@@ -45,9 +45,12 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-- After changing DB schema, run `pnpm --filter @workspace/db run push` then restart the workflow
+- `drizzle-kit push` fails non-TTY — use raw `pg` SQL (`node --input-type=module` in `lib/db/`) for schema changes
 - After changing lib schema, run `pnpm run typecheck:libs` to rebuild lib declarations before typechecking artifacts
 - Bot uses polling — only one instance should run at a time
+- Google Sheets must be shared with `grafik@grafik-bot-497821.iam.gserviceaccount.com`
+- Sheets column 3 = "Surname Name" (combined) — used for worker matching; columns 6-12 = Mon-Sun availability
+- Shift values in sheet: "1 shift (8h)", "2 shift (8h)", "3 shift (8h)", "day off"
 
 ## Pointers
 

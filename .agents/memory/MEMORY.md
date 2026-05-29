@@ -1,0 +1,2 @@
+- [Google Sheets structure](sheets-structure.md) — form responses: cols 0-5 are metadata, cols 6-12 are Mon-Sun, shift values "1 shift (8h)"/"2 shift (8h)"/"3 shift (8h)"/"day off"
+- [DB migration approach](db-migration.md) — drizzle-kit push fails non-TTY; use raw pg SQL CREATE TABLE for new tables, ALTER TABLE for existing
