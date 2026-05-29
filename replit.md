@@ -1,36 +1,43 @@
-# [Project name]
+# Employment Agency Schedule Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A Telegram bot for employment agencies to manage daily worker schedules and driver delivery routes to factories.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server + Telegram bot (port 8080)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- Required secret: `TELEGRAM_BOT_TOKEN` — Telegram bot token from @BotFather
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
+- Bot: Telegraf (Telegram Bot SDK)
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/bot/index.ts` — All Telegram bot logic (commands, menus, flows)
+- `lib/db/src/schema/workers.ts` — DB schema: workers, drivers, factories, schedules, admins
+- `lib/db/src/schema/index.ts` — Schema barrel export
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Bot runs in long-polling mode (no webhook) for simplicity in development/staging
+- Multi-step conversation flows tracked in-memory via `pendingActions` Map (keyed by Telegram user ID)
+- Admin must be registered first via `/adminsetup` (only first admin can self-register; subsequent admins must be added by existing admin)
+- Workers/drivers must send `/getid` to share their Telegram ID, which admin then links to their record
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **Admin**: Add/manage workers, drivers, factories; create daily schedules; notify all workers/drivers; view summaries
+- **Worker**: View today's and weekly schedule, factory address, driver info
+- **Driver**: View today's and weekly route, pickup list with worker addresses, mark pickups done
 
 ## User preferences
 
@@ -38,7 +45,9 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- After changing DB schema, run `pnpm --filter @workspace/db run push` then restart the workflow
+- After changing lib schema, run `pnpm run typecheck:libs` to rebuild lib declarations before typechecking artifacts
+- Bot uses polling — only one instance should run at a time
 
 ## Pointers
 
