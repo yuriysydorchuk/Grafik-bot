@@ -182,7 +182,7 @@ bot.hears("🗓 Генерувати графік", async (ctx) => {
   if (!await isAdmin(tid)) return;
   const next = getNextMonday();
   const curr = getCurrentMonday();
-  setState(tid, "gen:select_week", {});
+  setState(tid, "gen:select_week", { curr, next });
   return ctx.reply("Для якого тижня генерувати графік?", Markup.keyboard([
     [`📅 Поточний тиждень (${formatWeekStart(curr)})`],
     [`📅 Наступний тиждень (${formatWeekStart(next)})`],
@@ -534,14 +534,14 @@ bot.on("text", async (ctx) => {
     const factories = await db.select().from(factoriesTable);
     const match = factories.find(f => f.name === text);
     if (!match) return ctx.reply("Оберіть фабрику зі списку.");
-    setState(tid, "order:select_week", { factoryId: match.id, factoryName: match.name });
     const next = getNextMonday();
     const curr = getCurrentMonday();
+    setState(tid, "order:select_week", { factoryId: match.id, factoryName: match.name, curr, next });
     return ctx.reply(`Фабрика: *${match.name}*\nОберіть тиждень:`, {
       parse_mode: "Markdown",
       ...Markup.keyboard([
-        [`📅 Поточний (${curr})`],
-        [`📅 Наступний (${next})`],
+        [`📅 Поточний тиждень (${formatWeekStart(curr)})`],
+        [`📅 Наступний тиждень (${formatWeekStart(next)})`],
         ["✏️ Ввести вручну"],
         ["⬅️ Назад"],
       ]).resize(),
@@ -550,9 +550,10 @@ bot.on("text", async (ctx) => {
 
   if (state?.action === "order:select_week") {
     const { data } = state;
+    const { curr, next } = data as { curr: string; next: string };
     let weekStart: string;
-    if (text.includes(getCurrentMonday())) weekStart = getCurrentMonday();
-    else if (text.includes(getNextMonday())) weekStart = getNextMonday();
+    if (text.includes("Поточний")) weekStart = curr;
+    else if (text.includes("Наступний")) weekStart = next;
     else if (/^\d{4}-\d{2}-\d{2}$/.test(text)) weekStart = text;
     else if (text === "✏️ Ввести вручну") {
       return ctx.reply("Введіть дату понеділка (РРРР-ММ-ДД):", Markup.removeKeyboard());
@@ -611,11 +612,11 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     await ctx.reply(`⏳ Синхронізую тиждень ${weekStart}...`);
     try {
-      const { synced, notInMasterList } = await syncAvailabilityToDb(weekStart);
+      const { synced, autoAdded } = await syncAvailabilityToDb(weekStart);
       const missing = await getWorkersWhoHaventSubmitted(weekStart);
       let msg = `✅ Синхронізовано! *${synced}* записів для тижня ${formatWeekStart(weekStart)}\n\n`;
-      if (notInMasterList.length > 0) {
-        msg += `⚠️ *Не в списку працівників (${notInMasterList.length}):*\n${notInMasterList.map(n => `• ${n}`).join("\n")}\n\n`;
+      if (autoAdded.length > 0) {
+        msg += `👤 *Автоматично додано до списку (${autoAdded.length}):*\n${autoAdded.map(n => `• ${n}`).join("\n")}\n\n`;
       }
       if (missing.length > 0) {
         msg += `📭 *Не заповнили анкету (${missing.length}):*\n${missing.map(w => `• ${w.fullName}${w.telegramId ? "" : " ⚠️"}`).join("\n")}`;
@@ -632,10 +633,9 @@ bot.on("text", async (ctx) => {
   // ── Generate schedule: select week ───────────────────────────────
   if (state?.action === "gen:select_week") {
     let weekStart: string;
-    const curr = getCurrentMonday();
-    const next = getNextMonday();
-    if (text.includes(curr)) weekStart = curr;
-    else if (text.includes(next)) weekStart = next;
+    const { curr, next } = state.data as { curr: string; next: string };
+    if (text.includes("Поточний")) weekStart = curr;
+    else if (text.includes("Наступний")) weekStart = next;
     else if (/^\d{4}-\d{2}-\d{2}$/.test(text)) weekStart = text;
     else return ctx.reply("Введіть дату у форматі РРРР-ММ-ДД:");
     clearState(tid);

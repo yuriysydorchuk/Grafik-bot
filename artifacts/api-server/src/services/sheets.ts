@@ -154,9 +154,10 @@ export async function getAvailableWeeks(): Promise<string[]> {
 }
 
 // Sync latest availability from Sheets into DB for a given week
+// Auto-adds workers who are not yet in the master list
 export async function syncAvailabilityToDb(weekStart: string): Promise<{
   synced: number;
-  notInMasterList: string[];
+  autoAdded: string[];
 }> {
   const rows = await readAvailabilityFromSheets(weekStart);
 
@@ -171,9 +172,9 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
   }
 
   // Get all workers for matching
-  const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+  let allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
 
-  const notInMasterList: string[] = [];
+  const autoAdded: string[] = [];
   let synced = 0;
 
   // Clear existing availability for this week
@@ -181,14 +182,21 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
 
   for (const [normalizedName, row] of latestByName) {
     // Try to match to master list
-    const worker = allWorkers.find(w =>
+    let worker = allWorkers.find(w =>
       normalizeFullName(w.fullName) === normalizedName ||
       normalizedName.includes(normalizeFullName(w.fullName)) ||
       normalizeFullName(w.fullName).includes(normalizedName)
     );
 
+    // Auto-add worker if not in master list
     if (!worker) {
-      notInMasterList.push(row.fullName);
+      const [newWorker] = await db.insert(workersTable).values({
+        fullName: row.fullName.trim(),
+        isActive: true,
+      }).returning();
+      worker = newWorker;
+      allWorkers = [...allWorkers, newWorker!];
+      autoAdded.push(row.fullName.trim());
     }
 
     // Insert availability entries for each day+shift they're available
@@ -205,7 +213,7 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
     }
   }
 
-  return { synced, notInMasterList };
+  return { synced, autoAdded };
 }
 
 // Get workers from master list who have NOT submitted for this week
