@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { bot } from "./bot";
+import { startScheduler, stopScheduler } from "./services/scheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -31,15 +32,20 @@ async function main() {
     } catch (e) {
       logger.error({ err: e }, "Failed to start Telegram bot");
     }
+
+    // Start weekly reminder scheduler (every Sunday at 18:00 Kyiv time)
+    startScheduler();
   });
 
   // Graceful shutdown
   process.once("SIGINT", () => {
-    logger.info("SIGINT received, shutting down bot");
+    logger.info("SIGINT received, shutting down");
+    stopScheduler();
     bot.stop("SIGINT");
   });
   process.once("SIGTERM", () => {
-    logger.info("SIGTERM received, shutting down bot");
+    logger.info("SIGTERM received, shutting down");
+    stopScheduler();
     bot.stop("SIGTERM");
   });
 }

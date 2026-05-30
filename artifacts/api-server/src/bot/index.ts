@@ -215,11 +215,16 @@ bot.hears("👥 Управління", async (ctx) => {
 bot.hears("📢 Розсилки", async (ctx) => {
   const tid = String(ctx.from.id);
   if (!await isAdmin(tid)) return;
-  return ctx.reply("Оберіть дію:", Markup.keyboard([
-    ["📨 Нагадати заповнити таблицю"],
-    ["📢 Розіслати затверджений графік"],
-    ["⬅️ Назад"],
-  ]).resize());
+  const { getReminderHour } = await import("../services/scheduler");
+  return ctx.reply(
+    `📢 *Розсилки*\n\n⏰ Авто-нагадування: щонеділі о *${getReminderHour()}:00* (Київ)`,
+    { parse_mode: "Markdown", ...Markup.keyboard([
+      ["📨 Нагадати заповнити таблицю"],
+      ["📢 Розіслати затверджений графік"],
+      ["⏰ Змінити час нагадування", "🔔 Тест нагадування"],
+      ["⬅️ Назад"],
+    ]).resize() },
+  );
 });
 
 bot.hears("📨 Нагадати заповнити таблицю", async (ctx) => {
@@ -229,6 +234,28 @@ bot.hears("📨 Нагадати заповнити таблицю", async (ctx)
   const next = getNextMonday();
   return ctx.reply("Введіть тиждень для нагадування (РРРР-ММ-ДД або 'наступний'):",
     Markup.keyboard([[`${getNextMonday()}`], ["⬅️ Назад"]]).resize());
+});
+
+bot.hears("⏰ Змінити час нагадування", async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!await isAdmin(tid)) return;
+  setState(tid, "set_reminder_hour", {});
+  return ctx.reply(
+    "Введіть годину нагадування (за Києвом, 0–23):\nНаприклад: `18` — це 18:00 щонеділі",
+    { parse_mode: "Markdown", ...Markup.keyboard([["15", "17", "18", "19", "20"], ["⬅️ Назад"]]).resize() },
+  );
+});
+
+bot.hears("🔔 Тест нагадування", async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!await isAdmin(tid)) return;
+  await ctx.reply("⏳ Надсилаю тестові нагадування...");
+  const { sendWeeklyReminders } = await import("../services/scheduler");
+  const { notified, skipped } = await sendWeeklyReminders();
+  return ctx.reply(
+    `✅ Тест завершено!\n📨 Надіслано: ${notified}\n⚠️ Пропущено: ${skipped}`,
+    Markup.keyboard([["⬅️ Назад"]]).resize(),
+  );
 });
 
 bot.hears("📢 Розіслати затверджений графік", async (ctx) => {
@@ -726,6 +753,21 @@ bot.on("text", async (ctx) => {
       } catch { skipped++; }
     }
     return ctx.reply(`📨 Нагадування надіслано!\n✅ ${notified} повідомлень\n⚠️ ${skipped} без Telegram`, adminMenu());
+  }
+
+  // ── Set reminder hour ─────────────────────────────────────────────
+  if (state?.action === "set_reminder_hour") {
+    const hour = parseInt(text.trim(), 10);
+    if (isNaN(hour) || hour < 0 || hour > 23) {
+      return ctx.reply("Введіть число від 0 до 23:");
+    }
+    clearState(tid);
+    const { setReminderHour } = await import("../services/scheduler");
+    setReminderHour(hour);
+    return ctx.reply(
+      `✅ Авто-нагадування налаштовано на *${hour}:00* (Київ) щонеділі!`,
+      { parse_mode: "Markdown", ...adminMenu() },
+    );
   }
 
   // ── Head driver: select week ──────────────────────────────────────
