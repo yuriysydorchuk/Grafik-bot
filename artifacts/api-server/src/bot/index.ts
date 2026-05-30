@@ -3,9 +3,10 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
+  absenceRequestsTable, driverTripsTable, unplannedWorkersTable, availabilityTable,
   type DayOfWeek, type Shift, type Worker, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, notInArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   readAvailabilityFromSheets, syncAvailabilityToDb, getWorkersWhoHaventSubmitted,
@@ -14,6 +15,9 @@ import {
 import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
 } from "../services/scheduleGenerator";
+import {
+  exportScheduleToDrive, getDriveFolderLink, ensureFolderStructure, uploadReportPhoto,
+} from "../services/drive";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -65,7 +69,8 @@ const adminMenu = () => Markup.keyboard([
 
 const workerMenu = () => Markup.keyboard([
   ["📅 Мій графік на тиждень"],
-  ["ℹ️ Моя інформація"],
+  ["🙋 Зголосити відсутність", "ℹ️ Моя інформація"],
+  ["📄 Здати рапорт"],
 ]).resize();
 
 const headDriverMenu = () => Markup.keyboard([
@@ -75,13 +80,16 @@ const headDriverMenu = () => Markup.keyboard([
 
 const driverMenu = () => Markup.keyboard([
   ["📍 Моя зміна сьогодні", "📅 Мій графік"],
-  ["✅ Відмітити явку"],
+  ["✅ Відмітити явку", "⚠️ Не прийшли до машини"],
+  ["🚌 Почати поїздку", "🏭 Прибув на фабрику"],
+  ["➕ Позаплановий працівник"],
 ]).resize();
 
 const managementMenu = () => Markup.keyboard([
   ["➕ Додати працівника", "📋 Список працівників"],
   ["🔗 Прив'язати Telegram", "🚗 Водії"],
-  ["🏭 Фабрики", "⬅️ Назад"],
+  ["🏭 Фабрики", "🔥 Звільнити працівника"],
+  ["☁️ Google Drive", "⬅️ Назад"],
 ]).resize();
 
 // ─── /start ──────────────────────────────────────────────────────────────────
@@ -90,6 +98,30 @@ bot.start(async (ctx) => {
   const tid = String(ctx.from.id);
   const name = ctx.from.first_name;
   clearState(tid);
+
+  // Handle invite / code deep links: t.me/bot?start=join or ?start=1234
+  const payload = (ctx as any).startPayload as string | undefined;
+
+  if (payload && payload !== "") {
+    const code = payload.trim();
+
+    // Link by worker code
+    const workerByCode = await db.select().from(workersTable).where(eq(workersTable.workerCode, code));
+    if (workerByCode.length > 0 && !workerByCode[0]!.telegramId) {
+      await db.update(workersTable).set({ telegramId: tid }).where(eq(workersTable.id, workerByCode[0]!.id));
+      return ctx.reply(
+        `✅ Привіт, *${workerByCode[0]!.fullName}*!\n\nВас успішно прив'язано до бота.\nВаш код: \`${code}\``,
+        { parse_mode: "Markdown", ...workerMenu() },
+      );
+    }
+
+    if (code === "join") {
+      return ctx.reply(
+        `👋 Привіт! Для реєстрації введіть свій *код працівника* (4 цифри).\n\nЦей код видає адміністратор або він є у вашій картці.`,
+        { parse_mode: "Markdown", ...Markup.forceReply() },
+      );
+    }
+  }
 
   if (await isAdmin(tid)) {
     return ctx.reply(`👋 Привіт, *${name}*! Ви адміністратор.`, { parse_mode: "Markdown", ...adminMenu() });
@@ -106,7 +138,7 @@ bot.start(async (ctx) => {
     return ctx.reply(`👷 Привіт, *${worker.fullName}*! Ваше меню:`, { parse_mode: "Markdown", ...workerMenu() });
   }
   return ctx.reply(
-    `👋 Привіт, *${name}*!\n\nВи не зареєстровані. Зверніться до адміністратора.\n\nЯкщо ви адмін — надішліть /adminsetup`,
+    `👋 Привіт, *${name}*!\n\nВи не зареєстровані. Зверніться до адміністратора або використайте посилання-запрошення.\n\nЯкщо ви адмін — надішліть /adminsetup`,
     { parse_mode: "Markdown" },
   );
 });
@@ -355,6 +387,52 @@ bot.hears("📋 Список фабрик", async (ctx) => {
   return ctx.reply(`🏭 *Фабрики*:\n\n${list}`, { parse_mode: "Markdown", ...Markup.keyboard([["⬅️ Назад"]]).resize() });
 });
 
+// ─── Admin: Google Drive ──────────────────────────────────────────────────────
+
+bot.hears("☁️ Google Drive", async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!await isAdmin(tid)) return;
+  await ctx.reply("⏳ Перевіряю папки на Google Drive...");
+  try {
+    await ensureFolderStructure();
+    const link = await getDriveFolderLink();
+    return ctx.reply(
+      `☁️ *Google Drive*\n\n📁 Головна папка:\n${link}\n\nСтруктура:\n📂 Графіки — Excel файли графіків по тижнях\n📂 Облік годин — щомісячний облік годин\n📂 Рапорти — фото рапортів по фабриках та місяцях`,
+      { parse_mode: "Markdown", ...managementMenu() },
+    );
+  } catch (e) {
+    logger.error({ err: e }, "Drive folder check error");
+    return ctx.reply("❌ Помилка підключення до Google Drive. Перевірте налаштування сервісного акаунту.", managementMenu());
+  }
+});
+
+// ─── Admin: Extended worker list ──────────────────────────────────────────────
+
+bot.hears("📋 Список працівників", async (ctx) => {
+  if (!await isAdmin(String(ctx.from.id))) return;
+  const workers = await db.select().from(workersTable).where(eq(workersTable.isActive, true)).orderBy(workersTable.fullName);
+  if (workers.length === 0) return ctx.reply("Немає активних працівників.", managementMenu());
+  const list = workers.map((w, i) =>
+    `${i + 1}. *${w.fullName}* \`${w.workerCode ?? "—"}\`${w.telegramId ? " ✅" : " ⚠️"}${w.status === "fired" ? " 🔴" : ""}`
+  ).join("\n");
+  return ctx.reply(
+    `👷 *Працівники (${workers.length})*:\n\n${list}\n\n✅ = Telegram прив'язаний  ⚠️ = не прив'язаний`,
+    { parse_mode: "Markdown", ...managementMenu() },
+  );
+});
+
+// ─── Admin: Fire worker ───────────────────────────────────────────────────────
+
+bot.hears("🔥 Звільнити працівника", async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!await isAdmin(tid)) return;
+  const workers = await db.select().from(workersTable).where(and(eq(workersTable.isActive, true), ne(workersTable.status, "fired"))).orderBy(workersTable.fullName);
+  if (workers.length === 0) return ctx.reply("Немає активних працівників.", managementMenu());
+  const btns = workers.map(w => [`${w.fullName} (${w.workerCode ?? "—"})`]);
+  setState(tid, "fire_worker:select", { workers: workers.map(w => ({ id: w.id, name: w.fullName, code: w.workerCode })) });
+  return ctx.reply("Оберіть працівника для звільнення:", Markup.keyboard([...btns, ["⬅️ Назад"]]).resize());
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // WORKER FLOWS
 // ═══════════════════════════════════════════════════════════════════
@@ -371,7 +449,86 @@ bot.hears("📅 Мій графік на тиждень", async (ctx) => {
 bot.hears("ℹ️ Моя інформація", async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   if (!worker) return;
-  return ctx.reply(`👷 *${worker.fullName}*\n🆔 Telegram: \`${ctx.from.id}\``, { parse_mode: "Markdown" });
+  const botUsername = ctx.botInfo.username;
+  return ctx.reply(
+    `👷 *${worker.fullName}*\n🆔 Telegram: \`${ctx.from.id}\`\n🔑 Ваш код: \`${worker.workerCode ?? "—"}\`\n\nЗаслати другу посилання: \`https://t.me/${botUsername}?start=${worker.workerCode}\``,
+    { parse_mode: "Markdown" },
+  );
+});
+
+// ─── /invite — admin generates invite link ────────────────────────────────────
+
+bot.command("invite", async (ctx) => {
+  if (!await isAdmin(String(ctx.from.id))) return;
+  const botUsername = ctx.botInfo.username;
+  const link = `https://t.me/${botUsername}?start=join`;
+  return ctx.reply(
+    `🔗 *Запрошення до бота*\n\nПоділіться цим посиланням з новим працівником:\n${link}\n\n_Або надайте їм їхній код — вони зможуть зайти самостійно через_ \`/start КОД\``,
+    { parse_mode: "Markdown" },
+  );
+});
+
+// ─── Worker: Declare absence ──────────────────────────────────────────────────
+
+bot.hears("🙋 Зголосити відсутність", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const worker = await getWorker(tid);
+  if (!worker) return ctx.reply("❌ Ви не зареєстровані як працівник.");
+  const weeks = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.status, "approved")).orderBy(desc(scheduleWeeksTable.weekStart));
+  if (weeks.length === 0) return ctx.reply("📭 Немає затвердженого графіку.", workerMenu());
+  const week = weeks[0]!;
+  const entries = await db
+    .select({ id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
+    .from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, worker.id), eq(scheduleEntriesTable.status, "scheduled")));
+  if (entries.length === 0) return ctx.reply("У вас немає запланованих змін для зголошення.", workerMenu());
+  const btns = entries.map(e => [`${DAY_UK[e.day]} — ${SHIFT_SHORT[e.shift as Shift]}`]);
+  setState(tid, "absence:select_shift", { workerId: worker.id, weekStart: week.weekStart, weekId: week.id, entries });
+  return ctx.reply(
+    `🙋 *Зголосити відсутність*\n\nОберіть зміну, на яку не зможете прийти:`,
+    { parse_mode: "Markdown", ...Markup.keyboard([...btns, ["⬅️ Назад"]]).resize() },
+  );
+});
+
+// ─── Worker: Submit report photo ─────────────────────────────────────────────
+
+bot.hears("📄 Здати рапорт", async (ctx) => {
+  const worker = await getWorker(String(ctx.from.id));
+  if (!worker) return ctx.reply("❌ Ви не зареєстровані.");
+  // Check if within allowed period (7 days before month end or 7 days after month start)
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const prevMonth = now.getMonth() === 0
+    ? `${now.getFullYear() - 1}-12`
+    : `${now.getFullYear()}-${String(now.getMonth()).padStart(2, "0")}`;
+  const daysInCurrentMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysRemaining = daysInCurrentMonth - now.getDate();
+  const daysIntoMonth = now.getDate();
+  const canSubmitPrev = daysIntoMonth <= 7;
+  const canSubmitCurrent = daysRemaining <= 7;
+  if (!canSubmitPrev && !canSubmitCurrent) {
+    return ctx.reply(
+      `⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового місяця.\n\nНаступне вікно: з ${daysInCurrentMonth - 6}-го числа.`,
+      workerMenu(),
+    );
+  }
+  // Get factories from worker's schedule entries
+  const factories = await db
+    .select({ name: factoriesTable.name })
+    .from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
+    .where(eq(scheduleEntriesTable.workerId, worker.id));
+  const uniqueFactories = [...new Set(factories.map(f => f.name).filter(Boolean))] as string[];
+  if (uniqueFactories.length === 0) {
+    const allFactories = await db.select().from(factoriesTable);
+    uniqueFactories.push(...allFactories.map(f => f.name));
+  }
+  const options = [canSubmitPrev ? prevMonth : null, canSubmitCurrent ? currentMonth : null].filter(Boolean) as string[];
+  const monthLabel = (m: string) => new Date(`${m}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
+  setState(String(ctx.from.id), "report:select_month", { workerId: worker.id, workerName: worker.fullName, options, factories: uniqueFactories });
+  const btns = options.map(m => [monthLabel(m)]);
+  return ctx.reply("Оберіть місяць для рапорту:", Markup.keyboard([...btns, ["⬅️ Назад"]]).resize());
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -418,6 +575,133 @@ bot.hears("📅 Мій графік", async (ctx) => {
   const week = weeks[0]!;
   return showDriverWeek(ctx, driver.id, week.id, week.weekStart);
 });
+
+// ─── Driver: Trip tracking ────────────────────────────────────────────────────
+
+bot.hears("🚌 Почати поїздку", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.reply("❌ Ви не зареєстровані як водій.");
+  const today = new Date();
+  const dayName = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][today.getDay()] as DayOfWeek;
+  const week = getCurrentMonday();
+  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+  if (weeks.length === 0) return ctx.reply("Немає активного графіку.", driverMenu());
+  const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
+    .from(driverShiftAssignmentsTable)
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+  if (assignments.length === 0) return ctx.reply(`📭 На ${DAY_NAMES_UK[dayName]} у вас немає призначень.`, driverMenu());
+  // Record trip start
+  const now = new Date();
+  const trip = assignments[0]!;
+  const PICKUP_HOURS: Record<Shift, number> = { "1": 5, "2": 13, "3": 21 };
+  const expectedPickup = new Date(today);
+  expectedPickup.setHours(PICKUP_HOURS[trip.shift as Shift]!, 0, 0, 0);
+  const lateToPickup = now > expectedPickup;
+  const existingTrip = await db.select({ id: driverTripsTable.id }).from(driverTripsTable)
+    .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName), eq(driverTripsTable.shift, trip.shift as Shift)));
+  if (existingTrip.length > 0) {
+    await db.update(driverTripsTable).set({ pickupStartedAt: now, lateToPickup }).where(eq(driverTripsTable.id, existingTrip[0]!.id));
+  } else {
+    await db.insert(driverTripsTable).values({
+      driverId: driver.id, weekId: weeks[0]!.id, factoryId: trip.factoryId,
+      dayOfWeek: dayName, shift: trip.shift as Shift, tripDate: today.toISOString().split("T")[0]!,
+      pickupStartedAt: now, lateToPickup,
+    });
+  }
+  const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+  return ctx.reply(
+    `🚌 *Поїздку розпочато!*\n\nЧас: ${timeStr}${lateToPickup ? "\n⚠️ Ви спізнились на місце збору!" : "\n✅ Вчасно на місці збору"}`,
+    { parse_mode: "Markdown", ...driverMenu() },
+  );
+});
+
+bot.hears("🏭 Прибув на фабрику", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.reply("❌ Ви не зареєстровані як водій.");
+  const today = new Date();
+  const dayName = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][today.getDay()] as DayOfWeek;
+  const week = getCurrentMonday();
+  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+  if (weeks.length === 0) return ctx.reply("Немає активного графіку.", driverMenu());
+  const trip = await db.select().from(driverTripsTable)
+    .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName)));
+  if (trip.length === 0) return ctx.reply("⚠️ Спочатку натисніть «🚌 Почати поїздку».", driverMenu());
+  const now = new Date();
+  const FACTORY_HOURS: Record<Shift, number> = { "1": 5, "2": 13, "3": 21 };
+  const FACTORY_MINUTES: Record<Shift, number> = { "1": 45, "2": 45, "3": 45 };
+  const shift = trip[0]!.shift;
+  const expectedFactory = new Date(today);
+  expectedFactory.setHours(FACTORY_HOURS[shift]!, FACTORY_MINUTES[shift]!, 0, 0);
+  const lateToFactory = now > expectedFactory;
+  await db.update(driverTripsTable).set({ arrivedFactoryAt: now, lateToFactory }).where(eq(driverTripsTable.id, trip[0]!.id));
+  const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+  const travelMin = trip[0]!.pickupStartedAt
+    ? Math.round((now.getTime() - trip[0]!.pickupStartedAt.getTime()) / 60000)
+    : null;
+  return ctx.reply(
+    `🏭 *Прибуття на фабрику зафіксовано!*\n\nЧас: ${timeStr}${travelMin ? `\n⏱ В дорозі: ${travelMin} хв` : ""}${lateToFactory ? "\n⚠️ Запізнення на фабрику!" : "\n✅ Прибули вчасно"}`,
+    { parse_mode: "Markdown", ...driverMenu() },
+  );
+});
+
+// ─── Driver: Report workers who didn't show ───────────────────────────────────
+
+bot.hears("⚠️ Не прийшли до машини", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.reply("❌ Ви не зареєстровані як водій.");
+  const today = new Date();
+  const dayName = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][today.getDay()] as DayOfWeek;
+  const week = getCurrentMonday();
+  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+  if (weeks.length === 0) return ctx.reply("Немає активного графіку.", driverMenu());
+  const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift })
+    .from(driverShiftAssignmentsTable)
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+  if (myAssignments.length === 0) return ctx.reply(`📭 На сьогодні у вас немає призначень.`, driverMenu());
+  const myShifts = [...new Set(myAssignments.map(a => a.shift))];
+  const workers = await db
+    .select({ id: scheduleEntriesTable.id, name: workersTable.fullName, status: scheduleEntriesTable.status })
+    .from(scheduleEntriesTable)
+    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .where(and(
+      eq(scheduleEntriesTable.weekId, weeks[0]!.id),
+      eq(scheduleEntriesTable.dayOfWeek, dayName),
+      inArray(scheduleEntriesTable.shift, myShifts as Shift[]),
+      eq(scheduleEntriesTable.status, "scheduled"),
+    ));
+  if (workers.length === 0) return ctx.reply("Всі явки вже відмічені.", driverMenu());
+  setState(tid, "report_absent:select", { weekId: weeks[0]!.id, dayName, workers: workers.map(w => ({ id: w.id, name: w.name })), selected: [] as number[] });
+  const btns = workers.map(w => [`❌ ${w.name}`]);
+  return ctx.reply(
+    `⚠️ Оберіть хто не прийшов (натисніть на ім'я):\n\nПісля вибору натисніть «✅ Підтвердити»`,
+    Markup.keyboard([...btns, ["✅ Підтвердити відсутніх"], ["⬅️ Назад"]]).resize(),
+  );
+});
+
+// ─── Driver: Add unplanned worker ─────────────────────────────────────────────
+
+bot.hears("➕ Позаплановий працівник", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.reply("❌ Ви не зареєстровані як водій.");
+  const today = new Date();
+  const dayName = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][today.getDay()] as DayOfWeek;
+  const week = getCurrentMonday();
+  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+  if (weeks.length === 0) return ctx.reply("Немає активного графіку.", driverMenu());
+  const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
+    .from(driverShiftAssignmentsTable)
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+  if (assignments.length === 0) return ctx.reply(`📭 На сьогодні у вас немає призначень.`, driverMenu());
+  const a = assignments[0]!;
+  setState(tid, "unplanned:enter_name", { weekId: weeks[0]!.id, driverId: driver.id, factoryId: a.factoryId, dayOfWeek: dayName, shift: a.shift });
+  return ctx.reply("Введіть ім'я або код позапланового працівника:", Markup.removeKeyboard());
+});
+
+// ─── Driver: Attendance ───────────────────────────────────────────────────────
 
 bot.hears("✅ Відмітити явку", async (ctx) => {
   const driver = await getDriver(String(ctx.from.id));
@@ -479,10 +763,20 @@ bot.on("text", async (ctx) => {
   if (!state && text !== "⬅️ Назад") return;
 
   if (state?.action === "add_worker") {
-    await db.insert(workersTable).values({ fullName: text });
+    // Auto-generate worker code: find max existing numeric code + 1
+    const allCodes = await db.select({ code: workersTable.workerCode }).from(workersTable);
+    const maxCode = allCodes
+      .map(r => parseInt(r.code ?? "0", 10))
+      .filter(n => !isNaN(n))
+      .reduce((a, b) => Math.max(a, b), 0);
+    const newCode = String(maxCode + 1).padStart(4, "0");
+    await db.insert(workersTable).values({ fullName: text, workerCode: newCode });
+    const botUsername = ctx.botInfo.username;
     clearState(tid);
-    return ctx.reply(`✅ Працівник *${text}* доданий!\n\nТепер прив'яжіть їх Telegram через "🔗 Прив'язати Telegram".`,
-      { parse_mode: "Markdown", ...managementMenu() });
+    return ctx.reply(
+      `✅ Працівник *${text}* доданий!\n🔑 Код: \`${newCode}\`\n🔗 Посилання: \`https://t.me/${botUsername}?start=${newCode}\`\n\nАбо прив'яжіть Telegram через "🔗 Прив'язати Telegram".`,
+      { parse_mode: "Markdown", ...managementMenu() },
+    );
   }
 
   // ── Add driver ────────────────────────────────────────────────────
@@ -711,7 +1005,16 @@ bot.on("text", async (ctx) => {
     if (text === "✅ Затвердити графік") {
       await db.update(scheduleWeeksTable).set({ status: "approved", approvedAt: new Date() }).where(eq(scheduleWeeksTable.id, data.weekId));
       clearState(tid);
-      return ctx.reply(`✅ Графік для тижня ${formatWeekStart(data.weekStart)} затверджено!\n\nТепер розішліть його через "📢 Розсилки → 📢 Розіслати затверджений графік"`, adminMenu());
+      await ctx.reply(`✅ Графік для тижня ${formatWeekStart(data.weekStart)} затверджено!\n\n⏳ Зберігаю на Google Drive...`);
+      try {
+        const driveLink = await exportScheduleToDrive(data.weekId, data.weekStart);
+        if (driveLink) {
+          await ctx.reply(`☁️ Графік збережено на Drive:\n${driveLink}`, adminMenu());
+        }
+      } catch (e) {
+        logger.error({ err: e }, "Drive export failed");
+      }
+      return ctx.reply(`Тепер розішліть графік через "📢 Розсилки → 📢 Розіслати затверджений графік"`, adminMenu());
     }
     if (text === "🔄 Перегенерувати") {
       clearState(tid);
@@ -856,7 +1159,6 @@ bot.on("text", async (ctx) => {
     const nextIndex = data.index + 1;
     if (nextIndex >= entries.length) {
       clearState(tid);
-      // Notify absent workers
       for (const entryId of data.absent) {
         await notifyAbsentWorker(entryId, data.dayName);
       }
@@ -869,7 +1171,321 @@ bot.on("text", async (ctx) => {
     return ctx.reply(`👷 *${next.name}* — вийшов?`, { parse_mode: "Markdown" });
   }
 
+  // ── Worker: absence — select shift ───────────────────────────────
+  if (state?.action === "absence:select_shift") {
+    const { data } = state;
+    const entries: { id: number; day: DayOfWeek; shift: Shift }[] = data.entries;
+    const match = entries.find(e => text.startsWith(DAY_UK[e.day]) && text.includes(e.shift === "1" ? "1" : e.shift === "2" ? "2" : "3"));
+    if (!match) return ctx.reply("Оберіть зміну зі списку:");
+    setState(tid, "absence:enter_reason", { ...data, entryId: match.id, day: match.day, shift: match.shift });
+    return ctx.reply(
+      `🙋 Зміна: *${DAY_UK[match.day]} ${SHIFT_SHORT[match.shift]}*\n\nВкажіть причину відсутності:`,
+      { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    );
+  }
+
+  if (state?.action === "absence:enter_reason") {
+    const { data } = state;
+    clearState(tid);
+    // Save absence request
+    const req = await db.insert(absenceRequestsTable).values({
+      workerId: data.workerId,
+      weekStart: data.weekStart,
+      dayOfWeek: data.day,
+      shift: data.shift,
+      reason: text,
+      status: "pending",
+    }).returning({ id: absenceRequestsTable.id });
+    // Find substitutes: available for this slot but not in schedule
+    const inSchedule = await db.select({ workerId: scheduleEntriesTable.workerId })
+      .from(scheduleEntriesTable)
+      .where(and(eq(scheduleEntriesTable.weekId, data.weekId), eq(scheduleEntriesTable.dayOfWeek, data.day), eq(scheduleEntriesTable.shift, data.shift)));
+    const inScheduleIds = inSchedule.map(r => r.workerId);
+    const substitutes = await db.select({ fullNameRaw: availabilityTable.fullNameRaw })
+      .from(availabilityTable)
+      .where(and(eq(availabilityTable.weekStart, data.weekStart), eq(availabilityTable.dayOfWeek, data.day), eq(availabilityTable.shift, data.shift)));
+    // Match substitute names to workers
+    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+    const substituteCandidates = allWorkers.filter(w =>
+      !inScheduleIds.includes(w.id) &&
+      substitutes.some(s => s.fullNameRaw.toLowerCase().includes(w.fullName.toLowerCase().split(" ")[0]!.toLowerCase()))
+    ).slice(0, 5);
+    // Find worker name
+    const workerRecord = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, data.workerId));
+    const workerName = workerRecord[0]?.fullName ?? "Невідомий";
+    // Notify all admins
+    const admins = await db.select().from(adminsTable);
+    const requestId = req[0]!.id;
+    const subList = substituteCandidates.length > 0
+      ? `\n\n👥 *Можливі заміни:*\n${substituteCandidates.map((s, i) => `${i + 1}. ${s.fullName}`).join("\n")}`
+      : "\n\n⚠️ Замін не знайдено";
+    const adminMsg = `⚠️ *Зголошення відсутності*\n\n👷 *${workerName}*\n📅 ${DAY_UK[data.day as DayOfWeek]} — ${SHIFT_SHORT[data.shift as Shift]}\n📝 Причина: ${text}${subList}`;
+    const subButtons = substituteCandidates.map(s =>
+      [{ text: `🔄 Замінити на ${s.fullName}`, callback_data: `absence_sub_${requestId}_${s.id}` }]
+    );
+    const inlineButtons = [
+      ...subButtons,
+      [{ text: "✅ Прийняти (без заміни)", callback_data: `absence_approve_${requestId}` }],
+      [{ text: "❌ Відхилити", callback_data: `absence_reject_${requestId}` }],
+    ];
+    for (const admin of admins) {
+      try {
+        await bot.telegram.sendMessage(admin.telegramId, adminMsg, {
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: inlineButtons },
+        });
+      } catch { /* ignore */ }
+    }
+    return ctx.reply(
+      `✅ *Зголошення прийнято!*\n\nВи зголосили відсутність на ${DAY_UK[data.day as DayOfWeek]} (${SHIFT_SHORT[data.shift as Shift]}).\n\nАдміністратор отримав повідомлення і прийме рішення.`,
+      { parse_mode: "Markdown", ...workerMenu() },
+    );
+  }
+
+  // ── Fire worker ───────────────────────────────────────────────────
+  if (state?.action === "fire_worker:select") {
+    const { data } = state;
+    const workers: { id: number; name: string; code: string | null }[] = data.workers;
+    const match = workers.find(w => text.includes(w.name));
+    if (!match) return ctx.reply("Оберіть працівника зі списку.");
+    setState(tid, "fire_worker:confirm", { workerId: match.id, workerName: match.name });
+    return ctx.reply(
+      `⚠️ Ви дійсно хочете звільнити *${match.name}*?\n\nЦе позначить їх як звільненого і видалить з активних.`,
+      { parse_mode: "Markdown", ...Markup.keyboard([["✅ Так, звільнити", "❌ Скасувати"]]).resize() },
+    );
+  }
+
+  if (state?.action === "fire_worker:confirm") {
+    const { data } = state;
+    if (text === "✅ Так, звільнити") {
+      await db.update(workersTable).set({ status: "fired", isActive: false, firedAt: new Date() }).where(eq(workersTable.id, data.workerId));
+      clearState(tid);
+      return ctx.reply(`✅ *${data.workerName}* звільнений(-а).`, { parse_mode: "Markdown", ...managementMenu() });
+    }
+    clearState(tid);
+    return ctx.reply("Скасовано.", managementMenu());
+  }
+
+  // ── Report: select month ──────────────────────────────────────────
+  if (state?.action === "report:select_month") {
+    const { data } = state;
+    const options: string[] = data.options;
+    const monthLabel = (m: string) => new Date(`${m}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
+    const match = options.find(m => text.toLowerCase().includes(monthLabel(m).toLowerCase().split(" ")[0]!.toLowerCase()));
+    const selected = match ?? options[0]!;
+    const factories: string[] = data.factories;
+    if (factories.length === 1) {
+      setState(tid, "report:awaiting_photo", { ...data, month: selected, factory: factories[0]! });
+      return ctx.reply(`📄 Надішліть *фото* рапорту за ${monthLabel(selected)} — ${factories[0]}:`, { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+    }
+    setState(tid, "report:select_factory", { ...data, month: selected });
+    const btns = factories.map(f => [f]);
+    return ctx.reply("Оберіть фабрику:", Markup.keyboard([...btns, ["⬅️ Назад"]]).resize());
+  }
+
+  if (state?.action === "report:select_factory") {
+    const { data } = state;
+    const factories: string[] = data.factories;
+    const match = factories.find(f => f === text);
+    if (!match) return ctx.reply("Оберіть фабрику зі списку.");
+    setState(tid, "report:awaiting_photo", { ...data, factory: match });
+    const monthLabel = new Date(`${data.month}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
+    return ctx.reply(`📄 Надішліть *фото* рапорту за ${monthLabel} — ${match}:`, { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+  }
+
+  // ── Driver: unplanned worker ──────────────────────────────────────
+  if (state?.action === "unplanned:enter_name") {
+    const { data } = state;
+    clearState(tid);
+    // Try to match by code or name
+    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+    const byCode = allWorkers.find(w => w.workerCode === text.trim());
+    const byName = allWorkers.find(w => w.fullName.toLowerCase().includes(text.toLowerCase()));
+    const matched = byCode ?? byName;
+    await db.insert(unplannedWorkersTable).values({
+      weekId: data.weekId, driverId: data.driverId, factoryId: data.factoryId,
+      dayOfWeek: data.dayOfWeek, shift: data.shift,
+      workerName: matched?.fullName ?? text,
+      workerId: matched?.id,
+    });
+    // Notify admins
+    const admins = await db.select().from(adminsTable);
+    const driver = await getDriver(tid);
+    for (const admin of admins) {
+      try {
+        await bot.telegram.sendMessage(admin.telegramId,
+          `➕ *Позаплановий працівник*\n\n👷 ${matched?.fullName ?? text}${matched ? ` (код ${matched.workerCode})` : " (не в базі)"}\n🚗 Водій: ${driver?.name ?? "—"}\n📅 ${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}`,
+          { parse_mode: "Markdown" });
+      } catch { /* ignore */ }
+    }
+    return ctx.reply(
+      `✅ *${matched?.fullName ?? text}* додано як позапланового.\n\nАдміністратор повідомлений.`,
+      { parse_mode: "Markdown", ...driverMenu() },
+    );
+  }
+
+  // ── Driver: report absent workers ─────────────────────────────────
+  if (state?.action === "report_absent:select") {
+    const { data } = state;
+    const workers: { id: number; name: string | null }[] = data.workers;
+    if (text === "✅ Підтвердити відсутніх") {
+      if (data.selected.length === 0) {
+        clearState(tid);
+        return ctx.reply("Нікого не обрано. Скасовано.", driverMenu());
+      }
+      clearState(tid);
+      const absentIds: number[] = data.selected;
+      for (const entryId of absentIds) {
+        await db.update(scheduleEntriesTable).set({ status: "absent" }).where(eq(scheduleEntriesTable.id, entryId));
+        await notifyAbsentWorker(entryId, data.dayName);
+      }
+      // Notify admins
+      const admins = await db.select().from(adminsTable);
+      const absentNames = workers.filter(w => absentIds.includes(w.id)).map(w => w.name).join(", ");
+      const driver = await getDriver(tid);
+      for (const admin of admins) {
+        try {
+          await bot.telegram.sendMessage(admin.telegramId,
+            `⚠️ *Не прийшли до машини*\n\n🚗 Водій: ${driver?.name ?? "—"}\n📅 ${DAY_UK[data.dayName as DayOfWeek]}\n\nВідсутні: ${absentNames}`,
+            { parse_mode: "Markdown" });
+        } catch { /* ignore */ }
+      }
+      return ctx.reply(`✅ Відсутніх відмічено: ${absentIds.length}\nАдміністратор повідомлений.`, driverMenu());
+    }
+    // Toggle selection
+    const match = workers.find(w => text.includes(w.name ?? ""));
+    if (match) {
+      const idx = (data.selected as number[]).indexOf(match.id);
+      if (idx === -1) { data.selected.push(match.id); }
+      else { data.selected.splice(idx, 1); }
+      setState(tid, "report_absent:select", data);
+      const selected: number[] = data.selected;
+      const selectedNames = workers.filter(w => selected.includes(w.id)).map(w => `❌ ${w.name}`).join("\n") || "Нікого не обрано";
+      return ctx.reply(`Обрані відсутні:\n${selectedNames}\n\nПродовжуйте обирати або натисніть «✅ Підтвердити відсутніх»`);
+    }
+    return;
+  }
+
   return;
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PHOTO HANDLER — report submission
+// ═══════════════════════════════════════════════════════════════════
+
+bot.on("photo", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "report:awaiting_photo") return;
+  const { data } = state;
+  clearState(tid);
+  await ctx.reply("⏳ Завантажую рапорт на Google Drive...");
+  try {
+    const photo = ctx.message.photo.at(-1)!;
+    const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+    const resp = await fetch(fileLink.href);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const link = await uploadReportPhoto(
+      data.factory, data.workerName, data.month, buf, "image/jpeg",
+    );
+    if (link) {
+      return ctx.reply(`✅ Рапорт збережено!\n${link}`, workerMenu());
+    } else {
+      return ctx.reply("❌ Помилка збереження. Спробуйте ще раз.", workerMenu());
+    }
+  } catch (e) {
+    logger.error({ err: e }, "Report upload error");
+    return ctx.reply("❌ Помилка завантаження.", workerMenu());
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// CALLBACK QUERY HANDLERS — absence approval
+// ═══════════════════════════════════════════════════════════════════
+
+bot.action(/^absence_approve_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const requestId = parseInt(ctx.match[1]!, 10);
+  const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
+  if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
+  const r = req[0];
+  await db.update(absenceRequestsTable).set({ status: "accepted" }).where(eq(absenceRequestsTable.id, requestId));
+  // Mark schedule entry as absent
+  const entries = await db.select({ id: scheduleEntriesTable.id })
+    .from(scheduleEntriesTable)
+    .where(and(
+      eq(scheduleEntriesTable.workerId, r.workerId),
+      eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek),
+      eq(scheduleEntriesTable.shift, r.shift),
+    ));
+  if (entries[0]) {
+    await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined }).where(eq(scheduleEntriesTable.id, entries[0].id));
+  }
+  // Notify worker
+  const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
+  if (workerRecord[0]?.telegramId) {
+    try {
+      await bot.telegram.sendMessage(workerRecord[0].telegramId,
+        `✅ Ваше зголошення відсутності на *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* прийнято.`,
+        { parse_mode: "Markdown" });
+    } catch { /* ignore */ }
+  }
+  return ctx.editMessageText(`✅ Відсутність прийнята (без заміни)\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`);
+});
+
+bot.action(/^absence_sub_(\d+)_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const [requestId, substituteId] = [parseInt(ctx.match[1]!, 10), parseInt(ctx.match[2]!, 10)];
+  const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
+  if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
+  const r = req[0];
+  const sub = await db.select().from(workersTable).where(eq(workersTable.id, substituteId));
+  if (!sub[0]) return ctx.editMessageText("❌ Замінника не знайдено.");
+  // Update absence request
+  await db.update(absenceRequestsTable).set({ status: "substituted", substituteWorkerId: substituteId }).where(eq(absenceRequestsTable.id, requestId));
+  // Find schedule entry and reassign
+  const entries = await db.select({ id: scheduleEntriesTable.id })
+    .from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+  if (entries[0]) {
+    await db.update(scheduleEntriesTable).set({ workerId: substituteId }).where(eq(scheduleEntriesTable.id, entries[0].id));
+  }
+  const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
+  // Notify original worker
+  if (workerRecord[0]?.telegramId) {
+    try {
+      await bot.telegram.sendMessage(workerRecord[0].telegramId,
+        `✅ Вашу зміну *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* буде замінено на *${sub[0].fullName}*.`,
+        { parse_mode: "Markdown" });
+    } catch { /* ignore */ }
+  }
+  // Notify substitute worker
+  if (sub[0].telegramId) {
+    try {
+      await bot.telegram.sendMessage(sub[0].telegramId,
+        `📋 *Нове призначення!*\n\nВас призначено на заміну.\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}\nТиждень: ${formatWeekStart(r.weekStart)}`,
+        { parse_mode: "Markdown" });
+    } catch { /* ignore */ }
+  }
+  return ctx.editMessageText(`✅ Замінено: *${workerRecord[0]?.fullName ?? "—"}* → *${sub[0].fullName}*\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`, { parse_mode: "Markdown" });
+});
+
+bot.action(/^absence_reject_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const requestId = parseInt(ctx.match[1]!, 10);
+  const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
+  if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
+  const r = req[0];
+  await db.update(absenceRequestsTable).set({ status: "rejected" }).where(eq(absenceRequestsTable.id, requestId));
+  const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
+  if (workerRecord[0]?.telegramId) {
+    try {
+      await bot.telegram.sendMessage(workerRecord[0].telegramId,
+        `❌ Ваше зголошення відсутності на *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* відхилено.\n\nВам необхідно вийти на зміну або зв'язатись з адміністратором.`,
+        { parse_mode: "Markdown" });
+    } catch { /* ignore */ }
+  }
+  return ctx.editMessageText(`❌ Відхилено\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`);
 });
 
 // ═══════════════════════════════════════════════════════════════════
