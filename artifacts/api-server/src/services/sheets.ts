@@ -1,6 +1,6 @@
 import { google } from "googleapis";
 import { db } from "@workspace/db";
-import { availabilityTable, workersTable, type DayOfWeek, type Shift } from "@workspace/db";
+import { availabilityTable, workersTable, factoriesTable, type DayOfWeek, type Shift } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
@@ -16,6 +16,7 @@ export const SHIFT_LABELS: Record<Shift, string> = {
   "1": "1 зміна (6:00–14:00)",
   "2": "2 зміна (14:00–22:00)",
   "3": "3 зміна (22:00–6:00)",
+  "4": "4 зміна", "5": "5 зміна", "6": "6 зміна",
 };
 
 function parseShiftValue(val: string): Shift | null {
@@ -75,16 +76,25 @@ export async function readAvailabilityFromSheets(weekStart?: string): Promise<Sh
   });
 
   const rows = res.data.values ?? [];
-  if (rows.length < 2) return [];
+  if (rows.length === 0) return [];
+
+  // Detect whether the first row is a header or already data.
+  // Google Forms exports a header row, but some sheets have headers removed —
+  // a first cell matching a DD.MM.YYYY timestamp means row 0 is data, not a header.
+  const firstCell = String(rows[0]?.[0] ?? "");
+  const firstRowIsData = /\d{2}\.\d{2}\.\d{4}/.test(firstCell);
+  const hasHeader = !firstRowIsData;
 
   const headers = rows[0] as string[];
-  // Find column indices by detecting keywords
+  // Find column indices by detecting keywords (only meaningful if there's a header)
   let tsCol = 0, dateCol = 1, nameCol = 3;
-  for (let i = 0; i < headers.length; i++) {
-    const h = (headers[i] ?? "").toLowerCase();
-    if (h.includes("час") || h.includes("time") || h.includes("метка")) tsCol = i;
-    if (h.includes("дата") || h.includes("date") || h.includes("data")) dateCol = i;
-    if (h.includes("surname name") || h.includes("прізвище") && h.includes("ім")) nameCol = i;
+  if (hasHeader) {
+    for (let i = 0; i < headers.length; i++) {
+      const h = (headers[i] ?? "").toLowerCase();
+      if (h.includes("час") || h.includes("time") || h.includes("метка")) tsCol = i;
+      if (h.includes("дата") || h.includes("date") || h.includes("data")) dateCol = i;
+      if (h.includes("surname name") || h.includes("прізвище") && h.includes("ім")) nameCol = i;
+    }
   }
 
   // Day columns: search for day keywords in headers
@@ -98,23 +108,28 @@ export async function readAvailabilityFromSheets(weekStart?: string): Promise<Sh
     ["sat", ["saturday", "субота", "sobota", "сб"]],
     ["sun", ["sunday", "неділя", "niedziela", "нд"]],
   ];
-  for (let i = 0; i < headers.length; i++) {
-    const h = (headers[i] ?? "").toLowerCase();
-    for (const [day, keywords] of dayKeywords) {
-      if (keywords.some(k => h.includes(k))) {
-        dayColMap[day] = i;
-        break;
+  if (hasHeader) {
+    for (let i = 0; i < headers.length; i++) {
+      const h = (headers[i] ?? "").toLowerCase();
+      for (const [day, keywords] of dayKeywords) {
+        if (keywords.some(k => h.includes(k))) {
+          dayColMap[day] = i;
+          break;
+        }
       }
     }
   }
 
-  // Fallback: if days not found by name, assume columns 6-12
+  // Fallback: if days not found by name (or no header), assume columns 6-12
   if (Object.keys(dayColMap).length === 0) {
     DAYS.forEach((d, i) => { dayColMap[d] = 6 + i; });
   }
 
+  // If the first row is data (no header), include it; otherwise skip the header row.
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+
   const result: SheetRow[] = [];
-  for (const row of rows.slice(1)) {
+  for (const row of dataRows) {
     if (!row || row.length === 0) continue;
 
     const tsRaw = row[tsCol];
@@ -177,8 +192,11 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
   const autoAdded: string[] = [];
   let synced = 0;
 
-  // Clear existing availability for this week
-  await db.delete(availabilityTable).where(eq(availabilityTable.weekStart, weekStart));
+  // Clear existing SHEETS-sourced availability for this week only.
+  // Telegram-submitted availability is kept (it's a separate source of truth).
+  await db.delete(availabilityTable).where(
+    and(eq(availabilityTable.weekStart, weekStart), eq(availabilityTable.source, "sheets"))
+  );
 
   for (const [normalizedName, row] of latestByName) {
     // Try to match to master list
@@ -204,6 +222,8 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
       if (!shift) continue;
       await db.insert(availabilityTable).values({
         fullNameRaw: row.fullName,
+        workerId: worker?.id,
+        source: "sheets",
         weekStart,
         dayOfWeek: day,
         shift,
@@ -223,7 +243,16 @@ export async function getWorkersWhoHaventSubmitted(weekStart: string): Promise<W
 
   const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
 
-  return allWorkers.filter(w => !submittedNames.has(normalizeFullName(w.fullName)));
+  // Manual factories don't collect availability — exclude their workers
+  const manualFactoryIds = new Set(
+    (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.usesAvailability, false)))
+      .map(f => f.id)
+  );
+
+  return allWorkers.filter(w =>
+    !(w.factoryId && manualFactoryIds.has(w.factoryId)) &&
+    !submittedNames.has(normalizeFullName(w.fullName))
+  );
 }
 
 type Worker = typeof workersTable.$inferSelect;

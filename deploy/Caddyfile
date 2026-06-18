@@ -1,0 +1,17 @@
+# Grafik-bot reverse proxy with automatic HTTPS (Let's Encrypt).
+# Put this at /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
+# Caddy obtains + renews the TLS certificate automatically.
+
+# ── FREE option (no domain purchase): use a sslip.io hostname tied to your IP ──
+# Replace 1.2.3.4 with your server's real public IP. The dotted form resolves to
+# that exact IP, so Caddy gets a real Let's Encrypt cert for it — free HTTPS.
+1.2.3.4.sslip.io {
+    encode gzip
+    reverse_proxy localhost:8080
+}
+
+# ── When you buy a real domain later, swap the block above for this ───────────
+# your-domain.com {
+#     encode gzip
+#     reverse_proxy localhost:8080
+# }
