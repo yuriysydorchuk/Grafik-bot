@@ -10,7 +10,42 @@ import { useT } from "../lib/i18n";
 
 const shiftColor = (s?: string) => s === "1" ? "blue" : s === "2" ? "amber" : s === "3" ? "red" : "slate";
 
-type Group = { key: string; name: string; rows: AvailRow[] };
+// Per-day×shift breakdown where every person is counted once a day: those who reported a
+// single shift land there; those who reported several are placed greedily into the least
+// loaded of their shifts so the columns stay roughly balanced ("плюс-мінус рівна кількість").
+type Summary = { shifts: string[]; byDay: Record<string, Record<string, number>>; byShift: Record<string, number>; total: number };
+
+function buildSummary(rows: AvailRow[]): Summary {
+  const shiftSet = new Set<string>();
+  for (const r of rows) for (const d of DAYS) for (const s of r.days[d] ?? []) shiftSet.add(s);
+  const shifts = [...shiftSet].sort();
+  const byDay: Record<string, Record<string, number>> = {};
+  const byShift: Record<string, number> = Object.fromEntries(shifts.map(s => [s, 0]));
+  let total = 0;
+  for (const d of DAYS) {
+    const counts: Record<string, number> = Object.fromEntries(shifts.map(s => [s, 0]));
+    const single: string[] = [];
+    const multi: string[][] = [];
+    for (const r of rows) {
+      const av = r.days[d];
+      if (!av?.length) continue;
+      if (av.length === 1) single.push(av[0]!); else multi.push(av);
+    }
+    for (const s of single) counts[s]!++;
+    // most-constrained first (fewest options) for a tighter balance
+    multi.sort((a, b) => a.length - b.length);
+    for (const cand of multi) {
+      let best = cand[0]!;
+      for (const s of cand) if (counts[s]! < counts[best]!) best = s;
+      counts[best]!++;
+    }
+    byDay[d] = counts;
+    for (const s of shifts) { byShift[s]! += counts[s]!; total += counts[s]!; }
+  }
+  return { shifts, byDay, byShift, total };
+}
+
+type Group = { key: string; name: string; rows: AvailRow[]; summary: Summary };
 
 export default function Availability() {
   const t = useT();
@@ -22,7 +57,7 @@ export default function Availability() {
 
   const groups = useMemo<Group[]>(() => {
     if (!data) return [];
-    const map = new Map<string, Group>();
+    const map = new Map<string, Omit<Group, "summary">>();
     for (const r of data) {
       const key = r.factoryId != null ? `f${r.factoryId}` : "none";
       const name = r.factoryName ?? t("Без фабрики");
@@ -30,8 +65,9 @@ export default function Availability() {
       map.get(key)!.rows.push(r);
     }
     // factories first (alphabetical), "Без фабрики" last
-    return [...map.values()].sort((a, b) =>
-      a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
+    return [...map.values()]
+      .map(g => ({ ...g, summary: buildSummary(g.rows) }))
+      .sort((a, b) => a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
   }, [data]);
 
   return (
@@ -49,6 +85,44 @@ export default function Availability() {
                 <h2 className="text-sm font-semibold text-slate-700">{g.name}</h2>
                 <Badge color={g.key === "none" ? "amber" : "slate"}>{g.rows.length} {t("осіб")}</Badge>
               </div>
+              {g.summary.shifts.length > 0 && (
+                <Card className="mb-2 overflow-x-auto p-3">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">{t("Розподіл по змінах")}</div>
+                  <table className="w-full text-xs">
+                    <thead className="text-slate-400">
+                      <tr>
+                        <th className="px-2 py-1 text-left font-medium">{t("День")}</th>
+                        {g.summary.shifts.map(s => <th key={s} className="px-2 py-1 text-center font-medium">{s} {t("зм")}</th>)}
+                        <th className="px-2 py-1 text-center font-medium">{t("Усього")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {DAYS.map(d => {
+                        const row = g.summary.byDay[d] ?? {};
+                        const dayTotal = g.summary.shifts.reduce((a, s) => a + (row[s] ?? 0), 0);
+                        return (
+                          <tr key={d} className="border-t border-slate-100">
+                            <td className="px-2 py-1 font-medium text-slate-600">{DAY_UK[d]}</td>
+                            {g.summary.shifts.map(s => (
+                              <td key={s} className="px-2 py-1 text-center">
+                                {row[s] ? <Badge color={shiftColor(s) as any}>{row[s]}</Badge> : <span className="text-slate-300">·</span>}
+                              </td>
+                            ))}
+                            <td className="px-2 py-1 text-center font-semibold text-slate-600">{dayTotal || <span className="text-slate-300">·</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t border-slate-200">
+                        <td className="px-2 py-1 font-semibold text-slate-500">{t("Усього")}</td>
+                        {g.summary.shifts.map(s => <td key={s} className="px-2 py-1 text-center font-semibold text-slate-600">{g.summary.byShift[s] || 0}</td>)}
+                        <td className="px-2 py-1 text-center font-bold text-slate-700">{g.summary.total}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </Card>
+              )}
               <Card className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-xs uppercase text-slate-400">

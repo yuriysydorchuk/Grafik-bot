@@ -267,6 +267,34 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
   ok(res, w);
 });
 
+// Hard delete — owner only. Firing keeps the record (status="fired"); this wipes it
+// together with all owned history (schedule, availability, absences, disputes, docs).
+// References owned by OTHER entities are nulled, not deleted (e.g. a request where this
+// worker stood in as a substitute, or a candidate they referred / were converted from).
+router.delete("/workers/:id", requireRole("owner"), async (req, res) => {
+  const id = Number(req.params.id);
+  const [worker] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
+  if (!worker) return fail(res, 404, "Працівника не знайдено");
+  // Files live outside the DB — collect paths before the rows go away, unlink after commit.
+  const docs = await db.select({ filePath: workerDocumentsTable.filePath }).from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id));
+  await db.transaction(async (tx) => {
+    // Owned history → delete.
+    await tx.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.workerId, id));
+    await tx.delete(availabilityTable).where(eq(availabilityTable.workerId, id));
+    await tx.delete(absenceRequestsTable).where(eq(absenceRequestsTable.workerId, id));
+    await tx.delete(hoursDisputesTable).where(eq(hoursDisputesTable.workerId, id));
+    await tx.delete(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id));
+    // Pointers owned by other entities → unlink, keep the other entity.
+    await tx.update(absenceRequestsTable).set({ substituteWorkerId: null }).where(eq(absenceRequestsTable.substituteWorkerId, id));
+    await tx.update(unplannedWorkersTable).set({ workerId: null }).where(eq(unplannedWorkersTable.workerId, id));
+    await tx.update(candidatesTable).set({ workerId: null }).where(eq(candidatesTable.workerId, id));
+    await tx.update(candidatesTable).set({ referrerWorkerId: null }).where(eq(candidatesTable.referrerWorkerId, id));
+    await tx.delete(workersTable).where(eq(workersTable.id, id));
+  });
+  for (const d of docs) deleteStoredFile(d.filePath);
+  ok(res, { ok: true });
+});
+
 // Per-worker profile + analytics (for the worker detail page).
 const DAY_OFFSET: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
 router.get("/workers/:id", RW, async (req, res) => {

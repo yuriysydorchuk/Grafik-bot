@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Pencil, UserX, UserCheck, Link2 } from "lucide-react";
+import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, type Worker, type Factory, type Company, type Position } from "../lib/api";
+import { get, post, del, type Worker, type Factory, type Company, type Position } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Empty } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { PageHeader } from "../components/Layout";
@@ -33,6 +33,7 @@ export default function Workers() {
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
   const fire = useMutation({ mutationFn: (id: number) => post(`/workers/${id}/fire`), onSuccess: () => { invalidate(); toast.success(t("Працівника звільнено")); } });
   const restore = useMutation({ mutationFn: (id: number) => post(`/workers/${id}/restore`), onSuccess: () => { invalidate(); toast.success(t("Відновлено")); } });
+  const remove = useMutation({ mutationFn: (id: number) => del(`/workers/${id}`), onSuccess: () => { invalidate(); toast.success(t("Працівника видалено")); }, onError: (e: any) => toast.error(e.message) });
   const invite = useMutation({
     mutationFn: (id: number) => get<{ link: string }>(`/workers/${id}/invite`),
     onSuccess: (d) => { navigator.clipboard?.writeText(d.link); toast.success(t("Посилання скопійовано"), { description: d.link }); },
@@ -117,6 +118,7 @@ export default function Workers() {
                       {w.isActive
                         ? <button onClick={async () => { if (await confirm({ title: t("Звільнити {name}?", { name: w.fullName }), message: t("Працівник стане неактивним і не потраплятиме в графік."), danger: true, confirmText: t("Звільнити") })) fire.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
                         : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>}
+                      {!w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
                     </div>
                   </td>
                 </tr>
