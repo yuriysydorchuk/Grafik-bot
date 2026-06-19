@@ -103,6 +103,8 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
     genMode: (factory?.genMode ?? "availability") as GenMode,
     usesPositions: factory?.usesPositions ?? false,
     usesGender: factory?.usesGender ?? false,
+    usesTransport: factory?.usesTransport ?? true,
+    showWorkerHours: factory?.showWorkerHours ?? true,
     invoiceRate: factory?.invoiceRate != null ? String(factory.invoiceRate) : "",
   });
   const [posRows, setPosRows] = useState<PosRow[]>(
@@ -133,6 +135,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
     name: v.name.trim(), address: v.address, clientEmail: v.clientEmail,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
+    usesTransport: v.usesTransport, showWorkerHours: v.showWorkerHours,
     positions: v.usesPositions ? posRows.map(r => ({ positionId: r.positionId, rate: r.rate.trim() === "" ? null : Number(r.rate.replace(",", ".")), invoiceRate: r.invoiceRate.trim() === "" ? null : Number(r.invoiceRate.replace(",", ".")) })) : [],
     shifts, stops: stops.filter(s => s.name.trim()),
     ...(isOwner ? { invoiceRate: v.invoiceRate.trim() === "" ? null : Number(v.invoiceRate.replace(",", ".")) } : {}),
@@ -217,6 +220,19 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
             <input type="checkbox" checked={v.usesGender} onChange={e => setV({ ...v, usesGender: e.target.checked })} />
             {t("Поділ за статтю (чоловіки / жінки)")}
           </label>
+        </div>
+        {/* What the worker sees in the bot — trims their menu buttons */}
+        <div className="space-y-2 rounded-xl border border-slate-200 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Що бачить працівник у боті")}</p>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={v.usesTransport} onChange={e => setV({ ...v, usesTransport: e.target.checked })} />
+            {t("Є довіз працівників (показувати зупинки)")}
+          </label>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={v.showWorkerHours} onChange={e => setV({ ...v, showWorkerHours: e.target.checked })} />
+            {t("Показувати кнопку «Мої години та зміни»")}
+          </label>
+          <p className="pl-6 text-xs text-slate-400">{t("Кнопка «Заповнити доступність» зʼявляється лише в режимі «Працівники заповнюють доступність».")}</p>
         </div>
         <div>
           <Label>{t("Час змін (початок – кінець)")}</Label>

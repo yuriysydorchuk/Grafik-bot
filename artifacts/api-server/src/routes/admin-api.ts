@@ -1028,7 +1028,7 @@ function cleanStops(input: any): { name: string; time: string }[] | undefined {
 }
 
 router.post("/factories", RW, async (req, res) => {
-  const { name, address, companyId, shifts, genMode, usesAvailability, usesPositions, usesGender, invoiceRate, stops, positions } = req.body ?? {};
+  const { name, address, companyId, shifts, genMode, usesAvailability, usesPositions, usesGender, usesTransport, showWorkerHours, invoiceRate, stops, positions } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть назву");
   const cs = cleanShifts(shifts);
   const values: any = { name: name.trim(), address: address?.trim() || null, companyId: companyId ?? null };
@@ -1040,6 +1040,8 @@ router.post("/factories", RW, async (req, res) => {
   values.genMode = gm; values.usesAvailability = gm === "availability";
   if (usesPositions !== undefined) values.usesPositions = !!usesPositions;
   if (usesGender !== undefined) values.usesGender = !!usesGender;
+  if (usesTransport !== undefined) values.usesTransport = !!usesTransport;
+  if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if ((req as AuthedRequest).admin?.role === "owner" && invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
   const [f] = await db.insert(factoriesTable).values(values).returning();
   if (positions !== undefined) await setFactoryPositions(f!.id, positions);
@@ -1048,7 +1050,7 @@ router.post("/factories", RW, async (req, res) => {
 
 router.patch("/factories/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const { name, address, clientEmail, companyId, shifts, shiftCount, genMode, usesAvailability, usesPositions, usesGender, invoiceRate, positions } = req.body ?? {};
+  const { name, address, clientEmail, companyId, shifts, shiftCount, genMode, usesAvailability, usesPositions, usesGender, usesTransport, showWorkerHours, invoiceRate, positions } = req.body ?? {};
   const patch: any = {};
   for (const [k, v] of Object.entries({ name, address, clientEmail })) {
     if (v !== undefined) patch[k] = v === "" ? null : v;
@@ -1071,6 +1073,8 @@ router.patch("/factories/:id", RW, async (req, res) => {
   else if (usesAvailability !== undefined) { patch.usesAvailability = !!usesAvailability; patch.genMode = usesAvailability ? "availability" : "orders"; }
   if (usesPositions !== undefined) patch.usesPositions = !!usesPositions;
   if (usesGender !== undefined) patch.usesGender = !!usesGender;
+  if (usesTransport !== undefined) patch.usesTransport = !!usesTransport;
+  if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
   const [f] = await db.update(factoriesTable).set(patch).where(eq(factoriesTable.id, id)).returning();

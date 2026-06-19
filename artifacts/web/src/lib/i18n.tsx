@@ -748,6 +748,10 @@ const EN: Record<string, string> = {
   // Per-factory positions / generation modes
   "Поділ за статтю": "Gender split",
   "Поділ за статтю (чоловіки / жінки)": "Gender split (men / women)",
+  "Що бачить працівник у боті": "What the worker sees in the bot",
+  "Є довіз працівників (показувати зупинки)": "Workers get transport (show pickup stops)",
+  "Показувати кнопку «Мої години та зміни»": "Show the “My hours & shifts” button",
+  "Кнопка «Заповнити доступність» зʼявляється лише в режимі «Працівники заповнюють доступність».": "The “Submit availability” button appears only in “Workers submit availability” mode.",
   "Генеруємо за замовленнями (всі активні)": "Generate from orders (all active)",
   "Випускаємо всіх активних (без замовлень)": "Send out all active (no orders)",
   "Без замовлень. «Згенерувати» випустить УСІХ активних працівників (Пн–Сб): закріплені — у свою зміну, решта рівномірно по змінах. Хто зголосив відсутність — не ставиться.": "No orders. “Generate” sends out ALL active workers (Mon–Sat): pinned ones to their shift, the rest spread evenly across shifts. Anyone who reported an absence is skipped.",

@@ -35,6 +35,15 @@ import { t, trAll, tb, bhears, LANGS, LANG_LABEL, OFFICE_LANGS, asLang, oLang, d
 
 // Worker's chosen UI language (defaults to Ukrainian)
 const wlang = (w?: { language?: string | null } | null): Lang => asLang(w?.language);
+// Worker reply keyboard trimmed by the worker's factory settings (availability/hours
+// buttons). Falls back to the full menu when the worker has no factory yet.
+const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang: Lang = "uk") => {
+  if (!worker?.factoryId) return workerMenu(lang);
+  const [f] = await db
+    .select({ availability: factoriesTable.usesAvailability, hours: factoriesTable.showWorkerHours })
+    .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
+  return workerMenu(lang, f ? { availability: f.availability, hours: f.hours } : {});
+};
 // Office/admin & driver chosen UI language (uk default; only uk/en offered)
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);
 // Inline keyboard for choosing a language
@@ -176,7 +185,7 @@ bot.start(async (ctx) => {
       if (!referrer) return ctx.reply("❌ Посилання недійсне. Зверніться до того, хто його надіслав.");
       // already a worker?
       const asWorker = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
-      if (asWorker) return ctx.reply(`✅ Ви вже працівник (*${asWorker.fullName}*) — запрошення не потрібне.`, { parse_mode: "Markdown", ...workerMenu() });
+      if (asWorker) return ctx.reply(`✅ Ви вже працівник (*${asWorker.fullName}*) — запрошення не потрібне.`, { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wlang(asWorker))) });
       // already a candidate?
       const asCand = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
       if (asCand) return ctx.reply("✅ Ви вже у списку кандидатів. Менеджер зв'яжеться з вами найближчим часом.");
@@ -194,7 +203,7 @@ bot.start(async (ctx) => {
       if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.");
       const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
       if (existing) {
-        return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...workerMenu() });
+        return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
       }
       setState(tid, "worker_signup", { factoryId, factoryName: fac.name });
       return ctx.reply(
@@ -214,7 +223,7 @@ bot.start(async (ctx) => {
       }
       return ctx.reply(
         `✅ Привіт, *${w.fullName}*!\n\nВас прив'язано до бота.\nВаш код: \`${code}\``,
-        { parse_mode: "Markdown", ...workerMenu() },
+        { parse_mode: "Markdown", ...(await workerMenuFor(w, wlang(w))) },
       );
     }
     // Unknown code or invalid link
@@ -236,7 +245,7 @@ bot.start(async (ctx) => {
     // First time (no language chosen) → ask language before anything
     if (!worker.language) return ctx.reply(t("uk", "lang.choose") + " / Choose your language:", langPickKeyboard());
     const lang = wlang(worker);
-    return ctx.reply(t(lang, "start.greet", { name: worker.fullName }), { parse_mode: "Markdown", ...workerMenu(lang) });
+    return ctx.reply(t(lang, "start.greet", { name: worker.fullName }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
 
   // Brand-new unregistered user → let them pick a language first (stored for registration)
@@ -279,7 +288,7 @@ bot.hears(bhears("⬅️ Назад"), async (ctx) => {
   if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)); }
   const worker = await getWorker(tid);
   const wl = wlang(worker);
-  return ctx.reply(t(wl, "menu.title"), workerMenu(wl));
+  return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
 });
 
 // ─── Office/admin & driver language switch ───────────────────────────────────
@@ -713,17 +722,17 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
   const worker = await getWorker(tid);
   if (worker) {
     await db.update(workersTable).set({ language: lang }).where(eq(workersTable.id, worker.id));
-    return ctx.reply(t(lang, "lang.changed"), workerMenu(lang));
+    return ctx.reply(t(lang, "lang.changed"), await workerMenuFor(worker, lang));
   }
   // not a worker yet → remember choice for registration, show generic message
   setState(tid, "lang_pref", { lang });
   return ctx.reply(t(lang, "start.notReg", { name: ctx.from.first_name }));
 });
 
-async function showMyScheduleWeek(ctx: Context, workerId: number, wantWeekStart: string | null, editMsgId: number | undefined, lang: Lang) {
+async function showMyScheduleWeek(ctx: Context, workerId: number, wantWeekStart: string | null, editMsgId: number | undefined, lang: Lang, factoryId: number | null = null) {
   const weeks = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.status, "approved"));
   if (weeks.length === 0) {
-    if (editMsgId) return; return ctx.reply(t(lang, "sched.noApproved"), workerMenu(lang));
+    if (editMsgId) return; return ctx.reply(t(lang, "sched.noApproved"), await workerMenuFor({ factoryId }, lang));
   }
   const curMon = getCurrentMonday(), nextMon = getNextMonday();
   const cur = weeks.find(w => String(w.weekStart) === curMon);
@@ -741,14 +750,14 @@ async function showMyScheduleWeek(ctx: Context, workerId: number, wantWeekStart:
 bot.hears(trAll("menu.schedule"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   if (!worker) return ctx.reply(t(wlang(worker), "notRegistered"));
-  return showMyScheduleWeek(ctx, worker.id, null, undefined, wlang(worker));
+  return showMyScheduleWeek(ctx, worker.id, null, undefined, wlang(worker), worker.factoryId);
 });
 
 bot.action(/^wsched:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   await ctx.answerCbQuery();
   if (!worker) return;
-  return showMyScheduleWeek(ctx, worker.id, (ctx as any).match[1], ctx.callbackQuery.message?.message_id, wlang(worker));
+  return showMyScheduleWeek(ctx, worker.id, (ctx as any).match[1], ctx.callbackQuery.message?.message_id, wlang(worker), worker.factoryId);
 });
 
 bot.hears(trAll("menu.myInfo"), async (ctx) => {
@@ -787,23 +796,26 @@ bot.hears(trAll("menu.factoryInfo"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
   if (!worker) return ctx.reply(t(lang, "notRegistered"));
-  if (!worker.factoryId) return ctx.reply(t(lang, "fac.noFactory"), workerMenu(lang));
+  if (!worker.factoryId) return ctx.reply(t(lang, "fac.noFactory"), await workerMenuFor(worker, lang));
   const f = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId)))[0];
-  if (!f) return ctx.reply(t(lang, "fac.notFound"), workerMenu(lang));
+  if (!f) return ctx.reply(t(lang, "fac.notFound"), await workerMenuFor(worker, lang));
   let msg = `🏭 *${f.name}*\n`;
   if (f.address) msg += `📍 ${f.address}\n`;
   const shifts = factoryShifts(f);
   msg += `\n${t(lang, "fac.shifts")}\n`;
   if (shifts.length) shifts.forEach((s, i) => { msg += t(lang, "fac.shiftRow", { n: i + 1, start: s.start, end: s.end }) + "\n"; });
   else msg += t(lang, "fac.notSet") + "\n";
-  const stops = (f.stops ?? []) as { name: string; time: string }[];
-  if (stops.length) {
-    msg += `\n${t(lang, "fac.stops")}\n`;
-    for (const st of stops) msg += `• ${st.name}${st.time ? ` — ${t(lang, "fac.stopAt")} *${st.time}*` : ""}\n`;
-  } else {
-    msg += `\n${t(lang, "fac.noStops")}\n`;
+  // Pickup stops are shown only when the factory provides transport (uses_transport).
+  if (f.usesTransport) {
+    const stops = (f.stops ?? []) as { name: string; time: string }[];
+    if (stops.length) {
+      msg += `\n${t(lang, "fac.stops")}\n`;
+      for (const st of stops) msg += `• ${st.name}${st.time ? ` — ${t(lang, "fac.stopAt")} *${st.time}*` : ""}\n`;
+    } else {
+      msg += `\n${t(lang, "fac.noStops")}\n`;
+    }
   }
-  return ctx.reply(msg, { parse_mode: "Markdown", ...workerMenu(lang) });
+  return ctx.reply(msg, { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
 });
 
 // ── Interactive "my hours" review: flag wrong/remove shifts, propose additions ──
@@ -1016,7 +1028,7 @@ bot.action("hrv:send", async (ctx) => {
       body: summary,
     });
   } catch { /* best-effort */ }
-  return ctx.reply(t(lang, "hr.sent"), workerMenu(lang));
+  return ctx.reply(t(lang, "hr.sent"), await workerMenuFor(worker, lang));
 });
 
 bot.action("hrv:x", async (ctx) => {
@@ -1033,7 +1045,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
   const curMon = getCurrentMonday(), nextMon = getNextMonday();
   const weeks = await db.select().from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.status, "approved"), inArray(scheduleWeeksTable.weekStart, [curMon, nextMon])));
-  if (weeks.length === 0) return ctx.reply(t(lang, "sched.noApproved"), workerMenu(lang));
+  if (weeks.length === 0) return ctx.reply(t(lang, "sched.noApproved"), await workerMenuFor(worker, lang));
   const weekById = new Map(weeks.map(w => [w.id, w]));
   const rows = await db
     .select({
@@ -1043,7 +1055,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(and(eq(scheduleEntriesTable.workerId, worker.id), eq(scheduleEntriesTable.status, "scheduled"), inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id))));
-  if (rows.length === 0) return ctx.reply(t(lang, "abs.noShifts"), workerMenu(lang));
+  if (rows.length === 0) return ctx.reply(t(lang, "abs.noShifts"), await workerMenuFor(worker, lang));
 
   const now = nowWarsaw();
   const items = rows.map(r => {
@@ -1069,7 +1081,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
   }
   if (eligible.length === 0) {
     msg += t(lang, "abs.noneEligible");
-    return ctx.reply(msg, { parse_mode: "Markdown", ...workerMenu(lang) });
+    return ctx.reply(msg, { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
   msg += t(lang, "abs.pick");
   setState(tid, "absence:pick", { workerId: worker.id, lang, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
@@ -1102,7 +1114,7 @@ bot.hears(trAll("menu.report"), async (ctx) => {
 
   if (!inLastWeek && !inFirstWeek) {
     const daysLeft = daysInMonth - day;
-    return ctx.reply(`⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового.\n\nДо кінця місяця: ${daysLeft} днів.`, workerMenu());
+    return ctx.reply(`⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового.\n\nДо кінця місяця: ${daysLeft} днів.`, await workerMenuFor(worker, wlang(worker)));
   }
 
   // Визначаємо за який місяць рапорт
@@ -1140,7 +1152,7 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   });
 
   if (uniqueFactories.length === 0) {
-    return ctx.reply(`📄 За місяць *${monthLabel}* у вас немає підтверджених змін. Зверніться до адміністратора.`, { parse_mode: "Markdown", ...workerMenu() });
+    return ctx.reply(`📄 За місяць *${monthLabel}* у вас немає підтверджених змін. Зверніться до адміністратора.`, { parse_mode: "Markdown", ...(await workerMenuFor(worker, wlang(worker))) });
   }
 
   if (uniqueFactories.length === 1) {
@@ -1890,6 +1902,8 @@ bot.on("photo", async (ctx) => {
   if (state?.action !== "report:awaiting_photo") return;
   const { data } = state;
   clearState(tid);
+  const worker = await getWorker(tid);
+  const menu = await workerMenuFor(worker, wlang(worker));
   await ctx.reply("⏳ Завантажую рапорт на Google Drive...");
   try {
     const photo = ctx.message.photo.at(-1)!;
@@ -1897,11 +1911,11 @@ bot.on("photo", async (ctx) => {
     const resp = await fetch(fileLink.href);
     const buf = Buffer.from(await resp.arrayBuffer());
     const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, "image/jpeg");
-    if (link) return ctx.reply(`✅ Рапорт збережено!\n${link}`, workerMenu());
-    return ctx.reply("❌ Помилка збереження. Спробуйте ще раз.", workerMenu());
+    if (link) return ctx.reply(`✅ Рапорт збережено!\n${link}`, menu);
+    return ctx.reply("❌ Помилка збереження. Спробуйте ще раз.", menu);
   } catch (e) {
     logger.error({ err: e }, "Report upload error");
-    return ctx.reply("❌ Помилка завантаження.", workerMenu());
+    return ctx.reply("❌ Помилка завантаження.", menu);
   }
 });
 
@@ -2028,7 +2042,7 @@ bot.on("text", async (ctx) => {
     const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
     if (existing) {
       clearState(tid);
-      return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...workerMenu() });
+      return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
     }
     const code = await genWorkerCode();
     await db.insert(workersTable).values({
@@ -2050,7 +2064,7 @@ bot.on("text", async (ctx) => {
     } catch { /* notification is best-effort */ }
     return ctx.reply(
       `✅ Дякуємо, *${fullName}*!\nВас додано до фабрики *${data.factoryName}*.\n\nТепер ви можете заповнювати доступність через меню.`,
-      { parse_mode: "Markdown", ...workerMenu() },
+      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, "uk")) },
     );
   }
 
@@ -2968,7 +2982,7 @@ bot.on("text", async (ctx) => {
     const lang = asLang(data.lang);
     return ctx.reply(
       t(lang, "abs.sent", { day: dayShort(lang, data.day), shift: String(data.shift) }),
-      { parse_mode: "Markdown", ...workerMenu(lang) },
+      { parse_mode: "Markdown", ...(await workerMenuFor(await getWorker(tid), lang)) },
     );
   }
 
@@ -2983,7 +2997,8 @@ bot.on("text", async (ctx) => {
       `📝 *Пояснення відсутності*\n\n👷 *${data.name}*\n📅 ${DAY_NAMES_UK[data.day as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}\n\nПричина: ${text}`,
       { parse_mode: "Markdown" },
     );
-    return ctx.reply("✅ Дякуємо. Вашу причину передано адміністратору.", workerMenu());
+    const w = await getWorker(tid);
+    return ctx.reply("✅ Дякуємо. Вашу причину передано адміністратору.", await workerMenuFor(w, wlang(w)));
   }
 
   // ── Fire worker ───────────────────────────────────────────────────

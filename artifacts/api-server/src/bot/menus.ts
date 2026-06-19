@@ -10,14 +10,19 @@ export const adminMenu = (lang: Lang = "uk") => Markup.keyboard([
 ]).resize();
 
 
-export const workerMenu = (lang: Lang = "uk") => Markup.keyboard([
-  [t(lang, "menu.schedule")],
-  [t(lang, "menu.availability")],
-  [t(lang, "menu.factoryInfo"), t(lang, "menu.myHours")],
-  [t(lang, "menu.absence"), t(lang, "menu.myInfo")],
-  [t(lang, "menu.referral"), t(lang, "menu.report")],
-  [t(lang, "menu.language")],
-]).resize();
+// Worker menu rows are trimmed by the factory's settings: hide "Submit availability"
+// when the factory doesn't collect it, and "My hours" when it's switched off.
+export type WorkerMenuOpts = { availability?: boolean; hours?: boolean };
+export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
+  const { availability = true, hours = true } = opts;
+  const rows: string[][] = [[t(lang, "menu.schedule")]];
+  if (availability) rows.push([t(lang, "menu.availability")]);
+  rows.push(hours ? [t(lang, "menu.factoryInfo"), t(lang, "menu.myHours")] : [t(lang, "menu.factoryInfo")]);
+  rows.push([t(lang, "menu.absence"), t(lang, "menu.myInfo")]);
+  rows.push([t(lang, "menu.referral"), t(lang, "menu.report")]);
+  rows.push([t(lang, "menu.language")]);
+  return Markup.keyboard(rows).resize();
+};
 
 export const headDriverMenu = (lang: Lang = "uk") => Markup.keyboard([
   [tb(lang, "📋 Призначити водіїв"), tb(lang, "📅 Графік тижня")],
