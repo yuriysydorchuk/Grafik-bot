@@ -7,6 +7,7 @@ import {
 } from "@workspace/db";
 import { eq, and, lt, desc } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { sendAlert } from "../lib/alerts";
 import { bot } from "../bot";
 import { getWorkersWhoHaventSubmitted } from "./sheets";
 import { getNextMonday, getCurrentMonday, formatWeekStart } from "./scheduleGenerator";
@@ -90,7 +91,10 @@ async function pruneNotifications(): Promise<void> {
     if (recent.length === 300) {
       await db.delete(notificationsTable).where(lt(notificationsTable.id, recent[299]!.id));
     }
-  } catch (e) { logger.error({ err: e }, "prune notifications failed"); }
+  } catch (e: any) {
+    logger.error({ err: e }, "prune notifications failed");
+    void sendAlert({ service: "cron", kind: e?.name, source: "pruneNotifications", message: e?.message ?? String(e) });
+  }
 }
 
 export function stopScheduler() {
@@ -157,8 +161,9 @@ async function checkPreShiftNotifications() {
         await sendFactoryShiftReminder(weekId, factory.id, factory.name, shift, dayName, start);
       }
     }
-  } catch (e) {
+  } catch (e: any) {
     logger.error({ err: e }, "Error in pre-shift check");
+    void sendAlert({ service: "cron", kind: e?.name, source: "preShiftCheck", message: e?.message ?? String(e) });
   }
 }
 
@@ -295,8 +300,9 @@ export async function sendWeeklyReminders(): Promise<{ notified: number; skipped
     }
 
     logger.info({ week: nextWeek, notified, skipped }, "Weekly reminders sent");
-  } catch (e) {
+  } catch (e: any) {
     logger.error({ err: e }, "Error in weekly reminder job");
+    void sendAlert({ service: "cron", kind: e?.name, source: "weeklyReminder", message: e?.message ?? String(e) });
   }
 
   return { notified, skipped };

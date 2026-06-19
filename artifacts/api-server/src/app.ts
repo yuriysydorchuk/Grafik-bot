@@ -7,6 +7,7 @@ import fs from "node:fs";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { sendAlert } from "./lib/alerts";
 
 const app: Express = express();
 
@@ -62,5 +63,18 @@ if (fs.existsSync(path.join(webDist, "index.html"))) {
 } else {
   logger.warn({ webDist }, "Web panel build not found — run `pnpm --filter @workspace/web build`");
 }
+
+// ─── Global API error handler (must be registered last) ─────────────────────────
+// Express 5 forwards errors from async route handlers here. Logs the full error
+// (with stack) to pino, fires a short best-effort alert, and returns a generic
+// 500 — the client never sees stack traces or internal details.
+const errorHandler: express.ErrorRequestHandler = (err, req, res, _next) => {
+  const path = req.url?.split("?")[0];
+  logger.error({ err, method: req.method, url: path }, "unhandled API error");
+  void sendAlert({ service: "api", kind: (err as any)?.name, source: `${req.method} ${path}`, message: (err as any)?.message });
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error" });
+};
+app.use(errorHandler);
 
 export default app;

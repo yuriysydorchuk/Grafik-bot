@@ -107,6 +107,9 @@ Node v22.23.0 · pnpm 11.8.0 · PostgreSQL 16.14 · Caddy v2.11.4 · pm2 7.0.1.
 `NODE_ENV` · `WEB_PUBLIC_URL` · `LOG_LEVEL` · `CORS_ORIGINS` · `WEB_DIST` · `UPLOADS_DIR` ·
 `ADMIN_GOOGLE_EMAIL`
 
+**Алерти (опційно, off за замовчуванням — див. [ALERTING.md](ALERTING.md)):**
+`ALERTS_ENABLED` · `ALERT_TELEGRAM_CHAT_ID` · `ALERT_COOLDOWN_SECONDS`
+
 **Google Drive (експорт графіків/звітів):**
 `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` · `GOOGLE_OAUTH_REFRESH_TOKEN`
 (службовий акаунт не має квоти Drive — аплоуд іде від імені OAuth-користувача; див.
@@ -131,7 +134,9 @@ Node v22.23.0 · pnpm 11.8.0 · PostgreSQL 16.14 · Caddy v2.11.4 · pm2 7.0.1.
   TODO: cron `pg_dump` + `tar uploads/` + offsite. Деталі — [DATABASE.md](DATABASE.md).
 - **Безпека доступу.** Парольний root-SSH ще ввімкнений; root-пароль і старий бот-токен світилися
   в чаті — **TODO:** вимкнути `PasswordAuthentication`, змінити root-пароль, відкликати токен.
-- **Немає моніторингу/алертів.** TODO: uptime-чек на `/api/healthz`, алерт на падіння pm2.
+- **Моніторинг помилок** — Telegram-алерти (API/процес/бот/cron) + healthcheck; див. [ALERTING.md](ALERTING.md).
+  За замовчуванням вимкнено (`ALERTS_ENABLED=false`). **TODO:** зовнішній uptime-монітор на
+  `/api/healthz` для виявлення повного падіння процесу/сервера (самоалерт тоді не спрацює).
 - **Sshlip.io тимчасовий.** Залежить від сервісу sslip.io; на постійку — власний домен.
 - **Секрети.** `.env`, `GOOGLE_SERVICE_ACCOUNT_JSON`, SSH-ключі не комітити; `minimumReleaseAge`
   у `pnpm-workspace.yaml` не вимикати.

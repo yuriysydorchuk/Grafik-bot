@@ -15,7 +15,7 @@ ssh grafik
 pm2 status                                              # grafik-bot online?
 systemctl is-active caddy postgresql                    # active active
 curl -s -o /dev/null -w '%{http_code}\n' https://161.97.117.151.sslip.io/         # 200
-curl -s https://161.97.117.151.sslip.io/api/healthz                               # health endpoint
+curl -s https://161.97.117.151.sslip.io/api/healthz                               # {status,db,bot,uptimeSec}; 503 якщо БД лежить
 ```
 
 ---
@@ -108,6 +108,20 @@ curl -s http://localhost:8080/api/healthz                 # напряму на 
 5. Якщо дані пошкоджені — відновити з дампа (див. [DATABASE.md](DATABASE.md) → restore).
 
 ---
+
+## Алерти (моніторинг помилок)
+
+Прод шле короткі Telegram-алерти на помилки API/процесу/бота/cron. Повний опис, формат, антиспам
+і налаштування — [ALERTING.md](ALERTING.md).
+
+- **Стан:** алерти активні, якщо в `.env` `ALERTS_ENABLED=true` і задано `ALERT_TELEGRAM_CHAT_ID`
+  (інакше — лише логування).
+- **Заглушити:** `ALERTS_ENABLED=false` → `pm2 restart grafik-bot --update-env`.
+- **Алерт прийшов — що робити:** дивись поле `service` (api/process/bot/cron) → відповідний плейбук вище;
+  деталі помилки — `pm2 logs grafik-bot | grep alert`.
+- **Тиша при явному збої?** Перевір `ALERTS_ENABLED`, `ALERT_TELEGRAM_CHAT_ID`, і що ти натискав
+  `/start` боту-одержувачу. Якщо ліг **увесь** процес/сервер — самоалерт не надійде (потрібен
+  зовнішній uptime-монітор на `/api/healthz`, див. ALERTING.md).
 
 ## Корисне
 

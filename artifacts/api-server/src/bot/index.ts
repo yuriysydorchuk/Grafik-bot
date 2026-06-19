@@ -20,6 +20,7 @@ import {
   exportScheduleToDrive, getDriveFolderLink, ensureFolderStructure, uploadReportPhoto,
 } from "../services/drive";
 import { bot } from "./instance";
+import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours } from "./time";
 import {
@@ -38,6 +39,14 @@ const wlang = (w?: { language?: string | null } | null): Lang => asLang(w?.langu
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);
 // Inline keyboard for choosing a language
 const langPickKeyboard = () => Markup.inlineKeyboard(LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `setlang:${l}`)]));
+
+// Central handler-error trap: keep the bot alive on per-update errors, log + alert.
+// PII-safe — we report only the update TYPE and the error, never message text /
+// user names / phones.
+bot.catch((err: any, ctx) => {
+  logger.error({ err, updateType: ctx?.updateType }, "Telegraf handler error");
+  void sendAlert({ service: "bot", kind: err?.name, source: ctx?.updateType, message: err?.message ?? String(err) });
+});
 // Office/driver picker — uk/en only (label kept simple)
 const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
