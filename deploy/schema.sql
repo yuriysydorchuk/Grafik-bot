@@ -1,8 +1,19 @@
+-- Grafik-bot — bootstrap database schema (PostgreSQL), schema-only.
+--
+-- GENERATED from the live schema:
+--   pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges --no-comments
+--   (PG17-only SET lines stripped for PostgreSQL 16 compatibility)
+--
+-- Source of truth for the schema is lib/db/src/schema/workers.ts.
+-- Regenerate this file after schema changes (see docs/infrastructure/DATABASE.md).
+-- Apply to a fresh DB:  psql "$DATABASE_URL" -f deploy/schema.sql
+-- Regenerated: 2026-06-19.
+
 --
 -- PostgreSQL database dump
 --
 
-\restrict kalOrEUMlA521fOSuGirzw2q5Dcvg807uTAwYWSGNP6fPD6KkuMyw1lUclOmANa
+\restrict RdnwbhlGwjMPearL4OH50EEDTcYxOdnbQQeSzZMr23g5KgZz5dYIohieyltR1Yv
 
 -- Dumped from database version 17.10 (Homebrew)
 -- Dumped by pg_dump version 17.10 (Homebrew)
@@ -10,7 +21,6 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -123,7 +133,8 @@ CREATE TABLE public.admins (
     password_hash text,
     role text DEFAULT 'owner'::text NOT NULL,
     invite_code text,
-    is_main boolean DEFAULT false NOT NULL
+    is_main boolean DEFAULT false NOT NULL,
+    language text
 );
 
 
@@ -216,6 +227,40 @@ ALTER SEQUENCE public.bot_messages_id_seq OWNED BY public.bot_messages.id;
 
 
 --
+-- Name: candidate_activity; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.candidate_activity (
+    id integer NOT NULL,
+    candidate_id integer NOT NULL,
+    admin_id integer,
+    kind text NOT NULL,
+    detail text,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: candidate_activity_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.candidate_activity_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: candidate_activity_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.candidate_activity_id_seq OWNED BY public.candidate_activity.id;
+
+
+--
 -- Name: candidates; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -231,7 +276,11 @@ CREATE TABLE public.candidates (
     bonus_amount real,
     bonus_paid boolean DEFAULT false NOT NULL,
     notes text,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    funnel_id integer,
+    assigned_admin_id integer,
+    next_action_at timestamp without time zone,
+    email text
 );
 
 
@@ -253,6 +302,71 @@ CREATE SEQUENCE public.candidates_id_seq
 --
 
 ALTER SEQUENCE public.candidates_id_seq OWNED BY public.candidates.id;
+
+
+--
+-- Name: companies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.companies (
+    id integer NOT NULL,
+    name text NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: companies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.companies_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: companies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.companies_id_seq OWNED BY public.companies.id;
+
+
+--
+-- Name: document_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.document_types (
+    id integer NOT NULL,
+    name text NOT NULL,
+    required boolean DEFAULT true NOT NULL,
+    has_expiry boolean DEFAULT false NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: document_types_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.document_types_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: document_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.document_types_id_seq OWNED BY public.document_types.id;
 
 
 --
@@ -344,7 +458,8 @@ CREATE TABLE public.drivers (
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     invite_code text,
-    username text
+    username text,
+    language text
 );
 
 
@@ -385,7 +500,11 @@ CREATE TABLE public.factories (
     uses_availability boolean DEFAULT true NOT NULL,
     shifts jsonb DEFAULT '[]'::jsonb NOT NULL,
     invoice_rate real,
-    stops jsonb DEFAULT '[]'::jsonb NOT NULL
+    stops jsonb DEFAULT '[]'::jsonb NOT NULL,
+    company_id integer,
+    gen_mode text DEFAULT 'availability'::text NOT NULL,
+    uses_positions boolean DEFAULT false NOT NULL,
+    uses_gender boolean DEFAULT false NOT NULL
 );
 
 
@@ -420,7 +539,8 @@ CREATE TABLE public.factory_orders (
     day_of_week public.day_of_week NOT NULL,
     shift public.shift NOT NULL,
     workers_needed integer DEFAULT 0 NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    requirements jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 
 
@@ -442,6 +562,74 @@ CREATE SEQUENCE public.factory_orders_id_seq
 --
 
 ALTER SEQUENCE public.factory_orders_id_seq OWNED BY public.factory_orders.id;
+
+
+--
+-- Name: factory_positions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.factory_positions (
+    id integer NOT NULL,
+    factory_id integer NOT NULL,
+    position_id integer NOT NULL,
+    rate real,
+    sort_order integer DEFAULT 0 NOT NULL,
+    invoice_rate real
+);
+
+
+--
+-- Name: factory_positions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.factory_positions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: factory_positions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.factory_positions_id_seq OWNED BY public.factory_positions.id;
+
+
+--
+-- Name: funnels; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.funnels (
+    id integer NOT NULL,
+    name text NOT NULL,
+    kind text DEFAULT 'custom'::text NOT NULL,
+    stages jsonb DEFAULT '[]'::jsonb NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: funnels_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.funnels_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: funnels_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.funnels_id_seq OWNED BY public.funnels.id;
 
 
 --
@@ -514,6 +702,40 @@ CREATE SEQUENCE public.notifications_id_seq
 --
 
 ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
+
+
+--
+-- Name: positions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.positions (
+    id integer NOT NULL,
+    name text NOT NULL,
+    color text DEFAULT 'slate'::text NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: positions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.positions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: positions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.positions_id_seq OWNED BY public.positions.id;
 
 
 --
@@ -682,6 +904,48 @@ CREATE TABLE public.user_states (
 
 
 --
+-- Name: worker_documents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.worker_documents (
+    id integer NOT NULL,
+    worker_id integer NOT NULL,
+    doc_type_id integer,
+    title text NOT NULL,
+    status text DEFAULT 'present'::text NOT NULL,
+    number text,
+    expires_at date,
+    file_url text,
+    note text,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    file_path text,
+    file_name text,
+    file_mime text
+);
+
+
+--
+-- Name: worker_documents_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.worker_documents_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: worker_documents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.worker_documents_id_seq OWNED BY public.worker_documents.id;
+
+
+--
 -- Name: workers; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -697,7 +961,12 @@ CREATE TABLE public.workers (
     factory_id integer,
     hourly_rate real DEFAULT 31.5 NOT NULL,
     is_student boolean DEFAULT false NOT NULL,
-    under_26 boolean DEFAULT false NOT NULL
+    under_26 boolean DEFAULT false NOT NULL,
+    language text,
+    company_id integer,
+    position_id integer,
+    gender text,
+    fixed_shift text
 );
 
 
@@ -750,10 +1019,31 @@ ALTER TABLE ONLY public.bot_messages ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: candidate_activity id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_activity ALTER COLUMN id SET DEFAULT nextval('public.candidate_activity_id_seq'::regclass);
+
+
+--
 -- Name: candidates id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.candidates ALTER COLUMN id SET DEFAULT nextval('public.candidates_id_seq'::regclass);
+
+
+--
+-- Name: companies id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.companies ALTER COLUMN id SET DEFAULT nextval('public.companies_id_seq'::regclass);
+
+
+--
+-- Name: document_types id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_types ALTER COLUMN id SET DEFAULT nextval('public.document_types_id_seq'::regclass);
 
 
 --
@@ -792,6 +1082,20 @@ ALTER TABLE ONLY public.factory_orders ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: factory_positions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.factory_positions ALTER COLUMN id SET DEFAULT nextval('public.factory_positions_id_seq'::regclass);
+
+
+--
+-- Name: funnels id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.funnels ALTER COLUMN id SET DEFAULT nextval('public.funnels_id_seq'::regclass);
+
+
+--
 -- Name: hours_disputes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -803,6 +1107,13 @@ ALTER TABLE ONLY public.hours_disputes ALTER COLUMN id SET DEFAULT nextval('publ
 --
 
 ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
+
+
+--
+-- Name: positions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.positions ALTER COLUMN id SET DEFAULT nextval('public.positions_id_seq'::regclass);
 
 
 --
@@ -831,6 +1142,13 @@ ALTER TABLE ONLY public.schedule_weeks ALTER COLUMN id SET DEFAULT nextval('publ
 --
 
 ALTER TABLE ONLY public.unplanned_workers ALTER COLUMN id SET DEFAULT nextval('public.unplanned_workers_id_seq'::regclass);
+
+
+--
+-- Name: worker_documents id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.worker_documents ALTER COLUMN id SET DEFAULT nextval('public.worker_documents_id_seq'::regclass);
 
 
 --
@@ -889,11 +1207,35 @@ ALTER TABLE ONLY public.bot_messages
 
 
 --
+-- Name: candidate_activity candidate_activity_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_activity
+    ADD CONSTRAINT candidate_activity_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: candidates candidates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.candidates
     ADD CONSTRAINT candidates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: companies companies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.companies
+    ADD CONSTRAINT companies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: document_types document_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_types
+    ADD CONSTRAINT document_types_pkey PRIMARY KEY (id);
 
 
 --
@@ -945,6 +1287,22 @@ ALTER TABLE ONLY public.factory_orders
 
 
 --
+-- Name: factory_positions factory_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.factory_positions
+    ADD CONSTRAINT factory_positions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: funnels funnels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.funnels
+    ADD CONSTRAINT funnels_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: hours_disputes hours_disputes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -958,6 +1316,14 @@ ALTER TABLE ONLY public.hours_disputes
 
 ALTER TABLE ONLY public.notifications
     ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: positions positions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.positions
+    ADD CONSTRAINT positions_pkey PRIMARY KEY (id);
 
 
 --
@@ -1006,6 +1372,14 @@ ALTER TABLE ONLY public.unplanned_workers
 
 ALTER TABLE ONLY public.user_states
     ADD CONSTRAINT user_states_pkey PRIMARY KEY (telegram_id);
+
+
+--
+-- Name: worker_documents worker_documents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.worker_documents
+    ADD CONSTRAINT worker_documents_pkey PRIMARY KEY (id);
 
 
 --
@@ -1061,6 +1435,20 @@ CREATE UNIQUE INDEX drivers_invite_code_unique ON public.drivers USING btree (in
 
 
 --
+-- Name: idx_cand_activity_cand; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_cand_activity_cand ON public.candidate_activity USING btree (candidate_id);
+
+
+--
+-- Name: idx_worker_docs_worker; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_worker_docs_worker ON public.worker_documents USING btree (worker_id);
+
+
+--
 -- Name: schedule_approvals_week_factory; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1092,11 +1480,43 @@ ALTER TABLE ONLY public.availability
 
 
 --
+-- Name: candidate_activity candidate_activity_admin_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_activity
+    ADD CONSTRAINT candidate_activity_admin_id_fkey FOREIGN KEY (admin_id) REFERENCES public.admins(id);
+
+
+--
+-- Name: candidate_activity candidate_activity_candidate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidate_activity
+    ADD CONSTRAINT candidate_activity_candidate_id_fkey FOREIGN KEY (candidate_id) REFERENCES public.candidates(id) ON DELETE CASCADE;
+
+
+--
+-- Name: candidates candidates_assigned_admin_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidates
+    ADD CONSTRAINT candidates_assigned_admin_id_fkey FOREIGN KEY (assigned_admin_id) REFERENCES public.admins(id);
+
+
+--
 -- Name: candidates candidates_factory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.candidates
     ADD CONSTRAINT candidates_factory_id_fkey FOREIGN KEY (factory_id) REFERENCES public.factories(id);
+
+
+--
+-- Name: candidates candidates_funnel_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.candidates
+    ADD CONSTRAINT candidates_funnel_id_fkey FOREIGN KEY (funnel_id) REFERENCES public.funnels(id);
 
 
 --
@@ -1164,11 +1584,35 @@ ALTER TABLE ONLY public.driver_trips
 
 
 --
+-- Name: factories factories_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.factories
+    ADD CONSTRAINT factories_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
 -- Name: factory_orders factory_orders_factory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.factory_orders
     ADD CONSTRAINT factory_orders_factory_id_fkey FOREIGN KEY (factory_id) REFERENCES public.factories(id);
+
+
+--
+-- Name: factory_positions factory_positions_factory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.factory_positions
+    ADD CONSTRAINT factory_positions_factory_id_fkey FOREIGN KEY (factory_id) REFERENCES public.factories(id) ON DELETE CASCADE;
+
+
+--
+-- Name: factory_positions factory_positions_position_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.factory_positions
+    ADD CONSTRAINT factory_positions_position_id_fkey FOREIGN KEY (position_id) REFERENCES public.positions(id);
 
 
 --
@@ -1260,6 +1704,30 @@ ALTER TABLE ONLY public.unplanned_workers
 
 
 --
+-- Name: worker_documents worker_documents_doc_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.worker_documents
+    ADD CONSTRAINT worker_documents_doc_type_id_fkey FOREIGN KEY (doc_type_id) REFERENCES public.document_types(id);
+
+
+--
+-- Name: worker_documents worker_documents_worker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.worker_documents
+    ADD CONSTRAINT worker_documents_worker_id_fkey FOREIGN KEY (worker_id) REFERENCES public.workers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: workers workers_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workers
+    ADD CONSTRAINT workers_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
 -- Name: workers workers_factory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1268,8 +1736,16 @@ ALTER TABLE ONLY public.workers
 
 
 --
+-- Name: workers workers_position_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workers
+    ADD CONSTRAINT workers_position_id_fkey FOREIGN KEY (position_id) REFERENCES public.positions(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict kalOrEUMlA521fOSuGirzw2q5Dcvg807uTAwYWSGNP6fPD6KkuMyw1lUclOmANa
+\unrestrict RdnwbhlGwjMPearL4OH50EEDTcYxOdnbQQeSzZMr23g5KgZz5dYIohieyltR1Yv
 

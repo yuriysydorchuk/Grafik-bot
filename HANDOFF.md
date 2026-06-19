@@ -20,10 +20,24 @@
 | `artifacts/api-server/src/bot/README.md` | бот: запуск, polling, handlers, звʼязок з БД/сервісами, cron, ризики pm2 |
 | `artifacts/web/README.md` | адмінпанель: стек, структура, API, ролі, i18n |
 | `lib/db/README.md` | пакет схеми, таблиці, зміни через psql |
-| `deploy/DEPLOY.md` | покроковий деплой на VPS (Caddy+pm2+Postgres) |
+| `deploy/DEPLOY.md` | покроковий деплой на VPS з нуля (Caddy+pm2+Postgres) |
+| **`docs/infrastructure/`** | **джерело правди по продакшн-середовищу** (живий сервер, деплой, БД, runbook, інциденти) — див. нижче |
 | `replit.md` | **legacy** (рання версія) — не покладатися |
 
 ---
+
+## Продакшн (джерело правди — `docs/infrastructure/`)
+
+Стан реального продакшн-сервера й експлуатація задокументовані в [`docs/infrastructure/`](docs/infrastructure/) —
+це **єдине джерело правди по проду** (не покладайся на пам'ять/чат):
+
+- [`PRODUCTION.md`](docs/infrastructure/PRODUCTION.md) — сервер/IP/OS, домени, шляхи, сервіси, pm2, Caddy/SSL, Postgres, env-назви, ризики
+- [`DEPLOYMENT.md`](docs/infrastructure/DEPLOYMENT.md) — деплой, build-команди, restart, rollback, пост-деплой чек
+- [`DATABASE.md`](docs/infrastructure/DATABASE.md) — БД, схема, ручні SQL-зміни, backup/restore, безпека
+- [`RUNBOOK.md`](docs/infrastructure/RUNBOOK.md) — перевірка стану й дії при інцидентах (бот/сайт/БД)
+- [`INCIDENTS.md`](docs/infrastructure/INCIDENTS.md) — журнал інцидентів (шаблон + історія)
+
+Деталі первинного розгортання та відкриті питання — у [`docs/HANDOFF-vps-deploy.md`](docs/HANDOFF-vps-deploy.md).
 
 ## Як швидко увійти в проєкт
 
