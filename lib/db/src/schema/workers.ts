@@ -97,6 +97,7 @@ export const factoriesTable = pgTable("factories", {
   usesGender: boolean("uses_gender").notNull().default(false),        // does this factory split orders by gender?
   usesTransport: boolean("uses_transport").notNull().default(true),   // agency provides pickup → show stops/pickup to workers
   showWorkerHours: boolean("show_worker_hours").notNull().default(true), // show the "My hours" button to workers
+  showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule
   clientEmail: text("client_email"), // where to send approved schedule
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   createdAt: timestamp("created_at").notNull().defaultNow(),

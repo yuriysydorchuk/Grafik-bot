@@ -186,7 +186,7 @@ async function uploadOrUpdateFile(
 // ─── Schedule Excel builder (reused by Drive export + direct download) ─────────
 
 type SchedRow = { day: string; shift: string; workerName: string | null; workerCode: string | null; positionId?: number | null; positionName?: string | null; gender?: string | null };
-type SegConfig = { usesPositions: boolean; usesGender: boolean; posOrder: { id: number; name: string }[] };
+type SegConfig = { usesPositions: boolean; usesGender: boolean; showCode: boolean; posOrder: { id: number; name: string }[] };
 
 const genderTagPL = (g?: string | null) => g === "female" ? "K" : g === "male" ? "M" : "";
 const genderRankPL = (g?: string | null) => g === "female" ? 0 : g === "male" ? 1 : 2;
@@ -214,10 +214,34 @@ function groupShiftPeople(people: SchedRow[], seg: SegConfig): { label: string |
   return [{ label: null, people: [...people].sort(byName) }];
 }
 
+// Teal palette matching the client's preferred grafik layout.
+const TEAL = "FF8FC9C4";        // shift-header band + number cells
+const TEAL_LIGHT = "FFD6EBE9";  // position/gender group sub-headers
+const BORDER = "FF000000";      // black thin border
+
+// Actual calendar date of `day` within the week starting `weekStart` (Mon).
+function dayDate(weekStart: string, day: string): Date {
+  const d = new Date(weekStart + "T00:00:00");
+  d.setDate(d.getDate() + Math.max(0, (DAYS as readonly string[]).indexOf(day)));
+  return d;
+}
+const fmtDDMMYYYY = (d: Date) =>
+  `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
+// Shift duration in whole hours from "HH:MM" start/end (handles overnight through midnight).
+function shiftHours(st?: { start: string; end: string }): number | null {
+  if (!st) return null;
+  const [sh, sm] = st.start.split(":").map(Number);
+  const [eh, em] = st.end.split(":").map(Number);
+  if ([sh, sm, eh, em].some(n => Number.isNaN(n))) return null;
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins <= 0) mins += 24 * 60;
+  return Math.round(mins / 60);
+}
+
 function buildFactoryWorkbook(
   factoryName: string, factoryId: number, fEntries: SchedRow[], weekStart: string,
   allFactories: { id: number; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; shifts?: { start: string; end: string }[] | null; shiftCount?: number | null }[],
-  seg: SegConfig = { usesPositions: false, usesGender: false, posOrder: [] },
+  seg: SegConfig = { usesPositions: false, usesGender: false, showCode: true, posOrder: [] },
 ): Promise<Buffer> {
   const weekPL = weekLabelPL(weekStart);
   const fac = allFactories.find(x => x.id === factoryId);
@@ -227,77 +251,81 @@ function buildFactoryWorkbook(
     top: { style: "thin", color: { argb } }, left: { style: "thin", color: { argb } },
     bottom: { style: "thin", color: { argb } }, right: { style: "thin", color: { argb } },
   });
-  // Extra "Płeć" (K/M) column only when the factory splits by gender.
-  const cols = seg.usesGender ? 4 : 3;
+
+  // Column layout: №, Name, [Płeć], [Kod], then a blank notes column on the right.
+  const widths = [6, 34];
+  if (seg.usesGender) widths.push(8);
+  if (seg.showCode) widths.push(12);
+  widths.push(16);                  // trailing blank column
+  const cols = widths.length;       // total columns
+  const bandCols = cols - 1;        // header band spans everything except the blank column
 
   const wb = new ExcelJS.Workbook();
+  // Fill + black border on every cell of a (possibly merged) horizontal range.
+  const paintRange = (ws: ExcelJS.Worksheet, row: number, c1: number, c2: number, argb?: string) => {
+    for (let c = c1; c <= c2; c++) {
+      const cell = ws.getCell(row, c);
+      if (argb) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb } } as any;
+      cell.border = thin(BORDER) as any;
+    }
+  };
+
   for (const day of DAYS) {
     const dayEntries = fEntries.filter(e => e.day === day);
     if (dayEntries.length === 0) continue;
     const ws = wb.addWorksheet(DAY_NAMES_PL[day]!.slice(0, 31), { views: [{ showGridLines: false }] });
-    ws.columns = seg.usesGender ? [{ width: 6 }, { width: 34 }, { width: 8 }, { width: 12 }] : [{ width: 6 }, { width: 36 }, { width: 14 }];
+    ws.columns = widths.map(w => ({ width: w }));
+    const date = dayDate(weekStart, day);
     let r = 1;
-    ws.mergeCells(r, 1, r, cols);
-    const title = ws.getCell(r, 1);
-    title.value = `${DAY_NAMES_PL[day]!.toUpperCase()} · ${weekPL}`;
-    title.font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
-    title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" } } as any;
-    title.alignment = { vertical: "middle", horizontal: "center" };
-    ws.getRow(r).height = 30; r++;
-    ws.mergeCells(r, 1, r, cols);
-    const sub = ws.getCell(r, 1);
-    sub.value = `🏭 ${factoryName}`;
-    sub.font = { bold: true, size: 11, color: { argb: "FF374151" } };
-    sub.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } } as any;
-    sub.alignment = { vertical: "middle", horizontal: "center" };
-    ws.getRow(r).height = 20; r += 2;
     for (const shift of (["1", "2", "3", "4", "5", "6"] as Shift[]).slice(0, nShifts)) {
       const people = dayEntries.filter(e => e.shift === shift);
       if (people.length === 0) continue;
       const st = fShifts[Number(shift) - 1];
-      ws.mergeCells(r, 1, r, cols);
+      const hrs = shiftHours(st);
+      // Teal shift-header band: "1 zmiana <Factory> DD.MM.YYYY (8H) (07:00-15:00)"
+      ws.mergeCells(r, 1, r, bandCols);
       const sh = ws.getCell(r, 1);
-      sh.value = `ZMIANA ${shift}   ·   ${st ? `${st.start} – ${st.end}` : ""}   ·   ${people.length} os.`;
-      sh.font = { bold: true, size: 12, color: { argb: "FFFFFFFF" } };
-      sh.fill = { type: "pattern", pattern: "solid", fgColor: { argb: shiftFillFor(Number(shift)) } } as any;
-      sh.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-      ws.getRow(r).height = 24; r++;
-      const hdr = ws.getRow(r);
-      hdr.values = seg.usesGender ? ["Lp.", "Imię i nazwisko", "Płeć", "Kod"] : ["Lp.", "Imię i nazwisko", "Kod"];
-      hdr.eachCell((c) => {
-        c.font = { bold: true, color: { argb: "FF374151" } };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } } as any;
-        c.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
-        c.border = thin("FFD1D5DB") as any;
-      });
-      ws.getRow(r).height = 18; r++;
+      sh.value = `${shift} zmiana ${factoryName} ${fmtDDMMYYYY(date)}`
+        + `${hrs != null ? ` (${hrs}H)` : ""}${st ? ` (${st.start}-${st.end})` : ""}`;
+      sh.font = { bold: true, size: 13, color: { argb: "FF1F2937" } };
+      sh.alignment = { vertical: "middle", horizontal: "center" };
+      paintRange(ws, r, 1, bandCols, TEAL);
+      ws.getRow(r).height = 26; r++;
       let n = 1;
       for (const grp of groupShiftPeople(people, seg)) {
         // group sub-header (position and/or gender)
         if (grp.label) {
-          ws.mergeCells(r, 1, r, cols);
+          ws.mergeCells(r, 1, r, bandCols);
           const gh = ws.getCell(r, 1);
-          gh.value = `▸ ${grp.label}`;
-          gh.font = { bold: true, italic: true, size: 10, color: { argb: "FF4B5563" } };
-          gh.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } } as any;
+          gh.value = grp.label;
+          gh.font = { bold: true, italic: true, size: 10, color: { argb: "FF374151" } };
           gh.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+          paintRange(ws, r, 1, bandCols, TEAL_LIGHT);
           ws.getRow(r).height = 16; r++;
         }
         for (const p of grp.people) {
           const row = ws.getRow(r);
-          row.values = seg.usesGender
-            ? [n, p.workerName ?? "", genderTagPL(p.gender), p.workerCode ?? ""]
-            : [n, p.workerName ?? "", p.workerCode ?? ""];
-          const bg = n % 2 === 0 ? "FFF9FAFB" : "FFFFFFFF";
-          row.eachCell((c, col) => {
-            c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } } as any;
-            c.border = thin("FFE5E7EB") as any;
-            c.alignment = { vertical: "middle", horizontal: col === 2 ? "left" : "center", indent: col === 2 ? 1 : 0 };
-          });
+          const vals: any[] = [n, p.workerName ?? ""];
+          if (seg.usesGender) vals.push(genderTagPL(p.gender));
+          if (seg.showCode) vals.push(p.workerCode ?? "");
+          vals.push("");            // blank notes column
+          row.values = vals;
+          for (let c = 1; c <= cols; c++) {
+            const cell = ws.getCell(r, c);
+            cell.border = thin(BORDER) as any;
+            if (c === 1) {
+              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: TEAL } } as any;
+              cell.font = { bold: true, color: { argb: "FF1F2937" } };
+              cell.alignment = { vertical: "middle", horizontal: "center" };
+            } else {
+              cell.alignment = { vertical: "middle", horizontal: c === 2 ? "left" : "center", indent: c === 2 ? 1 : 0 };
+            }
+          }
+          ws.getRow(r).height = 20;
           n++; r++;
         }
       }
-      r++;
+      r++; // gap before the next shift
     }
   }
   if (wb.worksheets.length === 0) {
@@ -309,8 +337,8 @@ function buildFactoryWorkbook(
 
 // Load a factory's segregation config (flags + ordered positions) for the Excel builder.
 async function loadSegConfig(factoryId: number): Promise<SegConfig> {
-  const f = (await db.select({ usesPositions: factoriesTable.usesPositions, usesGender: factoriesTable.usesGender }).from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
-  if (!f) return { usesPositions: false, usesGender: false, posOrder: [] };
+  const f = (await db.select({ usesPositions: factoriesTable.usesPositions, usesGender: factoriesTable.usesGender, showCode: factoriesTable.showCode }).from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
+  if (!f) return { usesPositions: false, usesGender: false, showCode: true, posOrder: [] };
   const posOrder = f.usesPositions
     ? (await db.select({ id: factoryPositionsTable.positionId, name: positionsTable.name })
         .from(factoryPositionsTable)
@@ -319,7 +347,7 @@ async function loadSegConfig(factoryId: number): Promise<SegConfig> {
         .orderBy(factoryPositionsTable.sortOrder, factoryPositionsTable.id))
         .map(p => ({ id: p.id, name: p.name ?? "?" }))
     : [];
-  return { usesPositions: f.usesPositions, usesGender: f.usesGender, posOrder };
+  return { usesPositions: f.usesPositions, usesGender: f.usesGender, showCode: f.showCode, posOrder };
 }
 
 // Build a downloadable Excel for one factory's week. Returns buffer + filename.
