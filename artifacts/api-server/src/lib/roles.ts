@@ -1,50 +1,29 @@
-// Shared role + capability model (keep in sync with web/src/lib/roles.ts)
-export type Role = "owner" | "scheduler" | "driver";
-export const ROLES: Role[] = ["owner", "scheduler", "driver"];
-export const ROLE_LABEL: Record<Role, string> = {
-  owner: "Власник", scheduler: "Графікова", driver: "Водій",
+// Shared role + capability MODEL. Role MEMBERSHIP lives in the DB (roles table);
+// this file defines the fixed CATALOGUES (capabilities + pages) and pure helpers.
+// Keep the capability/page keys in sync with web/src/lib/roles.ts.
+
+export type Role = string;        // role key stored in admins.role (owner | scheduler | driver | custom…)
+export const OWNER = "owner";     // immutable superuser — always full access, never lockable
+
+// Action capabilities a role can be granted (the "what can it do" catalogue).
+export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers"] as const;
+export type Capability = (typeof CAP_KEYS)[number];
+export const CAP_LABEL: Record<Capability, string> = {
+  editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
+  viewFinance: "Фінанси (ставки, рахунки)",
+  assignDrivers: "Водійські дії (борд, призначення, посадка)",
+  deleteWorkers: "Видаляти працівників назавжди",
 };
 
-// Page/route access (used for nav + route guards)
-export const PAGE_ROLES: Record<string, Role[]> = {
-  "/": ["owner", "scheduler", "driver"],
-  "/schedule": ["owner", "scheduler", "driver"], // driver = read-only
-  "/driver-shifts": ["owner", "scheduler", "driver"],
-  "/orders": ["owner", "scheduler"],
-  "/availability": ["owner", "scheduler"],
-  "/reliability": ["owner", "scheduler"],
-  "/hours": ["owner", "scheduler"],
-  "/absences": ["owner", "scheduler"],
-  "/trips": ["owner", "scheduler", "driver"],
-  "/reports": ["owner", "scheduler"],
-  "/finance": ["owner"],
-  "/settings": ["owner", "scheduler"],
-  "/workers": ["owner", "scheduler"],
-  "/candidates": ["owner", "scheduler"],
-  "/broadcast": ["owner", "scheduler"],
-  "/drivers": ["owner", "scheduler"],
-  "/factories": ["owner", "scheduler"],
-  "/admins": ["owner"],
-};
+// Nav/route paths a role can be granted access to (the "what can it see" catalogue).
+export const PAGE_KEYS = [
+  "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
+  "/hours", "/absences", "/trips", "/reports", "/finance", "/settings",
+  "/workers", "/recruitment", "/broadcast", "/drivers", "/factories", "/admins",
+] as const;
 
-// Action capabilities
-export const CAPS = {
-  manageRoles: ["owner"],
-  editSchedule: ["owner", "scheduler"],
-  editOrders: ["owner", "scheduler"],
-  editFactories: ["owner", "scheduler"],
-  editAvailability: ["owner", "scheduler"],
-  editWorkers: ["owner", "scheduler"],
-  viewAnalytics: ["owner", "scheduler"],
-  assignDrivers: ["owner", "scheduler", "driver"],
-  live: ["owner", "scheduler", "driver"],
-} as const satisfies Record<string, Role[]>;
-export type Capability = keyof typeof CAPS;
-
-export function can(role: Role | undefined | null, cap: Capability): boolean {
-  return !!role && (CAPS[cap] as readonly Role[]).includes(role);
-}
-export function canAccessPage(role: Role | undefined | null, path: string): boolean {
-  const allowed = PAGE_ROLES[path];
-  return !allowed || (!!role && allowed.includes(role));
+// owner is always allowed; otherwise check the resolved capability set.
+export function hasCap(role: Role | null | undefined, caps: string[] | null | undefined, cap: Capability): boolean {
+  if (role === OWNER) return true;
+  return !!caps && caps.includes(cap);
 }

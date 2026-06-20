@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "node:crypto";
 import { db } from "@workspace/db";
-import { adminsTable } from "@workspace/db";
+import { adminsTable, rolesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { verifyPassword, createToken, authRequired, SESSION_COOKIE, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
@@ -84,7 +84,13 @@ router.post("/auth/logout", (_req, res) => {
 router.get("/auth/me", authRequired, async (req: AuthedRequest, res) => {
   const admin = (await db.select().from(adminsTable).where(eq(adminsTable.id, req.admin!.adminId)))[0];
   if (!admin) return res.status(401).json({ error: "unauthorized" });
-  return res.json({ id: admin.id, name: admin.name, username: admin.username, isMain: !!admin.isMain, role: admin.role ?? "owner" });
+  const roleKey = admin.role ?? "owner";
+  const [role] = await db.select({ label: rolesTable.label }).from(rolesTable).where(eq(rolesTable.key, roleKey));
+  return res.json({
+    id: admin.id, name: admin.name, username: admin.username, isMain: !!admin.isMain,
+    role: roleKey, roleLabel: role?.label ?? roleKey,
+    caps: req.admin!.caps, pages: req.admin!.pages,
+  });
 });
 
 export default router;

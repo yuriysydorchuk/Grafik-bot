@@ -1,7 +1,7 @@
 import { scryptSync, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
-import { adminsTable } from "@workspace/db";
+import { adminsTable, rolesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 // ─── Password hashing (scrypt, no external deps) ───────────────────────────────
@@ -31,9 +31,28 @@ const SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "grafik_session";
 
-import type { Role } from "./roles";
+import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, type Role, type Capability } from "./roles";
 
 type SessionPayload = { adminId: number; name: string; role: Role; exp: number };
+
+// ─── Role access cache (roles table) ───────────────────────────────────────────
+// Role membership (pages/caps) lives in the DB and rarely changes — cache it and
+// invalidate whenever a role is created/edited/deleted.
+let rolesCache: Map<string, { pages: string[]; caps: string[] }> | null = null;
+export async function loadRolesCache(force = false): Promise<Map<string, { pages: string[]; caps: string[] }>> {
+  if (rolesCache && !force) return rolesCache;
+  const rows = await db.select({ key: rolesTable.key, pages: rolesTable.pages, caps: rolesTable.caps }).from(rolesTable);
+  rolesCache = new Map(rows.map(r => [r.key, { pages: r.pages ?? [], caps: r.caps ?? [] }]));
+  return rolesCache;
+}
+export function invalidateRolesCache(): void { rolesCache = null; }
+
+// Resolve a role key into its access sets. owner is the immutable superuser → full access.
+async function resolveAccess(role: string): Promise<{ pages: string[]; caps: string[] }> {
+  if (role === OWNER) return { pages: [...PAGE_KEYS], caps: [...CAP_KEYS] };
+  const cache = await loadRolesCache();
+  return cache.get(role) ?? { pages: [], caps: [] };
+}
 
 function b64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -65,7 +84,7 @@ export function verifyToken(token: string | undefined): SessionPayload | null {
 // ─── Express middleware ────────────────────────────────────────────────────────
 
 export interface AuthedRequest extends Request {
-  admin?: { adminId: number; name: string; role: Role; isMain: boolean };
+  admin?: { adminId: number; name: string; role: Role; isMain: boolean; caps: string[]; pages: string[] };
 }
 
 export async function authRequired(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -77,18 +96,29 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
   try {
     const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
     if (!admin) return res.status(401).json({ error: "unauthorized" }); // account deleted
-    req.admin = { adminId: admin.id, name: payload.name, role: (admin.role ?? "owner") as Role, isMain: !!admin.isMain };
+    const role = (admin.role ?? OWNER) as Role;
+    const access = await resolveAccess(role);
+    req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages };
     return next();
   } catch {
     return res.status(500).json({ error: "auth error" });
   }
 }
 
-// Gate a route to specific roles (use after authRequired)
+// Gate a route to specific role keys (use after authRequired)
 export function requireRole(...roles: Role[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.admin) return res.status(401).json({ error: "unauthorized" });
     if (!roles.includes(req.admin.role)) return res.status(403).json({ error: "forbidden" });
+    return next();
+  };
+}
+
+// Gate a route to admins whose role grants a capability (owner always passes).
+export function requireCap(cap: Capability) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.admin) return res.status(401).json({ error: "unauthorized" });
+    if (!hasCap(req.admin.role, req.admin.caps, cap)) return res.status(403).json({ error: "forbidden" });
     return next();
   };
 }

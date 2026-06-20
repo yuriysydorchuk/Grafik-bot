@@ -71,7 +71,7 @@ export default function Schedule() {
   const me = useMe();
   const week = data?.week;
   const approved = !!data?.approved;
-  const editable = can(me?.role, "editSchedule"); // driver = read-only
+  const editable = can(me, "editData"); // driver = read-only
   // worked shifts are locked per-cell until you tap "edit" on that specific shift
   const [editCells, setEditCells] = useState<Set<string>>(new Set());
   const toggleEditCell = (key: string) => setEditCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });

@@ -36,7 +36,7 @@ export default function App() {
   if (isError || !me) return <Login />;
 
   const guard = (path: string, el: React.ReactNode) =>
-    canAccessPage(me.role, path) ? el : <Redirect to="/" />;
+    canAccessPage(me, path) ? el : <Redirect to="/" />;
 
   return (
     <Layout me={me}>

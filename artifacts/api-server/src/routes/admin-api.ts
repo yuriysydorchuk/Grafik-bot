@@ -9,12 +9,12 @@ import {
   driverShiftAssignmentsTable, driverTripsTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, funnelsTable, candidateActivityTable, companiesTable,
-  documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable,
+  documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray } from "drizzle-orm";
-import { authRequired, requireRole, requireMainAdmin, type AuthedRequest } from "../lib/auth";
-import { ROLES, type Role } from "../lib/roles";
+import { authRequired, requireRole, requireCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
+import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
 import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
@@ -32,7 +32,9 @@ const router: IRouter = Router();
 router.use(authRequired);
 
 // Read/write capability for owner + scheduler (driver is read-only / live-only)
-const RW = requireRole("owner", "scheduler");
+const RW = requireCap("editData");
+// Whether the requester's role may see/edit financial fields (rates, invoices).
+const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "viewFinance");
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, code: number, msg: string) => res.status(code).json({ error: msg });
@@ -187,7 +189,7 @@ router.get("/workers", RW, async (req, res) => {
     }));
   const filtered = rows.filter(r => factoryId == null || r.factoryId === factoryId);
   // payroll fields are financial — owner only
-  if ((req as AuthedRequest).admin?.role !== "owner") {
+  if (!canFinance(req)) {
     return ok(res, filtered.map(({ hourlyRate, isStudent, under26, ...rest }) => rest));
   }
   ok(res, filtered);
@@ -215,7 +217,7 @@ router.post("/workers", RW, async (req, res) => {
     positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
     telegramId: telegramId?.trim() || null, workerCode: code,
   };
-  if ((req as AuthedRequest).admin?.role === "owner") {
+  if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
     if (isStudent !== undefined) values.isStudent = !!isStudent;
     if (under26 !== undefined) values.under26 = !!under26;
@@ -246,7 +248,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
   }
   if (language !== undefined) patch.language = String(language).trim() || null;
   // payroll fields — owner only
-  if ((req as AuthedRequest).admin?.role === "owner") {
+  if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
     if (isStudent !== undefined) patch.isStudent = !!isStudent;
     if (under26 !== undefined) patch.under26 = !!under26;
@@ -271,7 +273,7 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
 // together with all owned history (schedule, availability, absences, disputes, docs).
 // References owned by OTHER entities are nulled, not deleted (e.g. a request where this
 // worker stood in as a substitute, or a candidate they referred / were converted from).
-router.delete("/workers/:id", requireRole("owner"), async (req, res) => {
+router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
   const id = Number(req.params.id);
   const [worker] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
   if (!worker) return fail(res, 404, "Працівника не знайдено");
@@ -301,7 +303,7 @@ router.get("/workers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
-  const isOwner = (req as AuthedRequest).admin?.role === "owner";
+  const isOwner = canFinance(req);
   const factories = await db.select().from(factoriesTable);
   const facMap = new Map(factories.map(f => [f.id, f]));
   const companies = await db.select().from(companiesTable);
@@ -965,7 +967,7 @@ router.get("/factories", async (req, res) => {
   const rows = await db.select().from(factoriesTable).orderBy(factoriesTable.name);
   const companies = await db.select().from(companiesTable);
   const coMap = new Map(companies.map(c => [c.id, c.name]));
-  const isOwner = (req as AuthedRequest).admin?.role === "owner";
+  const isOwner = canFinance(req);
   // per-factory positions (with the catalogue name/colour); rate is financial → owner only
   const fp = await db
     .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, name: positionsTable.name, color: positionsTable.color })
@@ -1043,7 +1045,7 @@ router.post("/factories", RW, async (req, res) => {
   if (usesTransport !== undefined) values.usesTransport = !!usesTransport;
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
-  if ((req as AuthedRequest).admin?.role === "owner" && invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
+  if (canFinance(req) && invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
   const [f] = await db.insert(factoriesTable).values(values).returning();
   if (positions !== undefined) await setFactoryPositions(f!.id, positions);
   ok(res, f);
@@ -1058,7 +1060,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   // invoiceRate is financial — owner only
-  if ((req as AuthedRequest).admin?.role === "owner" && invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
+  if (canFinance(req) && invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
   const cs = cleanShifts(shifts);
   if (cs) {
     patch.shifts = cs;
@@ -1636,7 +1638,7 @@ router.get("/hours", RW, async (req, res) => {
   // factory shift definitions (for actual per-shift durations + column counts)
   const facRows = await db.select().from(factoriesTable);
   const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
-  const isOwner = (req as AuthedRequest).admin?.role === "owner";
+  const isOwner = canFinance(req);
   const rates = await getFinanceRates();
   const posRates = await getPositionRates();
   const rows = await db
@@ -1797,7 +1799,7 @@ function monthBounds(month: string) {
   return { start: `${month}-01`, end: ymdStr(new Date(y!, m!, 1)) };
 }
 
-router.get("/finance", requireRole("owner"), async (req, res) => {
+router.get("/finance", requireCap("viewFinance"), async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const rates = await getFinanceRates();
   const { start, end } = monthBounds(month);
@@ -1811,10 +1813,10 @@ router.get("/finance", requireRole("owner"), async (req, res) => {
 });
 
 // ─── Finance rate settings (owner) ───────────────────────────────────────────────
-router.get("/finance/settings", requireRole("owner"), async (_req, res) => {
+router.get("/finance/settings", requireCap("viewFinance"), async (_req, res) => {
   ok(res, await getFinanceRates());
 });
-router.put("/finance/settings", requireRole("owner"), async (req, res) => {
+router.put("/finance/settings", requireCap("viewFinance"), async (req, res) => {
   const body = req.body ?? {};
   const current = await getFinanceRates();
   const next: any = { ...current };
@@ -1828,7 +1830,7 @@ router.put("/finance/settings", requireRole("owner"), async (req, res) => {
 });
 
 // ─── Finance comparison (owner): turnover/profit/hours/people, per factory + company ──
-router.get("/finance/compare", requireRole("owner"), async (req, res) => {
+router.get("/finance/compare", requireCap("viewFinance"), async (req, res) => {
   const mode = String(req.query.mode || "mtd"); // mtd | mom | yoy_month | yoy
   const rates = await getFinanceRates();
   const now = new Date();
@@ -2257,6 +2259,11 @@ const mainAdminId = async () =>
   ?? (await db.select({ id: adminsTable.id }).from(adminsTable).orderBy(adminsTable.id).limit(1))[0]?.id;
 
 // Listing is visible to any owner; mutations below are head-admin-only.
+async function roleExists(key: string): Promise<boolean> {
+  const [r] = await db.select({ id: rolesTable.id }).from(rolesTable).where(eq(rolesTable.key, key));
+  return !!r;
+}
+
 router.get("/admins", requireRole("owner"), async (_req, res) => {
   const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, username: adminsTable.username, telegramId: adminsTable.telegramId, role: adminsTable.role, isMain: adminsTable.isMain, inviteCode: adminsTable.inviteCode }).from(adminsTable).orderBy(adminsTable.id);
   ok(res, admins.map(a => ({
@@ -2271,7 +2278,7 @@ router.post("/admins", requireMainAdmin, async (req, res) => {
   const { name, role } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть ім'я");
   const r = (String(role) as Role);
-  if (!ROLES.includes(r)) return fail(res, 400, "Невірна роль");
+  if (!(await roleExists(r))) return fail(res, 400, "Невірна роль");
   const code = await uniqueAdminCode();
   const [a] = await db.insert(adminsTable).values({ name: name.trim(), role: r, inviteCode: code }).returning();
   ok(res, { id: a!.id, name: a!.name, role: a!.role, inviteLink: adminInviteLink(code) });
@@ -2286,7 +2293,7 @@ router.patch("/admins/:id", requireMainAdmin, async (req, res) => {
   if (name !== undefined) { if (!String(name).trim()) return fail(res, 400, "Ім'я не може бути порожнім"); patch.name = String(name).trim(); }
   if (role !== undefined) {
     const r = String(role) as Role;
-    if (!ROLES.includes(r)) return fail(res, 400, "Невірна роль");
+    if (!(await roleExists(r))) return fail(res, 400, "Невірна роль");
     if (id === mainId && r !== "owner") return fail(res, 400, "Головний власник має лишатися власником");
     patch.role = r;
   }
@@ -2298,7 +2305,7 @@ router.patch("/admins/:id", requireMainAdmin, async (req, res) => {
 router.patch("/admins/:id/role", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const role = String((req.body ?? {}).role) as Role;
-  if (!ROLES.includes(role)) return fail(res, 400, "Невірна роль");
+  if (!(await roleExists(role))) return fail(res, 400, "Невірна роль");
   if (id === (await mainAdminId()) && role !== "owner") return fail(res, 400, "Головний власник має лишатися власником");
   const [a] = await db.update(adminsTable).set({ role }).where(eq(adminsTable.id, id)).returning();
   ok(res, a);
@@ -2327,6 +2334,64 @@ router.delete("/admins/:id", requireMainAdmin, async (req, res) => {
   if (id === (await mainAdminId())) return fail(res, 400, "Не можна видалити головного власника");
   if (id === (req as AuthedRequest).admin?.adminId) return fail(res, 400, "Не можна видалити власний акаунт");
   await db.delete(adminsTable).where(eq(adminsTable.id, id));
+  ok(res, { ok: true });
+});
+
+// ─── Roles (web access roles) — head admin only ───────────────────────────────
+const slugify = (s: string) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+const cleanKeys = (input: any, allowed: readonly string[]): string[] =>
+  Array.isArray(input) ? [...new Set(input.map(String).filter(x => allowed.includes(x)))] : [];
+
+router.get("/roles", requireMainAdmin, async (_req, res) => {
+  const rows = await db.select().from(rolesTable).orderBy(rolesTable.sortOrder, rolesTable.id);
+  const admins = await db.select({ role: adminsTable.role }).from(adminsTable);
+  const inUse = new Map<string, number>();
+  for (const a of admins) inUse.set(a.role ?? "", (inUse.get(a.role ?? "") ?? 0) + 1);
+  ok(res, rows.map(r => ({
+    id: r.id, key: r.key, label: r.label, isSystem: r.isSystem,
+    pages: r.pages ?? [], caps: r.caps ?? [], inUse: inUse.get(r.key) ?? 0,
+  })));
+});
+
+router.post("/roles", requireMainAdmin, async (req, res) => {
+  const { label, key, pages, caps } = req.body ?? {};
+  if (!label?.trim()) return fail(res, 400, "Вкажіть назву ролі");
+  // key is internal (the label is what's shown); non-latin names slug to "" → auto-generate
+  let k = slugify(key || label) || `role-${Date.now().toString(36).slice(-6)}`;
+  if (await roleExists(k)) k = `${k}-${Date.now().toString(36).slice(-4)}`;
+  const max = (await db.select({ s: rolesTable.sortOrder }).from(rolesTable)).reduce((a, r) => Math.max(a, r.s ?? 0), 0);
+  const [r] = await db.insert(rolesTable).values({
+    key: k, label: String(label).trim(), isSystem: false,
+    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), sortOrder: max + 1,
+  }).returning();
+  invalidateRolesCache();
+  ok(res, r);
+});
+
+router.patch("/roles/:id", requireMainAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const [role] = await db.select().from(rolesTable).where(eq(rolesTable.id, id));
+  if (!role) return fail(res, 404, "Роль не знайдено");
+  if (role.key === OWNER) return fail(res, 400, "Роль «Власник» не можна змінювати");
+  const { label, pages, caps } = req.body ?? {};
+  const patch: any = {};
+  if (label !== undefined) { if (!String(label).trim()) return fail(res, 400, "Назва не може бути порожньою"); patch.label = String(label).trim(); }
+  if (pages !== undefined) patch.pages = cleanKeys(pages, PAGE_KEYS);
+  if (caps !== undefined) patch.caps = cleanKeys(caps, CAP_KEYS);
+  const [r] = await db.update(rolesTable).set(patch).where(eq(rolesTable.id, id)).returning();
+  invalidateRolesCache();
+  ok(res, r);
+});
+
+router.delete("/roles/:id", requireMainAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const [role] = await db.select().from(rolesTable).where(eq(rolesTable.id, id));
+  if (!role) return fail(res, 404, "Роль не знайдено");
+  if (role.isSystem) return fail(res, 400, "Системну роль не можна видалити");
+  const [used] = await db.select({ id: adminsTable.id }).from(adminsTable).where(eq(adminsTable.role, role.key)).limit(1);
+  if (used) return fail(res, 400, "Роль використовується — спершу переназначте користувачів");
+  await db.delete(rolesTable).where(eq(rolesTable.id, id));
+  invalidateRolesCache();
   ok(res, { ok: true });
 });
 
@@ -2400,7 +2465,7 @@ router.get("/live", async (_req, res) => {
 // Bulk-save driver assignments for a week+factory. `slots`: { "day-shift": number[] }.
 // Replaces the whole factory's week assignments in one go (supports several drivers per shift).
 // Saving does NOT notify — notification is an explicit separate action.
-router.put("/schedule/driver-assignments", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.put("/schedule/driver-assignments", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, factoryId, slots } = req.body ?? {};
   if (!weekStart || !factoryId || typeof slots !== "object") return fail(res, 400, "Невірні дані");
   const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
@@ -2422,7 +2487,7 @@ router.put("/schedule/driver-assignments", requireRole("owner", "scheduler", "dr
 });
 
 // Notify each assigned driver of their shifts for this week+factory (explicit action)
-router.post("/schedule/notify-drivers", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.post("/schedule/notify-drivers", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, factoryId } = req.body ?? {};
   if (!weekStart || !factoryId) return fail(res, 400, "Невірні дані");
   try {
@@ -2436,7 +2501,7 @@ router.post("/schedule/notify-drivers", requireRole("owner", "scheduler", "drive
 });
 
 // Send each scheduled worker their week schedule with the assigned driver per shift.
-router.post("/schedule/notify-workers", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.post("/schedule/notify-workers", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, factoryId } = req.body ?? {};
   if (!weekStart || !factoryId) return fail(res, 400, "Невірні дані");
   try {
@@ -2456,7 +2521,7 @@ const findWeekRow = async (weekStart: string) => {
 };
 
 // Compact overview of every factory's running shifts (with hours + headcount + assigned drivers)
-router.get("/driver-board", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   const weekStart = String(req.query.weekStart);
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
   const week = await findWeekRow(weekStart);
@@ -2495,7 +2560,7 @@ router.get("/driver-board", requireRole("owner", "scheduler", "driver"), async (
 });
 
 // Save ONE driver's assignments across all factories for a week (full replace for that driver).
-router.put("/schedule/driver-assignments/by-driver", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.put("/schedule/driver-assignments/by-driver", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, driverId, slots } = req.body ?? {};
   if (!weekStart || !driverId || typeof slots !== "object") return fail(res, 400, "Невірні дані");
   let week = await findWeekRow(String(weekStart));
@@ -2517,7 +2582,7 @@ router.put("/schedule/driver-assignments/by-driver", requireRole("owner", "sched
 });
 
 // Notify ONE driver of their week (explicit action)
-router.post("/schedule/notify-driver", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.post("/schedule/notify-driver", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, driverId } = req.body ?? {};
   if (!weekStart || !driverId) return fail(res, 400, "Невірні дані");
   try {
@@ -2531,7 +2596,7 @@ router.post("/schedule/notify-driver", requireRole("owner", "scheduler", "driver
 });
 
 // Copy all driver assignments from one week to another (full replace of target week)
-router.post("/schedule/driver-assignments/copy-week", requireRole("owner", "scheduler", "driver"), async (req, res) => {
+router.post("/schedule/driver-assignments/copy-week", requireCap("assignDrivers"), async (req, res) => {
   const { fromWeekStart, toWeekStart } = req.body ?? {};
   if (!fromWeekStart || !toWeekStart) return fail(res, 400, "Невірні дані");
   const from = await findWeekRow(String(fromWeekStart));

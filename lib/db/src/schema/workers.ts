@@ -191,6 +191,20 @@ export const adminsTable = pgTable("admins", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Web-panel access roles. `key` is what admins.role stores. `owner` is the immutable
+// superuser (always full access in code). `pages`/`caps` are the configurable access
+// sets, chosen from code-defined catalogues (lib/roles.ts). Managed only by is_main.
+export const rolesTable = pgTable("roles", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),               // slug stored in admins.role
+  label: text("label").notNull(),
+  isSystem: boolean("is_system").notNull().default(false), // owner/scheduler/driver — not deletable
+  pages: jsonb("pages").$type<string[]>().notNull().default([]),  // allowed page paths
+  caps: jsonb("caps").$type<string[]>().notNull().default([]),    // allowed capability keys
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // On-site notification center (no-show / shift cancellation), shown via the header bell
 export const notificationsTable = pgTable("notifications", {
   id: serial("id").primaryKey(),

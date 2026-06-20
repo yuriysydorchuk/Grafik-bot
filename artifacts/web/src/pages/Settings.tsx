@@ -2,31 +2,31 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, type Funnel, type FunnelStage, type Company, type DocumentType, type Position } from "../lib/api";
+import { get, put, post, patch, del, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me } from "../lib/api";
 import { Card, Spinner, Input, Label, Button, Select, Badge, Empty } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { STAGE_COLORS, dotClass, badgeClass } from "../lib/colors";
-import type { Role } from "../lib/roles";
+import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
 
 type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "users";
-const TABS: { id: TabId; label: string; roles: Role[] }[] = [
-  { id: "general", label: "Фінанси / ставки", roles: ["owner"] },
-  { id: "companies", label: "Фірми", roles: ["owner", "scheduler"] },
-  { id: "factories", label: "Фабрики", roles: ["owner", "scheduler"] },
-  { id: "positions", label: "Посади", roles: ["owner", "scheduler"] },
-  { id: "documents", label: "Документи", roles: ["owner", "scheduler"] },
-  { id: "funnels", label: "Воронки рекрутації", roles: ["owner", "scheduler"] },
-  { id: "users", label: "Користувачі та ролі", roles: ["owner"] },
+const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
+  { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
+  { id: "companies", label: "Фірми", show: m => can(m, "editData") },
+  { id: "factories", label: "Фабрики", show: m => can(m, "editData") },
+  { id: "positions", label: "Посади", show: m => can(m, "editData") },
+  { id: "documents", label: "Документи", show: m => can(m, "editData") },
+  { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
+  { id: "users", label: "Користувачі та ролі", show: m => m.isMain },
 ];
 
 export default function Settings() {
   const t = useT();
   const me = useMe();
-  const tabs = TABS.filter(t => me?.role && t.roles.includes(me.role));
+  const tabs = me ? TABS.filter(tab => tab.show(me)) : [];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "factories");
   const active = tabs.some(t => t.id === tab) ? tab : (tabs[0]?.id ?? "factories");
 

@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { cn } from "./ui";
 import { post, type Me } from "../lib/api";
-import { canAccessPage, ROLE_LABEL } from "../lib/roles";
+import { canAccessPage } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
 import { useT, useLang } from "../lib/i18n";
 
@@ -104,7 +104,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
   }
 
   const groups = NAV
-    .map(g => ({ ...g, items: g.items.filter(i => canAccessPage(me.role, i.href)) }))
+    .map(g => ({ ...g, items: g.items.filter(i => canAccessPage(me, i.href)) }))
     .filter(g => g.items.length > 0);
 
   // `rail` = collapsed icon-only mode (labels appear on hover via the group/nav peer)
@@ -145,7 +145,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
           </div>
           <div className={cn("min-w-0 leading-tight", rail && "hidden group-hover/nav:block")}>
             <div className="truncate text-sm font-medium text-slate-700">{me.name}{me.isMain && " 👑"}</div>
-            <div className="text-[11px] text-slate-400">{t(ROLE_LABEL[me.role] ?? "Користувач")}</div>
+            <div className="text-[11px] text-slate-400">{t(me.roleLabel ?? "Користувач")}</div>
           </div>
         </div>
         <button onClick={logout} title={rail ? t("Вийти") : undefined} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-500 transition hover:bg-rose-50 hover:text-rose-600">

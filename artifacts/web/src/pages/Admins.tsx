@@ -1,21 +1,17 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Link2, KeyRound, Copy } from "lucide-react";
+import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, patch, del, type Me } from "../lib/api";
-import { ROLE_LABEL, type Role } from "../lib/roles";
+import { get, post, patch, del, type Me, type RoleDef } from "../lib/api";
+import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, type Capability } from "../lib/roles";
 import { Card, Spinner, Badge, Empty, Select, Button, Modal, Input, Label } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 
 interface AdminRow {
-  id: number; name: string; username: string | null; role: Role;
+  id: number; name: string; username: string | null; role: string;
   isMain: boolean; hasWebLogin: boolean; hasTelegram: boolean; pending: boolean; inviteLink: string | null;
 }
-
-const ROLE_OPTS: { value: Role; label: string }[] = [
-  { value: "owner", label: "Власник" }, { value: "scheduler", label: "Графікова" }, { value: "driver", label: "Водій" },
-];
 
 export default function Admins({ me }: { me: Me }) {
   const t = useT();
@@ -23,13 +19,15 @@ export default function Admins({ me }: { me: Me }) {
   const confirm = useConfirm();
   const canManage = me.isMain; // only the head admin assigns roles / manages users
   const { data, isLoading } = useQuery<AdminRow[]>({ queryKey: ["admins"], queryFn: () => get("/admins") });
+  const { data: roles = [] } = useQuery<RoleDef[]>({ queryKey: ["roles"], queryFn: () => get("/roles") });
+  const roleLabel = (key: string) => roles.find(r => r.key === key)?.label ?? key;
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AdminRow | null>(null);
   const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["admins"] });
 
   const setRole = useMutation({
-    mutationFn: (v: { id: number; role: Role }) => patch(`/admins/${v.id}`, { role: v.role }),
+    mutationFn: (v: { id: number; role: string }) => patch(`/admins/${v.id}`, { role: v.role }),
     onSuccess: () => { toast.success(t("Роль оновлено")); inv(); }, onError: (e: any) => toast.error(e.message),
   });
   const regenInvite = useMutation({
@@ -51,7 +49,7 @@ export default function Admins({ me }: { me: Me }) {
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-slate-500">{t("Ви:")} <span className="font-medium text-slate-700">{me.name}</span> · {t(ROLE_LABEL[me.role])}{me.isMain && " 👑"}</p>
+        <p className="text-sm text-slate-500">{t("Ви:")} <span className="font-medium text-slate-700">{me.name}</span> · {me.roleLabel}{me.isMain && " 👑"}</p>
         {canManage && <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати користувача")}</Button>}
       </div>
       {!canManage && (
@@ -77,13 +75,13 @@ export default function Admins({ me }: { me: Me }) {
                       : <Badge color="slate">{t("без веб-логіну")}</Badge>}
                   </td>
                   <td className="px-4 py-2.5">
-                    {a.isMain ? <Badge color="red">👑 {t("Власник")}</Badge>
+                    {a.isMain ? <Badge color="red">👑 {roleLabel(a.role)}</Badge>
                       : canManage ? (
-                        <Select className="w-36" value={a.role} disabled={setRole.isPending}
-                          onChange={e => setRole.mutate({ id: a.id, role: e.target.value as Role })}>
-                          {ROLE_OPTS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+                        <Select className="w-40" value={a.role} disabled={setRole.isPending}
+                          onChange={e => setRole.mutate({ id: a.id, role: e.target.value })}>
+                          {roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
                         </Select>
-                      ) : <Badge color="slate">{t(ROLE_LABEL[a.role])}</Badge>}
+                      ) : <Badge color="slate">{roleLabel(a.role)}</Badge>}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {canManage && (
@@ -102,27 +100,117 @@ export default function Admins({ me }: { me: Me }) {
         )}
       </Card>
 
-      <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
-        <div className="mb-1 font-medium text-slate-700">{t("Як це працює")}</div>
-        <ul className="list-disc space-y-0.5 pl-5">
-          <li>{t("Додати користувача → оберіть роль → скопіюйте посилання-запрошення і надішліть людині.")}</li>
-          <li>{t("Людина відкриває посилання в Telegram, приєднується і задає логін/пароль.")}</li>
-          <li>{t("Вхід — двофакторний: після логіну+паролю бот надсилає 6-значний код у Telegram.")}</li>
-        </ul>
-        <div className="mt-2 text-xs">{t("Ролі: Власник — повний доступ; Графікова — усе, крім фінансів і користувачів; Водій — лайв, графіки (перегляд), поїздки, призначення водіїв.")}</div>
-      </div>
+      {canManage && <RolesManager roles={roles} confirm={confirm} />}
 
-      {adding && <AddUser onClose={() => setAdding(false)} onCreated={(name, link) => { inv(); setAdding(false); setInvite({ name, link }); }} />}
-      {editing && <EditUser admin={editing} onClose={() => setEditing(null)} onSaved={() => { inv(); setEditing(null); }} />}
+      {adding && <AddUser roles={roles} onClose={() => setAdding(false)} onCreated={(name, link) => { inv(); setAdding(false); setInvite({ name, link }); }} />}
+      {editing && <EditUser admin={editing} roles={roles} onClose={() => setEditing(null)} onSaved={() => { inv(); setEditing(null); }} />}
       {invite && <InviteModal name={invite.name} link={invite.link} onClose={() => setInvite(null)} />}
     </>
   );
 }
 
-function AddUser({ onClose, onCreated }: { onClose: () => void; onCreated: (name: string, link: string) => void }) {
+// ─── Roles & accesses (head admin only) ───────────────────────────────────────
+function RolesManager({ roles, confirm }: { roles: RoleDef[]; confirm: ReturnType<typeof useConfirm> }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const inv = () => qc.invalidateQueries({ queryKey: ["roles"] });
+  const [editing, setEditing] = useState<RoleDef | null>(null);
+  const [adding, setAdding] = useState(false);
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/roles/${id}`),
+    onSuccess: () => { toast.success(t("Роль видалено")); inv(); }, onError: (e: any) => toast.error(e.message),
+  });
+
+  return (
+    <Card className="mt-6 p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 text-base font-semibold text-slate-800"><Shield className="h-4 w-4 text-slate-400" /> {t("Ролі та доступи")}</h3>
+          <p className="mt-0.5 text-sm text-slate-500">{t("Створюйте власні ролі й задавайте, які сторінки та дії їм дозволені.")}</p>
+        </div>
+        <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Нова роль")}</Button>
+      </div>
+      <div className="space-y-2">
+        {roles.map(r => (
+          <div key={r.id} className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-slate-700">{r.label}</span>
+                {r.isSystem && <Badge color="slate">{t("системна")}</Badge>}
+                {r.key === "owner" && <Badge color="red">👑</Badge>}
+                {r.inUse > 0 && <span className="text-xs text-slate-400">· {r.inUse} {t("корист.")}</span>}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-slate-400">
+                {r.key === "owner" ? t("Повний доступ (незмінна)") : `${r.pages.length} ${t("стор.")} · ${r.caps.length} ${t("дій")}`}
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              {r.key !== "owner" && <button onClick={() => setEditing(r)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>}
+              {!r.isSystem && <button onClick={async () => { if (await confirm({ title: t("Видалити роль «{name}»?", { name: r.label }), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {(adding || editing) && <RoleEditor role={editing} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
+    </Card>
+  );
+}
+
+function RoleEditor({ role, onClose, onSaved }: { role: RoleDef | null; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const [label, setLabel] = useState(role?.label ?? "");
+  const [pages, setPages] = useState<Set<string>>(new Set(role?.pages ?? ["/"]));
+  const [caps, setCaps] = useState<Set<string>>(new Set(role?.caps ?? []));
+  const toggle = (set: Set<string>, setter: (s: Set<string>) => void, key: string) => {
+    const next = new Set(set); next.has(key) ? next.delete(key) : next.add(key); setter(next);
+  };
+  const save = useMutation({
+    mutationFn: () => {
+      const body = { label: label.trim(), pages: [...pages], caps: [...caps] };
+      return role ? patch(`/roles/${role.id}`, body) : post("/roles", body);
+    },
+    onSuccess: () => { toast.success(role ? t("Роль оновлено") : t("Роль створено")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={role ? t("Редагувати роль") : t("Нова роль")}>
+      <div className="space-y-4">
+        <div><Label>{t("Назва ролі")}</Label><Input value={label} onChange={e => setLabel(e.target.value)} placeholder={t("напр. Координатор складу")} autoFocus /></div>
+        <div>
+          <Label>{t("Доступ до сторінок")}</Label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {PAGE_KEYS.map(p => (
+              <label key={p} className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={pages.has(p)} onChange={() => toggle(pages, setPages, p)} />
+                {t(PAGE_LABEL[p] ?? p)}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label>{t("Дозволені дії")}</Label>
+          <div className="space-y-1.5">
+            {CAP_KEYS.map(c => (
+              <label key={c} className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={caps.has(c)} onChange={() => toggle(caps, setCaps, c)} />
+                {t(CAP_LABEL[c as Capability])}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} disabled={!label.trim()} onClick={() => label.trim() && save.mutate()}>{t("Зберегти")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddUser({ roles, onClose, onCreated }: { roles: RoleDef[]; onClose: () => void; onCreated: (name: string, link: string) => void }) {
   const t = useT();
   const [name, setName] = useState("");
-  const [role, setRole] = useState<Role>("scheduler");
+  const [role, setRole] = useState<string>(roles.find(r => r.key !== "owner")?.key ?? "scheduler");
   const save = useMutation({
     mutationFn: () => post<{ inviteLink: string }>("/admins", { name, role }),
     onSuccess: (r) => { navigator.clipboard?.writeText(r.inviteLink); onCreated(name, r.inviteLink); },
@@ -133,8 +221,8 @@ function AddUser({ onClose, onCreated }: { onClose: () => void; onCreated: (name
       <div className="space-y-3">
         <div><Label>{t("Імʼя")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
         <div><Label>{t("Роль")}</Label>
-          <Select value={role} onChange={e => setRole(e.target.value as Role)}>
-            {ROLE_OPTS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          <Select value={role} onChange={e => setRole(e.target.value)}>
+            {roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
           </Select>
         </div>
         <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500"><Copy className="mr-1 inline h-3 w-3" />{t("Після створення скопіюється посилання-запрошення. Надішліть його людині в Telegram.")}</div>
@@ -147,10 +235,10 @@ function AddUser({ onClose, onCreated }: { onClose: () => void; onCreated: (name
   );
 }
 
-function EditUser({ admin, onClose, onSaved }: { admin: AdminRow; onClose: () => void; onSaved: () => void }) {
+function EditUser({ admin, roles, onClose, onSaved }: { admin: AdminRow; roles: RoleDef[]; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const [name, setName] = useState(admin.name);
-  const [role, setRole] = useState<Role>(admin.role);
+  const [role, setRole] = useState<string>(admin.role);
   const save = useMutation({
     mutationFn: () => patch(`/admins/${admin.id}`, { name, ...(admin.isMain ? {} : { role }) }),
     onSuccess: () => { toast.success(t("Збережено")); onSaved(); }, onError: (e: any) => toast.error(e.message),
@@ -160,8 +248,8 @@ function EditUser({ admin, onClose, onSaved }: { admin: AdminRow; onClose: () =>
       <div className="space-y-3">
         <div><Label>{t("Імʼя")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
         <div><Label>{t("Роль")}</Label>
-          <Select value={role} disabled={admin.isMain} onChange={e => setRole(e.target.value as Role)}>
-            {ROLE_OPTS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          <Select value={role} disabled={admin.isMain} onChange={e => setRole(e.target.value)}>
+            {roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
           </Select>
           {admin.isMain && <p className="mt-1 text-xs text-slate-400">{t("Головний власник — роль незмінна.")}</p>}
         </div>

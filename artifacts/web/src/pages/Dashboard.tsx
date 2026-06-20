@@ -45,7 +45,7 @@ export default function Dashboard() {
   });
   const confirm = useConfirm();
   const me = useMe();
-  const canRemind = can(me?.role, "editAvailability");
+  const canRemind = can(me, "editData");
   const remind = useMutation({
     mutationFn: () => post("/availability/remind", { weekStart: focusWeek }),
     onSuccess: (r: any) => toast.success(t("Нагадування надіслано"), { description: `✅ ${r.notified}${r.skipped ? ` · ⚠️ ${t("без Telegram")}: ${r.skipped}` : ""}` }),
