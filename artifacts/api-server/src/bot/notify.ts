@@ -9,7 +9,7 @@ import {
 import { eq, and, count, desc, ne } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { setState } from "./state";
-import { DAY_UK, SHIFT_SHORT, splitMessage } from "./display";
+import { DAY_UK, SHIFT_SHORT, splitMessage, mdSafe } from "./display";
 import { t, asLang, dayShort, type Lang } from "./i18n";
 import { DAYS, DAY_NAMES_UK } from "../services/sheets";
 
@@ -154,13 +154,16 @@ export async function sendBonusPaid(telegramId: string, friendName: string, amou
 }
 
 // Salary advance: tell the worker their request's new status (approved / rejected / paid).
-export async function notifyWorkerAdvance(workerId: number, status: string, amount: number): Promise<boolean> {
+export async function notifyWorkerAdvance(workerId: number, status: string, amount: number, note?: string | null): Promise<boolean> {
   const [w] = await db.select({ tid: workersTable.telegramId, lang: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId));
   if (!w?.tid) return false;
   const key = status === "approved" ? "notif.advApproved" : status === "rejected" ? "notif.advRejected" : status === "paid" ? "notif.advPaid" : null;
   if (!key) return false;
+  let msg = t(asLang(w.lang), key, { amount: String(amount) });
+  // Include the admin's reason on rejection (free text — strip Markdown entities).
+  if (status === "rejected" && note) msg += `\n📝 ${mdSafe(note)}`;
   try {
-    await bot.telegram.sendMessage(w.tid, t(asLang(w.lang), key, { amount: String(amount) }), { parse_mode: "Markdown" });
+    await bot.telegram.sendMessage(w.tid, msg, { parse_mode: "Markdown" });
     return true;
   } catch { return false; }
 }

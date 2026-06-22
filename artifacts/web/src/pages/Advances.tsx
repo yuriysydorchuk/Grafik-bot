@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X, Banknote } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, type AdvanceRequest } from "../lib/api";
-import { Card, Spinner, Select, Empty, Badge } from "../components/ui";
+import { Card, Spinner, Select, Empty, Badge, Modal, Button, Input, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 
@@ -16,6 +16,8 @@ export default function Advances() {
   const t = useT();
   const qc = useQueryClient();
   const [filter, setFilter] = useState<"all" | "pending" | "approved" | "rejected" | "paid">("all");
+  const [rejecting, setRejecting] = useState<AdvanceRequest | null>(null);
+  const [reason, setReason] = useState("");
   const { data = [], isFetching } = useQuery<AdvanceRequest[]>({ queryKey: ["advances"], queryFn: () => get("/advances") });
 
   const STATUS_LABEL: Record<string, string> = {
@@ -23,10 +25,16 @@ export default function Advances() {
   };
   const inv = () => qc.invalidateQueries({ queryKey: ["advances"] });
   const act = useMutation({
-    mutationFn: (v: { id: number; action: "approve" | "reject" | "paid" }) => post(`/advances/${v.id}/${v.action}`),
+    mutationFn: (v: { id: number; action: "approve" | "reject" | "paid"; note?: string }) =>
+      post(`/advances/${v.id}/${v.action}`, v.note != null ? { note: v.note } : undefined),
     onSuccess: (_d, v) => { inv(); toast.success(v.action === "approve" ? t("Затверджено") : v.action === "reject" ? t("Відхилено") : t("Позначено виплаченим")); },
     onError: (e: any) => toast.error(e.message),
   });
+  const confirmReject = () => {
+    if (!rejecting) return;
+    act.mutate({ id: rejecting.id, action: "reject", note: reason.trim() });
+    setRejecting(null); setReason("");
+  };
 
   const pending = data.filter(r => r.status === "pending");
   const rows = useMemo(() => filter === "all" ? data : data.filter(r => r.status === filter), [data, filter]);
@@ -66,7 +74,7 @@ export default function Advances() {
                 </div>
                 <div className="flex shrink-0 gap-1">
                   <button onClick={() => act.mutate({ id: r.id, action: "approve" })} disabled={act.isPending} className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Check className="h-4 w-4" /> {t("Затвердити")}</button>
-                  <button onClick={() => act.mutate({ id: r.id, action: "reject" })} disabled={act.isPending} className="flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /> {t("Відхилити")}</button>
+                  <button onClick={() => { setRejecting(r); setReason(""); }} disabled={act.isPending} className="flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /> {t("Відхилити")}</button>
                 </div>
               </div>
             ))}
@@ -92,7 +100,10 @@ export default function Advances() {
                   <td className="px-4 py-2.5 font-medium text-slate-700">{r.name ?? "—"}</td>
                   <td className="px-4 py-2.5 text-slate-500">{r.factory ?? "—"}</td>
                   <td className="px-4 py-2.5 text-right font-semibold text-slate-700">{r.amount} zł</td>
-                  <td className="px-4 py-2.5 text-slate-600">{r.comment || <span className="text-slate-300">—</span>}</td>
+                  <td className="px-4 py-2.5 text-slate-600">
+                    {r.comment || (!r.adminNote && <span className="text-slate-300">—</span>)}
+                    {r.status === "rejected" && r.adminNote && <div className="mt-0.5 text-xs text-rose-600">⛔ {r.adminNote}</div>}
+                  </td>
                   <td className="px-4 py-2.5"><Badge color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status]}</Badge></td>
                   <td className="px-4 py-2.5 text-right">
                     {r.status === "approved" && (
@@ -104,6 +115,25 @@ export default function Advances() {
             </tbody>
           </table>
         </Card>
+      )}
+
+      {rejecting && (
+        <Modal open onClose={() => setRejecting(null)} title={t("Відхилити аванс")}>
+          <div className="space-y-3">
+            <div className="text-sm text-slate-600">
+              {rejecting.name ?? "—"} · <span className="font-semibold">{rejecting.amount} zł</span>
+            </div>
+            <div>
+              <Label>{t("Причина відхилення (необов'язково)")}</Label>
+              <Input value={reason} onChange={e => setReason(e.target.value)} placeholder={t("Напр.: перевищено ліміт авансів")} autoFocus />
+              <p className="mt-1 text-xs text-slate-400">{t("Працівник отримає це повідомлення в Telegram.")}</p>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="secondary" onClick={() => setRejecting(null)}>{t("Скасувати")}</Button>
+              <Button loading={act.isPending} onClick={confirmReject}>{t("Відхилити")}</Button>
+            </div>
+          </div>
+        </Modal>
       )}
     </>
   );

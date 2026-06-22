@@ -6,6 +6,7 @@ import { startScheduler, stopScheduler } from "./services/scheduler";
 import { loadStates } from "./bot/state";
 import { ensureUploadDirs } from "./lib/uploads";
 import { sendAlert, sendStartupAlert } from "./lib/alerts";
+import { ensureReferralFunnel, backfillOrphanReferralCandidates } from "./services/funnels";
 
 const rawPort = process.env["PORT"];
 
@@ -46,6 +47,15 @@ async function main() {
 
     // Ensure local upload directories exist (worker documents, etc.)
     ensureUploadDirs();
+
+    // The referral funnel is built-in and must exist, else referral candidates
+    // land with funnel_id = null and never show on the board. Ensure + self-heal.
+    try {
+      const refFunnelId = await ensureReferralFunnel();
+      await backfillOrphanReferralCandidates(refFunnelId);
+    } catch (e) {
+      logger.error({ err: e }, "ensureReferralFunnel failed");
+    }
 
     // Restore persisted conversation states so in-progress flows survive restarts
     await loadStates();

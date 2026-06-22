@@ -2058,7 +2058,7 @@ async function decideAdvance(req: any, res: any, target: "approved" | "rejected"
   if (target === "paid") patch.paidAt = new Date();
   else { patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date(); if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null; }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
-  import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
+  import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount, patch.adminNote ?? null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
   ok(res, { ok: true });
 }
 router.post("/advances/:id/approve", RW, (req, res) => decideAdvance(req, res, "approved"));

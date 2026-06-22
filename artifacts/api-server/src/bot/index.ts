@@ -20,6 +20,7 @@ import {
   exportScheduleToDrive, getDriveFolderLink, ensureFolderStructure, uploadReportPhoto,
 } from "../services/drive";
 import { bot } from "./instance";
+import { ensureReferralFunnel } from "../services/funnels";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours } from "./time";
@@ -838,6 +839,17 @@ bot.action("adv:new", async (ctx) => {
   const worker = await getWorker(tid);
   const lang = wlang(worker);
   if (!worker) return;
+  // Rate limit: at most 1 request per day and 3 per month (all statuses counted),
+  // computed on the Warsaw calendar.
+  const today = warsawDateStr();
+  const month = today.slice(0, 7);
+  const reqs = await db.select({ createdAt: advanceRequestsTable.createdAt })
+    .from(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, worker.id));
+  const warsawDay = (d: Date) => new Date(d).toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" });
+  const dayCount = reqs.filter(r => warsawDay(r.createdAt) === today).length;
+  const monthCount = reqs.filter(r => warsawDay(r.createdAt).slice(0, 7) === month).length;
+  if (dayCount >= 1) return ctx.reply(t(lang, "adv.limitDay"));
+  if (monthCount >= 3) return ctx.reply(t(lang, "adv.limitMonth"));
   setState(tid, "advance:enter_amount", { workerId: worker.id, lang });
   return ctx.reply(t(lang, "adv.askAmount"), Markup.removeKeyboard());
 });
@@ -850,7 +862,14 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   const id = Number((ctx as any).match[2]);
   const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
   if (!r) { await ctx.answerCbQuery("Не знайдено"); return; }
-  const target = action === "approve" ? "approved" : action === "reject" ? "rejected" : "paid";
+  // Rejection goes through a short prompt so the admin can add an optional reason.
+  if (action === "reject") {
+    await ctx.answerCbQuery();
+    setState(tid, "advance:reject_reason", { requestId: id });
+    await ctx.reply("✍️ Введіть причину відхилення (або /skip):", Markup.removeKeyboard());
+    return;
+  }
+  const target = action === "approve" ? "approved" : "paid";
   if (target === "paid" && r.status !== "approved") { await ctx.answerCbQuery("Спершу затвердіть"); return; }
   const admin = await getAdmin(tid);
   const patch: any = { status: target };
@@ -858,7 +877,7 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   else { patch.decidedBy = admin?.id ?? null; patch.decidedAt = new Date(); }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
   await ctx.answerCbQuery("✅");
-  const label = target === "approved" ? "✅ Затверджено" : target === "rejected" ? "❌ Відхилено" : "💸 Виплачено";
+  const label = target === "approved" ? "✅ Затверджено" : "💸 Виплачено";
   try { await ctx.editMessageText(`${(ctx.callbackQuery.message as any)?.text ?? ""}\n\n— ${label}`); } catch { /* ignore */ }
   notifyWorkerAdvance(r.workerId, target, r.amount).catch(() => {});
 });
@@ -2157,6 +2176,7 @@ bot.on("text", async (ctx) => {
     const dup = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
     if (dup) { clearState(tid); return ctx.reply("✅ Ви вже у списку кандидатів. Дякуємо!"); }
     const [cand] = await db.insert(candidatesTable).values({
+      funnelId: await ensureReferralFunnel(), // built-in referral funnel — else invisible on the board
       referrerWorkerId: data.referrerId, fullName: data.fullName, telegramId: tid,
       phone, factoryId: data.factoryId ?? null, stage: "new",
     }).returning();
@@ -3047,6 +3067,23 @@ bot.on("text", async (ctx) => {
     );
     await notifyRoles("scheduler", { type: "advance", title: `💰 Запит на аванс: ${wname}`, body: `${data.amount} zł${comment ? ` · ${comment}` : ""}` });
     return ctx.reply(t(lang, "adv.sent", { amount: String(data.amount) }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
+  }
+
+  // Admin entered the optional reason after tapping "❌ Відхилити" in the bot.
+  if (state?.action === "advance:reject_reason") {
+    const { data } = state;
+    clearState(tid);
+    const admin = await getAdmin(tid);
+    if (!admin) return;
+    const al = olang(admin);
+    const note = text.trim() === "/skip" ? null : text.trim();
+    const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, data.requestId)))[0];
+    if (!r) return ctx.reply(tb(al, "Запит не знайдено."), managementMenu(al));
+    await db.update(advanceRequestsTable)
+      .set({ status: "rejected", adminNote: note, decidedBy: admin.id, decidedAt: new Date() })
+      .where(eq(advanceRequestsTable.id, r.id));
+    notifyWorkerAdvance(r.workerId, "rejected", r.amount, note).catch(() => {});
+    return ctx.reply(`❌ ${tb(al, "Аванс відхилено")} (*${r.amount} zł*)${note ? `\n📝 ${mdSafe(note)}` : ""}`, { parse_mode: "Markdown", ...managementMenu(al) });
   }
 
   if (state?.action === "absence:enter_reason") {

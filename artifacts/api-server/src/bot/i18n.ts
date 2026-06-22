@@ -152,6 +152,8 @@ const D: Dict = {
   "adv.listHeader":      { uk: "💰 *Ваші запити на аванс:*", en: "💰 *Your advance requests:*", es: "💰 *Tus solicitudes de adelanto:*", ru: "💰 *Ваши запросы на аванс:*", pl: "💰 *Twoje wnioski o zaliczkę:*" },
   "adv.none":            { uk: "У вас ще немає запитів на аванс.", en: "You have no advance requests yet.", es: "Aún no tienes solicitudes de adelanto.", ru: "У вас ещё нет запросов на аванс.", pl: "Nie masz jeszcze wniosków o zaliczkę." },
   "adv.new":             { uk: "➕ Попросити аванс", en: "➕ Request an advance", es: "➕ Solicitar un adelanto", ru: "➕ Попросить аванс", pl: "➕ Poproś o zaliczkę" },
+  "adv.limitDay":        { uk: "❌ Можна подати лише *1 запит на аванс на день*. Спробуйте завтра.", en: "❌ Only *1 advance request per day* is allowed. Try again tomorrow.", es: "❌ Solo se permite *1 solicitud de adelanto por día*. Inténtalo mañana.", ru: "❌ Можно подать только *1 запрос на аванс в день*. Попробуйте завтра.", pl: "❌ Można złożyć tylko *1 wniosek o zaliczkę dziennie*. Spróbuj jutro." },
+  "adv.limitMonth":      { uk: "❌ Ліміт запитів на аванс: *3 на місяць*. Спробуйте наступного місяця.", en: "❌ Advance request limit: *3 per month*. Try again next month.", es: "❌ Límite de solicitudes de adelanto: *3 por mes*. Inténtalo el próximo mes.", ru: "❌ Лимит запросов на аванс: *3 в месяц*. Попробуйте в следующем месяце.", pl: "❌ Limit wniosków o zaliczkę: *3 na miesiąc*. Spróbuj w przyszłym miesiącu." },
   "adv.stPending":       { uk: "⏳ на розгляді", en: "⏳ pending", es: "⏳ pendiente", ru: "⏳ на рассмотрении", pl: "⏳ w trakcie" },
   "adv.stApproved":      { uk: "✅ затверджено", en: "✅ approved", es: "✅ aprobado", ru: "✅ одобрено", pl: "✅ zatwierdzono" },
   "adv.stRejected":      { uk: "❌ відхилено", en: "❌ rejected", es: "❌ rechazado", ru: "❌ отклонено", pl: "❌ odrzucono" },
@@ -205,6 +207,9 @@ export const oLang = (v: any): Lang => (v === "en" ? "en" : "uk"); // office/dri
 
 // uk → en. Add pairs here as strings get wrapped with tb(). Proofread later.
 const BOT_EN: Record<string, string> = {
+  // ── advances (admin) ──
+  "Аванс відхилено": "Advance rejected",
+  "Запит не знайдено.": "Request not found.",
   // ── menus / buttons ──
   "📋 Замовлення фабрик": "📋 Factory orders",
   "📊 Читати таблицю": "📊 Read spreadsheet",
