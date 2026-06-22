@@ -8,7 +8,7 @@ import {
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
   driverShiftAssignmentsTable, driverTripsTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
-  hoursDisputesTable, absenceRequestsTable, funnelsTable, candidateActivityTable, companiesTable,
+  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
@@ -2029,6 +2029,41 @@ router.post("/absence-requests/:id/substitute", RW, async (req, res) => {
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(() => {});
   ok(res, { ok: true });
 });
+
+// ─── Salary advances ──────────────────────────────────────────────────────────
+router.get("/advances", RW, async (_req, res) => {
+  const rows = await db
+    .select({
+      id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
+      name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
+      amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
+      status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
+      decidedAt: advanceRequestsTable.decidedAt, paidAt: advanceRequestsTable.paidAt,
+      createdAt: advanceRequestsTable.createdAt,
+    })
+    .from(advanceRequestsTable)
+    .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
+    .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+    .orderBy(desc(advanceRequestsTable.id));
+  ok(res, rows);
+});
+
+// Approve / reject / mark-paid. Each notifies the worker of the new status.
+async function decideAdvance(req: any, res: any, target: "approved" | "rejected" | "paid") {
+  const id = Number(req.params.id);
+  const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
+  if (!r) return fail(res, 404, "Не знайдено");
+  if (target === "paid" && r.status !== "approved") return fail(res, 400, "Виплатити можна лише затверджений аванс");
+  const patch: any = { status: target };
+  if (target === "paid") patch.paidAt = new Date();
+  else { patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date(); if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null; }
+  await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
+  import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
+  ok(res, { ok: true });
+}
+router.post("/advances/:id/approve", RW, (req, res) => decideAdvance(req, res, "approved"));
+router.post("/advances/:id/reject", RW, (req, res) => decideAdvance(req, res, "rejected"));
+router.post("/advances/:id/paid", RW, (req, res) => decideAdvance(req, res, "paid"));
 
 // month range helper for drill-downs
 function monthRange(month: string) {

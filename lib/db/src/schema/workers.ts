@@ -353,6 +353,21 @@ export const hoursDisputesTable = pgTable("hours_disputes", {
   resolvedAt: timestamp("resolved_at"),
 });
 
+// Salary-advance requests: a worker asks for an advance via the bot; office staff
+// review on the web (approve/reject) and mark paid. The worker sees the status.
+export const advanceRequestsTable = pgTable("advance_requests", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  amount: real("amount").notNull(),                       // requested amount (PLN)
+  comment: text("comment"),                               // worker's optional note
+  status: text("status").notNull().default("pending"),   // pending | approved | rejected | paid
+  adminNote: text("admin_note"),                          // optional note on the decision
+  decidedBy: integer("decided_by").references(() => adminsTable.id),
+  decidedAt: timestamp("decided_at"),
+  paidAt: timestamp("paid_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent
 // ones (Telegram only allows deleting messages < 48h old). Pruned on clear.
 export const botMessagesTable = pgTable("bot_messages", {

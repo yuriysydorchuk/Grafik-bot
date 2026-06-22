@@ -46,7 +46,7 @@ export async function notifyAdmins(text: string, options: Record<string, unknown
 // to the matching web users (by role) + the head driver when "driver"/"both" is targeted.
 export async function notifyRoles(
   audience: "scheduler" | "driver" | "both",
-  msg: { type: "no_show" | "cancellation" | "hours_correction"; title: string; body?: string },
+  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance"; title: string; body?: string },
 ) {
   // 1) on-site notification
   try {
@@ -149,6 +149,18 @@ export async function sendBonusPaid(telegramId: string, friendName: string, amou
       t(asLang(lang), "notif.bonusPaid", { friend: friendName, amount: amount != null ? ` — *${amount} zł*` : "" }),
       { parse_mode: "Markdown" },
     );
+    return true;
+  } catch { return false; }
+}
+
+// Salary advance: tell the worker their request's new status (approved / rejected / paid).
+export async function notifyWorkerAdvance(workerId: number, status: string, amount: number): Promise<boolean> {
+  const [w] = await db.select({ tid: workersTable.telegramId, lang: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w?.tid) return false;
+  const key = status === "approved" ? "notif.advApproved" : status === "rejected" ? "notif.advRejected" : status === "paid" ? "notif.advPaid" : null;
+  if (!key) return false;
+  try {
+    await bot.telegram.sendMessage(w.tid, t(asLang(w.lang), key, { amount: String(amount) }), { parse_mode: "Markdown" });
     return true;
   } catch { return false; }
 }

@@ -4,7 +4,7 @@ import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
   absenceRequestsTable, driverTripsTable, unplannedWorkersTable, availabilityTable,
-  candidatesTable, hoursDisputesTable,
+  candidatesTable, hoursDisputesTable, advanceRequestsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, desc, inArray, ne } from "drizzle-orm";
@@ -65,6 +65,7 @@ import { isAdmin, getAdmin, getWorker, getDriver } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
+  notifyWorkerAdvance,
 } from "./notify";
 
 export { bot };
@@ -790,6 +791,58 @@ bot.hears(trAll("menu.referral"), async (ctx) => {
     msg += t(lang, "ref.none");
   }
   return ctx.reply(msg, { parse_mode: "HTML" });
+});
+
+// ─── Salary advance: worker requests + sees status ────────────────────────────
+const advStatusLabel = (lang: Lang, s: string) =>
+  t(lang, s === "approved" ? "adv.stApproved" : s === "rejected" ? "adv.stRejected" : s === "paid" ? "adv.stPaid" : "adv.stPending");
+
+bot.hears(trAll("menu.advance"), async (ctx) => {
+  const worker = await getWorker(String(ctx.from.id));
+  const lang = wlang(worker);
+  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  const rows = await db.select().from(advanceRequestsTable)
+    .where(eq(advanceRequestsTable.workerId, worker.id)).orderBy(desc(advanceRequestsTable.id)).limit(10);
+  let msg: string;
+  if (!rows.length) msg = t(lang, "adv.none");
+  else {
+    msg = t(lang, "adv.listHeader") + "\n\n" + rows.map(r => {
+      const d = new Date(r.createdAt).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" });
+      return `• ${d} — *${r.amount} zł* — ${advStatusLabel(lang, r.status)}`;
+    }).join("\n");
+  }
+  return ctx.reply(msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: t(lang, "adv.new"), callback_data: "adv:new" }]] } });
+});
+
+bot.action("adv:new", async (ctx) => {
+  const tid = String(ctx.from.id);
+  await ctx.answerCbQuery();
+  const worker = await getWorker(tid);
+  const lang = wlang(worker);
+  if (!worker) return;
+  setState(tid, "advance:enter_amount", { workerId: worker.id, lang });
+  return ctx.reply(t(lang, "adv.askAmount"), Markup.removeKeyboard());
+});
+
+// Admin acts on an advance straight from the Telegram notification.
+bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!(await isAdmin(tid))) { await ctx.answerCbQuery("Лише для адміністрації"); return; }
+  const action = (ctx as any).match[1] as "approve" | "reject" | "paid";
+  const id = Number((ctx as any).match[2]);
+  const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
+  if (!r) { await ctx.answerCbQuery("Не знайдено"); return; }
+  const target = action === "approve" ? "approved" : action === "reject" ? "rejected" : "paid";
+  if (target === "paid" && r.status !== "approved") { await ctx.answerCbQuery("Спершу затвердіть"); return; }
+  const admin = await getAdmin(tid);
+  const patch: any = { status: target };
+  if (target === "paid") patch.paidAt = new Date();
+  else { patch.decidedBy = admin?.id ?? null; patch.decidedAt = new Date(); }
+  await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
+  await ctx.answerCbQuery("✅");
+  const label = target === "approved" ? "✅ Затверджено" : target === "rejected" ? "❌ Відхилено" : "💸 Виплачено";
+  try { await ctx.editMessageText(`${(ctx.callbackQuery.message as any)?.text ?? ""}\n\n— ${label}`); } catch { /* ignore */ }
+  notifyWorkerAdvance(r.workerId, target, r.amount).catch(() => {});
 });
 
 bot.hears(trAll("menu.factoryInfo"), async (ctx) => {
@@ -2938,6 +2991,36 @@ bot.on("text", async (ctx) => {
     const bl = data.lang ?? "uk";
     try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
     return ctx.reply(`➕ ${tb(bl, "Додано в авто:")} *${matched?.fullName ?? text.trim()}*${matched ? "" : ` ${tb(bl, "(немає в базі)")}`}`, { parse_mode: "Markdown" });
+  }
+
+  if (state?.action === "advance:enter_amount") {
+    const lang = asLang(state.data.lang);
+    const amount = parseFloat(text.replace(",", ".").replace(/[^\d.]/g, ""));
+    if (!isFinite(amount) || amount <= 0) return ctx.reply(t(lang, "adv.badAmount"));
+    setState(tid, "advance:enter_comment", { ...state.data, amount: Math.round(amount * 100) / 100 });
+    return ctx.reply(t(lang, "adv.askComment"));
+  }
+
+  if (state?.action === "advance:enter_comment") {
+    const { data } = state;
+    const lang = asLang(data.lang);
+    clearState(tid);
+    const comment = text.trim() === "-" ? null : text.trim();
+    const ins = await db.insert(advanceRequestsTable)
+      .values({ workerId: data.workerId, amount: data.amount, comment, status: "pending" })
+      .returning({ id: advanceRequestsTable.id });
+    const reqId = ins[0]!.id;
+    const worker = await getWorker(tid);
+    const wname = worker?.fullName ?? "—";
+    await notifyAdmins(
+      `💰 *Запит на аванс*\n\n👷 *${wname}*\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${comment}` : ""}`,
+      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+        [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
+        [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],
+      ] } },
+    );
+    await notifyRoles("scheduler", { type: "advance", title: `💰 Запит на аванс: ${wname}`, body: `${data.amount} zł${comment ? ` · ${comment}` : ""}` });
+    return ctx.reply(t(lang, "adv.sent", { amount: String(data.amount) }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
 
   if (state?.action === "absence:enter_reason") {

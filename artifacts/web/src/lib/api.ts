@@ -42,6 +42,11 @@ export type ShiftCode = "1" | "2" | "3" | "4" | "5" | "6";
 
 export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[] }
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
+export interface AdvanceRequest {
+  id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
+  amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
+  adminNote: string | null; decidedAt: string | null; paidAt: string | null; createdAt: string;
+}
 export interface Company { id: number; name: string; workerCount?: number }
 export type Gender = "male" | "female";
 export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }

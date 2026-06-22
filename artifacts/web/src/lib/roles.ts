@@ -18,7 +18,7 @@ export const CAP_LABEL: Record<Capability, string> = {
 export const PAGE_LABEL: Record<string, string> = {
   "/": "Огляд", "/schedule": "Графік", "/driver-shifts": "Зміни водіїв",
   "/orders": "Замовлення", "/availability": "Доступність", "/reliability": "Надійність",
-  "/hours": "Облік годин", "/absences": "Відсутності", "/trips": "Поїздки",
+  "/hours": "Облік годин", "/absences": "Відсутності", "/advances": "Аванси", "/trips": "Поїздки",
   "/reports": "Звіти", "/finance": "Фінанси", "/settings": "Налаштування",
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
   "/drivers": "Водії", "/factories": "Фабрики", "/admins": "Адміни",

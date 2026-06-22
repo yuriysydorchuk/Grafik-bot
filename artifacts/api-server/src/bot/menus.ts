@@ -20,7 +20,7 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   rows.push(hours ? [t(lang, "menu.factoryInfo"), t(lang, "menu.myHours")] : [t(lang, "menu.factoryInfo")]);
   rows.push([t(lang, "menu.absence"), t(lang, "menu.myInfo")]);
   rows.push([t(lang, "menu.referral"), t(lang, "menu.report")]);
-  rows.push([t(lang, "menu.language")]);
+  rows.push([t(lang, "menu.advance"), t(lang, "menu.language")]);
   return Markup.keyboard(rows).resize();
 };
 
