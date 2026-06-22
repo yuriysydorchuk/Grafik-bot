@@ -56,11 +56,23 @@ bot.catch((err: any, ctx) => {
   logger.error({ err, updateType: ctx?.updateType }, "Telegraf handler error");
   void sendAlert({ service: "bot", kind: err?.name, source: ctx?.updateType, message: err?.message ?? String(err) });
 });
+
+// Guard: is this Telegram id already linked to a *different* worker/driver?
+// telegram_id is UNIQUE per table, so setting an already-taken id throws — these
+// let callers show a friendly message instead of hitting the DB error.
+async function tgTakenByWorker(tid: string, exceptId?: number): Promise<boolean> {
+  const rows = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.telegramId, tid));
+  return rows.some(r => r.id !== exceptId);
+}
+async function tgTakenByDriver(tid: string, exceptId?: number): Promise<boolean> {
+  const rows = await db.select({ id: driversTable.id }).from(driversTable).where(eq(driversTable.telegramId, tid));
+  return rows.some(r => r.id !== exceptId);
+}
 // Office/driver picker — uk/en only (label kept simple)
 const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
-import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml } from "./display";
+import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe } from "./display";
 import { isAdmin, getAdmin, getWorker, getDriver } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
@@ -150,11 +162,14 @@ bot.start(async (ctx) => {
           return ctx.reply("❌ Це посилання вже використано іншим акаунтом. Зверніться до адміністратора.");
         }
         if (!d.telegramId) {
+          if (await tgTakenByDriver(tid, d.id)) {
+            return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого водія. Зверніться до адміністратора.");
+          }
           await db.update(driversTable).set({ telegramId: tid, username: ctx.from.username ?? null }).where(eq(driversTable.id, d.id));
         }
         const dl = olang(d);
         const menu = d.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl);
-        return ctx.reply(tb(dl, "✅ Привіт, *{name}*!\n\nВас прив'язано до бота як водія.", { name: d.name }), { parse_mode: "Markdown", ...menu });
+        return ctx.reply(tb(dl, "✅ Привіт, *{name}*!\n\nВас прив'язано до бота як водія.", { name: mdSafe(d.name) }), { parse_mode: "Markdown", ...menu });
       }
       return ctx.reply("❌ Посилання недійсне або водія не знайдено. Зверніться до адміністратора.");
     }
@@ -174,7 +189,7 @@ bot.start(async (ctx) => {
       const ROLE_UK: Record<string, string> = { owner: "Власник", scheduler: "Графікова", driver: "Водій" };
       setState(tid, "web_login:username", {});
       return ctx.reply(
-        `✅ Привіт, *${a.name}*!\n\nВас додано до панелі (роль: *${ROLE_UK[a.role] ?? a.role}*).\n\nЗадамо веб-доступ. Введіть *логін* (3–32 символи, лат./цифри):`,
+        `✅ Привіт, *${mdSafe(a.name)}*!\n\nВас додано до панелі (роль: *${ROLE_UK[a.role] ?? a.role}*).\n\nЗадамо веб-доступ. Введіть *логін* (3–32 символи, лат./цифри):`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -186,13 +201,13 @@ bot.start(async (ctx) => {
       if (!referrer) return ctx.reply("❌ Посилання недійсне. Зверніться до того, хто його надіслав.");
       // already a worker?
       const asWorker = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
-      if (asWorker) return ctx.reply(`✅ Ви вже працівник (*${asWorker.fullName}*) — запрошення не потрібне.`, { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wlang(asWorker))) });
+      if (asWorker) return ctx.reply(`✅ Ви вже працівник (*${mdSafe(asWorker.fullName)}*) — запрошення не потрібне.`, { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wlang(asWorker))) });
       // already a candidate?
       const asCand = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
       if (asCand) return ctx.reply("✅ Ви вже у списку кандидатів. Менеджер зв'яжеться з вами найближчим часом.");
       setState(tid, "candidate_signup:name", { referrerId, referrerName: referrer.fullName, factoryId: referrer.factoryId ?? null });
       return ctx.reply(
-        `👋 Вітаємо! Вас запросив(ла) *${referrer.fullName}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище*:`,
+        `👋 Вітаємо! Вас запросив(ла) *${mdSafe(referrer.fullName)}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище*:`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -204,11 +219,11 @@ bot.start(async (ctx) => {
       if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.");
       const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
       if (existing) {
-        return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
+        return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
       }
       setState(tid, "worker_signup", { factoryId, factoryName: fac.name });
       return ctx.reply(
-        `👋 Вітаємо! Реєстрація на фабрику *${fac.name}*.\n\nВведіть ваше *ім'я та прізвище*:`,
+        `👋 Вітаємо! Реєстрація на фабрику *${mdSafe(fac.name)}*.\n\nВведіть ваше *ім'я та прізвище*:`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -220,10 +235,13 @@ bot.start(async (ctx) => {
         return ctx.reply("❌ Цей код вже використано іншим акаунтом. Зверніться до адміністратора.", { parse_mode: "Markdown" });
       }
       if (!w.telegramId) {
+        if (await tgTakenByWorker(tid, w.id)) {
+          return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого працівника. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+        }
         await db.update(workersTable).set({ telegramId: tid }).where(eq(workersTable.id, w.id));
       }
       return ctx.reply(
-        `✅ Привіт, *${w.fullName}*!\n\nВас прив'язано до бота.\nВаш код: \`${code}\``,
+        `✅ Привіт, *${mdSafe(w.fullName)}*!\n\nВас прив'язано до бота.\nВаш код: \`${code}\``,
         { parse_mode: "Markdown", ...(await workerMenuFor(w, wlang(w))) },
       );
     }
@@ -2095,7 +2113,7 @@ bot.on("text", async (ctx) => {
     const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
     if (existing) {
       clearState(tid);
-      return ctx.reply(`✅ Ви вже зареєстровані як *${existing.fullName}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
+      return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
     }
     const code = await genWorkerCode();
     await db.insert(workersTable).values({
@@ -2116,7 +2134,7 @@ bot.on("text", async (ctx) => {
       }
     } catch { /* notification is best-effort */ }
     return ctx.reply(
-      `✅ Дякуємо, *${fullName}*!\nВас додано до фабрики *${data.factoryName}*.\n\nТепер ви можете заповнювати доступність через меню.`,
+      `✅ Дякуємо, *${mdSafe(fullName)}*!\nВас додано до фабрики *${mdSafe(data.factoryName)}*.\n\nТепер ви можете заповнювати доступність через меню.`,
       { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, "uk")) },
     );
   }
@@ -2147,7 +2165,7 @@ bot.on("text", async (ctx) => {
     try {
       const ref = (await db.select().from(workersTable).where(eq(workersTable.id, data.referrerId)))[0];
       if (ref?.telegramId) {
-        await bot.telegram.sendMessage(ref.telegramId, `🎉 За вашим запрошенням зареєструвався(лась) *${data.fullName}*!\n\nКоли він(вона) вийде на роботу — ви отримаєте бонус. Статус дивіться у «🎁 Запроси друга».`, { parse_mode: "Markdown" });
+        await bot.telegram.sendMessage(ref.telegramId, `🎉 За вашим запрошенням зареєструвався(лась) *${mdSafe(data.fullName)}*!\n\nКоли він(вона) вийде на роботу — ви отримаєте бонус. Статус дивіться у «🎁 Запроси друга».`, { parse_mode: "Markdown" });
       }
     } catch { /* best-effort */ }
     // notify owner + scheduler
@@ -2159,7 +2177,7 @@ bot.on("text", async (ctx) => {
       }
     } catch { /* best-effort */ }
     return ctx.reply(
-      `✅ Дякуємо, *${data.fullName}*! Вашу заявку прийнято.\nМенеджер зв'яжеться з вами найближчим часом. 📞`,
+      `✅ Дякуємо, *${mdSafe(data.fullName)}*! Вашу заявку прийнято.\nМенеджер зв'яжеться з вами найближчим часом. 📞`,
       { parse_mode: "Markdown" },
     );
   }
@@ -2435,16 +2453,24 @@ bot.on("text", async (ctx) => {
       const workers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
       const match = workers.find(w => w.fullName.toLowerCase().includes(data.searchName.toLowerCase()));
       if (!match) { clearState(tid); return ctx.reply(tb(al, "Працівника не знайдено."), managementMenu(al)); }
+      if (await tgTakenByWorker(newTid, match.id)) {
+        clearState(tid);
+        return ctx.reply(tb(al, "❌ Цей Telegram ID уже прив'язаний до іншого працівника."), managementMenu(al));
+      }
       await db.update(workersTable).set({ telegramId: newTid }).where(eq(workersTable.id, match.id));
       clearState(tid);
-      return ctx.reply(tb(al, "✅ *{name}* прив'язаний до Telegram `{id}`", { name: match.fullName, id: newTid }), { parse_mode: "Markdown", ...managementMenu(al) });
+      return ctx.reply(tb(al, "✅ *{name}* прив'язаний до Telegram `{id}`", { name: mdSafe(match.fullName), id: newTid }), { parse_mode: "Markdown", ...managementMenu(al) });
     } else {
       const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
       const match = drivers.find(d => d.name.toLowerCase().includes(data.searchName.toLowerCase()));
       if (!match) { clearState(tid); return ctx.reply(tb(al, "Водія не знайдено."), managementMenu(al)); }
+      if (await tgTakenByDriver(newTid, match.id)) {
+        clearState(tid);
+        return ctx.reply(tb(al, "❌ Цей Telegram ID уже прив'язаний до іншого водія."), managementMenu(al));
+      }
       await db.update(driversTable).set({ telegramId: newTid }).where(eq(driversTable.id, match.id));
       clearState(tid);
-      return ctx.reply(tb(al, "✅ *{name}* прив'язаний до Telegram `{id}`", { name: match.name, id: newTid }), { parse_mode: "Markdown", ...managementMenu(al) });
+      return ctx.reply(tb(al, "✅ *{name}* прив'язаний до Telegram `{id}`", { name: mdSafe(match.name), id: newTid }), { parse_mode: "Markdown", ...managementMenu(al) });
     }
   }
 

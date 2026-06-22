@@ -13,6 +13,14 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Make free-form text (names, company, position) safe to embed in Telegram legacy
+// Markdown (parse_mode: "Markdown"). Legacy Markdown has NO escape mechanism, so a
+// value containing * _ ` [ ] breaks parsing ("can't parse entities"). We strip
+// those entity-starting characters — display-only, the stored data is untouched.
+export function mdSafe(text: string | null | undefined): string {
+  return String(text ?? "").replace(/[*_`\[\]]/g, "");
+}
+
 // Split a message into Telegram-safe chunks (max 4000 chars, split on newlines)
 export function splitMessage(text: string, maxLen = 4000): string[] {
   if (text.length <= maxLen) return [text];
