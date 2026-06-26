@@ -258,7 +258,7 @@ function buildFactoryWorkbook(
   if (seg.showCode) widths.push(12);
   widths.push(16);                  // trailing blank column
   const cols = widths.length;       // total columns
-  const bandCols = cols - 1;        // header band spans everything except the blank column
+  const bandCols = cols;            // header band spans the FULL width (incl. notes col) — one solid colored line
 
   const wb = new ExcelJS.Workbook();
   // Fill + black border on every cell of a (possibly merged) horizontal range.
