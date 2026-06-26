@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import {
-  get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement,
+  get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
   DAYS, DAY_FULL, SHIFT_UK, type DayCode, type ShiftCode,
 } from "../lib/api";
 import { upcomingWeeks, dayDate } from "../lib/dates";
@@ -57,6 +57,8 @@ export default function Schedule() {
   const [weekStart, setWeekStart] = useState(urlWeek || upcomingWeeks()[0]!.value);
   const [over, setOver] = useState("");
   const [approveOpen, setApproveOpen] = useState(false);
+  const [addTo, setAddTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // manual add (incl. past shifts)
+  const [addQuery, setAddQuery] = useState("");
 
   useEffect(() => { if (!factoryId && factories.length) setFactoryId(String(factories[0]!.id)); }, [factories]);
 
@@ -65,6 +67,9 @@ export default function Schedule() {
     queryFn: () => get(`/schedule?weekStart=${weekStart}&factoryId=${factoryId}`),
   });
   const reload = () => qc.invalidateQueries({ queryKey: ["schedule"] });
+  // All active workers of this factory — for manually adding someone (e.g. found out after the shift).
+  const { data: allWorkers = [] } = useQuery<Worker[]>({ queryKey: ["workers"], queryFn: () => get("/workers"), enabled: !!factoryId });
+  const factoryWorkers = allWorkers.filter(w => w.isActive && String(w.factoryId) === factoryId);
 
   const factory = factories.find(f => String(f.id) === factoryId);
   const facName = factory?.name ?? "";
@@ -135,6 +140,8 @@ export default function Schedule() {
     onSuccess: (r: any) => { reload(); setApproveOpen(false); toast.success(t("Затверджено"), { description: (r.messages ?? []).join(" · ") }); }, onError: (e: any) => toast.error(e.message) });
   const notify = useMutation({ mutationFn: () => post("/schedule/notify", { weekStart, factoryId: Number(factoryId) }),
     onSuccess: (r: any) => toast.success(t("Розіслано"), { description: `${t("Працівників:")} ${r.workersNotified} · ${t("водій:")} ${r.driverNotified ? t("так") : "—"}${r.workersSkipped ? ` · ${t("без TG:")} ${r.workersSkipped}` : ""}` }), onError: (e: any) => toast.error(e.message) });
+  const notifyDay = useMutation({ mutationFn: (day: DayCode) => post("/schedule/notify", { weekStart, factoryId: Number(factoryId), day }),
+    onSuccess: (r: any) => toast.success(t("Розіслано"), { description: `${t("Працівників:")} ${r.workersNotified}` }), onError: (e: any) => toast.error(e.message) });
   const addEntry = useMutation({ mutationFn: (v: { workerId: number; day: DayCode; shift: ShiftCode }) => post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const moveEntry = useMutation({ mutationFn: (v: { id: number; shift: ShiftCode }) => patch(`/schedule/entry/${v.id}`, { shift: v.shift }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const removeEntry = useMutation({ mutationFn: (id: number) => del(`/schedule/entry/${id}`), onSuccess: reload });
@@ -216,6 +223,15 @@ export default function Schedule() {
                 <div className="flex items-baseline gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2">
                   <span className="text-sm font-semibold text-slate-700">{DAY_FULL[day]}</span>
                   <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, di)}</span>
+                  {entries.some(e => e.day === day) && (
+                    <button
+                      className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      disabled={notifyDay.isPending}
+                      title={t("Розіслати графік на цей день працівникам")}
+                      onClick={async () => { if (await confirm({ title: t("Розіслати на {day}?", { day: DAY_FULL[day] }), message: t("Працівникам, що мають зміну цього дня, прийде повідомлення."), confirmText: t("Розіслати") })) notifyDay.mutate(day); }}>
+                      <Send className="h-3 w-3" /> {t("Розіслати")}
+                    </button>
+                  )}
                 </div>
                 <div className={`grid grid-cols-1 divide-y divide-slate-100 ${gridColsClass(shiftCount)} md:divide-x md:divide-y-0`}>
                   {shifts.map(shift => {
@@ -340,6 +356,12 @@ export default function Schedule() {
                                 {extras.length > 0 && <span className="rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-600">+{extras.length} {t("додатк.")}</span>}
                               </div>
                             )}
+                            {editable && (
+                              <button onClick={() => { setAddTo({ day, shift }); setAddQuery(""); }}
+                                className="mt-1 w-full rounded-lg border border-dashed border-slate-300 py-1 text-[11px] font-medium text-slate-400 hover:border-red-300 hover:text-red-600">
+                                ➕ {t("Додати людину")}
+                              </button>
+                            )}
                           </div>
                         ) : (
                         <div {...overProps(aKey)} onDrop={handleDrop(day, shift, "assigned")}
@@ -422,6 +444,34 @@ export default function Schedule() {
       )}
 
       {approveOpen && <ApproveModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} loading={approve.isPending} onClose={() => setApproveOpen(false)} onApprove={(sendEmail) => approve.mutate(sendEmail)} />}
+
+      {addTo && (() => {
+        const inShiftIds = new Set(byDayShift(addTo.day, addTo.shift).map(e => e.workerId));
+        const q = addQuery.trim().toLowerCase();
+        const cands = factoryWorkers
+          .filter(w => !inShiftIds.has(w.id))
+          .filter(w => !q || w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
+          .slice(0, 50);
+        return (
+          <Modal open onClose={() => setAddTo(null)} title={`${t("Додати людину")} — ${DAY_FULL[addTo.day]} · ${SHIFT_UK[addTo.shift]}`}>
+            <div className="space-y-3">
+              <input autoFocus value={addQuery} onChange={e => setAddQuery(e.target.value)} placeholder={t("Пошук за іменем або кодом")}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                {cands.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : cands.map(w => (
+                  <button key={w.id} disabled={addEntry.isPending}
+                    onClick={() => { addEntry.mutate({ workerId: w.id, day: addTo.day, shift: addTo.shift }); setAddTo(null); }}
+                    className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-red-300 hover:bg-red-50 disabled:opacity-50">
+                    <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{w.fullName}</span>
+                    {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-400">{t("Людину буде додано до зміни; статус «вийшов» позначте в явці.")}</p>
+            </div>
+          </Modal>
+        );
+      })()}
     </>
   );
 }
