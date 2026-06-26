@@ -5,7 +5,7 @@ import {
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, availabilityTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, isNotNull } from "drizzle-orm";
 import { workerMenu, headDriverMenu, driverMenu } from "./menus";
 import { DAY_UK, SHIFT_SHORT } from "./display";
 import { t, tb, dayShort, type Lang } from "./i18n";
@@ -247,7 +247,7 @@ export async function showWorkerSchedule(
     .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, factoryName: factoriesTable.name, factoryAddress: factoriesTable.address })
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.workerId, workerId), ne(scheduleEntriesTable.status, "absent")));
+    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.workerId, workerId), ne(scheduleEntriesTable.status, "absent"), isNotNull(scheduleEntriesTable.sentAt)));
   let msg = t(lang, "sched.title", { week: formatWeekStart(weekStart) }) + "\n\n";
   if (entries.length === 0) {
     msg += t(lang, "sched.none");

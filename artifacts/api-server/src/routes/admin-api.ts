@@ -1440,14 +1440,20 @@ router.get("/schedule/excel", RW, async (req, res) => {
 
 // Send the factory's schedule to its workers + head driver via Telegram
 router.post("/schedule/notify", RW, async (req, res) => {
-  const { weekStart, factoryId } = req.body ?? {};
+  const { weekStart, factoryId, day } = req.body ?? {};
   if (!weekStart || !factoryId) return fail(res, 400, "weekStart та factoryId обовʼязкові");
   const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
   const week = candidates.find(w => w.status === "approved") ?? candidates[0];
   if (!week) return fail(res, 404, "Графік не знайдено");
+  const dayCode = day && DAYS.includes(day) ? (day as DayOfWeek) : undefined;
   try {
     const { notifyFactorySchedule } = await import("../bot/notify");
-    const result = await notifyFactorySchedule(week.id, week.weekStart, Number(factoryId));
+    const result = await notifyFactorySchedule(week.id, week.weekStart, Number(factoryId), dayCode);
+    // Mark these entries as sent — workers only see sent days in their bot schedule.
+    await db.update(scheduleEntriesTable).set({ sentAt: new Date() }).where(and(
+      eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.factoryId, Number(factoryId)),
+      ...(dayCode ? [eq(scheduleEntriesTable.dayOfWeek, dayCode)] : []),
+    ));
     ok(res, result);
   } catch (e) {
     logger.error({ err: e }, "notifyFactorySchedule failed");

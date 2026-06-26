@@ -420,7 +420,7 @@ export async function refreshExcelReports() {
 }
 
 // Send one factory's approved schedule to its workers (personal shifts) + head driver (full list)
-export async function notifyFactorySchedule(weekId: number, weekStart: string, factoryId: number) {
+export async function notifyFactorySchedule(weekId: number, weekStart: string, factoryId: number, day?: DayOfWeek) {
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   const factoryName = factory?.name ?? "—";
 
@@ -431,7 +431,11 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId), ne(scheduleEntriesTable.status, "absent")));
+    .where(and(
+      eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId),
+      ne(scheduleEntriesTable.status, "absent"),
+      ...(day ? [eq(scheduleEntriesTable.dayOfWeek, day)] : []),
+    ));
 
   // Per-worker personal schedule
   const byWorker = new Map<number, { name: string; telegramId: string | null; lang: string | null; items: { day: DayOfWeek; shift: Shift }[] }>();

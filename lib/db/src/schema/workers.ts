@@ -157,6 +157,7 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   absenceReason: text("absence_reason"),
   pickedUpBy: integer("picked_up_by").references(() => driversTable.id), // driver who boarded this worker
   hoursOverride: real("hours_override"), // manual hours for this shift (overrides computed shift duration)
+  sentAt: timestamp("sent_at"), // when this entry was sent to the worker — they only see sent entries
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
