@@ -2,8 +2,8 @@ import { Markup } from "telegraf";
 import { t, tb, type Lang } from "./i18n";
 
 export const adminMenu = (lang: Lang = "uk") => Markup.keyboard([
-  [tb(lang, "📋 Замовлення фабрик"), tb(lang, "📊 Читати таблицю")],
-  [tb(lang, "🗓 Генерувати графік"), tb(lang, "✅ Перегляд графіків")],
+  [tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")],
+  [tb(lang, "✅ Перегляд графіків")],
   [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
   [tb(lang, "📢 Розсилки")],
   [tb(lang, "🌐 Мова / Language")],

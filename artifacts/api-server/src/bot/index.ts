@@ -10,7 +10,7 @@ import {
 import { eq, and, desc, inArray, ne } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
-  readAvailabilityFromSheets, syncAvailabilityToDb, getWorkersWhoHaventSubmitted,
+  getWorkersWhoHaventSubmitted,
   DAY_NAMES_UK, DAYS,
 } from "../services/sheets";
 import {
@@ -352,22 +352,6 @@ bot.hears(bhears("📋 Замовлення фабрик"), async (ctx) => {
 });
 
 // ─── Admin: Read Sheets ───────────────────────────────────────────────────────
-
-bot.hears(bhears("📊 Читати таблицю"), async (ctx) => {
-  const tid = String(ctx.from.id);
-  const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
-  await ctx.reply(tb(al, "⏳ Зчитую Google Sheets..."));
-  try {
-    const rows = await readAvailabilityFromSheets();
-    const weeks = [...new Set(rows.map(r => r.weekStart))].sort();
-    if (weeks.length === 0) return ctx.reply(tb(al, "📭 Таблиця порожня або немає нових відповідей."));
-    setState(tid, "sheets:select_week", { weeks });
-    return ctx.reply(tb(al, "Оберіть тиждень для синхронізації:"), Markup.keyboard([...weeks.map(w => [`📅 ${w} (${formatWeekStart(w)})`]), [tb(al, "⬅️ Назад")]]).resize());
-  } catch (e) {
-    logger.error({ err: e }, "Error reading sheets");
-    return ctx.reply(tb(al, "❌ Помилка читання таблиці. Перевірте що таблиця поділена з сервісним акаунтом."));
-  }
-});
 
 // ─── Admin: Generate Schedule ─────────────────────────────────────────────────
 
@@ -1295,7 +1279,9 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
     if (!arr.includes(a.shift as Shift)) arr.push(a.shift as Shift);
   }
   const alreadyFilled = existing.length > 0;
-  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang });
+  // Already-submitted shifts are locked: the worker may ADD more, but can't remove/change these.
+  const locked = existing.map(a => `${a.day}-${a.shift}`);
+  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked });
   await ctx.reply(
     alreadyFilled ? t(lang, "av.already", { week: formatWeekStart(weekStart) }) : t(lang, "av.intro", { week: formatWeekStart(weekStart) }),
     { parse_mode: "Markdown" },
@@ -1306,21 +1292,26 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
 
 // Availability day selection callback: avail_MON_1 toggles a shift; avail_MON_off = day off
 bot.action(/^avail_([a-z]+)_(1|2|3|off)$/, async (ctx) => {
-  await ctx.answerCbQuery();
   const tid = String(ctx.from.id);
   const state = getState(tid);
-  if (state?.action !== "avail:filling") return;
+  if (state?.action !== "avail:filling") { await ctx.answerCbQuery(); return; }
   const [, day, shiftRaw] = ctx.match as RegExpMatchArray;
   const { responses, weekStart, shiftCount } = state.data;
+  const locked: string[] = state.data.locked ?? [];
+  const lang = asLang(state.data.lang);
   if (shiftRaw === "off") {
+    // Can't take a whole day off if any shift that day was already confirmed.
+    if (locked.some(k => k.startsWith(`${day}-`))) { await ctx.answerCbQuery(t(lang, "av.locked")); return; }
     responses[day!] = []; // explicit day off
   } else {
     const cur: Shift[] = Array.isArray(responses[day!]) ? responses[day!] : [];
     const s = shiftRaw as Shift;
+    if (cur.includes(s) && locked.includes(`${day}-${s}`)) { await ctx.answerCbQuery(t(lang, "av.locked")); return; } // can't unselect a confirmed shift
     responses[day!] = cur.includes(s) ? cur.filter((x: Shift) => x !== s) : [...cur, s].sort();
   }
+  await ctx.answerCbQuery();
   setState(tid, "avail:filling", { ...state.data, responses });
-  await sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery.message?.message_id, shiftCount ?? 3, asLang(state.data.lang));
+  await sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery.message?.message_id, shiftCount ?? 3, lang);
 });
 
 // Availability confirm callback
@@ -1332,22 +1323,20 @@ bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const worker = await getWorker(tid);
   if (!worker) return;
   const { weekStart, responses } = state.data;
+  const locked: string[] = state.data.locked ?? [];
   const lang = asLang(state.data.lang);
   clearState(tid);
 
-  // Delete previous availability for THIS worker/week only (latest submission wins).
-  // Match by workerId so renames/typos don't leave stale rows.
-  await db.delete(availabilityTable).where(
-    and(eq(availabilityTable.weekStart, weekStart), eq(availabilityTable.workerId, worker.id))
-  );
-
-  // Insert new availability entries — one row per (day, shift); resolved to workerId
+  // Additive only: previously-confirmed shifts stay (locked). We insert just the NEW
+  // (day, shift) pairs — never delete — so a worker can top up but not cancel what they
+  // already committed to. (Cancelling a confirmed shift goes through "Взяти вихідний".)
   const now = new Date();
   let count = 0;
   for (const [day, shifts] of Object.entries(responses) as [DayOfWeek, Shift[] | null][]) {
     if (!Array.isArray(shifts)) continue;
     for (const shift of shifts) {
       if (!["1", "2", "3", "4", "5", "6"].includes(shift)) continue;
+      if (locked.includes(`${day}-${shift}`)) continue; // already saved earlier
       await db.insert(availabilityTable).values({
         fullNameRaw: worker.fullName,
         workerId: worker.id,
@@ -2567,28 +2556,6 @@ bot.on("text", async (ctx) => {
   }
 
   // ── Sheets: select week ───────────────────────────────────────────
-  if (state?.action === "sheets:select_week") {
-    const al = olang(await getAdmin(tid));
-    const match = text.match(/(\d{4}-\d{2}-\d{2})/);
-    if (!match) return ctx.reply(tb(al, "Оберіть тиждень зі списку."));
-    const weekStart = match[1]!;
-    clearState(tid);
-    await ctx.reply(tb(al, "⏳ Синхронізую тиждень {week}...", { week: weekStart }));
-    try {
-      const { synced, autoAdded } = await syncAvailabilityToDb(weekStart);
-      const missing = await getWorkersWhoHaventSubmitted(weekStart);
-      let msg = tb(al, "✅ Синхронізовано! *{n}* записів для тижня {week}", { n: synced, week: formatWeekStart(weekStart) }) + "\n\n";
-      if (autoAdded.length > 0) msg += `👤 *${tb(al, "Автоматично додано ({n}):", { n: autoAdded.length })}*\n${autoAdded.map(n => `• ${n}`).join("\n")}\n\n`;
-      if (missing.length > 0) msg += `📭 *${tb(al, "Не заповнили ({n}):", { n: missing.length })}*\n${missing.map(w => `• ${w.fullName}${w.telegramId ? "" : " ⚠️"}`).join("\n")}`;
-      else msg += tb(al, "🎉 Всі заповнили анкету!");
-      await sendLongMessage(ctx.chat!.id, msg, { parse_mode: "Markdown" });
-      return ctx.reply(tb(al, "Що далі?"), adminMenu(al));
-    } catch (e) {
-      logger.error({ err: e }, "Sync error");
-      return ctx.reply(tb(al, "❌ Помилка синхронізації."), adminMenu(al));
-    }
-  }
-
   // ── Generate: select factory ──────────────────────────────────────
   if (state?.action === "gen:select_factory") {
     const al = olang(await getAdmin(tid));
@@ -2921,6 +2888,8 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     await ctx.reply(tb(al, "⏳ Розсилаю..."));
     const { notified, skipped } = await sendScheduleToAllWorkers(weeks[0]!.id, weekStart);
+    // Mark the whole week's entries as sent — workers only see sent days.
+    await db.update(scheduleEntriesTable).set({ sentAt: new Date() }).where(eq(scheduleEntriesTable.weekId, weeks[0]!.id));
     const headDriverResult = await sendScheduleToHeadDriver(weeks[0]!.id, weekStart);
     return ctx.reply(tb(al, "📢 Розіслано!\n👷 Працівники: {n} / пропущено: {s}\n🚐 Головний водій: {hd}", { n: notified, s: skipped, hd: headDriverResult }), adminMenu(al));
   }
@@ -3043,6 +3012,7 @@ bot.on("text", async (ctx) => {
     const lang = asLang(state.data.lang);
     const amount = parseFloat(text.replace(",", ".").replace(/[^\d.]/g, ""));
     if (!isFinite(amount) || amount <= 0) return ctx.reply(t(lang, "adv.badAmount"));
+    if (amount > 500) return ctx.reply(t(lang, "adv.maxAmount"));
     setState(tid, "advance:enter_comment", { ...state.data, amount: Math.round(amount * 100) / 100 });
     return ctx.reply(t(lang, "adv.askComment"));
   }
@@ -3101,7 +3071,14 @@ bot.on("text", async (ctx) => {
     const subs = await db.select({ fullNameRaw: availabilityTable.fullNameRaw })
       .from(availabilityTable)
       .where(and(eq(availabilityTable.weekStart, data.weekStart), eq(availabilityTable.dayOfWeek, data.day), eq(availabilityTable.shift, data.shift)));
-    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+    // Substitutes must come from the SAME factory as the absent shift, not all factories.
+    const absEntry = (await db.select({ f: scheduleEntriesTable.factoryId }).from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, data.entryId)))[0];
+    const absFactoryId = absEntry?.f
+      ?? (await db.select({ f: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, data.workerId)))[0]?.f
+      ?? null;
+    const allWorkers = await db.select().from(workersTable).where(
+      absFactoryId != null ? and(eq(workersTable.isActive, true), eq(workersTable.factoryId, absFactoryId)) : eq(workersTable.isActive, true)
+    );
     const substituteCandidates = allWorkers.filter(w =>
       !inScheduleIds.includes(w.id) &&
       subs.some(s => s.fullNameRaw.toLowerCase().includes(w.fullName.toLowerCase().split(" ")[0]!.toLowerCase()))
