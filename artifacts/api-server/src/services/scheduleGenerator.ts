@@ -331,7 +331,7 @@ function ymd(d: Date): string {
 }
 
 export function getNextMonday(): string {
-  const today = new Date();
+  const today = nowWarsaw();
   const day = today.getDay();
   const diff = day === 0 ? 1 : 8 - day;
   const next = new Date(today);
@@ -340,7 +340,7 @@ export function getNextMonday(): string {
 }
 
 export function getCurrentMonday(): string {
-  const today = new Date();
+  const today = nowWarsaw();
   const day = today.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   const mon = new Date(today);
