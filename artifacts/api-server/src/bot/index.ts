@@ -1218,15 +1218,22 @@ bot.hears(trAll("menu.report"), async (ctx) => {
       eq(scheduleWeeksTable.status, "approved"),
     ));
 
-  // Unique factories from this month's schedule
+  // Factories the worker can file a report for: those from their approved shifts, plus
+  // their own assigned factory as a fallback so workers WITHOUT approved shifts can still
+  // submit. If neither exists, we can't determine a factory → show an error.
   const seen = new Set<number>();
   const uniqueFactories = factoryRows.filter(f => {
     if (!f.id || seen.has(f.id)) return false;
     seen.add(f.id); return true;
   });
+  if (worker.factoryId && !seen.has(worker.factoryId)) {
+    const [own] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
+      .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
+    if (own) { seen.add(own.id); uniqueFactories.push(own); }
+  }
 
   if (uniqueFactories.length === 0) {
-    return ctx.reply(`📄 За місяць *${monthLabel}* у вас немає підтверджених змін. Зверніться до адміністратора.`, { parse_mode: "Markdown", ...(await workerMenuFor(worker, wlang(worker))) });
+    return ctx.reply(`📄 Не вдалося визначити вашу фабрику для рапорту. Зверніться до адміністратора.`, { parse_mode: "Markdown", ...(await workerMenuFor(worker, wlang(worker))) });
   }
 
   if (uniqueFactories.length === 1) {
@@ -1247,7 +1254,7 @@ bot.hears(trAll("menu.report"), async (ctx) => {
     month: reportMonth, factories: uniqueFactories.map(f => f.name),
   });
   return ctx.reply(
-    `📄 Рапорт за *${monthLabel}*\n\nВи працювали на кількох фабриках. Оберіть:`,
+    `📄 Рапорт за *${monthLabel}*\n\nОберіть фабрику для рапорту:`,
     { parse_mode: "Markdown", ...Markup.keyboard([...uniqueFactories.map(f => [f.name!]), ["⬅️ Назад"]]).resize() },
   );
 });
