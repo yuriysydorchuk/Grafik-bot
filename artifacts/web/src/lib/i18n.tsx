@@ -370,6 +370,7 @@ const EN: Record<string, string> = {
   "Усього годин:": "Total hours:",
   "Години з рапорту": "Hours from report",
   "Вписати години": "Enter hours",
+  "Відкрити рапорт": "Open report",
   "не вислано": "not submitted",
   "Нагадати про рапорт": "Remind about report",
   "Excel рапорту": "Report Excel",

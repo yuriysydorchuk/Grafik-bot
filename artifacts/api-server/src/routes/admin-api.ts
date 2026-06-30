@@ -1690,13 +1690,14 @@ router.get("/hours", RW, async (req, res) => {
     });
   }
   // worker-reported monthly hours (from the bot report) for this month
-  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported, link: monthlyReportsTable.photoLink })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const reportByWorker = new Map(reports.map(r => [r.workerId, r.hours]));
+  const reportByWorker = new Map(reports.map(r => [r.workerId, r]));
   const workers = [...byWorker.values()]
     .map(w => {
       const hours = round2(w.hours);
-      const base: any = { ...w, hours, reportHours: reportByWorker.get(w.workerId) ?? null, reportSubmitted: reportByWorker.has(w.workerId) };
+      const rep = reportByWorker.get(w.workerId);
+      const base: any = { ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null };
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
         base.gross = round2(p.gross); base.net = round2(p.net); base.laborCost = round2(p.laborCost);

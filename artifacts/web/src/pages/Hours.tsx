@@ -16,7 +16,7 @@ interface Dispute { workerId: number; status: string }
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
-  reportHours?: number | null; reportSubmitted?: boolean;
+  reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   rate?: number; gross?: number; net?: number; laborCost?: number; // owner only
 }
 interface Group { key: string; name: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
@@ -157,10 +157,13 @@ function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; can
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["hours", month] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
-  const display = w.reportSubmitted
-    ? <span className="font-semibold text-slate-700">{w.reportHours} {t("год")}</span>
+  // The hours value links to the submitted report file (Drive) when there is one.
+  const linked = w.reportSubmitted
+    ? (w.reportLink
+        ? <a href={w.reportLink} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="font-semibold text-red-700 underline-offset-2 hover:underline" title={t("Відкрити рапорт")}>{w.reportHours} {t("год")}</a>
+        : <span className="font-semibold text-slate-700">{w.reportHours} {t("год")}</span>)
     : <Badge color="amber">{t("не вислано")}</Badge>;
-  if (!canEdit) return display;
+  if (!canEdit) return linked;
   if (editing) {
     const submit = () => save.mutate(val.replace(",", ".").trim() || null);
     return (
@@ -173,8 +176,9 @@ function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; can
     );
   }
   return (
-    <button onClick={() => { setVal(w.reportHours != null ? String(w.reportHours) : ""); setEditing(true); }} className="inline-flex items-center gap-1 hover:opacity-80" title={t("Вписати години")}>
-      {display}<Pencil className="h-3 w-3 text-slate-300" />
-    </button>
+    <span className="inline-flex items-center justify-end gap-1.5">
+      {linked}
+      <button onClick={() => { setVal(w.reportHours != null ? String(w.reportHours) : ""); setEditing(true); }} className="rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати години")}><Pencil className="h-3.5 w-3.5" /></button>
+    </span>
   );
 }
