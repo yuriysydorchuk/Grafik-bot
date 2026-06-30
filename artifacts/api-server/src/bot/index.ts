@@ -1997,7 +1997,7 @@ bot.on("photo", async (ctx) => {
     const resp = await fetch(fileLink.href);
     const buf = Buffer.from(await resp.arrayBuffer());
     const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, "image/jpeg");
-    if (link) return ctx.reply(`✅ Рапорт збережено!\n${link}`, menu);
+    if (link) return ctx.reply(`✅ Рапорт збережено!`, menu);
     return ctx.reply("❌ Помилка збереження. Спробуйте ще раз.", menu);
   } catch (e) {
     logger.error({ err: e }, "Report upload error");
