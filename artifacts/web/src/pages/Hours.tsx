@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle } from "lucide-react";
-import { get } from "../lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, Download, Check, X, Pencil } from "lucide-react";
+import { toast } from "sonner";
+import { get, post } from "../lib/api";
 import { monthOptions } from "../lib/dates";
-import { Card, Spinner, Select, Empty, Badge } from "../components/ui";
+import { Card, Spinner, Select, Empty, Badge, Button, Input } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { WorkerDaysModal } from "../components/DetailModals";
 import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
 
 interface Dispute { workerId: number; status: string }
@@ -14,6 +16,7 @@ interface Dispute { workerId: number; status: string }
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
+  reportHours?: number | null; reportSubmitted?: boolean;
   rate?: number; gross?: number; net?: number; laborCost?: number; // owner only
 }
 interface Group { key: string; name: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
@@ -32,6 +35,12 @@ export default function Hours() {
   });
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
   const openByWorker = useMemo(() => new Set(disputes.filter(d => d.status === "new").map(d => d.workerId)), [disputes]);
+  const canEdit = can(me, "editData");
+  const remind = useMutation({
+    mutationFn: () => post<{ notified: number; total: number }>("/hours/report-remind", { month }),
+    onSuccess: (r) => toast.success(t("Нагадування про рапорт надіслано: {n} з {total}", { n: r.notified, total: r.total })),
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>();
@@ -58,6 +67,12 @@ export default function Hours() {
             <Badge color="slate">{t("Усього змін:")} {data.totalShifts}</Badge>
             <Badge color="green">{t("Усього годин:")} {round(data.totalHours)}</Badge>
             {isOwner && data.totalNet != null && <Badge color="green">{t("ЗП нетто:")} {round(data.totalNet)} zł</Badge>}
+          </div>
+        )}
+        {canEdit && (
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="secondary" loading={remind.isPending} onClick={() => remind.mutate()}><BellRing className="h-4 w-4" /> {t("Нагадати про рапорт")}</Button>
+            <a href={`/api/hours/report-excel?month=${month}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> {t("Excel рапорту")}</a>
           </div>
         )}
       </div>
@@ -89,6 +104,7 @@ export default function Hours() {
                         <th className="px-4 py-2.5">{t("Працівник")}</th><th className="px-4 py-2.5">{t("Код")}</th>
                         {cols.map(c => <th key={c} className="px-3 py-2.5 text-center">{c} {t("зм")}</th>)}
                         <th className="px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="px-4 py-2.5 text-right">{t("Години")}</th>
+                        <th className="px-4 py-2.5 text-right">{t("Години з рапорту")}</th>
                         {isOwner && <><th className="px-3 py-2.5 text-right">{t("Ставка")}</th><th className="px-4 py-2.5 text-right">{t("ЗП нетто")}</th></>}
                       </tr>
                     </thead>
@@ -103,6 +119,7 @@ export default function Hours() {
                           {cols.map(c => <td key={c} className="px-3 py-2.5 text-center text-slate-600">{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
                           <td className="px-4 py-2.5 text-center font-medium text-slate-700">{w.shifts}</td>
                           <td className="px-4 py-2.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
+                          <td className="px-4 py-2.5 text-right" onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
                           {isOwner && <><td className="px-3 py-2.5 text-right text-slate-400">{w.rate ?? "—"}</td><td className="px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td></>}
                         </tr>
                       ))}
@@ -112,6 +129,7 @@ export default function Hours() {
                         <td className="px-4 py-2.5" colSpan={2 + cols.length}>{t("Разом по фабриці")}</td>
                         <td className="px-4 py-2.5 text-center">{g.shifts}</td>
                         <td className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>
+                        <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>
                         {isOwner && <><td /><td className="px-4 py-2.5 text-right text-emerald-700">{round(g.net)} zł</td></>}
                       </tr>
                     </tfoot>
@@ -124,5 +142,39 @@ export default function Hours() {
       )}
       {sel && <WorkerDaysModal workerId={sel.id} name={sel.name} month={month} monthLabel={monthLabel} onClose={() => setSel(null)} />}
     </>
+  );
+}
+
+// Report-hours cell: read-only for non-editors; click-to-edit inline for admins so they
+// can fill hours manually (e.g. for workers who submitted before this feature existed).
+function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; canEdit: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+  const save = useMutation({
+    mutationFn: (hours: string | null) => post("/hours/report", { workerId: w.workerId, month, hours }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["hours", month] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const display = w.reportSubmitted
+    ? <span className="font-semibold text-slate-700">{w.reportHours} {t("год")}</span>
+    : <Badge color="amber">{t("не вислано")}</Badge>;
+  if (!canEdit) return display;
+  if (editing) {
+    const submit = () => save.mutate(val.replace(",", ".").trim() || null);
+    return (
+      <span className="inline-flex items-center justify-end gap-1">
+        <Input value={val} onChange={e => setVal(e.target.value)} inputMode="decimal" placeholder="1–400" className="w-20 text-right" autoFocus
+          onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setEditing(false); }} />
+        <button onClick={submit} disabled={save.isPending} className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50"><Check className="h-4 w-4" /></button>
+        <button onClick={() => setEditing(false)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
+      </span>
+    );
+  }
+  return (
+    <button onClick={() => { setVal(w.reportHours != null ? String(w.reportHours) : ""); setEditing(true); }} className="inline-flex items-center gap-1 hover:opacity-80" title={t("Вписати години")}>
+      {display}<Pencil className="h-3 w-3 text-slate-300" />
+    </button>
   );
 }

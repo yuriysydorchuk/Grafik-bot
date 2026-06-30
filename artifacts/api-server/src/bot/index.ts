@@ -4,7 +4,7 @@ import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
   absenceRequestsTable, driverTripsTable, unplannedWorkersTable, availabilityTable,
-  candidatesTable, hoursDisputesTable, advanceRequestsTable,
+  candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, desc, inArray, ne } from "drizzle-orm";
@@ -1176,6 +1176,17 @@ bot.action(/^absreq:(\d+)$/, async (ctx) => {
   return ctx.reply(t(lang, "abs.askReason", { day: dayShort(lang, item.day), shift: item.shift }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
 });
 
+// After the factory is known, ask the worker to type their total monthly hours.
+// `data` carries { workerId, workerName, month, factory }.
+const reportMonthLabel = (m: string) => new Date(`${m}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
+async function askReportHours(ctx: Context, tid: string, data: any) {
+  setState(tid, "report:awaiting_hours", data);
+  return ctx.reply(
+    `📄 Рапорт за *${reportMonthLabel(data.month)}* — ${data.factory}\n\nВкажіть *загальну кількість годин* за місяць (число 1–400):`,
+    { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+  );
+}
+
 bot.hears(trAll("menu.report"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   if (!worker) return ctx.reply("❌ Ви не зареєстровані.");
@@ -1237,15 +1248,11 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   }
 
   if (uniqueFactories.length === 1) {
-    // Одна фабрика — одразу просимо фото
-    setState(String(ctx.from.id), "report:awaiting_photo", {
+    // Одна фабрика — питаємо години, далі фото
+    return askReportHours(ctx, String(ctx.from.id), {
       workerId: worker.id, workerName: worker.fullName,
       month: reportMonth, factory: uniqueFactories[0]!.name,
     });
-    return ctx.reply(
-      `📄 Рапорт за *${monthLabel}* — ${uniqueFactories[0]!.name}\n\nНадішліть фото рапорту:`,
-      { parse_mode: "Markdown", ...Markup.removeKeyboard() },
-    );
   }
 
   // Кілька фабрик — запитуємо яку
@@ -1997,8 +2004,20 @@ bot.on("photo", async (ctx) => {
     const resp = await fetch(fileLink.href);
     const buf = Buffer.from(await resp.arrayBuffer());
     const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, "image/jpeg");
-    if (link) return ctx.reply(`✅ Рапорт збережено!`, menu);
-    return ctx.reply("❌ Помилка збереження. Спробуйте ще раз.", menu);
+    // No photo saved → don't accept the hours; ask to retry.
+    if (!link) return ctx.reply("❌ Не вдалося зберегти фото. Спробуйте надіслати рапорт ще раз.", menu);
+    // Persist the monthly report (hours + photo). Re-submit for the same month overwrites.
+    const [fac] = data.factory
+      ? await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.name, data.factory))
+      : [];
+    const factoryId = fac?.id ?? worker?.factoryId ?? null;
+    await db.insert(monthlyReportsTable).values({
+      workerId: data.workerId, month: data.month, factoryId, hoursReported: data.reportHours, photoLink: link,
+    }).onConflictDoUpdate({
+      target: [monthlyReportsTable.workerId, monthlyReportsTable.month],
+      set: { factoryId, hoursReported: data.reportHours, photoLink: link, createdAt: new Date() },
+    });
+    return ctx.reply(`✅ Рапорт збережено! Годин за місяць: *${data.reportHours}*`, { parse_mode: "Markdown", ...menu });
   } catch (e) {
     logger.error({ err: e }, "Report upload error");
     return ctx.reply("❌ Помилка завантаження.", menu);
@@ -3163,8 +3182,7 @@ bot.on("text", async (ctx) => {
     const selected = match ?? options[0]!;
     const factories: string[] = data.factories;
     if (factories.length === 1) {
-      setState(tid, "report:awaiting_photo", { ...data, month: selected, factory: factories[0]! });
-      return ctx.reply(`📄 Надішліть *фото* рапорту за ${monthLabel(selected)} — ${factories[0]}:`, { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+      return askReportHours(ctx, tid, { ...data, month: selected, factory: factories[0]! });
     }
     setState(tid, "report:select_factory", { ...data, month: selected });
     return ctx.reply("Оберіть фабрику:", Markup.keyboard([...factories.map(f => [f]), ["⬅️ Назад"]]).resize());
@@ -3175,9 +3193,20 @@ bot.on("text", async (ctx) => {
     const factories: string[] = data.factories;
     const match = factories.find(f => f === text);
     if (!match) return ctx.reply("Оберіть фабрику зі списку.");
-    setState(tid, "report:awaiting_photo", { ...data, factory: match });
-    const monthLabel = new Date(`${data.month}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
-    return ctx.reply(`📄 Надішліть *фото* рапорту за ${monthLabel} — ${match}:`, { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+    return askReportHours(ctx, tid, { ...data, factory: match });
+  }
+
+  if (state?.action === "report:awaiting_hours") {
+    const { data } = state;
+    const hours = parseFloat(text.replace(",", ".").replace(/[^\d.]/g, ""));
+    if (!isFinite(hours) || hours < 1 || hours > 400) {
+      return ctx.reply("Вкажіть коректне число годин за місяць (від 1 до 400, напр. 168 або 172.5).");
+    }
+    setState(tid, "report:awaiting_photo", { ...data, reportHours: Math.round(hours * 100) / 100 });
+    return ctx.reply(
+      `🕒 Годин за місяць: *${Math.round(hours * 100) / 100}*\n\nТепер надішліть *фото* рапорту:`,
+      { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    );
   }
 
   // ── Driver: unplanned worker ──────────────────────────────────────

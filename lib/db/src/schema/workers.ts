@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real
+  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -368,6 +368,19 @@ export const advanceRequestsTable = pgTable("advance_requests", {
   paidAt: timestamp("paid_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Monthly worker report: the worker submits a photo of their report AND types their
+// total hours for the month (1–400). One record per worker+month (re-submit upserts).
+// Surfaced in the Hours module ("години з рапорту"); missing record = not submitted yet.
+export const monthlyReportsTable = pgTable("monthly_reports", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  month: text("month").notNull(),                          // "YYYY-MM"
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  hoursReported: real("hours_reported").notNull(),         // worker-entered monthly total
+  photoLink: text("photo_link"),                           // Google Drive link to the report photo
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("monthly_reports_worker_month_uniq").on(t.workerId, t.month)]);
 
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent
 // ones (Telegram only allows deleting messages < 48h old). Pruned on clear.

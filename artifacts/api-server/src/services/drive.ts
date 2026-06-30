@@ -4,7 +4,7 @@ import { db } from "@workspace/db";
 import {
   settingsTable, scheduleEntriesTable, workersTable, factoriesTable,
   driverTripsTable, driversTable, absenceRequestsTable, scheduleWeeksTable,
-  positionsTable, factoryPositionsTable,
+  positionsTable, factoryPositionsTable, monthlyReportsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, gte, lt, ne } from "drizzle-orm";
@@ -486,6 +486,62 @@ export async function uploadReportPhoto(
     logger.error({ err: e }, "Error uploading report photo");
     return null;
   }
+}
+
+// Downloadable Excel of worker-reported monthly hours (factory · code · worker · hours · status).
+// Includes ALL active workers so admins see who hasn't submitted yet.
+export async function buildReportHoursExcel(month: string): Promise<Buffer> {
+  const workers = await db.select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, factoryId: workersTable.factoryId })
+    .from(workersTable).where(eq(workersTable.isActive, true));
+  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facName = new Map(facs.map(f => [f.id, f.name]));
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
+    .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
+  const repByWorker = new Map(reports.map(r => [r.workerId, r.hours]));
+
+  const rows = workers
+    .map(w => ({
+      factory: w.factoryId != null ? (facName.get(w.factoryId) ?? "—") : "Без фабрики",
+      code: w.code ?? "", name: w.name,
+      hours: repByWorker.has(w.id) ? repByWorker.get(w.id)! : null,
+    }))
+    .sort((a, b) => a.factory.localeCompare(b.factory, "uk") || a.name.localeCompare(b.name, "uk"));
+
+  const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Raport-godziny", { views: [{ showGridLines: false }] });
+  ws.columns = [{ width: 26 }, { width: 12 }, { width: 34 }, { width: 18 }, { width: 14 }];
+  const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
+
+  ws.mergeCells(1, 1, 1, 5);
+  const title = ws.getCell(1, 1);
+  title.value = `Години з рапорту — ${monthLabel}`;
+  title.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
+  title.alignment = { vertical: "middle", horizontal: "left" };
+  ws.getRow(1).height = 26;
+
+  const hdr = ws.getRow(2);
+  hdr.values = ["Фабрика", "Код", "Працівник", "Години з рапорту", "Статус"];
+  hdr.eachCell((c) => {
+    c.font = { bold: true, color: { argb: "FF374151" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } } as any;
+    c.border = thin as any;
+    c.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
+  });
+  ws.getRow(2).height = 18;
+
+  let r = 3;
+  for (const row of rows) {
+    const xl = ws.getRow(r);
+    xl.values = [row.factory, row.code, row.name, row.hours ?? "", row.hours != null ? "вислано" : "не вислано"];
+    xl.eachCell({ includeEmpty: true }, (c, col) => {
+      c.border = thin as any;
+      c.alignment = { vertical: "middle", horizontal: col === 4 ? "right" : "left", indent: col === 4 ? 0 : 1 };
+      if (col === 5 && row.hours == null) c.font = { color: { argb: "FFB45309" } };
+    });
+    r++;
+  }
+  return wb.xlsx.writeBuffer().then(b => Buffer.from(b));
 }
 
 // ─── Hours tracking Excel (per factory subfolder, one file per year, tab per month) ──

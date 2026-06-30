@@ -8,7 +8,7 @@ import {
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
   driverShiftAssignmentsTable, driverTripsTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
-  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, funnelsTable, candidateActivityTable, companiesTable,
+  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
@@ -1689,10 +1689,14 @@ router.get("/hours", RW, async (req, res) => {
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
   }
+  // worker-reported monthly hours (from the bot report) for this month
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
+    .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
+  const reportByWorker = new Map(reports.map(r => [r.workerId, r.hours]));
   const workers = [...byWorker.values()]
     .map(w => {
       const hours = round2(w.hours);
-      const base: any = { ...w, hours };
+      const base: any = { ...w, hours, reportHours: reportByWorker.get(w.workerId) ?? null, reportSubmitted: reportByWorker.has(w.workerId) };
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
         base.gross = round2(p.gross); base.net = round2(p.net); base.laborCost = round2(p.laborCost);
@@ -1708,6 +1712,61 @@ router.get("/hours", RW, async (req, res) => {
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
     ...(isOwner ? { totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)), totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)) } : {}),
   });
+});
+
+// Remind active workers who haven't submitted their monthly report yet.
+router.post("/hours/report-remind", RW, async (req, res) => {
+  const month = String((req.body ?? {}).month || new Date().toISOString().slice(0, 7));
+  const active = await db.select({ id: workersTable.id, tid: workersTable.telegramId, lang: workersTable.language })
+    .from(workersTable).where(eq(workersTable.isActive, true));
+  const submitted = new Set((await db.select({ workerId: monthlyReportsTable.workerId }).from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month))).map(r => r.workerId));
+  const missing = active.filter(w => !submitted.has(w.id));
+  const targets = missing.filter(w => w.tid);
+  if (targets.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length });
+  let notified = 0, skipped = 0;
+  try {
+    const { bot } = await import("../bot");
+    const { t, asLang } = await import("../bot/i18n");
+    const label = new Date(`${month}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
+    for (const w of targets) {
+      const lang = asLang(w.lang);
+      try { await bot.telegram.sendMessage(w.tid!, t(lang, "notif.reportRemind", { month: label, btn: t(lang, "menu.report") }), { parse_mode: "Markdown" }); notified++; }
+      catch { skipped++; }
+      await new Promise(r => setTimeout(r, 50));
+    }
+  } catch (e) { logger.error({ err: e }, "report remind failed"); return fail(res, 500, "Помилка розсилки"); }
+  ok(res, { notified, skipped: skipped + (missing.length - targets.length), total: missing.length });
+});
+
+// Manually set/clear a worker's report hours for a month (admin fills it on the web).
+// No photo is required for a manual entry. Empty/null hours clears the record.
+router.post("/hours/report", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId);
+  const month = String(req.body?.month || "");
+  if (!workerId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId та month обовʼязкові");
+  const raw = req.body?.hours;
+  if (raw === null || raw === undefined || raw === "") {
+    await db.delete(monthlyReportsTable).where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month)));
+    return ok(res, { ok: true, cleared: true });
+  }
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours < 1 || hours > 400) return fail(res, 400, "Години: число від 1 до 400");
+  const h = Math.round(hours * 100) / 100;
+  const [w] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
+  await db.insert(monthlyReportsTable)
+    .values({ workerId, month, factoryId: w?.factoryId ?? null, hoursReported: h, photoLink: null })
+    .onConflictDoUpdate({ target: [monthlyReportsTable.workerId, monthlyReportsTable.month], set: { hoursReported: h } });
+  ok(res, { ok: true, hours: h });
+});
+
+// Download an Excel of worker-reported monthly hours.
+router.get("/hours/report-excel", RW, async (req, res) => {
+  const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+  const { buildReportHoursExcel } = await import("../services/drive");
+  const buffer = await buildReportHoursExcel(month);
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Години з рапорту ${month}.xlsx`)}"`);
+  res.send(buffer);
 });
 
 // ─── Finance (owner only): live invoice + labor cost + profit per factory ────────
