@@ -1206,11 +1206,7 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   const reportMonth = reportMonthFor(now);
   const monthLabel = new Date(`${reportMonth}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
 
-  // Визначаємо фабрику з графіку за цей місяць
-  const [yearStr, monStr] = reportMonth.split("-");
-  const monthStart = `${yearStr}-${monStr}-01`;
-  const monthEnd = new Date(parseInt(yearStr!), parseInt(monStr!), 1).toISOString().split("T")[0]!;
-
+  // Фабрики працівника з його затверджених змін (місяць не фільтруємо — беремо всі його фабрики)
   const factoryRows = await db
     .select({ id: factoriesTable.id, name: factoriesTable.name })
     .from(scheduleEntriesTable)

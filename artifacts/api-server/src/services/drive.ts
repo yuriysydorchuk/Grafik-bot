@@ -556,9 +556,12 @@ export async function updateHoursTracking(month: string): Promise<string | null>
     const year = parseInt(yearStr!);
     const mon = parseInt(monStr!);
     const monthStart = `${yearStr}-${monStr}-01`;
-    const monthEnd = new Date(year, mon, 1).toISOString().split("T")[0]!;
+    // tz-safe: first day of next month, and include the boundary week (Monday up to 6 days early)
+    const monthEnd = mon === 12 ? `${year + 1}-01-01` : `${year}-${String(mon + 1).padStart(2, "0")}-01`;
+    const wf = new Date(monthStart + "T00:00:00"); wf.setDate(wf.getDate() - 6);
+    const weekFrom = `${wf.getFullYear()}-${String(wf.getMonth() + 1).padStart(2, "0")}-${String(wf.getDate()).padStart(2, "0")}`;
 
-    const entries = await db
+    const allEntries = await db
       .select({
         workerId: scheduleEntriesTable.workerId,
         workerName: workersTable.fullName,
@@ -578,10 +581,15 @@ export async function updateHoursTracking(month: string): Promise<string | null>
       .where(
         and(
           eq(scheduleWeeksTable.status, "approved"),
-          gte(scheduleWeeksTable.weekStart, monthStart),
+          gte(scheduleWeeksTable.weekStart, weekFrom),
           lt(scheduleWeeksTable.weekStart, monthEnd),
         ),
       );
+    // Attribute each shift to the month of its real date, not the week's Monday.
+    const entries = allEntries.filter(e => {
+      const dt = dayDate(String(e.weekStart), e.dayOfWeek);
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}` === month;
+    });
 
     // Group entries by factory
     const byFactory = new Map<string, { name: string; entries: typeof entries }>();
@@ -698,7 +706,7 @@ export async function updateDriverTripsExcel(month: string): Promise<string | nu
     const year = parseInt(yearStr!);
     const mon = parseInt(monStr!);
     const monthStart = `${yearStr}-${monStr}-01`;
-    const monthEnd = new Date(year, mon, 1).toISOString().split("T")[0]!;
+    const monthEnd = mon === 12 ? `${year + 1}-01-01` : `${year}-${String(mon + 1).padStart(2, "0")}-01`; // tz-safe next-month start
 
     // Fetch all trips for this month
     const trips = await db
