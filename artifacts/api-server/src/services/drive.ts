@@ -350,8 +350,10 @@ async function loadSegConfig(factoryId: number): Promise<SegConfig> {
   return { usesPositions: f.usesPositions, usesGender: f.usesGender, showCode: f.showCode, posOrder };
 }
 
-// Build a downloadable Excel for one factory's week. Returns buffer + filename.
-export async function buildScheduleExcelBuffer(weekId: number, factoryId: number): Promise<{ buffer: Buffer; fileName: string; factoryName: string } | null> {
+// Build a downloadable Excel for one factory's week — or a single day when `day` is given
+// (the workbook builder already emits one worksheet per day, so a one-day filter yields a
+// single-day file). Returns buffer + filename.
+export async function buildScheduleExcelBuffer(weekId: number, factoryId: number, day?: string | null): Promise<{ buffer: Buffer; fileName: string; factoryName: string } | null> {
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   if (!factory) return null;
   const week = (await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, weekId)))[0];
@@ -361,11 +363,17 @@ export async function buildScheduleExcelBuffer(weekId: number, factoryId: number
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(positionsTable, eq(workersTable.positionId, positionsTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId), ne(scheduleEntriesTable.status, "absent")));
+    .where(and(
+      eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId), ne(scheduleEntriesTable.status, "absent"),
+      ...(day ? [eq(scheduleEntriesTable.dayOfWeek, day as any)] : []),
+    ));
   const allFactories = await db.select().from(factoriesTable);
   const seg = await loadSegConfig(factoryId);
   const buffer = await buildFactoryWorkbook(factory.name, factoryId, entries, weekStart, allFactories, seg);
-  return { buffer, fileName: `Grafik ${factory.name} ${weekStart.replace(/-/g, ".")}.xlsx`, factoryName: factory.name };
+  const fileName = day
+    ? `Grafik ${factory.name} ${DAY_NAMES_PL[day] ?? day} ${fmtDDMMYYYY(dayDate(weekStart, day))}.xlsx`
+    : `Grafik ${factory.name} ${weekStart.replace(/-/g, ".")}.xlsx`;
+  return { buffer, fileName, factoryName: factory.name };
 }
 
 // ─── Schedule Excel export (per factory subfolder) ───────────────────────────

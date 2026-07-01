@@ -1444,12 +1444,14 @@ router.delete("/schedule/entry/:id", RW, async (req, res) => {
 router.get("/schedule/excel", RW, async (req, res) => {
   const weekStart = String(req.query.weekStart);
   const factoryId = Number(req.query.factoryId);
+  const dayRaw = req.query.day ? String(req.query.day) : null;         // optional single-day download
+  const day = dayRaw && (DAYS as string[]).includes(dayRaw) ? dayRaw : null;
   if (!weekStart || !factoryId) return fail(res, 400, "weekStart та factoryId обовʼязкові");
   const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
   const week = candidates.find(w => w.status === "approved") ?? candidates[0];
   if (!week) return fail(res, 404, "Графік не знайдено");
   const { buildScheduleExcelBuffer } = await import("../services/drive");
-  const out = await buildScheduleExcelBuffer(week.id, factoryId);
+  const out = await buildScheduleExcelBuffer(week.id, factoryId, day);
   if (!out) return fail(res, 404, "Не вдалося сформувати файл");
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(out.fileName)}"`);

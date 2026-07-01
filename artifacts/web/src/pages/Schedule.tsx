@@ -224,13 +224,21 @@ export default function Schedule() {
                   <span className="text-sm font-semibold text-slate-700">{DAY_FULL[day]}</span>
                   <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, di)}</span>
                   {entries.some(e => e.day === day) && (
-                    <button
-                      className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      disabled={notifyDay.isPending}
-                      title={t("Розіслати графік на цей день працівникам")}
-                      onClick={async () => { if (await confirm({ title: t("Розіслати на {day}?", { day: DAY_FULL[day] }), message: t("Працівникам, що мають зміну цього дня, прийде повідомлення."), confirmText: t("Розіслати") })) notifyDay.mutate(day); }}>
-                      <Send className="h-3 w-3" /> {t("Розіслати")}
-                    </button>
+                    <div className="ml-auto flex items-center gap-1">
+                      <a
+                        href={`/api/schedule/excel?weekStart=${weekStart}&factoryId=${factoryId}&day=${day}`}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                        title={t("Скачати графік на цей день")}>
+                        <Download className="h-3 w-3" /> {t("Скачати")}
+                      </a>
+                      <button
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        disabled={notifyDay.isPending}
+                        title={t("Розіслати графік на цей день працівникам")}
+                        onClick={async () => { if (await confirm({ title: t("Розіслати на {day}?", { day: DAY_FULL[day] }), message: t("Працівникам, що мають зміну цього дня, прийде повідомлення."), confirmText: t("Розіслати") })) notifyDay.mutate(day); }}>
+                        <Send className="h-3 w-3" /> {t("Розіслати")}
+                      </button>
+                    </div>
                   )}
                 </div>
                 <div className={`grid grid-cols-1 divide-y divide-slate-100 ${gridColsClass(shiftCount)} md:divide-x md:divide-y-0`}>

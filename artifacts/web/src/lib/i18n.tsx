@@ -223,6 +223,8 @@ const EN: Record<string, string> = {
   "Згенерувати": "Generate",
   "Розіслати в Telegram?": "Send via Telegram?",
   "Розіслати графік на цей день працівникам": "Send this day's schedule to workers",
+  "Скачати": "Download",
+  "Скачати графік на цей день": "Download this day's schedule",
   "Додати людину": "Add a person",
   "Людину буде додано до зміни; статус «вийшов» позначте в явці.": "The person is added to the shift; mark “present” in attendance.",
   "Розіслати на {day}?": "Send for {day}?",
