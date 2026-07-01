@@ -1530,7 +1530,7 @@ router.get("/reliability", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
-  const monthEnd = new Date(y!, m!, 1).toISOString().split("T")[0]!;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   const rows = await db
     .select({
       workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
@@ -1568,7 +1568,7 @@ router.get("/trips", async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
-  const monthEnd = new Date(y!, m!, 1).toISOString().split("T")[0]!;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   const rows = await db
     .select({
       driverId: driverTripsTable.driverId, name: driversTable.name, vehicle: driversTable.vehicle,
@@ -1661,7 +1661,7 @@ router.get("/hours", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
-  const monthEnd = new Date(y!, m!, 1).toISOString().split("T")[0]!;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   // factory shift definitions (for actual per-shift durations + column counts)
   const facRows = await db.select().from(factoriesTable);
   const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
@@ -1973,7 +1973,7 @@ router.get("/absences", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
-  const monthEnd = new Date(y!, m!, 1).toISOString().split("T")[0]!;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   const rows = await db
     .select({
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
