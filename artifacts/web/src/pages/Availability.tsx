@@ -1,12 +1,18 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Factory as FactoryIcon } from "lucide-react";
-import { get, type AvailRow, DAYS, DAY_UK } from "../lib/api";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Factory as FactoryIcon, Send } from "lucide-react";
+import { toast } from "sonner";
+import { get, post, type AvailRow, DAYS, DAY_UK } from "../lib/api";
 import { upcomingWeeks } from "../lib/dates";
 import { WeekSelect } from "../components/WeekSelect";
-import { Card, Spinner, Empty, Badge } from "../components/ui";
+import { Card, Spinner, Empty, Badge, Button } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { useConfirm } from "../components/confirm";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
+
+interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
 
 const shiftColor = (s?: string) => s === "1" ? "blue" : s === "2" ? "amber" : s === "3" ? "red" : "slate";
 
@@ -50,9 +56,22 @@ type Group = { key: string; name: string; rows: AvailRow[]; summary: Summary };
 export default function Availability() {
   const t = useT();
   const [weekStart, setWeekStart] = useState(upcomingWeeks()[0]!.value);
+  const me = useMe();
+  const canRemind = can(me, "editData");
+  const confirm = useConfirm();
   const { data, isFetching } = useQuery<AvailRow[]>({
     queryKey: ["availability", weekStart],
     queryFn: () => get(`/availability?weekStart=${weekStart}`),
+  });
+  // Workers who still haven't filled availability for the selected week (for the reminder button)
+  const { data: missing = [] } = useQuery<MissingWorker[]>({
+    queryKey: ["avail-missing", weekStart], enabled: !!weekStart && canRemind,
+    queryFn: () => get(`/availability/missing?weekStart=${weekStart}`),
+  });
+  const remind = useMutation({
+    mutationFn: () => post("/availability/remind", { weekStart }),
+    onSuccess: (r: any) => toast.success(t("Нагадування надіслано"), { description: `✅ ${r.notified}${r.skipped ? ` · ⚠️ ${t("без Telegram")}: ${r.skipped}` : ""}` }),
+    onError: (e: any) => toast.error(e.message),
   });
 
   const groups = useMemo<Group[]>(() => {
@@ -73,8 +92,23 @@ export default function Availability() {
   return (
     <>
       <PageHeader title={t("Доступність")} subtitle={t("Хто на які зміни заявився — по фабриках")} />
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <WeekSelect value={weekStart} onChange={setWeekStart} />
+        {canRemind && (
+          <div className="flex items-center gap-2">
+            <Badge color={missing.length ? "amber" : "green"}>{t("Не заповнили:")} {missing.length}</Badge>
+            <Button variant="secondary" loading={remind.isPending} disabled={missing.length === 0}
+              onClick={async () => {
+                const n = missing.filter(w => w.telegramId).length;
+                const msg = n > 0
+                  ? t("{n} із {total} прац. мають Telegram і отримають нагадування заповнити доступність на наступний тиждень.", { n, total: missing.length })
+                  : t("Жоден із {total} прац. не приєднаний до Telegram — нагадування нікому не надійде.", { total: missing.length });
+                if (await confirm({ title: t("Надіслати нагадування?"), message: msg, confirmText: t("Надіслати") })) remind.mutate();
+              }}>
+              <Send className="h-3.5 w-3.5" /> {t("Нагадати всім")}
+            </Button>
+          </div>
+        )}
       </div>
       {isFetching && !data ? <Spinner /> : !data?.length ? <Empty>{t("Ніхто ще не заповнив доступність на цей тиждень")}</Empty> : (
         <div className="space-y-6">

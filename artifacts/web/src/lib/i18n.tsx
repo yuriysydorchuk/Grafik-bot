@@ -107,6 +107,7 @@ const EN: Record<string, string> = {
   "Призначень": "Assignments",
   "Статус": "Status",
   "Не заповнили доступність — наст. тиждень": "Haven't submitted availability — next week",
+  "Не заповнили:": "Not filled:",
   "{n} із {total} прац. мають Telegram і отримають нагадування заповнити доступність на наступний тиждень.": "{n} of {total} workers have Telegram and will get a reminder to submit availability for next week.",
   "Жоден із {total} прац. не приєднаний до Telegram — нагадування нікому не надійде.": "None of the {total} workers are on Telegram — no reminder will be delivered.",
   "Надіслати нагадування?": "Send reminders?",

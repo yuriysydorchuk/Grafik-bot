@@ -23,7 +23,7 @@ import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
-import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours } from "./time";
+import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import {
   getMenuDriverFactory, sendAvailabilityKeyboard,
   getAssignedWorkerIds, getAssignedEntries, getReserveForShift, renderShiftEditor, showReserveSummary,
@@ -1202,16 +1202,8 @@ bot.hears(trAll("menu.report"), async (ctx) => {
     return ctx.reply(`⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового.\n\nДо кінця місяця: ${daysLeft} днів.`, await workerMenuFor(worker, wlang(worker)));
   }
 
-  // Визначаємо за який місяць рапорт
-  let reportMonth: string;
-  if (inLastWeek) {
-    // Здаємо рапорт за поточний місяць
-    reportMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  } else {
-    // Перші 7 днів — рапорт за попередній місяць
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    reportMonth = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
-  }
+  // Визначаємо за який місяць рапорт (спільна логіка з нагадуванням з офісу)
+  const reportMonth = reportMonthFor(now);
   const monthLabel = new Date(`${reportMonth}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
 
   // Визначаємо фабрику з графіку за цей місяць

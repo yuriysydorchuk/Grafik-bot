@@ -20,12 +20,30 @@ import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
-import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName } from "../bot/time";
+import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, reportMonthFor } from "../bot/time";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile } from "../lib/uploads";
 
 const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+// Actual calendar date (YYYY-MM-DD) of a schedule entry = its week's Monday + day offset.
+// Month-scoped reports must attribute each shift to the month of its real date, not the
+// week's Monday — otherwise a week straddling the boundary (e.g. Mon 29 Jun–Sun 5 Jul)
+// counts entirely under June and July shows empty until the next full week.
+function entryDateStr(weekStart: string, day: string | null): string {
+  const d = new Date(String(weekStart) + "T00:00:00");
+  d.setDate(d.getDate() + Math.max(0, DAYS.indexOf(day as DayOfWeek)));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+// Lower bound for the week filter: any week whose Monday is up to 6 days before the month
+// start can still contain days that fall inside the month.
+function weekFromForMonth(monthStart: string): string {
+  const d = new Date(monthStart + "T00:00:00");
+  d.setDate(d.getDate() - 6);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 const router: IRouter = Router();
 
 // Everything here requires a valid session
@@ -1517,15 +1535,18 @@ router.get("/reliability", RW, async (req, res) => {
     .select({
       workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
       factoryName: factoriesTable.name, status: scheduleEntriesTable.status, reason: scheduleEntriesTable.absenceReason,
+      day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, monthStart), lt(scheduleWeeksTable.weekStart, monthEnd)));
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd)));
   const byWorker = new Map<number, any>();
   for (const r of rows) {
     if (!r.workerId) continue;
+    const date = entryDateStr(String(r.weekStart), r.day);
+    if (date < monthStart || date >= monthEnd) continue; // day falls outside the queried month
     if (!byWorker.has(r.workerId)) byWorker.set(r.workerId, { workerId: r.workerId, name: r.name, code: r.code, factory: r.factoryName, present: 0, absent: 0, cancelled: 0, scheduled: 0 });
     const s = byWorker.get(r.workerId);
     if (r.status === "present") s.present++;
@@ -1653,15 +1674,18 @@ router.get("/hours", RW, async (req, res) => {
       factoryId: scheduleEntriesTable.factoryId, factory: factoriesTable.name, shift: scheduleEntriesTable.shift,
       hoursOverride: scheduleEntriesTable.hoursOverride, positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, monthStart), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "present")));
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "present")));
   const byWorker = new Map<number, any>();
   for (const r of rows) {
     if (!r.workerId) continue;
+    const date = entryDateStr(String(r.weekStart), r.day);
+    if (date < monthStart || date >= monthEnd) continue; // day falls outside the queried month
     const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
     if (!byWorker.has(r.workerId)) byWorker.set(r.workerId, {
       workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory,
@@ -1716,14 +1740,17 @@ router.get("/hours", RW, async (req, res) => {
 });
 
 // Remind active workers who haven't submitted their monthly report yet.
-router.post("/hours/report-remind", RW, async (req, res) => {
-  const month = String((req.body ?? {}).month || new Date().toISOString().slice(0, 7));
+router.post("/hours/report-remind", RW, async (_req, res) => {
+  // The report month follows the collection window (first 7 days of a month → previous
+  // month), not the calendar month or the page selector — otherwise on the 1st we'd nag
+  // people for a month that hasn't ended. Server-authoritative so it can't drift.
+  const month = reportMonthFor();
   const active = await db.select({ id: workersTable.id, tid: workersTable.telegramId, lang: workersTable.language })
     .from(workersTable).where(eq(workersTable.isActive, true));
   const submitted = new Set((await db.select({ workerId: monthlyReportsTable.workerId }).from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month))).map(r => r.workerId));
   const missing = active.filter(w => !submitted.has(w.id));
   const targets = missing.filter(w => w.tid);
-  if (targets.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length });
+  if (targets.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length, month });
   let notified = 0, skipped = 0;
   try {
     const { bot } = await import("../bot");
@@ -1736,7 +1763,7 @@ router.post("/hours/report-remind", RW, async (req, res) => {
       await new Promise(r => setTimeout(r, 50));
     }
   } catch (e) { logger.error({ err: e }, "report remind failed"); return fail(res, 500, "Помилка розсилки"); }
-  ok(res, { notified, skipped: skipped + (missing.length - targets.length), total: missing.length });
+  ok(res, { notified, skipped: skipped + (missing.length - targets.length), total: missing.length, month });
 });
 
 // Manually set/clear a worker's report hours for a month (admin fills it on the web).
@@ -1957,13 +1984,11 @@ router.get("/absences", RW, async (req, res) => {
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, monthStart), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent")));
-  const absences = rows.map(r => {
-    const d = new Date(String(r.weekStart) + "T00:00:00");
-    d.setDate(d.getDate() + Math.max(0, DAYS.indexOf(r.day as any)));
-    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return { name: r.name, code: r.code, factory: r.factory, date, day: r.day, shift: r.shift, reason: r.reason, excused: !!r.reason };
-  }).sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent")));
+  const absences = rows
+    .map(r => ({ name: r.name, code: r.code, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason, excused: !!r.reason }))
+    .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
+    .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
   const noShow = absences.filter(a => !a.excused).length;
   ok(res, { month, absences, total: absences.length, excused: absences.length - noShow, noShow });
 });

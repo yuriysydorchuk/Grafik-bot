@@ -13,6 +13,17 @@ export function warsawDateStr(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: DRIVER_TZ });
 }
 
+// The month (YYYY-MM) a monthly report currently belongs to. Reports are collected in a
+// window around the month boundary: in the first 7 days of a month the report is still for
+// the PREVIOUS month; otherwise it's for the current month. Shared by the bot report flow
+// and the office "remind about report" action so they never disagree.
+export function reportMonthFor(now: Date = nowWarsaw()): string {
+  const base = now.getDate() <= 7
+    ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    : now;
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}`;
+}
+
 // Today's weekday in Warsaw as our DayOfWeek code
 export function warsawDayName(): DayOfWeek {
   const short = new Date().toLocaleDateString("en-US", { timeZone: DRIVER_TZ, weekday: "short" });

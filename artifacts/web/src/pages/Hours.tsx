@@ -37,8 +37,11 @@ export default function Hours() {
   const openByWorker = useMemo(() => new Set(disputes.filter(d => d.status === "new").map(d => d.workerId)), [disputes]);
   const canEdit = can(me, "editData");
   const remind = useMutation({
-    mutationFn: () => post<{ notified: number; total: number }>("/hours/report-remind", { month }),
-    onSuccess: (r) => toast.success(t("Нагадування про рапорт надіслано: {n} з {total}", { n: r.notified, total: r.total })),
+    // Server picks the report month by the collection window (first days of a month → prev month)
+    mutationFn: () => post<{ notified: number; total: number; month: string }>("/hours/report-remind", {}),
+    onSuccess: (r) => toast.success(t("Нагадування про рапорт надіслано: {n} з {total}", { n: r.notified, total: r.total }), {
+      description: months.find(m => m.value === r.month)?.label ?? r.month,
+    }),
     onError: (e: any) => toast.error(e.message),
   });
 
