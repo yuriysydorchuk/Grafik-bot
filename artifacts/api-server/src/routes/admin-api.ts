@@ -2156,10 +2156,11 @@ router.post("/advances/:id/approve", RW, (req, res) => decideAdvance(req, res, "
 router.post("/advances/:id/reject", RW, (req, res) => decideAdvance(req, res, "rejected"));
 router.post("/advances/:id/paid", RW, (req, res) => decideAdvance(req, res, "paid"));
 
-// month range helper for drill-downs
+// month range helper for drill-downs. monthEnd = first day of next month (tz-safe string).
 function monthRange(month: string) {
   const [y, m] = month.split("-").map(Number);
-  return { monthStart: `${month}-01`, monthEnd: new Date(y!, m!, 1).toISOString().split("T")[0]! };
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+  return { monthStart: `${month}-01`, monthEnd };
 }
 const entryDate = (weekStart: string, day: string) => {
   const d = new Date(String(weekStart) + "T00:00:00");
@@ -2186,7 +2187,7 @@ router.get("/worker-days/:id", RW, async (req, res) => {
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, monthStart), lt(scheduleWeeksTable.weekStart, monthEnd)));
+    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd)));
   const driverRows = await db.select({ id: driversTable.id, name: driversTable.name }).from(driversTable);
   const days = rows.map(r => {
     const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
@@ -2199,7 +2200,8 @@ router.get("/worker-days/:id", RW, async (req, res) => {
       hours: r.status === "present" ? (r.hoursOverride ?? computed) : 0,
       pickedUpBy: r.pickedUpBy ? (driverRows.find(d => d.id === r.pickedUpBy)?.name ?? null) : null,
     };
-  }).sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+  }).filter(d => d.date >= monthStart && d.date < monthEnd) // attribute each shift to the month of its real date
+    .sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
   // worker's unresolved proposed corrections for this month (structured items)
   const disp = (await db.select().from(hoursDisputesTable)
     .where(and(eq(hoursDisputesTable.workerId, workerId), eq(hoursDisputesTable.status, "new")))
