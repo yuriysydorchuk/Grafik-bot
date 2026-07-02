@@ -172,6 +172,20 @@ const D: Dict = {
   "notif.absRejected":   { uk: "❌ Вашу відсутність на *{day} {shift}* відхилено. Зверніться до диспетчера.", en: "❌ Your absence for *{day} {shift}* was rejected. Contact the dispatcher.", es: "❌ Tu ausencia para *{day} {shift}* fue rechazada. Contacta al despachador.", ru: "❌ Ваше отсутствие на *{day} {shift}* отклонено. Обратитесь к диспетчеру.", pl: "❌ Twoja nieobecność na *{day} {shift}* została odrzucona. Skontaktuj się z dyspozytorem." },
   "notif.subAssigned":   { uk: "🆕 Вас поставили на зміну *{day} {shift}* (заміна). Перевірте «{btn}».", en: "🆕 You were assigned to shift *{day} {shift}* (substitute). Check “{btn}”.", es: "🆕 Te asignaron al turno *{day} {shift}* (sustitución). Revisa «{btn}».", ru: "🆕 Вас поставили на смену *{day} {shift}* (замена). Проверьте «{btn}».", pl: "🆕 Przydzielono Cię do zmiany *{day} {shift}* (zastępstwo). Sprawdź „{btn}”." },
 
+  // ── monthly report submission ──
+  "report.window":        { uk: "⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового.\n\nДо кінця місяця: {days} днів.", en: "⏰ Reports can be submitted in the last 7 days of the month or the first 7 days of the next one.\n\nDays left until month end: {days}.", es: "⏰ Los reportes se pueden enviar en los últimos 7 días del mes o los primeros 7 días del siguiente.\n\nDías hasta fin de mes: {days}.", ru: "⏰ Рапорты можно подавать за 7 дней до конца месяца или в первые 7 дней нового.\n\nДо конца месяца: {days} дней.", pl: "⏰ Raporty można składać w ostatnich 7 dniach miesiąca lub w pierwszych 7 dniach nowego.\n\nDo końca miesiąca: {days} dni." },
+  "report.noFactory":     { uk: "📄 Не вдалося визначити вашу фабрику для рапорту. Зверніться до адміністратора.", en: "📄 Could not determine your factory for the report. Contact the administrator.", es: "📄 No se pudo determinar tu fábrica para el reporte. Contacta al administrador.", ru: "📄 Не удалось определить вашу фабрику для рапорта. Обратитесь к администратору.", pl: "📄 Nie udało się ustalić Twojej fabryki dla raportu. Skontaktuj się z administratorem." },
+  "report.pickFactoryHdr":{ uk: "📄 Рапорт за *{month}*\n\nОберіть фабрику для рапорту:", en: "📄 Report for *{month}*\n\nChoose the factory for the report:", es: "📄 Reporte de *{month}*\n\nElige la fábrica para el reporte:", ru: "📄 Рапорт за *{month}*\n\nВыберите фабрику для рапорта:", pl: "📄 Raport za *{month}*\n\nWybierz fabrykę dla raportu:" },
+  "report.pickFactory":   { uk: "Оберіть фабрику:", en: "Choose a factory:", es: "Elige una fábrica:", ru: "Выберите фабрику:", pl: "Wybierz fabrykę:" },
+  "report.pickFromList":  { uk: "Оберіть фабрику зі списку.", en: "Choose a factory from the list.", es: "Elige una fábrica de la lista.", ru: "Выберите фабрику из списка.", pl: "Wybierz fabrykę z listy." },
+  "report.askHours":      { uk: "📄 Рапорт за *{month}* — {factory}\n\nВкажіть *загальну кількість годин* за місяць (число 1–400):", en: "📄 Report for *{month}* — {factory}\n\nEnter the *total number of hours* for the month (a number 1–400):", es: "📄 Reporte de *{month}* — {factory}\n\nIndica el *total de horas* del mes (número 1–400):", ru: "📄 Рапорт за *{month}* — {factory}\n\nУкажите *общее количество часов* за месяц (число 1–400):", pl: "📄 Raport za *{month}* — {factory}\n\nPodaj *łączną liczbę godzin* za miesiąc (liczba 1–400):" },
+  "report.badHours":      { uk: "Вкажіть коректне число годин за місяць (від 1 до 400, напр. 168 або 172.5).", en: "Enter a valid number of hours for the month (from 1 to 400, e.g. 168 or 172.5).", es: "Ingresa un número válido de horas del mes (de 1 a 400, ej. 168 o 172.5).", ru: "Укажите корректное число часов за месяц (от 1 до 400, напр. 168 или 172.5).", pl: "Podaj poprawną liczbę godzin za miesiąc (od 1 do 400, np. 168 lub 172.5)." },
+  "report.askPhoto":      { uk: "🕒 Годин за місяць: *{hours}*\n\nТепер надішліть *фото* рапорту:", en: "🕒 Hours for the month: *{hours}*\n\nNow send a *photo* of the report:", es: "🕒 Horas del mes: *{hours}*\n\nAhora envía una *foto* del reporte:", ru: "🕒 Часов за месяц: *{hours}*\n\nТеперь пришлите *фото* рапорта:", pl: "🕒 Godzin za miesiąc: *{hours}*\n\nTeraz wyślij *zdjęcie* raportu:" },
+  "report.uploading":     { uk: "⏳ Завантажую рапорт на Google Drive...", en: "⏳ Uploading the report to Google Drive...", es: "⏳ Subiendo el reporte a Google Drive...", ru: "⏳ Загружаю рапорт на Google Drive...", pl: "⏳ Przesyłam raport na Google Drive..." },
+  "report.photoFail":     { uk: "❌ Не вдалося зберегти фото. Спробуйте надіслати рапорт ще раз.", en: "❌ Could not save the photo. Try submitting the report again.", es: "❌ No se pudo guardar la foto. Intenta enviar el reporte de nuevo.", ru: "❌ Не удалось сохранить фото. Попробуйте отправить рапорт ещё раз.", pl: "❌ Nie udało się zapisać zdjęcia. Spróbuj wysłać raport ponownie." },
+  "report.saved":         { uk: "✅ Рапорт збережено! Годин за місяць: *{hours}*", en: "✅ Report saved! Hours for the month: *{hours}*", es: "✅ ¡Reporte guardado! Horas del mes: *{hours}*", ru: "✅ Рапорт сохранён! Часов за месяц: *{hours}*", pl: "✅ Raport zapisany! Godzin za miesiąc: *{hours}*" },
+  "report.uploadErr":     { uk: "❌ Помилка завантаження.", en: "❌ Upload error.", es: "❌ Error de carga.", ru: "❌ Ошибка загрузки.", pl: "❌ Błąd przesyłania." },
+
   // ── stages (referral) ──
   "stage.new":       { uk: "🆕 нова заявка", en: "🆕 new", es: "🆕 nuevo", ru: "🆕 новая заявка", pl: "🆕 nowy" },
   "stage.contacted": { uk: "📞 зв'язалися", en: "📞 contacted", es: "📞 contactado", ru: "📞 связались", pl: "📞 skontaktowano" },
@@ -198,6 +212,9 @@ export function trAll(key: string): string[] {
 
 export const dayShort = (lang: Lang, day: string) => t(lang, `d.${day}`);
 export const stageLabel = (lang: Lang, stage: string) => t(lang, `stage.${stage}`) || stage;
+
+// Intl locale per bot language — for toLocaleDateString (localized month names etc.)
+export const DATE_LOCALE: Record<Lang, string> = { uk: "uk-UA", en: "en-GB", es: "es-ES", ru: "ru-RU", pl: "pl-PL" };
 export { DAY_KEYS };
 
 // ─────────────────────────────────────────────────────────────────────────────
