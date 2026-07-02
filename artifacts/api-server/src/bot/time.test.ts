@@ -2,11 +2,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { factoryShiftStart, shiftAnchor } from "./time.ts";
 
-test("factoryShiftStart uses factory time, falls back to defaults", () => {
+test("factoryShiftStart resolves shifts positionally, falls back to the default", () => {
+  // prefers the `shifts` JSON over legacy columns
+  const js = {
+    shifts: [{ start: "05:45", end: "13:30" }, { start: "13:30", end: "21:15" }],
+    shift1Start: "07:00", shift2Start: null, shift3Start: null,
+  };
+  assert.equal(factoryShiftStart(js, "1"), "05:45");
+  assert.equal(factoryShiftStart(js, "2"), "13:30");
+
+  // legacy columns are compacted: the only configured time becomes shift 1
   const f = { shift1Start: null, shift2Start: "13:30", shift3Start: null };
-  assert.equal(factoryShiftStart(f, "1"), "06:00"); // default
-  assert.equal(factoryShiftStart(f, "2"), "13:30"); // custom
-  assert.equal(factoryShiftStart(f, "3"), "22:00"); // default
+  assert.equal(factoryShiftStart(f, "1"), "13:30"); // first (and only) shift
+  assert.equal(factoryShiftStart(f, "2"), "06:00"); // not configured → default
+
   assert.equal(factoryShiftStart(undefined, "1"), "06:00");
   // malformed value ignored
   assert.equal(factoryShiftStart({ shift1Start: "oops", shift2Start: null, shift3Start: null }, "1"), "06:00");
