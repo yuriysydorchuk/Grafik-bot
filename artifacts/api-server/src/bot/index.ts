@@ -311,6 +311,25 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
   return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
 });
 
+// One-button reply keyboard shown while a worker dialog awaits typed input,
+// so there is always a visible way out of the flow.
+const cancelKb = (lang: Lang) => Markup.keyboard([[t(lang, "hr.cancel")]]).resize();
+
+// Universal cancel for worker input flows (any language) — clears the dialog
+// state and returns to the main menu. Registered before bot.on("text") so it
+// wins over flows that would otherwise swallow the text as input.
+bot.hears(trAll("hr.cancel"), async (ctx) => {
+  const tid = String(ctx.from.id);
+  clearState(tid);
+  const admin = await getAdmin(tid);
+  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), adminMenu(al)); }
+  const driver = await getDriver(tid);
+  if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)); }
+  const worker = await getWorker(tid);
+  const wl = wlang(worker);
+  return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
+});
+
 // ─── Office/admin & driver language switch ───────────────────────────────────
 bot.hears(bhears("🌐 Мова / Language"), async (ctx) => {
   const tid = String(ctx.from.id);
@@ -835,7 +854,7 @@ bot.action("adv:new", async (ctx) => {
   if (dayCount >= 1) return ctx.reply(t(lang, "adv.limitDay"));
   if (monthCount >= 3) return ctx.reply(t(lang, "adv.limitMonth"));
   setState(tid, "advance:enter_amount", { workerId: worker.id, lang });
-  return ctx.reply(t(lang, "adv.askAmount"), Markup.removeKeyboard());
+  return ctx.reply(t(lang, "adv.askAmount"), cancelKb(lang));
 });
 
 // Admin acts on an advance straight from the Telegram notification.
@@ -1029,7 +1048,7 @@ bot.action(/^hrv:h:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   try { await ctx.deleteMessage(); } catch { /* ignore */ }
   setState(tid, "hrv_hours", { review: st.data, index: i });
-  return ctx.reply(t(asLang(st.data.lang), "hr.askHours", { date: s.dateLabel, shift: s.shift, hours: s.hours }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+  return ctx.reply(t(asLang(st.data.lang), "hr.askHours", { date: s.dateLabel, shift: s.shift, hours: s.hours }), { parse_mode: "Markdown", ...cancelKb(asLang(st.data.lang)) });
 });
 
 // remove a proposed addition
@@ -1050,7 +1069,7 @@ bot.action("hrv:add", async (ctx) => {
   await ctx.answerCbQuery();
   try { await ctx.deleteMessage(); } catch { /* ignore */ }
   setState(tid, "hrv_add:date", { review: st.data });
-  return ctx.reply(t(asLang(st.data.lang), "hr.askDate"), { parse_mode: "Markdown" });
+  return ctx.reply(t(asLang(st.data.lang), "hr.askDate"), { parse_mode: "Markdown", ...cancelKb(asLang(st.data.lang)) });
 });
 
 // choose a shift number for the addition
@@ -1173,7 +1192,7 @@ bot.action(/^absreq:(\d+)$/, async (ctx) => {
   if (!item) return;
   setState(tid, "absence:enter_reason", { workerId: st.data.workerId, lang, weekStart: item.weekStart, weekId: item.weekId, day: item.day, shift: item.shift, entryId: item.id });
   try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
-  return ctx.reply(t(lang, "abs.askReason", { day: dayShort(lang, item.day), shift: item.shift }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+  return ctx.reply(t(lang, "abs.askReason", { day: dayShort(lang, item.day), shift: item.shift }), { parse_mode: "Markdown", ...cancelKb(lang) });
 });
 
 // After the factory is known, ask the worker to type their total monthly hours.
@@ -1184,7 +1203,7 @@ async function askReportHours(ctx: Context, tid: string, data: any) {
   const lang = asLang(data.lang);
   return ctx.reply(
     t(lang, "report.askHours", { month: reportMonthLabel(lang, data.month), factory: data.factory }),
-    { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    { parse_mode: "Markdown", ...cancelKb(lang) },
   );
 }
 
@@ -1805,6 +1824,16 @@ bot.on("document", async (ctx) => {
   const state = getState(tid);
   if (!state) return;
 
+  // ── Monthly report photo sent as a file (uncompressed) ───────────
+  if (state.action === "report:awaiting_photo") {
+    const doc = ctx.message.document;
+    if (doc.mime_type?.startsWith("image/")) {
+      return submitMonthlyReport(ctx, tid, state.data, doc.file_id, doc.mime_type);
+    }
+    const lang = wlang(await getWorker(tid));
+    return ctx.reply(t(lang, "report.needPhoto"), { parse_mode: "Markdown", ...cancelKb(lang) });
+  }
+
   // ── Schedule Excel import ─────────────────────────────────────────
   if (state.action === "schedule_import:awaiting_file") {
     if (!await isAdmin(tid)) return;
@@ -1979,22 +2008,18 @@ bot.on("document", async (ctx) => {
 // PHOTO HANDLER — report submission
 // ═══════════════════════════════════════════════════════════════════
 
-bot.on("photo", async (ctx) => {
-  const tid = String(ctx.from.id);
-  const state = getState(tid);
-  if (state?.action !== "report:awaiting_photo") return;
-  const { data } = state;
+// Shared by the photo handler and the document handler (photo sent as a file).
+async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId: string, mime: string) {
   clearState(tid);
   const worker = await getWorker(tid);
   const lang = wlang(worker);
   const menu = await workerMenuFor(worker, lang);
   await ctx.reply(t(lang, "report.uploading"));
   try {
-    const photo = ctx.message.photo.at(-1)!;
-    const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+    const fileLink = await ctx.telegram.getFileLink(fileId);
     const resp = await fetch(fileLink.href);
     const buf = Buffer.from(await resp.arrayBuffer());
-    const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, "image/jpeg");
+    const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, mime);
     // No photo saved → don't accept the hours; ask to retry.
     if (!link) return ctx.reply(t(lang, "report.photoFail"), menu);
     // Persist the monthly report (hours + photo). Re-submit for the same month overwrites.
@@ -2013,6 +2038,14 @@ bot.on("photo", async (ctx) => {
     logger.error({ err: e }, "Report upload error");
     return ctx.reply(t(lang, "report.uploadErr"), menu);
   }
+}
+
+bot.on("photo", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "report:awaiting_photo") return;
+  const photo = ctx.message.photo.at(-1)!;
+  return submitMonthlyReport(ctx, tid, state.data, photo.file_id, "image/jpeg");
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3197,8 +3230,14 @@ bot.on("text", async (ctx) => {
     setState(tid, "report:awaiting_photo", { ...data, reportHours: Math.round(hours * 100) / 100 });
     return ctx.reply(
       t(rlang, "report.askPhoto", { hours: Math.round(hours * 100) / 100 }),
-      { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+      { parse_mode: "Markdown", ...cancelKb(rlang) },
     );
+  }
+
+  // Text while the bot waits for the report photo — remind instead of staying silent.
+  if (state?.action === "report:awaiting_photo") {
+    const rlang = asLang(state.data.lang);
+    return ctx.reply(t(rlang, "report.needPhoto"), { parse_mode: "Markdown", ...cancelKb(rlang) });
   }
 
   // ── Driver: unplanned worker ──────────────────────────────────────

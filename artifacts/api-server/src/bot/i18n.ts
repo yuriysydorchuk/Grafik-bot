@@ -185,6 +185,7 @@ const D: Dict = {
   "report.photoFail":     { uk: "❌ Не вдалося зберегти фото. Спробуйте надіслати рапорт ще раз.", en: "❌ Could not save the photo. Try submitting the report again.", es: "❌ No se pudo guardar la foto. Intenta enviar el reporte de nuevo.", ru: "❌ Не удалось сохранить фото. Попробуйте отправить рапорт ещё раз.", pl: "❌ Nie udało się zapisać zdjęcia. Spróbuj wysłać raport ponownie." },
   "report.saved":         { uk: "✅ Рапорт збережено! Годин за місяць: *{hours}*", en: "✅ Report saved! Hours for the month: *{hours}*", es: "✅ ¡Reporte guardado! Horas del mes: *{hours}*", ru: "✅ Рапорт сохранён! Часов за месяц: *{hours}*", pl: "✅ Raport zapisany! Godzin za miesiąc: *{hours}*" },
   "report.uploadErr":     { uk: "❌ Помилка завантаження.", en: "❌ Upload error.", es: "❌ Error de carga.", ru: "❌ Ошибка загрузки.", pl: "❌ Błąd przesyłania." },
+  "report.needPhoto":     { uk: "📷 Надішліть *фото* рапорту, або натисніть «✖️ Скасувати».", en: "📷 Send a *photo* of the report, or tap “✖️ Cancel”.", es: "📷 Envía una *foto* del reporte, o toca «✖️ Cancelar».", ru: "📷 Пришлите *фото* рапорта, или нажмите «✖️ Отмена».", pl: "📷 Wyślij *zdjęcie* raportu, lub naciśnij „✖️ Anuluj”." },
 
   // ── stages (referral) ──
   "stage.new":       { uk: "🆕 нова заявка", en: "🆕 new", es: "🆕 nuevo", ru: "🆕 новая заявка", pl: "🆕 nowy" },
