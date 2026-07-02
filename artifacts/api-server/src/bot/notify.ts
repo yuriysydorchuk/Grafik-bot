@@ -37,6 +37,7 @@ export async function notifyAdmins(text: string, options: Record<string, unknown
   const admins = await db.select().from(adminsTable);
   for (const admin of admins) {
     if (!admin.telegramId) continue; // invited/pending admins have no Telegram yet
+    if (admin.role === "driver") continue; // web-only driver role — not office staff
     try { await bot.telegram.sendMessage(admin.telegramId, text, options as any); }
     catch { /* individual failure should not stop others */ }
   }

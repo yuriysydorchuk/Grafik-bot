@@ -2277,7 +2277,7 @@ bot.on("text", async (ctx) => {
 
   // ── Web login: set username ───────────────────────────────────────
   if (state?.action === "web_login:username") {
-    const al = olang(await getAdmin(tid));
+    const al = olang(await getAdmin(tid) ?? await getDriver(tid));
     const username = text.trim().toLowerCase();
     if (!/^[a-z0-9_.-]{3,32}$/.test(username)) {
       return ctx.reply(tb(al, "❌ Логін: 3–32 символи, лише латиниця/цифри/_.- — введіть ще раз:"));
@@ -2291,7 +2291,11 @@ bot.on("text", async (ctx) => {
   // ── Web login: set password ───────────────────────────────────────
   if (state?.action === "web_login:password") {
     const { data } = state;
-    const al = olang(await getAdmin(tid));
+    // A web-role-"driver" user goes through this flow too (adm-invite deep link),
+    // but getAdmin() won't see them — fall back to their driver row for language/menu.
+    const admin = await getAdmin(tid);
+    const driver = admin ? undefined : await getDriver(tid);
+    const al = olang(admin ?? driver);
     if (text.length < 8) return ctx.reply(tb(al, "❌ Пароль закороткий (мінімум 8 символів). Введіть ще раз:"));
     const { hashPassword } = await import("../lib/auth");
     await db.update(adminsTable)
@@ -2300,9 +2304,10 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     try { await ctx.deleteMessage(); } catch { /* can't delete password msg in some chats */ }
     const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
+    const doneMenu = driver ? (driver.isHeadDriver ? headDriverMenu(al) : driverMenu(al)) : managementMenu(al);
     return ctx.reply(
       tb(al, "✅ Веб-доступ налаштовано!\n\n👤 Логін: <code>{user}</code>\n🔗 Панель: {url}\n\n(пароль збережено, повідомлення з ним видалено)", { user: escapeHtml(data.username), url: escapeHtml(url) }),
-      { parse_mode: "HTML", ...managementMenu(al) },
+      { parse_mode: "HTML", ...doneMenu },
     );
   }
 
