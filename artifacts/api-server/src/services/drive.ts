@@ -496,40 +496,45 @@ export async function uploadReportPhoto(
   }
 }
 
-// Downloadable Excel of worker-reported monthly hours (factory · code · worker · hours · status).
-// Includes ALL active workers so admins see who hasn't submitted yet.
-export async function buildReportHoursExcel(month: string): Promise<Buffer> {
+// Downloadable Excel (in Polish) of worker-reported monthly hours:
+// Kod · Imię i nazwisko · Fabryka · Godziny · Status. Includes ALL active workers
+// (so admins see who hasn't submitted). Optionally filtered to a single factory.
+// Returns the buffer plus the factory name (when filtered) for the download filename.
+export async function buildReportHoursExcel(month: string, factoryId?: number): Promise<{ buffer: Buffer; facName: string | null }> {
   const workers = await db.select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, factoryId: workersTable.factoryId })
     .from(workersTable).where(eq(workersTable.isActive, true));
   const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
-  const facName = new Map(facs.map(f => [f.id, f.name]));
+  const facById = new Map(facs.map(f => [f.id, f.name]));
   const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
   const repByWorker = new Map(reports.map(r => [r.workerId, r.hours]));
 
+  const selectedFac = factoryId != null ? (facById.get(factoryId) ?? null) : null;
   const rows = workers
+    .filter(w => factoryId == null || w.factoryId === factoryId)
     .map(w => ({
-      factory: w.factoryId != null ? (facName.get(w.factoryId) ?? "—") : "Без фабрики",
+      factory: w.factoryId != null ? (facById.get(w.factoryId) ?? "—") : "Bez fabryki",
       code: w.code ?? "", name: w.name,
       hours: repByWorker.has(w.id) ? repByWorker.get(w.id)! : null,
     }))
-    .sort((a, b) => a.factory.localeCompare(b.factory, "uk") || a.name.localeCompare(b.name, "uk"));
+    .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 
   const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+  const totalHours = rows.reduce((s, x) => s + (x.hours ?? 0), 0);
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Raport-godziny", { views: [{ showGridLines: false }] });
-  ws.columns = [{ width: 26 }, { width: 12 }, { width: 34 }, { width: 18 }, { width: 14 }];
+  ws.columns = [{ width: 12 }, { width: 34 }, { width: 26 }, { width: 12 }, { width: 14 }];
   const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
 
   ws.mergeCells(1, 1, 1, 5);
   const title = ws.getCell(1, 1);
-  title.value = `Години з рапорту — ${monthLabel}`;
+  title.value = selectedFac ? `Godziny z raportu — ${selectedFac} — ${monthLabel}` : `Godziny z raportu — ${monthLabel}`;
   title.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
   title.alignment = { vertical: "middle", horizontal: "left" };
   ws.getRow(1).height = 26;
 
   const hdr = ws.getRow(2);
-  hdr.values = ["Фабрика", "Код", "Працівник", "Години з рапорту", "Статус"];
+  hdr.values = ["Kod", "Imię i nazwisko", "Fabryka", "Godziny", "Status"];
   hdr.eachCell((c) => {
     c.font = { bold: true, color: { argb: "FF374151" } };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } } as any;
@@ -541,7 +546,7 @@ export async function buildReportHoursExcel(month: string): Promise<Buffer> {
   let r = 3;
   for (const row of rows) {
     const xl = ws.getRow(r);
-    xl.values = [row.factory, row.code, row.name, row.hours ?? "", row.hours != null ? "вислано" : "не вислано"];
+    xl.values = [row.code, row.name, row.factory, row.hours ?? "", row.hours != null ? "wysłano" : "brak"];
     xl.eachCell({ includeEmpty: true }, (c, col) => {
       c.border = thin as any;
       c.alignment = { vertical: "middle", horizontal: col === 4 ? "right" : "left", indent: col === 4 ? 0 : 1 };
@@ -549,7 +554,19 @@ export async function buildReportHoursExcel(month: string): Promise<Buffer> {
     });
     r++;
   }
-  return wb.xlsx.writeBuffer().then(b => Buffer.from(b));
+
+  // Total row (Razem): sum of reported hours.
+  const totalRow = ws.getRow(r);
+  totalRow.values = ["", "Razem", "", Math.round(totalHours * 100) / 100, ""];
+  totalRow.eachCell({ includeEmpty: true }, (c, col) => {
+    c.font = { bold: true, color: { argb: "FF1F2937" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } } as any;
+    c.border = thin as any;
+    c.alignment = { vertical: "middle", horizontal: col === 4 ? "right" : "left", indent: col === 4 ? 0 : 1 };
+  });
+
+  const buffer = await wb.xlsx.writeBuffer().then(b => Buffer.from(b));
+  return { buffer, facName: selectedFac };
 }
 
 // ─── Hours tracking Excel (per factory subfolder, one file per year, tab per month) ──

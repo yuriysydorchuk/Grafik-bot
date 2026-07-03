@@ -1761,6 +1761,11 @@ router.get("/hours", RW, async (req, res) => {
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
         base.gross = round2(p.gross); base.net = round2(p.net); base.laborCost = round2(p.laborCost);
+        // Payroll based on the hours the worker reported themselves (not the schedule).
+        if (rep?.hours != null) {
+          const rp = calcPayroll(rep.hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
+          base.reportGross = round2(rp.gross); base.reportNet = round2(rp.net);
+        } else { base.reportGross = null; base.reportNet = null; }
       } else {
         delete base.rate; delete base.isStudent; delete base.under26;
       }
@@ -1771,7 +1776,12 @@ router.get("/hours", RW, async (req, res) => {
     month, workers,
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
-    ...(isOwner ? { totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)), totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)) } : {}),
+    totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),
+    ...(isOwner ? {
+      totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)),
+      totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)),
+      totalReportNet: round2(workers.reduce((s, w) => s + (w.reportNet ?? 0), 0)),
+    } : {}),
   });
 });
 
@@ -1826,10 +1836,12 @@ router.post("/hours/report", RW, async (req, res) => {
 // Download an Excel of worker-reported monthly hours.
 router.get("/hours/report-excel", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+  const factoryId = req.query.factoryId ? Number(req.query.factoryId) : undefined;
   const { buildReportHoursExcel } = await import("../services/drive");
-  const buffer = await buildReportHoursExcel(month);
+  const { buffer, facName } = await buildReportHoursExcel(month, factoryId);
+  const namePart = facName ? `${facName} ` : "";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Години з рапорту ${month}.xlsx`)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Godziny raport ${namePart}${month}.xlsx`)}"`);
   res.send(buffer);
 });
 
