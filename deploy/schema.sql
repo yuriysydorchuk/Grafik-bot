@@ -2,21 +2,20 @@
 --
 -- GENERATED from the live schema:
 --   pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges --no-comments
---   (PG17-only SET lines stripped for PostgreSQL 16 compatibility)
 --
 -- Source of truth for the schema is lib/db/src/schema/workers.ts.
 -- Regenerate this file after schema changes (see docs/infrastructure/DATABASE.md).
 -- Apply to a fresh DB:  psql "$DATABASE_URL" -f deploy/schema.sql
--- Regenerated: 2026-06-19.
+-- Regenerated: 2026-07-03 (from production, PG16).
 
 --
 -- PostgreSQL database dump
 --
 
-\restrict RdnwbhlGwjMPearL4OH50EEDTcYxOdnbQQeSzZMr23g5KgZz5dYIohieyltR1Yv
+\restrict MH0O7q9nd9u4jpLx0cfMehMCJUY3S1DjXfBJM2zALMqShw9LjpChV0wu83cDiN1
 
--- Dumped from database version 17.10 (Homebrew)
--- Dumped by pg_dump version 17.10 (Homebrew)
+-- Dumped from database version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -156,6 +155,44 @@ CREATE SEQUENCE public.admins_id_seq
 --
 
 ALTER SEQUENCE public.admins_id_seq OWNED BY public.admins.id;
+
+
+--
+-- Name: advance_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.advance_requests (
+    id integer NOT NULL,
+    worker_id integer NOT NULL,
+    amount real NOT NULL,
+    comment text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    admin_note text,
+    decided_by integer,
+    decided_at timestamp without time zone,
+    paid_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: advance_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.advance_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: advance_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.advance_requests_id_seq OWNED BY public.advance_requests.id;
 
 
 --
@@ -380,7 +417,8 @@ CREATE TABLE public.driver_shift_assignments (
     day_of_week public.day_of_week NOT NULL,
     shift public.shift NOT NULL,
     driver_id integer NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    kind text DEFAULT 'delivery'::text NOT NULL
 );
 
 
@@ -445,6 +483,42 @@ ALTER SEQUENCE public.driver_trips_id_seq OWNED BY public.driver_trips.id;
 
 
 --
+-- Name: driver_workdays; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.driver_workdays (
+    id integer NOT NULL,
+    driver_id integer NOT NULL,
+    work_date date NOT NULL,
+    started_at timestamp without time zone DEFAULT now() NOT NULL,
+    odometer_start integer NOT NULL,
+    ended_at timestamp without time zone,
+    odometer_end integer,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: driver_workdays_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.driver_workdays_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: driver_workdays_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.driver_workdays_id_seq OWNED BY public.driver_workdays.id;
+
+
+--
 -- Name: drivers; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -459,7 +533,8 @@ CREATE TABLE public.drivers (
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     invite_code text,
     username text,
-    language text
+    language text,
+    seats integer
 );
 
 
@@ -504,7 +579,10 @@ CREATE TABLE public.factories (
     company_id integer,
     gen_mode text DEFAULT 'availability'::text NOT NULL,
     uses_positions boolean DEFAULT false NOT NULL,
-    uses_gender boolean DEFAULT false NOT NULL
+    uses_gender boolean DEFAULT false NOT NULL,
+    uses_transport boolean DEFAULT true NOT NULL,
+    show_worker_hours boolean DEFAULT true NOT NULL,
+    show_code boolean DEFAULT true NOT NULL
 );
 
 
@@ -670,6 +748,41 @@ ALTER SEQUENCE public.hours_disputes_id_seq OWNED BY public.hours_disputes.id;
 
 
 --
+-- Name: monthly_reports; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.monthly_reports (
+    id integer NOT NULL,
+    worker_id integer NOT NULL,
+    month text NOT NULL,
+    factory_id integer,
+    hours_reported real NOT NULL,
+    photo_link text,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: monthly_reports_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.monthly_reports_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: monthly_reports_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.monthly_reports_id_seq OWNED BY public.monthly_reports.id;
+
+
+--
 -- Name: notifications; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -739,6 +852,42 @@ ALTER SEQUENCE public.positions_id_seq OWNED BY public.positions.id;
 
 
 --
+-- Name: roles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.roles (
+    id integer NOT NULL,
+    key text NOT NULL,
+    label text NOT NULL,
+    is_system boolean DEFAULT false NOT NULL,
+    pages jsonb DEFAULT '[]'::jsonb NOT NULL,
+    caps jsonb DEFAULT '[]'::jsonb NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: roles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.roles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: roles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.roles_id_seq OWNED BY public.roles.id;
+
+
+--
 -- Name: schedule_approvals; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -785,7 +934,8 @@ CREATE TABLE public.schedule_entries (
     absence_reason text,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     picked_up_by integer,
-    hours_override real
+    hours_override real,
+    sent_at timestamp without time zone
 );
 
 
@@ -1005,6 +1155,13 @@ ALTER TABLE ONLY public.admins ALTER COLUMN id SET DEFAULT nextval('public.admin
 
 
 --
+-- Name: advance_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.advance_requests ALTER COLUMN id SET DEFAULT nextval('public.advance_requests_id_seq'::regclass);
+
+
+--
 -- Name: availability id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1061,6 +1218,13 @@ ALTER TABLE ONLY public.driver_trips ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: driver_workdays id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.driver_workdays ALTER COLUMN id SET DEFAULT nextval('public.driver_workdays_id_seq'::regclass);
+
+
+--
 -- Name: drivers id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1103,6 +1267,13 @@ ALTER TABLE ONLY public.hours_disputes ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: monthly_reports id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.monthly_reports ALTER COLUMN id SET DEFAULT nextval('public.monthly_reports_id_seq'::regclass);
+
+
+--
 -- Name: notifications id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1114,6 +1285,13 @@ ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.positions ALTER COLUMN id SET DEFAULT nextval('public.positions_id_seq'::regclass);
+
+
+--
+-- Name: roles id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles ALTER COLUMN id SET DEFAULT nextval('public.roles_id_seq'::regclass);
 
 
 --
@@ -1191,6 +1369,14 @@ ALTER TABLE ONLY public.admins
 
 
 --
+-- Name: advance_requests advance_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.advance_requests
+    ADD CONSTRAINT advance_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: availability availability_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1255,6 +1441,14 @@ ALTER TABLE ONLY public.driver_trips
 
 
 --
+-- Name: driver_workdays driver_workdays_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.driver_workdays
+    ADD CONSTRAINT driver_workdays_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: drivers drivers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1311,6 +1505,14 @@ ALTER TABLE ONLY public.hours_disputes
 
 
 --
+-- Name: monthly_reports monthly_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.monthly_reports
+    ADD CONSTRAINT monthly_reports_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1324,6 +1526,22 @@ ALTER TABLE ONLY public.notifications
 
 ALTER TABLE ONLY public.positions
     ADD CONSTRAINT positions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: roles roles_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_key_key UNIQUE (key);
+
+
+--
+-- Name: roles roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_pkey PRIMARY KEY (id);
 
 
 --
@@ -1449,6 +1667,13 @@ CREATE INDEX idx_worker_docs_worker ON public.worker_documents USING btree (work
 
 
 --
+-- Name: monthly_reports_worker_month_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX monthly_reports_worker_month_uniq ON public.monthly_reports USING btree (worker_id, month);
+
+
+--
 -- Name: schedule_approvals_week_factory; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1469,6 +1694,22 @@ ALTER TABLE ONLY public.absence_requests
 
 ALTER TABLE ONLY public.absence_requests
     ADD CONSTRAINT absence_requests_worker_id_fkey FOREIGN KEY (worker_id) REFERENCES public.workers(id);
+
+
+--
+-- Name: advance_requests advance_requests_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.advance_requests
+    ADD CONSTRAINT advance_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.admins(id);
+
+
+--
+-- Name: advance_requests advance_requests_worker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.advance_requests
+    ADD CONSTRAINT advance_requests_worker_id_fkey FOREIGN KEY (worker_id) REFERENCES public.workers(id);
 
 
 --
@@ -1584,6 +1825,14 @@ ALTER TABLE ONLY public.driver_trips
 
 
 --
+-- Name: driver_workdays driver_workdays_driver_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.driver_workdays
+    ADD CONSTRAINT driver_workdays_driver_id_fkey FOREIGN KEY (driver_id) REFERENCES public.drivers(id);
+
+
+--
 -- Name: factories factories_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1621,6 +1870,22 @@ ALTER TABLE ONLY public.factory_positions
 
 ALTER TABLE ONLY public.hours_disputes
     ADD CONSTRAINT hours_disputes_worker_id_fkey FOREIGN KEY (worker_id) REFERENCES public.workers(id);
+
+
+--
+-- Name: monthly_reports monthly_reports_factory_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.monthly_reports
+    ADD CONSTRAINT monthly_reports_factory_id_fkey FOREIGN KEY (factory_id) REFERENCES public.factories(id);
+
+
+--
+-- Name: monthly_reports monthly_reports_worker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.monthly_reports
+    ADD CONSTRAINT monthly_reports_worker_id_fkey FOREIGN KEY (worker_id) REFERENCES public.workers(id);
 
 
 --
@@ -1747,5 +2012,5 @@ ALTER TABLE ONLY public.workers
 -- PostgreSQL database dump complete
 --
 
-\unrestrict RdnwbhlGwjMPearL4OH50EEDTcYxOdnbQQeSzZMr23g5KgZz5dYIohieyltR1Yv
+\unrestrict MH0O7q9nd9u4jpLx0cfMehMCJUY3S1DjXfBJM2zALMqShw9LjpChV0wu83cDiN1
 
