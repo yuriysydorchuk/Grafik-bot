@@ -208,7 +208,7 @@ bot.start(async (ctx) => {
       if (asCand) return ctx.reply("✅ Ви вже у списку кандидатів. Менеджер зв'яжеться з вами найближчим часом.");
       setState(tid, "candidate_signup:name", { referrerId, referrerName: referrer.fullName, factoryId: referrer.factoryId ?? null });
       return ctx.reply(
-        `👋 Вітаємо! Вас запросив(ла) *${mdSafe(referrer.fullName)}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище*:`,
+        `👋 Вітаємо! Вас запросив(ла) *${mdSafe(referrer.fullName)}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище* латиницею (наприклад: Jan Kowalski):`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -224,7 +224,7 @@ bot.start(async (ctx) => {
       }
       setState(tid, "worker_signup", { factoryId, factoryName: fac.name });
       return ctx.reply(
-        `👋 Вітаємо! Реєстрація на фабрику *${mdSafe(fac.name)}*.\n\nВведіть ваше *ім'я та прізвище*:`,
+        `👋 Вітаємо! Реєстрація на фабрику *${mdSafe(fac.name)}*.\n\nВведіть ваше *ім'я та прізвище* латиницею (наприклад: Jan Kowalski):`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -2258,8 +2258,9 @@ bot.on("text", async (ctx) => {
   if (state?.action === "worker_signup") {
     const { data } = state;
     const fullName = text.trim().replace(/\s+/g, " ");
-    if (fullName.length < 3 || !/[a-zа-яёіїєґ]/i.test(fullName)) {
-      return ctx.reply("❌ Введіть коректне ім'я та прізвище (наприклад: Іван Коваль):");
+    // names are stored in Latin (Polish alphabet) only — Cyrillic is rejected up front
+    if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
+      return ctx.reply("❌ Введіть ім'я та прізвище латиницею (наприклад: Jan Kowalski):");
     }
     // double-check this Telegram isn't already linked to a worker
     const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
@@ -2294,8 +2295,9 @@ bot.on("text", async (ctx) => {
   // ── Referral candidate signup: name ───────────────────────────────
   if (state?.action === "candidate_signup:name") {
     const fullName = text.trim().replace(/\s+/g, " ");
-    if (fullName.length < 3 || !/[a-zа-яёіїєґ]/i.test(fullName)) {
-      return ctx.reply("❌ Введіть коректне ім'я та прізвище (наприклад: Іван Коваль):");
+    // same Latin-only rule as worker self-signup (candidate later converts to a worker)
+    if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
+      return ctx.reply("❌ Введіть ім'я та прізвище латиницею (наприклад: Jan Kowalski):");
     }
     setState(tid, "candidate_signup:phone", { ...state.data, fullName });
     return ctx.reply("📞 Введіть ваш *номер телефону* (або надішліть /skip):", { parse_mode: "Markdown" });

@@ -118,6 +118,13 @@ export default function Schedule() {
     const fromFac = (factory?.positions ?? []).map(p => p.positionId);
     return [...(fromFac.length ? fromFac : positions.map(p => p.id)), null];
   })();
+  // Flat comparators mirroring groupEntries order: position (factory order) → gender → name.
+  const nameCmp = (a?: string | null, b?: string | null) => (a ?? "").localeCompare(b ?? "", "pl");
+  const prank = (pid?: number | null) => { const i = posOrderIds.indexOf(pid ?? null); return i === -1 ? posOrderIds.length : i; };
+  const byGroupThenName = (a: ScheduleEntry, b: ScheduleEntry) =>
+    (usesPositions ? prank(a.positionId) - prank(b.positionId) : 0) || (usesGender ? grank(a.gender) - grank(b.gender) : 0) || byName(a, b);
+  const poolOrder = (a: ReserveItem, b: ReserveItem) =>
+    (usesPositions ? prank(a.positionId) - prank(b.positionId) : 0) || (usesGender ? grank(a.gender) - grank(b.gender) : 0) || nameCmp(a.name, b.name);
   const groupEntries = (items: ScheduleEntry[]): { key: string; label: string | null; color: string; items: ScheduleEntry[] }[] => {
     if (!usesPositions && !usesGender) return [{ key: "all", label: null, color: "slate", items: [...items].sort(byName) }];
     if (usesPositions) {
@@ -325,7 +332,7 @@ export default function Schedule() {
                                 </button>
                               )}
                             </div>
-                            {list.map(e => {
+                            {[...list].sort(byGroupThenName).map(e => {
                               const present = e.status === "present", absent = e.status === "absent";
                               const tint = present ? "border-emerald-200 bg-emerald-50/60" : absent ? "border-rose-200 bg-rose-50/60" : "border-slate-200 bg-white";
                               return (
@@ -411,7 +418,7 @@ export default function Schedule() {
                             <div className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">{t("Запас")} ({res.length})</div>
                             <div {...overProps(rKey)} onDrop={handleDrop(day, shift, "reserve")}
                               className={`min-h-10 space-y-1 rounded-lg border border-dashed p-1 transition ${over === rKey ? "border-rose-300 bg-rose-50" : "border-slate-200"}`}>
-                              {res.map(r => (
+                              {[...res].sort(poolOrder).map(r => (
                                 <div key={r.workerId} draggable={editable} onDragStart={ev => startDrag(ev, { kind: "reserve", workerId: r.workerId, day, shift })} onDragEnd={() => setOver("")}
                                   className={`flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm ${editable ? "cursor-grab hover:border-emerald-300 active:cursor-grabbing" : ""}`}>
                                   <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
@@ -435,7 +442,7 @@ export default function Schedule() {
                       {t("Вільні працівники")} ({dayAvail.length}) — {t("перетягни у зміну")}
                     </summary>
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {dayAvail.map(w => (
+                      {[...dayAvail].sort((a, b) => nameCmp(a.name, b.name)).map(w => (
                         <div key={w.workerId} draggable={editable} onDragStart={ev => startDrag(ev, { kind: "available", workerId: w.workerId, day })} onDragEnd={() => setOver("")}
                           className={`flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 ${editable ? "cursor-grab hover:border-red-300 active:cursor-grabbing" : ""}`}>
                           <GripVertical className="h-3 w-3 shrink-0 text-slate-300" />
@@ -459,6 +466,7 @@ export default function Schedule() {
         const cands = factoryWorkers
           .filter(w => !inShiftIds.has(w.id))
           .filter(w => !q || w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName, "pl"))
           .slice(0, 50);
         return (
           <Modal open onClose={() => setAddTo(null)} title={`${t("Додати людину")} — ${DAY_FULL[addTo.day]} · ${SHIFT_UK[addTo.shift]}`}>
