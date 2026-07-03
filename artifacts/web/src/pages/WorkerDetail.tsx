@@ -22,6 +22,7 @@ interface WorkerProfile {
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
+  factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
   recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
 }
 
@@ -121,6 +122,32 @@ export default function WorkerDetail() {
         <Kpi icon={Clock} label={t("Усього годин")} value={st.totalHours} color="text-slate-600 bg-slate-100" />
         <Kpi icon={Gift} label={t("Запросив друзів")} value={st.referralCount} color="text-amber-600 bg-amber-50" />
       </div>
+
+      {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
+      {(w.factoryHistory?.length ?? 0) > 0 && (
+        <Card className="mb-5 overflow-hidden">
+          <div className="border-b border-slate-100 px-5 py-3"><h3 className="text-sm font-semibold text-slate-700">{t("Історія по фабриках")}</h3></div>
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Період")}</th><th className="px-4 py-2 text-center">{t("Зміни")}</th><th className="px-4 py-2 text-right">{t("Години")}</th><th className="px-4 py-2 text-right">{t("Невиходи")}</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {w.factoryHistory.map((f, i) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  <td className="px-4 py-2 font-medium text-slate-700">
+                    {f.factoryName ?? t("Без фабрики")}
+                    {f.factoryId != null && f.factoryId === w.factoryId && <span className="ml-2"><Badge color="green">{t("поточна")}</Badge></span>}
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">{f.firstDate} — {f.lastDate}</td>
+                  <td className="px-4 py-2 text-center text-slate-600">{f.shifts}</td>
+                  <td className="px-4 py-2 text-right font-medium text-emerald-700">{f.hours} {t("год")}</td>
+                  <td className="px-4 py-2 text-right text-slate-600">{f.absent || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
 
       {/* Documents */}
       <WorkerDocuments workerId={w.id} />

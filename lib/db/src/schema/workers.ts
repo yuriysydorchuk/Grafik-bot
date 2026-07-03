@@ -1,6 +1,7 @@
 import {
   pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -389,7 +390,8 @@ export const advanceRequestsTable = pgTable("advance_requests", {
 });
 
 // Monthly worker report: the worker submits a photo of their report AND types their
-// total hours for the month (1–400). One record per worker+month (re-submit upserts).
+// total hours for the month (1–400). One record per worker+month+factory (a worker
+// transferred mid-month files one report per factory; re-submit for the same factory upserts).
 // Surfaced in the Hours module ("години з рапорту"); missing record = not submitted yet.
 export const monthlyReportsTable = pgTable("monthly_reports", {
   id: serial("id").primaryKey(),
@@ -399,7 +401,11 @@ export const monthlyReportsTable = pgTable("monthly_reports", {
   hoursReported: real("hours_reported").notNull(),         // worker-entered monthly total
   photoLink: text("photo_link"),                           // Google Drive link to the report photo
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("monthly_reports_worker_month_uniq").on(t.workerId, t.month)]);
+}, (t) => [
+  uniqueIndex("monthly_reports_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
+  // Legacy/manual rows without a factory: still at most one per worker+month.
+  uniqueIndex("monthly_reports_worker_month_nofactory_uniq").on(t.workerId, t.month).where(sql`${t.factoryId} IS NULL`),
+]);
 
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent
 // ones (Telegram only allows deleting messages < 48h old). Pruned on clear.

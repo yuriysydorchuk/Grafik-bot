@@ -505,17 +505,28 @@ export async function buildReportHoursExcel(month: string, factoryId?: number): 
     .from(workersTable).where(eq(workersTable.isActive, true));
   const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
   const facById = new Map(facs.map(f => [f.id, f.name]));
-  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const repByWorker = new Map(reports.map(r => [r.workerId, r.hours]));
+  const repsByWorker = new Map<number, { factoryId: number | null; hours: number }[]>();
+  for (const r of reports) {
+    if (!repsByWorker.has(r.workerId)) repsByWorker.set(r.workerId, []);
+    repsByWorker.get(r.workerId)!.push(r);
+  }
 
   const selectedFac = factoryId != null ? (facById.get(factoryId) ?? null) : null;
-  const rows = workers
-    .filter(w => factoryId == null || w.factoryId === factoryId)
-    .map(w => ({
-      factory: w.factoryId != null ? (facById.get(w.factoryId) ?? "—") : "Bez fabryki",
-      code: w.code ?? "", name: w.name,
-      hours: repByWorker.has(w.id) ? repByWorker.get(w.id)! : null,
+  // One row per (worker, factory): a mid-month transfer yields a row per factory reported;
+  // a worker with no report shows once under their current factory.
+  const raw: { facId: number | null; code: string; name: string; hours: number | null }[] = [];
+  for (const w of workers) {
+    const reps = repsByWorker.get(w.id) ?? [];
+    if (reps.length === 0) raw.push({ facId: w.factoryId, code: w.code ?? "", name: w.name, hours: null });
+    else for (const r of reps) raw.push({ facId: r.factoryId ?? w.factoryId, code: w.code ?? "", name: w.name, hours: r.hours });
+  }
+  const rows = raw
+    .filter(x => factoryId == null || x.facId === factoryId)
+    .map(x => ({
+      factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki",
+      code: x.code, name: x.name, hours: x.hours,
     }))
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 

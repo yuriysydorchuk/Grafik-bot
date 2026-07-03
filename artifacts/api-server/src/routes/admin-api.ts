@@ -12,7 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, inArray } from "drizzle-orm";
+import { eq, and, desc, gte, lt, inArray, isNull } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
@@ -359,12 +359,29 @@ router.get("/workers/:id", RW, async (req, res) => {
     const ym = dt ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}` : "";
     if (r.status === "present") { allShifts++; allHours += hoursOf(r); if (ym === thisMonth) { monShifts++; monHours += hoursOf(r); } }
     if (r.status === "absent") { allAbsent++; if (ym === thisMonth) monAbsent++; }
-    return { date: dt ? dt.toISOString().slice(0, 10) : null, ts: dt ? dt.getTime() : 0, factoryName: r.factoryName, shift: r.shift, status: r.status, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
+    return { date: dt ? dt.toISOString().slice(0, 10) : null, ts: dt ? dt.getTime() : 0, factoryId: r.factoryId ?? null, factoryName: r.factoryName, shift: r.shift, status: r.status, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
   });
   const recent = enriched.filter(e => e.date).sort((a, b) => b.ts - a.ts).slice(0, 15).map(({ ts, ...e }) => e);
   const rel = allShifts + allAbsent > 0 ? Math.round((allShifts / (allShifts + allAbsent)) * 100) : null;
   const referralCount = (await db.select({ id: candidatesTable.id }).from(candidatesTable).where(eq(candidatesTable.referrerWorkerId, id))).length;
   const round = (n: number) => Math.round(n * 100) / 100;
+
+  // Employment history per factory: worked shifts/hours/absences and the first–last
+  // entry dates there (a mid-month transfer or re-hire keeps the old factory visible).
+  const byFactory = new Map<number, { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }>();
+  for (const e of enriched) {
+    if (!e.date) continue;
+    const key = e.factoryId ?? 0;
+    if (!byFactory.has(key)) byFactory.set(key, { factoryId: e.factoryId, factoryName: e.factoryName, shifts: 0, hours: 0, absent: 0, firstDate: e.date, lastDate: e.date });
+    const f = byFactory.get(key)!;
+    if (e.status === "present") { f.shifts++; f.hours += e.hours; }
+    if (e.status === "absent") f.absent++;
+    if (e.date < f.firstDate) f.firstDate = e.date;
+    if (e.date > f.lastDate) f.lastDate = e.date;
+  }
+  const factoryHistory = [...byFactory.values()]
+    .map(f => ({ ...f, hours: round(f.hours) }))
+    .sort((a, b) => b.lastDate.localeCompare(a.lastDate));
 
   ok(res, {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
@@ -379,6 +396,7 @@ router.get("/workers/:id", RW, async (req, res) => {
       month: thisMonth, monthShifts: monShifts, monthHours: round(monHours), monthAbsent: monAbsent,
       totalShifts: allShifts, totalHours: round(allHours), totalAbsent: allAbsent, reliability: rel, referralCount,
     },
+    factoryHistory,
     recent,
   });
 });
@@ -1717,19 +1735,23 @@ router.get("/hours", RW, async (req, res) => {
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "present")));
-  const byWorker = new Map<number, any>();
+  // Rows are keyed by (worker, factory): a worker transferred mid-month shows up
+  // under BOTH factories, each row carrying only the hours worked there.
+  const rowKey = (workerId: number, factoryId: number | null) => `${workerId}|${factoryId ?? 0}`;
+  const byWorkerFactory = new Map<string, any>();
   for (const r of rows) {
     if (!r.workerId) continue;
     const date = entryDateStr(String(r.weekStart), r.day);
     if (date < monthStart || date >= monthEnd) continue; // day falls outside the queried month
     const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
-    if (!byWorker.has(r.workerId)) byWorker.set(r.workerId, {
+    const key = rowKey(r.workerId, r.factoryId);
+    if (!byWorkerFactory.has(key)) byWorkerFactory.set(key, {
       workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
       rate: effRate(posRates, r.factoryId, r.positionId, r.rate ?? rates.defaultRate), isStudent: !!r.isStudent, under26: !!r.under26,
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
-    const w = byWorker.get(r.workerId);
+    const w = byWorkerFactory.get(key);
     w.shifts++;
     w.hours += r.hoursOverride ?? factoryShiftHours(fac, r.shift as any);
     w.byShift[r.shift] = (w.byShift[r.shift] ?? 0) + 1;
@@ -1739,24 +1761,34 @@ router.get("/hours", RW, async (req, res) => {
     id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
     factoryId: workersTable.factoryId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
   }).from(workersTable).where(eq(workersTable.isActive, true));
+  const workersWithRows = new Set<number>([...byWorkerFactory.values()].map(w => w.workerId));
   for (const aw of activeWorkers) {
-    if (byWorker.has(aw.id)) continue;
+    if (workersWithRows.has(aw.id)) continue;
     const fac = aw.factoryId != null ? facById.get(aw.factoryId) : undefined;
-    byWorker.set(aw.id, {
+    byWorkerFactory.set(rowKey(aw.id, aw.factoryId), {
       workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
       rate: effRate(posRates, aw.factoryId, aw.positionId, aw.rate ?? rates.defaultRate), isStudent: !!aw.isStudent, under26: !!aw.under26,
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
   }
-  // worker-reported monthly hours (from the bot report) for this month
-  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported, link: monthlyReportsTable.photoLink })
+  // worker-reported monthly hours (from the bot report) for this month, per factory
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported, link: monthlyReportsTable.photoLink })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const reportByWorker = new Map(reports.map(r => [r.workerId, r]));
-  const workers = [...byWorker.values()]
+  const repByKey = new Map<string, typeof reports[number]>();
+  for (const r of reports) if (r.factoryId != null) repByKey.set(rowKey(r.workerId, r.factoryId), r);
+  // Legacy/manual reports without a factory → attach to the worker's current-factory row, else their first row.
+  const curFacByWorker = new Map(activeWorkers.map(a => [a.id, a.factoryId]));
+  for (const r of reports) {
+    if (r.factoryId != null) continue;
+    const wRows = [...byWorkerFactory.values()].filter(w => w.workerId === r.workerId);
+    const target = wRows.find(w => w.factoryId === curFacByWorker.get(r.workerId)) ?? wRows[0];
+    if (target && !repByKey.has(rowKey(r.workerId, target.factoryId))) repByKey.set(rowKey(r.workerId, target.factoryId), r);
+  }
+  const workers = [...byWorkerFactory.values()]
     .map(w => {
       const hours = round2(w.hours);
-      const rep = reportByWorker.get(w.workerId);
+      const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
       const base: any = { ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null };
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
@@ -1812,24 +1844,38 @@ router.post("/hours/report-remind", RW, async (_req, res) => {
   ok(res, { notified, skipped: skipped + (missing.length - targets.length), total: missing.length, month });
 });
 
-// Manually set/clear a worker's report hours for a month (admin fills it on the web).
-// No photo is required for a manual entry. Empty/null hours clears the record.
+// Manually set/clear a worker's report hours for a month+factory (admin fills it on
+// the web). No photo is required for a manual entry. Empty/null hours clears the record.
 router.post("/hours/report", RW, async (req, res) => {
   const workerId = Number(req.body?.workerId);
   const month = String(req.body?.month || "");
   if (!workerId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId та month обовʼязкові");
+  // Factory the row belongs to (from the Hours group); falls back to the worker's current one.
+  let factoryId: number | null = req.body?.factoryId != null ? Number(req.body.factoryId) : null;
+  if (factoryId == null) {
+    const [w] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
+    factoryId = w?.factoryId ?? null;
+  }
+  const facCond = factoryId != null ? eq(monthlyReportsTable.factoryId, factoryId) : isNull(monthlyReportsTable.factoryId);
   const raw = req.body?.hours;
   if (raw === null || raw === undefined || raw === "") {
-    await db.delete(monthlyReportsTable).where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month)));
+    await db.delete(monthlyReportsTable).where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month), facCond));
     return ok(res, { ok: true, cleared: true });
   }
   const hours = Number(raw);
   if (!Number.isFinite(hours) || hours < 1 || hours > 400) return fail(res, 400, "Години: число від 1 до 400");
   const h = Math.round(hours * 100) / 100;
-  const [w] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
-  await db.insert(monthlyReportsTable)
-    .values({ workerId, month, factoryId: w?.factoryId ?? null, hoursReported: h, photoLink: null })
-    .onConflictDoUpdate({ target: [monthlyReportsTable.workerId, monthlyReportsTable.month], set: { hoursReported: h } });
+  if (factoryId != null) {
+    await db.insert(monthlyReportsTable)
+      .values({ workerId, month, factoryId, hoursReported: h, photoLink: null })
+      .onConflictDoUpdate({ target: [monthlyReportsTable.workerId, monthlyReportsTable.month, monthlyReportsTable.factoryId], set: { hoursReported: h } });
+  } else {
+    // Partial unique index (factory IS NULL) can't be an onConflict target — upsert manually.
+    const [existing] = await db.select({ id: monthlyReportsTable.id }).from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, month), facCond));
+    if (existing) await db.update(monthlyReportsTable).set({ hoursReported: h }).where(eq(monthlyReportsTable.id, existing.id));
+    else await db.insert(monthlyReportsTable).values({ workerId, month, factoryId: null, hoursReported: h, photoLink: null });
+  }
   ok(res, { ok: true, hours: h });
 });
 

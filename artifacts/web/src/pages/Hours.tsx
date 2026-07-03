@@ -118,7 +118,7 @@ export default function Hours() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {g.rows.map(w => (
-                        <tr key={w.workerId} onClick={() => setSel({ id: w.workerId, name: w.name })} className="cursor-pointer hover:bg-red-50/40">
+                        <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => setSel({ id: w.workerId, name: w.name })} className="cursor-pointer hover:bg-red-50/40">
                           <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
                             {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
                             {w.name}
@@ -161,7 +161,7 @@ function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; can
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState("");
   const save = useMutation({
-    mutationFn: (hours: string | null) => post("/hours/report", { workerId: w.workerId, month, hours }),
+    mutationFn: (hours: string | null) => post("/hours/report", { workerId: w.workerId, month, hours, factoryId: w.factoryId }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["hours", month] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });

@@ -7,7 +7,7 @@ import {
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray, ne, isNull } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, isNull, gte, lt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   getWorkersWhoHaventSubmitted,
@@ -1271,25 +1271,41 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   const reportMonth = reportMonthFor(now);
   const monthLabel = reportMonthLabel(lang, reportMonth);
 
-  // Фабрики працівника з його затверджених змін (місяць не фільтруємо — беремо всі його фабрики)
+  // Фабрики працівника з його затверджених змін ЗВІТНОГО місяця (тиждень, що містить
+  // 1-ше число, може починатися ще в попередньому місяці — беремо тижні з запасом
+  // у 6 днів і фільтруємо кожну зміну за фактичною датою).
+  const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const [ry, rm] = reportMonth.split("-").map(Number);
+  const monthStart = `${reportMonth}-01`;
+  const monthEnd = rm! === 12 ? `${ry! + 1}-01-01` : `${ry}-${String(rm! + 1).padStart(2, "0")}-01`;
+  const weekFromDate = new Date(monthStart + "T00:00:00");
+  weekFromDate.setDate(weekFromDate.getDate() - 6);
   const factoryRows = await db
-    .select({ id: factoriesTable.id, name: factoriesTable.name })
+    .select({ id: factoriesTable.id, name: factoriesTable.name, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
     .from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(and(
       eq(scheduleEntriesTable.workerId, worker.id),
       eq(scheduleWeeksTable.status, "approved"),
+      gte(scheduleWeeksTable.weekStart, ymd(weekFromDate)),
+      lt(scheduleWeeksTable.weekStart, monthEnd),
     ));
 
-  // Factories the worker can file a report for: those from their approved shifts, plus
-  // their own assigned factory as a fallback so workers WITHOUT approved shifts can still
-  // submit. If neither exists, we can't determine a factory → show an error.
+  // Factories the worker can file a report for: those from their approved shifts in the
+  // report month (a mid-month transfer yields two), plus their current factory as a
+  // fallback so workers WITHOUT approved shifts can still submit. If neither exists,
+  // we can't determine a factory → show an error.
   const seen = new Set<number>();
-  const uniqueFactories = factoryRows.filter(f => {
-    if (!f.id || seen.has(f.id)) return false;
-    seen.add(f.id); return true;
-  });
+  const uniqueFactories: { id: number; name: string | null }[] = [];
+  for (const r of factoryRows) {
+    if (!r.id || seen.has(r.id) || !r.weekStart) continue;
+    const d = new Date(String(r.weekStart) + "T00:00:00");
+    d.setDate(d.getDate() + Math.max(0, DAYS.indexOf(r.day)));
+    const ds = ymd(d);
+    if (ds < monthStart || ds >= monthEnd) continue;
+    seen.add(r.id); uniqueFactories.push({ id: r.id, name: r.name });
+  }
   if (worker.factoryId && !seen.has(worker.factoryId)) {
     const [own] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
       .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
@@ -2116,17 +2132,35 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
     const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, mime);
     // No photo saved → don't accept the hours; ask to retry.
     if (!link) return ctx.reply(t(lang, "report.photoFail"), menu);
-    // Persist the monthly report (hours + photo). Re-submit for the same month overwrites.
+    // Persist the monthly report (hours + photo). One record per worker+month+factory:
+    // re-submit for the same factory overwrites; a second factory (mid-month transfer)
+    // gets its own record.
     const [fac] = data.factory
       ? await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.name, data.factory))
       : [];
     const factoryId = fac?.id ?? worker?.factoryId ?? null;
-    await db.insert(monthlyReportsTable).values({
-      workerId: data.workerId, month: data.month, factoryId, hoursReported: data.reportHours, photoLink: link,
-    }).onConflictDoUpdate({
-      target: [monthlyReportsTable.workerId, monthlyReportsTable.month],
-      set: { factoryId, hoursReported: data.reportHours, photoLink: link, createdAt: new Date() },
-    });
+    if (factoryId != null) {
+      await db.insert(monthlyReportsTable).values({
+        workerId: data.workerId, month: data.month, factoryId, hoursReported: data.reportHours, photoLink: link,
+      }).onConflictDoUpdate({
+        target: [monthlyReportsTable.workerId, monthlyReportsTable.month, monthlyReportsTable.factoryId],
+        set: { hoursReported: data.reportHours, photoLink: link, createdAt: new Date() },
+      });
+    } else {
+      // No factory resolvable — upsert the single "no factory" record manually
+      // (the partial unique index can't be an onConflict target here).
+      const [existing] = await db.select({ id: monthlyReportsTable.id }).from(monthlyReportsTable)
+        .where(and(eq(monthlyReportsTable.workerId, data.workerId), eq(monthlyReportsTable.month, data.month), isNull(monthlyReportsTable.factoryId)));
+      if (existing) {
+        await db.update(monthlyReportsTable)
+          .set({ hoursReported: data.reportHours, photoLink: link, createdAt: new Date() })
+          .where(eq(monthlyReportsTable.id, existing.id));
+      } else {
+        await db.insert(monthlyReportsTable).values({
+          workerId: data.workerId, month: data.month, factoryId: null, hoursReported: data.reportHours, photoLink: link,
+        });
+      }
+    }
     return ctx.reply(t(lang, "report.saved", { hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
   } catch (e) {
     logger.error({ err: e }, "Report upload error");
