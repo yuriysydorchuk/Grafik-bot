@@ -11,3 +11,6 @@ uploads/
 
 # but keep the deploy template
 !deploy/.env.example
+
+# Хендоф первинного VPS-деплою містить секрети (паролі/токени) — не комітити
+docs/archive/HANDOFF-vps-deploy.md

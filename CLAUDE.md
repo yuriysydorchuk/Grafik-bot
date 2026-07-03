@@ -80,7 +80,9 @@ psql "$DATABASE_URL" -c "ALTER TABLE ... ;"
 ```
 
 **Обовʼязкові env-змінні** (файл `.env` у корені, **не комітиться**):
-`PORT`, `DATABASE_URL` (Postgres), `TELEGRAM_BOT_TOKEN`, `SESSION_SECRET` (підпис сесійних cookie), `GOOGLE_SERVICE_ACCOUNT_JSON` + `GOOGLE_SHEETS_ID` (Sheets/Drive), `TELEGRAM_BOT_USERNAME` (для invite-посилань). Опційні: `CORS_ORIGINS`, `WEB_DIST`, SMTP-змінні для email.
+`PORT`, `DATABASE_URL` (Postgres), `TELEGRAM_BOT_TOKEN`, `SESSION_SECRET` (підпис сесійних cookie), `GOOGLE_SERVICE_ACCOUNT_JSON` + `GOOGLE_SHEETS_ID` (Sheets/Drive), `TELEGRAM_BOT_USERNAME` (для invite-посилань). Опційні: `CORS_ORIGINS`, `WEB_DIST`, SMTP-змінні для email, `UPLOADS_DIR` (файли документів працівників), алерти (`ALERTS_ENABLED`, `ALERT_TELEGRAM_CHAT_ID`, `ALERT_COOLDOWN_SECONDS` — див. `docs/infrastructure/ALERTING.md`).
+
+**Google Drive-завантаження** (фото рапортів, Excel-и) йдуть **OAuth-ом від реального користувача** (`GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN`, акаунт yuriisydorchuk96@gmail.com). Refresh-токен перегенерується через `node --env-file=.env artifacts/api-server/get-google-token.mjs`. OAuth-застосунок у Google Cloud має лишатися **Published** — у статусі «Testing» токени вмирають кожні 7 днів (`invalid_grant`, ламає ВСІ Drive-операції).
 
 Деплой на VPS (Caddy + pm2 + PostgreSQL) описаний у [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
@@ -90,16 +92,20 @@ psql "$DATABASE_URL" -c "ALTER TABLE ... ;"
 
 - **Схема БД** живе лише в `lib/db/src/schema/workers.ts`. Після її зміни запусти `pnpm run typecheck:libs`, щоб перебудувати декларації перед типчеком artifacts.
 - **Міграції — вручну через `psql`.** `drizzle-kit push` ненадійний у non-TTY; зміни накатуються SQL-командами (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...`). Тримай SQL та схему синхронними.
-- **i18n за патерном «укр-рядок-як-ключ».** Веб: `artifacts/web/src/lib/i18n.tsx` (`t()`, словник uk→en). Бот: `artifacts/api-server/src/bot/i18n.ts` (`t`/`tb`/`bhears`). Додаючи новий текст — додай і EN-переклад; перевір дублікати ключів:
-  `grep -oE '^  "[^"]+":' src/lib/i18n.tsx | sort | uniq -d` (дублі дають помилку TS1117).
-- **Система багатомовна.** Кожна нова функція з текстами має одразу враховувати i18n (веб — uk/en; бот працівника — 5 мов; офіс/водій-бот — uk/en): не хардкодити один рядок там, де інтерфейс уже перекладається.
+- **i18n за патерном «укр-рядок-як-ключ».** Веб: `artifacts/web/src/lib/i18n.tsx` (`t()`, словник uk→en + **частковий** uk→ru лише для водійських сторінок). Бот: `artifacts/api-server/src/bot/i18n.ts` (`t`/`tb`/`bhears`; `BOT_EN` повний, `BOT_RU` частковий — лише водійський досвід). Прогалини в RU-словниках = український текст, **за дизайном** (офісні рядки на ru не перекладаємо). Додаючи новий текст — додай EN (та RU, якщо рядок водійський). Дублікати ключів у межах одного словника ловить `tsc` (TS1117); `uniq -d` по всьому файлу дає фальш-спрацювання (ключі легально повторюються у двох словниках).
+- **Система багатомовна.** Кожна нова функція з текстами має одразу враховувати i18n (веб — uk/en; бот працівника — 5 мов; офіс-бот — uk/en; водій у боті — uk/en/ru): не хардкодити один рядок там, де інтерфейс уже перекладається.
 - **Мова документів — польська.** Усі документи, що формуються і скачуються (Excel-графіки, звіти, файли для клієнтів), — **польською мовою**, якщо явно не вказано інше.
 - **Імена працівників — лише латиницею** (польський алфавіт). Реєстрація в боті відхиляє кирилицю; якщо кириличне ім'я все ж потрапило в базу — виправляємо вручну. Сортування імен — локаль `pl`.
 - **Tailwind v4:** класи мають бути присутні в коді буквально (сканер не бачить динамічних рядків). Повні класи виписані у `artifacts/web/src/lib/colors.ts` (`bg-*-500`, `border-t-*-500`, `bg-*-100 text-*-700`).
-- **Ролі та доступи:** `owner | scheduler | driver` (мапа можливостей продубльована: `artifacts/api-server/src/lib/roles.ts` + `artifacts/web/src/lib/roles.ts`). Ролі призначає **лише головний адмін** (`admins.is_main`, Yuriy id=1). У бота **немає** шляху видати `is_main`.
-- **Фінансові поля — лише для owner** (ставки, рахунки): і в API (фільтрація відповіді), і в UI.
+- **Ролі та доступи — динамічні.** Ролі веб-панелі живуть у БД-таблиці `roles` (`pages` jsonb + `caps` jsonb; системні `owner`/`scheduler`/`driver` + кастомні). Каталоги capability/сторінок продубльовані: `artifacts/api-server/src/lib/roles.ts` ↔ `artifacts/web/src/lib/roles.ts` — тримати синхронними. Гейти API — `requireCap`/`requireAnyCap` (`editData`, `viewFinance`, `assignDrivers`, `deleteWorkers`); `owner` — незмінний суперюзер (повний доступ у коді, незалежно від рядка в БД). Ролі/користувачів редагує **лише головний адмін** (`admins.is_main`, Yuriy id=1, `requireMainAdmin`); у бота **немає** шляху видати `is_main`. Нова сторінка = ключ у `PAGE_KEYS` обох `roles.ts` + `UPDATE roles SET pages = pages || '["/шлях"]'` для потрібних ролей.
+- **Бот-адмінство — лише через `getAdmin`/`isAdmin` з `bot/roles.ts`:** вони фільтрують веб-роль `driver` (таких людей у боті веде рядок у `drivers`, вкл. `isHeadDriver`). Прямий select з `adminsTable` для гейтів — регресія.
+- **Меню бота — через хелпери:** працівнику `workerMenuFor(worker, lang)` (обрізається під налаштування фабрики), водієві `driverMenuFor(driver, lang)` (кнопка зміни залежить від відкритого workday). Голі `workerMenu`/`driverMenu` повертають сховані кнопки.
+- **Стани вводу в боті** показують `cancelKb(lang)`, а не `removeKeyboard()` — глобальний hears «✖️ Скасувати» дає вихід з будь-якого діалогу. Вільний текст (імена тощо) у Markdown-повідомленнях — через `mdSafe()`; глобальний fallback у `bot/instance.ts` (обгортка `callApi`) повторює відправку без parse_mode при «can't parse entities».
+- **Місячні звіти — за фактичною датою зміни.** Тиждень легально перетинає межу місяця: бери тижні з запасом (`weekFromForMonth`, −6 днів) і фільтруй кожну зміну за датою (`entryDateStr`). Дати-рядки рахуй рядком, **не** `new Date(...).toISOString()` — прод-сервер у Europe/Berlin, і toISOString зрізає день.
+- **`driver_shift_assignments.kind`** = `delivery | pickup` («забрати зі зміни»). Усе про завіз/посадку/поїздки фільтрує `kind='delivery'`; огляди показують обидва з маркуванням. Детекція прогалин забору продубльована у 2 місцях (`GET /driver-board` + `services/pickupGaps.ts`) — міняти синхронно.
+- **Фінансові поля — лише для owner** (ставки, рахунки, `viewFinance`/`canFinance`): і в API (фільтрація відповіді), і в UI.
 - **Безпека:** не комітити `.env` (у `.gitignore`); приватний SSH-ключ не розкривати; `pnpm-workspace.yaml` має `minimumReleaseAge` (захист від supply-chain) — не вимикати.
-- **Бот — лише один polling-інстанс** (інакше Telegram повертає 409). Локальний запуск і прод одночасно конфліктують на одному токені.
+- **Бот — лише один polling-інстанс на токен** (інакше Telegram повертає 409). Локальна розробка і прод використовують **різні токени** (тестовий бот ≠ прод-бот @ESschedule_grafik_bot), тож конфлікту між ними немає.
 - **Стиль коду:** дотримуйся наявних ідіом сусіднього коду (іменування, щільність коментарів). TypeScript strict.
 
 ---
