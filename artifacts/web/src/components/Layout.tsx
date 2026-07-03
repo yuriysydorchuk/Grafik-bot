@@ -16,10 +16,10 @@ function LangToggle() {
   const { lang, setLang } = useLang();
   return (
     <div className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-semibold">
-      {(["uk", "en"] as const).map(l => (
+      {(["uk", "en", "ru"] as const).map(l => (
         <button key={l} onClick={() => setLang(l)}
           className={cn("rounded-md px-2 py-1 transition", lang === l ? "bg-red-50 text-red-700" : "text-slate-400 hover:text-slate-600")}>
-          {l === "uk" ? "УКР" : "EN"}
+          {l === "uk" ? "УКР" : l === "en" ? "EN" : "РУС"}
         </button>
       ))}
     </div>

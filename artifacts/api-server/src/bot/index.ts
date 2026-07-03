@@ -363,10 +363,10 @@ bot.hears(trAll("hr.cancel"), async (ctx) => {
 bot.hears(bhears("🌐 Мова / Language"), async (ctx) => {
   const tid = String(ctx.from.id);
   if (!(await isAdmin(tid)) && !(await getDriver(tid))) return;
-  return ctx.reply("Оберіть мову / Choose language:", officeLangKeyboard());
+  return ctx.reply("Оберіть мову / Choose language / Выберите язык:", officeLangKeyboard());
 });
 
-bot.action(/^olang:(uk|en)$/, async (ctx) => {
+bot.action(/^olang:(uk|en|ru)$/, async (ctx) => {
   const tid = String(ctx.from.id);
   const lang = oLang(ctx.match[1]);
   const admin = await getAdmin(tid);
@@ -3507,7 +3507,7 @@ bot.action(/^pkg:(\d{4}-\d{2}-\d{2}):(\w+):(\d+):(\d)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, Number(factoryId))))[0];
   return ctx.reply(
-    `🔙 *${mdSafe(fac?.name ?? "—")}* · ${SHIFT_SHORT[shift as Shift]} (${DAY_UK[day as DayOfWeek]})\n\nКого відправити забрати людей зі зміни?`,
+    `🔙 *${mdSafe(fac?.name ?? "—")}* · ${SHIFT_SHORT[shift as Shift]} (${DAY_UK[day as DayOfWeek]})\n\n${tb(olang(driver), "Кого відправити забрати людей зі зміни?")}`,
     { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } },
   );
 });

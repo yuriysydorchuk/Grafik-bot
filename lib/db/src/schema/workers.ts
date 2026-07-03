@@ -71,7 +71,7 @@ export const driversTable = pgTable("drivers", {
   inviteCode: text("invite_code").unique(), // for ?start=drv<code> invite links
   isHeadDriver: boolean("is_head_driver").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
-  language: text("language"), // uk | en (null = not chosen, defaults to uk)
+  language: text("language"), // uk | en | ru (null = not chosen, defaults to uk)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
