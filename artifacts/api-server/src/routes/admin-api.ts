@@ -935,9 +935,12 @@ router.patch("/drivers/:id", RW, async (req, res) => {
 router.delete("/drivers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   // Soft-delete + unlink Telegram/invite so the person loses bot access immediately
-  // and the (unique) Telegram id is freed for a future re-invite.
-  await db.update(driversTable).set({ isActive: false, telegramId: null, inviteCode: null, isHeadDriver: false }).where(eq(driversTable.id, id));
-  ok(res, { ok: true });
+  // and the (unique) Telegram id is freed for a future re-invite. Their upcoming
+  // schedule assignments are removed so the name disappears from the grid.
+  const { deactivateDriver, removeDriverUpcomingAssignments } = await import("../services/drivers");
+  await deactivateDriver(id);
+  const removed = await removeDriverUpcomingAssignments(id);
+  ok(res, { ok: true, removedAssignments: removed });
 });
 
 router.get("/drivers/:id/invite", async (req, res) => {
@@ -2718,8 +2721,10 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
 
     // Who takes shift N's workers home if no explicit pickup is assigned?
     // The delivery drivers of the shift that STARTS when N ends (same day, or the
-    // next day when N crosses midnight). Gap = no such drivers at all, or their
-    // known seat total is smaller than the shift's headcount.
+    // next day when N crosses midnight). Gap = no such drivers at all, or the
+    // headcount doesn't fit even into the largest buses: exact capacities aren't
+    // tracked (vehicles rotate), the fleet is 9- and 20-seat buses, so an unknown
+    // vehicle counts as 20 seats and we only flag what is certainly impossible.
     const pickupGapFor = (day: string, idx: number): { reason: string; people: number; seats: number | null } | null => {
       const st = fShifts[idx];
       const people = headcountOf(day, String(idx + 1));
@@ -2731,9 +2736,7 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       const covering = coverIdx >= 0 && headcountOf(coverDay, String(coverIdx + 1)) > 0
         ? cellAssigns(coverDay, String(coverIdx + 1), "delivery") : [];
       if (covering.length === 0) return { reason: "none", people, seats: null };
-      const seatVals = covering.map(d => seatsOf.get(d.id));
-      if (seatVals.some(s => s == null)) return null; // unknown capacity → don't guess
-      const seats = seatVals.reduce<number>((a, b) => a + (b ?? 0), 0);
+      const seats = covering.reduce<number>((a, d) => a + (seatsOf.get(d.id) ?? 20), 0);
       return seats < people ? { reason: "capacity", people, seats } : null;
     };
 

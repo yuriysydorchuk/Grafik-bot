@@ -3,8 +3,10 @@
 // GET /driver-board (keep the rules in sync):
 //   - a shift with workers is covered when a pickup assignment exists for it, OR
 //     delivery drivers arrive for the shift that STARTS when it ends (same day;
-//     the next day when the shift crosses midnight) with enough known seats;
-//   - unknown seat capacity → assume enough (don't guess).
+//     the next day when the shift crosses midnight) with enough seats;
+//   - exact capacities aren't tracked (vehicles rotate; the fleet is 9- and
+//     20-seat buses) → an unknown vehicle counts as 20 seats, so a capacity gap
+//     fires only when the headcount can't fit even into the largest buses.
 import { db } from "@workspace/db";
 import {
   driversTable, factoriesTable, scheduleEntriesTable, driverShiftAssignmentsTable,
@@ -63,9 +65,7 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
         gaps.push({ factoryId: f.id, factoryName: f.name, day, shift: sc, end: st.end ?? null, people, seats: null, reason: "none" });
         continue;
       }
-      const seatVals = covering.map(a => seatsOf.get(a.driverId));
-      if (seatVals.some(v => v == null)) continue; // unknown capacity → don't guess
-      const seats = seatVals.reduce<number>((a, b) => a + (b ?? 0), 0);
+      const seats = covering.reduce<number>((a, x) => a + (seatsOf.get(x.driverId) ?? 20), 0);
       if (seats < people) gaps.push({ factoryId: f.id, factoryName: f.name, day, shift: sc, end: st.end ?? null, people, seats, reason: "capacity" });
     }
   }

@@ -330,6 +330,20 @@ async function driverMenuFor(driver: Driver, dl: Lang) {
   return driver.isHeadDriver ? headDriverMenu(dl, onShift) : driverMenu(dl, onShift);
 }
 
+// The driver roster (add/remove) is managed by office admins AND the head driver
+// (regular drivers stay bot-only). Returns null for everyone else.
+async function rosterManager(tid: string): Promise<{ al: Lang; admin: boolean; headDriver?: Driver } | null> {
+  const admin = await getAdmin(tid);
+  if (admin) return { al: olang(admin), admin: true };
+  const d = await getDriver(tid);
+  if (d?.isHeadDriver) return { al: olang(d), admin: false, headDriver: d };
+  return null;
+}
+// Where to return after a roster action finishes.
+async function rosterDoneMenu(m: { al: Lang; admin: boolean; headDriver?: Driver }) {
+  return m.admin ? managementMenu(m.al) : await driverMenuFor(m.headDriver!, m.al);
+}
+
 // Universal cancel for worker input flows (any language) — clears the dialog
 // state and returns to the main menu. Registered before bot.on("text") so it
 // wins over flows that would otherwise swallow the text as input.
@@ -555,16 +569,31 @@ bot.hears(bhears("🚗 Водії"), async (ctx) => {
   return ctx.reply(tb(al, "Управління водіями:"), Markup.keyboard([
     [tb(al, "➕ Додати водія"), tb(al, "📋 Список водіїв")],
     [tb(al, "📨 Запросити водія"), tb(al, "👑 Призначити головним")],
-    [tb(al, "🔗 Прив'язати вручну (ID)")],
+    [tb(al, "🔗 Прив'язати вручну (ID)"), tb(al, "🗑 Видалити водія")],
     [tb(al, "⬅️ Назад")],
   ]).resize());
 });
 
 bot.hears(bhears("➕ Додати водія"), async (ctx) => {
   const tid = String(ctx.from.id);
-  const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  const m = await rosterManager(tid); if (!m) return; const al = m.al;
   setState(tid, "add_driver", {});
-  return ctx.reply(tb(al, "Введіть ім'я водія:"), Markup.removeKeyboard());
+  return ctx.reply(tb(al, "Введіть ім'я водія:"), cancelKb(al));
+});
+
+// Remove a regular driver (office admin or head driver). Head drivers are
+// protected — demoting/removing them stays with the office/web panel.
+bot.hears(bhears("🗑 Видалити водія"), async (ctx) => {
+  const tid = String(ctx.from.id);
+  const m = await rosterManager(tid); if (!m) return; const al = m.al;
+  const drivers = await db.select().from(driversTable)
+    .where(and(eq(driversTable.isActive, true), eq(driversTable.isHeadDriver, false)));
+  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв для видалення."), await rosterDoneMenu(m));
+  setState(tid, "remove_driver:select", {});
+  return ctx.reply(tb(al, "Оберіть водія для видалення:"), Markup.keyboard([
+    ...drivers.map(d => [`❌ ${d.name}`]),
+    [tb(al, "⬅️ Назад")],
+  ]).resize());
 });
 
 bot.hears(bhears("📋 Список водіїв"), async (ctx) => {
@@ -1500,11 +1529,17 @@ bot.hears(bhears("👥 Мій список водіїв"), async (ctx) => {
   if (!driver?.isHeadDriver) return ctx.reply(tb(olang(driver), "❌ Немає доступу."));
   const dl = olang(driver);
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
-  if (drivers.length === 0) return ctx.reply(tb(dl, "Список водіїв порожній."), headDriverMenu(dl));
   const list = drivers.map((d, i) =>
     `${i + 1}. ${d.isHeadDriver ? "👑 " : ""}*${d.name}*${d.vehicle ? ` 🚗 ${d.vehicle}` : ""}${d.telegramId ? " ✅" : " ⚠️"}`
-  ).join("\n");
-  return ctx.reply(`🚗 *${tb(dl, "Водії")} (${drivers.length})*:\n\n${list}\n\n${tb(dl, "👑 = головний водій (теж може возити зміни)\n✅ = підключений до бота")}`, { parse_mode: "Markdown", ...headDriverMenu(dl) });
+  ).join("\n") || tb(dl, "Список водіїв порожній.");
+  // The head driver manages the roster from here (add / remove regular drivers)
+  return ctx.reply(
+    `🚗 *${tb(dl, "Водії")} (${drivers.length})*:\n\n${list}\n\n${tb(dl, "👑 = головний водій (теж може возити зміни)\n✅ = підключений до бота")}`,
+    { parse_mode: "Markdown", ...Markup.keyboard([
+      [tb(dl, "➕ Додати водія"), tb(dl, "🗑 Видалити водія")],
+      [tb(dl, "⬅️ Назад")],
+    ]).resize() },
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2503,13 +2538,15 @@ bot.on("text", async (ctx) => {
     return ctx.reply(tb(al, "Управління:"), managementMenu(al));
   }
 
-  // ── Add driver ────────────────────────────────────────────────────
+  // ── Add driver (office admin or head driver) ──────────────────────
   if (state?.action === "add_driver") {
     const { data } = state;
-    const al = olang(await getAdmin(tid));
+    const m = await rosterManager(tid);
+    if (!m) { clearState(tid); return; }
+    const al = m.al;
     if (!data.name) {
       data.name = text; setState(tid, "add_driver", data);
-      return ctx.reply(tb(al, "Введіть номер авто (або /skip):"), Markup.removeKeyboard());
+      return ctx.reply(tb(al, "Введіть номер авто (або /skip):"), cancelKb(al));
     }
     const vehicle = text === "/skip" ? undefined : text;
     const inviteCode = await genDriverCode();
@@ -2520,7 +2557,45 @@ bot.on("text", async (ctx) => {
       tb(al, "✅ Водій <b>{name}</b> доданий!", { name: escapeHtml(data.name) }) + `${vehicle ? `\n🚗 ${tb(al, "Авто:")} ${escapeHtml(vehicle)}` : ""}\n\n${tb(al, "📎 Посилання-запрошення (натисніть щоб скопіювати):")}\n<code>${escapeHtml(inviteLink)}</code>\n\n${tb(al, "Надішліть його водію — він натисне і автоматично підключиться до бота.")}`,
       { parse_mode: "HTML" },
     );
-    return ctx.reply(tb(al, "Управління водіями:"), managementMenu(al));
+    return ctx.reply(tb(al, "Управління водіями:"), await rosterDoneMenu(m));
+  }
+
+  // ── Remove driver: pick from the list ─────────────────────────────
+  if (state?.action === "remove_driver:select") {
+    const m = await rosterManager(tid);
+    if (!m) { clearState(tid); return; }
+    const al = m.al;
+    const name = text.replace(/^❌\s*/, "").trim();
+    const drivers = await db.select().from(driversTable)
+      .where(and(eq(driversTable.isActive, true), eq(driversTable.isHeadDriver, false)));
+    const d = drivers.find(x => x.name === name);
+    if (!d) return ctx.reply(tb(al, "Оберіть водія зі списку."));
+    setState(tid, "remove_driver:confirm", { driverId: d.id, driverName: d.name });
+    return ctx.reply(
+      tb(al, "⚠️ Дійсно видалити водія *{name}*?\n\nВін втратить доступ до бота, його призначення на цей і майбутні тижні буде знято.", { name: d.name }),
+      { parse_mode: "Markdown", ...Markup.keyboard([[tb(al, "✅ Так, видалити водія"), tb(al, "❌ Скасувати")]]).resize() },
+    );
+  }
+
+  if (state?.action === "remove_driver:confirm") {
+    const { data } = state;
+    const m = await rosterManager(tid);
+    if (!m) { clearState(tid); return; }
+    const al = m.al;
+    clearState(tid);
+    if (!bhears("✅ Так, видалити водія").includes(text)) {
+      return ctx.reply(tb(al, "Скасовано."), await rosterDoneMenu(m));
+    }
+    const { deactivateDriver, removeDriverUpcomingAssignments } = await import("../services/drivers");
+    await deactivateDriver(data.driverId);
+    const removed = await removeDriverUpcomingAssignments(data.driverId);
+    return ctx.reply(
+      tb(al, "✅ Водія *{name}* видалено.{extra}", {
+        name: data.driverName,
+        extra: removed > 0 ? tb(al, "\nЗнято призначень у графіку: {n}.", { n: removed }) : "",
+      }),
+      { parse_mode: "Markdown", ...(await rosterDoneMenu(m)) },
+    );
   }
 
   // ── Invite driver: show invite link ───────────────────────────────

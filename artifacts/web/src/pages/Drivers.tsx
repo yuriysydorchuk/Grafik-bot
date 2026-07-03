@@ -72,11 +72,10 @@ function DriverModal({ driver, onClose, onSaved }: { driver?: Driver; onClose: (
   const [name, setName] = useState(driver?.name ?? "");
   const [vehicle, setVehicle] = useState(driver?.vehicle ?? "");
   const [phone, setPhone] = useState(driver?.phone ?? "");
-  const [seats, setSeats] = useState(driver?.seats != null ? String(driver.seats) : "");
 
   const save = useMutation({
     mutationFn: async () => {
-      const body = { name, vehicle, phone, seats: seats.trim() ? Number(seats) : null };
+      const body = { name, vehicle, phone };
       if (isEdit) return patch<Driver>(`/drivers/${driver!.id}`, body);
       const d = await post<Driver>("/drivers", body);
       try {
@@ -95,7 +94,6 @@ function DriverModal({ driver, onClose, onSaved }: { driver?: Driver; onClose: (
       <div className="space-y-3">
         <div><Label>{t("Ім'я")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
         <div><Label>{t("Авто (необов'язково)")}</Label><Input value={vehicle} onChange={e => setVehicle(e.target.value)} /></div>
-        <div><Label>{t("Місткість, пасажирів (для розрахунку заборів)")}</Label><Input type="number" min={1} value={seats} onChange={e => setSeats(e.target.value)} placeholder="8" /></div>
         <div><Label>{t("Телефон (необов'язково)")}</Label><Input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+48…" /></div>
         {!isEdit && <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500"><Copy className="mr-1 inline h-3 w-3" />{t("Після створення посилання-запрошення скопіюється автоматично. Надішліть його водієві — щойно він натисне «Старт», отримуватиме сповіщення.")}</div>}
         <div className="flex justify-end gap-2 pt-1">

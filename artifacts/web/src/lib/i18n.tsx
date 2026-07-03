@@ -364,8 +364,6 @@ const EN: Record<string, string> = {
   "Кількість поїздок і запізнення за місяць": "Trip count and lateness per month",
   "За цей місяць немає зафіксованих поїздок": "No recorded trips for this month",
 
-  "Місткість, пасажирів (для розрахунку заборів)": "Capacity, passengers (for pickup planning)",
-
   // ── Driver pickup («Забрати зі зміни») ──
   "Забрати зі зміни": "Pick up from shift",
   "забрати": "pick up",
