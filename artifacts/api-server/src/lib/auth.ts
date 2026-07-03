@@ -123,6 +123,15 @@ export function requireCap(cap: Capability) {
   };
 }
 
+// Gate a route to admins whose role grants ANY of the capabilities (owner always passes).
+export function requireAnyCap(...caps: Capability[]) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.admin) return res.status(401).json({ error: "unauthorized" });
+    if (!caps.some(c => hasCap(req.admin!.role, req.admin!.caps, c))) return res.status(403).json({ error: "forbidden" });
+    return next();
+  };
+}
+
 // Gate a route to the single immutable head admin (role assignment, user management).
 // Nobody but this account — not even other owners — can pass.
 export function requireMainAdmin(req: AuthedRequest, res: Response, next: NextFunction) {

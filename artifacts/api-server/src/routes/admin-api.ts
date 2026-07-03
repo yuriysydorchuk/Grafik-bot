@@ -13,7 +13,7 @@ import {
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull } from "drizzle-orm";
-import { authRequired, requireRole, requireCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
+import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
 import {
@@ -913,7 +913,11 @@ router.get("/drivers", async (_req, res) => {
   ok(res, rows);
 });
 
-router.post("/drivers", RW, async (req, res) => {
+// Driver roster management is open to "driver actions" (head driver on the web)
+// as well as editData — mirrors the bot, where the head driver manages the roster.
+const DRIVER_RW = requireAnyCap("editData", "assignDrivers");
+
+router.post("/drivers", DRIVER_RW, async (req, res) => {
   const { name, vehicle, phone, seats } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть ім'я");
   // unique 5-digit invite code
@@ -930,7 +934,7 @@ router.post("/drivers", RW, async (req, res) => {
   ok(res, d);
 });
 
-router.patch("/drivers/:id", RW, async (req, res) => {
+router.patch("/drivers/:id", DRIVER_RW, async (req, res) => {
   const id = Number(req.params.id);
   const { name, vehicle, phone, isHeadDriver } = req.body ?? {};
   // Promoting/demoting a head driver is a role assignment — head admin only.
@@ -950,7 +954,7 @@ router.patch("/drivers/:id", RW, async (req, res) => {
   ok(res, d);
 });
 
-router.delete("/drivers/:id", RW, async (req, res) => {
+router.delete("/drivers/:id", DRIVER_RW, async (req, res) => {
   const id = Number(req.params.id);
   // Soft-delete + unlink Telegram/invite so the person loses bot access immediately
   // and the (unique) Telegram id is freed for a future re-invite. Their upcoming
