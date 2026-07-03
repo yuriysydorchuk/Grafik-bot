@@ -69,7 +69,7 @@ export interface Worker {
 }
 export interface Driver {
   id: number; name: string; vehicle: string | null; phone: string | null; telegramId: string | null;
-  inviteCode: string | null; isHeadDriver: boolean; isActive: boolean;
+  seats: number | null; inviteCode: string | null; isHeadDriver: boolean; isActive: boolean;
 }
 export type GenMode = "availability" | "orders" | "all";
 export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null }

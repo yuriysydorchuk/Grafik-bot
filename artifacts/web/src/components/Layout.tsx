@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
-  FolderOpen, Activity, Route, Clock, CalendarX, Wallet, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon,
+  FolderOpen, Activity, Route, Clock, CalendarX, Wallet, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, type LucideIcon,
 } from "lucide-react";
 import { cn } from "./ui";
@@ -57,6 +57,7 @@ const NAV: NavGroup[] = [
       { href: "/absences", label: "Відсутності", icon: CalendarX },
       { href: "/advances", label: "Аванси", icon: HandCoins },
       { href: "/trips", label: "Поїздки", icon: Route },
+      { href: "/mileage", label: "Звіт по пробігу", icon: Gauge },
       { href: "/reports", label: "Звіти / Drive", icon: FolderOpen },
     ],
   },

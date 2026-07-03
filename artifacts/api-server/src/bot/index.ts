@@ -3,11 +3,11 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
-  absenceRequestsTable, driverTripsTable, unplannedWorkersTable, availabilityTable,
+  absenceRequestsTable, driverTripsTable, driverWorkdaysTable, unplannedWorkersTable, availabilityTable,
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
-  type DayOfWeek, type Shift,
+  type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray, ne } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   getWorkersWhoHaventSubmitted,
@@ -169,7 +169,7 @@ bot.start(async (ctx) => {
           await db.update(driversTable).set({ telegramId: tid, username: ctx.from.username ?? null }).where(eq(driversTable.id, d.id));
         }
         const dl = olang(d);
-        const menu = d.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl);
+        const menu = await driverMenuFor(d, dl);
         return ctx.reply(tb(dl, "✅ Привіт, *{name}*!\n\nВас прив'язано до бота як водія.", { name: mdSafe(d.name) }), { parse_mode: "Markdown", ...menu });
       }
       return ctx.reply("❌ Посилання недійсне або водія не знайдено. Зверніться до адміністратора.");
@@ -255,7 +255,7 @@ bot.start(async (ctx) => {
   const driver = await getDriver(tid);
   if (driver) {
     const dl = olang(driver);
-    const menu = driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl);
+    const menu = await driverMenuFor(driver, dl);
     const role = driver.isHeadDriver ? tb(dl, "Ви головний водій.") : tb(dl, "Ваше меню:");
     const icon = driver.isHeadDriver ? "🚐" : "🚗";
     return ctx.reply(`${icon} ${tb(dl, "Привіт, *{name}*!", { name: driver.name })} ${role}`, { parse_mode: "Markdown", ...menu });
@@ -305,7 +305,7 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
   const admin = await getAdmin(tid);
   if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), adminMenu(al)); }
   const driver = await getDriver(tid);
-  if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)); }
+  if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
   const wl = wlang(worker);
   return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
@@ -314,6 +314,21 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
 // One-button reply keyboard shown while a worker dialog awaits typed input,
 // so there is always a visible way out of the flow.
 const cancelKb = (lang: Lang) => Markup.keyboard([[t(lang, "hr.cancel")]]).resize();
+
+// The driver's latest open working day (started, not finished yet) — governs
+// which workday button the menu shows (Почати зміну / Закінчити зміну).
+async function getOpenWorkday(driverId: number) {
+  const rows = await db.select().from(driverWorkdaysTable)
+    .where(and(eq(driverWorkdaysTable.driverId, driverId), isNull(driverWorkdaysTable.endedAt)))
+    .orderBy(desc(driverWorkdaysTable.id)).limit(1);
+  return rows[0];
+}
+
+// Driver menu with the correct workday button for the current state.
+async function driverMenuFor(driver: Driver, dl: Lang) {
+  const onShift = (await getOpenWorkday(driver.id)) !== undefined;
+  return driver.isHeadDriver ? headDriverMenu(dl, onShift) : driverMenu(dl, onShift);
+}
 
 // Universal cancel for worker input flows (any language) — clears the dialog
 // state and returns to the main menu. Registered before bot.on("text") so it
@@ -324,7 +339,7 @@ bot.hears(trAll("hr.cancel"), async (ctx) => {
   const admin = await getAdmin(tid);
   if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), adminMenu(al)); }
   const driver = await getDriver(tid);
-  if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)); }
+  if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
   const wl = wlang(worker);
   return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
@@ -352,7 +367,7 @@ bot.action(/^olang:(uk|en)$/, async (ctx) => {
     await db.update(driversTable).set({ language: lang }).where(eq(driversTable.id, driver.id));
     await ctx.answerCbQuery();
     try { await ctx.deleteMessage(); } catch { /* ignore */ }
-    return ctx.reply(tb(lang, "✅ Мову змінено."), driver.isHeadDriver ? headDriverMenu(lang) : driverMenu(lang));
+    return ctx.reply(tb(lang, "✅ Мову змінено."), await driverMenuFor(driver, lang));
   }
   return ctx.answerCbQuery();
 });
@@ -1523,9 +1538,10 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
   const week = getCurrentMonday();
   const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
+  // Trip tracking covers DELIVERY runs only (pickups have no boarding/lateness flow)
   const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
     .from(driverShiftAssignmentsTable)
-    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (assignments.length === 0) return ctx.reply(tb(dl, "📭 На {day} у вас немає призначень.", { day: DAY_NAMES_UK[dayName] }), driverMenu(dl));
   // If several assignments today, pick the one whose shift starts soonest from now
   const now = nowWarsaw();
@@ -1548,7 +1564,7 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
   const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
   return ctx.reply(
     `🚌 *${tb(dl, "Поїздку розпочато!")}*\n🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[trip.shift as Shift]}\n\n${tb(dl, "Час:")} ${timeStr}${lateToPickup ? `\n⚠️ ${tb(dl, "Спізнення на збір (план {t})", { t: shiftAnchor(now, shiftStart, 60).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}` : `\n✅ ${tb(dl, "Вчасно на місці збору")}`}`,
-    { parse_mode: "Markdown", ...(driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)) },
+    { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
   );
 });
 
@@ -1564,7 +1580,7 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
   // Prefer a trip already started today; otherwise the latest trip for today
   const trips = await db.select().from(driverTripsTable)
     .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName)));
-  if (trips.length === 0) return ctx.reply(tb(dl, "⚠️ Спочатку натисніть «🚌 Почати поїздку»."), driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl));
+  if (trips.length === 0) return ctx.reply(tb(dl, "⚠️ Спочатку натисніть «🚌 Почати поїздку»."), await driverMenuFor(driver, dl));
   const t = trips.find(x => x.pickupStartedAt && !x.arrivedFactoryAt) ?? trips[0]!;
   const now = nowWarsaw();
   const factory = await getMenuDriverFactory(t.factoryId);
@@ -1577,7 +1593,47 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
     ? Math.round((now.getTime() - new Date(t.pickupStartedAt).getTime()) / 60000) : null;
   return ctx.reply(
     `🏭 *${tb(dl, "Прибуття зафіксовано!")}*\n🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[t.shift as Shift]}\n\n${tb(dl, "Час:")} ${timeStr}${travelMin !== null ? `\n⏱ ${tb(dl, "В дорозі:")} ${travelMin} ${tb(dl, "хв")}` : ""}${lateToFactory ? `\n⚠️ ${tb(dl, "Запізнення (план до {t})", { t: expectedFactory.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}` : `\n✅ ${tb(dl, "Прибули вчасно")}`}`,
-    { parse_mode: "Markdown", ...(driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl)) },
+    { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+  );
+});
+
+// ─── Driver: workday with odometer (mileage report) ──────────────────────────
+
+bot.hears(bhears("🚗 Почати зміну"), async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return;
+  const dl = olang(driver);
+  const open = await getOpenWorkday(driver.id);
+  // An open workday from TODAY → nothing to start; from a previous day it will
+  // be closed by the new starting odometer (the reading is the same number).
+  if (open && open.workDate === warsawDateStr()) {
+    const t0 = new Date(open.startedAt).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+    return ctx.reply(
+      tb(dl, "⚠️ У вас вже відкрита зміна з {time} (пробіг {km} км). Натисніть «🏁 Закінчити зміну», коли повернетесь.", { time: t0, km: open.odometerStart }),
+      await driverMenuFor(driver, dl),
+    );
+  }
+  setState(tid, "workday:start_km", { driverId: driver.id, staleId: open?.id ?? null, staleDate: open?.workDate ?? null, staleStart: open?.odometerStart ?? null });
+  return ctx.reply(
+    tb(dl, "🚗 *Початок зміни*\n\nВведіть *поточний пробіг* авто (км), виїжджаючи з бази:"),
+    { parse_mode: "Markdown", ...cancelKb(dl) },
+  );
+});
+
+bot.hears(bhears("🏁 Закінчити зміну"), async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return;
+  const dl = olang(driver);
+  const open = await getOpenWorkday(driver.id);
+  if (!open) {
+    return ctx.reply(tb(dl, "⚠️ Немає відкритої зміни. Натисніть «🚗 Почати зміну», коли виїжджаєте з бази."), await driverMenuFor(driver, dl));
+  }
+  setState(tid, "workday:end_km", { workdayId: open.id, odometerStart: open.odometerStart });
+  return ctx.reply(
+    tb(dl, "🏁 *Кінець зміни*\n\nВведіть *кінцевий пробіг* авто (км):"),
+    { parse_mode: "Markdown", ...cancelKb(dl) },
   );
 });
 
@@ -1592,9 +1648,10 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
   const week = getCurrentMonday();
   const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
+  // Attendance is a boarding concept — pickups («Забрати зі зміни») don't mark it
   const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
     .from(driverShiftAssignmentsTable)
-    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (myAssignments.length === 0) return ctx.reply(tb(dl, "📭 На сьогодні у вас немає призначень."), driverMenu(dl));
   const myShifts = [...new Set(myAssignments.map(a => a.shift))];
   const myKeys = new Set(myAssignments.map(a => `${a.factoryId}-${a.shift}`));
@@ -1677,15 +1734,17 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   const driver = await getDriver(tid);
   if (!driver) return;
   const dl = olang(driver);
-  const menu = () => driver.isHeadDriver ? headDriverMenu(dl) : driverMenu(dl);
+  const menuKb = await driverMenuFor(driver, dl);
+  const menu = () => menuKb;
   const dayName = warsawDayName();
   const week = getCurrentMonday();
   const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), menu());
   const weekId = weeks[0]!.id;
+  // Boarding covers delivery runs only — pickups don't mark attendance
   const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
     .from(driverShiftAssignmentsTable)
-    .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (myAssignments.length === 0) return ctx.reply(tb(dl, "У вас немає призначень на сьогодні."), menu());
 
   const factoryRows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
@@ -1812,7 +1871,7 @@ bot.action("brd:ok", async (ctx) => {
   if (leftForOthers > 0) summary += `\n🟡 ${tb(bl, "Залишено для інших водіїв:")} ${leftForOthers}`;
   summary += `\n\n🚌 ${tb(bl, "Час виїзду зафіксовано.")}`;
   try { await ctx.editMessageText(summary, { parse_mode: "Markdown" }); } catch { /* ignore */ }
-  await ctx.reply("Готово.", driver.isHeadDriver ? headDriverMenu() : driverMenu());
+  await ctx.reply("Готово.", await driverMenuFor(driver, bl === "en" ? "en" : "uk"));
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2304,7 +2363,7 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     try { await ctx.deleteMessage(); } catch { /* can't delete password msg in some chats */ }
     const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
-    const doneMenu = driver ? (driver.isHeadDriver ? headDriverMenu(al) : driverMenu(al)) : managementMenu(al);
+    const doneMenu = driver ? await driverMenuFor(driver, al) : managementMenu(al);
     return ctx.reply(
       tb(al, "✅ Веб-доступ налаштовано!\n\n👤 Логін: <code>{user}</code>\n🔗 Панель: {url}\n\n(пароль збережено, повідомлення з ним видалено)", { user: escapeHtml(data.username), url: escapeHtml(url) }),
       { parse_mode: "HTML", ...doneMenu },
@@ -3245,6 +3304,50 @@ bot.on("text", async (ctx) => {
     return ctx.reply(t(rlang, "report.needPhoto"), { parse_mode: "Markdown", ...cancelKb(rlang) });
   }
 
+  // ── Driver: workday odometer (start / end) ────────────────────────
+  if (state?.action === "workday:start_km" || state?.action === "workday:end_km") {
+    const driver = await getDriver(tid);
+    if (!driver) { clearState(tid); return; }
+    const dl = olang(driver);
+    const km = parseInt(text.replace(/[\s.]/g, ""), 10);
+    if (!Number.isFinite(km) || km < 0 || km > 3_000_000) {
+      return ctx.reply(tb(dl, "❌ Введіть пробіг числом у км (напр. 152340):"));
+    }
+    const now = nowWarsaw();
+    const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+
+    if (state.action === "workday:start_km") {
+      const { data } = state;
+      clearState(tid);
+      let note = "";
+      // A forgotten open workday from a previous day: today's leaving-base reading
+      // equals its final odometer (the car stood overnight), so close it with that.
+      if (data.staleId && km >= (data.staleStart ?? 0)) {
+        await db.update(driverWorkdaysTable).set({ endedAt: now, odometerEnd: km }).where(eq(driverWorkdaysTable.id, data.staleId));
+        note = "\n\n" + tb(dl, "ℹ️ У вас була незакрита зміна за {date} — вона закрита цим пробігом.", { date: String(data.staleDate) });
+      }
+      await db.insert(driverWorkdaysTable).values({
+        driverId: driver.id, workDate: warsawDateStr(), startedAt: now, odometerStart: km,
+      });
+      return ctx.reply(
+        tb(dl, "✅ *Зміну розпочато!*\n🕒 {time}\n🛣 Початковий пробіг: *{km} км*\n\nГарної дороги! Натисніть «🏁 Закінчити зміну», коли повернетесь на базу.", { time: timeStr, km }) + note,
+        { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+      );
+    }
+
+    // workday:end_km
+    const { data } = state;
+    if (km < data.odometerStart) {
+      return ctx.reply(tb(dl, "❌ Кінцевий пробіг ({end} км) не може бути меншим за початковий ({start} км). Введіть ще раз:", { end: km, start: data.odometerStart }));
+    }
+    clearState(tid);
+    await db.update(driverWorkdaysTable).set({ endedAt: now, odometerEnd: km }).where(eq(driverWorkdaysTable.id, data.workdayId));
+    return ctx.reply(
+      tb(dl, "🏁 *Зміну закінчено!*\n🕒 {time}\n🛣 Пробіг: {start} → {end} км\n📏 За зміну: *{km} км*", { time: timeStr, start: data.odometerStart, end: km, km: km - data.odometerStart }),
+      { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+    );
+  }
+
   // ── Driver: unplanned worker ──────────────────────────────────────
   if (state?.action === "unplanned:enter_name") {
     const { data } = state;
@@ -3309,6 +3412,66 @@ bot.on("text", async (ctx) => {
   }
 
   return;
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// CALLBACK QUERY HANDLERS — pickup gaps («Забрати зі зміни», головний водій)
+// ═══════════════════════════════════════════════════════════════════
+
+// Step 1: head driver tapped a gap → offer the driver list.
+bot.action(/^pkg:(\d{4}-\d{2}-\d{2}):(\w+):(\d+):(\d)$/, async (ctx) => {
+  const driver = await getDriver(String(ctx.from.id));
+  if (!driver?.isHeadDriver) { await ctx.answerCbQuery("Лише для головного водія"); return; }
+  const [, weekStart, day, factoryId, shift] = (ctx as any).match as string[];
+  const drivers = await db.select({ id: driversTable.id, name: driversTable.name, seats: driversTable.seats })
+    .from(driversTable).where(eq(driversTable.isActive, true)).orderBy(driversTable.name);
+  const rows = drivers.map(d => ([{
+    text: `${d.name}${d.seats ? ` (${d.seats} м.)` : ""}`,
+    callback_data: `pka:${weekStart}:${day}:${factoryId}:${shift}:${d.id}`,
+  }]));
+  await ctx.answerCbQuery();
+  const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, Number(factoryId))))[0];
+  return ctx.reply(
+    `🔙 *${mdSafe(fac?.name ?? "—")}* · ${SHIFT_SHORT[shift as Shift]} (${DAY_UK[day as DayOfWeek]})\n\nКого відправити забрати людей зі зміни?`,
+    { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } },
+  );
+});
+
+// Step 2: driver chosen → save the pickup assignment and notify that driver.
+bot.action(/^pka:(\d{4}-\d{2}-\d{2}):(\w+):(\d+):(\d):(\d+)$/, async (ctx) => {
+  const head = await getDriver(String(ctx.from.id));
+  if (!head?.isHeadDriver) { await ctx.answerCbQuery("Лише для головного водія"); return; }
+  const [, weekStart, day, factoryId, shift, driverId] = (ctx as any).match as string[];
+  const cands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart!)).orderBy(desc(scheduleWeeksTable.id));
+  const week = cands.find(w => w.status === "approved") ?? cands[0];
+  if (!week) { await ctx.answerCbQuery("Тиждень не знайдено"); return; }
+  const exists = await db.select({ id: driverShiftAssignmentsTable.id }).from(driverShiftAssignmentsTable).where(and(
+    eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, Number(factoryId)),
+    eq(driverShiftAssignmentsTable.dayOfWeek, day as DayOfWeek), eq(driverShiftAssignmentsTable.shift, shift as Shift),
+    eq(driverShiftAssignmentsTable.driverId, Number(driverId)), eq(driverShiftAssignmentsTable.kind, "pickup"),
+  ));
+  if (exists.length === 0) {
+    await db.insert(driverShiftAssignmentsTable).values({
+      weekId: week.id, factoryId: Number(factoryId), dayOfWeek: day as DayOfWeek,
+      shift: shift as Shift, driverId: Number(driverId), kind: "pickup",
+    });
+  }
+  const [drv] = await db.select().from(driversTable).where(eq(driversTable.id, Number(driverId)));
+  const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, Number(factoryId)));
+  const facShiftEnd = factoryShifts(await getMenuDriverFactory(Number(factoryId)))[Number(shift) - 1]?.end ?? "—";
+  await ctx.answerCbQuery("Призначено ✅");
+  try { await ctx.editMessageText(`✅ *${mdSafe(drv?.name ?? "—")}* забере зі зміни ${SHIFT_SHORT[shift as Shift]} (${DAY_UK[day as DayOfWeek]}) — ${mdSafe(fac?.name ?? "—")}.`, { parse_mode: "Markdown" }); } catch { /* ignore */ }
+  if (drv?.telegramId) {
+    const dl = olang(drv);
+    try {
+      await bot.telegram.sendMessage(drv.telegramId,
+        tb(dl, "🔙 *Нове призначення — забрати зі зміни*\n\n🏭 {factory} · {shift}\n📅 {day}\n🕒 Бути на фабриці на: {end}", {
+          factory: fac?.name ?? "—", shift: SHIFT_SHORT[shift as Shift], day: DAY_UK[day as DayOfWeek], end: facShiftEnd,
+        }),
+        { parse_mode: "Markdown" });
+    } catch { /* ignore */ }
+  }
+  return undefined;
 });
 
 // ═══════════════════════════════════════════════════════════════════

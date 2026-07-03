@@ -363,6 +363,29 @@ const EN: Record<string, string> = {
   // ── Trips ──
   "Кількість поїздок і запізнення за місяць": "Trip count and lateness per month",
   "За цей місяць немає зафіксованих поїздок": "No recorded trips for this month",
+
+  "Місткість, пасажирів (для розрахунку заборів)": "Capacity, passengers (for pickup planning)",
+
+  // ── Driver pickup («Забрати зі зміни») ──
+  "Забрати зі зміни": "Pick up from shift",
+  "забрати": "pick up",
+  "нема кому забрати": "no one to pick up",
+  "Ніхто не приїжджає на кінець цієї зміни": "No driver arrives at the end of this shift",
+  "Місць не вистачає: {people} ос., місць {seats}": "Not enough seats: {people} people, {seats} seats",
+
+  // ── Mileage report ──
+  "Звіт по пробігу": "Mileage report",
+  "Пробіг авто по змінах водіїв (початок/кінець зміни)": "Vehicle mileage per driver shift (shift start/end)",
+  "За цей місяць немає записів пробігу": "No mileage records for this month",
+  "Всього за місяць": "Month total",
+  "Змін": "Shifts",
+  "Середній пробіг / зміну": "Average km / shift",
+  "Повернення": "Return",
+  "Початковий пробіг": "Odometer start",
+  "Кінцевий пробіг": "Odometer end",
+  "Пробіг за зміну": "Km per shift",
+  "зміна відкрита": "shift open",
+  "км": "km",
   "Поїздок": "Trips",
   "Спізн. на збір": "Late to pickup",
   "Спізн. на фабрику": "Late to factory",

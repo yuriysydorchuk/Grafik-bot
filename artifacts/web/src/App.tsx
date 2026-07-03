@@ -22,6 +22,7 @@ import Hours from "./pages/Hours";
 import Absences from "./pages/Absences";
 import Advances from "./pages/Advances";
 import Trips from "./pages/Trips";
+import Mileage from "./pages/Mileage";
 import Finance from "./pages/Finance";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="/advances">{() => guard("/advances", <Advances />)}</Route>
         <Route path="/reports">{() => guard("/reports", <Reports />)}</Route>
         <Route path="/trips">{() => guard("/trips", <Trips />)}</Route>
+        <Route path="/mileage">{() => guard("/mileage", <Mileage />)}</Route>
         <Route path="/finance">{() => guard("/finance", <Finance />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>

@@ -77,15 +77,15 @@ export async function notifyDriversOfWeek(weekStart: string, factoryId: number):
   if (!week) return { notified: 0, skipped: 0 };
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   const rows = await db
-    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, telegramId: driversTable.telegramId, name: driversTable.name })
+    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, kind: driverShiftAssignmentsTable.kind, driverId: driverShiftAssignmentsTable.driverId, telegramId: driversTable.telegramId, name: driversTable.name })
     .from(driverShiftAssignmentsTable)
     .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
     .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId)));
 
-  const byDriver = new Map<number, { telegramId: string | null; name: string | null; items: { day: DayOfWeek; shift: Shift }[] }>();
+  const byDriver = new Map<number, { telegramId: string | null; name: string | null; items: { day: DayOfWeek; shift: Shift; kind: string }[] }>();
   for (const r of rows) {
     if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { telegramId: r.telegramId, name: r.name, items: [] });
-    byDriver.get(r.driverId)!.items.push({ day: r.day as DayOfWeek, shift: r.shift as Shift });
+    byDriver.get(r.driverId)!.items.push({ day: r.day as DayOfWeek, shift: r.shift as Shift, kind: r.kind });
   }
 
   let notified = 0, skipped = 0;
@@ -94,7 +94,8 @@ export async function notifyDriversOfWeek(weekStart: string, factoryId: number):
     const lines = DAYS
       .filter(day => d.items.some(i => i.day === day))
       .map(day => {
-        const shifts = d.items.filter(i => i.day === day).map(i => SHIFT_SHORT[i.shift]).join(", ");
+        const shifts = d.items.filter(i => i.day === day)
+          .map(i => i.kind === "pickup" ? `🔙 забрати ${SHIFT_SHORT[i.shift]}` : SHIFT_SHORT[i.shift]).join(", ");
         return `${DAY_UK[day]}: ${shifts}`;
       });
     const msg = `🚗 *Ваші зміни — ${factory?.name ?? "фабрика"}*\n📅 ${formatWeekStart(weekStart)}\n\n${lines.join("\n")}`;
@@ -177,12 +178,13 @@ export async function notifyWorkersScheduleWithDrivers(weekStart: string, factor
   if (!week) return { notified: 0, skipped: 0 };
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
 
-  // driver assigned per day+shift for this factory/week
+  // driver assigned per day+shift for this factory/week (delivery only — the
+  // pickup driver at shift end is не the one who brings the worker in)
   const assigns = await db
     .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, name: driversTable.name, username: driversTable.username, phone: driversTable.phone })
     .from(driverShiftAssignmentsTable)
     .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
-    .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId)));
+    .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId), eq(driverShiftAssignmentsTable.kind, "delivery")));
   const driverAt = new Map<string, { name: string | null; username: string | null; phone: string | null }>();
   for (const a of assigns) driverAt.set(`${a.day}-${a.shift}`, { name: a.name, username: a.username, phone: a.phone });
 
@@ -234,7 +236,7 @@ export async function notifyDriverOfWeek(weekStart: string, driverId: number): P
   if (!driver.telegramId) return { notified: 0, skipped: 1 };
 
   const rows = await db
-    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, factoryName: factoriesTable.name })
+    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, kind: driverShiftAssignmentsTable.kind, factoryName: factoriesTable.name })
     .from(driverShiftAssignmentsTable)
     .leftJoin(factoriesTable, eq(driverShiftAssignmentsTable.factoryId, factoriesTable.id))
     .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.driverId, driverId)));
@@ -250,7 +252,7 @@ export async function notifyDriverOfWeek(weekStart: string, driverId: number): P
     .filter(day => rows.some(r => r.day === day))
     .map(day => {
       const items = rows.filter(r => r.day === day)
-        .map(r => `${r.factoryName ?? "фабрика"} — ${SHIFT_SHORT[r.shift as Shift]}`)
+        .map(r => `${r.factoryName ?? "фабрика"} — ${r.kind === "pickup" ? `🔙 забрати ${SHIFT_SHORT[r.shift as Shift]}` : SHIFT_SHORT[r.shift as Shift]}`)
         .join("; ");
       return `${DAY_UK[day]}: ${items}`;
     });

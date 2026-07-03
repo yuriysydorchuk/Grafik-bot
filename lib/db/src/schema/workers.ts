@@ -67,6 +67,7 @@ export const driversTable = pgTable("drivers", {
   name: text("name").notNull(),
   phone: text("phone"),
   vehicle: text("vehicle"),
+  seats: integer("seats"), // passenger capacity — used by the pickup-gap detector (null = unknown)
   inviteCode: text("invite_code").unique(), // for ?start=drv<code> invite links
   isHeadDriver: boolean("is_head_driver").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
@@ -176,6 +177,9 @@ export const driverShiftAssignmentsTable = pgTable("driver_shift_assignments", {
   dayOfWeek: dayEnum("day_of_week").notNull(),
   shift: shiftEnum("shift").notNull(),
   driverId: integer("driver_id").notNull().references(() => driversTable.id),
+  // delivery = завозить людей НА зміну (default, historical rows are deliveries);
+  // pickup = «Забрати зі зміни» — waits at the factory at the END of this shift.
+  kind: text("kind").notNull().default("delivery"), // delivery | pickup
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -243,6 +247,21 @@ export const driverTripsTable = pgTable("driver_trips", {
   arrivedFactoryAt: timestamp("arrived_factory_at"),
   lateToPickup: boolean("late_to_pickup").default(false),
   lateToFactory: boolean("late_to_factory").default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Driver working day with odometer readings: opened when the driver leaves the
+// base/home ("Почати зміну", start odometer) and closed on return ("Закінчити
+// зміну", end odometer). Feeds the web "Звіт по пробігу" (mileage report);
+// per-shift km = odometer_end − odometer_start (computed, not stored).
+export const driverWorkdaysTable = pgTable("driver_workdays", {
+  id: serial("id").primaryKey(),
+  driverId: integer("driver_id").notNull().references(() => driversTable.id),
+  workDate: date("work_date").notNull(),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  odometerStart: integer("odometer_start").notNull(), // km
+  endedAt: timestamp("ended_at"),
+  odometerEnd: integer("odometer_end"),               // km
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -409,6 +428,7 @@ export type Availability = typeof availabilityTable.$inferSelect;
 export type ScheduleWeek = typeof scheduleWeeksTable.$inferSelect;
 export type ScheduleEntry = typeof scheduleEntriesTable.$inferSelect;
 export type Admin = typeof adminsTable.$inferSelect;
+export type DriverWorkday = typeof driverWorkdaysTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 

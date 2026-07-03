@@ -34,6 +34,7 @@ let weeklyReminderTask: ScheduledTask | null = null;
 let preShiftTask: ScheduledTask | null = null;
 let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
+let pickupGapTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
 export function getReminderHour(): number { return reminderHour; }
@@ -75,10 +76,19 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Daily 19:00 Warsaw: check TOMORROW's pickup gaps («Забрати зі зміни») and
+  // message the head driver with quick-assign buttons.
+  pickupGapTask = cron.schedule(
+    "0 19 * * *",
+    async () => { await notifyHeadDriverPickupGaps(); },
+    { timezone: TZ },
+  );
+
   pruneNotifications(); // run once on boot so the table is bounded immediately
 
   logger.info({ cron: `0 ${reminderHour} * * 0`, tz: TZ }, "Weekly reminder scheduler started");
   logger.info({ cron: "*/15 * * * * (Warsaw)", tz: TZ }, "Pre-shift notification checker started");
+  logger.info({ cron: "0 19 * * * (Warsaw)", tz: TZ }, "Pickup-gap checker started");
 }
 
 // Keep the notification center bounded: drop entries older than 30 days, and cap the
@@ -102,6 +112,7 @@ export function stopScheduler() {
   preShiftTask?.stop();       preShiftTask = null;
   midnightResetTask?.stop();  midnightResetTask = null;
   prunePruneTask?.stop();     prunePruneTask = null;
+  pickupGapTask?.stop();      pickupGapTask = null;
 }
 
 export function setReminderHour(hour: number) {
@@ -143,22 +154,36 @@ async function checkPreShiftNotifications() {
     for (const factory of factories) {
       // Use the jsonb `shifts` (falls back to legacy columns) so web-created factories
       // and shifts 4–6 are covered, not just legacy shift1/2/3Start.
-      const shiftTimes: Array<{ shift: Shift; start: string | null }> = factoryShifts(factory)
+      const shiftTimes: Array<{ shift: Shift; start: string | null; end: string | null }> = factoryShifts(factory)
         .slice(0, Math.min(6, Math.max(1, factory.shiftCount ?? 3)))
-        .map((st, i) => ({ shift: String(i + 1) as Shift, start: st.start }));
+        .map((st, i) => ({ shift: String(i + 1) as Shift, start: st.start, end: st.end }));
 
-      for (const { shift, start } of shiftTimes) {
+      for (const { shift, start, end } of shiftTimes) {
         if (!start) continue; // no time configured for this shift at this factory
 
         const minsUntil = minutesUntilShift(nowMs, start);
         // Notify within a 14-minute window centred on 120 min before shift
-        if (minsUntil < 106 || minsUntil > 134) continue;
+        if (minsUntil >= 106 && minsUntil <= 134) {
+          const key = `${factory.id}_${shift}_${todayStr}`;
+          if (!sentToday.has(key)) {
+            sentToday.add(key);
+            await sendFactoryShiftReminder(weekId, factory.id, factory.name, shift, dayName, start);
+          }
+        }
 
-        const key = `${factory.id}_${shift}_${todayStr}`;
-        if (sentToday.has(key)) continue;
-        sentToday.add(key);
-
-        await sendFactoryShiftReminder(weekId, factory.id, factory.name, shift, dayName, start);
+        // Pickup («Забрати зі зміни») reminder ~60 min before the shift ENDS.
+        // For an overnight shift the assignment row lives on the day the shift
+        // STARTED — cross-midnight/week-boundary cases are handled inside.
+        if (end) {
+          const minsUntilEnd = minutesUntilShift(nowMs, end);
+          if (minsUntilEnd >= 46 && minsUntilEnd <= 74) {
+            const key = `${factory.id}_${shift}_p_${todayStr}`;
+            if (!sentToday.has(key)) {
+              sentToday.add(key);
+              await sendPickupReminder(factory.id, factory.name, shift, dayName, start, end);
+            }
+          }
+        }
       }
     }
   } catch (e: any) {
@@ -206,7 +231,7 @@ async function sendFactoryShiftReminder(
     } catch { /* ignore */ }
   }
 
-  // Driver for this factory+shift today
+  // Delivery driver for this factory+shift today (pickups get their own reminder)
   const drivers = await db
     .select({ telegramId: driversTable.telegramId, name: driversTable.name })
     .from(driverShiftAssignmentsTable)
@@ -216,6 +241,7 @@ async function sendFactoryShiftReminder(
       eq(driverShiftAssignmentsTable.factoryId, factoryId),
       eq(driverShiftAssignmentsTable.dayOfWeek, day),
       eq(driverShiftAssignmentsTable.shift, shift),
+      eq(driverShiftAssignmentsTable.kind, "delivery"),
     ));
 
   for (const d of drivers) {
@@ -230,6 +256,115 @@ async function sendFactoryShiftReminder(
   }
 
   logger.info({ factoryName, shift, shiftStart, day, notified, drivers: drivers.length }, "Pre-shift reminders sent");
+}
+
+// Remind pickup drivers («Забрати зі зміни») ~1h before the shift ends.
+// The assignment row lives on the day the shift STARTED: for an overnight shift
+// (end <= start) that is the previous calendar day — possibly the previous week.
+async function sendPickupReminder(
+  factoryId: number,
+  factoryName: string,
+  shift: Shift,
+  todayName: DayOfWeek,
+  shiftStart: string | null,
+  shiftEnd: string,
+) {
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h! * 60 + m!; };
+  const crossesMidnight = shiftStart != null && toMin(shiftEnd) <= toMin(shiftStart);
+  const dayOrder: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const assignDay = crossesMidnight ? dayOrder[(dayOrder.indexOf(todayName) + 6) % 7]! : todayName;
+  // The shift started yesterday: if today is Monday, its week is the previous one.
+  let weekStart = getCurrentMonday();
+  if (crossesMidnight && todayName === "mon") {
+    const d = new Date(weekStart + "T00:00:00");
+    d.setDate(d.getDate() - 7);
+    weekStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  const weeks = await db.select().from(scheduleWeeksTable)
+    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
+  if (weeks.length === 0) return;
+
+  const rows = await db
+    .select({ telegramId: driversTable.telegramId })
+    .from(driverShiftAssignmentsTable)
+    .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
+    .where(and(
+      eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id),
+      eq(driverShiftAssignmentsTable.factoryId, factoryId),
+      eq(driverShiftAssignmentsTable.dayOfWeek, assignDay),
+      eq(driverShiftAssignmentsTable.shift, shift),
+      eq(driverShiftAssignmentsTable.kind, "pickup"),
+    ));
+  if (rows.length === 0) return;
+
+  const people = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+    .where(and(
+      eq(scheduleEntriesTable.weekId, weeks[0]!.id),
+      eq(scheduleEntriesTable.factoryId, factoryId),
+      eq(scheduleEntriesTable.dayOfWeek, assignDay),
+      eq(scheduleEntriesTable.shift, shift),
+    ));
+
+  let notified = 0;
+  for (const r of rows) {
+    if (!r.telegramId) continue;
+    try {
+      await bot.telegram.sendMessage(
+        r.telegramId,
+        `🔔 *Нагадування — забрати зі зміни*\n\nЧерез годину кінець зміни: *${SHIFT_LABELS[shift]}* (до ${shiftEnd})\n🏭 ${factoryName} — 👷 ${people.length}\n\n🔙 Будьте на фабриці на ${shiftEnd}, щоб забрати людей.`,
+        { parse_mode: "Markdown" },
+      );
+      notified++;
+      await new Promise(res => setTimeout(res, 50));
+    } catch { /* ignore */ }
+  }
+  logger.info({ factoryName, shift, shiftEnd, assignDay, notified }, "Pickup reminders sent");
+}
+
+// ─── Pickup gaps → head driver (daily 19:00, about tomorrow) ─────────────────
+// Detects shifts with no one to take workers home tomorrow and asks the head
+// driver to assign someone (inline quick-assign buttons handled in bot/index.ts).
+export async function notifyHeadDriverPickupGaps() {
+  try {
+    const nowW = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+    const tomorrow = new Date(nowW); tomorrow.setDate(tomorrow.getDate() + 1);
+    const day = DAY_OF_WEEK_JS[tomorrow.getDay()]!;
+    // The week that contains tomorrow: next week's Monday when today is Sunday
+    const weekStart = day === "mon" ? getNextMonday() : getCurrentMonday();
+    const weeks = await db.select().from(scheduleWeeksTable)
+      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
+    if (weeks.length === 0) return;
+
+    const { detectPickupGaps } = await import("./pickupGaps");
+    const gaps = await detectPickupGaps(weeks[0]!.id, day);
+    if (gaps.length === 0) return;
+
+    const heads = await db.select().from(driversTable)
+      .where(and(eq(driversTable.isHeadDriver, true), eq(driversTable.isActive, true)));
+    if (heads.length === 0) return;
+
+    const dateStr = `${String(tomorrow.getDate()).padStart(2, "0")}.${String(tomorrow.getMonth() + 1).padStart(2, "0")}`;
+    const lines = gaps.map(g =>
+      `🏭 *${g.factoryName}* · ${SHIFT_LABELS[g.shift]} (до ${g.end ?? "—"}) — 👷 ${g.people}` +
+      (g.reason === "capacity" ? `\n   ⚠️ місць лише ${g.seats} — потрібен додатковий водій` : `\n   ⚠️ ніхто не приїжджає на кінець зміни`),
+    );
+    // One quick-assign button per gap; callback carries week+day+factory+shift.
+    const buttons = gaps.map(g => ([{
+      text: `➕ ${g.factoryName} · зм.${g.shift}`,
+      callback_data: `pkg:${weekStart}:${g.day}:${g.factoryId}:${g.shift}`,
+    }]));
+    const msg = `🔙 *Завтра (${dateStr}) нема кому забрати зі зміни:*\n\n${lines.join("\n")}\n\nНатисніть, щоб призначити водія:`;
+
+    for (const h of heads) {
+      if (!h.telegramId) continue;
+      try { await bot.telegram.sendMessage(h.telegramId, msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: buttons } }); }
+      catch { /* ignore */ }
+    }
+    logger.info({ day, weekStart, gaps: gaps.length }, "Pickup-gap notification sent to head driver");
+  } catch (e: any) {
+    logger.error({ err: e }, "Error in pickup-gap check");
+    void sendAlert({ service: "cron", kind: e?.name, source: "pickupGaps", message: e?.message ?? String(e) });
+  }
 }
 
 // ─── Weekly availability reminder ────────────────────────────────────────────

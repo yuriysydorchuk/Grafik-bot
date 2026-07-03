@@ -13,7 +13,7 @@ import { DAYS, DAY_NAMES_UK } from "../services/sheets";
 import { formatWeekStart } from "../services/scheduleGenerator";
 import { sendLongMessage } from "./notify";
 import { setState, clearState } from "./state";
-import { nowWarsaw, shiftAnchor, factoryShiftStart } from "./time";
+import { nowWarsaw, shiftAnchor, factoryShiftStart, factoryShifts } from "./time";
 
 export async function getMenuDriverFactory(factoryId: number) {
   return (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
@@ -374,7 +374,7 @@ export async function showDriverShift(ctx: Context, driverId: number, weekStart:
   if (weeks.length === 0) return ctx.reply(tb(lang, "Немає активного графіку."), driverMenu(lang));
   const driver = (await db.select().from(driversTable).where(eq(driversTable.id, driverId)))[0];
   const menu = driver?.isHeadDriver ? headDriverMenu(lang) : driverMenu(lang);
-  const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId, factoryName: factoriesTable.name })
+  const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, kind: driverShiftAssignmentsTable.kind, factoryId: driverShiftAssignmentsTable.factoryId, factoryName: factoriesTable.name })
     .from(driverShiftAssignmentsTable)
     .leftJoin(factoriesTable, eq(driverShiftAssignmentsTable.factoryId, factoriesTable.id))
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, day), eq(driverShiftAssignmentsTable.driverId, driverId)));
@@ -382,17 +382,24 @@ export async function showDriverShift(ctx: Context, driverId: number, weekStart:
   let msg = `📍 *${DAY_NAMES_UK[day]}* — ${tb(lang, "Ваші зміни:")}\n\n`;
   for (const a of assignments) {
     const factory = await getMenuDriverFactory(a.factoryId);
-    const start = factoryShiftStart(factory, a.shift as Shift);
     const workers = await db
       .select({ name: workersTable.fullName, status: scheduleEntriesTable.status })
       .from(scheduleEntriesTable)
       .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
       .where(and(eq(scheduleEntriesTable.weekId, weeks[0]!.id), eq(scheduleEntriesTable.dayOfWeek, day), eq(scheduleEntriesTable.shift, a.shift), eq(scheduleEntriesTable.factoryId, a.factoryId)));
-    msg += `🏭 *${a.factoryName ?? "—"}* · ${SHIFT_SHORT[a.shift as Shift]}\n🚌 ${tb(lang, "Збір:")} ${shiftAnchor(nowWarsaw(), start, 60).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })} · 🏭 ${tb(lang, "на фабриці до:")} ${shiftAnchor(nowWarsaw(), start, 15).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}\n`;
-    workers.forEach((w, i) => {
-      const icon = w.status === "present" ? "✅" : w.status === "absent" ? "❌" : "⏳";
-      msg += `  ${i + 1}. ${icon} ${w.name}\n`;
-    });
+    if (a.kind === "pickup") {
+      // «Забрати зі зміни» — be at the factory when the shift ENDS; no boarding marks
+      const end = factoryShifts(factory)[Number(a.shift) - 1]?.end;
+      msg += `🏭 *${a.factoryName ?? "—"}* · 🔙 ${tb(lang, "Забрати зі зміни")} ${SHIFT_SHORT[a.shift as Shift]}\n🕒 ${tb(lang, "Бути на фабриці на:")} ${end ?? "—"} · 👷 ${workers.length}\n`;
+      workers.forEach((w, i) => { msg += `  ${i + 1}. ${w.name}\n`; });
+    } else {
+      const start = factoryShiftStart(factory, a.shift as Shift);
+      msg += `🏭 *${a.factoryName ?? "—"}* · ${SHIFT_SHORT[a.shift as Shift]}\n🚌 ${tb(lang, "Збір:")} ${shiftAnchor(nowWarsaw(), start, 60).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })} · 🏭 ${tb(lang, "на фабриці до:")} ${shiftAnchor(nowWarsaw(), start, 15).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}\n`;
+      workers.forEach((w, i) => {
+        const icon = w.status === "present" ? "✅" : w.status === "absent" ? "❌" : "⏳";
+        msg += `  ${i + 1}. ${icon} ${w.name}\n`;
+      });
+    }
     msg += "\n";
   }
   await sendLongMessage(ctx.chat!.id, msg, { parse_mode: "Markdown" });
@@ -401,7 +408,7 @@ export async function showDriverShift(ctx: Context, driverId: number, weekStart:
 
 export async function showDriverWeek(ctx: Context, driverId: number, weekId: number, weekStart: string, lang: Lang = "uk") {
   const assignments = await db
-    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, factoryName: factoriesTable.name })
+    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, kind: driverShiftAssignmentsTable.kind, factoryName: factoriesTable.name })
     .from(driverShiftAssignmentsTable)
     .leftJoin(factoriesTable, eq(driverShiftAssignmentsTable.factoryId, factoriesTable.id))
     .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.driverId, driverId)));
@@ -411,7 +418,7 @@ export async function showDriverWeek(ctx: Context, driverId: number, weekId: num
     const dayA = assignments.filter(a => a.day === day);
     if (dayA.length > 0) {
       msg += `${DAY_UK[day]}: `;
-      msg += dayA.map(a => `${SHIFT_SHORT[a.shift as Shift]} 🏭 ${a.factoryName}`).join(", ");
+      msg += dayA.map(a => `${a.kind === "pickup" ? `🔙 ${tb(lang, "забрати")} ` : ""}${SHIFT_SHORT[a.shift as Shift]} 🏭 ${a.factoryName}`).join(", ");
       msg += "\n";
     }
   }

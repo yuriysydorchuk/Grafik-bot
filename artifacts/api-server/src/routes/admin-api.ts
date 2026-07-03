@@ -6,7 +6,7 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
-  driverShiftAssignmentsTable, driverTripsTable, adminsTable, settingsTable,
+  driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
@@ -896,7 +896,7 @@ router.get("/drivers", async (_req, res) => {
 });
 
 router.post("/drivers", RW, async (req, res) => {
-  const { name, vehicle, phone } = req.body ?? {};
+  const { name, vehicle, phone, seats } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть ім'я");
   // unique 5-digit invite code
   let code = "";
@@ -907,6 +907,7 @@ router.post("/drivers", RW, async (req, res) => {
   const [d] = await db.insert(driversTable).values({
     name: name.trim(), vehicle: vehicle?.trim() || null,
     phone: phone?.trim() || null, inviteCode: code,
+    seats: Number(seats) > 0 ? Math.floor(Number(seats)) : null,
   }).returning();
   ok(res, d);
 });
@@ -925,6 +926,7 @@ router.patch("/drivers/:id", RW, async (req, res) => {
   if (name !== undefined) patch.name = String(name).trim();
   if (vehicle !== undefined) patch.vehicle = String(vehicle).trim() || null;
   if (phone !== undefined) patch.phone = String(phone).trim() || null;
+  if (req.body?.seats !== undefined) patch.seats = Number(req.body.seats) > 0 ? Math.floor(Number(req.body.seats)) : null;
   if (isHeadDriver !== undefined) patch.isHeadDriver = !!isHeadDriver;
   const [d] = await db.update(driversTable).set(patch).where(eq(driversTable.id, id)).returning();
   ok(res, d);
@@ -1296,7 +1298,7 @@ router.get("/schedule", async (req, res) => {
       .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name })
       .from(driverShiftAssignmentsTable)
       .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
-      .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId)));
+      .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId), eq(driverShiftAssignmentsTable.kind, "delivery")));
     for (const r of rows) (assignments[`${r.day}-${r.shift}`] ??= []).push({ driverId: r.driverId, driverName: r.driverName });
   }
   const drivers = await db.select({ id: driversTable.id, name: driversTable.name }).from(driversTable).where(eq(driversTable.isActive, true)).orderBy(driversTable.name);
@@ -1587,6 +1589,35 @@ router.get("/trips", async (req, res) => {
     s.total++; if (r.lateP) s.latePickup++; if (r.lateF) s.lateFactory++;
   }
   ok(res, { month, drivers: [...byDriver.values()].sort((a, b) => b.total - a.total) });
+});
+
+// ─── Mileage report (driver workdays with odometer readings) ────────────────────
+// Any authed role may read (the head driver's web role sees all drivers).
+router.get("/mileage", async (req, res) => {
+  const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
+  const rows = await db
+    .select({
+      driverId: driverWorkdaysTable.driverId, name: driversTable.name, vehicle: driversTable.vehicle,
+      workDate: driverWorkdaysTable.workDate, startedAt: driverWorkdaysTable.startedAt, endedAt: driverWorkdaysTable.endedAt,
+      odoStart: driverWorkdaysTable.odometerStart, odoEnd: driverWorkdaysTable.odometerEnd,
+    })
+    .from(driverWorkdaysTable)
+    .leftJoin(driversTable, eq(driverWorkdaysTable.driverId, driversTable.id))
+    .where(and(gte(driverWorkdaysTable.workDate, monthStart), lt(driverWorkdaysTable.workDate, monthEnd)))
+    .orderBy(driverWorkdaysTable.workDate, driverWorkdaysTable.id);
+  const byDriver = new Map<number, any>();
+  for (const r of rows) {
+    if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { driverId: r.driverId, name: r.name, vehicle: r.vehicle, days: [], totalKm: 0, closedShifts: 0 });
+    const s = byDriver.get(r.driverId);
+    const km = r.odoEnd != null ? r.odoEnd - r.odoStart : null; // open workday → km unknown yet
+    s.days.push({ date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km });
+    if (km != null) { s.totalKm += km; s.closedShifts++; }
+  }
+  const drivers = [...byDriver.values()].map(d => ({ ...d, avgKm: d.closedShifts ? Math.round(d.totalKm / d.closedShifts) : null }));
+  ok(res, { month, drivers: drivers.sort((a, b) => a.name.localeCompare(b.name)) });
 });
 
 // ─── Hours worked per worker for a month (payroll view, from approved schedule) ──
@@ -2557,7 +2588,7 @@ router.get("/live", async (_req, res) => {
       .select({ factoryId: driverShiftAssignmentsTable.factoryId, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name })
       .from(driverShiftAssignmentsTable)
       .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
-      .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.dayOfWeek, today)));
+      .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.dayOfWeek, today), eq(driverShiftAssignmentsTable.kind, "delivery")));
 
     for (const f of factories) {
       const fShifts = factoryShifts(f);
@@ -2601,15 +2632,20 @@ router.put("/schedule/driver-assignments", requireCap("assignDrivers"), async (r
   const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
   let week = candidates.find(w => w.status === "approved") ?? candidates[0];
   if (!week) { [week] = await db.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning(); } // allow assigning ahead
+  // A pickup-unaware client (Schedule page) sends only "day-shift" keys — then
+  // replace ONLY delivery rows and keep the pickups saved via DriverShifts.
+  const hasPickupKeys = Object.keys(slots as object).some(k => k.split("-")[2] === "p");
   await db.delete(driverShiftAssignmentsTable).where(and(
     eq(driverShiftAssignmentsTable.weekId, week!.id), eq(driverShiftAssignmentsTable.factoryId, Number(factoryId)),
+    ...(hasPickupKeys ? [] : [eq(driverShiftAssignmentsTable.kind, "delivery")]),
   ));
   const rows: any[] = [];
   for (const [key, ids] of Object.entries(slots as Record<string, number[]>)) {
-    const [day, shift] = key.split("-");
+    // "day-shift" = delivery, "day-shift-p" = pickup («Забрати зі зміни»)
+    const [day, shift, p] = key.split("-");
     if (!day || !shift || !Array.isArray(ids)) continue;
     for (const id of [...new Set(ids.map(Number).filter(Boolean))]) {
-      rows.push({ weekId: week!.id, factoryId: Number(factoryId), dayOfWeek: day as DayOfWeek, shift: shift as Shift, driverId: id });
+      rows.push({ weekId: week!.id, factoryId: Number(factoryId), dayOfWeek: day as DayOfWeek, shift: shift as Shift, driverId: id, kind: p === "p" ? "pickup" : "delivery" });
     }
   }
   if (rows.length) await db.insert(driverShiftAssignmentsTable).values(rows);
@@ -2650,37 +2686,67 @@ const findWeekRow = async (weekStart: string) => {
   return c.find(w => w.status === "approved") ?? c[0];
 };
 
-// Compact overview of every factory's running shifts (with hours + headcount + assigned drivers)
+// Compact overview of every factory's running shifts (with hours + headcount + assigned drivers).
+// Each cell also carries pickup («Забрати зі зміни») assignments and a `pickupGap`
+// warning when nobody is set to take the shift's workers home (see gap rules below).
 router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   const weekStart = String(req.query.weekStart);
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
   const week = await findWeekRow(weekStart);
   const factories = await db.select().from(factoriesTable).orderBy(factoriesTable.name);
-  const drivers = await db.select({ id: driversTable.id, name: driversTable.name, isHeadDriver: driversTable.isHeadDriver, telegramId: driversTable.telegramId })
+  const drivers = await db.select({ id: driversTable.id, name: driversTable.name, seats: driversTable.seats, isHeadDriver: driversTable.isHeadDriver, telegramId: driversTable.telegramId })
     .from(driversTable).where(eq(driversTable.isActive, true)).orderBy(desc(driversTable.isHeadDriver), driversTable.name);
+  const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
 
   let entries: { factoryId: number; day: string; shift: string }[] = [];
-  let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null }[] = [];
+  let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null; kind: string }[] = [];
   if (week) {
     entries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
       .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, week.id));
-    assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name })
+    assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name, kind: driverShiftAssignmentsTable.kind })
       .from(driverShiftAssignmentsTable).leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(eq(driverShiftAssignmentsTable.weekId, week.id));
   }
 
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h! * 60 + m!; };
   const out = factories.map(f => {
     const fShifts = factoryShifts(f);
     const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
+    const headcountOf = (day: string, sc: string) => entries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
+    const cellAssigns = (day: string, sc: string, kind: string) =>
+      assigns.filter(a => a.factoryId === f.id && a.day === day && a.shift === sc && a.kind === kind).map(a => ({ id: a.driverId, name: a.driverName }));
+
+    // Who takes shift N's workers home if no explicit pickup is assigned?
+    // The delivery drivers of the shift that STARTS when N ends (same day, or the
+    // next day when N crosses midnight). Gap = no such drivers at all, or their
+    // known seat total is smaller than the shift's headcount.
+    const pickupGapFor = (day: string, idx: number): { reason: string; people: number; seats: number | null } | null => {
+      const st = fShifts[idx];
+      const people = headcountOf(day, String(idx + 1));
+      if (!st || people === 0) return null;
+      if (cellAssigns(day, String(idx + 1), "pickup").length > 0) return null; // explicitly covered
+      const crossesMidnight = toMin(st.end) <= toMin(st.start);
+      const coverDay = crossesMidnight ? DAYS[(DAYS.indexOf(day as any) + 1) % 7]! : day;
+      const coverIdx = fShifts.findIndex(x => x.start === st.end);
+      const covering = coverIdx >= 0 && headcountOf(coverDay, String(coverIdx + 1)) > 0
+        ? cellAssigns(coverDay, String(coverIdx + 1), "delivery") : [];
+      if (covering.length === 0) return { reason: "none", people, seats: null };
+      const seatVals = covering.map(d => seatsOf.get(d.id));
+      if (seatVals.some(s => s == null)) return null; // unknown capacity → don't guess
+      const seats = seatVals.reduce<number>((a, b) => a + (b ?? 0), 0);
+      return seats < people ? { reason: "capacity", people, seats } : null;
+    };
+
     const cells: any[] = [];
     for (const day of DAYS) {
       for (let s = 1; s <= n; s++) {
         const sc = String(s);
-        const headcount = entries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
-        const cellDrivers = assigns.filter(a => a.factoryId === f.id && a.day === day && a.shift === sc).map(a => ({ id: a.driverId, name: a.driverName }));
-        if (headcount === 0 && cellDrivers.length === 0) continue; // only relevant shifts
+        const headcount = headcountOf(day, sc);
+        const cellDrivers = cellAssigns(day, sc, "delivery");
+        const pickupDrivers = cellAssigns(day, sc, "pickup");
+        if (headcount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
         const st = fShifts[s - 1];
-        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers });
+        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: pickupGapFor(day, s - 1) });
       }
     }
     return { id: f.id, name: f.name, shiftCount: n, cells };
@@ -2702,9 +2768,10 @@ router.put("/schedule/driver-assignments/by-driver", requireCap("assignDrivers")
   for (const [factoryId, keys] of Object.entries(slots as Record<string, string[]>)) {
     if (!Array.isArray(keys)) continue;
     for (const key of [...new Set(keys)]) {
-      const [day, shift] = String(key).split("-");
+      // "day-shift" = delivery, "day-shift-p" = pickup («Забрати зі зміни»)
+      const [day, shift, p] = String(key).split("-");
       if (!day || !shift) continue;
-      rows.push({ weekId: week!.id, factoryId: Number(factoryId), dayOfWeek: day as DayOfWeek, shift: shift as Shift, driverId: Number(driverId) });
+      rows.push({ weekId: week!.id, factoryId: Number(factoryId), dayOfWeek: day as DayOfWeek, shift: shift as Shift, driverId: Number(driverId), kind: p === "p" ? "pickup" : "delivery" });
     }
   }
   if (rows.length) await db.insert(driverShiftAssignmentsTable).values(rows);
@@ -2737,7 +2804,7 @@ router.post("/schedule/driver-assignments/copy-week", requireCap("assignDrivers"
   if (!to) { [to] = await db.insert(scheduleWeeksTable).values({ weekStart: String(toWeekStart), status: "draft" }).returning(); }
   await db.delete(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, to!.id));
   await db.insert(driverShiftAssignmentsTable).values(src.map(r => ({
-    weekId: to!.id, factoryId: r.factoryId, dayOfWeek: r.dayOfWeek, shift: r.shift, driverId: r.driverId,
+    weekId: to!.id, factoryId: r.factoryId, dayOfWeek: r.dayOfWeek, shift: r.shift, driverId: r.driverId, kind: r.kind,
   })));
   ok(res, { ok: true, count: src.length });
 });

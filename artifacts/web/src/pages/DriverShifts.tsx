@@ -11,9 +11,10 @@ import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 
-type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[] };
+type PickupGap = { reason: "none" | "capacity"; people: number; seats: number | null } | null;
+type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap };
 type FactoryBoard = { id: number; name: string; shiftCount: number; cells: Cell[] };
-type DriverRow = { id: number; name: string; isHeadDriver: boolean; telegramId: string | null };
+type DriverRow = { id: number; name: string; seats: number | null; isHeadDriver: boolean; telegramId: string | null };
 type Board = { weekStart: string; hasWeek: boolean; factories: FactoryBoard[]; drivers: DriverRow[] };
 
 const prevWeek = (weekStart: string) => {
@@ -52,7 +53,7 @@ export default function DriverShifts() {
   const drivers = data?.drivers ?? [];
   const driverLoad = useMemo(() => {
     const m = new Map<number, number>();
-    for (const f of factories) for (const c of f.cells) for (const d of c.drivers) m.set(d.id, (m.get(d.id) ?? 0) + 1);
+    for (const f of factories) for (const c of f.cells) for (const d of [...c.drivers, ...c.pickupDrivers]) m.set(d.id, (m.get(d.id) ?? 0) + 1);
     return m;
   }, [factories]);
 
@@ -163,6 +164,20 @@ function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
                           <span key={dr.id} className="rounded-md bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-700">{dr.name}</span>
                         )) : <span className="text-xs text-slate-300">—</span>}
                       </div>
+                      {c.pickupDrivers.length > 0 && (
+                        <div className="mt-1 flex flex-wrap justify-center gap-1">
+                          {c.pickupDrivers.map(dr => (
+                            <span key={dr.id} className="rounded-md bg-sky-50 px-1.5 py-0.5 text-xs font-medium text-sky-700" title={t("Забрати зі зміни")}>🔙 {dr.name}</span>
+                          ))}
+                        </div>
+                      )}
+                      {c.pickupGap && (
+                        <div className="mt-1" title={c.pickupGap.reason === "capacity"
+                          ? t("Місць не вистачає: {people} ос., місць {seats}", { people: c.pickupGap.people, seats: c.pickupGap.seats ?? 0 })
+                          : t("Ніхто не приїжджає на кінець цієї зміни")}>
+                          <Badge color="amber">⚠️ {t("нема кому забрати")}</Badge>
+                        </div>
+                      )}
                     </td>
                   );
                 })}
@@ -182,7 +197,10 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
   const t = useT();
   const initial = useMemo(() => {
     const set = new Set<string>();
-    for (const f of factories) for (const c of f.cells) if (c.drivers.some(d => d.id === driver.id)) set.add(cellKey(f.id, c.day, c.shift));
+    for (const f of factories) for (const c of f.cells) {
+      if (c.drivers.some(d => d.id === driver.id)) set.add(cellKey(f.id, c.day, c.shift));
+      if (c.pickupDrivers.some(d => d.id === driver.id)) set.add(cellKey(f.id, c.day, c.shift) + "-p"); // «Забрати зі зміни»
+    }
     return set;
   }, [factories, driver.id]);
   const [sel, setSel] = useState<Set<string>>(new Set(initial));
@@ -256,8 +274,11 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                           const c = f.cells.find(c => c.day === d && c.shift === s);
                           if (!c) return <td key={d} className={`px-2 py-2 text-center text-slate-200 ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>—</td>;
                           const k = cellKey(f.id, d, s);
+                          const kp = k + "-p"; // pickup («Забрати зі зміни»)
                           const on = sel.has(k);
+                          const onP = sel.has(kp);
                           const others = c.drivers.filter(x => x.id !== driver.id);
+                          const othersP = c.pickupDrivers.filter(x => x.id !== driver.id);
                           return (
                             <td key={d} className={`px-2 py-2 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
                               <button type="button" onClick={() => toggle(k)}
@@ -266,7 +287,17 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                                 {on ? <Check className="h-4 w-4" /> : <span className="text-[11px] font-semibold">{c.headcount}</span>}
                                 <span className={`text-[10px] ${on ? "text-red-100" : "text-slate-400"}`}>{on ? `${c.headcount} ${t("ос.")}` : t("ос.")}</span>
                               </button>
-                              {others.length > 0 && <div className="mt-0.5 truncate text-[10px] text-slate-400" title={others.map(o => o.name).join(", ")}>+{others.map(o => o.name).join(", ")}</div>}
+                              <button type="button" onClick={() => toggle(kp)} title={t("Забрати зі зміни")}
+                                className={`mt-1 w-full rounded-md border px-1 py-0.5 text-[10px] font-medium transition ${
+                                  onP ? "border-sky-600 bg-sky-600 text-white" : c.pickupGap ? "border-amber-300 bg-amber-50 text-amber-700 hover:border-sky-400" : "border-slate-200 bg-white text-slate-400 hover:border-sky-300"}`}>
+                                🔙 {t("забрати")}{c.pickupGap && !onP ? " ⚠️" : ""}
+                              </button>
+                              {(others.length > 0 || othersP.length > 0) && (
+                                <div className="mt-0.5 truncate text-[10px] text-slate-400"
+                                  title={[...others.map(o => o.name), ...othersP.map(o => `🔙 ${o.name}`)].join(", ")}>
+                                  +{[...others.map(o => o.name), ...othersP.map(o => `🔙${o.name}`)].join(", ")}
+                                </div>
+                              )}
                             </td>
                           );
                         })}
