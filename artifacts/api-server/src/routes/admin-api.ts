@@ -244,6 +244,10 @@ router.post("/workers", RW, async (req, res) => {
   ok(res, w);
 });
 
+// Nullable text field from a JSON body: null/empty → SQL NULL. Plain String(x) here is
+// a trap — String(null) is the literal "null" (it once wiped workers' bot languages).
+const strOrNull = (v: unknown): string | null => (v == null ? null : String(v).trim() || null);
+
 router.patch("/workers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, language, hourlyRate, isStudent, under26 } = req.body ?? {};
@@ -254,9 +258,9 @@ router.patch("/workers/:id", RW, async (req, res) => {
   if (positionId !== undefined) patch.positionId = positionId ?? null;
   if (gender !== undefined) patch.gender = normGender(gender);
   if (fixedShift !== undefined) patch.fixedShift = normFixedShift(fixedShift);
-  if (telegramId !== undefined) patch.telegramId = String(telegramId).trim() || null;
+  if (telegramId !== undefined) patch.telegramId = strOrNull(telegramId);
   if (workerCode !== undefined) {
-    const code = String(workerCode).trim();
+    const code = strOrNull(workerCode);
     if (code) {
       if (!/^\d+$/.test(code)) return fail(res, 400, "Код — лише цифри");
       const dup = await db.select().from(workersTable).where(eq(workersTable.workerCode, code));
@@ -264,7 +268,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
       patch.workerCode = code;
     } else patch.workerCode = null;
   }
-  if (language !== undefined) patch.language = String(language).trim() || null;
+  if (language !== undefined) patch.language = strOrNull(language);
   // payroll fields — owner only
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
