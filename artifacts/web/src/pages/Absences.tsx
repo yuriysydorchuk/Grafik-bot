@@ -14,7 +14,7 @@ interface Absence {
 }
 interface AbsenceRequest {
   id: number; workerId: number; name: string | null; factory: string | null;
-  date: string; day: DayCode; shift: ShiftCode; reason: string | null; status: string; createdAt: string;
+  date: string; day: DayCode; shift: ShiftCode | null; reason: string | null; status: string; createdAt: string;
   substitutes: { id: number; name: string }[];
 }
 
@@ -77,9 +77,11 @@ export default function Absences() {
               <div key={r.id} className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-white p-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-slate-700">{r.name ?? "—"} {r.factory && <Badge color="slate">{r.factory}</Badge>}</div>
-                  <div className="text-sm text-slate-500">{fmtDate(r.date)} · {DAY_UK[r.day]} · {SHIFT_UK[r.shift]}</div>
+                  <div className="text-sm text-slate-500">{fmtDate(r.date)} · {DAY_UK[r.day]} · {r.shift ? SHIFT_UK[r.shift] : `🏖 ${t("цілий день")}`}</div>
                   {r.reason && <div className="mt-0.5 text-sm text-slate-600">📝 {r.reason}</div>}
-                  {r.substitutes.length > 0 ? (
+                  {r.shift == null ? (
+                    <div className="mt-1 text-xs text-slate-400">{t("Вихідний на цілий день — без прив'язки до зміни")}</div>
+                  ) : r.substitutes.length > 0 ? (
                     <div className="mt-1.5">
                       <div className="text-xs font-medium text-slate-500">{t("Можливі заміни (доступні на цю зміну):")}</div>
                       <div className="mt-1 flex flex-wrap gap-1">

@@ -120,11 +120,19 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
   const factoryRows = await db.select({ id: factoriesTable.id, usesAvailability: factoriesTable.usesAvailability, genMode: factoriesTable.genMode, shiftCount: factoriesTable.shiftCount }).from(factoriesTable);
   const factorySettings = new Map<number, typeof factoryRows[number]>(factoryRows.map(f => [f.id, f]));
 
-  // Workers who reported an absence (not rejected) → never schedule them for that day+shift.
+  // Workers who reported an absence (not rejected) → never schedule them for that
+  // day+shift; a whole-day request (shift NULL) blocks EVERY shift of the day.
   const absenceRows = await db.select({ workerId: absenceRequestsTable.workerId, day: absenceRequestsTable.dayOfWeek, shift: absenceRequestsTable.shift, status: absenceRequestsTable.status })
     .from(absenceRequestsTable).where(eq(absenceRequestsTable.weekStart, weekStart));
-  const absentSet = new Set<string>(); // `${workerId}-${day}-${shift}`
-  for (const a of absenceRows) if (a.status !== "rejected") absentSet.add(`${a.workerId}-${a.day}-${a.shift}`);
+  const absentSet = new Set<string>();    // `${workerId}-${day}-${shift}`
+  const absentDaySet = new Set<string>(); // `${workerId}-${day}` — whole day off
+  for (const a of absenceRows) {
+    if (a.status === "rejected") continue;
+    if (a.shift == null) absentDaySet.add(`${a.workerId}-${a.day}`);
+    else absentSet.add(`${a.workerId}-${a.day}-${a.shift}`);
+  }
+  const isAbsent = (workerId: number, day: string, shift: string) =>
+    absentSet.has(`${workerId}-${day}-${shift}`) || absentDaySet.has(`${workerId}-${day}`);
 
   // Build the candidate pool PER FACTORY: factoryId → ("day-shift" → set of worker IDs).
   //  • usesAvailability: workers of that factory who reported availability for that day+shift
@@ -199,7 +207,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
           const candidates = [...(availByFactory.get(order.factoryId)?.get(`${day}-${shift}`) ?? [])]
             .filter(wid => {
               if (usedThisShift.has(wid)) return false;
-              if (absentSet.has(`${wid}-${day}-${shift}`)) return false; // reported absent
+              if (isAbsent(wid, day, shift)) return false; // reported absent (shift or whole day)
               const days = workerDaysAssigned.get(wid);
               if (!days) return false;
               if (days.size >= 6) return false;            // max 6 days
@@ -269,7 +277,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
         if (!fs || fs < 1 || fs > count) continue;                 // unbound — handled below
         const shift = String(fs) as Shift;
         if (slotLocked(day, shift)) continue;
-        if (absentSet.has(`${w.id}-${day}-${shift}`)) continue;    // absent that shift
+        if (isAbsent(w.id, day, shift)) continue;    // absent that shift or whole day
         await db.insert(scheduleEntriesTable).values({ weekId, workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift, status: "scheduled" });
         load[fs - 1]!++;
         workerDaysAssigned.get(w.id)!.add(day);
@@ -285,7 +293,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
       for (const w of unbound) {
         // candidate shifts: not locked, not absent
         const opts = Array.from({ length: count }, (_, i) => i)
-          .filter(i => !slotLocked(day, String(i + 1) as Shift) && !absentSet.has(`${w.id}-${day}-${String(i + 1)}`));
+          .filter(i => !slotLocked(day, String(i + 1) as Shift) && !isAbsent(w.id, day, String(i + 1)));
         if (!opts.length) continue;
         const minLoad = Math.min(...opts.map(i => load[i]!));
         const wk = workerWeekShift.get(w.id);

@@ -12,7 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, inArray, isNull } from "drizzle-orm";
+import { eq, and, desc, gte, lt, inArray, isNull, ne } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
@@ -1216,16 +1216,35 @@ router.get("/availability", RW, async (req, res) => {
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .where(eq(availabilityTable.weekStart, weekStart));
   // group by worker (a worker can report several shifts per day → arrays)
-  const byWorker = new Map<string, { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]> }>();
+  const byWorker = new Map<string, { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff: Record<string, string> }>();
   for (const r of rows) {
     const key = r.workerId != null ? `w${r.workerId}` : `n:${r.name}`;
-    if (!byWorker.has(key)) byWorker.set(key, { name: r.name, workerId: r.workerId, source: r.source, factoryId: r.factoryId, factoryName: r.factoryName, days: {} });
+    if (!byWorker.has(key)) byWorker.set(key, { name: r.name, workerId: r.workerId, source: r.source, factoryId: r.factoryId, factoryName: r.factoryName, days: {}, dayOff: {} });
     const days = byWorker.get(key)!.days;
     (days[r.day] ??= []);
     if (!days[r.day]!.includes(r.shift)) days[r.day]!.push(r.shift);
   }
   // keep shifts sorted for stable display
   for (const w of byWorker.values()) for (const d of Object.keys(w.days)) w.days[d]!.sort();
+  // Day-off requests for this week → per-day marker on the worker's row
+  // (pending = ⚠️ awaiting the scheduler's decision, accepted/substituted = confirmed off).
+  const offReqs = await db.select({ workerId: absenceRequestsTable.workerId, day: absenceRequestsTable.dayOfWeek, status: absenceRequestsTable.status })
+    .from(absenceRequestsTable)
+    .where(and(eq(absenceRequestsTable.weekStart, weekStart), ne(absenceRequestsTable.status, "rejected")));
+  // A worker who asked for a day off but has no availability rows still gets a row —
+  // the scheduler must see the request while building the schedule.
+  const missingIds = [...new Set(offReqs.filter(r => !byWorker.has(`w${r.workerId}`)).map(r => r.workerId))];
+  if (missingIds.length) {
+    const ws = await db.select({ id: workersTable.id, name: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name })
+      .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(inArray(workersTable.id, missingIds));
+    for (const w of ws) byWorker.set(`w${w.id}`, { name: w.name, workerId: w.id, source: "dayoff", factoryId: w.factoryId, factoryName: w.factoryName, days: {}, dayOff: {} });
+  }
+  for (const r of offReqs) {
+    const w = byWorker.get(`w${r.workerId}`);
+    if (!w) continue;
+    // pending wins over an accepted marker (needs the scheduler's attention)
+    if (r.status === "pending" || !w.dayOff[r.day]) w.dayOff[r.day] = r.status;
+  }
   ok(res, [...byWorker.values()].sort((a, b) => a.name.localeCompare(b.name, "uk")));
 });
 
@@ -1369,9 +1388,18 @@ router.get("/schedule", async (req, res) => {
       const ids = [...new Set(reqs.flatMap(r => [r.workerId, r.substituteWorkerId].filter((x): x is number => x != null)))];
       const names = await db.select({ id: workersTable.id, name: workersTable.fullName }).from(workersTable).where(inArray(workersTable.id, ids));
       const nameOf = new Map(names.map(n => [n.id, n.name]));
+      // Shift-tied requests first; whole-day requests (shift NULL) then mark every
+      // shift of the day without overwriting a more specific entry.
       for (const r of reqs) {
+        if (r.shift == null) continue;
         absenceByWorker[`${r.workerId}-${r.day}-${r.shift}`] = { status: r.status, reason: r.reason };
         if (r.substituteWorkerId) substituteFor[`${r.substituteWorkerId}-${r.day}-${r.shift}`] = nameOf.get(r.workerId) ?? "?";
+      }
+      for (const r of reqs) {
+        if (r.shift != null) continue;
+        for (let s = 1; s <= 6; s++) {
+          absenceByWorker[`${r.workerId}-${r.day}-${s}`] ??= { status: r.status, reason: r.reason };
+        }
       }
     }
   }
@@ -2163,7 +2191,8 @@ router.get("/absence-requests", RW, async (_req, res) => {
     .orderBy(desc(absenceRequestsTable.id));
   const out = [];
   for (const r of rows) {
-    const substitutes = r.status === "pending"
+    // Whole-day requests (shift NULL) have no substitute flow — nothing to cover yet.
+    const substitutes = r.status === "pending" && r.shift != null
       ? await substitutesFor(String(r.weekStart), r.day as DayOfWeek, r.shift as Shift, r.factoryId, r.workerId)
       : [];
     out.push({ ...r, date: entryDate(String(r.weekStart), r.day), substitutes });
@@ -2171,17 +2200,25 @@ router.get("/absence-requests", RW, async (_req, res) => {
   ok(res, out);
 });
 
-async function notifyAbsenceDecision(workerId: number, day: DayOfWeek, shift: Shift, accepted: boolean) {
+async function notifyAbsenceDecision(workerId: number, day: DayOfWeek, shift: Shift | null, accepted: boolean) {
   const w = (await db.select({ tid: workersTable.telegramId, language: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
   if (!w?.tid) return;
   try {
     const { bot } = await import("../bot");
     const { t, asLang, dayShort } = await import("../bot/i18n");
     const lang = asLang(w.language);
-    const params = { day: dayShort(lang, day), shift: t(lang, "hr.shiftN", { n: shift }) };
-    const txt = accepted
-      ? t(lang, "notif.absAccepted", params)
-      : t(lang, "notif.absRejected", params);
+    let txt: string;
+    if (shift == null) {
+      // Whole-day off request (no concrete shift)
+      txt = accepted
+        ? t(lang, "notif.absAcceptedDay", { day: dayShort(lang, day) })
+        : t(lang, "notif.absRejectedDay", { day: dayShort(lang, day) });
+    } else {
+      const params = { day: dayShort(lang, day), shift: t(lang, "hr.shiftN", { n: shift }) };
+      txt = accepted
+        ? t(lang, "notif.absAccepted", params)
+        : t(lang, "notif.absRejected", params);
+    }
     await bot.telegram.sendMessage(w.tid, txt, { parse_mode: "Markdown" });
   } catch (e) { logger.error({ err: e }, "notify absence decision failed"); }
 }
@@ -2191,15 +2228,20 @@ router.post("/absence-requests/:id/approve", RW, async (req, res) => {
   const r = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
   await db.update(absenceRequestsTable).set({ status: "accepted" }).where(eq(absenceRequestsTable.id, id));
-  // mark the matching schedule entry absent
+  // mark the matching schedule entry absent (whole-day request → every scheduled shift that day)
   const week = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved"))))[0];
   if (week) {
-    const [e] = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
-      .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
-    if (e) await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null }).where(eq(scheduleEntriesTable.id, e.id));
+    if (r.shift == null) {
+      await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null })
+        .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled")));
+    } else {
+      const [e] = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+        .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+      if (e) await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null }).where(eq(scheduleEntriesTable.id, e.id));
+    }
   }
-  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift, true).catch(() => {});
+  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift | null, true).catch(() => {});
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(() => {});
   ok(res, { ok: true });
 });
@@ -2209,7 +2251,7 @@ router.post("/absence-requests/:id/reject", RW, async (req, res) => {
   const r = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
   await db.update(absenceRequestsTable).set({ status: "rejected" }).where(eq(absenceRequestsTable.id, id));
-  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift, false).catch(() => {});
+  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift | null, false).catch(() => {});
   ok(res, { ok: true });
 });
 
@@ -2219,6 +2261,7 @@ router.post("/absence-requests/:id/substitute", RW, async (req, res) => {
   const subId = Number(req.body?.workerId);
   const r = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
+  if (r.shift == null) return fail(res, 400, "Для цілоденного вихідного заміна недоступна — підтвердіть без заміни");
   if (!subId) return fail(res, 400, "Оберіть заміну");
   await db.update(absenceRequestsTable).set({ status: "substituted", substituteWorkerId: subId }).where(eq(absenceRequestsTable.id, id));
   const week = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)

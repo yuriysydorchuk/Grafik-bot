@@ -222,13 +222,15 @@ export const notificationsTable = pgTable("notifications", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// Worker self-reports absence before their shift
+// Worker self-reports absence: for a concrete assigned shift (shift set) or a whole
+// day off (shift NULL — requested before the schedule was made, e.g. from filled
+// availability or just a calendar day). Scheduler approves/rejects both kinds.
 export const absenceRequestsTable = pgTable("absence_requests", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id),
   weekStart: date("week_start").notNull(),
   dayOfWeek: dayEnum("day_of_week").notNull(),
-  shift: shiftEnum("shift").notNull(),
+  shift: shiftEnum("shift"),                            // NULL = whole day off
   reason: text("reason"),
   status: text("status").notNull().default("pending"), // pending | substituted | rejected | accepted
   substituteWorkerId: integer("substitute_worker_id").references(() => workersTable.id),

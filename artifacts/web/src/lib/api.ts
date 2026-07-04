@@ -112,7 +112,7 @@ export interface Dashboard {
   weeks: { weekStart: string; status: string; label: string }[];
   currentWeek: string; nextWeek: string;
 }
-export interface AvailRow { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]> }
+export interface AvailRow { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff?: Record<string, string> }
 
 export const DAYS: DayCode[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 export const DAY_UK: Record<DayCode, string> = {

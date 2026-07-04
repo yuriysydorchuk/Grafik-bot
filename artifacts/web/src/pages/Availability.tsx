@@ -172,6 +172,11 @@ export default function Availability() {
                         <td className="px-4 py-2 font-medium text-slate-700">{r.name}</td>
                         {DAYS.map(d => (
                           <td key={d} className="px-3 py-2 text-center">
+                            {r.dayOff?.[d] && (
+                              <span className="mr-1" title={r.dayOff[d] === "pending" ? t("Відпрошується (не підтверджено)") : t("Вихідний підтверджено")}>
+                                {r.dayOff[d] === "pending" ? "⚠️" : "🏖"}
+                              </span>
+                            )}
                             {r.days[d]?.length
                               ? <span className="inline-flex flex-wrap justify-center gap-1">
                                   {r.days[d]!.map(s => <Badge key={s} color={shiftColor(s) as any}>{s} {t("зм")}</Badge>)}

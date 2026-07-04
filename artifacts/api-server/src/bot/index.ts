@@ -1174,17 +1174,41 @@ bot.action("hrv:x", async (ctx) => {
   return ctx.answerCbQuery("Закрито");
 });
 
+// A day off can be requested three ways: off a concrete ASSIGNED shift (approved
+// schedule, ≥24h ahead), off a day with FILLED AVAILABILITY (schedule not made yet),
+// or off any calendar day within the next 2 weeks. The scheduler approves/rejects
+// all of them; whole-day requests are stored with shift = NULL.
+const ABS_DAY_HORIZON = 14;
+const absYmd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const absDateOf = (weekStart: string, day: string): Date => {
+  const d = new Date(weekStart + "T00:00:00");
+  d.setDate(d.getDate() + Math.max(0, DAYS.indexOf(day as DayOfWeek)));
+  return d;
+};
+// Dates (YYYY-MM-DD) with an active (non-rejected) request — not offered again.
+async function absTakenDates(workerId: number): Promise<Set<string>> {
+  const curMon = getCurrentMonday();
+  const mondays = [0, 7, 14].map(off => { const d = new Date(curMon + "T00:00:00"); d.setDate(d.getDate() + off); return absYmd(d); });
+  const reqs = await db.select({ weekStart: absenceRequestsTable.weekStart, day: absenceRequestsTable.dayOfWeek })
+    .from(absenceRequestsTable)
+    .where(and(eq(absenceRequestsTable.workerId, workerId), ne(absenceRequestsTable.status, "rejected"), inArray(absenceRequestsTable.weekStart, mondays)));
+  return new Set(reqs.map(r => absYmd(absDateOf(String(r.weekStart), r.day))));
+}
+
 bot.hears(trAll("menu.absence"), async (ctx) => {
   const tid = String(ctx.from.id);
   const worker = await getWorker(tid);
   const lang = wlang(worker);
   if (!worker) return ctx.reply(t(lang, "notRegistered"));
   const curMon = getCurrentMonday(), nextMon = getNextMonday();
+  const now = nowWarsaw();
+  const taken = await absTakenDates(worker.id);
+
+  // 1) Assigned shifts in approved weeks (≥24h before start).
   const weeks = await db.select().from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.status, "approved"), inArray(scheduleWeeksTable.weekStart, [curMon, nextMon])));
-  if (weeks.length === 0) return ctx.reply(t(lang, "sched.noApproved"), await workerMenuFor(worker, lang));
   const weekById = new Map(weeks.map(w => [w.id, w]));
-  const rows = await db
+  const rows = weeks.length === 0 ? [] : await db
     .select({
       id: scheduleEntriesTable.id, weekId: scheduleEntriesTable.weekId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       factoryName: factoriesTable.name, fshifts: factoriesTable.shifts, s1: factoriesTable.shift1Start, s2: factoriesTable.shift2Start, s3: factoriesTable.shift3Start,
@@ -1192,38 +1216,99 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(and(eq(scheduleEntriesTable.workerId, worker.id), eq(scheduleEntriesTable.status, "scheduled"), inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id))));
-  if (rows.length === 0) return ctx.reply(t(lang, "abs.noShifts"), await workerMenuFor(worker, lang));
 
-  const now = nowWarsaw();
   const items = rows.map(r => {
     const wk = weekById.get(r.weekId)!;
-    const idx = Math.max(0, DAYS.indexOf(r.day));
-    const d = new Date(String(wk.weekStart) + "T00:00:00"); d.setDate(d.getDate() + idx);
+    const d = absDateOf(String(wk.weekStart), r.day);
     const start = factoryShiftStart({ shifts: r.fshifts, shift1Start: r.s1, shift2Start: r.s2, shift3Start: r.s3 }, r.shift as Shift);
     const [hh, mm] = start.split(":").map(Number);
     const startDt = new Date(d); startDt.setHours(hh || 6, mm || 0, 0, 0);
     return {
       id: r.id, weekStart: String(wk.weekStart), weekId: r.weekId, day: r.day as DayOfWeek, shift: r.shift as Shift,
       factoryName: r.factoryName ?? "—", dateLabel: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }),
-      start, _t: startDt.getTime(), hoursUntil: (startDt.getTime() - now.getTime()) / 3600000,
+      dateStr: absYmd(d), _t: startDt.getTime(), hoursUntil: (startDt.getTime() - now.getTime()) / 3600000,
     };
   }).sort((a, b) => a._t - b._t);
 
-  const eligible = items.filter(i => i.hoursUntil >= 24);
+  const eligible = items.filter(i => i.hoursUntil >= 24 && !taken.has(i.dateStr));
   const tooClose = items.filter(i => i.hoursUntil >= 0 && i.hoursUntil < 24);
+  const shiftDates = new Set(items.filter(i => i.hoursUntil >= 0).map(i => i.dateStr));
+
+  // 2) Days with filled availability (this + next week), no assigned shift there.
+  const avail = await db.select({ weekStart: availabilityTable.weekStart, day: availabilityTable.dayOfWeek })
+    .from(availabilityTable)
+    .where(and(eq(availabilityTable.workerId, worker.id), inArray(availabilityTable.weekStart, [curMon, nextMon])));
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const seenDays = new Set<string>();
+  const dayItems: { date: string; label: string; day: DayOfWeek }[] = [];
+  for (const a of avail) {
+    const d = absDateOf(String(a.weekStart), a.day);
+    const ds = absYmd(d);
+    if (d < tomorrow || seenDays.has(ds) || shiftDates.has(ds) || taken.has(ds)) continue;
+    seenDays.add(ds);
+    dayItems.push({ date: ds, day: a.day as DayOfWeek, label: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) });
+  }
+  dayItems.sort((a, b) => a.date.localeCompare(b.date));
 
   let msg = t(lang, "abs.title");
   if (tooClose.length) {
     msg += t(lang, "abs.tooLate") + "\n" + tooClose.map(i => `• ${i.dateLabel} ${dayShort(lang, i.day)} ${i.shift} — ${i.factoryName}`).join("\n");
   }
-  if (eligible.length === 0) {
-    msg += t(lang, "abs.noneEligible");
-    return ctx.reply(msg, { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
-  }
   msg += t(lang, "abs.pick");
+
+  const kb: { text: string; callback_data: string }[][] = [
+    ...eligible.map(i => [{ text: `${i.dateLabel} ${dayShort(lang, i.day)} · ${i.shift} · ${i.factoryName}`, callback_data: `absreq:${i.id}` }]),
+    ...dayItems.map(dI => [{ text: `📋 ${dI.label} ${dayShort(lang, dI.day)} — ${t(lang, "abs.dayAvail")}`, callback_data: `absday:${dI.date}` }]),
+    [{ text: t(lang, "abs.otherDay"), callback_data: "absother" }],
+  ];
   setState(tid, "absence:pick", { workerId: worker.id, lang, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
-  const kb = eligible.map(i => [{ text: `${i.dateLabel} ${dayShort(lang, i.day)} · ${i.shift} · ${i.factoryName}`, callback_data: `absreq:${i.id}` }]);
   return ctx.reply(msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } });
+});
+
+// «Інший день» → picker of the next 14 days (whole-day request).
+bot.action("absother", async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id); const st = getState(tid);
+  if (st?.action !== "absence:pick") return;
+  const lang = asLang(st.data.lang);
+  const taken = await absTakenDates(st.data.workerId);
+  const now = nowWarsaw();
+  const btns: { text: string; callback_data: string }[] = [];
+  for (let i = 1; i <= ABS_DAY_HORIZON; i++) {
+    const d = new Date(now); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0);
+    const ds = absYmd(d);
+    if (taken.has(ds)) continue;
+    const dayName = DAYS[(d.getDay() + 6) % 7]!;
+    btns.push({ text: `${d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })} ${dayShort(lang, dayName)}`, callback_data: `absday:${ds}` });
+  }
+  const kb: typeof btns[] = [];
+  for (let i = 0; i < btns.length; i += 2) kb.push(btns.slice(i, i + 2));
+  return ctx.reply(t(lang, "abs.pickDay"), { reply_markup: { inline_keyboard: kb } });
+});
+
+// Whole-day pick (from the availability list or the 14-day picker).
+bot.action(/^absday:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id); const st = getState(tid);
+  if (st?.action !== "absence:pick") return;
+  const lang = asLang(st.data.lang);
+  const dateStr = (ctx.match as RegExpMatchArray)[1]!;
+  const d = new Date(dateStr + "T00:00:00");
+  const now = nowWarsaw();
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const limit = new Date(now); limit.setDate(limit.getDate() + ABS_DAY_HORIZON); limit.setHours(23, 59, 59, 0);
+  if (d < tomorrow || d > limit) return;
+  const dayIdx = (d.getDay() + 6) % 7;
+  const mon = new Date(d); mon.setDate(mon.getDate() - dayIdx);
+  const weekStart = absYmd(mon);
+  const dayName = DAYS[dayIdx]!;
+  const dup = await db.select({ id: absenceRequestsTable.id }).from(absenceRequestsTable)
+    .where(and(eq(absenceRequestsTable.workerId, st.data.workerId), eq(absenceRequestsTable.weekStart, weekStart), eq(absenceRequestsTable.dayOfWeek, dayName), ne(absenceRequestsTable.status, "rejected")));
+  if (dup.length > 0) return ctx.reply(t(lang, "abs.dayTaken"));
+  const dateLabel = d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" });
+  setState(tid, "absence:enter_reason", { workerId: st.data.workerId, lang, weekStart, weekId: null, day: dayName, shift: null, entryId: null, dateLabel });
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  return ctx.reply(t(lang, "abs.askReasonDay", { day: dayShort(lang, dayName), date: dateLabel }), { parse_mode: "Markdown", ...cancelKb(lang) });
 });
 
 // Pick a shift to report absence for (24h already enforced when the list was built)
@@ -3441,6 +3526,35 @@ bot.on("text", async (ctx) => {
   if (state?.action === "absence:enter_reason") {
     const { data } = state;
     clearState(tid);
+    // Whole-day request (shift NULL): no substitute search — there's no concrete
+    // shift yet; the scheduler just approves/rejects, the generator skips the day.
+    if (data.shift == null) {
+      const dayReq = await db.insert(absenceRequestsTable).values({
+        workerId: data.workerId, weekStart: data.weekStart, dayOfWeek: data.day,
+        shift: null, reason: text, status: "pending",
+      }).returning({ id: absenceRequestsTable.id });
+      const wRec = await db.select({ fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, data.workerId));
+      const wName = wRec[0]?.fullName ?? "Невідомий";
+      const reqId = dayReq[0]!.id;
+      const adminMsg = `🏖 *Запит на вихідний (цілий день)*\n\n👷 *${mdSafe(wName)}*\n📅 ${DAY_UK[data.day as DayOfWeek]} ${data.dateLabel ?? ""}\n📝 Причина: ${mdSafe(text)}`;
+      await notifyAdmins(adminMsg, {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [
+          [{ text: "✅ Підтвердити вихідний", callback_data: `absence_approve_${reqId}` }],
+          [{ text: "❌ Відхилити", callback_data: `absence_reject_${reqId}` }],
+        ] },
+      });
+      await notifyRoles("scheduler", {
+        type: "cancellation",
+        title: `🏖 Вихідний: ${wName}`,
+        body: `${DAY_UK[data.day as DayOfWeek]} ${data.dateLabel ?? ""} · цілий день · причина: ${text}`,
+      });
+      const dlang = asLang(data.lang);
+      return ctx.reply(
+        t(dlang, "abs.sentDay", { day: dayShort(dlang, data.day), date: data.dateLabel ?? "" }),
+        { parse_mode: "Markdown", ...(await workerMenuFor(await getWorker(tid), dlang)) },
+      );
+    }
     const req = await db.insert(absenceRequestsTable).values({
       workerId: data.workerId, weekStart: data.weekStart, dayOfWeek: data.day,
       shift: data.shift, reason: text, status: "pending",
@@ -3798,19 +3912,35 @@ bot.action(/^absence_approve_(\d+)$/, async (ctx) => {
   if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
   const r = req[0];
   await db.update(absenceRequestsTable).set({ status: "accepted" }).where(eq(absenceRequestsTable.id, requestId));
-  const entries = await db.select({ id: scheduleEntriesTable.id })
-    .from(scheduleEntriesTable)
-    .where(and(eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
-  if (entries[0]) {
-    await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined }).where(eq(scheduleEntriesTable.id, entries[0].id));
+  if (r.shift == null) {
+    // Whole-day off: mark ALL already-assigned shifts of that day absent (if the
+    // schedule got made in the meantime); the generator won't add new ones.
+    const wk = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
+      .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved"))))[0];
+    if (wk) {
+      await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null })
+        .where(and(eq(scheduleEntriesTable.weekId, wk.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled")));
+    }
+  } else {
+    const entries = await db.select({ id: scheduleEntriesTable.id })
+      .from(scheduleEntriesTable)
+      .where(and(eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+    if (entries[0]) {
+      await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined }).where(eq(scheduleEntriesTable.id, entries[0].id));
+    }
   }
   const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
   if (workerRecord[0]?.telegramId) {
-    try { await bot.telegram.sendMessage(workerRecord[0].telegramId, `✅ Вашу відсутність на *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* прийнято.`, { parse_mode: "Markdown" }); }
+    const wl = asLang(workerRecord[0].language);
+    const dmText = r.shift == null
+      ? t(wl, "notif.absAcceptedDay", { day: dayShort(wl, r.dayOfWeek) })
+      : t(wl, "notif.absAccepted", { day: dayShort(wl, r.dayOfWeek), shift: t(wl, "hr.shiftN", { n: r.shift }) });
+    try { await bot.telegram.sendMessage(workerRecord[0].telegramId, dmText, { parse_mode: "Markdown" }); }
     catch { /* ignore */ }
   }
   refreshExcelReports().catch(() => { });
-  return ctx.editMessageText(`✅ Відсутність прийнята (без заміни)\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`);
+  const label = r.shift == null ? "цілий день" : SHIFT_SHORT[r.shift];
+  return ctx.editMessageText(`✅ ${r.shift == null ? "Вихідний підтверджено" : "Відсутність прийнята (без заміни)"}\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${label}`);
 });
 
 // Admin sends substitute a Yes/No question
@@ -3820,6 +3950,7 @@ bot.action(/^absence_invite_(\d+)_(\d+)$/, async (ctx) => {
   const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
   if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
   const r = req[0];
+  if (r.shift == null) return ctx.editMessageText("❌ Для цілоденного вихідного заміна недоступна.");
   const sub = await db.select().from(workersTable).where(eq(workersTable.id, substituteId));
   if (!sub[0]) return ctx.editMessageText("❌ Замінника не знайдено.");
   if (!sub[0].telegramId) {
@@ -3852,6 +3983,7 @@ bot.action(/^absence_invite_accept_(\d+)_(\d+)$/, async (ctx) => {
   const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
   if (!req[0]) return ctx.editMessageText("❌ Запит більше не актуальний.");
   const r = req[0];
+  if (r.shift == null) return; // whole-day requests have no substitute flow
   const sub = await db.select().from(workersTable).where(eq(workersTable.id, substituteId));
   if (!sub[0]) return;
   await db.update(absenceRequestsTable).set({ status: "substituted", substituteWorkerId: substituteId }).where(eq(absenceRequestsTable.id, requestId));
@@ -3877,6 +4009,7 @@ bot.action(/^absence_invite_decline_(\d+)_(\d+)$/, async (ctx) => {
   const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
   if (!req[0]) return ctx.editMessageText("❌ Запит більше не актуальний.");
   const r = req[0];
+  if (r.shift == null) return; // whole-day requests have no substitute flow
   const sub = await db.select().from(workersTable).where(eq(workersTable.id, substituteId));
   await notifyAdmins(
     `❌ *${sub[0]?.fullName ?? "Замінник"}* не може вийти\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}\n\nОберіть іншого замінника.`,
@@ -3894,8 +4027,12 @@ bot.action(/^absence_reject_(\d+)$/, async (ctx) => {
   await db.update(absenceRequestsTable).set({ status: "rejected" }).where(eq(absenceRequestsTable.id, requestId));
   const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
   if (workerRecord[0]?.telegramId) {
-    try { await bot.telegram.sendMessage(workerRecord[0].telegramId, `❌ Вашу відсутність на *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* відхилено. Будь ласка, вийдіть на зміну.`, { parse_mode: "Markdown" }); }
+    const wl = asLang(workerRecord[0].language);
+    const dmText = r.shift == null
+      ? t(wl, "notif.absRejectedDay", { day: dayShort(wl, r.dayOfWeek) })
+      : t(wl, "notif.absRejected", { day: dayShort(wl, r.dayOfWeek), shift: t(wl, "hr.shiftN", { n: r.shift }) });
+    try { await bot.telegram.sendMessage(workerRecord[0].telegramId, dmText, { parse_mode: "Markdown" }); }
     catch { /* ignore */ }
   }
-  return ctx.editMessageText(`❌ Відхилено\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`);
+  return ctx.editMessageText(`❌ Відхилено\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${r.shift == null ? "цілий день" : SHIFT_SHORT[r.shift]}`);
 });
