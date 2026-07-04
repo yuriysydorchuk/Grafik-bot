@@ -1704,8 +1704,19 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
     .from(driverShiftAssignmentsTable)
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (myAssignments.length === 0) return ctx.reply(tb(dl, "📭 На сьогодні у вас немає призначень."), driverMenu(dl));
-  const myShifts = [...new Set(myAssignments.map(a => a.shift))];
-  const myKeys = new Set(myAssignments.map(a => `${a.factoryId}-${a.shift}`));
+  // Same time-window rule as boarding: only runs near now — at night you must not be
+  // able to mark someone absent from a shift that starts in the afternoon.
+  const attFacRows = await db.select().from(factoriesTable);
+  const attFacById = new Map(attFacRows.map(f => [f.id, f]));
+  const attToday = warsawDateStr();
+  const attNow = nowWarsaw();
+  const nearAssignments = myAssignments.filter(a =>
+    Math.abs(attNow.getTime() - shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift).getTime()) <= BOARD_WINDOW_MS);
+  if (nearAssignments.length === 0) {
+    return ctx.reply(tb(dl, "🕒 Зараз немає рейсу для посадки — до найближчої вашої зміни ще далеко. Відмічайте явку ближче до початку зміни (за ~3 години)."), driverMenu(dl));
+  }
+  const myShifts = [...new Set(nearAssignments.map(a => a.shift))];
+  const myKeys = new Set(nearAssignments.map(a => `${a.factoryId}-${a.shift}`));
   const workersRaw = await db
     .select({ id: scheduleEntriesTable.id, name: workersTable.fullName, status: scheduleEntriesTable.status, factoryId: scheduleEntriesTable.factoryId, shift: scheduleEntriesTable.shift })
     .from(scheduleEntriesTable)
@@ -1746,7 +1757,21 @@ bot.hears(bhears("➕ Позаплановий працівник"), async (ctx)
 
 // ─── DRIVER BOARDING (посадка) — inline tap-to-board flow ───────────────────────
 type BoardWorker = { key: string; entryId: number | null; workerId: number | null; name: string; factoryId: number; shift: string; boarded: boolean; unplanned: boolean };
-type BoardData = { weekId: number; dayName: DayOfWeek; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; lang?: Lang };
+type BoardData = { weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; lang?: Lang };
+
+// Boarding is scoped to runs whose shift starts near "now": the board only shows
+// sections within ±3h of the shift start, and confirmation refuses to mark absences
+// for a shift starting >2h from now. Otherwise confirming the morning run would
+// auto-mark the 14:00/22:00 runs as no-shows (real incident: 2026-07-04, 03:03).
+const BOARD_WINDOW_MS = 3 * 3600_000;
+const BOARD_GUARD_MS = 2 * 3600_000;
+type FactoryLike = { shifts: unknown; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null };
+// Warsaw-wall-clock Date of the shift start on the given YYYY-MM-DD day.
+function shiftStartOn(dateStr: string, factory: FactoryLike | undefined, shift: string): Date {
+  const [hh, mm] = factoryShiftStart(factory as any, shift as Shift).split(":").map(Number);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y!, (m ?? 1) - 1, d ?? 1, hh ?? 6, mm ?? 0, 0, 0);
+}
 
 const boardingText = (dayName: DayOfWeek, lang: Lang = "uk") =>
   `🚌 *${tb(lang, "Посадка")}* — ${DAY_NAMES_UK[dayName]}\n\n${tb(lang, "Натискайте, хто сів у авто (⬜→✅). За потреби додайте людей. Коли всі сіли або час їхати — «Підтвердити посадку».")}`;
@@ -1787,38 +1812,73 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   const dl = olang(driver);
   const menuKb = await driverMenuFor(driver, dl);
   const menu = () => menuKb;
-  const dayName = warsawDayName();
-  const week = getCurrentMonday();
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
-  if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), menu());
-  const weekId = weeks[0]!.id;
-  // Boarding covers delivery runs only — pickups don't mark attendance
-  const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
-    .from(driverShiftAssignmentsTable)
-    .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
-  if (myAssignments.length === 0) return ctx.reply(tb(dl, "У вас немає призначень на сьогодні."), menu());
 
-  const factoryRows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
-  const facName = (id: number) => factoryRows.find(f => f.id === id)?.name ?? tb(dl, "фабрика");
-  const secKeys = new Set<string>();
-  const sections: BoardData["sections"] = [];
-  for (const a of myAssignments) {
-    const k = `${a.factoryId}-${a.shift}`;
-    if (secKeys.has(k)) continue; secKeys.add(k);
-    sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) });
+  const factoryRows = await db.select().from(factoriesTable);
+  const facById = new Map(factoryRows.map(f => [f.id, f]));
+  const facName = (id: number) => facById.get(id)?.name ?? tb(dl, "фабрика");
+  const now = nowWarsaw();
+  const ymdOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  // Candidate boarding days: today, and yesterday right after midnight — a night-shift
+  // driver marking attendance at 00:30 still means yesterday's 22:00 run.
+  type Candidate = { weekId: number; dayName: DayOfWeek; boardDate: string };
+  const candidates: Candidate[] = [];
+  const week = getCurrentMonday();
+  const [curWeek] = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+  if (curWeek) candidates.push({ weekId: curWeek.id, dayName: warsawDayName(), boardDate: warsawDateStr() });
+  const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+  const yDayName = DAYS[(DAYS.indexOf(warsawDayName()) + 6) % 7]!;
+  if (yDayName === "sun") {
+    // Yesterday belongs to the previous schedule week (today is Monday).
+    const prevMon = new Date(week + "T00:00:00"); prevMon.setDate(prevMon.getDate() - 7);
+    const [pw] = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, ymdOf(prevMon)), eq(scheduleWeeksTable.status, "approved")));
+    if (pw) candidates.push({ weekId: pw.id, dayName: yDayName, boardDate: ymdOf(yesterday) });
+  } else if (curWeek) {
+    candidates.push({ weekId: curWeek.id, dayName: yDayName, boardDate: ymdOf(yesterday) });
   }
-  const myShifts = [...new Set(myAssignments.map(a => a.shift))];
+  if (candidates.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), menu());
+
+  // Pick the first candidate day that has delivery runs within ±3h of now.
+  // Boarding covers delivery runs only — pickups don't mark attendance.
+  let hadAnyToday = false;
+  let chosen: { c: Candidate; sections: BoardData["sections"] } | null = null;
+  for (const c of candidates) {
+    const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
+      .from(driverShiftAssignmentsTable)
+      .where(and(eq(driverShiftAssignmentsTable.weekId, c.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, c.dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
+    if (c.boardDate === warsawDateStr() && myAssignments.length > 0) hadAnyToday = true;
+    const secKeys = new Set<string>();
+    const sections: BoardData["sections"] = [];
+    for (const a of myAssignments) {
+      const k = `${a.factoryId}-${a.shift}`;
+      if (secKeys.has(k)) continue; secKeys.add(k);
+      const start = shiftStartOn(c.boardDate, facById.get(a.factoryId), a.shift);
+      if (Math.abs(now.getTime() - start.getTime()) > BOARD_WINDOW_MS) continue;
+      sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) });
+    }
+    if (sections.length > 0) { chosen = { c, sections }; break; }
+  }
+
+  if (!chosen) {
+    return ctx.reply(hadAnyToday
+      ? tb(dl, "🕒 Зараз немає рейсу для посадки — до найближчої вашої зміни ще далеко. Відмічайте явку ближче до початку зміни (за ~3 години).")
+      : tb(dl, "У вас немає призначень на сьогодні."), menu());
+  }
+
+  const { c, sections } = chosen;
+  const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
+  const myShifts = [...new Set(sections.map(s => s.shift))];
   const entriesRaw = await db
     .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[]), eq(scheduleEntriesTable.status, "scheduled")));
-  const entries = entriesRaw.filter(e => secKeys.has(`${e.factoryId}-${e.shift}`));
+    .where(and(eq(scheduleEntriesTable.weekId, c.weekId), eq(scheduleEntriesTable.dayOfWeek, c.dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[]), eq(scheduleEntriesTable.status, "scheduled")));
+  const entries = entriesRaw.filter(e => secKeySet.has(`${e.factoryId}-${e.shift}`));
   if (entries.length === 0) return ctx.reply(tb(dl, "Немає кого забирати — усіх уже забрали інші водії, або явку вже відмічено."), menu());
 
   const workers: BoardWorker[] = entries.map(e => ({ key: `e${e.id}`, entryId: e.id, workerId: e.workerId, name: e.workerName ?? "—", factoryId: e.factoryId, shift: e.shift, boarded: false, unplanned: false }));
-  const data: BoardData = { weekId, dayName, sections, workers, chatId: ctx.chat!.id, messageId: 0, lang: dl };
-  const sent = await ctx.reply(boardingText(dayName, dl), { parse_mode: "Markdown", reply_markup: boardingMarkup(data) });
+  const data: BoardData = { weekId: c.weekId, dayName: c.dayName, boardDate: c.boardDate, sections, workers, chatId: ctx.chat!.id, messageId: 0, lang: dl };
+  const sent = await ctx.reply(boardingText(c.dayName, dl), { parse_mode: "Markdown", reply_markup: boardingMarkup(data) });
   data.messageId = sent.message_id;
   setState(tid, "boarding", data);
   return;
@@ -1862,8 +1922,12 @@ bot.action("brd:ok", async (ctx) => {
   const driver = await getDriver(tid);
   if (!driver) return;
   const now = new Date();
-  const todayStr = warsawDateStr();
+  // The board is tied to a concrete calendar day (may be yesterday for a night run
+  // confirmed after midnight); legacy persisted states without boardDate = today.
+  const todayStr = data.boardDate ?? warsawDateStr();
   const { weekId, dayName } = data;
+  const facRows = await db.select().from(factoriesTable);
+  const facByIdOk = new Map(facRows.map(f => [f.id, f]));
 
   // 1) claim boarded workers → present (+ create entries for added people)
   const boarded = data.workers.filter(w => w.boarded);
@@ -1879,10 +1943,16 @@ bot.action("brd:ok", async (ctx) => {
     }
   }
 
-  // 2) record pickup trip per section; mark absent only once ALL assigned drivers confirmed
+  // 2) record pickup trip per section; mark absent only once ALL assigned drivers confirmed.
+  // Safety guard: a shift starting >2h from now is NOT this confirmation's run — skip it
+  // entirely (no trip, no absences), even if it somehow ended up on the board.
   const absentEntries: { id: number; name: string; factoryName: string; shift: string }[] = [];
   let leftForOthers = 0;
+  let skippedEarly = 0;
+  const nowW = nowWarsaw();
   for (const sec of data.sections) {
+    const secStart = shiftStartOn(todayStr, facByIdOk.get(sec.factoryId), sec.shift);
+    if (nowW.getTime() < secStart.getTime() - BOARD_GUARD_MS) { skippedEarly++; continue; }
     await recordPickupTrip(driver.id, weekId, dayName, sec.factoryId, sec.shift, now, todayStr);
     const assigned = await db.select({ driverId: driverShiftAssignmentsTable.driverId })
       .from(driverShiftAssignmentsTable)
@@ -1920,6 +1990,7 @@ bot.action("brd:ok", async (ctx) => {
   let summary = `✅ *${tb(bl, "Посадку підтверджено")}* (${timeStr})\n\n🟢 ${tb(bl, "Сіли в авто:")} ${boarded.length}`;
   if (absentEntries.length > 0) summary += `\n🔴 ${tb(bl, "Не вийшли:")} ${absentEntries.length}`;
   if (leftForOthers > 0) summary += `\n🟡 ${tb(bl, "Залишено для інших водіїв:")} ${leftForOthers}`;
+  if (skippedEarly > 0) summary += `\n⏭ ${tb(bl, "Рейси, що почнуться пізніше, пропущено:")} ${skippedEarly}`;
   summary += `\n\n🚌 ${tb(bl, "Час виїзду зафіксовано.")}`;
   try { await ctx.editMessageText(summary, { parse_mode: "Markdown" }); } catch { /* ignore */ }
   await ctx.reply("Готово.", await driverMenuFor(driver, bl === "en" ? "en" : "uk"));
