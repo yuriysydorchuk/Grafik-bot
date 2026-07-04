@@ -1,12 +1,16 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { get } from "../lib/api";
-import { Card, Spinner, Select, Empty, Badge, cn } from "../components/ui";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Pencil, Check, X } from "lucide-react";
+import { toast } from "sonner";
+import { get, patch } from "../lib/api";
+import { Card, Spinner, Select, Empty, Badge, Input, cn } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT, useLang } from "../lib/i18n";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
 import { monthOptions } from "../lib/dates";
 
-interface Day { date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null }
+interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null }
 interface Row { driverId: number; name: string; vehicle: string | null; days: Day[]; totalKm: number; closedShifts: number; avgKm: number | null }
 
 const fmtTime = (iso: string | null) =>
@@ -17,13 +21,31 @@ const fmtDate = (d: string, locale: string) =>
 export default function Mileage() {
   const t = useT();
   const { lang } = useLang();
+  const me = useMe();
+  const qc = useQueryClient();
   const locale = lang === "en" ? "en-GB" : "uk-UA";
   const months = useMemo(() => monthOptions(lang === "en" ? "en-US" : "uk-UA"), [lang]);
   const [month, setMonth] = useState(months[0]!.value);
   const [driverId, setDriverId] = useState<number | null>(null);
+  const canEdit = can(me, "editData") || can(me, "assignDrivers");
+  const [editId, setEditId] = useState<number | null>(null);
+  const [eStart, setEStart] = useState("");
+  const [eEnd, setEEnd] = useState("");
   const { data, isFetching } = useQuery<{ month: string; drivers: Row[] }>({
     queryKey: ["mileage", month], queryFn: () => get(`/mileage?month=${month}`),
   });
+
+  const save = useMutation({
+    mutationFn: (d: Day) => {
+      const body: any = { odometerStart: Number(eStart) };
+      if (d.odoEnd != null) body.odometerEnd = Number(eEnd);
+      return patch(`/driver-workdays/${d.id}`, body);
+    },
+    onSuccess: () => { setEditId(null); qc.invalidateQueries({ queryKey: ["mileage"] }); toast.success(t("Пробіг оновлено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const startEdit = (d: Day) => { setEditId(d.id); setEStart(String(d.odoStart)); setEEnd(d.odoEnd != null ? String(d.odoEnd) : ""); };
 
   const drivers = data?.drivers ?? [];
   const active = drivers.find(d => d.driverId === driverId) ?? drivers[0];
@@ -67,21 +89,54 @@ export default function Mileage() {
                       <th className="px-4 py-2.5 text-right">{t("Початковий пробіг")}</th>
                       <th className="px-4 py-2.5 text-right">{t("Кінцевий пробіг")}</th>
                       <th className="px-4 py-2.5 text-right">{t("Пробіг за зміну")}</th>
+                      {canEdit && <th className="px-4 py-2.5" />}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {active.days.map((d, i) => (
-                      <tr key={i}>
+                    {active.days.map((d) => (
+                      <tr key={d.id}>
                         <td className="px-4 py-2.5 font-medium text-slate-700">{fmtDate(d.date, locale)}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.startedAt)}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.endedAt)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">{d.odoStart}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">{d.odoEnd ?? "—"}</td>
-                        <td className="px-4 py-2.5 text-right">
-                          {d.km != null
-                            ? <span className="font-semibold tabular-nums text-slate-800">{d.km} {t("км")}</span>
-                            : <Badge color="amber">{t("зміна відкрита")}</Badge>}
-                        </td>
+                        {editId === d.id ? (
+                          <>
+                            <td className="px-4 py-2.5 text-right">
+                              <Input type="number" value={eStart} onChange={e => setEStart(e.target.value)} className="w-28 text-right" autoFocus />
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              {d.odoEnd != null
+                                ? <Input type="number" value={eEnd} onChange={e => setEEnd(e.target.value)} className="w-28 text-right" />
+                                : "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-slate-400">…</td>
+                            <td className="px-4 py-2.5">
+                              <div className="flex justify-end gap-1">
+                                <button title={t("Зберегти")} disabled={save.isPending} onClick={() => save.mutate(d)}
+                                  className="rounded p-1 text-emerald-600 hover:bg-emerald-50"><Check size={16} /></button>
+                                <button title={t("Скасувати")} onClick={() => setEditId(null)}
+                                  className="rounded p-1 text-slate-400 hover:bg-slate-100"><X size={16} /></button>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">{d.odoStart}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">{d.odoEnd ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-right">
+                              {d.km != null
+                                ? <span className="font-semibold tabular-nums text-slate-800">{d.km} {t("км")}</span>
+                                : <Badge color="amber">{t("зміна відкрита")}</Badge>}
+                            </td>
+                            {canEdit && (
+                              <td className="px-4 py-2.5">
+                                <div className="flex justify-end">
+                                  <button title={t("Виправити пробіг")} onClick={() => startEdit(d)}
+                                    className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Pencil size={15} /></button>
+                                </div>
+                              </td>
+                            )}
+                          </>
+                        )}
                       </tr>
                     ))}
                   </tbody>

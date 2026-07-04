@@ -383,6 +383,8 @@ const EN: Record<string, string> = {
   "Кінцевий пробіг": "Odometer end",
   "Пробіг за зміну": "Km per shift",
   "зміна відкрита": "shift open",
+  "Виправити пробіг": "Fix odometer",
+  "Пробіг оновлено": "Odometer updated",
   "км": "km",
   "Поїздок": "Trips",
   "Спізн. на збір": "Late to pickup",
@@ -1073,6 +1075,8 @@ const RU: Record<string, string> = {
   "Кінцевий пробіг": "Конечный пробег",
   "Пробіг за зміну": "Пробег за смену",
   "зміна відкрита": "смена открыта",
+  "Виправити пробіг": "Исправить пробег",
+  "Пробіг оновлено": "Пробег обновлён",
 };
 
 const LangCtx = createContext<{ lang: Lang; setLang: (l: Lang) => void }>({ lang: "uk", setLang: () => {} });

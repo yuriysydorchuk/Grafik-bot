@@ -52,7 +52,7 @@ Grafik-bot/
 
 **Довідники:** `GET/POST/PATCH/DELETE /companies`, `GET/POST/PATCH/DELETE /positions`, `GET/POST/PATCH /factories`, `GET /factories/:id/join-link`
 
-**Водії:** `GET/POST/PATCH/DELETE /drivers` (мутації — `editData` АБО `assignDrivers`: головний водій керує списком і з сайту), `GET /drivers/:id/invite`, `GET /driver-board`, `GET /driver-days/:id`, `GET /mileage` (пробіг по змінах водіїв)
+**Водії:** `GET/POST/PATCH/DELETE /drivers` (мутації — `editData` АБО `assignDrivers`: головний водій керує списком і з сайту), `GET /drivers/:id/invite`, `GET /driver-board`, `GET /driver-days/:id`, `GET /mileage` (пробіг по змінах водіїв), `PATCH /driver-workdays/:id` (виправлення пробігу; `editData` АБО `assignDrivers`)
 
 **Замовлення/доступність:** `GET/PUT /orders`, `GET /availability`, `GET /availability/missing`, `POST /availability/remind`
 

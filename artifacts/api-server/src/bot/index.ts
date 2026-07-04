@@ -1747,6 +1747,33 @@ bot.hears(bhears("🏁 Закінчити зміну"), async (ctx) => {
   );
 });
 
+// Fix a mistyped odometer reading. Drivers get a 24h window per reading (start:
+// from startedAt, end: from endedAt); later fixes go through the admin/web panel.
+const WORKDAY_FIX_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+bot.action(/^wdfix:(start|end):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from!.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  const field = (ctx as any).match[1] as "start" | "end";
+  const [wd] = await db.select().from(driverWorkdaysTable).where(eq(driverWorkdaysTable.id, Number((ctx as any).match[2])));
+  if (!wd || wd.driverId !== driver.id || (field === "end" && !wd.endedAt)) {
+    return ctx.answerCbQuery(tb(dl, "Запис не знайдено."));
+  }
+  const recordedAt = field === "start" ? wd.startedAt : wd.endedAt!;
+  if (Date.now() - new Date(recordedAt).getTime() > WORKDAY_FIX_WINDOW_MS) {
+    await ctx.answerCbQuery();
+    return ctx.reply(tb(dl, "⏰ Минуло понад 24 години — виправити пробіг може лише адміністратор."), await driverMenuFor(driver, dl));
+  }
+  await ctx.answerCbQuery();
+  setState(tid, "workday:fix_km", { workdayId: wd.id, field });
+  return ctx.reply(
+    tb(dl, field === "start" ? "✏️ Введіть новий *початковий* пробіг (км):" : "✏️ Введіть новий *кінцевий* пробіг (км):"),
+    { parse_mode: "Markdown", ...cancelKb(dl) },
+  );
+});
+
 // ─── Driver: Report absent workers ────────────────────────────────────────────
 
 bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) => {
@@ -3567,12 +3594,17 @@ bot.on("text", async (ctx) => {
         await db.update(driverWorkdaysTable).set({ endedAt: now, odometerEnd: km }).where(eq(driverWorkdaysTable.id, data.staleId));
         note = "\n\n" + tb(dl, "ℹ️ У вас була незакрита зміна за {date} — вона закрита цим пробігом.", { date: String(data.staleDate) });
       }
-      await db.insert(driverWorkdaysTable).values({
+      const [wd] = await db.insert(driverWorkdaysTable).values({
         driverId: driver.id, workDate: warsawDateStr(), startedAt: now, odometerStart: km,
-      });
-      return ctx.reply(
+      }).returning();
+      await ctx.reply(
         tb(dl, "✅ *Зміну розпочато!*\n🕒 {time}\n🛣 Початковий пробіг: *{km} км*\n\nГарної дороги! Натисніть «🏁 Закінчити зміну», коли повернетесь на базу.", { time: timeStr, km }) + note,
         { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+      );
+      // Separate message: a reply-keyboard menu and an inline button can't share one message
+      return ctx.reply(
+        tb(dl, "Помилилися з пробігом? Виправити можна протягом 24 годин:"),
+        Markup.inlineKeyboard([[Markup.button.callback(tb(dl, "✏️ Виправити пробіг"), `wdfix:start:${wd!.id}`)]]),
       );
     }
 
@@ -3583,8 +3615,48 @@ bot.on("text", async (ctx) => {
     }
     clearState(tid);
     await db.update(driverWorkdaysTable).set({ endedAt: now, odometerEnd: km }).where(eq(driverWorkdaysTable.id, data.workdayId));
-    return ctx.reply(
+    await ctx.reply(
       tb(dl, "🏁 *Зміну закінчено!*\n🕒 {time}\n🛣 Пробіг: {start} → {end} км\n📏 За зміну: *{km} км*", { time: timeStr, start: data.odometerStart, end: km, km: km - data.odometerStart }),
+      { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+    );
+    return ctx.reply(
+      tb(dl, "Помилилися з пробігом? Виправити можна протягом 24 годин:"),
+      Markup.inlineKeyboard([[
+        Markup.button.callback(tb(dl, "✏️ Початковий"), `wdfix:start:${data.workdayId}`),
+        Markup.button.callback(tb(dl, "✏️ Кінцевий"), `wdfix:end:${data.workdayId}`),
+      ]]),
+    );
+  }
+
+  // ── Driver: fix an odometer reading of a recent workday (24h window) ──
+  if (state?.action === "workday:fix_km") {
+    const driver = await getDriver(tid);
+    if (!driver) { clearState(tid); return; }
+    const dl = olang(driver);
+    const km = parseInt(text.replace(/[\s.]/g, ""), 10);
+    if (!Number.isFinite(km) || km < 0 || km > 3_000_000) {
+      return ctx.reply(tb(dl, "❌ Введіть пробіг числом у км (напр. 152340):"));
+    }
+    const { workdayId, field } = state.data;
+    const [wd] = await db.select().from(driverWorkdaysTable).where(eq(driverWorkdaysTable.id, workdayId));
+    if (!wd || wd.driverId !== driver.id) {
+      clearState(tid);
+      return ctx.reply(tb(dl, "Запис не знайдено."), await driverMenuFor(driver, dl));
+    }
+    if (field === "start" && wd.odometerEnd != null && km > wd.odometerEnd) {
+      return ctx.reply(tb(dl, "❌ Початковий пробіг ({start} км) не може бути більшим за кінцевий ({end} км). Введіть ще раз:", { start: km, end: wd.odometerEnd }));
+    }
+    if (field === "end" && km < wd.odometerStart) {
+      return ctx.reply(tb(dl, "❌ Кінцевий пробіг ({end} км) не може бути меншим за початковий ({start} км). Введіть ще раз:", { end: km, start: wd.odometerStart }));
+    }
+    clearState(tid);
+    await db.update(driverWorkdaysTable).set(field === "start" ? { odometerStart: km } : { odometerEnd: km }).where(eq(driverWorkdaysTable.id, wd.id));
+    const start = field === "start" ? km : wd.odometerStart;
+    const end = field === "end" ? km : wd.odometerEnd;
+    return ctx.reply(
+      end != null
+        ? tb(dl, "✅ Пробіг виправлено!\n🛣 {start} → {end} км\n📏 За зміну: *{km} км*", { start, end, km: end - start })
+        : tb(dl, "✅ Початковий пробіг виправлено: *{km} км*", { km }),
       { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
     );
   }

@@ -1629,6 +1629,7 @@ router.get("/mileage", async (req, res) => {
   const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   const rows = await db
     .select({
+      id: driverWorkdaysTable.id,
       driverId: driverWorkdaysTable.driverId, name: driversTable.name, vehicle: driversTable.vehicle,
       workDate: driverWorkdaysTable.workDate, startedAt: driverWorkdaysTable.startedAt, endedAt: driverWorkdaysTable.endedAt,
       odoStart: driverWorkdaysTable.odometerStart, odoEnd: driverWorkdaysTable.odometerEnd,
@@ -1642,11 +1643,41 @@ router.get("/mileage", async (req, res) => {
     if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { driverId: r.driverId, name: r.name, vehicle: r.vehicle, days: [], totalKm: 0, closedShifts: 0 });
     const s = byDriver.get(r.driverId);
     const km = r.odoEnd != null ? r.odoEnd - r.odoStart : null; // open workday → km unknown yet
-    s.days.push({ date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km });
+    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km });
     if (km != null) { s.totalKm += km; s.closedShifts++; }
   }
   const drivers = [...byDriver.values()].map(d => ({ ...d, avgKm: d.closedShifts ? Math.round(d.totalKm / d.closedShifts) : null }));
   ok(res, { month, drivers: drivers.sort((a, b) => a.name.localeCompare(b.name)) });
+});
+
+// Fix odometer readings of a driver workday (admin or head driver from the web;
+// drivers themselves have a 24h window in the bot).
+router.patch("/driver-workdays/:id", DRIVER_RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const wd = (await db.select().from(driverWorkdaysTable).where(eq(driverWorkdaysTable.id, id)))[0];
+  if (!wd) return fail(res, 404, "Запис не знайдено");
+  const parseKm = (v: unknown) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n <= 3_000_000 ? n : null;
+  };
+  const patch: { odometerStart?: number; odometerEnd?: number } = {};
+  if (req.body?.odometerStart !== undefined) {
+    const n = parseKm(req.body.odometerStart);
+    if (n == null) return fail(res, 400, "Пробіг має бути цілим числом у км");
+    patch.odometerStart = n;
+  }
+  if (req.body?.odometerEnd !== undefined) {
+    if (!wd.endedAt) return fail(res, 400, "Зміна ще відкрита — кінцевий пробіг редагувати не можна");
+    const n = parseKm(req.body.odometerEnd);
+    if (n == null) return fail(res, 400, "Пробіг має бути цілим числом у км");
+    patch.odometerEnd = n;
+  }
+  if (!Object.keys(patch).length) return fail(res, 400, "Немає полів для оновлення");
+  const start = patch.odometerStart ?? wd.odometerStart;
+  const end = patch.odometerEnd ?? wd.odometerEnd;
+  if (end != null && end < start) return fail(res, 400, "Кінцевий пробіг не може бути меншим за початковий");
+  const [row] = await db.update(driverWorkdaysTable).set(patch).where(eq(driverWorkdaysTable.id, id)).returning();
+  ok(res, row);
 });
 
 // ─── Hours worked per worker for a month (payroll view, from approved schedule) ──
