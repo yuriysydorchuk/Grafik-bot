@@ -1594,10 +1594,16 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
     .from(driverShiftAssignmentsTable)
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (assignments.length === 0) return ctx.reply(tb(dl, "📭 На {day} у вас немає призначень.", { day: DAY_NAMES_UK[dayName] }), driverMenu(dl));
-  // If several assignments today, pick the one whose shift starts soonest from now
+  // If several assignments today, pick the one whose shift starts closest to now
+  // (assignments[0] would glue the run to the morning shift all day long)
   const now = nowWarsaw();
-  const factory = await getMenuDriverFactory(assignments[0]!.factoryId);
-  const trip = assignments[0]!;
+  const tripFacRows = await db.select().from(factoriesTable);
+  const tripFacById = new Map(tripFacRows.map(f => [f.id, f]));
+  const tripToday = warsawDateStr();
+  const trip = [...assignments].sort((a, b) =>
+    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(a.factoryId), a.shift).getTime()) -
+    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(b.factoryId), b.shift).getTime()))[0]!;
+  const factory = await getMenuDriverFactory(trip.factoryId);
   const shiftStart = factoryShiftStart(factory, trip.shift as Shift);
   const expectedPickup = shiftAnchor(now, shiftStart, 60); // pickup 1h before shift
   const lateToPickup = now > expectedPickup;
@@ -1628,12 +1634,25 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
   const week = getCurrentMonday();
   const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
-  // Prefer a trip already started today; otherwise the latest trip for today
   const trips = await db.select().from(driverTripsTable)
     .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName)));
   if (trips.length === 0) return ctx.reply(tb(dl, "⚠️ Спочатку натисніть «🚌 Почати поїздку»."), await driverMenuFor(driver, dl));
-  const t = trips.find(x => x.pickupStartedAt && !x.arrivedFactoryAt) ?? trips[0]!;
   const now = nowWarsaw();
+  // Among open runs take the one started LAST — a stale morning trip the driver
+  // forgot to close must not swallow the current run's arrival (real incident:
+  // shift-2 arrival logged onto the 03:03 shift-1 trip, "520 min on the road").
+  // If nothing is open, fall back to the trip whose shift starts closest to now.
+  const open = trips.filter(x => x.pickupStartedAt && !x.arrivedFactoryAt)
+    .sort((a, b) => new Date(b.pickupStartedAt!).getTime() - new Date(a.pickupStartedAt!).getTime());
+  let t = open[0];
+  if (!t) {
+    const arrFacRows = await db.select().from(factoriesTable);
+    const arrFacById = new Map(arrFacRows.map(f => [f.id, f]));
+    const arrToday = warsawDateStr();
+    t = [...trips].sort((a, b) =>
+      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(a.factoryId), a.shift).getTime()) -
+      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(b.factoryId), b.shift).getTime()))[0]!;
+  }
   const factory = await getMenuDriverFactory(t.factoryId);
   const shiftStart = factoryShiftStart(factory, t.shift as Shift);
   const expectedFactory = shiftAnchor(now, shiftStart, 15); // be at factory 15 min before shift

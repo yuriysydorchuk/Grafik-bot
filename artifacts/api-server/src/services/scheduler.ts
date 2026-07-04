@@ -2,17 +2,17 @@ import cron, { type ScheduledTask } from "node-cron";
 import { db } from "@workspace/db";
 import {
   workersTable, driversTable, adminsTable, factoriesTable,
-  scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, notificationsTable,
+  scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, driverTripsTable, notificationsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and, lt, desc } from "drizzle-orm";
+import { eq, and, lt, desc, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { sendAlert } from "../lib/alerts";
 import { bot } from "../bot";
 import { getWorkersWhoHaventSubmitted } from "./sheets";
 import { getNextMonday, getCurrentMonday, formatWeekStart } from "./scheduleGenerator";
-import { factoryShifts } from "../bot/time";
-import { t, asLang } from "../bot/i18n";
+import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr } from "../bot/time";
+import { t, asLang, tb, oLang } from "../bot/i18n";
 
 // All cron times in Europe/Warsaw timezone
 const TZ = "Europe/Warsaw";
@@ -52,10 +52,10 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
-  // Pre-shift check every 15 minutes
+  // Pre-shift check every 15 minutes (+ forgotten-arrival reminders for drivers)
   preShiftTask = cron.schedule(
     "*/15 * * * *",
-    async () => { await checkPreShiftNotifications(); },
+    async () => { await checkPreShiftNotifications(); await checkForgottenArrivals(); },
     { timezone: TZ },
   );
 
@@ -261,6 +261,46 @@ async function sendFactoryShiftReminder(
 // Remind pickup drivers («Забрати зі зміни») ~1h before the shift ends.
 // The assignment row lives on the day the shift STARTED: for an overnight shift
 // (end <= start) that is the previous calendar day — possibly the previous week.
+// Driver started a run («Почати поїздку» / boarding) but never pressed
+// «🏭 Прибув на фабрику»: remind once, an hour after the delivered shift began.
+// Window 60–300 min keeps it to the current run (no nagging about stale trips).
+async function checkForgottenArrivals() {
+  try {
+    const today = warsawDateStr();
+    const now = nowWarsaw();
+    const trips = await db.select().from(driverTripsTable)
+      .where(and(eq(driverTripsTable.tripDate, today), isNull(driverTripsTable.arrivedFactoryAt)));
+    const open = trips.filter(t => t.pickupStartedAt);
+    if (open.length === 0) return;
+    const facs = await db.select().from(factoriesTable);
+    const facById = new Map(facs.map(f => [f.id, f]));
+    for (const trip of open) {
+      const key = `arrfrgt_${trip.id}`;
+      if (sentToday.has(key)) continue;
+      const fac = facById.get(trip.factoryId);
+      const [hh, mm] = factoryShiftStart(fac, trip.shift as Shift).split(":").map(Number);
+      const [y, m, d] = today.split("-").map(Number);
+      const start = new Date(y!, m! - 1, d!, hh ?? 6, mm ?? 0, 0, 0);
+      const minsSinceStart = (now.getTime() - start.getTime()) / 60000;
+      if (minsSinceStart < 60 || minsSinceStart > 300) continue;
+      const [drv] = await db.select().from(driversTable).where(eq(driversTable.id, trip.driverId));
+      if (!drv?.telegramId) continue;
+      sentToday.add(key);
+      try {
+        const dl = oLang(drv.language);
+        await bot.telegram.sendMessage(
+          drv.telegramId,
+          tb(dl, "⚠️ Ви почали поїздку ({factory} · {shift} зміна), але не натиснули «🏭 Прибув на фабрику».\n\nЯкщо ви вже на фабриці — натисніть кнопку в меню, щоб зафіксувати час прибуття.", { factory: fac?.name ?? "—", shift: trip.shift }),
+        );
+        logger.info({ tripId: trip.id, driverId: trip.driverId, factory: fac?.name, shift: trip.shift }, "Forgotten-arrival reminder sent");
+      } catch { /* driver blocked the bot etc. — ignore */ }
+    }
+  } catch (e: any) {
+    logger.error({ err: e }, "checkForgottenArrivals failed");
+    void sendAlert({ service: "cron", kind: e?.name, source: "checkForgottenArrivals", message: e?.message ?? String(e) });
+  }
+}
+
 async function sendPickupReminder(
   factoryId: number,
   factoryName: string,
