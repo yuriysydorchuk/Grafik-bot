@@ -1594,36 +1594,67 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
     .from(driverShiftAssignmentsTable)
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   if (assignments.length === 0) return ctx.reply(tb(dl, "📭 На {day} у вас немає призначень.", { day: DAY_NAMES_UK[dayName] }), driverMenu(dl));
-  // If several assignments today, pick the one whose shift starts closest to now
-  // (assignments[0] would glue the run to the morning shift all day long)
+  // One physical run can serve SEVERAL factories at once (e.g. ANDROS 1 + DORKO 1):
+  // start a trip for EVERY assignment whose shift is near now (±3h); if none is
+  // near, take the single closest one. (Picking just one left the other factory's
+  // trip open forever — it later swallowed the next run's arrival.)
   const now = nowWarsaw();
   const tripFacRows = await db.select().from(factoriesTable);
   const tripFacById = new Map(tripFacRows.map(f => [f.id, f]));
   const tripToday = warsawDateStr();
-  const trip = [...assignments].sort((a, b) =>
-    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(a.factoryId), a.shift).getTime()) -
-    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(b.factoryId), b.shift).getTime()))[0]!;
-  const factory = await getMenuDriverFactory(trip.factoryId);
-  const shiftStart = factoryShiftStart(factory, trip.shift as Shift);
-  const expectedPickup = shiftAnchor(now, shiftStart, 60); // pickup 1h before shift
-  const lateToPickup = now > expectedPickup;
-  const existingTrip = await db.select({ id: driverTripsTable.id }).from(driverTripsTable)
-    .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName), eq(driverTripsTable.shift, trip.shift as Shift)));
-  if (existingTrip.length > 0) {
-    await db.update(driverTripsTable).set({ pickupStartedAt: now, lateToPickup }).where(eq(driverTripsTable.id, existingTrip[0]!.id));
-  } else {
-    await db.insert(driverTripsTable).values({
-      driverId: driver.id, weekId: weeks[0]!.id, factoryId: trip.factoryId,
-      dayOfWeek: dayName, shift: trip.shift as Shift, tripDate: warsawDateStr(),
-      pickupStartedAt: now, lateToPickup,
-    });
+  const uniqMap = new Map<string, typeof assignments[number]>();
+  for (const a of assignments) uniqMap.set(`${a.factoryId}-${a.shift}`, a);
+  const uniq = [...uniqMap.values()];
+  const distToNow = (a: typeof assignments[number]) =>
+    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(a.factoryId), a.shift).getTime());
+  const near = uniq.filter(a => distToNow(a) <= BOARD_WINDOW_MS);
+  const targets = near.length > 0 ? near : [[...uniq].sort((a, b) => distToNow(a) - distToNow(b))[0]!];
+
+  const lines: string[] = [];
+  for (const trip of targets) {
+    const factory = tripFacById.get(trip.factoryId);
+    const shiftStart = factoryShiftStart(factory, trip.shift as Shift);
+    const expectedPickup = shiftAnchor(now, shiftStart, 60); // pickup 1h before shift
+    const lateToPickup = now > expectedPickup;
+    const existingTrip = await db.select({ id: driverTripsTable.id }).from(driverTripsTable)
+      .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName), eq(driverTripsTable.shift, trip.shift as Shift), eq(driverTripsTable.factoryId, trip.factoryId)));
+    if (existingTrip.length > 0) {
+      await db.update(driverTripsTable).set({ pickupStartedAt: now, lateToPickup }).where(eq(driverTripsTable.id, existingTrip[0]!.id));
+    } else {
+      await db.insert(driverTripsTable).values({
+        driverId: driver.id, weekId: weeks[0]!.id, factoryId: trip.factoryId,
+        dayOfWeek: dayName, shift: trip.shift as Shift, tripDate: tripToday,
+        pickupStartedAt: now, lateToPickup,
+      });
+    }
+    lines.push(`🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[trip.shift as Shift]} — ${lateToPickup
+      ? `⚠️ ${tb(dl, "Спізнення на збір (план {t})", { t: expectedPickup.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}`
+      : `✅ ${tb(dl, "Вчасно на місці збору")}`}`);
   }
   const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
   return ctx.reply(
-    `🚌 *${tb(dl, "Поїздку розпочато!")}*\n🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[trip.shift as Shift]}\n\n${tb(dl, "Час:")} ${timeStr}${lateToPickup ? `\n⚠️ ${tb(dl, "Спізнення на збір (план {t})", { t: shiftAnchor(now, shiftStart, 60).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}` : `\n✅ ${tb(dl, "Вчасно на місці збору")}`}`,
+    `🚌 *${tb(dl, "Поїздку розпочато!")}*\n${lines.join("\n")}\n\n${tb(dl, "Час:")} ${timeStr}`,
     { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
   );
 });
+
+// Record the arrival on one concrete trip (shared by the direct path and the
+// factory-picker callback below).
+async function markFactoryArrival(ctx: Context, driver: Driver, dl: Lang, t: { id: number; factoryId: number; shift: string; pickupStartedAt: Date | string | null }) {
+  const now = nowWarsaw();
+  const factory = await getMenuDriverFactory(t.factoryId);
+  const shiftStart = factoryShiftStart(factory, t.shift as Shift);
+  const expectedFactory = shiftAnchor(now, shiftStart, 15); // be at factory 15 min before shift
+  const lateToFactory = now > expectedFactory;
+  await db.update(driverTripsTable).set({ arrivedFactoryAt: now, lateToFactory }).where(eq(driverTripsTable.id, t.id));
+  const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+  const travelMin = t.pickupStartedAt
+    ? Math.round((now.getTime() - new Date(t.pickupStartedAt).getTime()) / 60000) : null;
+  return ctx.reply(
+    `🏭 *${tb(dl, "Прибуття зафіксовано!")}*\n🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[t.shift as Shift]}\n\n${tb(dl, "Час:")} ${timeStr}${travelMin !== null ? `\n⏱ ${tb(dl, "В дорозі:")} ${travelMin} ${tb(dl, "хв")}` : ""}${lateToFactory ? `\n⚠️ ${tb(dl, "Запізнення (план до {t})", { t: expectedFactory.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}` : `\n✅ ${tb(dl, "Прибули вчасно")}`}`,
+    { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+  );
+}
 
 bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
   const tid = String(ctx.from.id);
@@ -1638,14 +1669,20 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
     .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName)));
   if (trips.length === 0) return ctx.reply(tb(dl, "⚠️ Спочатку натисніть «🚌 Почати поїздку»."), await driverMenuFor(driver, dl));
   const now = nowWarsaw();
-  // Among open runs take the one started LAST — a stale morning trip the driver
-  // forgot to close must not swallow the current run's arrival (real incident:
-  // shift-2 arrival logged onto the 03:03 shift-1 trip, "520 min on the road").
-  // If nothing is open, fall back to the trip whose shift starts closest to now.
   const open = trips.filter(x => x.pickupStartedAt && !x.arrivedFactoryAt)
     .sort((a, b) => new Date(b.pickupStartedAt!).getTime() - new Date(a.pickupStartedAt!).getTime());
+  // One run can serve several factories at once — with more than one open trip
+  // we can't guess which factory he's at, so ask (each gets its own arrival).
+  if (open.length > 1) {
+    const facRows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+    const fname = (id: number) => facRows.find(f => f.id === id)?.name ?? "—";
+    return ctx.reply(tb(dl, "🏭 На яку фабрику ви прибули?"), {
+      reply_markup: { inline_keyboard: open.map(o => [{ text: `${fname(o.factoryId)} · ${SHIFT_SHORT[o.shift as Shift]}`, callback_data: `arrv:${o.id}` }]) },
+    });
+  }
   let t = open[0];
   if (!t) {
+    // Nothing open — fall back to the trip whose shift starts closest to now.
     const arrFacRows = await db.select().from(factoriesTable);
     const arrFacById = new Map(arrFacRows.map(f => [f.id, f]));
     const arrToday = warsawDateStr();
@@ -1653,18 +1690,21 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
       Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(a.factoryId), a.shift).getTime()) -
       Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(b.factoryId), b.shift).getTime()))[0]!;
   }
-  const factory = await getMenuDriverFactory(t.factoryId);
-  const shiftStart = factoryShiftStart(factory, t.shift as Shift);
-  const expectedFactory = shiftAnchor(now, shiftStart, 15); // be at factory 15 min before shift
-  const lateToFactory = now > expectedFactory;
-  await db.update(driverTripsTable).set({ arrivedFactoryAt: now, lateToFactory }).where(eq(driverTripsTable.id, t.id));
-  const timeStr = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
-  const travelMin = t.pickupStartedAt
-    ? Math.round((now.getTime() - new Date(t.pickupStartedAt).getTime()) / 60000) : null;
-  return ctx.reply(
-    `🏭 *${tb(dl, "Прибуття зафіксовано!")}*\n🏭 ${factory?.name ?? "—"} · ${SHIFT_SHORT[t.shift as Shift]}\n\n${tb(dl, "Час:")} ${timeStr}${travelMin !== null ? `\n⏱ ${tb(dl, "В дорозі:")} ${travelMin} ${tb(dl, "хв")}` : ""}${lateToFactory ? `\n⚠️ ${tb(dl, "Запізнення (план до {t})", { t: expectedFactory.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" }) })}` : `\n✅ ${tb(dl, "Прибули вчасно")}`}`,
-    { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
-  );
+  return markFactoryArrival(ctx, driver, dl, t);
+});
+
+// Factory picker for arrival when one run served several factories.
+bot.action(/^arrv:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return;
+  const dl = olang(driver);
+  const [t] = await db.select().from(driverTripsTable).where(eq(driverTripsTable.id, Number((ctx as any).match[1])));
+  if (!t || t.driverId !== driver.id) return;
+  if (t.arrivedFactoryAt) return ctx.reply(tb(dl, "Прибуття вже зафіксовано."), await driverMenuFor(driver, dl));
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  return markFactoryArrival(ctx, driver, dl, t);
 });
 
 // ─── Driver: workday with odometer (mileage report) ──────────────────────────
