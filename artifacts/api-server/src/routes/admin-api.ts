@@ -1984,7 +1984,24 @@ const effRate = (m: Map<string, number>, factoryId: number | null | undefined, p
 
 const ymdStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-// Compute finance for an arbitrary [start, end) range (week-start based, approved schedules only).
+// Calendar months fully covered by [start, end) — a worker's monthly report is a single
+// figure for a whole month, so it can only override hours when the month fits entirely.
+function fullMonthsIn(start: string, end: string): string[] {
+  const months: string[] = [];
+  let d = new Date(start + "T00:00:00");
+  if (d.getDate() !== 1) d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+  while (ymdStr(new Date(d.getFullYear(), d.getMonth() + 1, 1)) <= end) {
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+  }
+  return months;
+}
+
+// Compute finance for an arbitrary [start, end) range (approved schedules only).
+// Each shift counts under its actual calendar date, not the week's Monday — a week
+// straddling the range edge contributes only the days that fall inside.
+// For months fully inside the range, a submitted worker report (monthly_reports)
+// overrides the schedule-derived hours for that worker+factory+month.
 async function computeFinanceRange(start: string, end: string, rates: FinanceRates) {
   const facRows = await db.select().from(factoriesTable);
   const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
@@ -1993,36 +2010,93 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
   const rows = await db
     .select({
       workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId, shift: scheduleEntriesTable.shift,
+      hoursOverride: scheduleEntriesTable.hoursOverride,
+      day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
       positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, start), lt(scheduleWeeksTable.weekStart, end), eq(scheduleEntriesTable.status, "present")));
-  // aggregate hours per (factory, worker, position) — payroll/invoice are linear so per-portion is exact.
-  // position matters because both pay rate and client invoice rate can vary by position.
-  const wf = new Map<string, { factoryId: number; workerId: number; positionId: number | null; rate: number; invoiceRate: number; isStudent: boolean; under26: boolean; hours: number }>();
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(start)), lt(scheduleWeeksTable.weekStart, end), eq(scheduleEntriesTable.status, "present")));
+  // aggregate hours per (factory, worker, position, month) — payroll/invoice are linear so per-portion is exact.
+  // position matters because both pay rate and client invoice rate can vary by position;
+  // month matters because report overrides apply per month.
+  type Portion = { factoryId: number; workerId: number; positionId: number | null; month: string; rate: number; invoiceRate: number; isStudent: boolean; under26: boolean; hours: number };
+  const wf = new Map<string, Portion>();
   for (const r of rows) {
     if (!r.workerId || r.factoryId == null) continue;
+    const date = entryDateStr(String(r.weekStart), r.day);
+    if (date < start || date >= end) continue;
+    const month = date.slice(0, 7);
     const fac = facById.get(r.factoryId);
-    const key = `${r.factoryId}:${r.workerId}:${r.positionId ?? 0}`;
+    const key = `${r.factoryId}:${r.workerId}:${r.positionId ?? 0}:${month}`;
     if (!wf.has(key)) wf.set(key, {
-      factoryId: r.factoryId, workerId: r.workerId, positionId: r.positionId ?? null,
+      factoryId: r.factoryId, workerId: r.workerId, positionId: r.positionId ?? null, month,
       rate: effRate(posRates, r.factoryId, r.positionId, r.rate ?? rates.defaultRate),
       invoiceRate: effRate(posInvoice, r.factoryId, r.positionId, fac?.invoiceRate ?? 0),
       isStudent: !!r.isStudent, under26: !!r.under26, hours: 0,
     });
-    wf.get(key)!.hours += factoryShiftHours(fac, r.shift as any);
+    wf.get(key)!.hours += r.hoursOverride ?? factoryShiftHours(fac, r.shift as any);
+  }
+  // Worker monthly reports take precedence over schedule hours.
+  const months = fullMonthsIn(start, end);
+  if (months.length) {
+    const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, month: monthlyReportsTable.month, hours: monthlyReportsTable.hoursReported })
+      .from(monthlyReportsTable).where(inArray(monthlyReportsTable.month, months));
+    if (reports.length) {
+      // group schedule portions by (factory, worker, month) so a report can rescale them
+      const byFwm = new Map<string, { keys: string[]; hours: number }>();
+      for (const [key, e] of wf) {
+        const k = `${e.factoryId}:${e.workerId}:${e.month}`;
+        if (!byFwm.has(k)) byFwm.set(k, { keys: [], hours: 0 });
+        const g = byFwm.get(k)!;
+        g.keys.push(key); g.hours += e.hours;
+      }
+      const repWorkers = await db.select({
+        id: workersTable.id, factoryId: workersTable.factoryId, positionId: workersTable.positionId,
+        rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      }).from(workersTable).where(inArray(workersTable.id, [...new Set(reports.map(r => r.workerId))]));
+      const wById = new Map(repWorkers.map(w => [w.id, w]));
+      for (const rep of reports) {
+        const w = wById.get(rep.workerId);
+        // legacy reports without a factory → the factory where the worker has hours that month, preferring the current one
+        let facId = rep.factoryId;
+        if (facId == null) {
+          const wGroups = [...byFwm.keys()].filter(k => k.split(":")[1] === String(rep.workerId) && k.endsWith(`:${rep.month}`));
+          const curKey = `${w?.factoryId}:${rep.workerId}:${rep.month}`;
+          facId = wGroups.includes(curKey) ? w!.factoryId! : wGroups.length ? Number(wGroups[0]!.split(":")[0]) : (w?.factoryId ?? null);
+        }
+        if (facId == null) continue;
+        const grp = byFwm.get(`${facId}:${rep.workerId}:${rep.month}`);
+        if (grp && grp.hours > 0) {
+          // rescale the schedule portions proportionally — keeps the per-position rate split
+          const scale = rep.hours / grp.hours;
+          for (const key of grp.keys) wf.get(key)!.hours *= scale;
+        } else if (w) {
+          // report without any marked shifts — count it at the worker's current position/rate
+          const fac = facById.get(facId);
+          wf.set(`${facId}:${rep.workerId}:${w.positionId ?? 0}:${rep.month}`, {
+            factoryId: facId, workerId: rep.workerId, positionId: w.positionId ?? null, month: rep.month,
+            rate: effRate(posRates, facId, w.positionId, w.rate ?? rates.defaultRate),
+            invoiceRate: effRate(posInvoice, facId, w.positionId, fac?.invoiceRate ?? 0),
+            isStudent: !!w.isStudent, under26: !!w.under26, hours: rep.hours,
+          });
+        }
+      }
+    }
   }
   const perFactory = new Map<number, any>();
-  for (const f of facRows) perFactory.set(f.id, { factoryId: f.id, name: f.name, invoiceRate: f.invoiceRate ?? null, hours: 0, invoiceNet: 0, laborCost: 0, people: new Set<number>() });
+  for (const f of facRows) perFactory.set(f.id, { factoryId: f.id, name: f.name, invoiceRate: f.invoiceRate ?? null, hours: 0, invoiceNet: 0, salaryGross: 0, zusEmployer: 0, laborCost: 0, people: new Set<number>() });
   const allPeople = new Set<number>();
   for (const e of wf.values()) {
     const pf = perFactory.get(e.factoryId); if (!pf) continue;
     pf.hours += e.hours;
     pf.invoiceNet += e.hours * (e.invoiceRate ?? 0);
-    pf.laborCost += calcPayroll(e.hours * e.rate, e.isStudent, e.under26, rates).laborCost;
+    const p = calcPayroll(e.hours * e.rate, e.isStudent, e.under26, rates);
+    pf.salaryGross += p.gross;
+    pf.zusEmployer += p.erTotal;
+    pf.laborCost += p.laborCost;
     pf.people.add(e.workerId);
     allPeople.add(e.workerId);
   }
@@ -2035,13 +2109,15 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
       factoryId: pf.factoryId, name: pf.name, invoiceRate: pf.invoiceRate, hasRate: pf.invoiceRate != null || pf.invoiceNet > 0,
       hours: round2(pf.hours), workers: pf.people.size, people: pf.people.size,
       invoiceNet, invoiceVat, invoiceGross: round2(invoiceNet + invoiceVat),
+      salaryGross: round2(pf.salaryGross), zusEmployer: round2(pf.zusEmployer),
       laborCost, profit, margin: invoiceNet > 0 ? Math.round((profit / invoiceNet) * 100) : null,
     };
   }).sort((a, b) => b.profit - a.profit);
   const sum = (k: string) => round2(factories.reduce((s, f) => s + (f as any)[k], 0));
   const totals = {
     hours: sum("hours"), invoiceNet: sum("invoiceNet"), invoiceVat: sum("invoiceVat"),
-    invoiceGross: sum("invoiceGross"), laborCost: sum("laborCost"), profit: sum("profit"),
+    invoiceGross: sum("invoiceGross"), salaryGross: sum("salaryGross"), zusEmployer: sum("zusEmployer"),
+    laborCost: sum("laborCost"), profit: sum("profit"),
     people: allPeople.size,
   };
   return { factories, totals };

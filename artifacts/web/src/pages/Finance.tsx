@@ -15,9 +15,9 @@ import { useMemo } from "react";
 
 interface FacFin {
   factoryId: number; name: string; invoiceRate: number | null; hasRate: boolean; hours: number; workers: number;
-  invoiceNet: number; invoiceVat: number; invoiceGross: number; laborCost: number; profit: number; margin: number | null;
+  invoiceNet: number; invoiceVat: number; invoiceGross: number; salaryGross: number; zusEmployer: number; laborCost: number; profit: number; margin: number | null;
 }
-interface Totals { hours: number; invoiceNet: number; invoiceVat: number; invoiceGross: number; laborCost: number; profit: number; people: number }
+interface Totals { hours: number; invoiceNet: number; invoiceVat: number; invoiceGross: number; salaryGross: number; zusEmployer: number; laborCost: number; profit: number; people: number }
 interface FinResp { month: string; factories: FacFin[]; totals: Totals; prev: { month: string; totals: Totals } }
 
 const zl = (n: number) => `${n.toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
@@ -45,7 +45,7 @@ export default function Finance() {
 
   return (
     <>
-      <PageHeader title={t("Фінанси")} subtitle={t("Жива фактура, вартість праці та прибуток по фабриках (із відмічених явок)")} />
+      <PageHeader title={t("Фінанси")} subtitle={t("Жива фактура, вартість праці та прибуток по фабриках (з рапортів, а без рапорту — з відмічених явок)")} />
       <div className="mb-4"><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
 
       {isFetching && !data ? <Spinner /> : !data ? <Empty>{t("Немає даних")}</Empty> : (
@@ -54,13 +54,15 @@ export default function Finance() {
             <Card className="p-5">
               <div className="flex items-center gap-2 text-sm font-medium text-slate-500"><FileText className="h-4 w-4 text-sky-500" /> {t("Фактура (нетто)")}</div>
               <div className="mt-1 text-2xl font-bold text-slate-800">{zl(data.totals.invoiceNet)}</div>
-              <div className="mt-0.5 text-xs text-slate-400">{t("з ВАТ:")} {zl(data.totals.invoiceGross)}</div>
+              <div className="mt-0.5 text-xs text-slate-400">{t("ВАТ:")} {zl(data.totals.invoiceVat)}</div>
+              <div className="text-xs text-slate-400">{t("з ВАТ:")} {zl(data.totals.invoiceGross)}</div>
               <div className="mt-2"><Delta cur={data.totals.invoiceNet} prev={data.prev.totals.invoiceNet} /></div>
             </Card>
             <Card className="p-5">
               <div className="flex items-center gap-2 text-sm font-medium text-slate-500"><Wallet className="h-4 w-4 text-amber-500" /> {t("Вартість праці")}</div>
               <div className="mt-1 text-2xl font-bold text-slate-800">{zl(data.totals.laborCost)}</div>
-              <div className="mt-0.5 text-xs text-slate-400">{t("брутто ЗП + ZUS роботодавця")}</div>
+              <div className="mt-0.5 text-xs text-slate-400">{t("ЗП брутто:")} {zl(data.totals.salaryGross)}</div>
+              <div className="text-xs text-slate-400">{t("ZUS роботодавця:")} {zl(data.totals.zusEmployer)}</div>
               <div className="mt-2"><Delta cur={data.totals.laborCost} prev={data.prev.totals.laborCost} /></div>
             </Card>
             <Card className="p-5">
@@ -122,7 +124,7 @@ export default function Finance() {
             </Card>
           )}
           <p className="mt-3 text-xs text-slate-400">
-            💡 {t("Прибуток = фактура нетто − повна вартість праці (брутто ЗП + ZUS роботодавця). Ставки ZUS/ВАТ — кнопка зверху.")}
+            💡 {t("Прибуток = фактура нетто − повна вартість праці (брутто ЗП + ZUS роботодавця). Години беруться з рапорту працівника, а якщо рапорту немає — із затверджених відмічених явок.")}
           </p>
 
           <ComparisonSection />
