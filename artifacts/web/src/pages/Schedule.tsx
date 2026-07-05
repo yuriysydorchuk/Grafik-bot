@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil } from "lucide-react";
+import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
@@ -30,7 +30,7 @@ type SchedResp = {
   orders: Record<string, number>;
   orderReq: Record<string, OrderRequirement[]>;
   positions: PositionLite[];
-  unplanned: Record<string, { name: string }[]>;
+  unplanned: Record<string, { id: number; name: string; workerId: number | null }[]>;
   absenceByWorker: Record<string, { status: string; reason: string | null }>;
   substituteFor: Record<string, string>;
 };
@@ -59,6 +59,8 @@ export default function Schedule() {
   const [approveOpen, setApproveOpen] = useState(false);
   const [addTo, setAddTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // manual add (incl. past shifts)
   const [addQuery, setAddQuery] = useState("");
+  const [linkTo, setLinkTo] = useState<{ id: number; name: string; day: DayCode; shift: ShiftCode } | null>(null); // link a free-text unplanned extra to a real worker
+  const [linkQuery, setLinkQuery] = useState("");
 
   useEffect(() => { if (!factoryId && factories.length) setFactoryId(String(factories[0]!.id)); }, [factories]);
 
@@ -153,6 +155,8 @@ export default function Schedule() {
   const moveEntry = useMutation({ mutationFn: (v: { id: number; shift: ShiftCode }) => patch(`/schedule/entry/${v.id}`, { shift: v.shift }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const removeEntry = useMutation({ mutationFn: (id: number) => del(`/schedule/entry/${id}`), onSuccess: reload });
   const setStatus = useMutation({ mutationFn: (v: { id: number; status: string }) => patch(`/schedule/entry/${v.id}/status`, { status: v.status }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
+  const linkUnplanned = useMutation({ mutationFn: (v: { id: number; workerId: number }) => post(`/unplanned/${v.id}/link`, { workerId: v.workerId }),
+    onSuccess: () => { reload(); toast.success(t("Прив'язано")); }, onError: (e: any) => toast.error(e.message) });
 
   const byDayShift = (d: DayCode, s: ShiftCode) => entries.filter(e => e.day === d && e.shift === s);
 
@@ -359,7 +363,15 @@ export default function Schedule() {
                             {extras.map((u, i) => (
                               <div key={`u${i}`} className="flex items-center gap-2 rounded-lg border border-dashed border-sky-300 bg-sky-50/60 px-2 py-1.5 text-sm">
                                 <span className="min-w-0 flex-1 truncate font-medium text-sky-700">{u.name}</span>
-                                <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-600">{t("➕ додатковий")}</span>
+                                {u.workerId == null && editable ? (
+                                  <button onClick={() => { setLinkTo({ id: u.id, name: u.name, day, shift }); setLinkQuery(""); }}
+                                    title={t("Водій вписав ім'я вручну — прив'яжіть працівника з бази")}
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100">
+                                    <Link2 className="h-3 w-3" /> {t("прив'язати")}
+                                  </button>
+                                ) : (
+                                  <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-600">{t("➕ додатковий")}</span>
+                                )}
                               </div>
                             ))}
                             {!list.length && !extras.length && <div className="px-2 py-1 text-xs text-slate-300">{t("— нікого —")}</div>}
@@ -484,6 +496,35 @@ export default function Schedule() {
                 ))}
               </div>
               <p className="text-xs text-slate-400">{t("Людину буде додано до зміни; статус «вийшов» позначте в явці.")}</p>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {linkTo && (() => {
+        const q = linkQuery.trim().toLowerCase();
+        // Not limited to this factory: the driver may have picked up someone assigned elsewhere.
+        const cands = allWorkers
+          .filter(w => w.isActive)
+          .filter(w => !q || w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName, "pl"))
+          .slice(0, 50);
+        return (
+          <Modal open onClose={() => setLinkTo(null)} title={`${t("Прив'язати «{name}»", { name: linkTo.name })} — ${DAY_FULL[linkTo.day]} · ${SHIFT_UK[linkTo.shift]}`}>
+            <div className="space-y-3">
+              <input autoFocus value={linkQuery} onChange={e => setLinkQuery(e.target.value)} placeholder={t("Пошук за іменем або кодом")}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                {cands.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : cands.map(w => (
+                  <button key={w.id} disabled={linkUnplanned.isPending}
+                    onClick={() => { linkUnplanned.mutate({ id: linkTo.id, workerId: w.id }); setLinkTo(null); }}
+                    className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-red-300 hover:bg-red-50 disabled:opacity-50">
+                    <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{w.fullName}</span>
+                    {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-400">{t("Запис водія буде прив'язано до працівника, і в явці з'явиться «вийшов».")}</p>
             </div>
           </Modal>
         );

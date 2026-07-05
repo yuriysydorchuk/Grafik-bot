@@ -1366,13 +1366,14 @@ router.get("/schedule", async (req, res) => {
   // Positions catalogue (for grouping/labels/colours on the schedule grid)
   const positions = await db.select({ id: positionsTable.id, name: positionsTable.name, color: positionsTable.color }).from(positionsTable).orderBy(positionsTable.sortOrder, positionsTable.id);
 
-  // Unplanned workers drivers added on the spot (per day-shift) — shown for shifts that already happened
-  const unplanned: Record<string, { name: string }[]> = {};
+  // Unplanned workers drivers added on the spot (per day-shift) — shown for shifts that already happened.
+  // workerId=null means the driver typed a free-text name; link it via POST /unplanned/:id/link.
+  const unplanned: Record<string, { id: number; name: string; workerId: number | null }[]> = {};
   if (week && factoryId != null) {
-    const ur = await db.select({ day: unplannedWorkersTable.dayOfWeek, shift: unplannedWorkersTable.shift, name: unplannedWorkersTable.workerName })
+    const ur = await db.select({ id: unplannedWorkersTable.id, day: unplannedWorkersTable.dayOfWeek, shift: unplannedWorkersTable.shift, name: unplannedWorkersTable.workerName, workerId: unplannedWorkersTable.workerId })
       .from(unplannedWorkersTable)
       .where(and(eq(unplannedWorkersTable.weekId, week.id), eq(unplannedWorkersTable.factoryId, factoryId)));
-    for (const u of ur) (unplanned[`${u.day}-${u.shift}`] ??= []).push({ name: u.name });
+    for (const u of ur) (unplanned[`${u.day}-${u.shift}`] ??= []).push({ id: u.id, name: u.name, workerId: u.workerId });
   }
 
   // Absence requests for this week → annotate planned chips: who asked off (pending /
@@ -1405,6 +1406,30 @@ router.get("/schedule", async (req, res) => {
   }
 
   ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor });
+});
+
+// Link a driver-typed unplanned worker to a real worker from the base.
+// Mirrors the boarding flow: the person was on the shift, so an attendance
+// entry (status=present) is created unless one already exists.
+router.post("/unplanned/:id/link", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const workerId = Number(req.body?.workerId);
+  if (!Number.isInteger(id) || !Number.isInteger(workerId)) return fail(res, 400, "Невірні дані");
+  const [row] = await db.select().from(unplannedWorkersTable).where(eq(unplannedWorkersTable.id, id));
+  if (!row) return fail(res, 404, "Запис не знайдено");
+  const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!worker) return fail(res, 404, "Працівника не знайдено");
+  await db.update(unplannedWorkersTable).set({ workerId: worker.id, workerName: worker.fullName }).where(eq(unplannedWorkersTable.id, id));
+  const existing = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.weekId, row.weekId), eq(scheduleEntriesTable.workerId, worker.id),
+      eq(scheduleEntriesTable.dayOfWeek, row.dayOfWeek), eq(scheduleEntriesTable.shift, row.shift), eq(scheduleEntriesTable.factoryId, row.factoryId)));
+  if (existing.length === 0) {
+    await db.insert(scheduleEntriesTable).values({
+      weekId: row.weekId, workerId: worker.id, factoryId: row.factoryId,
+      dayOfWeek: row.dayOfWeek, shift: row.shift, status: "present", pickedUpBy: row.driverId,
+    });
+  }
+  ok(res, { linked: true, workerName: worker.fullName });
 });
 
 // Move an existing entry to another shift (drag between shifts)

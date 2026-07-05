@@ -23,6 +23,7 @@ import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
+import { matchWorker } from "./workerMatch";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import {
   getMenuDriverFactory, sendAvailabilityKeyboard,
@@ -1924,11 +1925,59 @@ bot.hears(bhears("➕ Позаплановий працівник"), async (ctx)
   return ctx.reply(tb(dl, "Введіть ім'я або код позапланового працівника:"), Markup.removeKeyboard());
 });
 
+// Inline pick list when the typed name fuzzy-matches several workers.
+type PickCandidate = { id: number; fullName: string; workerCode: string | null };
+const candidatePickKb = (cands: PickCandidate[], prefix: string, lang: Lang) => ({
+  inline_keyboard: [
+    ...cands.map(w => [{ text: `👤 ${w.fullName}${w.workerCode ? ` · ${w.workerCode}` : ""}`, callback_data: `${prefix}:${w.id}` }]),
+    [{ text: tb(lang, "➕ Ні, додати як введено"), callback_data: `${prefix}:x` }],
+  ],
+});
+
+// `data` is dialog-state payload (weekId/driverId/factoryId/dayOfWeek/shift).
+async function saveUnplannedWorker(
+  data: Record<string, any>,
+  matched: PickCandidate | null, typed: string, driverName: string, suggestions: string[] = [],
+) {
+  await db.insert(unplannedWorkersTable).values({
+    weekId: data.weekId, driverId: data.driverId, factoryId: data.factoryId,
+    dayOfWeek: data.dayOfWeek as DayOfWeek, shift: data.shift as Shift,
+    workerName: matched?.fullName ?? typed, workerId: matched?.id,
+  });
+  await notifyAdmins(
+    `➕ *Позаплановий працівник*\n\n👷 ${mdSafe(matched?.fullName ?? typed)}${matched ? ` (код ${matched.workerCode ?? "—"})` : " (не в базі)"}` +
+    (!matched && suggestions.length ? `\n❓ Можливо: ${suggestions.map(mdSafe).join(", ")} — привʼязати можна у веб-графіку` : "") +
+    `\n🚗 Водій: ${mdSafe(driverName)}\n📅 ${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}`,
+    { parse_mode: "Markdown" },
+  );
+}
+
+bot.action(/^unpk:(\d+|x)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "unplanned:pick") return ctx.answerCbQuery();
+  const { data } = st;
+  clearState(tid);
+  const driver = await getDriver(tid);
+  const dl = olang(driver);
+  const pick = ctx.match[1]!;
+  let matched: PickCandidate | null = null;
+  if (pick !== "x") {
+    const [w] = await db.select().from(workersTable).where(eq(workersTable.id, Number(pick)));
+    if (!w) { await ctx.answerCbQuery(); return; }
+    matched = w;
+  }
+  await ctx.answerCbQuery();
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  await saveUnplannedWorker(data, matched, data.typed, driver?.name ?? "—");
+  return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: mdSafe(matched?.fullName ?? data.typed) }), { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) });
+});
+
 // ─── Driver: Attendance (multi-select) ────────────────────────────────────────
 
 // ─── DRIVER BOARDING (посадка) — inline tap-to-board flow ───────────────────────
 type BoardWorker = { key: string; entryId: number | null; workerId: number | null; name: string; factoryId: number; shift: string; boarded: boolean; unplanned: boolean };
-type BoardData = { weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; lang?: Lang };
+type BoardData = { weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; addTyped?: string; lang?: Lang };
 
 // Boarding is scoped to runs whose shift starts near "now": the board only shows
 // sections within ±3h of the shift start, and confirmation refuses to mark absences
@@ -1962,6 +2011,40 @@ function boardingMarkup(data: BoardData) {
   rows.push([{ text: tb(lang, "❌ Скасувати"), callback_data: "brd:x" }]);
   return { inline_keyboard: rows };
 }
+
+// Put a (possibly matched) person on the board and refresh the boarding message.
+async function boardAddPerson(ctx: Context, tid: string, data: BoardData, matched: PickCandidate | null, typed: string) {
+  const fid = data.addFactoryId!, sh = data.addShift!;
+  // If matched worker is already in this section's list, just board them
+  const existing = matched ? data.workers.find(w => w.workerId === matched.id && w.factoryId === fid && w.shift === sh) : undefined;
+  if (existing) {
+    existing.boarded = true;
+  } else {
+    data.workers.push({ key: `u${data.workers.length}_${Date.now() % 100000}`, entryId: null, workerId: matched?.id ?? null, name: matched?.fullName ?? typed, factoryId: fid, shift: sh, boarded: true, unplanned: true });
+  }
+  delete data.addFactoryId; delete data.addShift; delete data.addTyped;
+  setState(tid, "boarding", data);
+  const bl = data.lang ?? "uk";
+  try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
+  return ctx.reply(`➕ ${tb(bl, "Додано в авто:")} *${mdSafe(matched?.fullName ?? typed)}*${matched ? "" : ` ${tb(bl, "(немає в базі)")}`}`, { parse_mode: "Markdown" });
+}
+
+bot.action(/^brdpk:(\d+|x)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "boarding:add_pick") return ctx.answerCbQuery();
+  const data = st.data as BoardData;
+  const pick = ctx.match[1]!;
+  let matched: PickCandidate | null = null;
+  if (pick !== "x") {
+    const [w] = await db.select().from(workersTable).where(eq(workersTable.id, Number(pick)));
+    if (!w) { await ctx.answerCbQuery(); return; }
+    matched = w;
+  }
+  await ctx.answerCbQuery();
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  return boardAddPerson(ctx, tid, data, matched, data.addTyped ?? "—");
+});
 
 async function recordPickupTrip(driverId: number, weekId: number, dayName: DayOfWeek, factoryId: number, shift: string, now: Date, todayStr: string) {
   const PICKUP_HOURS: Record<string, number> = { "1": 5, "2": 13, "3": 21, "4": 5, "5": 13, "6": 21 };
@@ -3457,22 +3540,15 @@ bot.on("text", async (ctx) => {
   if (state?.action === "boarding:add_name") {
     const data = state.data as BoardData;
     const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
-    const byCode = allWorkers.find(w => w.workerCode === text.trim());
-    const byName = allWorkers.find(w => w.fullName.toLowerCase().includes(text.toLowerCase()));
-    const matched = byCode ?? byName;
-    const fid = data.addFactoryId!, sh = data.addShift!;
-    // If matched worker is already in this section's list, just board them
-    const existing = matched ? data.workers.find(w => w.workerId === matched.id && w.factoryId === fid && w.shift === sh) : undefined;
-    if (existing) {
-      existing.boarded = true;
-    } else {
-      data.workers.push({ key: `u${data.workers.length}_${Date.now() % 100000}`, entryId: null, workerId: matched?.id ?? null, name: matched?.fullName ?? text.trim(), factoryId: fid, shift: sh, boarded: true, unplanned: true });
+    const m = matchWorker(text, allWorkers);
+    if (!m.confident && m.candidates.length > 0) {
+      // Ambiguous — let the driver pick from lookalikes before boarding.
+      data.addTyped = text.trim();
+      setState(tid, "boarding:add_pick", data);
+      const bl = data.lang ?? "uk";
+      return ctx.reply(tb(bl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "brdpk", bl) });
     }
-    delete data.addFactoryId; delete data.addShift;
-    setState(tid, "boarding", data);
-    const bl = data.lang ?? "uk";
-    try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
-    return ctx.reply(`➕ ${tb(bl, "Додано в авто:")} *${matched?.fullName ?? text.trim()}*${matched ? "" : ` ${tb(bl, "(немає в базі)")}`}`, { parse_mode: "Markdown" });
+    return boardAddPerson(ctx, tid, data, m.confident, text.trim());
   }
 
   if (state?.action === "advance:enter_amount") {
@@ -3779,22 +3855,17 @@ bot.on("text", async (ctx) => {
   if (state?.action === "unplanned:enter_name") {
     const { data } = state;
     clearState(tid);
-    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
-    const byCode = allWorkers.find(w => w.workerCode === text.trim());
-    const byName = allWorkers.find(w => w.fullName.toLowerCase().includes(text.toLowerCase()));
-    const matched = byCode ?? byName;
-    await db.insert(unplannedWorkersTable).values({
-      weekId: data.weekId, driverId: data.driverId, factoryId: data.factoryId,
-      dayOfWeek: data.dayOfWeek, shift: data.shift,
-      workerName: matched?.fullName ?? text, workerId: matched?.id,
-    });
     const driver = await getDriver(tid);
     const dl = olang(driver);
-    await notifyAdmins(
-      `➕ *Позаплановий працівник*\n\n👷 ${matched?.fullName ?? text}${matched ? ` (код ${matched.workerCode})` : " (не в базі)"}\n🚗 Водій: ${driver?.name ?? "—"}\n📅 ${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}`,
-      { parse_mode: "Markdown" },
-    );
-    return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: matched?.fullName ?? text }), { parse_mode: "Markdown", ...driverMenu(dl) });
+    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+    const m = matchWorker(text, allWorkers);
+    if (!m.confident && m.candidates.length > 0) {
+      // Ambiguous — let the driver pick who they meant (unpk: action).
+      setState(tid, "unplanned:pick", { ...data, typed: text.trim() });
+      return ctx.reply(tb(dl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "unpk", dl) });
+    }
+    await saveUnplannedWorker(data, m.confident, text.trim(), driver?.name ?? "—");
+    return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: mdSafe(m.confident?.fullName ?? text.trim()) }), { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) });
   }
 
   // ── Driver: report absent workers ─────────────────────────────────
