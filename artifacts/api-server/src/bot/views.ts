@@ -318,25 +318,40 @@ export async function showHdSlots(ctx: Context, tid: string, data: any, lang: La
 }
 
 export async function showFullWeekSchedule(ctx: Context, weekId: number, weekStart: string, lang: Lang = "uk") {
+  // Overview for the head driver: counts per factory+shift (no worker lists —
+  // those show up in the boarding flow), plus the assigned delivery driver.
   const entries = await db
-    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, workerName: workersTable.fullName, factoryName: factoriesTable.name })
+    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name })
     .from(scheduleEntriesTable)
-    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(eq(scheduleEntriesTable.weekId, weekId));
   if (entries.length === 0) return ctx.reply(tb(lang, "Графік порожній."));
+  const assigns = await db
+    .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId, driverName: driversTable.name })
+    .from(driverShiftAssignmentsTable)
+    .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.kind, "delivery")));
+  const driversOf = (day: DayOfWeek, factoryId: number, shift: Shift) => {
+    const names = assigns.filter(a => a.day === day && a.factoryId === factoryId && a.shift === shift && a.driverName).map(a => a.driverName);
+    return [...new Set(names)].join(", ");
+  };
   let msg = `📅 *${tb(lang, "Графік")} — ${formatWeekStart(weekStart)}*\n\n`;
   for (const day of DAYS) {
     const dayEntries = entries.filter(e => e.day === day);
     if (dayEntries.length === 0) continue;
     msg += `*${DAY_NAMES_UK[day]}:*\n`;
-    for (const shift of ["1", "2", "3", "4", "5", "6"] as Shift[]) {
-      const shifted = dayEntries.filter(e => e.shift === shift);
-      if (shifted.length > 0) {
-        msg += `  ${SHIFT_SHORT[shift]} (${shifted.length} ${tb(lang, "ос.")}):\n`;
-        shifted.forEach(e => { msg += `    • ${e.workerName}\n`; });
+    const factories = [...new Map(dayEntries.map(e => [e.factoryId, e.factoryName ?? "—"])).entries()]
+      .sort((a, b) => a[1].localeCompare(b[1], "uk"));
+    for (const [factoryId, factoryName] of factories) {
+      msg += `  🏭 *${factoryName}*\n`;
+      for (const shift of ["1", "2", "3", "4", "5", "6"] as Shift[]) {
+        const count = dayEntries.filter(e => e.factoryId === factoryId && e.shift === shift).length;
+        if (count === 0) continue;
+        const drv = driversOf(day, factoryId, shift);
+        msg += `    ${SHIFT_SHORT[shift]} — ${count} ${tb(lang, "ос.")}${drv ? ` · 🚗 ${drv}` : ""}\n`;
       }
     }
+    msg += "\n";
   }
   return sendLongMessage(ctx.chat!.id, msg, { parse_mode: "Markdown" });
 }
