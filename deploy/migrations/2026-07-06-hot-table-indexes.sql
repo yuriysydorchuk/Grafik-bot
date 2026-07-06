@@ -1,6 +1,6 @@
--- 0001: індекси на гарячі таблиці (2026-07-06).
+-- Індекси на гарячі таблиці (2026-07-06).
 -- Схема живе в lib/db/src/schema/workers.ts; міграції накатуються вручну:
---   psql "$DATABASE_URL" -f deploy/migrations/0001-hot-table-indexes.sql
+--   psql "$DATABASE_URL" -f deploy/migrations/2026-07-06-hot-table-indexes.sql
 -- CONCURRENTLY не блокує запис, тому файл НЕ можна запускати в одній транзакції
 -- (psql -1); кожна команда — окремо. IF NOT EXISTS робить повторний запуск безпечним.
 
