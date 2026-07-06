@@ -74,3 +74,36 @@ export function factoryShiftHours(factory: FactoryShiftInfo | undefined, shift: 
   if (diff <= 0) diff += 24 * 60; // crosses midnight
   return Math.round((diff / 60) * 100) / 100;
 }
+
+// Minutes until a shift starts, both in Warsaw wall-clock, handling the midnight
+// wrap (e.g. notify at 23:xx about an 01:xx shift next day).
+export function minutesUntilShift(nowWarsawMs: number, shiftTimeStr: string): number {
+  const [hh, mm] = shiftTimeStr.split(":").map(Number);
+  const now = new Date(nowWarsawMs);
+  const shiftToday = new Date(nowWarsawMs);
+  shiftToday.setHours(hh!, mm!, 0, 0);
+  let diff = (shiftToday.getTime() - now.getTime()) / 60000;
+  if (diff < -120) diff += 24 * 60;
+  return diff;
+}
+
+// The pickup («Забрати зі зміни») assignment row lives on the day the shift STARTED.
+// For an overnight shift (end <= start) that is yesterday — and when today is Monday,
+// the previous week.
+export function pickupAssignmentSlot(
+  todayName: DayOfWeek,
+  currentMonday: string,
+  shiftStart: string | null,
+  shiftEnd: string,
+): { day: DayOfWeek; weekStart: string } {
+  const crossesMidnight = shiftStart != null && toMin(shiftEnd) <= toMin(shiftStart);
+  const dayOrder: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const day = crossesMidnight ? dayOrder[(dayOrder.indexOf(todayName) + 6) % 7]! : todayName;
+  let weekStart = currentMonday;
+  if (crossesMidnight && todayName === "mon") {
+    const d = new Date(weekStart + "T00:00:00");
+    d.setDate(d.getDate() - 7);
+    weekStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return { day, weekStart };
+}

@@ -12,7 +12,7 @@ import { sendAlert } from "../lib/alerts";
 import { bot } from "../bot";
 import { getWorkersWhoHaventSubmitted } from "./sheets";
 import { getNextMonday, getCurrentMonday, formatWeekStart } from "./scheduleGenerator";
-import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr } from "../bot/time";
+import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr, minutesUntilShift, pickupAssignmentSlot } from "../bot/time";
 import { t, asLang, tb, oLang } from "../bot/i18n";
 
 // All cron times in Europe/Warsaw timezone
@@ -172,18 +172,6 @@ export function setReminderHour(hour: number) {
 }
 
 // ─── Pre-shift notifications ──────────────────────────────────────────────────
-
-// Returns minutes until shift start in Warsaw time, handling midnight wrap.
-function minutesUntilShift(nowWarsawMs: number, shiftTimeStr: string): number {
-  const [hh, mm] = shiftTimeStr.split(":").map(Number);
-  const now = new Date(nowWarsawMs);
-  const shiftToday = new Date(nowWarsawMs);
-  shiftToday.setHours(hh!, mm!, 0, 0);
-  let diff = (shiftToday.getTime() - now.getTime()) / 60000;
-  // Handle cross-midnight: if shift is "yesterday" relative to now (e.g., notify at 23:xx for 01:xx next day)
-  if (diff < -120) diff += 24 * 60;
-  return diff;
-}
 
 async function checkPreShiftNotifications() {
   try {
@@ -364,17 +352,7 @@ async function sendPickupReminder(
   shiftStart: string | null,
   shiftEnd: string,
 ) {
-  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h! * 60 + m!; };
-  const crossesMidnight = shiftStart != null && toMin(shiftEnd) <= toMin(shiftStart);
-  const dayOrder: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-  const assignDay = crossesMidnight ? dayOrder[(dayOrder.indexOf(todayName) + 6) % 7]! : todayName;
-  // The shift started yesterday: if today is Monday, its week is the previous one.
-  let weekStart = getCurrentMonday();
-  if (crossesMidnight && todayName === "mon") {
-    const d = new Date(weekStart + "T00:00:00");
-    d.setDate(d.getDate() - 7);
-    weekStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
+  const { day: assignDay, weekStart } = pickupAssignmentSlot(todayName, getCurrentMonday(), shiftStart, shiftEnd);
   const weeks = await db.select().from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return;
