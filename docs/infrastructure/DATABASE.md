@@ -64,26 +64,27 @@ ALTER TABLE worker_documents
 
 ## Backup / restore
 
-**Backup (дамп БД):**
+**Автобекап налаштований (з 2026-07-06):** cron `0 3 * * *` запускає
+[`deploy/backup.sh`](../../deploy/backup.sh) → щодня дамп БД + архів `uploads/` у
+`/root/backups/` (`db-YYYY-MM-DD.sql.gz`, `uploads-YYYY-MM-DD.tar.gz`), ротація 14 днів,
+лог `/root/backups/backup.log`. `DATABASE_URL` скрипт читає з `.env` застосунку —
+пароль у crontab не дублюється.
+
+**Перевірка стану бекапів:**
 ```bash
-pg_dump "$DATABASE_URL" | gzip > ~/backup-grafik-$(date +%F).sql.gz
+ssh grafik 'ls -lh /root/backups | tail -5; tail -3 /root/backups/backup.log'
 ```
-**Backup завантажених файлів** (поза БД!):
-```bash
-tar czf ~/backup-uploads-$(date +%F).tar.gz -C /root/grafik-bot uploads
-```
+**Ручний позачерговий бекап:** `ssh grafik /root/grafik-bot/deploy/backup.sh`
+
 **Restore:**
 ```bash
-gunzip -c ~/backup-grafik-YYYY-MM-DD.sql.gz | psql "$DATABASE_URL"
-tar xzf ~/backup-uploads-YYYY-MM-DD.tar.gz -C /root/grafik-bot
+gunzip -c /root/backups/db-YYYY-MM-DD.sql.gz | psql "$DATABASE_URL"
+tar xzf /root/backups/uploads-YYYY-MM-DD.tar.gz -C /root/grafik-bot
 ```
-Приклади cron — у [`deploy/DEPLOY.md`](../../deploy/DEPLOY.md) (розділи «Бекап бази» / «Завантажені файли»).
 
-> ⚠️ **Стан на 2026-06-19: app-бекап НЕ налаштований** — `crontab -l` порожній, дампів у `/root` немає.
-> На рівні провайдера, ймовірно, увімкнено **Contabo Auto Backup** (снапшоти VM, обиралось при
-> купівлі) — це інше й app-дані не гарантує. **TODO:** додати cron `pg_dump` + `tar uploads/`
-> (приклади — [`deploy/DEPLOY.md`](../../deploy/DEPLOY.md)); **TODO:** offsite-зберігання дампів
-> (поки лежали б на тому ж сервері); **TODO:** підтвердити статус Contabo Auto Backup у панелі.
+> **TODO (залишилось):** offsite-зберігання дампів (зараз лежать на тому ж сервері;
+> варіант — та сама Google Drive-інтеграція); підтвердити статус Contabo Auto Backup
+> у панелі (снапшоти VM — це інше, консистентний дамп БД не гарантують).
 
 ---
 
