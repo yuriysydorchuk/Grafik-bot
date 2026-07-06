@@ -31,6 +31,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const [hourlyRate, setHourlyRate] = useState(worker?.hourlyRate != null ? String(worker.hourlyRate) : "31.5");
   const [isStudent, setIsStudent] = useState(!!worker?.isStudent);
   const [under26, setUnder26] = useState(!!worker?.under26);
+  const [selfTransport, setSelfTransport] = useState(!!worker?.selfTransport);
   const finance = isOwner ? { hourlyRate: hourlyRate.trim() === "" ? 31.5 : Number(hourlyRate.replace(",", ".")), isStudent, under26 } : {};
   const selFactory = factories.find(f => String(f.id) === factoryId);
   const shiftCount = selFactory?.shiftCount ?? 3;
@@ -41,7 +42,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const base = {
     fullName, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
     positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null,
-    telegramId, workerCode: workerCode.trim() || null, language: language || null, ...finance,
+    telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport, ...finance,
   };
   const save = useMutation({
     mutationFn: () => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, base),
@@ -98,6 +99,10 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
           </div>
         </div>
         <div><Label>{t("Telegram ID (необов'язково)")}</Label><Input value={telegramId} onChange={e => setTelegramId(e.target.value)} /></div>
+        <div className="rounded-xl border border-slate-200 p-3">
+          <label className="flex items-center gap-1.5 text-sm text-slate-600"><input type="checkbox" checked={selfTransport} onChange={e => setSelfTransport(e.target.checked)} /> {t("Доїжджає сам")}</label>
+          <p className="mt-1.5 text-xs text-slate-400">{t("Не показується водіям і не рахується до забрання. Явку/відсутність відмічає графікова вручну у графіку.")}</p>
+        </div>
         {isOwner && (
           <div className="rounded-xl border border-slate-200 p-3">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фінанси (umowa zlecenie)")}</div>

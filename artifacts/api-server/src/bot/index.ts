@@ -2123,11 +2123,13 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
   const myShifts = [...new Set(sections.map(s => s.shift))];
   const entriesRaw = await db
-    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId })
+    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, selfTransport: workersTable.selfTransport })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(eq(scheduleEntriesTable.weekId, c.weekId), eq(scheduleEntriesTable.dayOfWeek, c.dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[]), eq(scheduleEntriesTable.status, "scheduled")));
-  const entries = entriesRaw.filter(e => secKeySet.has(`${e.factoryId}-${e.shift}`));
+  // Self-transport workers get to work on their own → not shown to the driver, and
+  // never auto-marked absent below; the scheduler marks their presence manually.
+  const entries = entriesRaw.filter(e => secKeySet.has(`${e.factoryId}-${e.shift}`) && !e.selfTransport);
   if (entries.length === 0) return ctx.reply(tb(dl, "Немає кого забирати — усіх уже забрали інші водії, або явку вже відмічено."), menu());
 
   const workers: BoardWorker[] = entries.map(e => ({ key: `e${e.id}`, entryId: e.id, workerId: e.workerId, name: e.workerName ?? "—", factoryId: e.factoryId, shift: e.shift, boarded: false, unplanned: false }));
@@ -2217,9 +2219,10 @@ bot.action("brd:ok", async (ctx) => {
       .where(and(eq(driverTripsTable.weekId, weekId), eq(driverTripsTable.dayOfWeek, dayName), eq(driverTripsTable.factoryId, sec.factoryId), eq(driverTripsTable.shift, sec.shift as Shift)));
     const confirmedIds = new Set(trips.filter(t => t.pickup).map(t => t.driverId));
     const allConfirmed = assignedIds.length > 0 && assignedIds.every(id => confirmedIds.has(id));
+    // Self-transport workers are never auto-marked absent — the scheduler handles them.
     const remaining = await db.select({ id: scheduleEntriesTable.id, name: workersTable.fullName })
       .from(scheduleEntriesTable).leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), eq(scheduleEntriesTable.factoryId, sec.factoryId), eq(scheduleEntriesTable.shift, sec.shift as Shift), eq(scheduleEntriesTable.status, "scheduled")));
+      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), eq(scheduleEntriesTable.factoryId, sec.factoryId), eq(scheduleEntriesTable.shift, sec.shift as Shift), eq(scheduleEntriesTable.status, "scheduled"), ne(workersTable.selfTransport, true)));
     if (allConfirmed) {
       for (const r of remaining) {
         await db.update(scheduleEntriesTable).set({ status: "absent" }).where(eq(scheduleEntriesTable.id, r.id));

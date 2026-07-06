@@ -52,6 +52,7 @@ export const workersTable = pgTable("workers", {
   fixedShift: text("fixed_shift"), // "1".."6" — worker bound to this shift (for manual "give everyone" factories); null = flexible
   status: text("status").notNull().default("active"), // active | fired
   isActive: boolean("is_active").notNull().default(true),
+  selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
   hourlyRate: real("hourly_rate").notNull().default(31.5), // gross PLN/hour

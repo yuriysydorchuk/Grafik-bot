@@ -193,6 +193,7 @@ router.get("/workers", RW, async (req, res) => {
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
+      selfTransport: workersTable.selfTransport,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -223,7 +224,7 @@ const normGender = (g: any): string | null => (g === "male" || g === "female") ?
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
 
 router.post("/workers", RW, async (req, res) => {
-  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26 } = req.body ?? {};
+  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport } = req.body ?? {};
   if (!fullName?.trim()) return fail(res, 400, "Вкажіть ім'я");
   let code = workerCode?.trim();
   if (code && !/^\d+$/.test(code)) return fail(res, 400, "Код — лише цифри");
@@ -234,6 +235,7 @@ router.post("/workers", RW, async (req, res) => {
     fullName: fullName.trim(), factoryId: factoryId ?? null, companyId: companyId ?? null,
     positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
     telegramId: telegramId?.trim() || null, workerCode: code,
+    selfTransport: !!selfTransport,
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -250,7 +252,7 @@ const strOrNull = (v: unknown): string | null => (v == null ? null : String(v).t
 
 router.patch("/workers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, language, hourlyRate, isStudent, under26 } = req.body ?? {};
+  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, language, hourlyRate, isStudent, under26, selfTransport } = req.body ?? {};
   const patch: any = {};
   if (fullName !== undefined) patch.fullName = String(fullName).trim();
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
@@ -269,6 +271,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
     } else patch.workerCode = null;
   }
   if (language !== undefined) patch.language = strOrNull(language);
+  if (selfTransport !== undefined) patch.selfTransport = !!selfTransport;
   // payroll fields — owner only
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
@@ -392,7 +395,7 @@ router.get("/workers/:id", RW, async (req, res) => {
     factoryId: w.factoryId, factoryName: w.factoryId ? (facMap.get(w.factoryId)?.name ?? null) : null,
     companyId: w.companyId, companyName: coName,
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
-    gender: w.gender, fixedShift: w.fixedShift,
+    gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
     ...(isOwner ? { hourlyRate: w.hourlyRate, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
@@ -1272,7 +1275,7 @@ router.get("/schedule", async (req, res) => {
       id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       status: scheduleEntriesTable.status, workerId: scheduleEntriesTable.workerId,
       workerName: workersTable.fullName, workerCode: workersTable.workerCode,
-      positionId: workersTable.positionId, gender: workersTable.gender,
+      positionId: workersTable.positionId, gender: workersTable.gender, selfTransport: workersTable.selfTransport,
       factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name,
       pickedUpByName: driversTable.name,
     })
@@ -2945,8 +2948,11 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   let entries: { factoryId: number; day: string; shift: string }[] = [];
   let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null; kind: string }[] = [];
   if (week) {
+    // Self-transport workers get to work on their own → excluded from pickup headcount.
     entries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
-      .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, week.id));
+      .from(scheduleEntriesTable)
+      .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+      .where(and(eq(scheduleEntriesTable.weekId, week.id), ne(workersTable.selfTransport, true)));
     assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name, kind: driverShiftAssignmentsTable.kind })
       .from(driverShiftAssignmentsTable).leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(eq(driverShiftAssignmentsTable.weekId, week.id));

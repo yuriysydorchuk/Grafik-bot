@@ -9,10 +9,10 @@
 //     fires only when the headcount can't fit even into the largest buses.
 import { db } from "@workspace/db";
 import {
-  driversTable, factoriesTable, scheduleEntriesTable, driverShiftAssignmentsTable,
+  driversTable, factoriesTable, scheduleEntriesTable, driverShiftAssignmentsTable, workersTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import { factoryShifts } from "../bot/time";
 
 export type PickupGap = {
@@ -36,9 +36,12 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
 
   const nextDay = DAY_ORDER[(DAY_ORDER.indexOf(day) + 1) % 7]!;
+  // Self-transport workers get to work on their own → not counted toward pickup gaps.
   const entries = await db
     .select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
-    .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, weekId));
+    .from(scheduleEntriesTable)
+    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .where(and(eq(scheduleEntriesTable.weekId, weekId), ne(workersTable.selfTransport, true)));
   const assigns = await db
     .select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, kind: driverShiftAssignmentsTable.kind })
     .from(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, weekId));

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload,
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car,
 } from "lucide-react";
 import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label } from "../components/ui";
@@ -18,7 +18,7 @@ interface WorkerProfile {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
   factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
   positionId: number | null; positionName: string | null; positionColor: string | null;
-  gender: string | null; fixedShift: string | null;
+  gender: string | null; fixedShift: string | null; selfTransport: boolean;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
@@ -61,7 +61,7 @@ export default function WorkerDetail() {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
     factoryId: w.factoryId, factoryName: w.factoryName, companyId: w.companyId, companyName: w.companyName,
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
-    gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift,
+    gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     status: w.status, isActive: w.isActive, language: w.language,
     hourlyRate: w.hourlyRate, isStudent: w.isStudent, under26: w.under26,
   };
@@ -104,6 +104,7 @@ export default function WorkerDetail() {
           <Info icon={Briefcase} label={t("Посада")} value={w.positionName ?? "—"} />
           <Info icon={Users} label={t("Стать")} value={w.gender === "male" ? t("Чоловік") : w.gender === "female" ? t("Жінка") : "—"} />
           {w.fixedShift && <Info icon={CalendarCheck} label={t("Закріплена зміна")} value={t("{n} зміна", { n: w.fixedShift })} />}
+          {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}

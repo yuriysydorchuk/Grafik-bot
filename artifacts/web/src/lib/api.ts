@@ -63,7 +63,7 @@ export interface Worker {
   factoryId: number | null; factoryName: string | null;
   companyId?: number | null; companyName?: string | null;
   positionId?: number | null; positionName?: string | null; positionColor?: string | null;
-  gender?: Gender | null; fixedShift?: string | null;
+  gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
   status: string; isActive: boolean; language?: string | null;
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }
@@ -104,7 +104,7 @@ export interface WeekRow { id: number; weekStart: string; status: string; label:
 export interface ScheduleEntry {
   id: number; day: DayCode; shift: ShiftCode; status: string;
   workerId: number; workerName: string | null; workerCode: string | null;
-  positionId?: number | null; gender?: Gender | null;
+  positionId?: number | null; gender?: Gender | null; selfTransport?: boolean;
   factoryId: number; factoryName: string | null; pickedUpByName?: string | null;
 }
 export interface Dashboard {

@@ -205,7 +205,7 @@ async function sendFactoryShiftReminder(
 
   // Workers for this factory+shift today
   const workers = await db
-    .select({ telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language })
+    .select({ telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language, selfTransport: workersTable.selfTransport })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(
@@ -231,6 +231,9 @@ async function sendFactoryShiftReminder(
     } catch { /* ignore */ }
   }
 
+  // Self-transport workers get to work on their own → not counted for the driver.
+  const driverPickupCount = workers.filter(w => !w.selfTransport).length;
+
   // Delivery driver for this factory+shift today (pickups get their own reminder)
   const drivers = await db
     .select({ telegramId: driversTable.telegramId, name: driversTable.name })
@@ -249,7 +252,7 @@ async function sendFactoryShiftReminder(
     try {
       await bot.telegram.sendMessage(
         d.telegramId,
-        `🔔 *Нагадування*\n\nЧерез 2 години: *${SHIFT_LABELS[shift]}* (${shiftStart})\n🏭 ${factoryName} — ${workers.length} осіб\n\nНе забудьте відмітити явку!`,
+        `🔔 *Нагадування*\n\nЧерез 2 години: *${SHIFT_LABELS[shift]}* (${shiftStart})\n🏭 ${factoryName} — ${driverPickupCount} осіб\n\nНе забудьте відмітити явку!`,
         { parse_mode: "Markdown" },
       );
     } catch { /* ignore */ }

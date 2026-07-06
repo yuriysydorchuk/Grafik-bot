@@ -154,6 +154,9 @@ const EN: Record<string, string> = {
   "Студент": "Student",
   "До 26 років": "Under 26",
   "Студент + до 26 → без ZUS і податків (нетто = брутто). Решта: ZUS 11.26% + здоровотне 9%, ПІТ 0.": "Student + under 26 → no ZUS or taxes (net = gross). Otherwise: ZUS 11.26% + health 9%, PIT 0.",
+  "Доїжджає сам": "Own transport",
+  "Транспорт": "Transport",
+  "Не показується водіям і не рахується до забрання. Явку/відсутність відмічає графікова вручну у графіку.": "Hidden from drivers and not counted for pickup. The scheduler marks presence/absence manually in the schedule.",
 
   // ── Drivers ──
   "Головного водія призначено": "Head driver assigned",
