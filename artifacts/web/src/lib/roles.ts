@@ -20,7 +20,7 @@ export const PAGE_LABEL: Record<string, string> = {
   "/orders": "Замовлення", "/availability": "Доступність", "/reliability": "Надійність",
   "/hours": "Облік годин", "/absences": "Відсутності", "/advances": "Аванси", "/trips": "Поїздки",
   "/mileage": "Звіт по пробігу",
-  "/reports": "Звіти", "/finance": "Фінанси", "/settings": "Налаштування",
+  "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/settings": "Налаштування",
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
   "/drivers": "Водії", "/factories": "Фабрики", "/admins": "Адміни",
 };

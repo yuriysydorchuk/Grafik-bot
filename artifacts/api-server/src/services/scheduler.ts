@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, adminsTable, factoriesTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, driverTripsTable, notificationsTable,
+  settingsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, lt, desc, isNull } from "drizzle-orm";
@@ -25,8 +26,39 @@ const SHIFT_LABELS: Record<Shift, string> = {
 };
 
 // ─── Dedup tracker ────────────────────────────────────────────────────────────
-// Key: `{factoryId}_{shift}_{YYYY-MM-DD}` — prevents double-sending on multiple cron ticks
+// Key: `{factoryId}_{shift}_{YYYY-MM-DD}` — prevents double-sending on multiple cron
+// ticks. Mirrored into the settings table so a pm2 restart mid-day (every deploy)
+// doesn't re-send the same reminders.
 const sentToday = new Set<string>();
+const DEDUP_SETTINGS_KEY = "preshift_sent_today";
+
+function markSent(key: string): void {
+  sentToday.add(key);
+  void persistSentToday();
+}
+
+async function persistSentToday(): Promise<void> {
+  try {
+    const value = JSON.stringify({ date: warsawDateStr(), keys: [...sentToday] });
+    await db.insert(settingsTable).values({ key: DEDUP_SETTINGS_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+  } catch (e) {
+    logger.error({ err: e }, "persist pre-shift dedup failed");
+  }
+}
+
+async function loadSentToday(): Promise<void> {
+  try {
+    const [row] = await db.select().from(settingsTable).where(eq(settingsTable.key, DEDUP_SETTINGS_KEY));
+    if (!row) return;
+    const parsed = JSON.parse(row.value) as { date?: string; keys?: string[] };
+    if (parsed.date !== warsawDateStr()) return; // stale — a fresh day starts empty
+    for (const k of parsed.keys ?? []) sentToday.add(k);
+    if (sentToday.size) logger.info({ keys: sentToday.size }, "Pre-shift dedup restored after restart");
+  } catch (e) {
+    logger.error({ err: e }, "load pre-shift dedup failed");
+  }
+}
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
@@ -35,12 +67,14 @@ let preShiftTask: ScheduledTask | null = null;
 let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
 let pickupGapTask: ScheduledTask | null = null;
+let bankImportTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
 export function getReminderHour(): number { return reminderHour; }
 
 export function startScheduler() {
   stopScheduler();
+  void loadSentToday(); // restore today's dedup keys after a restart
 
   // Weekly availability reminder — Sunday at `reminderHour`:00 Warsaw
   weeklyReminderTask = cron.schedule(
@@ -62,7 +96,7 @@ export function startScheduler() {
   // Reset dedup tracker at midnight Warsaw time
   midnightResetTask = cron.schedule(
     "0 0 * * *",
-    () => { sentToday.clear(); logger.info("Pre-shift dedup tracker reset"); },
+    () => { sentToday.clear(); void persistSentToday(); logger.info("Pre-shift dedup tracker reset"); },
     { timezone: TZ },
   );
 
@@ -81,6 +115,21 @@ export function startScheduler() {
   pickupGapTask = cron.schedule(
     "0 19 * * *",
     async () => { await notifyHeadDriverPickupGaps(); },
+    { timezone: TZ },
+  );
+
+  // Daily 06:00 Warsaw: pull new bank statements (MT940) from Drive into
+  // bank_transactions/bank_statements. Idempotent (dedup hash), so a daily poll
+  // safely picks up the monthly uploads; categorization happens at query time.
+  bankImportTask = cron.schedule(
+    "0 6 * * *",
+    async () => {
+      try {
+        const { syncBankTransactions } = await import("./bankStatements");
+        const r = await syncBankTransactions();
+        logger.info({ files: r.files, imported: r.imported, skipped: r.skipped }, "Daily bank statement import");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily bank import failed"); }
+    },
     { timezone: TZ },
   );
 
@@ -113,6 +162,7 @@ export function stopScheduler() {
   midnightResetTask?.stop();  midnightResetTask = null;
   prunePruneTask?.stop();     prunePruneTask = null;
   pickupGapTask?.stop();      pickupGapTask = null;
+  bankImportTask?.stop();     bankImportTask = null;
 }
 
 export function setReminderHour(hour: number) {
@@ -140,7 +190,9 @@ async function checkPreShiftNotifications() {
     // Current Warsaw time
     const nowWarsaw = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
     const nowMs = nowWarsaw.getTime();
-    const todayStr = nowWarsaw.toISOString().split("T")[0]!;
+    // Warsaw date as a string — NOT toISOString(), which converts back to UTC and
+    // yields yesterday's date around midnight (server runs in Europe/Berlin).
+    const todayStr = warsawDateStr();
     const dayName = DAY_OF_WEEK_JS[nowWarsaw.getDay()]!;
     const week = getCurrentMonday();
 
@@ -166,7 +218,7 @@ async function checkPreShiftNotifications() {
         if (minsUntil >= 106 && minsUntil <= 134) {
           const key = `${factory.id}_${shift}_${todayStr}`;
           if (!sentToday.has(key)) {
-            sentToday.add(key);
+            markSent(key);
             await sendFactoryShiftReminder(weekId, factory.id, factory.name, shift, dayName, start);
           }
         }
@@ -179,7 +231,7 @@ async function checkPreShiftNotifications() {
           if (minsUntilEnd >= 46 && minsUntilEnd <= 74) {
             const key = `${factory.id}_${shift}_p_${todayStr}`;
             if (!sentToday.has(key)) {
-              sentToday.add(key);
+              markSent(key);
               await sendPickupReminder(factory.id, factory.name, shift, dayName, start, end);
             }
           }
@@ -288,7 +340,7 @@ async function checkForgottenArrivals() {
       if (minsSinceStart < 60 || minsSinceStart > 300) continue;
       const [drv] = await db.select().from(driversTable).where(eq(driversTable.id, trip.driverId));
       if (!drv?.telegramId) continue;
-      sentToday.add(key);
+      markSent(key);
       try {
         const dl = oLang(drv.language);
         await bot.telegram.sendMessage(

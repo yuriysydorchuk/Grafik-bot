@@ -24,6 +24,7 @@ import Advances from "./pages/Advances";
 import Trips from "./pages/Trips";
 import Mileage from "./pages/Mileage";
 import Finance from "./pages/Finance";
+import BankStatements from "./pages/BankStatements";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="/trips">{() => guard("/trips", <Trips />)}</Route>
         <Route path="/mileage">{() => guard("/mileage", <Mileage />)}</Route>
         <Route path="/finance">{() => guard("/finance", <Finance />)}</Route>
+        <Route path="/bank">{() => guard("/bank", <BankStatements />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>

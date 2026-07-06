@@ -12,9 +12,14 @@ export const entryStatusEnum = pgEnum("entry_status", ["scheduled", "present", "
 
 // Our agencies/companies that workers are employed through to staff client factories
 // (e.g. ES, ESO, Klinex). Factories and workers each belong to one company.
+// Also the legal entities of the economics module: each has its own NIP and (later)
+// KSeF credentials; finance documents/payments are booked per company.
 export const companiesTable = pgTable("companies", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
+  legalName: text("legal_name"),  // full registered name (e.g. "Eurosupport Group Sp. z o.o.")
+  nip: text("nip"),               // Polish tax id (10 digits) — used for KSeF auth & invoice matching
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -426,6 +431,53 @@ export const settingsTable = pgTable("settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// ─── Bank statements (raw MT940 lines) ────────────────────────────────────────
+// Faithful, one row per statement transaction, parsed from the monthly Drive uploads
+// (one folder per legal entity). This is the clean foundation of the finance rework;
+// economics (income/costs/P&L) is layered on top of it separately.
+export const bankTransactionsTable = pgTable("bank_transactions", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id), // matched from the entity subfolder (null = unmatched)
+  entityFolder: text("entity_folder"),   // raw subfolder name, for traceability
+  account: text("account"),              // :25: account id / IBAN
+  statementNo: text("statement_no"),     // :28C:
+  fileName: text("file_name"),           // source Drive file
+  valueDate: date("value_date").notNull(),
+  bookingDate: date("booking_date"),
+  direction: text("direction").notNull(),// "in" (credit) | "out" (debit)
+  amount: real("amount").notNull(),      // positive magnitude
+  currency: text("currency").notNull().default("PLN"),
+  counterparty: text("counterparty"),    // ^32/^33 name
+  counterpartyAccount: text("counterparty_account"), // ^38 IBAN
+  title: text("title"),                  // ^20–^29 remittance / merchant
+  txType: text("tx_type"),               // ^00 description + transaction code
+  bankRef: text("bank_ref"),             // reference after //
+  dedupHash: text("dedup_hash").notNull(),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("bank_transactions_dedup_uniq").on(t.dedupHash),
+]);
+
+// One row per parsed statement, holding the opening/closing balances (:60F:/:62F:).
+// Used to show the account balance at any point in time (sum of each account's latest
+// closing on or before a date).
+export const bankStatementsTable = pgTable("bank_statements", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  account: text("account"),
+  statementNo: text("statement_no"),
+  fileName: text("file_name"),
+  openingDate: date("opening_date"),
+  openingBalance: real("opening_balance"),
+  closingDate: date("closing_date"),
+  closingBalance: real("closing_balance"),
+  closingDerived: boolean("closing_derived").notNull().default(false), // :62F: had no amount → computed (chain-corrected after import)
+  dedupHash: text("dedup_hash").notNull(),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("bank_statements_dedup_uniq").on(t.dedupHash),
+]);
+
 // Types
 export type Worker = typeof workersTable.$inferSelect;
 export type Position = typeof positionsTable.$inferSelect;
@@ -440,6 +492,9 @@ export type Admin = typeof adminsTable.$inferSelect;
 export type DriverWorkday = typeof driverWorkdaysTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
+export type Company = typeof companiesTable.$inferSelect;
+export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
+export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";
