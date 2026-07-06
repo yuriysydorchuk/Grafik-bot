@@ -5,8 +5,8 @@ import {
   type DayOfWeek, type Shift, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, inArray } from "drizzle-orm";
-import { normalizeFullName } from "./sheets";
 import { DAYS } from "./sheets";
+import { matchWorker } from "../bot/workerMatch";
 import { factoryShifts, nowWarsaw } from "../bot/time";
 
 export interface ShortageInfo {
@@ -27,19 +27,21 @@ export interface ScheduleGenerationResult {
 
 export async function generateSchedule(weekStart: string, factoryId?: number): Promise<ScheduleGenerationResult> {
   // If generating for a specific factory, don't delete/recreate the whole week draft
-  let weekId: number;
   // A (day,shift) slot is "locked" once its shift start time has passed — already-worked
   // shifts must NOT be wiped/regenerated. Default (full regen of a fresh week): nothing locked.
   let slotLocked: (day: DayOfWeek, shift: Shift) => boolean = () => false;
   let lockedEntries: { workerId: number; dayOfWeek: DayOfWeek; shift: Shift }[] = [];
+  // All writes are deferred: the plan is computed in memory first, then applied in ONE
+  // transaction at the end — a crash mid-generation must not leave a half-wiped week.
+  let existingWeek: { id: number } | undefined; // week row to reuse (per-factory mode)
+  let draftToReplace: number | null = null;     // draft week id to wipe (full regen)
+  let entryIdsToDelete: number[] = [];
   if (factoryId) {
     // Use the SAME week row the panel displays (approved preferred, else latest) so a
     // per-factory regeneration shows up immediately — never spawn a parallel draft.
     const candidates = await db.select().from(scheduleWeeksTable)
       .where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-    let week = candidates.find(w => w.status === "approved") ?? candidates[0];
-    if (!week) { [week] = await db.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning(); }
-    weekId = week!.id;
+    existingWeek = candidates.find(w => w.status === "approved") ?? candidates[0];
     // Build the lock predicate from this factory's shift times
     const fac = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
     const fShifts = factoryShifts(fac);
@@ -52,23 +54,19 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
       d.setHours(hh || 6, mm || 0, 0, 0);
       return d.getTime() <= now;
     };
-    // Keep already-worked entries; delete only the future (unlocked) ones.
-    const existing = await db.select().from(scheduleEntriesTable)
-      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId)));
-    lockedEntries = existing.filter(e => slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift))
-      .map(e => ({ workerId: e.workerId, dayOfWeek: e.dayOfWeek as DayOfWeek, shift: e.shift as Shift }));
-    const toDelete = existing.filter(e => !slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift)).map(e => e.id);
-    if (toDelete.length) await db.delete(scheduleEntriesTable).where(inArray(scheduleEntriesTable.id, toDelete));
+    if (existingWeek) {
+      // Keep already-worked entries; delete only the future (unlocked) ones.
+      const existing = await db.select().from(scheduleEntriesTable)
+        .where(and(eq(scheduleEntriesTable.weekId, existingWeek.id), eq(scheduleEntriesTable.factoryId, factoryId)));
+      lockedEntries = existing.filter(e => slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift))
+        .map(e => ({ workerId: e.workerId, dayOfWeek: e.dayOfWeek as DayOfWeek, shift: e.shift as Shift }));
+      entryIdsToDelete = existing.filter(e => !slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift)).map(e => e.id);
+    }
   } else {
-    // Full regeneration — delete existing draft
+    // Full regeneration — the existing draft is replaced inside the final transaction
     const existingWeeks = await db.select().from(scheduleWeeksTable)
       .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "draft")));
-    if (existingWeeks.length > 0) {
-      await db.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, existingWeeks[0]!.id));
-      await db.delete(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, existingWeeks[0]!.id));
-    }
-    const [newWeek] = await db.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning();
-    weekId = newWeek!.id;
+    draftToReplace = existingWeeks[0]?.id ?? null;
   }
 
   // Load all active workers
@@ -106,14 +104,10 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     if (!workerWeekShift.has(e.workerId)) workerWeekShift.set(e.workerId, e.shift);
   }
 
-  // Match availability entries to worker IDs
+  // Match availability entries to worker IDs (legacy sheet rows without workerId).
+  // Fuzzy matcher from the bot; only a CONFIDENT match may auto-assign a person.
   function findWorkerByName(fullNameRaw: string): typeof allWorkers[0] | undefined {
-    const normalized = normalizeFullName(fullNameRaw);
-    return allWorkers.find(w =>
-      normalizeFullName(w.fullName) === normalized ||
-      normalized.includes(normalizeFullName(w.fullName)) ||
-      normalizeFullName(w.fullName).includes(normalized)
-    );
+    return matchWorker(fullNameRaw, allWorkers).confident ?? undefined;
   }
 
   // Factory settings (shift count + generation mode)
@@ -178,6 +172,8 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
   }
 
   let totalAssigned = 0;
+  // Planned entries — batch-inserted inside the final transaction (weekId added there).
+  const pending: { workerId: number; factoryId: number; dayOfWeek: DayOfWeek; shift: Shift }[] = [];
 
   // Process orders day by day, shift by shift — pool is resolved per factory order
   for (const day of DAYS) {
@@ -228,9 +224,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
 
           const toAssign = candidates.slice(0, line.count);
           for (const workerId of toAssign) {
-            await db.insert(scheduleEntriesTable).values({
-              weekId, workerId, factoryId: order.factoryId, dayOfWeek: day, shift, status: "scheduled",
-            });
+            pending.push({ workerId, factoryId: order.factoryId, dayOfWeek: day, shift });
             workerDaysAssigned.get(workerId)!.add(day);
             workerDayShifts.set(`${workerId}-${day}`, shift);
             if (!workerWeekShift.has(workerId)) workerWeekShift.set(workerId, shift);
@@ -278,7 +272,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
         const shift = String(fs) as Shift;
         if (slotLocked(day, shift)) continue;
         if (isAbsent(w.id, day, shift)) continue;    // absent that shift or whole day
-        await db.insert(scheduleEntriesTable).values({ weekId, workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift, status: "scheduled" });
+        pending.push({ workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift });
         load[fs - 1]!++;
         workerDaysAssigned.get(w.id)!.add(day);
         workerDayShifts.set(`${w.id}-${day}`, shift);
@@ -302,7 +296,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
         let pick = (wkIdx >= 0 && opts.includes(wkIdx) && load[wkIdx]! <= minLoad) ? wkIdx
           : opts.find(i => load[i]! === minLoad)!;
         const shift = String(pick + 1) as Shift;
-        await db.insert(scheduleEntriesTable).values({ weekId, workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift, status: "scheduled" });
+        pending.push({ workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift });
         load[pick]!++;
         workerDaysAssigned.get(w.id)!.add(day);
         workerDayShifts.set(`${w.id}-${day}`, shift);
@@ -311,6 +305,36 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
       }
     }
   }
+
+  // Apply the plan atomically: (re)create the week row, wipe replaced entries,
+  // batch-insert the new ones. Nothing is written if any step fails.
+  const weekId = await db.transaction(async (tx) => {
+    let wid: number;
+    if (factoryId) {
+      if (existingWeek) {
+        wid = existingWeek.id;
+      } else {
+        const [w] = await tx.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning();
+        wid = w!.id;
+      }
+      if (entryIdsToDelete.length) {
+        await tx.delete(scheduleEntriesTable).where(inArray(scheduleEntriesTable.id, entryIdsToDelete));
+      }
+    } else {
+      if (draftToReplace != null) {
+        await tx.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, draftToReplace));
+        await tx.delete(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, draftToReplace));
+      }
+      const [w] = await tx.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning();
+      wid = w!.id;
+    }
+    if (pending.length) {
+      await tx.insert(scheduleEntriesTable).values(
+        pending.map(p => ({ ...p, weekId: wid, status: "scheduled" as const })),
+      );
+    }
+    return wid;
+  });
 
   return { weekId, totalAssigned, shortages, warnings };
 }

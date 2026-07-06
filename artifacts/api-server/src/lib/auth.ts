@@ -27,6 +27,11 @@ export function verifyPassword(password: string, stored: string | null | undefin
 
 // ─── Session token (HMAC-signed, stateless) ────────────────────────────────────
 
+// A missing SESSION_SECRET in production would silently sign sessions with a
+// publicly known string — refuse to start instead.
+if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET must be set in production");
+}
 const SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "grafik_session";
