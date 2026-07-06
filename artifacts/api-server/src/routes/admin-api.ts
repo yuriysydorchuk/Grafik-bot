@@ -12,7 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, inArray, isNull, ne } from "drizzle-orm";
+import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
@@ -92,8 +92,10 @@ router.get("/dashboard", async (_req, res) => {
   }
   const entryCounts = new Map<number, number>();
   {
-    const rows = await db.select({ weekId: scheduleEntriesTable.weekId }).from(scheduleEntriesTable);
-    for (const r of rows) entryCounts.set(r.weekId, (entryCounts.get(r.weekId) ?? 0) + 1);
+    const rows = await db
+      .select({ weekId: scheduleEntriesTable.weekId, count: sql<number>`count(*)::int` })
+      .from(scheduleEntriesTable).groupBy(scheduleEntriesTable.weekId);
+    for (const r of rows) entryCounts.set(r.weekId, r.count);
   }
 
   // ── Planning summary for the focus week (next week) ──
@@ -215,9 +217,11 @@ router.get("/workers", RW, async (req, res) => {
 });
 
 async function nextWorkerCode(): Promise<string> {
-  const all = await db.select({ code: workersTable.workerCode }).from(workersTable);
-  const max = all.map(r => parseInt(r.code ?? "0", 10)).filter(n => !isNaN(n)).reduce((a, b) => Math.max(a, b), 0);
-  return String(max + 1).padStart(5, "0");
+  const [row] = await db
+    .select({ max: sql<number>`coalesce(max(${workersTable.workerCode}::int), 0)` })
+    .from(workersTable)
+    .where(sql`${workersTable.workerCode} ~ '^[0-9]+$'`);
+  return String((row?.max ?? 0) + 1).padStart(5, "0");
 }
 
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
