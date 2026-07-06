@@ -70,7 +70,7 @@ Grafik-bot/
 
 **Адміни/ролі:** `GET/POST /admins`, `PATCH/DELETE /admins/:id`, `PATCH /admins/:id/role`, `POST /admins/:id/invite|reset-web`, `GET/POST/PATCH/DELETE /roles` (динамічні ролі, лише `is_main`)
 
-**Інше:** `GET /dashboard`, `GET /live` (лайв-зміни), `GET/POST /notifications(/read)`, `POST /broadcast`, `POST /chat/clear`, `GET /reports`, `GET /drive/link`
+**Інше:** `GET /dashboard`, `GET /attention` (лічильники «Потребує уваги» для дашборда: pending-вихідні/аванси, нові коригування годин, невідмічені присутності, зміни без водія, непривʼязані позапланові, незаповнена диспозиційність), `GET /live` (лайв-зміни), `GET/POST /notifications(/read)`, `POST /broadcast`, `POST /chat/clear`, `GET /reports`, `GET /drive/link`
 
 > `routes/bot.ts` має `POST /webhook`, але **не змонтований** — бот працює в polling.
 
