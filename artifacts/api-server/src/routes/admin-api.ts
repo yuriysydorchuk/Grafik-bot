@@ -20,7 +20,7 @@ import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
-import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, reportMonthFor } from "../bot/time";
+import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile } from "../lib/uploads";
@@ -41,6 +41,11 @@ function entryDateStr(weekStart: string, day: string | null): string {
 function weekFromForMonth(monthStart: string): string {
   const d = new Date(monthStart + "T00:00:00");
   d.setDate(d.getDate() - 6);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function addDaysStr(dateStr: string, days: number): string {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
@@ -180,6 +185,86 @@ router.get("/dashboard", async (_req, res) => {
     currentWeek, nextWeek,
     focusWeek, focusWeekLabel: formatWeekStart(focusWeek),
     planning, shortages, attendance, recentWeeks,
+  });
+});
+
+// ─── Attention panel: open items waiting for office action ───────────────────
+router.get("/attention", async (_req, res) => {
+  const today = warsawDateStr();
+  const currentWeek = getCurrentMonday();
+  const nextWeek = getNextMonday();
+
+  const count = (p: Promise<{ n: number }[]>) => p.then(r => r[0]?.n ?? 0);
+  const [pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned] = await Promise.all([
+    count(db.select({ n: sql<number>`count(*)::int` }).from(absenceRequestsTable).where(eq(absenceRequestsTable.status, "pending"))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(hoursDisputesTable).where(eq(hoursDisputesTable.status, "new"))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(advanceRequestsTable).where(eq(advanceRequestsTable.status, "pending"))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(unplannedWorkersTable).where(isNull(unplannedWorkersTable.workerId))),
+  ]);
+
+  // Unmarked attendance: approved weeks that can still contain past days (last 3 Mondays),
+  // entries left `scheduled` whose actual date is already behind us.
+  let unmarkedAttendance = 0;
+  {
+    const weeks = await db.select().from(scheduleWeeksTable)
+      .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, addDaysStr(currentWeek, -14))));
+    if (weeks.length) {
+      const rows = await db.select({ weekId: scheduleEntriesTable.weekId, day: scheduleEntriesTable.dayOfWeek })
+        .from(scheduleEntriesTable)
+        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), eq(scheduleEntriesTable.status, "scheduled")));
+      const startOf = new Map(weeks.map(w => [w.id, w.weekStart]));
+      unmarkedAttendance = rows.filter(r => entryDateStr(startOf.get(r.weekId)!, r.day) < today).length;
+    }
+  }
+
+  // Delivery gaps: today-and-later slots (this + next week) that have workers needing
+  // transport (self-transport excluded, factory must use transport) but no `delivery`
+  // driver assignment yet.
+  let driverGaps = 0;
+  {
+    const weekRows = await db.select().from(scheduleWeeksTable)
+      .where(inArray(scheduleWeeksTable.weekStart, [currentWeek, nextWeek]));
+    // Primary row per weekStart: approved preferred, mirrors GET /dashboard
+    const byStart = new Map<string, typeof weekRows[number]>();
+    for (const w of weekRows) {
+      const cur = byStart.get(w.weekStart);
+      if (!cur || (w.status === "approved" && cur.status !== "approved")) byStart.set(w.weekStart, w);
+    }
+    const weeks = [...byStart.values()];
+    if (weeks.length) {
+      const transported = new Set(
+        (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.usesTransport, true))).map(f => f.id));
+      const entries = await db.select({
+          weekId: scheduleEntriesTable.weekId, factoryId: scheduleEntriesTable.factoryId,
+          day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
+        })
+        .from(scheduleEntriesTable)
+        .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), ne(workersTable.selfTransport, true)));
+      const deliveries = await db.select({
+          weekId: driverShiftAssignmentsTable.weekId, factoryId: driverShiftAssignmentsTable.factoryId,
+          day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift,
+        })
+        .from(driverShiftAssignmentsTable)
+        .where(and(inArray(driverShiftAssignmentsTable.weekId, weeks.map(w => w.id)), eq(driverShiftAssignmentsTable.kind, "delivery")));
+      const covered = new Set(deliveries.map(a => `${a.weekId}|${a.factoryId}|${a.day}|${a.shift}`));
+      const startOf = new Map(weeks.map(w => [w.id, w.weekStart]));
+      const gapSlots = new Set<string>();
+      for (const e of entries) {
+        if (!transported.has(e.factoryId)) continue;
+        if (entryDateStr(startOf.get(e.weekId)!, e.day) < today) continue; // past — nothing to fix
+        const k = `${e.weekId}|${e.factoryId}|${e.day}|${e.shift}`;
+        if (!covered.has(k)) gapSlots.add(k);
+      }
+      driverGaps = gapSlots.size;
+    }
+  }
+
+  const availabilityMissing = (await missingAvailabilityWorkers(nextWeek)).length;
+
+  ok(res, {
+    pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned,
+    unmarkedAttendance, driverGaps, availabilityMissing,
   });
 });
 
@@ -3079,16 +3164,15 @@ router.get("/notifications", async (req: AuthedRequest, res) => {
 router.post("/notifications/read", async (req: AuthedRequest, res) => {
   const myId = req.admin!.adminId;
   const role = req.admin!.role;
-  const { id } = req.body ?? {};
-  const rows = await db.select().from(notificationsTable);
-  for (const n of rows) {
-    if (role !== "owner" && n.audience !== "both" && n.audience !== role) continue;
-    if (id && n.id !== Number(id)) continue;
-    const readBy = n.readBy ?? [];
-    if (!readBy.includes(myId)) {
-      await db.update(notificationsTable).set({ readBy: [...readBy, myId] }).where(eq(notificationsTable.id, n.id));
-    }
-  }
+  // Numeric id = one notification; anything else (the bell sends "all") = everything visible.
+  const idNum = Number((req.body ?? {}).id);
+  const me = JSON.stringify([myId]);
+  const conds = [sql`NOT ${notificationsTable.readBy} @> ${me}::jsonb`];
+  if (Number.isInteger(idNum) && idNum > 0) conds.push(eq(notificationsTable.id, idNum));
+  if (role !== "owner") conds.push(inArray(notificationsTable.audience, ["both", role]));
+  await db.update(notificationsTable)
+    .set({ readBy: sql`${notificationsTable.readBy} || ${me}::jsonb` })
+    .where(and(...conds));
   ok(res, { ok: true });
 });
 

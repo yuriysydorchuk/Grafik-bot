@@ -38,7 +38,13 @@ export function NotificationBell() {
   const unread = items.length;
   const markRead = useMutation({
     mutationFn: (id?: number) => post("/notifications/read", id ? { id } : { id: "all" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+    // Optimistic: hide immediately instead of waiting for the next refetch
+    onMutate: async (id?: number) => {
+      await qc.cancelQueries({ queryKey: ["notifications"] });
+      qc.setQueryData<Notif[]>(["notifications"], (old = []) =>
+        old.map(n => (id == null || n.id === id ? { ...n, read: true } : n)));
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
   });
   const openNotif = (n: Notif) => {
     markRead.mutate(n.id);

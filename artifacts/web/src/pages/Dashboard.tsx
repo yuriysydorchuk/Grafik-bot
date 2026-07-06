@@ -3,13 +3,14 @@ import { Link } from "wouter";
 import { toast } from "sonner";
 import {
   Users, Truck, Factory, ArrowRight, AlertTriangle, CalendarRange, CheckCircle2, Zap, UserX, Send,
+  FileClock, CalendarOff, ClipboardCheck, HandCoins, Link2Off, CalendarX2, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid,
   PieChart, Pie, Cell,
 } from "recharts";
 import { get, post, DAY_UK, SHIFT_UK, type DayCode, type ShiftCode } from "../lib/api";
-import { Card, Spinner, Badge, Button } from "../components/ui";
+import { Card, Spinner, Badge, Button, cn } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { WeeklyWizard } from "../components/WeeklyWizard";
 import { LiveShifts } from "../components/LiveShifts";
@@ -19,6 +20,12 @@ import { can } from "../lib/roles";
 import { useT, type TFn } from "../lib/i18n";
 
 interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
+
+interface Attention {
+  pendingAbsences: number; hoursDisputes: number; pendingAdvances: number;
+  unlinkedUnplanned: number; unmarkedAttendance: number; driverGaps: number;
+  availabilityMissing: number;
+}
 
 interface Overview {
   counts: { workers: number; workersLinked: number; drivers: number; driversLinked: number; factories: number };
@@ -38,6 +45,7 @@ export default function Dashboard() {
   const t = useT();
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<Overview>({ queryKey: ["dashboard"], queryFn: () => get("/dashboard"), refetchInterval: 60000 });
+  const { data: attn } = useQuery<Attention>({ queryKey: ["attention"], queryFn: () => get("/attention"), refetchInterval: 60000 });
   const focusWeek = data?.focusWeek;
   const { data: missing = [] } = useQuery<MissingWorker[]>({
     queryKey: ["missing", focusWeek], enabled: !!focusWeek,
@@ -84,6 +92,8 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title={t("Огляд")} subtitle={t("Поточний тиждень {a} · наступний {b}", { a: data.currentWeek, b: data.nextWeek })} />
+
+      {attn && <AttentionPanel a={attn} />}
 
       <LiveShifts />
 
@@ -258,6 +268,57 @@ export default function Dashboard() {
   );
 }
 
+// «Потребує уваги»: clickable tiles with counts of open items; hidden when zero.
+const ATTN_TONE = {
+  rose: { tile: "border-rose-200 bg-rose-50/50 hover:bg-rose-50", icon: "bg-rose-100 text-rose-600" },
+  amber: { tile: "border-amber-200 bg-amber-50/50 hover:bg-amber-50", icon: "bg-amber-100 text-amber-600" },
+} as const;
+
+function AttentionPanel({ a }: { a: Attention }) {
+  const t = useT();
+  const all: { count: number; label: string; href: string; icon: LucideIcon; tone: keyof typeof ATTN_TONE }[] = [
+    { count: a.unmarkedAttendance, label: t("змін без відмітки присутності"), href: "/schedule", icon: ClipboardCheck, tone: "rose" },
+    { count: a.driverGaps, label: t("змін без водія (завіз)"), href: "/schedule", icon: Truck, tone: "rose" },
+    { count: a.hoursDisputes, label: t("непідтверджені коригування годин"), href: "/hours", icon: FileClock, tone: "rose" },
+    { count: a.pendingAbsences, label: t("запити на вихідні очікують"), href: "/absences", icon: CalendarOff, tone: "amber" },
+    { count: a.pendingAdvances, label: t("запити на аванс очікують"), href: "/advances", icon: HandCoins, tone: "amber" },
+    { count: a.unlinkedUnplanned, label: t("позапланові без привʼязки"), href: "/schedule", icon: Link2Off, tone: "amber" },
+    { count: a.availabilityMissing, label: t("не заповнили диспозиційність (наст. тиждень)"), href: "/availability", icon: CalendarX2, tone: "amber" },
+  ];
+  const items = all.filter(i => i.count > 0);
+
+  if (!items.length) return (
+    <Card className="mb-6 flex items-center gap-2 border-emerald-200 bg-emerald-50/60 p-4 text-sm font-medium text-emerald-700">
+      <CheckCircle2 className="h-5 w-5 shrink-0" /> {t("Все під контролем — незакритих питань немає")}
+    </Card>
+  );
+
+  return (
+    <Card className="mb-6 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5">
+        <AlertTriangle className="h-4 w-4 text-amber-500" />
+        <h3 className="text-sm font-semibold text-slate-700">{t("Потребує уваги")}</h3>
+        <Badge color="amber">{items.length}</Badge>
+      </div>
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {items.map(i => (
+          <Link key={i.label} href={i.href}>
+            <div className={cn("flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition", ATTN_TONE[i.tone].tile)}>
+              <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", ATTN_TONE[i.tone].icon)}>
+                <i.icon className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xl font-bold leading-tight text-slate-800">{i.count}</div>
+                <div className="text-xs leading-snug text-slate-500">{i.label}</div>
+              </div>
+              <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-slate-300" />
+            </div>
+          </Link>
+        ))}
+      </div>
+    </Card>
+  );
+}
 function Row({ dot, label, value }: { dot: string; label: string; value: number }) {
   return (
     <div className="flex items-center justify-between">
