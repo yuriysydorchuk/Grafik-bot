@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Схема роботи над НОВОЮ задачею (якщо це підтвердження/уточнення поточної роботи — ігноруй): 1) прочитай PROJECT_MAP.md і HANDOFF.md, якщо ще не читав у цій сесії; 2) знайди релевантні файли; 3) покажи план і ЧЕКАЙ підтвердження користувача перед реалізацією.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}
