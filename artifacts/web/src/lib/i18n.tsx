@@ -287,6 +287,10 @@ const EN: Record<string, string> = {
   "Інші фабрики не зачіпаються.": "Other factories are not affected.",
   "Надіслати на email клієнта": "Send to client email",
   "email клієнта не вказано (додайте у Фабриках)": "client email not set (add it in Factories)",
+  "Надіслати графік клієнту — {name}": "Email schedule to client — {name}",
+  "Лист із графіком (таблиця + Excel-файл) буде надіслано на": "The schedule email (table + Excel file) will be sent to",
+  "Весь тиждень": "Whole week",
+  "Конкретний день": "Specific day",
 
   // ── Orders ──
   "Замовлення збережено": "Orders saved",

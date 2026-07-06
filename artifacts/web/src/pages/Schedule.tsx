@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car } from "lucide-react";
+import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail } from "lucide-react";
 import { toast } from "sonner";
 import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
@@ -57,6 +57,7 @@ export default function Schedule() {
   const [weekStart, setWeekStart] = useState(urlWeek || upcomingWeeks()[0]!.value);
   const [over, setOver] = useState("");
   const [approveOpen, setApproveOpen] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
   const [addTo, setAddTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // manual add (incl. past shifts)
   const [addQuery, setAddQuery] = useState("");
   const [linkTo, setLinkTo] = useState<{ id: number; name: string; day: DayCode; shift: ShiftCode } | null>(null); // link a free-text unplanned extra to a real worker
@@ -147,6 +148,8 @@ export default function Schedule() {
     onError: (e: any) => toast.error(e.message) });
   const approve = useMutation({ mutationFn: (sendEmail: boolean) => post("/schedule/approve", { weekStart, factoryId: Number(factoryId), sendEmail }),
     onSuccess: (r: any) => { reload(); setApproveOpen(false); toast.success(t("Затверджено"), { description: (r.messages ?? []).join(" · ") }); }, onError: (e: any) => toast.error(e.message) });
+  const emailSend = useMutation({ mutationFn: (day: DayCode | null) => post("/schedule/email", { weekStart, factoryId: Number(factoryId), day }),
+    onSuccess: (r: any) => { setEmailOpen(false); toast.success("Email", { description: r.message }); }, onError: (e: any) => toast.error(e.message) });
   const notify = useMutation({ mutationFn: () => post("/schedule/notify", { weekStart, factoryId: Number(factoryId) }),
     onSuccess: (r: any) => toast.success(t("Розіслано"), { description: `${t("Працівників:")} ${r.workersNotified} · ${t("водій:")} ${r.driverNotified ? t("так") : "—"}${r.workersSkipped ? ` · ${t("без TG:")} ${r.workersSkipped}` : ""}` }), onError: (e: any) => toast.error(e.message) });
   const notifyDay = useMutation({ mutationFn: (day: DayCode) => post("/schedule/notify", { weekStart, factoryId: Number(factoryId), day }),
@@ -211,6 +214,9 @@ export default function Schedule() {
           <Button variant="secondary" loading={notify.isPending} disabled={!entries.length}
             onClick={async () => { if (await confirm({ title: t("Розіслати в Telegram?"), message: t("Працівникам фабрики «{name}» прийде їхній графік, а головному водію — повний список.", { name: facName }), confirmText: t("Розіслати") })) notify.mutate(); }}>
             <Send className="h-4 w-4" /> {t("Розіслати")}
+          </Button>
+          <Button variant="secondary" disabled={!entries.length} onClick={() => setEmailOpen(true)}>
+            <Mail className="h-4 w-4" /> Email
           </Button>
           <Button variant={approved ? "secondary" : "success"} disabled={!entries.length} onClick={() => setApproveOpen(true)}>
             <CheckCircle2 className="h-4 w-4" /> {approved ? t("Затвердити зміни") : t("Затвердити")}
@@ -473,6 +479,8 @@ export default function Schedule() {
 
       {approveOpen && <ApproveModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} loading={approve.isPending} onClose={() => setApproveOpen(false)} onApprove={(sendEmail) => approve.mutate(sendEmail)} />}
 
+      {emailOpen && <EmailModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} weekStart={weekStart} loading={emailSend.isPending} onClose={() => setEmailOpen(false)} onSend={(day) => emailSend.mutate(day)} />}
+
       {addTo && (() => {
         const inShiftIds = new Set(byDayShift(addTo.day, addTo.shift).map(e => e.workerId));
         const q = addQuery.trim().toLowerCase();
@@ -553,6 +561,44 @@ function ApproveModal({ factoryName, clientEmail, loading, onClose, onApprove }:
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button variant="success" loading={loading} onClick={() => onApprove(sendEmail)}>{t("Затвердити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function EmailModal({ factoryName, clientEmail, weekStart, loading, onClose, onSend }: {
+  factoryName: string; clientEmail: string | null; weekStart: string; loading: boolean; onClose: () => void; onSend: (day: DayCode | null) => void;
+}) {
+  const t = useT();
+  const [scope, setScope] = useState<"week" | "day">("week");
+  const [day, setDay] = useState<DayCode>("mon");
+  return (
+    <Modal open onClose={onClose} title={t("Надіслати графік клієнту — {name}", { name: factoryName })}>
+      <div className="space-y-4">
+        {clientEmail
+          ? <p className="text-sm text-slate-600">{t("Лист із графіком (таблиця + Excel-файл) буде надіслано на")} <b>{clientEmail}</b>.</p>
+          : <p className="text-sm text-amber-600">{t("email клієнта не вказано (додайте у Фабриках)")}</p>}
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+            <input type="radio" name="email-scope" checked={scope === "week"} onChange={() => setScope("week")} />
+            <span className="font-medium text-slate-700">{t("Весь тиждень")}</span>
+          </label>
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+            <input type="radio" name="email-scope" checked={scope === "day"} onChange={() => setScope("day")} />
+            <span className="font-medium text-slate-700">{t("Конкретний день")}</span>
+            {scope === "day" && (
+              <Select value={day} onChange={e => setDay(e.target.value as DayCode)} className="ml-auto w-44">
+                {DAYS.map((d, di) => <option key={d} value={d}>{DAY_FULL[d]} · {dayDate(weekStart, di)}</option>)}
+              </Select>
+            )}
+          </label>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={loading} disabled={!clientEmail} onClick={() => onSend(scope === "day" ? day : null)}>
+            <Mail className="h-4 w-4" /> {t("Надіслати")}
+          </Button>
         </div>
       </div>
     </Modal>

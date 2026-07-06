@@ -145,7 +145,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
       </nav>
       <div className="border-t border-slate-100 p-3">
         <div className="mb-2 flex items-center gap-2 px-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100 text-sm font-semibold text-red-700">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-red-500 to-red-700 text-sm font-semibold text-white shadow-sm">
             {me.name?.[0]?.toUpperCase() ?? "?"}
           </div>
           <div className={cn("min-w-0 leading-tight", rail && "hidden group-hover/nav:block")}>
@@ -182,7 +182,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* mobile header */}
-        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white/80 px-4 py-3 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white/80 px-4 py-3 shadow-[0_1px_3px_rgb(15_23_42/0.04)] backdrop-blur md:hidden">
           <button onClick={() => setOpen(!open)} className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100">
             {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
@@ -191,7 +191,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
           <div className="ml-auto flex items-center gap-2"><LangToggle /><NotificationBell /></div>
         </header>
         {/* desktop top bar */}
-        <header className="sticky top-0 z-30 hidden items-center gap-2 border-b border-slate-200 bg-white/80 px-8 py-2.5 backdrop-blur md:flex">
+        <header className="sticky top-0 z-30 hidden items-center gap-2 border-b border-slate-200 bg-white/80 px-8 py-2.5 shadow-[0_1px_3px_rgb(15_23_42/0.04)] backdrop-blur md:flex">
           <button onClick={toggleCollapsed} title={t("Згорнути меню")} className="-ml-2 rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700">
             {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </button>

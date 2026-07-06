@@ -45,7 +45,7 @@ export default function Login() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-red-50 p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-7 shadow-lg shadow-slate-200/50">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-7 shadow-lg shadow-slate-200/50 animate-pop-in">
         <div className="mb-6 flex flex-col items-center text-center">
           <img src="/logo.png" alt="Euro Support" className="mb-3 h-16 w-16 object-contain" />
           <h1 className="text-lg font-bold tracking-tight text-slate-800">Euro Support</h1>
