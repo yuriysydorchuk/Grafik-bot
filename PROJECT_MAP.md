@@ -107,7 +107,7 @@ Telegraf, **long-polling**, один інстанс. Деталі — [`artifact
 
 Drizzle, уся схема в `lib/db/src/schema/workers.ts`. Групи таблиць:
 
-- **Довідники:** `companies`, `factories`, `positions`, `factory_positions`, `workers`, `drivers`, `admins`, `roles` (динамічні ролі веб-панелі: pages+caps)
+- **Довідники:** `companies`, `factories`, `positions`, `factory_positions`, `workers` (`self_transport` = доїжджає сам → поза водійським флоу, явку ставить графікова), `drivers`, `admins`, `roles` (динамічні ролі веб-панелі: pages+caps)
 - **Планування:** `factory_orders`, `availability`, `schedule_weeks`, `schedule_entries` (має `sent_at` — «Мій графік» у боті показує лише розіслане), `schedule_approvals`, `driver_shift_assignments` (`kind`: delivery|pickup)
 - **Операції:** `driver_trips`, `driver_workdays` (зміна водія: виїзд/повернення + одометр), `unplanned_workers`, `absence_requests` (`shift NULL` = вихідний на цілий день; блокує генерацію вже в pending), `hours_disputes`, `advance_requests`, `monthly_reports` (рапорт працівника: unique worker+month+factory)
 - **Рекрутинг:** `funnels` (реферальна воронка гарантується на старті — `ensureReferralFunnel()`), `candidates`, `candidate_activity`
