@@ -56,7 +56,7 @@ Grafik-bot/
 
 **Замовлення/доступність:** `GET/PUT /orders`, `GET /availability`, `GET /availability/missing`, `POST /availability/remind`
 
-**Графік:** `GET /weeks`, `GET /schedule`, `GET /schedule/excel`, `POST /schedule/generate`, `POST /schedule/approve`, `POST /schedule/email` (лист клієнту фабрики: тиждень або день, з Excel-вкладенням), `POST /schedule/entry`, `PATCH/DELETE /schedule/entry/:id`, `PATCH /schedule/entry/:id/status`, `PUT /schedule/driver-assignments(/by-driver)`, `POST /schedule/driver-assignments/copy-week`, `POST /schedule/notify(-workers|-driver|-drivers)`
+**Графік:** `GET /weeks`, `GET /schedule`, `GET /schedule/excel`, `POST /schedule/generate`, `POST /schedule/approve`, `POST /schedule/email` (лист клієнту фабрики: тиждень або день, з Excel-вкладенням), `GET/PUT /email-templates` (шаблон листа, ключі `email_tpl_schedule_*` у `settings`), `POST /schedule/entry`, `PATCH/DELETE /schedule/entry/:id`, `PATCH /schedule/entry/:id/status`, `PUT /schedule/driver-assignments(/by-driver)`, `POST /schedule/driver-assignments/copy-week`, `POST /schedule/notify(-workers|-driver|-drivers)`
 
 **Облік/відсутності:** `GET /hours` (рядки по парі працівник+фабрика), `POST /hours/report` (ручні години рапорту), `POST /hours/report-remind`, `GET /hours/report-excel`, `GET /worker-days/:id`, `POST /worker-days/:id/add-shift`, `PATCH /worker-days/entry/:id`, `GET /absences`, `GET /absence-requests`, `POST /absence-requests/:id/approve|reject|substitute`, `GET /hours-reports`, `GET /hours-reports/:id/photo`, `POST /hours-reports/:id/apply|resolve`, `GET /reliability`, `GET /trips`, `POST /unplanned/:id/link` (привʼязка вписаного водієм позапланового до працівника з бази; створює явку present)
 
