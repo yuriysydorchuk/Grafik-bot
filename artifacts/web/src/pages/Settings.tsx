@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
@@ -12,7 +12,7 @@ import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "email" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
@@ -20,6 +20,7 @@ const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "positions", label: "Посади", show: m => can(m, "editData") },
   { id: "documents", label: "Документи", show: m => can(m, "editData") },
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
+  { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
   { id: "users", label: "Користувачі та ролі", show: m => m.isMain },
 ];
 
@@ -53,6 +54,7 @@ export default function Settings() {
       {active === "positions" && <PositionsSettings />}
       {active === "documents" && <DocTypesSettings />}
       {active === "funnels" && <FunnelsSettings />}
+      {active === "email" && <EmailTemplatesSettings />}
       {active === "users" && me && <Admins me={me} />}
     </>
   );
@@ -346,5 +348,51 @@ function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any
       {name.trim() && name !== p.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
     </div>
+  );
+}
+
+// ─── Email templates (client-facing letters) ─────────────────────────────────
+type EmailTpl = { subject: string; body: string };
+
+function EmailTemplatesSettings() {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ schedule: EmailTpl; defaults: { schedule: EmailTpl } }>({
+    queryKey: ["email-templates"], queryFn: () => get("/email-templates"),
+  });
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (data && !loaded) { setSubject(data.schedule.subject); setBody(data.schedule.body); setLoaded(true); }
+  }, [data, loaded]);
+  const save = useMutation({
+    mutationFn: () => put("/email-templates", { schedule: { subject, body } }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["email-templates"] }); toast.success(t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  if (isLoading || !data) return <Spinner />;
+  return (
+    <Card className="max-w-2xl p-4">
+      <h3 className="mb-1 text-sm font-semibold text-slate-700">{t("Лист із графіком клієнту")}</h3>
+      <p className="mb-4 text-xs text-slate-500">{t("Використовується при надсиланні графіку на фабрику (день або тиждень). Лист — польською; графік додається Excel-файлом.")}</p>
+      <div className="space-y-3">
+        <div>
+          <Label>{t("Тема листа")}</Label>
+          <Input value={subject} onChange={e => setSubject(e.target.value)} />
+        </div>
+        <div>
+          <Label>{t("Текст листа")}</Label>
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={13}
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+        </div>
+        <p className="text-xs text-slate-400">{t("Плейсхолдери: {data} — дата дня або період тижня, {fabryka} — назва фабрики.")}</p>
+        <div className="flex gap-2">
+          <Button loading={save.isPending} disabled={!subject.trim() || !body.trim()} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+          <Button variant="secondary" onClick={() => { setSubject(data.defaults.schedule.subject); setBody(data.defaults.schedule.body); }}>{t("Скинути до стандартного")}</Button>
+        </div>
+      </div>
+    </Card>
   );
 }

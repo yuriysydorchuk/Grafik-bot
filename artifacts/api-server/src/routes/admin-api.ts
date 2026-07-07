@@ -1649,6 +1649,21 @@ router.post("/schedule/email", RW, async (req, res) => {
   }
 });
 
+// Email templates (settings-backed). Scenario "schedule" = client schedule email.
+router.get("/email-templates", RW, async (_req, res) => {
+  const { getScheduleEmailTemplate, SCHEDULE_EMAIL_DEFAULTS } = await import("../services/email");
+  ok(res, { schedule: await getScheduleEmailTemplate(), defaults: { schedule: SCHEDULE_EMAIL_DEFAULTS } });
+});
+
+router.put("/email-templates", RW, async (req, res) => {
+  const { subject, body } = req.body?.schedule ?? {};
+  if (typeof subject !== "string" || !subject.trim() || typeof body !== "string" || !body.trim())
+    return fail(res, 400, "Тема і текст листа обовʼязкові");
+  const { saveScheduleEmailTemplate } = await import("../services/email");
+  await saveScheduleEmailTemplate(subject.trim(), body.trim());
+  ok(res, {});
+});
+
 // Send the factory's schedule to its workers + head driver via Telegram
 router.post("/schedule/notify", RW, async (req, res) => {
   const { weekStart, factoryId, day } = req.body ?? {};

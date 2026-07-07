@@ -58,6 +58,7 @@ export default function Schedule() {
   const [over, setOver] = useState("");
   const [approveOpen, setApproveOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [dayApprove, setDayApprove] = useState<DayCode | null>(null); // day-level approve modal
   const [addTo, setAddTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // manual add (incl. past shifts)
   const [addQuery, setAddQuery] = useState("");
   const [linkTo, setLinkTo] = useState<{ id: number; name: string; day: DayCode; shift: ShiftCode } | null>(null); // link a free-text unplanned extra to a real worker
@@ -152,8 +153,17 @@ export default function Schedule() {
     onSuccess: (r: any) => { setEmailOpen(false); toast.success("Email", { description: r.message }); }, onError: (e: any) => toast.error(e.message) });
   const notify = useMutation({ mutationFn: () => post("/schedule/notify", { weekStart, factoryId: Number(factoryId) }),
     onSuccess: (r: any) => toast.success(t("Розіслано"), { description: `${t("Працівників:")} ${r.workersNotified} · ${t("водій:")} ${r.driverNotified ? t("так") : "—"}${r.workersSkipped ? ` · ${t("без TG:")} ${r.workersSkipped}` : ""}` }), onError: (e: any) => toast.error(e.message) });
-  const notifyDay = useMutation({ mutationFn: (day: DayCode) => post("/schedule/notify", { weekStart, factoryId: Number(factoryId), day }),
-    onSuccess: (r: any) => toast.success(t("Розіслано"), { description: `${t("Працівників:")} ${r.workersNotified}` }), onError: (e: any) => toast.error(e.message) });
+  // Per-day approve: Telegram to workers and/or email to the factory client, both scoped to one day
+  const approveDay = useMutation({
+    mutationFn: async (p: { day: DayCode; tg: boolean; em: boolean }) => {
+      const messages: string[] = [];
+      if (p.tg) { const r: any = await post("/schedule/notify", { weekStart, factoryId: Number(factoryId), day: p.day }); messages.push(`Telegram: ${r.workersNotified ?? 0}`); }
+      if (p.em) { const r: any = await post("/schedule/email", { weekStart, factoryId: Number(factoryId), day: p.day }); messages.push(`Email: ${r.message}`); }
+      return messages;
+    },
+    onSuccess: (msgs) => { reload(); setDayApprove(null); toast.success(t("Затверджено"), { description: msgs.join(" · ") }); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const addEntry = useMutation({ mutationFn: (v: { workerId: number; day: DayCode; shift: ShiftCode }) => post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const moveEntry = useMutation({ mutationFn: (v: { id: number; shift: ShiftCode }) => patch(`/schedule/entry/${v.id}`, { shift: v.shift }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const removeEntry = useMutation({ mutationFn: (id: number) => del(`/schedule/entry/${id}`), onSuccess: reload });
@@ -248,13 +258,15 @@ export default function Schedule() {
                         title={t("Скачати графік на цей день")}>
                         <Download className="h-3 w-3" /> {t("Скачати")}
                       </a>
-                      <button
-                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                        disabled={notifyDay.isPending}
-                        title={t("Розіслати графік на цей день працівникам")}
-                        onClick={async () => { if (await confirm({ title: t("Розіслати на {day}?", { day: DAY_FULL[day] }), message: t("Працівникам, що мають зміну цього дня, прийде повідомлення."), confirmText: t("Розіслати") })) notifyDay.mutate(day); }}>
-                        <Send className="h-3 w-3" /> {t("Розіслати")}
-                      </button>
+                      {editable && (
+                        <button
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
+                          disabled={approveDay.isPending}
+                          title={t("Затвердити день: розіслати працівникам і/або надіслати на фабрику")}
+                          onClick={() => setDayApprove(day)}>
+                          <CheckCircle2 className="h-3 w-3" /> {t("Затвердити")}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -481,6 +493,8 @@ export default function Schedule() {
 
       {emailOpen && <EmailModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} weekStart={weekStart} loading={emailSend.isPending} onClose={() => setEmailOpen(false)} onSend={(day) => emailSend.mutate(day)} />}
 
+      {dayApprove && <DayApproveModal dayLabel={`${DAY_FULL[dayApprove]} · ${dayDate(weekStart, DAYS.indexOf(dayApprove))}`} clientEmail={factory?.clientEmail ?? null} loading={approveDay.isPending} onClose={() => setDayApprove(null)} onApprove={(tg, em) => approveDay.mutate({ day: dayApprove, tg, em })} />}
+
       {addTo && (() => {
         const inShiftIds = new Set(byDayShift(addTo.day, addTo.shift).map(e => e.workerId));
         const q = addQuery.trim().toLowerCase();
@@ -599,6 +613,38 @@ function EmailModal({ factoryName, clientEmail, weekStart, loading, onClose, onS
           <Button loading={loading} disabled={!clientEmail} onClick={() => onSend(scope === "day" ? day : null)}>
             <Mail className="h-4 w-4" /> {t("Надіслати")}
           </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DayApproveModal({ dayLabel, clientEmail, loading, onClose, onApprove }: {
+  dayLabel: string; clientEmail: string | null; loading: boolean; onClose: () => void; onApprove: (tg: boolean, em: boolean) => void;
+}) {
+  const t = useT();
+  const [tg, setTg] = useState(true);
+  const [em, setEm] = useState(!!clientEmail);
+  return (
+    <Modal open onClose={onClose} title={`${t("Затвердити день")} — ${dayLabel}`}>
+      <div className="space-y-4">
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={tg} onChange={e => setTg(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Розіслати працівникам у Telegram")}</span>
+            <span className="block text-xs text-slate-500">{t("Працівникам, що мають зміну цього дня, прийде повідомлення.")}</span>
+          </span>
+        </label>
+        <label className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${clientEmail ? "border-slate-200" : "border-slate-100 bg-slate-50 opacity-60"}`}>
+          <input type="checkbox" className="mt-0.5" disabled={!clientEmail} checked={em} onChange={e => setEm(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Надіслати на фабрику (email)")}</span>
+            <span className="block text-xs text-slate-500">{clientEmail ? `${clientEmail} · ${t("лист з Excel-файлом на цей день")}` : t("email клієнта не вказано (додайте у Фабриках)")}</span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant="success" loading={loading} disabled={!tg && !em} onClick={() => onApprove(tg, em)}>{t("Затвердити")}</Button>
         </div>
       </div>
     </Modal>

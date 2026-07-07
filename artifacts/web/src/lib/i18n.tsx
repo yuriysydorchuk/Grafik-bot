@@ -291,6 +291,18 @@ const EN: Record<string, string> = {
   "Лист із графіком (таблиця + Excel-файл) буде надіслано на": "The schedule email (table + Excel file) will be sent to",
   "Весь тиждень": "Whole week",
   "Конкретний день": "Specific day",
+  "Затвердити день": "Approve day",
+  "Затвердити день: розіслати працівникам і/або надіслати на фабрику": "Approve day: notify workers and/or email the factory",
+  "Розіслати працівникам у Telegram": "Send to workers via Telegram",
+  "Надіслати на фабрику (email)": "Email to the factory",
+  "лист з Excel-файлом на цей день": "email with this day's Excel file",
+  "Email-шаблони": "Email templates",
+  "Лист із графіком клієнту": "Client schedule email",
+  "Використовується при надсиланні графіку на фабрику (день або тиждень). Лист — польською; графік додається Excel-файлом.": "Used when emailing the schedule to a factory (day or week). The letter is in Polish; the schedule is attached as an Excel file.",
+  "Тема листа": "Subject",
+  "Текст листа": "Body",
+  "Плейсхолдери: {data} — дата дня або період тижня, {fabryka} — назва фабрики.": "Placeholders: {data} — day date or week range, {fabryka} — factory name.",
+  "Скинути до стандартного": "Reset to default",
 
   // ── Orders ──
   "Замовлення збережено": "Orders saved",

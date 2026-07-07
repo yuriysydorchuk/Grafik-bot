@@ -1,33 +1,67 @@
 import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import {
-  scheduleEntriesTable, scheduleWeeksTable, workersTable, factoriesTable,
-  type DayOfWeek, type Shift,
+  scheduleEntriesTable, scheduleWeeksTable, factoriesTable, settingsTable,
+  type DayOfWeek,
 } from "@workspace/db";
-import { eq, and, ne, desc } from "drizzle-orm";
+import { eq, and, ne, desc, inArray } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { DAYS } from "./sheets";
 
-// Polish day labels for the client-facing email
-const DAY_PL: Record<string, string> = {
-  mon: "Poniedziałek", tue: "Wtorek", wed: "Środa",
-  thu: "Czwartek", fri: "Piątek", sat: "Sobota", sun: "Niedziela",
+// ─── Email template (settings-backed, scenario "schedule") ───────────────────
+// Plain-text letter: greeting + signature; the schedule itself goes as an Excel
+// attachment. Placeholders: {data} — day date or week range, {fabryka} — factory name.
+export const SCHEDULE_EMAIL_DEFAULTS = {
+  subject: "Grafik na {data}",
+  body: `Dzień dobry. Wysyłam grafik na {data}
+Z wyrazami szacunku,
+Viktoriia Oliinyk
+Specjalista ds. administracji personalnej i grafików
++48 731 437 822
+e-mail: office.eurosupp@gmail.com
+ul. Krakowskie Przedmieście 55, 20-076, Lublin
+tel.:  +48 530 878 711
+facebook/eurosupportES
+instagram/euro_support_
+https://eurosupp.pl/
+Viber: +48 530 878 711
+NIP: 9462698100; Regon: 386387801`,
+} as const;
+
+const TPL_KEYS = { subject: "email_tpl_schedule_subject", body: "email_tpl_schedule_body" } as const;
+
+export async function getScheduleEmailTemplate(): Promise<{ subject: string; body: string }> {
+  const rows = await db.select().from(settingsTable).where(inArray(settingsTable.key, [TPL_KEYS.subject, TPL_KEYS.body]));
+  const byKey = new Map(rows.map(r => [r.key, r.value]));
+  return {
+    subject: byKey.get(TPL_KEYS.subject)?.trim() || SCHEDULE_EMAIL_DEFAULTS.subject,
+    body: byKey.get(TPL_KEYS.body)?.trim() || SCHEDULE_EMAIL_DEFAULTS.body,
+  };
+}
+
+export async function saveScheduleEmailTemplate(subject: string, body: string): Promise<void> {
+  for (const [value, key] of [[subject, TPL_KEYS.subject], [body, TPL_KEYS.body]] as const) {
+    await db.insert(settingsTable).values({ key, value })
+      .onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+  }
+}
+
+const fillTemplate = (tpl: string, params: Record<string, string>) => {
+  let out = tpl;
+  for (const [k, v] of Object.entries(params)) out = out.replaceAll(`{${k}}`, v);
+  return out;
 };
-const SHIFT_PL: Record<string, string> = { "1": "Zmiana 1", "2": "Zmiana 2", "3": "Zmiana 3" };
 
-const fmtPl = (x: Date) => x.toLocaleDateString("pl-PL", { day: "numeric", month: "numeric", year: "numeric" });
+// "07.07.2026" — dates as dd.mm.yyyy with leading zeros (client-facing)
+const fmtDate = (x: Date) =>
+  `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${x.getFullYear()}`;
 
-const weekLabel = (weekStart: string) => {
+// {data} value: single day date, or "start – end" for the whole week
+const dataLabel = (weekStart: string, day?: DayOfWeek | null): string => {
   const d = new Date(weekStart + "T00:00:00");
+  if (day) { d.setDate(d.getDate() + DAYS.indexOf(day)); return fmtDate(d); }
   const end = new Date(d); end.setDate(d.getDate() + 6);
-  return `${fmtPl(d)} – ${fmtPl(end)}`;
-};
-
-// "Poniedziałek 7.07.2026" — label for a single-day email
-const dayLabel = (weekStart: string, day: DayOfWeek) => {
-  const d = new Date(weekStart + "T00:00:00");
-  d.setDate(d.getDate() + DAYS.indexOf(day));
-  return `${DAY_PL[day]} ${fmtPl(d)}`;
+  return `${fmtDate(d)} – ${fmtDate(end)}`;
 };
 
 let transporter: nodemailer.Transporter | null = null;
@@ -45,29 +79,6 @@ function getTransporter(): nodemailer.Transporter | null {
   return transporter;
 }
 
-// ─── Per-factory email template ───────────────────────────────────────────────
-// Default template. To customise per factory, branch on factoryName here later.
-function buildScheduleEmailHtml(factoryName: string, periodLabel: string, byDay: Map<string, { shift: Shift; name: string }[]>): string {
-  let rowsHtml = "";
-  for (const day of DAYS) {
-    const entries = byDay.get(day) ?? [];
-    if (entries.length === 0) continue;
-    rowsHtml += `<tr><td colspan="2" style="background:#f0f0f0;font-weight:bold;padding:6px;">${DAY_PL[day]}</td></tr>`;
-    for (const shift of ["1", "2", "3"] as Shift[]) {
-      const names = entries.filter(e => e.shift === shift).map(e => e.name);
-      if (names.length === 0) continue;
-      rowsHtml += `<tr><td style="padding:4px 8px;border:1px solid #ddd;white-space:nowrap;">${SHIFT_PL[shift]} (${names.length})</td><td style="padding:4px 8px;border:1px solid #ddd;">${names.join(", ")}</td></tr>`;
-    }
-  }
-  return `
-    <div style="font-family:Arial,sans-serif;max-width:700px;">
-      <h2>Grafik pracy — ${factoryName}</h2>
-      <p><b>${periodLabel}</b></p>
-      <table style="border-collapse:collapse;width:100%;">${rowsHtml}</table>
-      <p style="color:#888;font-size:12px;margin-top:16px;">Wiadomość wygenerowana automatycznie.</p>
-    </div>`;
-}
-
 // Send schedule for one factory to its client email — whole week, or a single day when `day` is given.
 // Returns a human-readable status string.
 export async function sendScheduleEmail(factoryId: number, weekStart: string, day?: DayOfWeek | null): Promise<string> {
@@ -80,9 +91,8 @@ export async function sendScheduleEmail(factoryId: number, weekStart: string, da
   if (!week) return "тиждень не знайдено";
 
   const entries = await db
-    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, name: workersTable.fullName })
+    .select({ id: scheduleEntriesTable.id })
     .from(scheduleEntriesTable)
-    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(
       eq(scheduleEntriesTable.weekId, week.id),
       eq(scheduleEntriesTable.factoryId, factoryId),
@@ -91,20 +101,15 @@ export async function sendScheduleEmail(factoryId: number, weekStart: string, da
     ));
   if (entries.length === 0) return day ? "на цей день немає змін" : "на цей тиждень немає змін";
 
-  const byDay = new Map<string, { shift: Shift; name: string }[]>();
-  for (const e of entries) {
-    if (!byDay.has(e.day)) byDay.set(e.day, []);
-    byDay.get(e.day)!.push({ shift: e.shift as Shift, name: e.name ?? "—" });
-  }
-
-  const periodLabel = day ? dayLabel(weekStart, day) : `Tydzień: ${weekLabel(weekStart)}`;
-  const html = buildScheduleEmailHtml(factory.name, periodLabel, byDay);
-  const subject = `Grafik pracy — ${factory.name} — ${day ? dayLabel(weekStart, day) : weekLabel(weekStart)}`;
+  const params = { data: dataLabel(weekStart, day), fabryka: factory.name };
+  const tpl = await getScheduleEmailTemplate();
+  const subject = fillTemplate(tpl.subject, params);
+  const text = fillTemplate(tpl.body, params);
 
   const tx = getTransporter();
   if (!tx) {
     logger.warn({ factory: factory.name, to: factory.clientEmail }, "SMTP not configured — email not sent (preview logged)");
-    logger.info({ subject, htmlPreview: html.slice(0, 200) }, "Email preview");
+    logger.info({ subject, textPreview: text.slice(0, 200) }, "Email preview");
     return "⚠️ SMTP не налаштовано (лист не надіслано)";
   }
 
@@ -123,7 +128,7 @@ export async function sendScheduleEmail(factoryId: number, weekStart: string, da
       from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
       to: factory.clientEmail,
       subject,
-      html,
+      text,
       attachments,
     });
     logger.info({ factory: factory.name, to: factory.clientEmail, day: day ?? "week" }, "Schedule email sent");
