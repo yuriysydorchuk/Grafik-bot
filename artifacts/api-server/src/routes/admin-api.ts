@@ -1634,6 +1634,21 @@ router.get("/schedule/excel", RW, async (req, res) => {
   res.send(out.buffer);
 });
 
+// Email the schedule to the factory's client — whole week, or a single day when `day` is given
+router.post("/schedule/email", RW, async (req, res) => {
+  const { weekStart, factoryId, day: dayRaw } = req.body ?? {};
+  if (!weekStart || !factoryId) return fail(res, 400, "weekStart та factoryId обовʼязкові");
+  const day = dayRaw && (DAYS as string[]).includes(dayRaw) ? dayRaw : null;
+  try {
+    const { sendScheduleEmail } = await import("../services/email");
+    const message = await sendScheduleEmail(Number(factoryId), String(weekStart), day);
+    ok(res, { message });
+  } catch (e) {
+    logger.error({ err: e }, "schedule email");
+    fail(res, 500, "Помилка надсилання email");
+  }
+});
+
 // Send the factory's schedule to its workers + head driver via Telegram
 router.post("/schedule/notify", RW, async (req, res) => {
   const { weekStart, factoryId, day } = req.body ?? {};
