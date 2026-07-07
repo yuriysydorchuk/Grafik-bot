@@ -26,10 +26,13 @@ const T_INTERNAL = `(${TXT} ~ 'EUROSUPPORT|EURO SUPPORT|KLINEX|PRZELEW W.ASN|BET
 // outgoing split-payment VAT auto-move (mirror of a client's MPP payment); the bank
 // sometimes strips the /VAT//IDC markers leaving only a date-like title
 const T_VATSPLIT_OUT = `((${TXT} ~ '/VAT/' AND ${TXT} ~ '/IDC/') OR (counterparty IS NULL AND tx_type IS NULL AND title ~ '^[0-9/.]+ ES-?\\.?\\s*$'))`;
-// owner payouts (transfers to the Sydorchuk family incl. their salaries; card spending excluded)
-const T_CARDOP = `${TXT} ~ 'BEZGOT|KART. DEBET|535472'`;
+// owner payouts (transfers to the Sydorchuk family incl. their salaries); excluded:
+// card spending AND bank charges that merely mention the cardholder's name
+// (e.g. "MIESIĘCZNA OPŁATA ZA OBSŁUGĘ KARTY YURIY SYDORCHUK" is a fee, not a payout)
+const T_CARDOP = `${TXT} ~ 'BEZGOT|KART. DEBET|535472|OP.ATA|OPLATA|PROWIZ'`;
 const T_OWNER_ROMAN = `(${TXT} ~ 'SYDORCZUK ROMAN|ROMAN SYDORCZUK|SYDORCHUK ROMAN|ROMAN SYDORCHUK' AND NOT ${T_CARDOP})`;
-const T_OWNER_TETIANA = `(${TXT} ~ 'SYDORCZUK TETIANA|TETIANA SYDORCZUK|SYDORCHUK TETIANA|TETIANA SYDORCHUK|SYDORCZUK TATIANA|TATIANA SYDORCZUK' AND NOT ${T_CARDOP})`;
+// Tetiana's payouts also include transfers for Sydorczuk Daniel (owner's decision)
+const T_OWNER_TETIANA = `(${TXT} ~ 'SYDORCZUK TETIANA|TETIANA SYDORCZUK|SYDORCHUK TETIANA|TETIANA SYDORCHUK|SYDORCZUK TATIANA|TATIANA SYDORCZUK|SYDORCZUK DANIEL|DANIEL SYDORCZUK|SYDORCHUK DANIEL|DANIEL SYDORCHUK' AND NOT ${T_CARDOP})`;
 const T_OWNER_YURIY = `(${TXT} ~ 'SYDORCZUK YURI|YURI. SYDORCZUK|SYDORCHUK YURI|YURI. SYDORCHUK' AND NOT ${T_CARDOP})`;
 const T_OWNER_ANY = `(${T_OWNER_ROMAN} OR ${T_OWNER_TETIANA} OR ${T_OWNER_YURIY})`;
 const T_VATREF = `${TXT} ~ 'SKARBOW|URZ.D SKARB'`;                                         // tax-office VAT refund

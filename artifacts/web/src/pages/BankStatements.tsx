@@ -140,7 +140,7 @@ export default function BankStatements() {
           <div className="mt-4 mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("Виплати власникам (разом із їх зарплатою)")}</div>
           <div className="grid grid-cols-3 gap-3 lg:w-2/3">
             <MiniMetric label={t("Сидорчук Роман")} value={s.owner_roman} count={s.counts.owner_roman} active={detail === "owner_roman"} onClick={() => { setDetail(detail === "owner_roman" ? null : "owner_roman"); setDetail2(null); }} />
-            <MiniMetric label={t("Сидорчук Тетяна")} value={s.owner_tetiana} count={s.counts.owner_tetiana} active={detail === "owner_tetiana"} onClick={() => { setDetail(detail === "owner_tetiana" ? null : "owner_tetiana"); setDetail2(null); }} />
+            <MiniMetric label={t("Сидорчук Тетяна (вкл. для Сидорчук Даніеля)")} value={s.owner_tetiana} count={s.counts.owner_tetiana} active={detail === "owner_tetiana"} onClick={() => { setDetail(detail === "owner_tetiana" ? null : "owner_tetiana"); setDetail2(null); }} />
             <MiniMetric label={t("Сидорчук Юрій")} value={s.owner_yuriy} count={s.counts.owner_yuriy} active={detail === "owner_yuriy"} onClick={() => { setDetail(detail === "owner_yuriy" ? null : "owner_yuriy"); setDetail2(null); }} />
           </div>
 
@@ -402,7 +402,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
     : ({
         income: t("Приходи — від кого і коли"), expenses: t("Витрати"),
         cashmove: t("Готівковий рух — зняття та внесення"),
-        owner_roman: t("Виплати — Сидорчук Роман"), owner_tetiana: t("Виплати — Сидорчук Тетяна"), owner_yuriy: t("Виплати — Сидорчук Юрій"),
+        owner_roman: t("Виплати — Сидорчук Роман"), owner_tetiana: t("Виплати — Сидорчук Тетяна (вкл. для Сидорчук Даніеля)"), owner_yuriy: t("Виплати — Сидорчук Юрій"),
       }[bucket] ?? bucket);
   const isCashMove = bucket === "cashmove";
   const whoLabel = isCashMove ? t("Рахунок") : t("Від кого / призначення");
