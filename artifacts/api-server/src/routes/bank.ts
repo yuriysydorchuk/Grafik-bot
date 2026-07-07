@@ -72,8 +72,9 @@ const EXPENSE_CATS: [key: string, pattern: string][] = [
   ["seizure", `${TXT} ~ 'EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\.'`],
   ["salary", T_SALARY],
   ["zaliczki", `${TXT} ~ 'ZALICZK'`],
-  // all bank commissions in one place: transfers, deposits, cash withdrawals, account & card maintenance
-  ["fees", `${TXT} ~ 'PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE'`],
+  // all bank commissions in one place: transfers, deposits, cash withdrawals,
+  // account/card/package maintenance, e-banking (GOonline), ELIXIR transfer fees
+  ["fees", `${TXT} ~ 'PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE'`],
   ["fuel", `${TXT} ~ 'ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW'`],
   ["housing", `${TXT} ~ 'BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM'`],
   ["car_repair", `${TXT} ~ 'TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII'`],
