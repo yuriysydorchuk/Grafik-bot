@@ -47,7 +47,7 @@ export async function notifyAdmins(text: string, options: Record<string, unknown
 // to the matching web users (by role) + the head driver when "driver"/"both" is targeted.
 export async function notifyRoles(
   audience: "scheduler" | "driver" | "both",
-  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance"; title: string; body?: string },
+  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance" | "substitution"; title: string; body?: string },
 ) {
   // 1) on-site notification
   try {

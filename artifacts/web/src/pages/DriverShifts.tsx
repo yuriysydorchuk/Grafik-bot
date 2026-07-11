@@ -12,7 +12,7 @@ import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 
 type PickupGap = { reason: "none" | "capacity"; people: number; seats: number | null } | null;
-type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap };
+type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap; cancelled?: boolean };
 type FactoryBoard = { id: number; name: string; shiftCount: number; cells: Cell[] };
 type DriverRow = { id: number; name: string; seats: number | null; isHeadDriver: boolean; telegramId: string | null };
 type Board = { weekStart: string; hasWeek: boolean; factories: FactoryBoard[]; drivers: DriverRow[] };
@@ -65,15 +65,8 @@ export default function DriverShifts() {
 
       {isFetching && !data ? <Spinner /> : (
         <>
-          {!factories.length ? (
-            <Empty>{data?.hasWeek ? t("Немає змін у графіку на цей тиждень") : t("Графік на цей тиждень ще не згенеровано")}</Empty>
-          ) : (
-            <div className="space-y-4">
-              {factories.map(f => <FactoryCard key={f.id} f={f} weekStart={weekStart} />)}
-            </div>
-          )}
-
-          <div className="mt-7 flex items-center justify-between">
+          {/* Drivers first — the main working list: pick a driver, then assign shifts */}
+          <div className="flex items-center justify-between">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><Truck className="h-4 w-4 text-red-600" /> {t("Водії")}</h3>
             <Button variant="secondary" loading={copyPrev.isPending}
               onClick={async () => { if (await confirm({ title: t("Скопіювати призначення?"), message: t("Призначення водіїв з тижня {week} замінять поточні цього тижня.", { week: weekLabel(prevWeek(weekStart)) }), confirmText: t("Скопіювати") })) copyPrev.mutate(); }}>
@@ -101,6 +94,14 @@ export default function DriverShifts() {
               );
             })}
           </div>
+
+          {!factories.length ? (
+            <div className="mt-6"><Empty>{data?.hasWeek ? t("Немає змін у графіку на цей тиждень") : t("Графік на цей тиждень ще не згенеровано")}</Empty></div>
+          ) : (
+            <div className="mt-6 space-y-4">
+              {factories.map(f => <FactoryCard key={f.id} f={f} weekStart={weekStart} />)}
+            </div>
+          )}
         </>
       )}
 
@@ -158,7 +159,8 @@ function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
                   if (!c) return <td key={d} className={`px-3 py-2.5 text-center text-slate-200 ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>—</td>;
                   return (
                     <td key={d} className={`px-3 py-2.5 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
-                      <div className="text-[11px] text-slate-400">{c.headcount} {t("ос.")}</div>
+                      {c.cancelled && <div className="mb-1"><Badge color="rose">❌ {t("скасовано")}</Badge></div>}
+                      <div className="text-sm font-semibold text-slate-700">{c.headcount} <span className="font-normal text-slate-400">{t("ос.")}</span></div>
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
                         {c.drivers.length ? c.drivers.map(dr => (
                           <span key={dr.id} className="rounded-md bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-700">{dr.name}</span>
@@ -239,9 +241,10 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
 
         {!factories.length ? <Empty>{t("Немає змін для призначення")}</Empty> : factories.map(f => {
           const shifts = shiftsOf(f), days = daysOf(f);
-          const allKeys = f.cells.map(c => cellKey(f.id, c.day, c.shift));
-          const rowKeys = (s: ShiftCode) => f.cells.filter(c => c.shift === s).map(c => cellKey(f.id, c.day, c.shift));
-          const colKeys = (d: DayCode) => f.cells.filter(c => c.day === d).map(c => cellKey(f.id, c.day, c.shift));
+          const selectable = f.cells.filter(c => !c.cancelled); // bulk toggles must not touch cancelled cells
+          const allKeys = selectable.map(c => cellKey(f.id, c.day, c.shift));
+          const rowKeys = (s: ShiftCode) => selectable.filter(c => c.shift === s).map(c => cellKey(f.id, c.day, c.shift));
+          const colKeys = (d: DayCode) => selectable.filter(c => c.day === d).map(c => cellKey(f.id, c.day, c.shift));
           return (
             <div key={f.id} className="overflow-hidden rounded-xl border border-slate-200">
               <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
@@ -279,13 +282,20 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                           const onP = sel.has(kp);
                           const others = c.drivers.filter(x => x.id !== driver.id);
                           const othersP = c.pickupDrivers.filter(x => x.id !== driver.id);
+                          if (c.cancelled) {
+                            return (
+                              <td key={d} className={`px-2 py-2 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
+                                <div className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-2 text-[10px] font-medium text-rose-600">❌ {t("скасовано")}</div>
+                              </td>
+                            );
+                          }
                           return (
                             <td key={d} className={`px-2 py-2 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
                               <button type="button" onClick={() => toggle(k)}
                                 className={`flex w-full flex-col items-center gap-0.5 rounded-lg border px-2 py-1.5 transition ${
-                                  on ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-500 hover:border-red-300"}`}>
-                                {on ? <Check className="h-4 w-4" /> : <span className="text-[11px] font-semibold">{c.headcount}</span>}
-                                <span className={`text-[10px] ${on ? "text-red-100" : "text-slate-400"}`}>{on ? `${c.headcount} ${t("ос.")}` : t("ос.")}</span>
+                                  on ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white hover:border-red-300"}`}>
+                                {on ? <Check className="h-4 w-4" /> : <span className="text-sm font-bold text-slate-700">{c.headcount}</span>}
+                                <span className={`text-[10px] font-medium ${on ? "text-red-100" : "text-slate-500"}`}>{on ? `${c.headcount} ${t("ос.")}` : t("ос.")}</span>
                               </button>
                               <button type="button" onClick={() => toggle(kp)} title={t("Забрати зі зміни")}
                                 className={`mt-1 w-full rounded-md border px-1 py-0.5 text-[10px] font-medium transition ${

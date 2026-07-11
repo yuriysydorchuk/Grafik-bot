@@ -10,7 +10,7 @@ import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { monthOptions } from "../lib/dates";
 
-interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null }
+interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null }
 interface Row { driverId: number; name: string; vehicle: string | null; days: Day[]; totalKm: number; closedShifts: number; avgKm: number | null }
 
 const fmtTime = (iso: string | null) =>
@@ -84,6 +84,7 @@ export default function Mileage() {
                   <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
                     <tr>
                       <th className="px-4 py-2.5">{t("Дата")}</th>
+                      <th className="px-4 py-2.5">{t("Авто")}</th>
                       <th className="px-4 py-2.5">{t("Виїзд")}</th>
                       <th className="px-4 py-2.5">{t("Повернення")}</th>
                       <th className="px-4 py-2.5 text-right">{t("Початковий пробіг")}</th>
@@ -96,6 +97,7 @@ export default function Mileage() {
                     {active.days.map((d) => (
                       <tr key={d.id}>
                         <td className="px-4 py-2.5 font-medium text-slate-700">{fmtDate(d.date, locale)}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{d.vehiclePlate ?? <span className="text-slate-300">—</span>}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.startedAt)}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.endedAt)}</td>
                         {editId === d.id ? (

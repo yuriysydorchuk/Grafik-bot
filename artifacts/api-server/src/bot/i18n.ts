@@ -142,6 +142,7 @@ const D: Dict = {
 
   // ── push notifications (sent TO workers) ──
   "notif.reminder":      { uk: "🔔 *Нагадування про зміну*\n\nЧерез 2 години: *{shift}* ({time})\n🏭 {factory}\n\nБудьте вчасно!", en: "🔔 *Shift reminder*\n\nIn 2 hours: *{shift}* ({time})\n🏭 {factory}\n\nBe on time!", es: "🔔 *Recordatorio de turno*\n\nEn 2 horas: *{shift}* ({time})\n🏭 {factory}\n\n¡Sé puntual!", ru: "🔔 *Напоминание о смене*\n\nЧерез 2 часа: *{shift}* ({time})\n🏭 {factory}\n\nБудьте вовремя!", pl: "🔔 *Przypomnienie o zmianie*\n\nZa 2 godziny: *{shift}* ({time})\n🏭 {factory}\n\nBądź punktualnie!" },
+  "notif.shiftCancelled": { uk: "❌ *Зміну скасовано*\n\n🏭 {factory}\n📅 {date} · зміна {shift}\n\nВиходити на цю зміну не потрібно. Пропуск вам не рахується.", en: "❌ *Shift cancelled*\n\n🏭 {factory}\n📅 {date} · shift {shift}\n\nYou don't need to come to this shift. It won't count as a no-show.", es: "❌ *Turno cancelado*\n\n🏭 {factory}\n📅 {date} · turno {shift}\n\nNo necesitas venir a este turno. No contará como ausencia.", ru: "❌ *Смена отменена*\n\n🏭 {factory}\n📅 {date} · смена {shift}\n\nВыходить на эту смену не нужно. Пропуск вам не засчитывается.", pl: "❌ *Zmiana odwołana*\n\n🏭 {factory}\n📅 {date} · zmiana {shift}\n\nNie musisz przychodzić na tę zmianę. Nieobecność nie będzie liczona.", },
   "notif.schedHdr":      { uk: "📅 *Ваш графік — {factory}*\nТиждень: {week}\n\n{lines}", en: "📅 *Your schedule — {factory}*\nWeek: {week}\n\n{lines}", es: "📅 *Tu horario — {factory}*\nSemana: {week}\n\n{lines}", ru: "📅 *Ваш график — {factory}*\nНеделя: {week}\n\n{lines}", pl: "📅 *Twój grafik — {factory}*\nTydzień: {week}\n\n{lines}" },
   "notif.schedWeekHdr":  { uk: "📅 *Ваш графік на тиждень {week}*\n\n{lines}", en: "📅 *Your schedule for the week {week}*\n\n{lines}", es: "📅 *Tu horario para la semana {week}*\n\n{lines}", ru: "📅 *Ваш график на неделю {week}*\n\n{lines}", pl: "📅 *Twój grafik na tydzień {week}*\n\n{lines}" },
   "notif.schedDrvHdr":   { uk: "📅 *Графік — {factory}*\n{week}\n\n{lines}", en: "📅 *Schedule — {factory}*\n{week}\n\n{lines}", es: "📅 *Horario — {factory}*\n{week}\n\n{lines}", ru: "📅 *График — {factory}*\n{week}\n\n{lines}", pl: "📅 *Grafik — {factory}*\n{week}\n\n{lines}" },
@@ -585,6 +586,44 @@ const BOT_EN: Record<string, string> = {
   "⏳ Перегенерую графік для *{name}*...": "⏳ Regenerating the schedule for *{name}*...",
   "✅ Перегенеровано! Призначено: {n}": "✅ Regenerated! Assigned: {n}",
   "Не вистачає людей:": "Not enough people:",
+  // ── boarding correction (2h window) ──
+  "Коригування посадки": "Boarding correction",
+  "Відмітьте, як було насправді (⬜→✅), і натисніть «Підтвердити посадку» — статуси буде виправлено.": "Mark how it actually was (⬜→✅) and tap “Confirm boarding” — the statuses will be corrected.",
+  "✏️ Відкоригувати посадку": "✏️ Adjust boarding",
+  "Хтось дійшов пізніше або помилилися? Відкоригувати можна протягом 2 годин.": "Someone arrived late or you made a mistake? You can adjust it within 2 hours.",
+  "⏰ Минуло понад 2 години — тепер явку може виправити лише графіковий у веб-панелі.": "⏰ More than 2 hours have passed — now only the scheduler can fix attendance in the web panel.",
+  "Немає кого коригувати.": "Nobody to correct.",
+  "Посадку відкориговано": "Boarding adjusted",
+  "На зміні:": "On the shift:",
+  "Без змін.": "No changes.",
+  "Готово.": "Done.",
+  // ── substitution ──
+  "🔁 Ця людина когось заміняє на цій зміні?": "🔁 Is this person replacing someone on this shift?",
+  "🔁 Так": "🔁 Yes",
+  "Ні": "No",
+  "Нікого": "Nobody",
+  "Кого заміняє *{name}*?": "Who is *{name}* replacing?",
+  "🔁 *{name}* заміняє *{replaced}*.": "🔁 *{name}* replaces *{replaced}*.",
+  "✅ *{name}* додано як заміну для *{replaced}*.": "✅ *{name}* added as a substitute for *{replaced}*.",
+  // ── vehicles (fleet + workday picker) ──
+  "🚙 Яке авто ви берете?": "🚙 Which vehicle are you taking?",
+  "⏭ Пропустити": "⏭ Skip",
+  "Авто не вказано. Помилилися з пробігом? Виправити можна протягом 24 годин:": "Vehicle not set. Mistyped the odometer? You can fix it within 24 hours:",
+  "🚙 Авто: *{plate}*. Помилилися з пробігом? Виправити можна протягом 24 годин:": "🚙 Vehicle: *{plate}*. Mistyped the odometer? You can fix it within 24 hours:",
+  "🚙 Авто": "🚙 Vehicles",
+  "Авто": "Vehicles",
+  "місць": "seats",
+  "Поки що немає жодного авто. Додайте перше — і водії почнуть вибирати його при старті зміни.": "No vehicles yet. Add the first one — drivers will start picking it when starting a shift.",
+  "➕ Додати авто": "➕ Add vehicle",
+  "Введіть номер авто (напр. WGM 12345):": "Enter the plate number (e.g. WGM 12345):",
+  "❌ Введіть номер авто (напр. WGM 12345):": "❌ Enter the plate number (e.g. WGM 12345):",
+  "Марка і модель (напр. Opel Vivaro):": "Brand and model (e.g. Opel Vivaro):",
+  "Скільки пасажирських місць? (число)": "How many passenger seats? (a number)",
+  "❌ Введіть кількість місць числом (напр. 8):": "❌ Enter the seat count as a number (e.g. 8):",
+  "✅ Авто додано: *{plate}* — {brand} · {seats} {seatsWord}": "✅ Vehicle added: *{plate}* — {brand} · {seats} {seatsWord}",
+  "Видалено": "Deleted",
+  // ── shift cancellation (driver notice) ──
+  "❌ Зміну скасовано: {factory} · {date} · {shift} зміна. Її прибрано з вашого графіку.": "❌ Shift cancelled: {factory} · {date} · shift {shift}. It was removed from your schedule.",
   // @bot-en-append
 };
 
@@ -731,6 +770,44 @@ const BOT_RU: Record<string, string> = {
   "\nЗнято призначень у графіку: {n}.": "\nСнято назначений в графике: {n}.",
   "Список водіїв порожній.": "Список водителей пуст.",
   "👑 = головний водій (теж може возити зміни)\n✅ = підключений до бота": "👑 = главный водитель (тоже может возить смены)\n✅ = подключён к боту",
+  // ── boarding correction (2h window) ──
+  "Коригування посадки": "Корректировка посадки",
+  "Відмітьте, як було насправді (⬜→✅), і натисніть «Підтвердити посадку» — статуси буде виправлено.": "Отметьте, как было на самом деле (⬜→✅), и нажмите «Подтвердить посадку» — статусы будут исправлены.",
+  "✏️ Відкоригувати посадку": "✏️ Скорректировать посадку",
+  "Хтось дійшов пізніше або помилилися? Відкоригувати можна протягом 2 годин.": "Кто-то дошёл позже или вы ошиблись? Скорректировать можно в течение 2 часов.",
+  "⏰ Минуло понад 2 години — тепер явку може виправити лише графіковий у веб-панелі.": "⏰ Прошло больше 2 часов — теперь явку может исправить только диспетчер в веб-панели.",
+  "Немає кого коригувати.": "Некого корректировать.",
+  "Посадку відкориговано": "Посадка скорректирована",
+  "На зміні:": "На смене:",
+  "Без змін.": "Без изменений.",
+  "Готово.": "Готово.",
+  // ── substitution ──
+  "🔁 Ця людина когось заміняє на цій зміні?": "🔁 Этот человек кого-то заменяет на этой смене?",
+  "🔁 Так": "🔁 Да",
+  "Ні": "Нет",
+  "Нікого": "Никого",
+  "Кого заміняє *{name}*?": "Кого заменяет *{name}*?",
+  "🔁 *{name}* заміняє *{replaced}*.": "🔁 *{name}* заменяет *{replaced}*.",
+  "✅ *{name}* додано як заміну для *{replaced}*.": "✅ *{name}* добавлен(а) как замена для *{replaced}*.",
+  // ── vehicles (fleet + workday picker) ──
+  "🚙 Яке авто ви берете?": "🚙 Какое авто вы берёте?",
+  "⏭ Пропустити": "⏭ Пропустить",
+  "Авто не вказано. Помилилися з пробігом? Виправити можна протягом 24 годин:": "Авто не указано. Ошиблись с пробегом? Исправить можно в течение 24 часов:",
+  "🚙 Авто: *{plate}*. Помилилися з пробігом? Виправити можна протягом 24 годин:": "🚙 Авто: *{plate}*. Ошиблись с пробегом? Исправить можно в течение 24 часов:",
+  "🚙 Авто": "🚙 Авто",
+  "Авто": "Авто",
+  "місць": "мест",
+  "Поки що немає жодного авто. Додайте перше — і водії почнуть вибирати його при старті зміни.": "Пока нет ни одного авто. Добавьте первое — и водители начнут выбирать его при старте смены.",
+  "➕ Додати авто": "➕ Добавить авто",
+  "Введіть номер авто (напр. WGM 12345):": "Введите номер авто (напр. WGM 12345):",
+  "❌ Введіть номер авто (напр. WGM 12345):": "❌ Введите номер авто (напр. WGM 12345):",
+  "Марка і модель (напр. Opel Vivaro):": "Марка и модель (напр. Opel Vivaro):",
+  "Скільки пасажирських місць? (число)": "Сколько пассажирских мест? (число)",
+  "❌ Введіть кількість місць числом (напр. 8):": "❌ Введите количество мест числом (напр. 8):",
+  "✅ Авто додано: *{plate}* — {brand} · {seats} {seatsWord}": "✅ Авто добавлено: *{plate}* — {brand} · {seats} {seatsWord}",
+  "Видалено": "Удалено",
+  // ── shift cancellation (driver notice) ──
+  "❌ Зміну скасовано: {factory} · {date} · {shift} зміна. Її прибрано з вашого графіку.": "❌ Смена отменена: {factory} · {date} · {shift} смена. Она убрана из вашего графика.",
 };
 
 export function tb(lang: Lang, uk: string, params?: Record<string, string | number>): string {

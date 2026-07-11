@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Crown, Link2, Trash2, Pencil, Copy } from "lucide-react";
+import { Plus, Crown, Link2, Trash2, Pencil, Copy, CarFront } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Driver } from "../lib/api";
 import { Button, Input, Label, Card, Spinner, Badge, Modal, Empty } from "../components/ui";
@@ -62,7 +62,101 @@ export default function Drivers() {
       </Card>
       {adding && <DriverModal onClose={() => setAdding(false)} onSaved={() => { inv(); setAdding(false); }} />}
       {editing && <DriverModal driver={editing} onClose={() => setEditing(null)} onSaved={() => { inv(); setEditing(null); }} />}
+
+      <FleetSection />
     </>
+  );
+}
+
+// ─── Fleet (vehicles) — the same list the head driver manages in the bot;
+// drivers pick a plate when starting a workday, it shows in the mileage report.
+type Vehicle = { id: number; plate: string; brandModel: string | null; seats: number | null };
+
+function FleetSection() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { data: vehicles = [], isLoading } = useQuery<Vehicle[]>({ queryKey: ["vehicles"], queryFn: () => get("/vehicles") });
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Vehicle | null>(null);
+  const inv = () => qc.invalidateQueries({ queryKey: ["vehicles"] });
+
+  const remove = useMutation({ mutationFn: (id: number) => del(`/vehicles/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
+
+  return (
+    <>
+      <div className="mt-8 mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <CarFront className="h-4 w-4 text-red-600" /> {t("Автопарк")} <span className="font-normal text-slate-400">({vehicles.length})</span>
+        </h3>
+        <Button variant="secondary" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати авто")}</Button>
+      </div>
+      <Card className="overflow-x-auto">
+        {isLoading ? <Spinner /> : !vehicles.length ? (
+          <Empty>{t("Немає авто. Додайте перше — і водії почнуть вибирати його при старті зміни.")}</Empty>
+        ) : (
+          <table className="w-full min-w-100 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="px-4 py-2.5">{t("Номер")}</th>
+                <th className="px-4 py-2.5">{t("Марка і модель")}</th>
+                <th className="px-4 py-2.5 text-right">{t("Місткість")}</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {vehicles.map(v => (
+                <tr key={v.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-2.5 font-mono font-medium text-slate-700">{v.plate}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{v.brandModel ?? "—"}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-slate-500">{v.seats != null ? `${v.seats} ${t("пас. місць")}` : "—"}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="flex justify-end gap-1">
+                      <button onClick={() => setEditing(v)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
+                      <button onClick={async () => { if (await confirm({ title: t("Видалити {name}?", { name: v.plate }), danger: true, confirmText: t("Видалити") })) remove.mutate(v.id); }}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+      {adding && <VehicleModal onClose={() => setAdding(false)} onSaved={() => { inv(); setAdding(false); }} />}
+      {editing && <VehicleModal vehicle={editing} onClose={() => setEditing(null)} onSaved={() => { inv(); setEditing(null); }} />}
+    </>
+  );
+}
+
+function VehicleModal({ vehicle, onClose, onSaved }: { vehicle?: Vehicle; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const isEdit = !!vehicle;
+  const [plate, setPlate] = useState(vehicle?.plate ?? "");
+  const [brandModel, setBrandModel] = useState(vehicle?.brandModel ?? "");
+  const [seats, setSeats] = useState(vehicle?.seats != null ? String(vehicle.seats) : "");
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body = { plate, brandModel, seats: seats.trim() ? Number(seats) : null };
+      return isEdit ? patch<Vehicle>(`/vehicles/${vehicle!.id}`, body) : post<Vehicle>("/vehicles", body);
+    },
+    onSuccess: () => { toast.success(isEdit ? t("Збережено") : t("Авто додано")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  return (
+    <Modal open onClose={onClose} title={isEdit ? t("Редагувати авто") : t("Нове авто")}>
+      <div className="space-y-3">
+        <div><Label>{t("Номер")}</Label><Input value={plate} onChange={e => setPlate(e.target.value)} placeholder="WGM 12345" autoFocus /></div>
+        <div><Label>{t("Марка і модель (необов'язково)")}</Label><Input value={brandModel} onChange={e => setBrandModel(e.target.value)} placeholder="Opel Vivaro" /></div>
+        <div><Label>{t("Місткість, місць (необов'язково)")}</Label><Input type="number" value={seats} onChange={e => setSeats(e.target.value)} placeholder="8" /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} onClick={() => plate.trim() && save.mutate()}>{isEdit ? t("Зберегти") : t("Створити")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

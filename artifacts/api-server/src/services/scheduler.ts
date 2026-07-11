@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, adminsTable, factoriesTable,
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, driverTripsTable, notificationsTable,
-  settingsTable,
+  settingsTable, shiftCancellationsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, lt, desc, isNull } from "drizzle-orm";
@@ -193,6 +193,16 @@ export function setReminderHour(hour: number) {
 
 // ─── Pre-shift notifications ──────────────────────────────────────────────────
 
+// A cell cancelled by the scheduler gets no pre-shift/pickup reminders at all.
+async function isCellCancelled(weekId: number, factoryId: number, day: DayOfWeek, shift: Shift): Promise<boolean> {
+  const rows = await db.select({ id: shiftCancellationsTable.id }).from(shiftCancellationsTable)
+    .where(and(
+      eq(shiftCancellationsTable.weekId, weekId), eq(shiftCancellationsTable.factoryId, factoryId),
+      eq(shiftCancellationsTable.dayOfWeek, day), eq(shiftCancellationsTable.shift, shift),
+    )).limit(1);
+  return rows.length > 0;
+}
+
 async function checkPreShiftNotifications() {
   try {
     // Current Warsaw time
@@ -260,6 +270,7 @@ async function sendFactoryShiftReminder(
   day: DayOfWeek,
   shiftStart: string,
 ) {
+  if (await isCellCancelled(weekId, factoryId, day, shift)) return;
   const [hh] = shiftStart.split(":");
   const notifyTime = `${String((parseInt(hh!) - 2 + 24) % 24).padStart(2, "0")}:00`;
 
@@ -376,6 +387,7 @@ async function sendPickupReminder(
   const weeks = await db.select().from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
   if (weeks.length === 0) return;
+  if (await isCellCancelled(weeks[0]!.id, factoryId, assignDay, shift)) return;
 
   const rows = await db
     .select({ telegramId: driversTable.telegramId })

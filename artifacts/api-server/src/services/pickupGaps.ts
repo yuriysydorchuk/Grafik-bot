@@ -10,6 +10,7 @@
 import { db } from "@workspace/db";
 import {
   driversTable, factoriesTable, scheduleEntriesTable, driverShiftAssignmentsTable, workersTable,
+  shiftCancellationsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
@@ -45,6 +46,11 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
   const assigns = await db
     .select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, kind: driverShiftAssignmentsTable.kind })
     .from(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, weekId));
+  // Cancelled cells have no run at all → no pickup to cover.
+  const cancelledRows = await db
+    .select({ factoryId: shiftCancellationsTable.factoryId, day: shiftCancellationsTable.dayOfWeek, shift: shiftCancellationsTable.shift })
+    .from(shiftCancellationsTable).where(eq(shiftCancellationsTable.weekId, weekId));
+  const cancelled = new Set(cancelledRows.map(c => `${c.factoryId}-${c.day}-${c.shift}`));
 
   const gaps: PickupGap[] = [];
   for (const f of factories) {
@@ -58,6 +64,7 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
       const sc = String(s) as Shift;
       const people = headcount(day, sc);
       if (!st || people === 0) continue;
+      if (cancelled.has(`${f.id}-${day}-${sc}`)) continue;
       if (assignsAt(day, sc, "pickup").length > 0) continue; // explicitly covered
       const crossesMidnight = toMin(st.end) <= toMin(st.start);
       const coverDay = crossesMidnight ? nextDay : day;

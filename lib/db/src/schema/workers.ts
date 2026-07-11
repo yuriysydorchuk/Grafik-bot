@@ -82,6 +82,17 @@ export const driversTable = pgTable("drivers", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
+// starting a workday; the plate shows up in the mileage report.
+export const vehiclesTable = pgTable("vehicles", {
+  id: serial("id").primaryKey(),
+  plate: text("plate").notNull(),        // registration number, e.g. "WX 12345"
+  brandModel: text("brand_model"),       // e.g. "Opel Vivaro"
+  seats: integer("seats"),               // passenger capacity (null = unknown)
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const factoriesTable = pgTable("factories", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -190,6 +201,19 @@ export const driverShiftAssignmentsTable = pgTable("driver_shift_assignments", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// A whole factory shift (day+shift cell) cancelled by the scheduler. Entries stay
+// "scheduled" (so reliability ignores them); driver assignments for the cell are
+// deleted on cancel; bot boarding & pre-shift pushes skip cancelled cells.
+export const shiftCancellationsTable = pgTable("shift_cancellations", {
+  id: serial("id").primaryKey(),
+  weekId: integer("week_id").notNull().references(() => scheduleWeeksTable.id),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  dayOfWeek: dayEnum("day_of_week").notNull(),
+  shift: shiftEnum("shift").notNull(),
+  cancelledBy: text("cancelled_by"), // admin name (informational)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const adminsTable = pgTable("admins", {
   id: serial("id").primaryKey(),
   telegramId: text("telegram_id").unique(),  // nullable: set when an invited user joins the bot
@@ -269,6 +293,7 @@ export const driverWorkdaysTable = pgTable("driver_workdays", {
   workDate: date("work_date").notNull(),
   startedAt: timestamp("started_at").notNull().defaultNow(),
   odometerStart: integer("odometer_start").notNull(), // km
+  vehicleId: integer("vehicle_id").references(() => vehiclesTable.id), // null = skipped (no fleet yet)
   endedAt: timestamp("ended_at"),
   odometerEnd: integer("odometer_end"),               // km
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -284,6 +309,10 @@ export const unplannedWorkersTable = pgTable("unplanned_workers", {
   shift: shiftEnum("shift").notNull(),
   workerName: text("worker_name").notNull(),
   workerId: integer("worker_id").references(() => workersTable.id),
+  // Substitution: this person came instead of a scheduled worker (the replaced
+  // worker's entry goes absent with reason "заміна", which reliability counts
+  // as cancelled, not a no-show).
+  replacesWorkerId: integer("replaces_worker_id").references(() => workersTable.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -723,6 +752,8 @@ export type ScheduleWeek = typeof scheduleWeeksTable.$inferSelect;
 export type ScheduleEntry = typeof scheduleEntriesTable.$inferSelect;
 export type Admin = typeof adminsTable.$inferSelect;
 export type DriverWorkday = typeof driverWorkdaysTable.$inferSelect;
+export type Vehicle = typeof vehiclesTable.$inferSelect;
+export type ShiftCancellation = typeof shiftCancellationsTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;

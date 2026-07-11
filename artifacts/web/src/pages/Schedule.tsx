@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail } from "lucide-react";
+import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban } from "lucide-react";
 import { toast } from "sonner";
 import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
@@ -25,14 +25,15 @@ type SchedResp = {
   available: Record<string, ReserveItem[]>;
   approved: boolean;
   factory: { shiftCount: number; usesAvailability: boolean; genMode?: string; usesPositions?: boolean; usesGender?: boolean } | null;
-  assignments: Record<string, { driverId: number; driverName: string | null }>;
+  assignments: Record<string, { driverId: number; driverName: string | null }[]>;
   drivers: { id: number; name: string }[];
   orders: Record<string, number>;
   orderReq: Record<string, OrderRequirement[]>;
   positions: PositionLite[];
-  unplanned: Record<string, { id: number; name: string; workerId: number | null }[]>;
+  unplanned: Record<string, { id: number; name: string; workerId: number | null; replacesName: string | null }[]>;
   absenceByWorker: Record<string, { status: string; reason: string | null }>;
   substituteFor: Record<string, string>;
+  cancelledCells: string[];
 };
 type DragData =
   | { kind: "entry"; id: number; day: DayCode; shift: ShiftCode }
@@ -63,6 +64,7 @@ export default function Schedule() {
   const [addQuery, setAddQuery] = useState("");
   const [linkTo, setLinkTo] = useState<{ id: number; name: string; day: DayCode; shift: ShiftCode } | null>(null); // link a free-text unplanned extra to a real worker
   const [linkQuery, setLinkQuery] = useState("");
+  const [cancelTo, setCancelTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // cancel a whole day+shift cell
 
   useEffect(() => { if (!factoryId && factories.length) setFactoryId(String(factories[0]!.id)); }, [factories]);
 
@@ -98,6 +100,7 @@ export default function Schedule() {
   const unplanned = data?.unplanned ?? {};
   const absenceByWorker = data?.absenceByWorker ?? {};
   const substituteFor = data?.substituteFor ?? {};
+  const cancelledCells = new Set(data?.cancelledCells ?? []);
   // A shift "has happened" once its start time has passed → show actuals, lock editing.
   const factoryShiftsArr = factory?.shifts ?? [];
   // Compare in Warsaw wall-clock (independent of the viewer's timezone)
@@ -170,6 +173,20 @@ export default function Schedule() {
   const setStatus = useMutation({ mutationFn: (v: { id: number; status: string }) => patch(`/schedule/entry/${v.id}/status`, { status: v.status }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const linkUnplanned = useMutation({ mutationFn: (v: { id: number; workerId: number }) => post(`/unplanned/${v.id}/link`, { workerId: v.workerId }),
     onSuccess: () => { reload(); toast.success(t("Прив'язано")); }, onError: (e: any) => toast.error(e.message) });
+  const cancelShift = useMutation({
+    mutationFn: (v: { day: DayCode; shift: ShiftCode; notifyWorkers: boolean; notifyDrivers: boolean }) =>
+      post("/schedule/shift-cancel", { weekStart, factoryId: Number(factoryId), ...v }),
+    onSuccess: (r: any) => {
+      reload(); setCancelTo(null);
+      toast.success(t("Зміну скасовано"), { description: `${t("Сповіщено працівників:")} ${r.workersNotified ?? 0} · ${t("водіїв:")} ${r.driversNotified ?? 0}` });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const restoreShift = useMutation({
+    mutationFn: (v: { day: DayCode; shift: ShiftCode }) => post("/schedule/shift-restore", { weekStart, factoryId: Number(factoryId), ...v }),
+    onSuccess: () => { reload(); toast.success(t("Зміну відновлено"), { description: t("Водіїв призначте заново — призначення не відновлюються.") }); },
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const byDayShift = (d: DayCode, s: ShiftCode) => entries.filter(e => e.day === d && e.shift === s);
 
@@ -288,13 +305,31 @@ export default function Schedule() {
                     const isPast = shiftStarted(di, shift);
                     const cellEditing = editable && editCells.has(`${day}-${shift}`);
                     const extras = unplanned[`${day}-${shift}`] ?? [];
+                    const cancelled = cancelledCells.has(`${day}-${shift}`);
                     return (
-                      <div key={shift} className="p-3">
+                      <div key={shift} className={`p-3 ${cancelled ? "bg-rose-50/40" : ""}`}>
+                        {cancelled && (
+                          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-medium text-rose-700">
+                            <span>❌ {t("Зміну скасовано — пропуски не рахуються")}</span>
+                            {editable && (
+                              <button onClick={() => restoreShift.mutate({ day, shift })} disabled={restoreShift.isPending}
+                                className="shrink-0 rounded border border-rose-300 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50">
+                                {t("Відновити")}
+                              </button>
+                            )}
+                          </div>
+                        )}
                         <div className="mb-2">
                           <div className="flex items-center gap-2">
                             <span className={`h-2.5 w-2.5 rounded-full ${shiftDot[shift]}`} />
                             <span className="text-xs font-medium text-slate-600">{SHIFT_UK[shift]}</span>
                             {isPast && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("відбулась")}</span>}
+                            {editable && !cancelled && (list.length > 0 || extras.length > 0) && (
+                              <button title={t("Скасувати зміну")} onClick={() => setCancelTo({ day, shift })}
+                                className="rounded-md p-0.5 text-slate-300 transition hover:bg-rose-50 hover:text-rose-600">
+                                <Ban className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             <span
                               title={ordered > 0 ? t("У зміні {a} із {b} замовлених", { a: inShift, b: ordered }) : t("У зміні {a} · замовлення немає", { a: inShift })}
                               className={`ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -394,6 +429,8 @@ export default function Schedule() {
                                     className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100">
                                     <Link2 className="h-3 w-3" /> {t("прив'язати")}
                                   </button>
+                                ) : u.replacesName ? (
+                                  <span title={t("Замість {name}", { name: u.replacesName })} className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">🔁 {t("замість")} {u.replacesName.split(" ")[0]}</span>
                                 ) : (
                                   <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-600">{t("➕ додатковий")}</span>
                                 )}
@@ -530,6 +567,17 @@ export default function Schedule() {
         );
       })()}
 
+      {cancelTo && (
+        <CancelShiftModal
+          label={`${DAY_FULL[cancelTo.day]} · ${dayDate(weekStart, DAYS.indexOf(cancelTo.day))} · ${SHIFT_UK[cancelTo.shift]}`}
+          people={byDayShift(cancelTo.day, cancelTo.shift).length}
+          driverNames={(data?.assignments?.[`${cancelTo.day}-${cancelTo.shift}`] ?? []).map(d => d.driverName ?? "—")}
+          loading={cancelShift.isPending}
+          onClose={() => setCancelTo(null)}
+          onCancelShift={(notifyWorkers, notifyDrivers) => cancelShift.mutate({ day: cancelTo.day, shift: cancelTo.shift, notifyWorkers, notifyDrivers })}
+        />
+      )}
+
       {linkTo && (() => {
         const q = linkQuery.trim().toLowerCase();
         // Not limited to this factory: the driver may have picked up someone assigned elsewhere.
@@ -559,6 +607,44 @@ export default function Schedule() {
         );
       })()}
     </>
+  );
+}
+
+function CancelShiftModal({ label, people, driverNames, loading, onClose, onCancelShift }: {
+  label: string; people: number; driverNames: string[]; loading: boolean; onClose: () => void;
+  onCancelShift: (notifyWorkers: boolean, notifyDrivers: boolean) => void;
+}) {
+  const t = useT();
+  const [notifyWorkers, setNotifyWorkers] = useState(true);
+  const [notifyDrivers, setNotifyDrivers] = useState(true);
+  return (
+    <Modal open onClose={onClose} title={`${t("Скасувати зміну")} — ${label}`}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-600">
+          {t("Зміну буде позначено скасованою: пропуски людям не рахуються, зміна зникне з графіку водіїв (призначення буде знято).")}
+        </p>
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={notifyWorkers} onChange={e => setNotifyWorkers(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Сповістити працівників")}</span>
+            <span className="block text-xs text-slate-500">{t("У зміні: {n} осіб — кожен отримає повідомлення своєю мовою", { n: people })}</span>
+          </span>
+        </label>
+        <label className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${driverNames.length ? "border-slate-200" : "border-slate-100 bg-slate-50 opacity-60"}`}>
+          <input type="checkbox" className="mt-0.5" disabled={!driverNames.length} checked={notifyDrivers} onChange={e => setNotifyDrivers(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Сповістити водіїв")}</span>
+            <span className="block text-xs text-slate-500">{driverNames.length ? driverNames.join(", ") : t("водія не призначено")}</span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Назад")}</Button>
+          <Button variant="danger" loading={loading} onClick={() => onCancelShift(notifyWorkers, notifyDrivers && driverNames.length > 0)}>
+            <Ban className="h-4 w-4" /> {t("Скасувати зміну")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

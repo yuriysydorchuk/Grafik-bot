@@ -5,6 +5,7 @@ import {
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
   absenceRequestsTable, driverTripsTable, driverWorkdaysTable, unplannedWorkersTable, availabilityTable,
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
+  vehiclesTable, shiftCancellationsTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
 import { eq, and, desc, inArray, ne, isNull, gte, lt } from "drizzle-orm";
@@ -1860,6 +1861,77 @@ bot.action(/^wdfix:(start|end):(\d+)$/, async (ctx) => {
   );
 });
 
+// Vehicle chosen for the started workday (or the step skipped).
+bot.action(/^wdveh:(\d+):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from!.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  const wdId = Number((ctx as any).match[1]);
+  const vehId = Number((ctx as any).match[2]);
+  const [wd] = await db.select().from(driverWorkdaysTable).where(eq(driverWorkdaysTable.id, wdId));
+  if (!wd || wd.driverId !== driver.id) return ctx.answerCbQuery(tb(dl, "Запис не знайдено."));
+  const fixKb = { inline_keyboard: [[{ text: tb(dl, "✏️ Виправити пробіг"), callback_data: `wdfix:start:${wd.id}` }]] };
+  await ctx.answerCbQuery();
+  if (vehId === 0) {
+    try { await ctx.editMessageText(tb(dl, "Авто не вказано. Помилилися з пробігом? Виправити можна протягом 24 годин:"), { reply_markup: fixKb }); } catch { /* ignore */ }
+    return;
+  }
+  const [veh] = await db.select().from(vehiclesTable).where(eq(vehiclesTable.id, vehId));
+  if (!veh) return;
+  await db.update(driverWorkdaysTable).set({ vehicleId: veh.id }).where(eq(driverWorkdaysTable.id, wd.id));
+  try {
+    await ctx.editMessageText(tb(dl, "🚙 Авто: *{plate}*. Помилилися з пробігом? Виправити можна протягом 24 годин:", { plate: mdSafe(veh.plate) }), { parse_mode: "Markdown", reply_markup: fixKb });
+  } catch { /* ignore */ }
+  return;
+});
+
+// ─── Head driver: fleet management (vehicles) ────────────────────────────────
+
+async function showVehicleList(ctx: Context, dl: Lang) {
+  const fleet = await db.select().from(vehiclesTable).where(eq(vehiclesTable.isActive, true)).orderBy(vehiclesTable.plate);
+  const lines = fleet.map((v, i) =>
+    `${i + 1}. *${mdSafe(v.plate)}*${v.brandModel ? ` — ${mdSafe(v.brandModel)}` : ""}${v.seats ? ` · ${v.seats} ${tb(dl, "місць")}` : ""}`
+  ).join("\n");
+  return ctx.reply(
+    `🚙 *${tb(dl, "Авто")} (${fleet.length})*\n\n${lines || tb(dl, "Поки що немає жодного авто. Додайте перше — і водії почнуть вибирати його при старті зміни.")}`,
+    { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+      ...fleet.map(v => [{ text: `🗑 ${v.plate}`, callback_data: `veh:del:${v.id}` }]),
+      [{ text: tb(dl, "➕ Додати авто"), callback_data: "veh:add" }],
+    ] } },
+  );
+}
+
+bot.hears(bhears("🚙 Авто"), async (ctx) => {
+  const driver = await getDriver(String(ctx.from.id));
+  if (!driver?.isHeadDriver) return;
+  return showVehicleList(ctx, olang(driver));
+});
+
+bot.action("veh:add", async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver?.isHeadDriver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  await ctx.answerCbQuery();
+  setState(tid, "vehicle:plate", {});
+  return ctx.reply(tb(dl, "Введіть номер авто (напр. WGM 12345):"), cancelKb(dl));
+});
+
+bot.action(/^veh:del:(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver?.isHeadDriver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  const [veh] = await db.select().from(vehiclesTable).where(eq(vehiclesTable.id, Number((ctx as any).match[1])));
+  if (!veh) return ctx.answerCbQuery();
+  // Soft-delete: old workdays keep pointing at the plate in the mileage report.
+  await db.update(vehiclesTable).set({ isActive: false }).where(eq(vehiclesTable.id, veh.id));
+  await ctx.answerCbQuery(tb(dl, "Видалено"));
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  return showVehicleList(ctx, dl);
+});
+
 // ─── Driver: Report absent workers ────────────────────────────────────────────
 
 bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) => {
@@ -1882,7 +1954,9 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
   const attFacById = new Map(attFacRows.map(f => [f.id, f]));
   const attToday = warsawDateStr();
   const attNow = nowWarsaw();
+  const attCancelled = await cancelledCellKeys(weeks[0]!.id, dayName);
   const nearAssignments = myAssignments.filter(a =>
+    !attCancelled.has(`${a.factoryId}-${a.shift}`) &&
     Math.abs(attNow.getTime() - shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift).getTime()) <= BOARD_WINDOW_MS);
   if (nearAssignments.length === 0) {
     return ctx.reply(tb(dl, "🕒 Зараз немає рейсу для посадки — до найближчої вашої зміни ще далеко. Відмічайте явку ближче до початку зміни (за ~3 години)."), driverMenu(dl));
@@ -1920,7 +1994,10 @@ bot.hears(bhears("➕ Позаплановий працівник"), async (ctx)
     .from(driverShiftAssignmentsTable)
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id)));
   if (assignments.length === 0) return ctx.reply(tb(dl, "📭 На сьогодні у вас немає призначень."), driverMenu(dl));
-  const a = assignments[0]!;
+  const unpCancelled = await cancelledCellKeys(weeks[0]!.id, dayName);
+  const liveAssignments = assignments.filter(x => !unpCancelled.has(`${x.factoryId}-${x.shift}`));
+  if (liveAssignments.length === 0) return ctx.reply(tb(dl, "📭 На сьогодні у вас немає призначень."), driverMenu(dl));
+  const a = liveAssignments[0]!;
   setState(tid, "unplanned:enter_name", { weekId: weeks[0]!.id, driverId: driver.id, factoryId: a.factoryId, dayOfWeek: dayName, shift: a.shift });
   return ctx.reply(tb(dl, "Введіть ім'я або код позапланового працівника:"), Markup.removeKeyboard());
 });
@@ -1935,22 +2012,114 @@ const candidatePickKb = (cands: PickCandidate[], prefix: string, lang: Lang) => 
 });
 
 // `data` is dialog-state payload (weekId/driverId/factoryId/dayOfWeek/shift).
+// `replaces` = the scheduled worker this person substitutes: their entry goes
+// absent with a "заміна" reason (reliability counts that as cancelled, not a no-show).
 async function saveUnplannedWorker(
   data: Record<string, any>,
   matched: PickCandidate | null, typed: string, driverName: string, suggestions: string[] = [],
+  replaces: { entryId: number; workerId: number | null; name: string } | null = null,
 ) {
+  const newName = matched?.fullName ?? typed;
   await db.insert(unplannedWorkersTable).values({
     weekId: data.weekId, driverId: data.driverId, factoryId: data.factoryId,
     dayOfWeek: data.dayOfWeek as DayOfWeek, shift: data.shift as Shift,
-    workerName: matched?.fullName ?? typed, workerId: matched?.id,
+    workerName: newName, workerId: matched?.id, replacesWorkerId: replaces?.workerId ?? null,
   });
+  if (replaces) {
+    await db.update(scheduleEntriesTable)
+      .set({ status: "absent", absenceReason: `заміна: вийшов(-ла) ${newName}`, pickedUpBy: null })
+      .where(eq(scheduleEntriesTable.id, replaces.entryId));
+    await notifyRoles("scheduler", {
+      type: "substitution",
+      title: "🔁 Заміна на зміні",
+      body: `${newName} замість ${replaces.name}\n${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]} · водій ${driverName}`,
+    });
+  }
   await notifyAdmins(
-    `➕ *Позаплановий працівник*\n\n👷 ${mdSafe(matched?.fullName ?? typed)}${matched ? ` (код ${matched.workerCode ?? "—"})` : " (не в базі)"}` +
+    `➕ *Позаплановий працівник*\n\n👷 ${mdSafe(newName)}${matched ? ` (код ${matched.workerCode ?? "—"})` : " (не в базі)"}` +
+    (replaces ? `\n🔁 Замість: ${mdSafe(replaces.name)}` : "") +
     (!matched && suggestions.length ? `\n❓ Можливо: ${suggestions.map(mdSafe).join(", ")} — привʼязати можна у веб-графіку` : "") +
     `\n🚗 Водій: ${mdSafe(driverName)}\n📅 ${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}`,
     { parse_mode: "Markdown" },
   );
 }
+
+// The person is resolved — before saving, ask whether they substitute someone
+// scheduled on this factory+shift (skip the question when nobody is eligible).
+async function askUnplannedSubstitution(ctx: Context, tid: string, data: Record<string, any>, matched: PickCandidate | null, typed: string, dl: Lang) {
+  const driver = await getDriver(tid);
+  const entries = await db
+    .select({ id: scheduleEntriesTable.id, name: workersTable.fullName, workerId: scheduleEntriesTable.workerId })
+    .from(scheduleEntriesTable)
+    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .where(and(
+      eq(scheduleEntriesTable.weekId, data.weekId), eq(scheduleEntriesTable.dayOfWeek, data.dayOfWeek as DayOfWeek),
+      eq(scheduleEntriesTable.factoryId, data.factoryId), eq(scheduleEntriesTable.shift, data.shift as Shift),
+      inArray(scheduleEntriesTable.status, ["scheduled", "absent"]),
+    ));
+  const cands = entries.filter(e => e.workerId !== matched?.id);
+  if (cands.length === 0) {
+    await saveUnplannedWorker(data, matched, typed, driver?.name ?? "—");
+    return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: mdSafe(matched?.fullName ?? typed) }), { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) });
+  }
+  setState(tid, "unplanned:sub", {
+    ...data, typed,
+    matchedId: matched?.id ?? null, matchedName: matched?.fullName ?? null, matchedCode: matched?.workerCode ?? null,
+    cands: cands.map(e => ({ entryId: e.id, workerId: e.workerId, name: e.name ?? "—" })),
+  });
+  return ctx.reply(tb(dl, "🔁 Ця людина когось заміняє на цій зміні?"), Markup.inlineKeyboard([[
+    Markup.button.callback(tb(dl, "🔁 Так"), "unsub:y"),
+    Markup.button.callback(tb(dl, "Ні"), "unsub:n"),
+  ]]));
+}
+
+// Rebuild the PickCandidate the driver chose earlier from the dialog state.
+const unsubMatched = (data: Record<string, any>): PickCandidate | null =>
+  data.matchedId ? { id: data.matchedId, fullName: data.matchedName ?? "—", workerCode: data.matchedCode ?? null } : null;
+
+bot.action("unsub:y", async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "unplanned:sub") return;
+  const { data } = st;
+  const dl = olang(await getDriver(tid));
+  const cands: { entryId: number; workerId: number | null; name: string }[] = data.cands ?? [];
+  try {
+    await ctx.editMessageText(tb(dl, "Кого заміняє *{name}*?", { name: mdSafe(data.matchedName ?? data.typed) }), {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [
+        ...cands.map((c, i) => [{ text: `👤 ${c.name}`, callback_data: `unsubp:${i}` }]),
+        [{ text: tb(dl, "Нікого"), callback_data: "unsubp:x" }],
+      ] },
+    });
+  } catch { /* ignore */ }
+});
+
+bot.action(/^(unsub:n|unsubp:(\d+|x))$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "unplanned:sub") return;
+  const { data } = st;
+  clearState(tid);
+  const driver = await getDriver(tid);
+  const dl = olang(driver);
+  const raw = (ctx.match as RegExpMatchArray)[0]!;
+  const idxStr = raw.startsWith("unsubp:") ? raw.slice("unsubp:".length) : "x";
+  const cands: { entryId: number; workerId: number | null; name: string }[] = data.cands ?? [];
+  const replaces = idxStr !== "x" ? cands[Number(idxStr)] ?? null : null;
+  const matched = unsubMatched(data);
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  await saveUnplannedWorker(data, matched, data.typed, driver?.name ?? "—", [], replaces);
+  const name = mdSafe(matched?.fullName ?? data.typed);
+  return ctx.reply(
+    replaces
+      ? tb(dl, "✅ *{name}* додано як заміну для *{replaced}*.", { name, replaced: mdSafe(replaces.name) })
+      : tb(dl, "✅ *{name}* додано як позапланового.", { name }),
+    { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) },
+  );
+});
 
 bot.action(/^unpk:(\d+|x)$/, async (ctx) => {
   const tid = String(ctx.from.id);
@@ -1969,15 +2138,27 @@ bot.action(/^unpk:(\d+|x)$/, async (ctx) => {
   }
   await ctx.answerCbQuery();
   try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
-  await saveUnplannedWorker(data, matched, data.typed, driver?.name ?? "—");
-  return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: mdSafe(matched?.fullName ?? data.typed) }), { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) });
+  return askUnplannedSubstitution(ctx, tid, data, matched, data.typed, dl);
 });
 
 // ─── Driver: Attendance (multi-select) ────────────────────────────────────────
 
 // ─── DRIVER BOARDING (посадка) — inline tap-to-board flow ───────────────────────
-type BoardWorker = { key: string; entryId: number | null; workerId: number | null; name: string; factoryId: number; shift: string; boarded: boolean; unplanned: boolean };
-type BoardData = { weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; addTyped?: string; lang?: Lang };
+type BoardWorker = {
+  key: string; entryId: number | null; workerId: number | null; name: string; factoryId: number; shift: string; boarded: boolean; unplanned: boolean;
+  // Substitution: this ADDED person replaces a scheduled worker (sub* point at the replaced one)
+  subForEntryId?: number | null; subForWorkerId?: number | null; subForName?: string;
+  // Edit mode: the state this worker had when the correction board was opened
+  origBoarded?: boolean;
+};
+type BoardData = {
+  weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; addTyped?: string; lang?: Lang;
+  // Correction of an already-confirmed boarding (2h window): statuses are applied as a
+  // diff, no trip recording and no all-drivers-confirmed auto-absent pass.
+  editMode?: boolean;
+  // Key of the just-added person while the "does he replace someone?" question is pending
+  pendingSubKey?: string;
+};
 
 // Boarding is scoped to runs whose shift starts near "now": the board only shows
 // sections within ±3h of the shift start, and confirmation refuses to mark absences
@@ -1993,16 +2174,29 @@ function shiftStartOn(dateStr: string, factory: FactoryLike | undefined, shift: 
   return new Date(y!, (m ?? 1) - 1, d ?? 1, hh ?? 6, mm ?? 0, 0, 0);
 }
 
-const boardingText = (dayName: DayOfWeek, lang: Lang = "uk") =>
-  `🚌 *${tb(lang, "Посадка")}* — ${DAY_NAMES_UK[dayName]}\n\n${tb(lang, "Натискайте, хто сів у авто (⬜→✅). За потреби додайте людей. Коли всі сіли або час їхати — «Підтвердити посадку».")}`;
+// "factoryId-shift" keys of cells cancelled by the scheduler for this week+day —
+// boarding, absence marking and unplanned adds must skip them.
+async function cancelledCellKeys(weekId: number, dayName: DayOfWeek): Promise<Set<string>> {
+  const rows = await db.select({ factoryId: shiftCancellationsTable.factoryId, shift: shiftCancellationsTable.shift })
+    .from(shiftCancellationsTable)
+    .where(and(eq(shiftCancellationsTable.weekId, weekId), eq(shiftCancellationsTable.dayOfWeek, dayName)));
+  return new Set(rows.map(r => `${r.factoryId}-${r.shift}`));
+}
+
+const boardingText = (dayName: DayOfWeek, lang: Lang = "uk", editMode = false) =>
+  editMode
+    ? `✏️ *${tb(lang, "Коригування посадки")}* — ${DAY_NAMES_UK[dayName]}\n\n${tb(lang, "Відмітьте, як було насправді (⬜→✅), і натисніть «Підтвердити посадку» — статуси буде виправлено.")}`
+    : `🚌 *${tb(lang, "Посадка")}* — ${DAY_NAMES_UK[dayName]}\n\n${tb(lang, "Натискайте, хто сів у авто (⬜→✅). За потреби додайте людей. Коли всі сіли або час їхати — «Підтвердити посадку».")}`;
 
 function boardingMarkup(data: BoardData) {
   const lang = data.lang ?? "uk";
+  const replacedEntryIds = new Set(data.workers.filter(w => w.subForEntryId != null).map(w => w.subForEntryId));
   const rows: { text: string; callback_data: string }[][] = [];
   for (const sec of data.sections) {
     rows.push([{ text: `— ${sec.factoryName} · ${SHIFT_SHORT[sec.shift as Shift]} —`, callback_data: "brd:noop" }]);
     for (const w of data.workers.filter(w => w.factoryId === sec.factoryId && w.shift === sec.shift)) {
-      rows.push([{ text: `${w.boarded ? "✅" : "⬜"} ${w.name}${w.unplanned ? " ➕" : ""}`, callback_data: `brd:t:${w.key}` }]);
+      const mark = w.boarded ? "✅" : (w.entryId != null && replacedEntryIds.has(w.entryId)) ? "🔁" : "⬜";
+      rows.push([{ text: `${mark} ${w.name}${w.unplanned ? " ➕" : ""}`, callback_data: `brd:t:${w.key}` }]);
     }
     rows.push([{ text: tb(lang, "➕ Додати людину"), callback_data: `brd:add:${sec.factoryId}:${sec.shift}` }]);
   }
@@ -2012,22 +2206,101 @@ function boardingMarkup(data: BoardData) {
   return { inline_keyboard: rows };
 }
 
+// «Відкоригувати посадку» під підсумком підтвердження: живе 2 години (хтось дійшов
+// пізніше / водій помилився). Мітка часу зашита в callback — стан уже очищений.
+const BOARD_EDIT_WINDOW_MS = 2 * 3600_000;
+function boardEditButtonMarkup(data: BoardData, lang: Lang) {
+  const mins = Math.floor(Date.now() / 60000);
+  return { inline_keyboard: [[{ text: tb(lang, "✏️ Відкоригувати посадку"), callback_data: `brd:edit:${data.weekId}:${data.dayName}:${data.boardDate ?? warsawDateStr()}:${mins}` }]] };
+}
+
 // Put a (possibly matched) person on the board and refresh the boarding message.
 async function boardAddPerson(ctx: Context, tid: string, data: BoardData, matched: PickCandidate | null, typed: string) {
   const fid = data.addFactoryId!, sh = data.addShift!;
   // If matched worker is already in this section's list, just board them
   const existing = matched ? data.workers.find(w => w.workerId === matched.id && w.factoryId === fid && w.shift === sh) : undefined;
+  let addedKey: string | null = null;
   if (existing) {
     existing.boarded = true;
   } else {
-    data.workers.push({ key: `u${data.workers.length}_${Date.now() % 100000}`, entryId: null, workerId: matched?.id ?? null, name: matched?.fullName ?? typed, factoryId: fid, shift: sh, boarded: true, unplanned: true });
+    addedKey = `u${data.workers.length}_${Date.now() % 100000}`;
+    data.workers.push({ key: addedKey, entryId: null, workerId: matched?.id ?? null, name: matched?.fullName ?? typed, factoryId: fid, shift: sh, boarded: true, unplanned: true });
   }
   delete data.addFactoryId; delete data.addShift; delete data.addTyped;
   setState(tid, "boarding", data);
   const bl = data.lang ?? "uk";
   try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
-  return ctx.reply(`➕ ${tb(bl, "Додано в авто:")} *${mdSafe(matched?.fullName ?? typed)}*${matched ? "" : ` ${tb(bl, "(немає в базі)")}`}`, { parse_mode: "Markdown" });
+  await ctx.reply(`➕ ${tb(bl, "Додано в авто:")} *${mdSafe(matched?.fullName ?? typed)}*${matched ? "" : ` ${tb(bl, "(немає в базі)")}`}`, { parse_mode: "Markdown" });
+  // A truly new person may be a substitute for someone scheduled on this run who
+  // didn't show up — ask, so the scheduler sees the swap instead of a plain no-show.
+  const subCandidates = data.workers.filter(w => w.factoryId === fid && w.shift === sh && w.entryId != null && !w.boarded && w.subForEntryId == null);
+  if (addedKey && subCandidates.length > 0) {
+    data.pendingSubKey = addedKey;
+    setState(tid, "boarding", data);
+    return ctx.reply(tb(bl, "🔁 Ця людина когось заміняє на цій зміні?"), Markup.inlineKeyboard([[
+      Markup.button.callback(tb(bl, "🔁 Так"), "brdsub:y"),
+      Markup.button.callback(tb(bl, "Ні"), "brdsub:n"),
+    ]]));
+  }
+  return;
 }
+
+// Inline pick of WHO the just-added person replaces (boarding flow).
+bot.action("brdsub:y", async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id); const st = getState(tid);
+  if (st?.action !== "boarding") return;
+  const data = st.data as BoardData;
+  const added = data.workers.find(w => w.key === data.pendingSubKey);
+  if (!added) return;
+  const bl = data.lang ?? "uk";
+  const cands = data.workers.filter(w => w.factoryId === added.factoryId && w.shift === added.shift && w.entryId != null && !w.boarded && w.subForEntryId == null);
+  if (cands.length === 0) { delete data.pendingSubKey; setState(tid, "boarding", data); return; }
+  try {
+    await ctx.editMessageText(tb(bl, "Кого заміняє *{name}*?", { name: mdSafe(added.name) }), {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [
+        ...cands.map(w => [{ text: `👤 ${w.name}`, callback_data: `brdsubp:${w.key}` }]),
+        [{ text: tb(bl, "Нікого"), callback_data: "brdsubp:x" }],
+      ] },
+    });
+  } catch { /* ignore */ }
+});
+
+bot.action("brdsub:n", async (ctx) => {
+  const st = getState(String(ctx.from.id));
+  await ctx.answerCbQuery();
+  if (st?.action !== "boarding") return;
+  const data = st.data as BoardData;
+  delete data.pendingSubKey;
+  setState(String(ctx.from.id), "boarding", data);
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+});
+
+bot.action(/^brdsubp:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id); const st = getState(tid);
+  if (st?.action !== "boarding") return;
+  const data = st.data as BoardData;
+  const bl = data.lang ?? "uk";
+  const pick = (ctx.match as RegExpMatchArray)[1]!;
+  const added = data.workers.find(w => w.key === data.pendingSubKey);
+  delete data.pendingSubKey;
+  if (pick !== "x" && added) {
+    const target = data.workers.find(w => w.key === pick);
+    if (target?.entryId != null) {
+      added.subForEntryId = target.entryId;
+      added.subForWorkerId = target.workerId;
+      added.subForName = target.name;
+      target.boarded = false;
+      try { await ctx.editMessageText(tb(bl, "🔁 *{name}* заміняє *{replaced}*.", { name: mdSafe(added.name), replaced: mdSafe(target.name) }), { parse_mode: "Markdown" }); } catch { /* ignore */ }
+    }
+  } else {
+    try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  }
+  setState(tid, "boarding", data);
+  try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
+});
 
 bot.action(/^brdpk:(\d+|x)$/, async (ctx) => {
   const tid = String(ctx.from.id);
@@ -2101,11 +2374,12 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
       .from(driverShiftAssignmentsTable)
       .where(and(eq(driverShiftAssignmentsTable.weekId, c.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, c.dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
     if (c.boardDate === warsawDateStr() && myAssignments.length > 0) hadAnyToday = true;
+    const cancelled = await cancelledCellKeys(c.weekId, c.dayName);
     const secKeys = new Set<string>();
     const sections: BoardData["sections"] = [];
     for (const a of myAssignments) {
       const k = `${a.factoryId}-${a.shift}`;
-      if (secKeys.has(k)) continue; secKeys.add(k);
+      if (secKeys.has(k) || cancelled.has(k)) continue; secKeys.add(k);
       const start = shiftStartOn(c.boardDate, facById.get(a.factoryId), a.shift);
       if (Math.abs(now.getTime() - start.getTime()) > BOARD_WINDOW_MS) continue;
       sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) });
@@ -2189,14 +2463,67 @@ bot.action("brd:ok", async (ctx) => {
   const boarded = data.workers.filter(w => w.boarded);
   for (const w of boarded) {
     if (w.entryId) {
-      await db.update(scheduleEntriesTable).set({ status: "present", pickedUpBy: driver.id }).where(eq(scheduleEntriesTable.id, w.entryId));
+      await db.update(scheduleEntriesTable).set({ status: "present", pickedUpBy: driver.id, absenceReason: null }).where(eq(scheduleEntriesTable.id, w.entryId));
     } else if (w.workerId) {
       const [ne] = await db.insert(scheduleEntriesTable).values({ weekId, workerId: w.workerId, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, status: "present", pickedUpBy: driver.id }).returning();
       w.entryId = ne?.id ?? null;
-      await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, workerId: w.workerId });
+      await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, workerId: w.workerId, replacesWorkerId: w.subForWorkerId ?? null });
     } else {
-      await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name });
+      await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, replacesWorkerId: w.subForWorkerId ?? null });
     }
+  }
+
+  // 1b) substitutions: the replaced worker goes absent with a "заміна" reason —
+  // reliability counts reasoned absences as cancellations, not no-shows. If the
+  // "replaced" person ended up boarding too, the substitution link is void.
+  const substitutions = data.workers.filter(w =>
+    w.boarded && w.subForEntryId != null &&
+    !data.workers.some(t => t.entryId === w.subForEntryId && t.boarded));
+  for (const w of substitutions) {
+    await db.update(scheduleEntriesTable)
+      .set({ status: "absent", absenceReason: `заміна: вийшов(-ла) ${w.name}`, pickedUpBy: null })
+      .where(eq(scheduleEntriesTable.id, w.subForEntryId!));
+  }
+  if (substitutions.length > 0) {
+    const subLines = substitutions.map(w => `• ${mdSafe(w.name)} замість ${mdSafe(w.subForName ?? "—")} — ${facByIdOk.get(w.factoryId)?.name ?? ""} · ${SHIFT_SHORT[w.shift as Shift]}`).join("\n");
+    await notifyAdmins(`🔁 *Заміна на зміні*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${subLines}`, { parse_mode: "Markdown" });
+    await notifyRoles("scheduler", { type: "substitution", title: `🔁 Заміна на зміні (${substitutions.length})`, body: `${DAY_NAMES_UK[dayName]} · водій ${driver.name}\n${substitutions.map(w => `• ${w.name} замість ${w.subForName ?? "—"}`).join("\n")}` });
+  }
+
+  // Correction mode: the boarding was already confirmed — apply status diffs only,
+  // no trip recording and no all-drivers-confirmed auto-absent pass.
+  if (data.editMode) {
+    const becameAbsent: { id: number; name: string }[] = [];
+    let corrected = 0;
+    for (const w of data.workers) {
+      if (w.entryId == null || w.boarded === (w.origBoarded ?? false)) continue;
+      corrected++;
+      if (!w.boarded && w.subForEntryId == null) {
+        // un-marked by the driver → they never actually boarded
+        await db.update(scheduleEntriesTable).set({ status: "absent", pickedUpBy: null }).where(eq(scheduleEntriesTable.id, w.entryId));
+        if (!data.workers.some(x => x.subForEntryId === w.entryId)) becameAbsent.push({ id: w.entryId, name: w.name });
+      }
+      // newly boarded entries were already set present in step 1
+    }
+    for (const a of becameAbsent) await notifyAbsentWorker(a.id, dayName);
+    if (corrected > 0 || substitutions.length > 0) {
+      const diffLines = data.workers
+        .filter(w => w.entryId != null && w.boarded !== (w.origBoarded ?? false))
+        .map(w => `• ${mdSafe(w.name)} — ${w.boarded ? "✅ був(ла) на зміні" : "🔴 не був(ла)"}`).join("\n");
+      if (diffLines) {
+        await notifyAdmins(`✏️ *Корекція посадки*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${diffLines}`, { parse_mode: "Markdown" });
+      }
+    }
+    refreshExcelReports().catch(e => logger.error({ err: e }, "refreshExcelReports failed"));
+    const bl2 = data.lang ?? "uk";
+    const presentN = data.workers.filter(w => w.boarded).length;
+    let sum2 = `✅ *${tb(bl2, "Посадку відкориговано")}*\n\n🟢 ${tb(bl2, "На зміні:")} ${presentN}`;
+    if (corrected === 0 && substitutions.length === 0) sum2 = `✅ ${tb(bl2, "Без змін.")}`;
+    try {
+      await ctx.editMessageText(sum2, { parse_mode: "Markdown", reply_markup: boardEditButtonMarkup(data, bl2) });
+    } catch { /* ignore */ }
+    await ctx.reply(tb(bl2, "Готово."), await driverMenuFor(driver, bl2));
+    return;
   }
 
   // 2) record pickup trip per section; mark absent only once ALL assigned drivers confirmed.
@@ -2249,8 +2576,63 @@ bot.action("brd:ok", async (ctx) => {
   if (leftForOthers > 0) summary += `\n🟡 ${tb(bl, "Залишено для інших водіїв:")} ${leftForOthers}`;
   if (skippedEarly > 0) summary += `\n⏭ ${tb(bl, "Рейси, що почнуться пізніше, пропущено:")} ${skippedEarly}`;
   summary += `\n\n🚌 ${tb(bl, "Час виїзду зафіксовано.")}`;
-  try { await ctx.editMessageText(summary, { parse_mode: "Markdown" }); } catch { /* ignore */ }
+  summary += `\n${tb(bl, "Хтось дійшов пізніше або помилилися? Відкоригувати можна протягом 2 годин.")}`;
+  try { await ctx.editMessageText(summary, { parse_mode: "Markdown", reply_markup: boardEditButtonMarkup(data, bl) }); } catch { /* ignore */ }
   await ctx.reply("Готово.", await driverMenuFor(driver, bl === "en" ? "en" : "uk"));
+});
+
+// Re-open an already-confirmed boarding for correction (2h window). The dialog
+// state is long gone — rebuild the board from the DB: this driver's delivery
+// sections for that day, entries' current statuses as the starting point.
+bot.action(/^brd:edit:(\d+):(\w+):([\d-]+):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  const [, weekIdS, dayS, dateS, minsS] = ctx.match as RegExpMatchArray;
+  if (Date.now() - Number(minsS) * 60000 > BOARD_EDIT_WINDOW_MS) {
+    await ctx.answerCbQuery();
+    return ctx.reply(tb(dl, "⏰ Минуло понад 2 години — тепер явку може виправити лише графіковий у веб-панелі."), await driverMenuFor(driver, dl));
+  }
+  const weekId = Number(weekIdS);
+  const dayName = dayS as DayOfWeek;
+  const facRows = await db.select().from(factoriesTable);
+  const facById = new Map(facRows.map(f => [f.id, f]));
+  const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
+    .from(driverShiftAssignmentsTable)
+    .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
+  const cancelled = await cancelledCellKeys(weekId, dayName);
+  const secKeys = new Set<string>();
+  const sections: BoardData["sections"] = [];
+  for (const a of myAssignments) {
+    const k = `${a.factoryId}-${a.shift}`;
+    if (secKeys.has(k) || cancelled.has(k)) continue; secKeys.add(k);
+    sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facById.get(a.factoryId)?.name ?? tb(dl, "фабрика") });
+  }
+  if (sections.length === 0) return ctx.answerCbQuery();
+  const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
+  const myShifts = [...new Set(sections.map(s => s.shift))];
+  const entriesRaw = await db
+    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, selfTransport: workersTable.selfTransport, status: scheduleEntriesTable.status, pickedUpBy: scheduleEntriesTable.pickedUpBy })
+    .from(scheduleEntriesTable)
+    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[])));
+  // Correction touches only this driver's people: skip self-transport and workers
+  // boarded by a DIFFERENT driver.
+  const entries = entriesRaw.filter(e =>
+    secKeySet.has(`${e.factoryId}-${e.shift}`) && !e.selfTransport &&
+    !(e.status === "present" && e.pickedUpBy != null && e.pickedUpBy !== driver.id));
+  if (entries.length === 0) return ctx.answerCbQuery(tb(dl, "Немає кого коригувати."));
+  const workers: BoardWorker[] = entries.map(e => ({
+    key: `e${e.id}`, entryId: e.id, workerId: e.workerId, name: e.workerName ?? "—", factoryId: e.factoryId, shift: e.shift,
+    boarded: e.status === "present", unplanned: false, origBoarded: e.status === "present",
+  }));
+  const data: BoardData = { weekId, dayName, boardDate: dateS, sections, workers, chatId: ctx.chat!.id, messageId: 0, lang: dl, editMode: true };
+  await ctx.answerCbQuery();
+  const sent = await ctx.reply(boardingText(dayName, dl, true), { parse_mode: "Markdown", reply_markup: boardingMarkup(data) });
+  data.messageId = sent.message_id;
+  setState(tid, "boarding", data);
+  return;
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3794,6 +4176,19 @@ bot.on("text", async (ctx) => {
         tb(dl, "✅ *Зміну розпочато!*\n🕒 {time}\n🛣 Початковий пробіг: *{km} км*\n\nГарної дороги! Натисніть «🏁 Закінчити зміну», коли повернетесь на базу.", { time: timeStr, km }) + note,
         { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
       );
+      // Vehicle picker — only when the head driver has already added the fleet;
+      // until then the step is silently skipped (vehicle_id stays null).
+      const fleet = await db.select().from(vehiclesTable).where(eq(vehiclesTable.isActive, true));
+      if (fleet.length > 0) {
+        return ctx.reply(
+          tb(dl, "🚙 Яке авто ви берете?"),
+          Markup.inlineKeyboard([
+            ...fleet.map(v => [Markup.button.callback(v.plate, `wdveh:${wd!.id}:${v.id}`)]),
+            [Markup.button.callback(tb(dl, "⏭ Пропустити"), `wdveh:${wd!.id}:0`)],
+            [Markup.button.callback(tb(dl, "✏️ Виправити пробіг"), `wdfix:start:${wd!.id}`)],
+          ]),
+        );
+      }
       // Separate message: a reply-keyboard menu and an inline button can't share one message
       return ctx.reply(
         tb(dl, "Помилилися з пробігом? Виправити можна протягом 24 годин:"),
@@ -3854,6 +4249,45 @@ bot.on("text", async (ctx) => {
     );
   }
 
+  // ── Head driver: add a vehicle (plate → brand/model → seats) ──────
+  if (state?.action === "vehicle:plate") {
+    const driver = await getDriver(tid);
+    if (!driver?.isHeadDriver) { clearState(tid); return; }
+    const dl = olang(driver);
+    const plate = text.trim().toUpperCase();
+    if (plate.length < 3 || plate.length > 15) {
+      return ctx.reply(tb(dl, "❌ Введіть номер авто (напр. WGM 12345):"));
+    }
+    setState(tid, "vehicle:brand", { plate });
+    return ctx.reply(tb(dl, "Марка і модель (напр. Opel Vivaro):"), cancelKb(dl));
+  }
+
+  if (state?.action === "vehicle:brand") {
+    const driver = await getDriver(tid);
+    if (!driver?.isHeadDriver) { clearState(tid); return; }
+    const dl = olang(driver);
+    setState(tid, "vehicle:seats", { ...state.data, brandModel: text.trim() });
+    return ctx.reply(tb(dl, "Скільки пасажирських місць? (число)"), cancelKb(dl));
+  }
+
+  if (state?.action === "vehicle:seats") {
+    const driver = await getDriver(tid);
+    if (!driver?.isHeadDriver) { clearState(tid); return; }
+    const dl = olang(driver);
+    const seats = parseInt(text.replace(/\D/g, ""), 10);
+    if (!Number.isFinite(seats) || seats < 1 || seats > 60) {
+      return ctx.reply(tb(dl, "❌ Введіть кількість місць числом (напр. 8):"));
+    }
+    const { data } = state;
+    clearState(tid);
+    await db.insert(vehiclesTable).values({ plate: data.plate, brandModel: data.brandModel || null, seats });
+    await ctx.reply(
+      tb(dl, "✅ Авто додано: *{plate}* — {brand} · {seats} {seatsWord}", { plate: mdSafe(data.plate), brand: mdSafe(data.brandModel || "—"), seats, seatsWord: tb(dl, "місць") }),
+      { parse_mode: "Markdown", ...(await driverMenuFor(driver, dl)) },
+    );
+    return showVehicleList(ctx, dl);
+  }
+
   // ── Driver: unplanned worker ──────────────────────────────────────
   if (state?.action === "unplanned:enter_name") {
     const { data } = state;
@@ -3867,8 +4301,7 @@ bot.on("text", async (ctx) => {
       setState(tid, "unplanned:pick", { ...data, typed: text.trim() });
       return ctx.reply(tb(dl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "unpk", dl) });
     }
-    await saveUnplannedWorker(data, m.confident, text.trim(), driver?.name ?? "—");
-    return ctx.reply(tb(dl, "✅ *{name}* додано як позапланового.", { name: mdSafe(m.confident?.fullName ?? text.trim()) }), { parse_mode: "Markdown", ...(driver ? await driverMenuFor(driver, dl) : driverMenu(dl)) });
+    return askUnplannedSubstitution(ctx, tid, data, m.confident, text.trim(), dl);
   }
 
   // ── Driver: report absent workers ─────────────────────────────────

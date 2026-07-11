@@ -10,9 +10,11 @@ import {
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
+  vehiclesTable, shiftCancellationsTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
@@ -1061,6 +1063,47 @@ router.delete("/drivers/:id", DRIVER_RW, async (req, res) => {
   ok(res, { ok: true, removedAssignments: removed });
 });
 
+// ─── Vehicles (fleet) ────────────────────────────────────────────────────────
+// Same access as the driver roster: the head driver manages the fleet from the
+// web too (mirrors the bot's «🚙 Авто» menu). Delete is a soft-delete so old
+// workdays keep their plate in the mileage report.
+router.get("/vehicles", async (_req, res) => {
+  const rows = await db.select().from(vehiclesTable).where(eq(vehiclesTable.isActive, true)).orderBy(vehiclesTable.plate);
+  ok(res, rows);
+});
+
+router.post("/vehicles", DRIVER_RW, async (req, res) => {
+  const { plate, brandModel, seats } = req.body ?? {};
+  if (!plate?.trim()) return fail(res, 400, "Вкажіть номер авто");
+  const [v] = await db.insert(vehiclesTable).values({
+    plate: String(plate).trim().toUpperCase(),
+    brandModel: brandModel?.trim() || null,
+    seats: Number(seats) > 0 ? Math.floor(Number(seats)) : null,
+  }).returning();
+  ok(res, v);
+});
+
+router.patch("/vehicles/:id", DRIVER_RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const { plate, brandModel, seats } = req.body ?? {};
+  const patch: any = {};
+  if (plate !== undefined) {
+    if (!String(plate).trim()) return fail(res, 400, "Вкажіть номер авто");
+    patch.plate = String(plate).trim().toUpperCase();
+  }
+  if (brandModel !== undefined) patch.brandModel = String(brandModel).trim() || null;
+  if (seats !== undefined) patch.seats = Number(seats) > 0 ? Math.floor(Number(seats)) : null;
+  const [v] = await db.update(vehiclesTable).set(patch).where(eq(vehiclesTable.id, id)).returning();
+  if (!v) return fail(res, 404, "Не знайдено");
+  ok(res, v);
+});
+
+router.delete("/vehicles/:id", DRIVER_RW, async (req, res) => {
+  const id = Number(req.params.id);
+  await db.update(vehiclesTable).set({ isActive: false }).where(eq(vehiclesTable.id, id));
+  ok(res, { ok: true });
+});
+
 router.get("/drivers/:id/invite", async (req, res) => {
   const id = Number(req.params.id);
   const d = (await db.select().from(driversTable).where(eq(driversTable.id, id)))[0];
@@ -1460,12 +1503,24 @@ router.get("/schedule", async (req, res) => {
 
   // Unplanned workers drivers added on the spot (per day-shift) — shown for shifts that already happened.
   // workerId=null means the driver typed a free-text name; link it via POST /unplanned/:id/link.
-  const unplanned: Record<string, { id: number; name: string; workerId: number | null }[]> = {};
+  const unplanned: Record<string, { id: number; name: string; workerId: number | null; replacesName: string | null }[]> = {};
   if (week && factoryId != null) {
-    const ur = await db.select({ id: unplannedWorkersTable.id, day: unplannedWorkersTable.dayOfWeek, shift: unplannedWorkersTable.shift, name: unplannedWorkersTable.workerName, workerId: unplannedWorkersTable.workerId })
+    const replacedWorkers = aliasedTable(workersTable, "replaced_workers");
+    const ur = await db.select({ id: unplannedWorkersTable.id, day: unplannedWorkersTable.dayOfWeek, shift: unplannedWorkersTable.shift, name: unplannedWorkersTable.workerName, workerId: unplannedWorkersTable.workerId, replacesName: replacedWorkers.fullName })
       .from(unplannedWorkersTable)
+      .leftJoin(replacedWorkers, eq(unplannedWorkersTable.replacesWorkerId, replacedWorkers.id))
       .where(and(eq(unplannedWorkersTable.weekId, week.id), eq(unplannedWorkersTable.factoryId, factoryId)));
-    for (const u of ur) (unplanned[`${u.day}-${u.shift}`] ??= []).push({ id: u.id, name: u.name, workerId: u.workerId });
+    for (const u of ur) (unplanned[`${u.day}-${u.shift}`] ??= []).push({ id: u.id, name: u.name, workerId: u.workerId, replacesName: u.replacesName });
+  }
+
+  // Cells cancelled by the scheduler ("day-shift" keys) — rendered as a banner,
+  // excluded from reliability by keeping entries scheduled.
+  let cancelledCells: string[] = [];
+  if (week && factoryId != null) {
+    const cr = await db.select({ day: shiftCancellationsTable.dayOfWeek, shift: shiftCancellationsTable.shift })
+      .from(shiftCancellationsTable)
+      .where(and(eq(shiftCancellationsTable.weekId, week.id), eq(shiftCancellationsTable.factoryId, factoryId)));
+    cancelledCells = cr.map(c => `${c.day}-${c.shift}`);
   }
 
   // Absence requests for this week → annotate planned chips: who asked off (pending /
@@ -1497,7 +1552,7 @@ router.get("/schedule", async (req, res) => {
     }
   }
 
-  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor });
+  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells });
 });
 
 // Link a driver-typed unplanned worker to a real worker from the base.
@@ -1544,6 +1599,101 @@ router.patch("/schedule/entry/:id/status", RW, async (req, res) => {
   if (!e) return fail(res, 404, "Не знайдено");
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(err => logger.error({ err }, "refreshExcelReports after status edit failed"));
   ok(res, e);
+});
+
+// Cancel a whole factory shift (day+shift cell). Entries stay "scheduled" so
+// reliability ignores them (no-show is not counted for a cancelled shift);
+// driver assignments are removed so the run disappears from driver schedules.
+// Notifications to workers/drivers are optional (checkboxes in the dialog).
+router.post("/schedule/shift-cancel", RW, async (req: AuthedRequest, res) => {
+  const { weekStart, factoryId, day, shift, notifyWorkers, notifyDrivers } = req.body ?? {};
+  if (!weekStart || !Number.isInteger(factoryId) || !DAYS.includes(day) || !["1", "2", "3", "4", "5", "6"].includes(String(shift))) {
+    return fail(res, 400, "Невірні дані");
+  }
+  const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
+  const week = candidates.find(w => w.status === "approved") ?? candidates[0];
+  if (!week) return fail(res, 404, "Тиждень не знайдено");
+  const [factory] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!factory) return fail(res, 404, "Фабрику не знайдено");
+  const cancelCell = and(eq(shiftCancellationsTable.weekId, week.id), eq(shiftCancellationsTable.factoryId, factoryId), eq(shiftCancellationsTable.dayOfWeek, day as DayOfWeek), eq(shiftCancellationsTable.shift, shift as Shift));
+  const assignCell = and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.factoryId, factoryId), eq(driverShiftAssignmentsTable.dayOfWeek, day as DayOfWeek), eq(driverShiftAssignmentsTable.shift, shift as Shift));
+  const entryCell = and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.factoryId, factoryId), eq(scheduleEntriesTable.dayOfWeek, day as DayOfWeek), eq(scheduleEntriesTable.shift, shift as Shift));
+
+  const already = await db.select({ id: shiftCancellationsTable.id }).from(shiftCancellationsTable).where(cancelCell);
+  if (already.length === 0) {
+    await db.insert(shiftCancellationsTable).values({
+      weekId: week.id, factoryId, dayOfWeek: day as DayOfWeek, shift: shift as Shift,
+      cancelledBy: req.admin?.name ?? null,
+    });
+  }
+
+  // Assigned drivers (delivery + pickup) — remember them for the optional heads-up,
+  // then drop the assignments: the run must vanish from driver boards/schedules.
+  const assignedDrivers = await db
+    .select({ telegramId: driversTable.telegramId, name: driversTable.name, language: driversTable.language })
+    .from(driverShiftAssignmentsTable)
+    .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
+    .where(assignCell);
+  await db.delete(driverShiftAssignmentsTable).where(assignCell);
+
+  // A no-show can't exist on a cancelled shift — roll auto/driver-marked absences back.
+  await db.update(scheduleEntriesTable).set({ status: "scheduled", absenceReason: null, pickedUpBy: null })
+    .where(and(entryCell, eq(scheduleEntriesTable.status, "absent")));
+
+  // The actual calendar date of this cell (weekStart is Monday).
+  const d0 = new Date(weekStart + "T00:00:00");
+  d0.setDate(d0.getDate() + DAYS.indexOf(day as DayOfWeek));
+  const dateStr = `${String(d0.getDate()).padStart(2, "0")}.${String(d0.getMonth() + 1).padStart(2, "0")}`;
+
+  let workersNotified = 0;
+  let driversNotified = 0;
+  const { bot } = await import("../bot");
+  if (notifyWorkers) {
+    const ws = await db
+      .select({ telegramId: workersTable.telegramId, language: workersTable.language })
+      .from(scheduleEntriesTable)
+      .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+      .where(entryCell);
+    const { t, asLang } = await import("../bot/i18n");
+    for (const w of ws) {
+      if (!w.telegramId) continue;
+      const lang = asLang(w.language);
+      try {
+        await bot.telegram.sendMessage(w.telegramId, t(lang, "notif.shiftCancelled", { factory: factory.name, date: dateStr, shift: String(shift) }), { parse_mode: "Markdown" });
+        workersNotified++;
+        await new Promise(r => setTimeout(r, 50));
+      } catch { /* worker blocked the bot etc. */ }
+    }
+  }
+  if (notifyDrivers) {
+    const { tb, oLang } = await import("../bot/i18n");
+    for (const drv of assignedDrivers) {
+      if (!drv.telegramId) continue;
+      try {
+        await bot.telegram.sendMessage(drv.telegramId, tb(oLang(drv.language), "❌ Зміну скасовано: {factory} · {date} · {shift} зміна. Її прибрано з вашого графіку.", { factory: factory.name, date: dateStr, shift: String(shift) }));
+        driversNotified++;
+        await new Promise(r => setTimeout(r, 50));
+      } catch { /* ignore */ }
+    }
+  }
+  logger.info({ weekStart, factoryId, day, shift, workersNotified, driversNotified }, "shift cancelled");
+  ok(res, { cancelled: true, workersNotified, driversNotified, driversUnassigned: assignedDrivers.length });
+});
+
+// Undo a cancellation. Driver assignments are NOT restored automatically —
+// the scheduler re-assigns drivers by hand if the shift is back on.
+router.post("/schedule/shift-restore", RW, async (req, res) => {
+  const { weekStart, factoryId, day, shift } = req.body ?? {};
+  if (!weekStart || !Number.isInteger(factoryId) || !DAYS.includes(day) || !["1", "2", "3", "4", "5", "6"].includes(String(shift))) {
+    return fail(res, 400, "Невірні дані");
+  }
+  const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
+  const week = candidates.find(w => w.status === "approved") ?? candidates[0];
+  if (!week) return fail(res, 404, "Тиждень не знайдено");
+  await db.delete(shiftCancellationsTable).where(and(
+    eq(shiftCancellationsTable.weekId, week.id), eq(shiftCancellationsTable.factoryId, factoryId),
+    eq(shiftCancellationsTable.dayOfWeek, day as DayOfWeek), eq(shiftCancellationsTable.shift, shift as Shift)));
+  ok(res, { restored: true });
 });
 
 router.post("/schedule/generate", RW, async (req, res) => {
@@ -1808,9 +1958,11 @@ router.get("/mileage", async (req, res) => {
       driverId: driverWorkdaysTable.driverId, name: driversTable.name, vehicle: driversTable.vehicle,
       workDate: driverWorkdaysTable.workDate, startedAt: driverWorkdaysTable.startedAt, endedAt: driverWorkdaysTable.endedAt,
       odoStart: driverWorkdaysTable.odometerStart, odoEnd: driverWorkdaysTable.odometerEnd,
+      vehiclePlate: vehiclesTable.plate,
     })
     .from(driverWorkdaysTable)
     .leftJoin(driversTable, eq(driverWorkdaysTable.driverId, driversTable.id))
+    .leftJoin(vehiclesTable, eq(driverWorkdaysTable.vehicleId, vehiclesTable.id))
     .where(and(gte(driverWorkdaysTable.workDate, monthStart), lt(driverWorkdaysTable.workDate, monthEnd)))
     .orderBy(driverWorkdaysTable.workDate, driverWorkdaysTable.id);
   const byDriver = new Map<number, any>();
@@ -1818,7 +1970,7 @@ router.get("/mileage", async (req, res) => {
     if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { driverId: r.driverId, name: r.name, vehicle: r.vehicle, days: [], totalKm: 0, closedShifts: 0 });
     const s = byDriver.get(r.driverId);
     const km = r.odoEnd != null ? r.odoEnd - r.odoStart : null; // open workday → km unknown yet
-    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km });
+    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km, vehiclePlate: r.vehiclePlate });
     if (km != null) { s.totalKm += km; s.closedShifts++; }
   }
   const drivers = [...byDriver.values()].map(d => ({ ...d, avgKm: d.closedShifts ? Math.round(d.totalKm / d.closedShifts) : null }));
@@ -3066,6 +3218,12 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
 
   let entries: { factoryId: number; day: string; shift: string }[] = [];
   let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null; kind: string }[] = [];
+  const cancelledSet = new Set<string>();
+  if (week) {
+    const cRows = await db.select({ factoryId: shiftCancellationsTable.factoryId, day: shiftCancellationsTable.dayOfWeek, shift: shiftCancellationsTable.shift })
+      .from(shiftCancellationsTable).where(eq(shiftCancellationsTable.weekId, week.id));
+    for (const c of cRows) cancelledSet.add(`${c.factoryId}-${c.day}-${c.shift}`);
+  }
   if (week) {
     // Self-transport workers get to work on their own → excluded from pickup headcount.
     entries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
@@ -3095,6 +3253,7 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       const st = fShifts[idx];
       const people = headcountOf(day, String(idx + 1));
       if (!st || people === 0) return null;
+      if (cancelledSet.has(`${f.id}-${day}-${idx + 1}`)) return null; // cancelled cell — no run at all
       if (cellAssigns(day, String(idx + 1), "pickup").length > 0) return null; // explicitly covered
       const crossesMidnight = toMin(st.end) <= toMin(st.start);
       const coverDay = crossesMidnight ? DAYS[(DAYS.indexOf(day as any) + 1) % 7]! : day;
@@ -3115,7 +3274,8 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
         const pickupDrivers = cellAssigns(day, sc, "pickup");
         if (headcount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
         const st = fShifts[s - 1];
-        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: pickupGapFor(day, s - 1) });
+        const cancelled = cancelledSet.has(`${f.id}-${day}-${sc}`);
+        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
       }
     }
     return { id: f.id, name: f.name, shiftCount: n, cells };

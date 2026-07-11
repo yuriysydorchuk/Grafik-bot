@@ -28,7 +28,7 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
 // finish it when they return (both ask for an odometer reading).
 export const headDriverMenu = (lang: Lang = "uk", onShift = false) => Markup.keyboard([
   [tb(lang, "📋 Призначити водіїв"), tb(lang, "📅 Графік тижня")],
-  [tb(lang, "👥 Мій список водіїв")],
+  [tb(lang, "👥 Мій список водіїв"), tb(lang, "🚙 Авто")],
   [tb(lang, "📍 Моя зміна сьогодні"), tb(lang, "📅 Мій графік")],
   [onShift ? tb(lang, "🏁 Закінчити зміну") : tb(lang, "🚗 Почати зміну")],
   [tb(lang, "✅ Посадка / явка")],
