@@ -17,7 +17,7 @@ interface Data {
     cash: { total: number; perBox: { box: string; closing: number }[] };
   };
   receivables: { total: number; ksef: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] }; rows: Obligation[] };
-  payables: { total: number; unpaidInvoices: { total: number; count: number }; rows: Obligation[] };
+  payables: { total: number; unpaidInvoices: { total: number; count: number }; ksefCredits: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] }; rows: Obligation[] };
   netPosition: number;
 }
 
@@ -180,7 +180,21 @@ export default function Balance() {
                 <div className="whitespace-nowrap text-sm font-medium tabular-nums text-rose-600">{zl(d.payables.unpaidInvoices.total)}</div>
               </div>
             )}
-            {!d.payables.rows.length && !d.payables.unpaidInvoices.total
+            {d.payables.ksefCredits.total > 0 && (
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+                <div>
+                  <Link href="/ksef" className="text-sm font-medium text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-red-700">
+                    {t("Коректи/переплати клієнтам ({n} шт.)", { n: d.payables.ksefCredits.count })}
+                  </Link>
+                  <div className="text-xs text-slate-400">
+                    {d.payables.ksefCredits.byClient.slice(0, 4).map(c => `${c.client} ${zl(c.gross)}`).join(" · ")}
+                    {d.payables.ksefCredits.byClient.length > 4 ? " · …" : ""}
+                  </div>
+                </div>
+                <div className="whitespace-nowrap text-sm font-medium tabular-nums text-rose-600">{zl(d.payables.ksefCredits.total)}</div>
+              </div>
+            )}
+            {!d.payables.rows.length && !d.payables.unpaidInvoices.total && !d.payables.ksefCredits.total
               ? <div className="p-4"><Empty>{t("Немає відкритих боргів")}</Empty></div>
               : <ObRows rows={d.payables.rows} tone="text-rose-600" />}
           </Card>

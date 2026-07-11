@@ -221,7 +221,9 @@ export async function syncKsef(): Promise<KsefSyncResult> {
 // wrong firm's account:
 //  1) same firm + number in title + exact amount;
 //  2) any of our firms + number in title + exact amount (cross-firm payments);
-//  3) same firm + number in title, amount differs (batch transfers covering
+//  3) invoice minus the same buyer's open korekta: the transfer carries the
+//     main invoice number and equals exactly invoice + korekta — closes both;
+//  4) same firm + number in title, amount differs (batch transfers covering
 //     several invoices) — only with transfers not already claimed by an exact match.
 export async function matchKsefPayments(): Promise<number> {
   let total = 0;
@@ -245,6 +247,20 @@ export async function matchKsefPayments(): Promise<number> {
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND abs(t.amount - i.gross) <= 0.02`);
   await run(sql`
+    WITH pairs AS (
+      SELECT i.id AS inv_id, k.id AS kor_id, t.id AS txn_id, t.value_date
+      FROM ksef_invoices i
+      JOIN ksef_invoices k ON k.company_id = i.company_id
+        AND coalesce(k.buyer_nip, '?') = coalesce(i.buyer_nip, '!')
+        AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL AND k.id <> i.id
+      JOIN bank_transactions t ON t.direction = 'in' AND t.value_date >= i.issue_date
+        AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+        AND abs(t.amount - (i.gross + k.gross)) <= 0.02
+      WHERE i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
+    )
+    UPDATE ksef_invoices x SET paid_date = p.value_date, paid_txn_id = p.txn_id
+    FROM pairs p WHERE x.id = p.inv_id OR x.id = p.kor_id`);
+  await run(sql`
     UPDATE ksef_invoices i
     SET paid_date = t.value_date, paid_txn_id = t.id
     FROM bank_transactions t
@@ -258,13 +274,17 @@ export async function matchKsefPayments(): Promise<number> {
 // Receivables («нам винні») at a date: invoices issued on or before asOf that
 // were not yet paid at asOf. Payment date comes from the bank match; manual
 // override wins (manual «paid» without a date = never counted as a debt).
-// Only the main business — the cleaning sub-business (wspólnoty) is counted separately.
-export async function ksefReceivablesAt(asOf: string): Promise<{ total: number; count: number; byClient: { client: string; count: number; gross: number }[] }> {
+// Netting per client: clients with a positive open position are receivables;
+// clients netting NEGATIVE (uncovered korekty/overpayments) come back as
+// `credits` — that money is owed TO the client, the Balance shows it under
+// «Ми винні». Only the main business — cleaning (wspólnoty) is separate.
+export async function ksefReceivablesAt(asOf: string): Promise<{
+  total: number; count: number; byClient: { client: string; count: number; gross: number }[];
+  credits: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] };
+}> {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const rows = await db.select().from(ksefInvoicesTable).where(sql`${ksefInvoicesTable.issueDate} <= ${asOf}`);
-  const byClient = new Map<string, { client: string; count: number; gross: number }>();
-  let total = 0;
-  let count = 0;
+  const perClient = new Map<string, { client: string; count: number; gross: number }>();
   for (const inv of rows) {
     if (inv.segment === "cleaning") continue;
     let openAt: boolean;
@@ -275,13 +295,24 @@ export async function ksefReceivablesAt(asOf: string): Promise<{ total: number; 
     else openAt = inv.paidDate == null || inv.paidDate > asOf;
     if (!openAt) continue;
     const label = inv.clientLabel ?? inv.buyerName ?? "—";
-    const g = byClient.get(label) ?? byClient.set(label, { client: label, count: 0, gross: 0 }).get(label)!;
+    const g = perClient.get(label) ?? perClient.set(label, { client: label, count: 0, gross: 0 }).get(label)!;
     g.count++;
     g.gross = r2(g.gross + inv.gross);
-    total = r2(total + inv.gross);
-    count++;
   }
-  return { total, count, byClient: [...byClient.values()].sort((a, b) => b.gross - a.gross) };
+  const positive = [...perClient.values()].filter(c => c.gross > 0).sort((a, b) => b.gross - a.gross);
+  const negative = [...perClient.values()].filter(c => c.gross < 0)
+    .map(c => ({ ...c, gross: r2(-c.gross) })) // shown as what WE owe, positive number
+    .sort((a, b) => b.gross - a.gross);
+  return {
+    total: r2(positive.reduce((s, c) => s + c.gross, 0)),
+    count: positive.reduce((s, c) => s + c.count, 0),
+    byClient: positive,
+    credits: {
+      total: r2(negative.reduce((s, c) => s + c.gross, 0)),
+      count: negative.reduce((s, c) => s + c.count, 0),
+      byClient: negative,
+    },
+  };
 }
 
 // P&L revenue per client for the month (netto), source='ksef'; the cleaning

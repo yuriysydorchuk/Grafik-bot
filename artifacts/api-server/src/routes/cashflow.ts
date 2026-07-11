@@ -77,8 +77,13 @@ router.get("/cashflow", async (req, res) => {
     balanceAt(prevEnd, null), balanceAt(to, null), cashPosition(fromM, toM), openObligations(to), unpaidInvoicesAt(to), ksefReceivablesAt(to),
   ]);
   const unpaidInvoices = unpaidInv.total;
-  // «нам винні» = ручні належності + наші неоплачені фактури з KSeF на кінець періоду
-  const obligations = { ...obligationsRaw, receivable: round2(obligationsRaw.receivable + ksefRecv.total) };
+  // «нам винні» = ручні належності + наші неоплачені фактури з KSeF на кінець
+  // періоду; непокриті коректи клієнтам — на бік «ми винні»
+  const obligations = {
+    ...obligationsRaw,
+    receivable: round2(obligationsRaw.receivable + ksefRecv.total),
+    payable: round2(obligationsRaw.payable + ksefRecv.credits.total),
+  };
 
   // ── merge per category ────────────────────────────────────────────────────────
   const keys = new Set([...Object.keys(bankCats), ...Object.keys(cashCats)]);
@@ -143,9 +148,10 @@ router.get("/balance", async (req, res) => {
 
   const receivables = obRows.filter(r => r.direction === "receivable");
   const payables = obRows.filter(r => r.direction === "payable");
-  // manual receivables + our issued invoices unpaid at the date (KSeF × bank)
+  // manual receivables + our issued invoices unpaid at the date (KSeF × bank);
+  // clients netting negative (uncovered korekty) land on the payable side
   const receivableTotal = round2(receivables.reduce((s, r) => s + r.amount, 0) + ksefRecv.total);
-  const payableTotal = round2(payables.reduce((s, r) => s + r.amount, 0) + unpaidInv.total);
+  const payableTotal = round2(payables.reduce((s, r) => s + r.amount, 0) + unpaidInv.total + ksefRecv.credits.total);
   const moneyTotal = round2(bankTotal + cashBoxes.total);
   const pick = (r: any) => ({
     id: r.id, counterparty: r.counterparty, description: r.description, amount: r.amount,
@@ -161,7 +167,7 @@ router.get("/balance", async (req, res) => {
       cash: { total: cashBoxes.total, perBox: cashBoxes.perBox },
     },
     receivables: { total: receivableTotal, ksef: ksefRecv, rows: receivables.map(pick) },
-    payables: { total: payableTotal, unpaidInvoices: unpaidInv, rows: payables.map(pick) },
+    payables: { total: payableTotal, unpaidInvoices: unpaidInv, ksefCredits: ksefRecv.credits, rows: payables.map(pick) },
     netPosition: round2(moneyTotal + receivableTotal - payableTotal),
   });
 });
