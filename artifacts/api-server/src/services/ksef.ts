@@ -230,6 +230,33 @@ export async function matchKsefPayments(): Promise<number> {
   return Number(r.rowCount ?? 0);
 }
 
+// Receivables («нам винні») at a date: invoices issued on or before asOf that
+// were not yet paid at asOf. Payment date comes from the bank match; manual
+// override wins (manual «paid» without a date = never counted as a debt).
+export async function ksefReceivablesAt(asOf: string): Promise<{ total: number; count: number; byClient: { client: string; count: number; gross: number }[] }> {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const rows = await db.select().from(ksefInvoicesTable).where(sql`${ksefInvoicesTable.issueDate} <= ${asOf}`);
+  const byClient = new Map<string, { client: string; count: number; gross: number }>();
+  let total = 0;
+  let count = 0;
+  for (const inv of rows) {
+    let openAt: boolean;
+    if (inv.manualStatus === "paid") {
+      const d = inv.manualPaidDate ?? inv.paidDate;
+      openAt = d != null && d > asOf;
+    } else if (inv.manualStatus === "unpaid") openAt = true;
+    else openAt = inv.paidDate == null || inv.paidDate > asOf;
+    if (!openAt) continue;
+    const label = inv.clientLabel ?? inv.buyerName ?? "—";
+    const g = byClient.get(label) ?? byClient.set(label, { client: label, count: 0, gross: 0 }).get(label)!;
+    g.count++;
+    g.gross = r2(g.gross + inv.gross);
+    total = r2(total + inv.gross);
+    count++;
+  }
+  return { total, count, byClient: [...byClient.values()].sort((a, b) => b.gross - a.gross) };
+}
+
 // P&L revenue per client for the month (netto), source='ksef'; the cleaning
 // sub-business (wspólnoty) goes into its own segment
 export async function feedPnlRevenue(revenueMonth: string) {

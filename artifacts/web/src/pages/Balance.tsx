@@ -16,7 +16,7 @@ interface Data {
     banks: { total: number; perFirm: { companyId: number; name: string; amount: number }[] };
     cash: { total: number; perBox: { box: string; closing: number }[] };
   };
-  receivables: { total: number; rows: Obligation[] };
+  receivables: { total: number; ksef: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] }; rows: Obligation[] };
   payables: { total: number; unpaidInvoices: { total: number; count: number }; rows: Obligation[] };
   netPosition: number;
 }
@@ -137,7 +137,24 @@ export default function Balance() {
                     onClick={() => setAdding("receivable")}><Plus className="h-4 w-4" /></button>
                 </div>
               </div>
-              {!d.receivables.rows.length ? <div className="p-4"><Empty>{t("Немає відкритих — натисни + щоб дописати")}</Empty></div>
+              {d.receivables.ksef.total > 0 && (
+                <div className="border-b border-slate-100 px-4 py-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Link href="/ksef" className="text-sm font-medium text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-red-700">
+                        {t("Неоплачені виставлені фактури ({n} шт.)", { n: d.receivables.ksef.count })}
+                      </Link>
+                      <div className="text-xs text-slate-400">{t("автоматично: KSeF × витяги, на дату")}</div>
+                    </div>
+                    <div className="whitespace-nowrap text-sm font-medium tabular-nums text-emerald-700">{zl(d.receivables.ksef.total)}</div>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    {d.receivables.ksef.byClient.slice(0, 6).map(c => `${c.client} ${zl(c.gross)}`).join(" · ")}
+                    {d.receivables.ksef.byClient.length > 6 ? " · …" : ""}
+                  </div>
+                </div>
+              )}
+              {!d.receivables.rows.length && !d.receivables.ksef.total ? <div className="p-4"><Empty>{t("Немає відкритих — натисни + щоб дописати")}</Empty></div>
                 : <ObRows rows={d.receivables.rows} tone="text-emerald-700" />}
             </Card>
           </div>

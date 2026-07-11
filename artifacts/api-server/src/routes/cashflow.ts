@@ -14,6 +14,7 @@ import { balanceAt } from "./bank";
 import { cashPosition, cashBoxesAt, cashCategory } from "./cash";
 import { openObligations, openObligationRows } from "./obligations";
 import { unpaidInvoicesAt } from "./invoices";
+import { ksefReceivablesAt } from "../services/ksef";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -72,10 +73,12 @@ router.get("/cashflow", async (req, res) => {
 
   // ── positions ─────────────────────────────────────────────────────────────────
   // obligations & unpaid invoices as of the END of the selected period
-  const [bankOpen, bankClose, cashPos, obligations, unpaidInv] = await Promise.all([
-    balanceAt(prevEnd, null), balanceAt(to, null), cashPosition(fromM, toM), openObligations(to), unpaidInvoicesAt(to),
+  const [bankOpen, bankClose, cashPos, obligationsRaw, unpaidInv, ksefRecv] = await Promise.all([
+    balanceAt(prevEnd, null), balanceAt(to, null), cashPosition(fromM, toM), openObligations(to), unpaidInvoicesAt(to), ksefReceivablesAt(to),
   ]);
   const unpaidInvoices = unpaidInv.total;
+  // «нам винні» = ручні належності + наші неоплачені фактури з KSeF на кінець періоду
+  const obligations = { ...obligationsRaw, receivable: round2(obligationsRaw.receivable + ksefRecv.total) };
 
   // ── merge per category ────────────────────────────────────────────────────────
   const keys = new Set([...Object.keys(bankCats), ...Object.keys(cashCats)]);
@@ -133,14 +136,15 @@ router.get("/balance", async (req, res) => {
 
   const companies = (await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.isActive, true)))
     .filter(c => ["ES", "ESO", "Klinex"].includes(c.name));
-  const [bankTotal, cashBoxes, obRows, unpaidInv, ...perFirm] = await Promise.all([
-    balanceAt(to, null), cashBoxesAt(toM), openObligationRows(to), unpaidInvoicesAt(to),
+  const [bankTotal, cashBoxes, obRows, unpaidInv, ksefRecv, ...perFirm] = await Promise.all([
+    balanceAt(to, null), cashBoxesAt(toM), openObligationRows(to), unpaidInvoicesAt(to), ksefReceivablesAt(to),
     ...companies.map(c => balanceAt(to, c.id)),
   ]);
 
   const receivables = obRows.filter(r => r.direction === "receivable");
   const payables = obRows.filter(r => r.direction === "payable");
-  const receivableTotal = round2(receivables.reduce((s, r) => s + r.amount, 0));
+  // manual receivables + our issued invoices unpaid at the date (KSeF × bank)
+  const receivableTotal = round2(receivables.reduce((s, r) => s + r.amount, 0) + ksefRecv.total);
   const payableTotal = round2(payables.reduce((s, r) => s + r.amount, 0) + unpaidInv.total);
   const moneyTotal = round2(bankTotal + cashBoxes.total);
   const pick = (r: any) => ({
@@ -156,7 +160,7 @@ router.get("/balance", async (req, res) => {
       banks: { total: round2(bankTotal), perFirm: companies.map((c, i) => ({ companyId: c.id, name: c.name, amount: round2(perFirm[i] ?? 0) })) },
       cash: { total: cashBoxes.total, perBox: cashBoxes.perBox },
     },
-    receivables: { total: receivableTotal, rows: receivables.map(pick) },
+    receivables: { total: receivableTotal, ksef: ksefRecv, rows: receivables.map(pick) },
     payables: { total: payableTotal, unpaidInvoices: unpaidInv, rows: payables.map(pick) },
     netPosition: round2(moneyTotal + receivableTotal - payableTotal),
   });
