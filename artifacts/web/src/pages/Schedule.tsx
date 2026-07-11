@@ -201,11 +201,16 @@ export default function Schedule() {
     <>
       <PageHeader title={t("Графіки")} subtitle={facName ? t("Фабрика: {name}", { name: facName }) : undefined} />
 
+      {/* Week picker + factory/actions: pinned under the top bar while the grid
+          scrolls (md+ only — on phones the wrapped buttons would eat the screen).
+          top-[52px] = desktop top-bar height − 1px overlap; -mx-8/px-8 undo the
+          main padding so the opaque strip spans the full content column. */}
+      <div className="mb-4 md:sticky md:top-[52px] md:z-20 md:-mx-8 md:bg-[#f6f7f9] md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
       {/* Week picker (buttons) */}
       <WeekSelect value={weekStart} onChange={setWeekStart} className="mb-4" />
 
       {/* Factory + actions */}
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Select value={factoryId} onChange={e => setFactoryId(e.target.value)} className="w-44">
           {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </Select>
@@ -234,7 +239,8 @@ export default function Schedule() {
         </>}
       </div>
 
-      {isFetching && <div className="mb-2 h-0.5 animate-pulse rounded bg-red-400" />}
+      {isFetching && <div className="mt-3 h-0.5 animate-pulse rounded bg-red-400" />}
+      </div>{/* /sticky header */}
       {editable && hasContent && <p className="mb-3 text-xs text-slate-400">💡 {t("Перетягуйте людей між змінами")}{usesAvailability ? t(", запасом") : ""} {t("та списком вільних.")} {approved && t("Графік затверджено — заміни теж можна вносити.")}</p>}
 
       {!hasContent ? (
