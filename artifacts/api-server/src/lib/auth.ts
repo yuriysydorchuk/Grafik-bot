@@ -1,8 +1,8 @@
 import { scryptSync, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
-import { adminsTable, rolesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { adminsTable, rolesTable, adminSessionsTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
 
 // ─── Password hashing (scrypt, no external deps) ───────────────────────────────
 
@@ -38,7 +38,7 @@ export const SESSION_COOKIE = "grafik_session";
 
 import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, type Role, type Capability } from "./roles";
 
-type SessionPayload = { adminId: number; name: string; role: Role; exp: number };
+type SessionPayload = { adminId: number; name: string; role: Role; exp: number; tv?: number; sid?: string };
 
 // ─── Role access cache (roles table) ───────────────────────────────────────────
 // Role membership (pages/caps) lives in the DB and rarely changes — cache it and
@@ -66,8 +66,8 @@ function sign(data: string): string {
   return b64url(createHmac("sha256", SECRET).update(data).digest());
 }
 
-export function createToken(adminId: number, name: string, role: Role = "owner"): string {
-  const payload: SessionPayload = { adminId, name, role, exp: Date.now() + TTL_MS };
+export function createToken(adminId: number, name: string, role: Role = "owner", tokenVersion = 0, sid?: string): string {
+  const payload: SessionPayload = { adminId, name, role, exp: Date.now() + TTL_MS, tv: tokenVersion, sid };
   const body = b64url(Buffer.from(JSON.stringify(payload)));
   return `${body}.${sign(body)}`;
 }
@@ -89,7 +89,7 @@ export function verifyToken(token: string | undefined): SessionPayload | null {
 // ─── Express middleware ────────────────────────────────────────────────────────
 
 export interface AuthedRequest extends Request {
-  admin?: { adminId: number; name: string; role: Role; isMain: boolean; caps: string[]; pages: string[] };
+  admin?: { adminId: number; name: string; role: Role; isMain: boolean; caps: string[]; pages: string[]; sessionId?: string };
 }
 
 export async function authRequired(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -99,11 +99,25 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
   // Re-check against the DB every request so deletions / role changes take effect
   // immediately (the token's role is NOT trusted for authorization).
   try {
-    const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
+    const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain, tokenVersion: adminsTable.tokenVersion }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
     if (!admin) return res.status(401).json({ error: "unauthorized" }); // account deleted
+    // Server-side revocation: a bumped token_version (password change / "log out everywhere")
+    // invalidates every token issued before it. Pre-versioning tokens (tv undefined) count as 0.
+    if ((payload.tv ?? 0) !== (admin.tokenVersion ?? 0)) return res.status(401).json({ error: "unauthorized" });
+    // Per-session revocation: the token is bound to a tracked session (sid). A missing session
+    // (revoked, or a legacy pre-tracking token) fails — that device is logged out.
+    if (!payload.sid) return res.status(401).json({ error: "unauthorized" });
+    const [sess] = await db.select({ id: adminSessionsTable.id, revokedAt: adminSessionsTable.revokedAt, lastSeenAt: adminSessionsTable.lastSeenAt })
+      .from(adminSessionsTable).where(eq(adminSessionsTable.id, payload.sid));
+    if (!sess || sess.revokedAt || sess.id === undefined) return res.status(401).json({ error: "unauthorized" });
+    // Throttle last_seen writes to at most once per 5 min to avoid a DB write per request.
+    if (Date.now() - new Date(sess.lastSeenAt).getTime() > 5 * 60 * 1000) {
+      db.update(adminSessionsTable).set({ lastSeenAt: sql`now()` }).where(eq(adminSessionsTable.id, payload.sid))
+        .catch(() => { /* best-effort */ });
+    }
     const role = (admin.role ?? OWNER) as Role;
     const access = await resolveAccess(role);
-    req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages };
+    req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages, sessionId: payload.sid };
     return next();
   } catch {
     return res.status(500).json({ error: "auth error" });

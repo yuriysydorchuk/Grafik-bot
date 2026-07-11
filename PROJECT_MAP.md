@@ -44,7 +44,7 @@ Grafik-bot/
 
 ## API routes
 
-Префікс `/api`. Авторизація: сесійний cookie `grafik_session` (`authRequired`); мутації під `requireRole(...)`; керування адмінами — `requireMainAdmin`. Фінанси — owner only.
+Префікс `/api`. Авторизація: сесійний cookie `grafik_session` (`authRequired`, HMAC-токен зі вшитим `token_version`); мутації під `requireRole(...)`; керування адмінами — `requireMainAdmin`. Фінанси — owner only. **Відкликання сесій:** `authRequired` звіряє `payload.tv` з `admins.token_version` щозапиту; logout / зміна пароля / reset-web інкрементять версію → всі старі токени адміна миттєво недійсні («вийти скрізь»). 2FA-код — `crypto.randomInt`.
 
 **Auth:** `POST /auth/login`, `POST /auth/verify-2fa`, `POST /auth/logout`, `GET /auth/me` · **Health:** `GET /healthz`
 
@@ -79,6 +79,8 @@ Grafik-bot/
 
 **Адміни/ролі:** `GET/POST /admins`, `PATCH/DELETE /admins/:id`, `PATCH /admins/:id/role`, `POST /admins/:id/invite|reset-web`, `GET/POST/PATCH/DELETE /roles` (динамічні ролі, лише `is_main`)
 
+**Безпека/сесії (`routes/security.ts`, лише `is_main`):** `GET /security/sessions` (активні+недавні сесії веб-панелі: пристрій/IP/гео/час/остання активність, `current`=свій), `GET /security/login-events` (журнал входів: успіх/невірний пароль/невірний 2FA/logout), `POST /security/sessions/:id/revoke` (заблокувати одну), `POST /security/admins/:id/logout-everywhere` (ревок усіх сесій + bump `token_version`). Веб: `web/src/pages/Security.tsx` (`/security`, у навігації лише головному адміну).
+
 **Інше:** `GET /dashboard`, `GET /attention` (лічильники «Потребує уваги» для дашборда: pending-вихідні/аванси, нові коригування годин, невідмічені присутності, зміни без водія, непривʼязані позапланові, незаповнена диспозиційність), `GET /live` (лайв-зміни), `GET/POST /notifications(/read)`, `POST /broadcast`, `POST /chat/clear`, `GET /reports`, `GET /drive/link`
 
 > `routes/bot.ts` має `POST /webhook`, але **не змонтований** — бот працює в polling.
@@ -89,7 +91,7 @@ Grafik-bot/
 
 Telegraf, **long-polling**, один інстанс. Деталі — [`artifacts/api-server/src/bot/README.md`](artifacts/api-server/src/bot/README.md).
 
-- **Вхід:** `bot.start` обробляє deep-links `?start=...` (реєстрація працівника за кодом/фабрикою, привʼязка адміна/водія за invite, вибір мови). Команди: `/adminsetup`, `/getid`, `/invite`.
+- **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал, `fac`=самореєстрація на фабрику; вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
 - **Навігація:** reply-keyboard меню за роллю (`menus.ts`); `bot.hears` (~53, двомовний матч через `bhears`).
 - **Дії:** inline-кнопки `bot.action` (~32) — підтвердження відсутностей, мова, редагування графіку.
 - **Введення:** `bot.on("text"|"photo"|"document")` у межах активного кроку діалогу.
@@ -119,13 +121,13 @@ Telegraf, **long-polling**, один інстанс. Деталі — [`artifact
 
 Drizzle, уся схема в `lib/db/src/schema/workers.ts`. Групи таблиць:
 
-- **Довідники:** `companies`, `factories`, `positions`, `factory_positions`, `workers` (`self_transport` = доїжджає сам → поза водійським флоу, явку ставить графікова), `drivers`, `vehicles` (автопарк: номер/марка/місткість; веде головний водій у боті «🚙 Авто» або сайт Водії→Автопарк), `admins`, `roles` (динамічні ролі веб-панелі: pages+caps)
+- **Довідники:** `companies`, `factories`, `positions`, `factory_positions`, `workers` (`self_transport` = доїжджає сам → поза водійським флоу, явку ставить графікова; `worker_code` = публічний послідовний id для показу, `invite_code` = криптотокен привʼязки Telegram через `?start=emp<code>`), `drivers`, `vehicles` (автопарк: номер/марка/місткість; веде головний водій у боті «🚙 Авто» або сайт Водії→Автопарк), `admins`, `roles` (динамічні ролі веб-панелі: pages+caps)
 - **Планування:** `factory_orders`, `availability`, `schedule_weeks`, `schedule_entries` (має `sent_at` — «Мій графік» у боті показує лише розіслане), `schedule_approvals`, `driver_shift_assignments` (`kind`: delivery|pickup), `shift_cancellations` (скасовані клітинки week+factory+day+shift, unique)
 - **Операції:** `driver_trips`, `driver_workdays` (зміна водія: виїзд/повернення + одометр + `vehicle_id`), `unplanned_workers` (`replaces_worker_id` = кого замінив; замінений отримує absent з причиною «заміна» → reliability рахує як скасовано), `absence_requests` (`shift NULL` = вихідний на цілий день; блокує генерацію вже в pending), `hours_disputes`, `advance_requests`, `monthly_reports` (рапорт працівника: unique worker+month+factory)
 - **Рекрутинг:** `funnels` (реферальна воронка гарантується на старті — `ensureReferralFunnel()`), `candidates`, `candidate_activity`
 - **Документи:** `document_types`, `worker_documents` (файли — на диску `uploads/`, в БД лише метадата)
 - **Банківські витяги:** `bank_transactions` (сирі рядки MT940: дата/напрям/сума/контрагент/призначення/тип, дедуп-хеш), `bank_statements` (залишки `:60F:`/`:62F:` по витягах; `closing_derived` = обчислене закриття, коригується ланцюжком). `companies` має `legal_name`/`nip`/`is_active` (юрособи; TS неактивна)
-- **Сервісні:** `notifications`, `user_states`, `bot_messages`, `settings`
+- **Сервісні:** `notifications`, `user_states`, `bot_messages`, `settings`, `admin_sessions` (сесії веб-панелі: `id`=`sid` у токені, `ip`/`user_agent`/`device`/`geo`, `revoked_at` → per-session ревокація), `login_events` (незмінний журнал входів: `event`=success|bad_password|bad_2fa|no_telegram|logout)
 
 Деталі полів — у `lib/db/README.md` та самій схемі. **Зміни — вручну через `psql`** (не drizzle-kit).
 

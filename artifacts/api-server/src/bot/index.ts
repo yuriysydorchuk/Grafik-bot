@@ -8,7 +8,7 @@ import {
   vehiclesTable, shiftCancellationsTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray, ne, isNull, gte, lt } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, isNull, gte, lt, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   getWorkersWhoHaventSubmitted,
@@ -25,6 +25,7 @@ import { ensureReferralFunnel } from "../services/funnels";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker } from "./workerMatch";
+import { randomInviteCode } from "../lib/invite";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import {
   getMenuDriverFactory, sendAvailabilityKeyboard,
@@ -134,14 +135,14 @@ async function genWorkerCode(): Promise<string> {
   return String(max + 1).padStart(5, "0");
 }
 
-// Generate a unique 5-digit invite code for a driver
+// Generate a unique crypto-random invite code for a driver (unguessable — used as ?start=drv<code>).
 async function genDriverCode(): Promise<string> {
   for (let i = 0; i < 50; i++) {
-    const code = String(Math.floor(10000 + Math.random() * 90000));
+    const code = randomInviteCode();
     const existing = await db.select().from(driversTable).where(eq(driversTable.inviteCode, code));
     if (existing.length === 0) return code;
   }
-  return String(Date.now()).slice(-6); // fallback
+  return randomInviteCode(16); // fallback (collision astronomically unlikely)
 }
 
 // ─── /start ──────────────────────────────────────────────────────────────────
@@ -232,23 +233,31 @@ bot.start(async (ctx) => {
       );
     }
 
-    const workerByCode = await db.select().from(workersTable).where(eq(workersTable.workerCode, code));
-    if (workerByCode.length > 0) {
-      const w = workerByCode[0]!;
-      if (w.telegramId && w.telegramId !== tid) {
-        return ctx.reply("❌ Цей код вже використано іншим акаунтом. Зверніться до адміністратора.", { parse_mode: "Markdown" });
-      }
-      if (!w.telegramId) {
-        if (await tgTakenByWorker(tid, w.id)) {
-          return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого працівника. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+    // Worker invite link: ?start=emp<code> — binds via an unguessable invite_code (NOT the
+    // public sequential worker_code, which used to be enumerable and hijackable).
+    if (code.toLowerCase().startsWith("emp")) {
+      const empCode = code.slice(3);
+      const workerByCode = await db.select().from(workersTable).where(eq(workersTable.inviteCode, empCode));
+      if (workerByCode.length > 0) {
+        const w = workerByCode[0]!;
+        if (w.telegramId && w.telegramId !== tid) {
+          return ctx.reply("❌ Це посилання вже використано іншим акаунтом. Зверніться до адміністратора.", { parse_mode: "Markdown" });
         }
-        await db.update(workersTable).set({ telegramId: tid }).where(eq(workersTable.id, w.id));
+        if (!w.telegramId) {
+          if (await tgTakenByWorker(tid, w.id)) {
+            return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого працівника. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+          }
+          // Bind + burn the token (single-use): the link stops working once claimed.
+          await db.update(workersTable).set({ telegramId: tid, inviteCode: null }).where(eq(workersTable.id, w.id));
+        }
+        return ctx.reply(
+          `✅ Привіт, *${mdSafe(w.fullName)}*!\n\nВас прив'язано до бота.${w.workerCode ? `\nВаш код: \`${w.workerCode}\`` : ""}`,
+          { parse_mode: "Markdown", ...(await workerMenuFor(w, wlang(w))) },
+        );
       }
-      return ctx.reply(
-        `✅ Привіт, *${mdSafe(w.fullName)}*!\n\nВас прив'язано до бота.\nВаш код: \`${code}\``,
-        { parse_mode: "Markdown", ...(await workerMenuFor(w, wlang(w))) },
-      );
+      return ctx.reply("❌ Посилання недійсне або застаріле. Зверніться до адміністратора.", { parse_mode: "Markdown" });
     }
+
     // Unknown code or invalid link
     return ctx.reply("❌ Посилання недійсне або код не знайдено. Зверніться до адміністратора.", { parse_mode: "Markdown" });
   }
@@ -3208,8 +3217,9 @@ bot.on("text", async (ctx) => {
     const al = olang(admin ?? driver);
     if (text.length < 8) return ctx.reply(tb(al, "❌ Пароль закороткий (мінімум 8 символів). Введіть ще раз:"));
     const { hashPassword } = await import("../lib/auth");
+    // Bump token_version → invalidate any older session tokens after a (re)set password.
     await db.update(adminsTable)
-      .set({ username: data.username, passwordHash: hashPassword(text) })
+      .set({ username: data.username, passwordHash: hashPassword(text), tokenVersion: sql`${adminsTable.tokenVersion} + 1` })
       .where(eq(adminsTable.telegramId, tid));
     clearState(tid);
     try { await ctx.deleteMessage(); } catch { /* can't delete password msg in some chats */ }

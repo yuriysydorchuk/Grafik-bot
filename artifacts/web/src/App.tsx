@@ -35,6 +35,7 @@ import Payroll from "./pages/Payroll";
 import Ksef from "./pages/Ksef";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
+import Security from "./pages/Security";
 
 export default function App() {
   const onLogin = location.pathname.startsWith("/login");
@@ -82,6 +83,7 @@ export default function App() {
         <Route path="/factories">{() => guard("/factories", <Factories />)}</Route>
         <Route path="/settings">{() => guard("/settings", <Settings />)}</Route>
         <Route path="/admins">{() => guard("/admins", <Admins me={me} />)}</Route>
+        <Route path="/security">{() => guard("/security", <Security />)}</Route>
         <Route><Redirect to="/" /></Route>
       </Switch>
     </Layout>

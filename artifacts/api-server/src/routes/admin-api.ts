@@ -26,6 +26,7 @@ import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateS
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { randomInviteCode } from "../lib/invite";
 
 const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -657,14 +658,23 @@ router.get("/worker-documents/:id/file", RW, async (req, res) => {
 });
 
 // Personal invite link for a worker — they tap it and the bot links their Telegram.
+// Binds via an unguessable invite_code (?start=emp<code>), regenerated here if missing/burned;
+// worker_code stays a public display id only, never the binding secret.
 router.get("/workers/:id/invite", RW, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
-  let code = w.workerCode;
-  if (!code) { code = await nextWorkerCode(); await db.update(workersTable).set({ workerCode: code }).where(eq(workersTable.id, id)); }
+  let invite = w.inviteCode;
+  if (!invite) {
+    for (let i = 0; i < 50; i++) {
+      const c = randomInviteCode();
+      if ((await db.select().from(workersTable).where(eq(workersTable.inviteCode, c))).length === 0) { invite = c; break; }
+    }
+    invite = invite ?? randomInviteCode(16);
+    await db.update(workersTable).set({ inviteCode: invite }).where(eq(workersTable.id, id));
+  }
   const username = process.env.TELEGRAM_BOT_USERNAME || "";
-  ok(res, { code, link: username ? `https://t.me/${username}?start=${code}` : `?start=${code}` });
+  ok(res, { code: w.workerCode, link: username ? `https://t.me/${username}?start=emp${invite}` : `?start=emp${invite}` });
 });
 
 // ─── Manual broadcast + chat cleanup ───────────────────────────────────────────
@@ -1036,12 +1046,13 @@ const DRIVER_RW = requireAnyCap("editData", "assignDrivers");
 router.post("/drivers", DRIVER_RW, async (req, res) => {
   const { name, vehicle, phone, seats } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть ім'я");
-  // unique 5-digit invite code
+  // unique crypto-random invite code (unguessable ?start=drv<code> secret)
   let code = "";
   for (let i = 0; i < 50; i++) {
-    const c = String(Math.floor(10000 + Math.random() * 90000));
+    const c = randomInviteCode();
     if ((await db.select().from(driversTable).where(eq(driversTable.inviteCode, c))).length === 0) { code = c; break; }
   }
+  if (!code) code = randomInviteCode(16);
   const [d] = await db.insert(driversTable).values({
     name: name.trim(), vehicle: vehicle?.trim() || null,
     phone: phone?.trim() || null, inviteCode: code,
@@ -1128,7 +1139,7 @@ router.get("/drivers/:id/invite", async (req, res) => {
   if (!d) return fail(res, 404, "Не знайдено");
   let code = d.inviteCode;
   if (!code) {
-    code = String(Math.floor(10000 + Math.random() * 90000));
+    code = randomInviteCode();
     await db.update(driversTable).set({ inviteCode: code }).where(eq(driversTable.id, id));
   }
   const username = process.env.TELEGRAM_BOT_USERNAME || "";
@@ -2944,10 +2955,10 @@ const adminInviteLink = (code: string) => {
 };
 async function uniqueAdminCode(): Promise<string> {
   for (let i = 0; i < 50; i++) {
-    const c = Math.random().toString(36).slice(2, 8);
+    const c = randomInviteCode();
     if ((await db.select().from(adminsTable).where(eq(adminsTable.inviteCode, c))).length === 0) return c;
   }
-  return Math.random().toString(36).slice(2, 10);
+  return randomInviteCode(16);
 }
 // The head admin is the row flagged is_main (set once in the DB; the bot can never grant it).
 // Fall back to the lowest id only if the flag was somehow never set.
@@ -3022,7 +3033,8 @@ router.post("/admins/:id/invite", requireMainAdmin, async (req, res) => {
 // Reset web access (clears login + password so the user re-creates them in the bot)
 router.post("/admins/:id/reset-web", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  await db.update(adminsTable).set({ username: null, passwordHash: null }).where(eq(adminsTable.id, id));
+  // Bump token_version too → any active web session of that user is revoked immediately.
+  await db.update(adminsTable).set({ username: null, passwordHash: null, tokenVersion: sql`${adminsTable.tokenVersion} + 1` }).where(eq(adminsTable.id, id));
   ok(res, { ok: true });
 });
 

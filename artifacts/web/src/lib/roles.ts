@@ -37,7 +37,7 @@ export function can(me: Access, cap: Capability): boolean {
 }
 export function canAccessPage(me: Access, path: string): boolean {
   if (!me) return false;
-  if (path === "/admins") return !!me.isMain;     // user/role management — head admin only
+  if (path === "/admins" || path === "/security") return !!me.isMain; // user/role mgmt + sessions — head admin only
   if (me.role === OWNER) return true;
   return !!me.pages?.includes(path);
 }

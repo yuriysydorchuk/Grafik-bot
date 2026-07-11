@@ -10,6 +10,7 @@ import invoicesRouter from "./invoices";
 import pnlRouter from "./pnl";
 import payrollRouter from "./payroll";
 import ksefRouter from "./ksef";
+import securityRouter from "./security";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use(invoicesRouter);
 router.use(pnlRouter);
 router.use(payrollRouter);
 router.use(ksefRouter);
+router.use(securityRouter);
 
 export default router;

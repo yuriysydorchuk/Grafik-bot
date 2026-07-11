@@ -1,10 +1,11 @@
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { db } from "@workspace/db";
-import { adminsTable, rolesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import { verifyPassword, createToken, authRequired, SESSION_COOKIE, type AuthedRequest } from "../lib/auth";
+import { adminsTable, rolesTable, adminSessionsTable, loginEventsTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
+import { verifyPassword, createToken, verifyToken, authRequired, SESSION_COOKIE, type AuthedRequest } from "../lib/auth";
+import { clientIp, parseDevice, lookupGeo } from "../lib/clientInfo";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -23,14 +24,50 @@ const pending = new Map<string, { adminId: number; code: string; expires: number
 const PENDING_TTL = 5 * 60 * 1000;
 function sweep() { const now = Date.now(); for (const [k, v] of pending) if (v.expires < now) pending.delete(k); }
 
-function setSession(res: any, admin: { id: number; name: string; role: string | null }) {
+type LoginEventKind = "success" | "bad_password" | "bad_2fa" | "no_telegram" | "logout";
+
+// Record a sign-in attempt (success or failure). Geo is resolved asynchronously so it never
+// slows the login response; the row is patched in once the lookup returns.
+async function logEvent(req: any, event: LoginEventKind, opts: { adminId?: number | null; usernameTried?: string | null; sessionId?: string | null } = {}) {
+  const ip = clientIp(req);
+  const device = parseDevice(req.headers?.["user-agent"]);
+  try {
+    const [row] = await db.insert(loginEventsTable).values({
+      adminId: opts.adminId ?? null,
+      usernameTried: opts.usernameTried ?? null,
+      ip, device, event,
+      sessionId: opts.sessionId ?? null,
+    }).returning({ id: loginEventsTable.id });
+    if (row) fillGeo(ip, { eventId: row.id, sessionId: opts.sessionId ?? null });
+  } catch (e) {
+    logger.error({ err: e }, "logEvent failed");
+  }
+}
+
+// Fire-and-forget geo backfill for a session and/or login event.
+function fillGeo(ip: string | null, target: { eventId?: number; sessionId?: string | null }) {
+  lookupGeo(ip).then(geo => {
+    if (!geo) return;
+    if (target.sessionId) db.update(adminSessionsTable).set({ geo }).where(eq(adminSessionsTable.id, target.sessionId)).catch(() => {});
+    if (target.eventId) db.update(loginEventsTable).set({ geo }).where(eq(loginEventsTable.id, target.eventId)).catch(() => {});
+  }).catch(() => {});
+}
+
+// Create the tracked session row + issue its HMAC token cookie.
+async function setSession(req: any, res: any, admin: { id: number; name: string; role: string | null; tokenVersion?: number }): Promise<string> {
   const role = (admin.role ?? "owner") as any;
-  const token = createToken(admin.id, admin.name, role);
+  const sid = randomBytes(24).toString("hex");
+  const ip = clientIp(req);
+  const ua = (req.headers?.["user-agent"] as string | undefined) ?? null;
+  await db.insert(adminSessionsTable).values({ id: sid, adminId: admin.id, ip, userAgent: ua, device: parseDevice(ua) });
+  fillGeo(ip, { sessionId: sid });
+  const token = createToken(admin.id, admin.name, role, admin.tokenVersion ?? 0, sid);
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true, sameSite: "lax",
     secure: process.env.NODE_ENV === "production", // HTTPS-only cookie in production
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
+  return sid;
 }
 
 // Step 1: username + password → send a Telegram 2FA code
@@ -38,14 +75,17 @@ router.post("/auth/login", authLimiter, async (req, res) => {
   sweep();
   const { username, password } = req.body ?? {};
   if (!username || !password) return res.status(400).json({ error: "Введіть логін і пароль" });
-  const admin = (await db.select().from(adminsTable).where(eq(adminsTable.username, String(username).trim().toLowerCase())))[0];
+  const uname = String(username).trim().toLowerCase();
+  const admin = (await db.select().from(adminsTable).where(eq(adminsTable.username, uname)))[0];
   if (!admin || !verifyPassword(String(password), admin.passwordHash)) {
+    await logEvent(req, "bad_password", { adminId: admin?.id ?? null, usernameTried: uname });
     return res.status(401).json({ error: "Невірний логін або пароль" });
   }
   if (!admin.telegramId) {
+    await logEvent(req, "no_telegram", { adminId: admin.id, usernameTried: uname });
     return res.status(403).json({ error: "Акаунт не приєднаний до Telegram — двофакторний вхід неможливий. Зверніться до власника." });
   }
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(randomInt(100000, 1000000));
   const pendingId = randomBytes(16).toString("hex");
   pending.set(pendingId, { adminId: admin.id, code, expires: Date.now() + PENDING_TTL, attempts: 0 });
   try {
@@ -68,15 +108,27 @@ router.post("/auth/verify-2fa", authLimiter, async (req, res) => {
   if (!p) return res.status(400).json({ error: "Сесію входу не знайдено або вона застаріла. Увійдіть знову." });
   if (Date.now() > p.expires) { pending.delete(String(pendingId)); return res.status(400).json({ error: "Код прострочено. Увійдіть знову." }); }
   if (p.attempts >= 5) { pending.delete(String(pendingId)); return res.status(429).json({ error: "Забагато спроб. Увійдіть знову." }); }
-  if (String(code).trim() !== p.code) { p.attempts++; return res.status(401).json({ error: "Невірний код." }); }
+  if (String(code).trim() !== p.code) {
+    p.attempts++;
+    await logEvent(req, "bad_2fa", { adminId: p.adminId });
+    return res.status(401).json({ error: "Невірний код." });
+  }
   pending.delete(String(pendingId));
   const admin = (await db.select().from(adminsTable).where(eq(adminsTable.id, p.adminId)))[0];
   if (!admin) return res.status(401).json({ error: "Акаунт не знайдено" });
-  setSession(res, admin);
+  const sid = await setSession(req, res, admin);
+  await logEvent(req, "success", { adminId: admin.id, usernameTried: admin.username, sessionId: sid });
   return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner" });
 });
 
-router.post("/auth/logout", (_req, res) => {
+router.post("/auth/logout", async (req, res) => {
+  // Revoke just this device's session (not "everywhere" — that's an explicit action on the
+  // Security page). Succeeds regardless of token validity.
+  const payload = verifyToken((req as any).cookies?.[SESSION_COOKIE]);
+  if (payload?.sid) {
+    try { await db.update(adminSessionsTable).set({ revokedAt: sql`now()` }).where(eq(adminSessionsTable.id, payload.sid)); } catch { /* best-effort */ }
+    await logEvent(req, "logout", { adminId: payload.adminId, sessionId: payload.sid });
+  }
   res.clearCookie(SESSION_COOKIE);
   res.json({ ok: true });
 });

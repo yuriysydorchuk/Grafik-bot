@@ -49,7 +49,8 @@ export const workersTable = pgTable("workers", {
   id: serial("id").primaryKey(),
   fullName: text("full_name").notNull(),
   telegramId: text("telegram_id").unique(),
-  workerCode: text("worker_code").unique(),
+  workerCode: text("worker_code").unique(), // public sequential id (shown in lists/reports) — NOT a binding secret
+  inviteCode: text("invite_code").unique(), // unguessable token for ?start=emp<code> Telegram binding
   factoryId: integer("factory_id").references(() => factoriesTable.id),
   companyId: integer("company_id").references(() => companiesTable.id), // our agency the worker is under
   positionId: integer("position_id").references(() => positionsTable.id), // work role (nullable = generic production)
@@ -222,6 +223,7 @@ export const adminsTable = pgTable("admins", {
   passwordHash: text("password_hash"),       // scrypt hash for web login
   role: text("role").notNull().default("owner"), // owner | scheduler | driver
   isMain: boolean("is_main").notNull().default(false), // the one immutable head admin (only this account manages roles)
+  tokenVersion: integer("token_version").notNull().default(0), // bumped on logout / password change → invalidates all older session tokens
   inviteCode: text("invite_code").unique(),  // for ?start=adm<code> invite links
   language: text("language"), // uk | en (null = not chosen, defaults to uk)
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -740,6 +742,35 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 });
 
+// Web-panel login sessions — one row per successful web login. The session id is embedded
+// in the HMAC token (sid); authRequired looks it up so a single device can be revoked
+// (revoked_at) without touching the others. Kept for audit even after revocation/expiry.
+export const adminSessionsTable = pgTable("admin_sessions", {
+  id: text("id").primaryKey(),                 // random session id, also the `sid` inside the token
+  adminId: integer("admin_id").notNull().references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  device: text("device"),                      // parsed short label, e.g. "Chrome на Windows"
+  geo: text("geo"),                            // best-effort "City, Country" from IP (null if unknown/disabled)
+  revokedAt: timestamp("revoked_at"),          // set → token stops working immediately
+  revokedBy: integer("revoked_by"),            // admin id who revoked (null = self/logout/password change)
+});
+
+// Immutable audit trail of web sign-in attempts (success + failures) for breach forensics.
+export const loginEventsTable = pgTable("login_events", {
+  id: serial("id").primaryKey(),
+  adminId: integer("admin_id"),                // null when the username was unknown
+  usernameTried: text("username_tried"),
+  at: timestamp("at").notNull().defaultNow(),
+  ip: text("ip"),
+  device: text("device"),
+  geo: text("geo"),
+  event: text("event").notNull(),              // success | bad_password | bad_2fa | no_telegram | logout
+  sessionId: text("session_id"),               // links to admin_sessions.id on success/logout
+});
+
 // Types
 export type Worker = typeof workersTable.$inferSelect;
 export type Position = typeof positionsTable.$inferSelect;
@@ -760,6 +791,8 @@ export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
 export type CashEntry = typeof cashEntriesTable.$inferSelect;
+export type AdminSession = typeof adminSessionsTable.$inferSelect;
+export type LoginEvent = typeof loginEventsTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

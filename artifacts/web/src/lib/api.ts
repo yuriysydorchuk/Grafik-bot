@@ -114,6 +114,18 @@ export interface Dashboard {
 }
 export interface AvailRow { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff?: Record<string, string> }
 
+export interface SessionRow {
+  id: string; adminId: number; adminName: string | null;
+  createdAt: string; lastSeenAt: string;
+  ip: string | null; device: string | null; geo: string | null;
+  revokedAt: string | null; active: boolean; current: boolean;
+}
+export interface LoginEventRow {
+  id: number; adminId: number | null; adminName: string | null; usernameTried: string | null;
+  at: string; ip: string | null; device: string | null; geo: string | null;
+  event: "success" | "bad_password" | "bad_2fa" | "no_telegram" | "logout";
+}
+
 export const DAYS: DayCode[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 export const DAY_UK: Record<DayCode, string> = {
   mon: "Пн", tue: "Вт", wed: "Ср", thu: "Чт", fri: "Пт", sat: "Сб", sun: "Нд",
