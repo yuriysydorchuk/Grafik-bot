@@ -233,6 +233,7 @@ export async function matchKsefPayments(): Promise<number> {
 // Receivables («нам винні») at a date: invoices issued on or before asOf that
 // were not yet paid at asOf. Payment date comes from the bank match; manual
 // override wins (manual «paid» without a date = never counted as a debt).
+// Only the main business — the cleaning sub-business (wspólnoty) is counted separately.
 export async function ksefReceivablesAt(asOf: string): Promise<{ total: number; count: number; byClient: { client: string; count: number; gross: number }[] }> {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const rows = await db.select().from(ksefInvoicesTable).where(sql`${ksefInvoicesTable.issueDate} <= ${asOf}`);
@@ -240,6 +241,7 @@ export async function ksefReceivablesAt(asOf: string): Promise<{ total: number; 
   let total = 0;
   let count = 0;
   for (const inv of rows) {
+    if (inv.segment === "cleaning") continue;
     let openAt: boolean;
     if (inv.manualStatus === "paid") {
       const d = inv.manualPaidDate ?? inv.paidDate;
