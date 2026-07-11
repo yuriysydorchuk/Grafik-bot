@@ -214,20 +214,45 @@ export async function syncKsef(): Promise<KsefSyncResult> {
   return result;
 }
 
-// strict payment matching: the invoice number appears in an incoming transfer
-// title of the same firm (no amount heuristics — those were rejected before)
+// Strict payment matching, three passes. The anchor is always the invoice
+// number inside the incoming transfer title; the exact gross amount
+// disambiguates, because invoice numbers collide across our firms (A3/4/2026
+// exists at ES, ESO and Klinex at once) and clients sometimes pay to the
+// wrong firm's account:
+//  1) same firm + number in title + exact amount;
+//  2) any of our firms + number in title + exact amount (cross-firm payments);
+//  3) same firm + number in title, amount differs (batch transfers covering
+//     several invoices) — only with transfers not already claimed by an exact match.
 export async function matchKsefPayments(): Promise<number> {
-  const r: any = await db.execute(sql`
+  let total = 0;
+  const run = async (q: any) => {
+    const r: any = await db.execute(q);
+    total += Number(r.rowCount ?? 0);
+  };
+  await run(sql`
     UPDATE ksef_invoices i
     SET paid_date = t.value_date, paid_txn_id = t.id
     FROM bank_transactions t
-    WHERE i.paid_date IS NULL
+    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
-      AND t.direction = 'in'
-      AND t.value_date >= i.issue_date
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
-  `);
-  return Number(r.rowCount ?? 0);
+      AND abs(t.amount - i.gross) <= 0.02`);
+  await run(sql`
+    UPDATE ksef_invoices i
+    SET paid_date = t.value_date, paid_txn_id = t.id
+    FROM bank_transactions t
+    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
+      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND abs(t.amount - i.gross) <= 0.02`);
+  await run(sql`
+    UPDATE ksef_invoices i
+    SET paid_date = t.value_date, paid_txn_id = t.id
+    FROM bank_transactions t
+    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
+      AND t.company_id = i.company_id
+      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND NOT EXISTS (SELECT 1 FROM ksef_invoices x WHERE x.paid_txn_id = t.id)`);
+  return total;
 }
 
 // Receivables («нам винні») at a date: invoices issued on or before asOf that
