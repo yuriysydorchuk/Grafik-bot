@@ -137,6 +137,16 @@ export function requireAnyCap(...caps: Capability[]) {
   };
 }
 
+// Gate a route by PAGE access (roles.pages) — for pages like «Каса» that an office
+// employee fills without having any capability (owner always passes).
+export function requirePage(page: string) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.admin) return res.status(401).json({ error: "unauthorized" });
+    if (req.admin.role === OWNER || req.admin.pages.includes(page)) return next();
+    return res.status(403).json({ error: "forbidden" });
+  };
+}
+
 // Gate a route to the single immutable head admin (role assignment, user management).
 // Nobody but this account — not even other owners — can pass.
 export function requireMainAdmin(req: AuthedRequest, res: Response, next: NextFunction) {

@@ -129,6 +129,26 @@ export function startScheduler() {
         const r = await syncBankTransactions();
         logger.info({ files: r.files, imported: r.imported, skipped: r.skipped }, "Daily bank statement import");
       } catch (e: any) { logger.warn({ err: e?.message }, "Daily bank import failed"); }
+      try {
+        const { syncCashRegister } = await import("./cashRegister");
+        const c = await syncCashRegister();
+        logger.info({ tabs: c.tabs, entries: c.entries }, "Daily cash register sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily cash register sync failed"); }
+      try {
+        const { syncInvoices } = await import("./invoices");
+        const i = await syncInvoices();
+        logger.info({ tabs: i.tabs, invoices: i.invoices, unpaid: i.unpaid }, "Daily invoices sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily invoices sync failed"); }
+      try {
+        const { syncPayrollSummaries } = await import("./payrollSummaries");
+        const p = await syncPayrollSummaries();
+        logger.info({ sources: p.sources, factories: p.factories, errors: p.errors.length }, "Daily payroll summaries sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily payroll summaries sync failed"); }
+      try {
+        const { syncKsef } = await import("./ksef");
+        const k = await syncKsef();
+        logger.info({ companies: k.companies, inserted: k.inserted, paidMatched: k.paidMatched, errors: k.errors.length }, "Daily KSeF sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily KSeF sync failed"); }
     },
     { timezone: TZ },
   );

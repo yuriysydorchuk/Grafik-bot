@@ -5,9 +5,10 @@
 import { google } from "googleapis";
 import crypto from "node:crypto";
 import { db } from "@workspace/db";
-import { bankTransactionsTable, bankStatementsTable, companiesTable } from "@workspace/db";
+import { bankTransactionsTable, bankStatementsTable, companiesTable, counterpartyRulesTable } from "@workspace/db";
 import { sql as sqlRaw } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { T_OWNER_ANY } from "./bankClassify";
 import { decodeStatement, parseMt940, matchCompanyName, type Statement } from "./mt940";
 
 // The pure MT940 layer (encoding, parsing, entity matching) lives in mt940.ts —
@@ -109,6 +110,32 @@ export async function syncBankTransactions(filter?: (monthFolder: string) => boo
       SELECT 1 FROM bank_statements n
       WHERE n.account = s.account AND n.opening_date > s.opening_date AND n.opening_balance IS NOT NULL)`);
 
+  // counterparty rules cover future imports too — apply to freshly arrived rows
+  await applyCounterpartyRules({ onlyUncategorized: true });
+
   logger.info({ files: result.files, imported: result.imported, skipped: result.skipped }, "bank statements sync done");
   return result;
+}
+
+// ── Counterparty → category rules ──────────────────────────────────────────────
+// Bulk re-categorization by counterparty substring. Owner payouts are exempt:
+// neither auto-detected owner transfers nor per-txn owner overrides are touched.
+export async function applyCounterpartyRules(opts: { onlyUncategorized?: boolean; ruleId?: number } = {}): Promise<number> {
+  const rules = opts.ruleId
+    ? await db.select().from(counterpartyRulesTable).where(sqlRaw`id = ${opts.ruleId}`)
+    : await db.select().from(counterpartyRulesTable);
+  let updated = 0;
+  for (const r of rules) {
+    const guard = opts.onlyUncategorized
+      ? sqlRaw` AND manual_category IS NULL`
+      : sqlRaw` AND (manual_category IS NULL OR manual_category NOT IN ('owner_roman','owner_tetiana','owner_yuriy'))`;
+    const res: any = await db.execute(sqlRaw`
+      UPDATE bank_transactions SET manual_category = ${r.category}
+      WHERE direction = 'out'
+        AND upper(coalesce(counterparty, '')) LIKE ${"%" + r.pattern.toUpperCase() + "%"}
+        AND NOT (${sqlRaw.raw(T_OWNER_ANY)})
+        AND manual_category IS DISTINCT FROM ${r.category}${guard}`);
+    updated += Number(res?.rowCount ?? 0);
+  }
+  return updated;
 }

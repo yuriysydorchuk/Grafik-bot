@@ -452,6 +452,7 @@ export const bankTransactionsTable = pgTable("bank_transactions", {
   title: text("title"),                  // ^20–^29 remittance / merchant
   txType: text("tx_type"),               // ^00 description + transaction code
   bankRef: text("bank_ref"),             // reference after //
+  manualCategory: text("manual_category"), // owner's override: expense-category key or owner_roman/tetiana/yuriy (null = auto)
   dedupHash: text("dedup_hash").notNull(),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 }, (t) => [
@@ -478,6 +479,238 @@ export const bankStatementsTable = pgTable("bank_statements", {
   uniqueIndex("bank_statements_dedup_uniq").on(t.dedupHash),
 ]);
 
+// Office cash box (сейф) ledger, synced from the "STAN KASY" Google Sheet the office
+// maintains (one tab per month+entity). kind: opening (stan na początek) | in (знято
+// з карти в касу) | out (витрачено готівкою). Re-synced per tab (wipe & insert).
+export const cashEntriesTable = pgTable("cash_entries", {
+  id: serial("id").primaryKey(),
+  box: text("box").notNull().default("office"), // office | yuriy | tetiana — which physical safe
+  companyId: integer("company_id").references(() => companiesTable.id), // NULL for owner safes (company cash, not firm-specific)
+  periodMonth: text("period_month").notNull(), // "YYYY-MM" from the tab name
+  entryDate: date("entry_date"),               // may be missing in the sheet
+  kind: text("kind").notNull(),                // opening | in | out
+  amount: real("amount").notNull(),
+  description: text("description"),
+  note: text("note"),
+  tabName: text("tab_name").notNull(),         // source sheet tab, for traceability
+  sortIdx: integer("sort_idx").notNull().default(0), // original row order within the tab
+  transferGroup: text("transfer_group"),       // links the two legs of a box↔box transfer (internal move, cancels out in totals)
+  manualCategory: text("manual_category"),     // override for the auto text-based category of an outflow
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+// Counterparty → category rules: re-categorize all (past and future) transactions
+// of a counterparty at once. Never applied to owner-payout transactions.
+export const counterpartyRulesTable = pgTable("counterparty_rules", {
+  id: serial("id").primaryKey(),
+  pattern: text("pattern").notNull(),          // uppercase substring matched against counterparty
+  category: text("category").notNull(),        // expense category key
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Receivables / payables («Належності»): who owes us and what we owe, per firm.
+// Manual for now; invoice sync and KSeF will feed this later.
+export const obligationsTable = pgTable("obligations", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  direction: text("direction").notNull(),      // receivable (нам винні) | payable (ми винні)
+  counterparty: text("counterparty").notNull(),
+  description: text("description"),
+  amount: real("amount").notNull(),
+  dueDate: date("due_date"),
+  arisenDate: date("arisen_date").notNull().defaultNow(), // when the debt economically arose (for month-end positions)
+  status: text("status").notNull().default("open"), // open | settled
+  settledAt: date("settled_at"),
+  note: text("note"),
+  source: text("source").notNull().default("manual"), // manual | invoices | ksef
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Cost invoices («Фактури») — mirror of the three Faktury Kosztowe sheets
+// (ES / ESO / Klinex), one row per invoice. Unpaid ones feed the net position.
+export const invoicesTable = pgTable("invoices", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  periodMonth: text("period_month").notNull(), // "YYYY-MM" from the tab name
+  docType: text("doc_type"),                   // PROFORMA | FAKTURA | null (col A)
+  issueDate: date("issue_date"),
+  number: text("number"),
+  amount: real("amount").notNull(),
+  statusRaw: text("status_raw"),               // sheet text: Przelew / Nie oplacona / …
+  unpaid: boolean("unpaid").notNull().default(false), // derived: status ~ nie opłacona
+  dueDate: date("due_date"),
+  counterparty: text("counterparty"),
+  category: text("category"),                  // their own category text (Hostele, Inne, …)
+  paidDate: date("paid_date"),
+  // panel-side overrides — OUR metadata, carried over across sheet re-syncs
+  manualStatus: text("manual_status"),         // paid | unpaid | NULL (= as in the sheet)
+  manualPaidDate: date("manual_paid_date"),
+  manualCategory: text("manual_category"),
+  tabName: text("tab_name").notNull(),         // "{company}:{MM.YYYY}" for sheet rows, "manual" for panel rows
+  sortIdx: integer("sort_idx").notNull().default(0),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+// P&L accrual lines («P&L», /pnl): revenue/cogs per client + fixed costs per month.
+// History imported from the owner's financial-report workbook; new months arrive
+// from KSeF (revenue), payroll summaries (cogs) and manual entry (VAT/ZUS).
+export const pnlEntriesTable = pgTable("pnl_entries", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // "YYYY-MM"
+  section: text("section").notNull(),          // revenue | cogs | fixed
+  label: text("label").notNull(),              // client name or fixed-cost line
+  amount: real("amount").notNull(),            // revenue: netto (без VAT); cogs: повна вартість ЗП (брутто + податки)
+  amountGross: real("amount_gross"),           // revenue only: brutto фактур (з VAT)
+  segment: text("segment").notNull().default("main"), // main | cleaning (wspólnoty — окремий під-бізнес)
+  source: text("source").notNull().default("manual"), // manual | import | ksef | payroll
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Payroll summaries («Зведені ЗП») — one workbook per month per region
+// (e.g. «05.2026 Люблін Сводна»). Registry of source spreadsheets + parsed
+// per-factory aggregates, the ZUS/cash split rows and office payroll rows.
+export const payrollSourcesTable = pgTable("payroll_sources", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // "YYYY-MM" from the workbook title
+  region: text("region").notNull(),            // місто: Люблін / Познань / Лодзь
+  firm: text("firm"),                          // ES | ESO | Klinex — коли весь файл однієї фірми (Лодзь)
+  spreadsheetId: text("spreadsheet_id").notNull().unique(),
+  kind: text("kind").notNull().default("gsheet"), // gsheet | xlsx (Office file → read via temp conversion)
+  title: text("title"),
+  lastSyncAt: timestamp("last_sync_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Drive folders with payroll workbooks: scanned on every sync, new monthly
+// workbooks («07.2026 Люблін Сводна» …) are registered automatically.
+export const payrollFoldersTable = pgTable("payroll_folders", {
+  id: serial("id").primaryKey(),
+  folderId: text("folder_id").notNull().unique(),
+  title: text("title"),
+  lastSyncAt: timestamp("last_sync_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// One row per factory per month: GODZIN MIESIĘCZNIE aggregates + what the
+// factory tab itself reveals (declared brutto/netto vs cash on the side).
+export const payrollFactoryMonthsTable = pgTable("payroll_factory_months", {
+  id: serial("id").primaryKey(),
+  sourceId: integer("source_id").notNull().references(() => payrollSourcesTable.id),
+  periodMonth: text("period_month").notNull(),
+  region: text("region").notNull(),
+  factory: text("factory").notNull(),          // row label in GODZIN MIESIĘCZNIE
+  firm: text("firm"),                          // ES | ESO | Klinex (attribution per factory)
+  tabName: text("tab_name"),                   // matched per-factory tab, if found
+  // GODZIN MIESIĘCZNIE columns
+  hours: real("hours"),
+  doZaplaty: real("do_zaplaty"),               // netto to pay out, full month
+  zaliczki: real("zaliczki"),
+  zaliczkaBd: real("zaliczka_bd"),
+  premia: real("premia"),
+  odziez: real("odziez"),
+  hostel: real("hostel"),
+  dojazd: real("dojazd"),
+  kary: real("kary"),
+  workers: integer("workers"),
+  students: integer("students"),
+  over26: integer("over26"),
+  // main payroll table of the factory tab (what księgowość/ZUS sees)
+  mainBrutto: real("main_brutto"),
+  mainNetto: real("main_netto"),
+  mainTaxedBrutto: real("main_taxed_brutto"),  // Σ brutto of rows where netto < brutto (non-students)
+  // bottom «godz fakt / godz księgowość / gotówka» block, when present
+  blockBrutto: real("block_brutto"),
+  blockNetto: real("block_netto"),
+  blockTaxedBrutto: real("block_taxed_brutto"),
+  gotowka: real("gotowka"),                    // Σ cash payouts on the side
+  blockHoursActual: real("block_hours_actual"),
+  blockHoursDeclared: real("block_hours_declared"),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+// Per-worker payroll rows (main table merged with the ZUS/cash block):
+// drill-downs, kasa reconciliation and per-person bank matching.
+export const payrollCashRowsTable = pgTable("payroll_cash_rows", {
+  id: serial("id").primaryKey(),
+  sourceId: integer("source_id").notNull().references(() => payrollSourcesTable.id),
+  periodMonth: text("period_month").notNull(),
+  region: text("region").notNull(),
+  tabName: text("tab_name").notNull(),
+  name: text("name").notNull(),
+  hoursActual: real("hours_actual"),
+  hoursDeclared: real("hours_declared"),
+  brutto: real("brutto"),                    // declared brutto (ZUS base)
+  netto: real("netto"),                      // declared netto (goes to the bank account)
+  gotowka: real("gotowka"),
+  fullNetto: real("full_netto"),             // total pay (Do wypłaty / RAZEM)
+  konto: real("konto"),                      // expected bank transfer = declared netto, or full netto if no cash part
+  sortIdx: integer("sort_idx").notNull().default(0),
+});
+
+// Manually confirmed «bank counterparty = payroll person» pairs for the salary
+// reconciliation (typos in names that the fuzzy matcher can't safely confirm).
+export const payrollNameMatchesTable = pgTable("payroll_name_matches", {
+  id: serial("id").primaryKey(),
+  bankKey: text("bank_key").notNull().unique(), // normalized bank counterparty
+  counterparty: text("counterparty"),           // raw, for display
+  personKey: text("person_key").notNull(),      // normalized person name from сводна
+  personName: text("person_name"),
+  kind: text("kind").notNull().default("worker"), // worker | office
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Office payroll rows (OFFICE ES / OFFICE KLINEX / …) — kept as a raw mirror,
+// deliberately NOT linked to P&L or anything else yet.
+export const payrollOfficeRowsTable = pgTable("payroll_office_rows", {
+  id: serial("id").primaryKey(),
+  sourceId: integer("source_id").notNull().references(() => payrollSourcesTable.id),
+  periodMonth: text("period_month").notNull(),
+  region: text("region").notNull(),
+  firm: text("firm").notNull(),                // from the tab name: ES / KLINEX / ES OUTSOURCING
+  section: text("section"),                    // sheet grouping, e.g. STUDENTY
+  name: text("name").notNull(),
+  status: text("status"),                      // ZUS | STUD | …
+  hours: text("hours"),                        // may be «ETAT», kept as text
+  stawka: text("stawka"),
+  brutto: real("brutto"),
+  umowaOd: text("umowa_od"),
+  umowaDo: text("umowa_do"),
+  koniecStudiow: text("koniec_studiow"),
+  zaswiadczenie: text("zaswiadczenie"),
+  sortIdx: integer("sort_idx").notNull().default(0),
+});
+
+// Sales invoices mirrored from KSeF (Krajowy System e-Faktur), per firm.
+// Revenue accrual: an invoice issued in June for May's work belongs to May's
+// P&L (revenue_month = issue month − 1). Payment status: matched strictly by
+// invoice number in incoming bank transfers + manual override.
+export const ksefInvoicesTable = pgTable("ksef_invoices", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id),
+  ksefNumber: text("ksef_number").notNull().unique(),
+  invoiceNumber: text("invoice_number").notNull(),
+  issueDate: date("issue_date").notNull(),
+  invoicingDate: date("invoicing_date"),        // accepted by KSeF
+  buyerNip: text("buyer_nip"),
+  buyerName: text("buyer_name"),
+  net: real("net").notNull(),
+  vat: real("vat").notNull().default(0),
+  gross: real("gross").notNull(),
+  currency: text("currency").notNull().default("PLN"),
+  invoiceType: text("invoice_type"),            // Vat | Korekta | Zal | …
+  revenueMonth: text("revenue_month").notNull(),// "YYYY-MM" — P&L month (issue − 1)
+  clientLabel: text("client_label"),            // mapped P&L client name
+  segment: text("segment").notNull().default("main"), // main | cleaning (wspólnoty)
+  paidDate: date("paid_date"),                  // from bank matching (by invoice number in title)
+  paidTxnId: integer("paid_txn_id"),            // bank_transactions.id
+  manualStatus: text("manual_status"),          // paid | unpaid | NULL (auto)
+  manualPaidDate: date("manual_paid_date"),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
 // Types
 export type Worker = typeof workersTable.$inferSelect;
 export type Position = typeof positionsTable.$inferSelect;
@@ -495,6 +728,7 @@ export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
+export type CashEntry = typeof cashEntriesTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

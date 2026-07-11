@@ -14,3 +14,6 @@ uploads/
 
 # Хендоф первинного VPS-деплою містить секрети (паролі/токени) — не комітити
 docs/archive/HANDOFF-vps-deploy.md
+
+# KSeF certificate/keys — never commit
+KSEF/

@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
-  FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
+  FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, type LucideIcon,
 } from "lucide-react";
 import { cn } from "./ui";
@@ -66,6 +66,13 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/finance", label: "Фінанси", icon: Wallet },
       { href: "/bank", label: "Витяги", icon: Landmark },
+      { href: "/cash", label: "Каса", icon: Vault },
+      { href: "/cashflow", label: "Кешфлоу", icon: TrendingUp },
+      { href: "/balance", label: "Баланс", icon: PiggyBank },
+      { href: "/invoices", label: "Фактури", icon: FileText },
+      { href: "/pnl", label: "P&L", icon: BarChart3 },
+      { href: "/payroll", label: "Зарплати", icon: Banknote },
+      { href: "/ksef", label: "KSeF", icon: FileText },
     ],
   },
   {

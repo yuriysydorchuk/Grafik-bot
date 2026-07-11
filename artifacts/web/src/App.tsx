@@ -25,6 +25,14 @@ import Trips from "./pages/Trips";
 import Mileage from "./pages/Mileage";
 import Finance from "./pages/Finance";
 import BankStatements from "./pages/BankStatements";
+import CashRegister from "./pages/CashRegister";
+import Cashflow from "./pages/Cashflow";
+import Balance from "./pages/Balance";
+import Obligations from "./pages/Obligations";
+import Invoices from "./pages/Invoices";
+import Pnl from "./pages/Pnl";
+import Payroll from "./pages/Payroll";
+import Ksef from "./pages/Ksef";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 
@@ -58,6 +66,14 @@ export default function App() {
         <Route path="/mileage">{() => guard("/mileage", <Mileage />)}</Route>
         <Route path="/finance">{() => guard("/finance", <Finance />)}</Route>
         <Route path="/bank">{() => guard("/bank", <BankStatements />)}</Route>
+        <Route path="/cash">{() => guard("/cash", <CashRegister />)}</Route>
+        <Route path="/cashflow">{() => guard("/cashflow", <Cashflow />)}</Route>
+        <Route path="/balance">{() => guard("/balance", <Balance />)}</Route>
+        <Route path="/obligations">{() => guard("/obligations", <Obligations />)}</Route>
+        <Route path="/invoices">{() => guard("/invoices", <Invoices />)}</Route>
+        <Route path="/pnl">{() => guard("/pnl", <Pnl />)}</Route>
+        <Route path="/payroll">{() => guard("/payroll", <Payroll />)}</Route>
+        <Route path="/ksef">{() => guard("/ksef", <Ksef />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>

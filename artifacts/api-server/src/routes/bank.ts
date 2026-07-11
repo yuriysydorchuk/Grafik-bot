@@ -3,11 +3,16 @@
 // used both by the summary metrics and the drill-down lists so they always agree.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { bankTransactionsTable, companiesTable } from "@workspace/db";
+import { bankTransactionsTable, cashEntriesTable, companiesTable, counterpartyRulesTable } from "@workspace/db";
 import { and, eq, gte, lte, lt, or, ilike, asc, desc, count, sql, inArray } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { syncBankTransactions } from "../services/bankStatements";
+import { syncBankTransactions, applyCounterpartyRules } from "../services/bankStatements";
+import {
+  BUCKET, EXPENSE_CATS, OWNER_KEYS, MC, TXT, OPER, catCondition, periodRange,
+  T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
+} from "../services/bankClassify";
+import { syncCashRegister, type CashSyncResult } from "../services/cashRegister";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -18,117 +23,20 @@ const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m }
 const validMonth = (m: any) => typeof m === "string" && /^\d{4}-\d{2}$/.test(m);
 const rowsOf = (r: any): any[] => r?.rows ?? r ?? [];
 
-// ── Classification (SQL, single source of truth) ──────────────────────────────
-const TXT = `upper(coalesce(counterparty,'')||' '||coalesce(title,'')||' '||coalesce(tx_type,''))`;
-// own-account moves; unnamed bare "Przelew" rows are verified inter-bank transfers
-// (each has a mirror EUROSUPPORT credit on another of our accounts within ±3 days)
-const T_INTERNAL = `(${TXT} ~ 'EUROSUPPORT|EURO SUPPORT|KLINEX|PRZELEW W.ASN|BETWEEN YOUR OWN' OR (counterparty IS NULL AND coalesce(title,'') = 'Przelew'))`;
-// outgoing split-payment VAT auto-move (mirror of a client's MPP payment); the bank
-// sometimes strips the /VAT//IDC markers leaving only a date-like title
-const T_VATSPLIT_OUT = `((${TXT} ~ '/VAT/' AND ${TXT} ~ '/IDC/') OR (counterparty IS NULL AND tx_type IS NULL AND title ~ '^[0-9/.]+ ES-?\\.?\\s*$'))`;
-// owner payouts (transfers to the Sydorchuk family incl. their salaries); excluded:
-// card spending AND bank charges that merely mention the cardholder's name
-// (e.g. "MIESIĘCZNA OPŁATA ZA OBSŁUGĘ KARTY YURIY SYDORCHUK" is a fee, not a payout)
-const T_CARDOP = `${TXT} ~ 'BEZGOT|KART. DEBET|535472|OP.ATA|OPLATA|PROWIZ'`;
-const T_OWNER_ROMAN = `(${TXT} ~ 'SYDORCZUK ROMAN|ROMAN SYDORCZUK|SYDORCHUK ROMAN|ROMAN SYDORCHUK' AND NOT ${T_CARDOP})`;
-// Tetiana's payouts also include transfers for Sydorczuk Daniel (owner's decision)
-const T_OWNER_TETIANA = `(${TXT} ~ 'SYDORCZUK TETIANA|TETIANA SYDORCZUK|SYDORCHUK TETIANA|TETIANA SYDORCHUK|SYDORCZUK TATIANA|TATIANA SYDORCZUK|SYDORCZUK DANIEL|DANIEL SYDORCZUK|SYDORCHUK DANIEL|DANIEL SYDORCHUK' AND NOT ${T_CARDOP})`;
-const T_OWNER_YURIY = `(${TXT} ~ 'SYDORCZUK YURI|YURI. SYDORCZUK|SYDORCHUK YURI|YURI. SYDORCHUK' AND NOT ${T_CARDOP})`;
-const T_OWNER_ANY = `(${T_OWNER_ROMAN} OR ${T_OWNER_TETIANA} OR ${T_OWNER_YURIY})`;
-const T_VATREF = `${TXT} ~ 'SKARBOW|URZ.D SKARB'`;                                         // tax-office VAT refund
-// VAT split-payment rebooking between our own VAT & settlement accounts (A87
-// "PRZEKSIĘGOWANIE VAT MPP") and incoming /SFP/ tax-form postings — not real income.
-const T_VATMOVE = `(${TXT} ~ 'PRZEKS' OR ${TXT} ~ '/SFP/')`;
-// cash withdrawal (not cashless card); the bank's withdrawal COMMISSION also mentions
-// "gotówki" but is a company cost, not withdrawn cash → routed to the fees category
-const T_CASH = `((${TXT} ~ 'BANKOMA' OR (${TXT} ~ 'GOT.WK' AND ${TXT} !~ 'BEZGOT')) AND ${TXT} !~ 'PROWIZ|OP.ATA')`;
-const T_CASHDEP = `(${TXT} ~ 'WP.ATOMA' OR ${TXT} ~ 'ITCARD')`;                            // own cash deposited via a cash-deposit machine (ITCARD)
-// salary transfers: "Wynagrodzenie za MM.YYYY" + umowa-zlecenie invoices ("RACHUNEK … DO UMOWY")
-const T_SALARY = `(${TXT} ~ 'WYNAGRODZ|PENSJ' OR (${TXT} ~ 'RACHUNEK' AND ${TXT} ~ 'UMOW'))`;
-// The bank-credit account is debt, not operating cash: its inflows are our own
-// loan repayments (real expense = the outgoing transfer from the main account) and
-// the bank charges interest on it without :61: entries. Exclude it from operating
-// buckets and balances entirely.
-const CREDIT_ACCOUNTS = `coalesce(account,'') IN ('PL75109025900000000158258415')`;
-const OPER = `NOT ${CREDIT_ACCOUNTS}`;
-const BUCKET: Record<string, string> = {
-  income: `${OPER} AND direction='in' AND NOT (${T_INTERNAL}) AND NOT (${T_VATREF}) AND NOT (${T_VATMOVE}) AND NOT (${T_CASHDEP})`,
-  // expenses INCLUDE salaries (they show as a category in the breakdown);
-  // owner payouts stay separate; PRZEKS + outgoing VAT-split legs are internal VAT moves
-  expenses: `${OPER} AND direction='out' AND NOT (${T_INTERNAL}) AND NOT (${T_CASH}) AND NOT (${TXT} ~ 'PRZEKS') AND NOT (${T_VATSPLIT_OUT}) AND NOT (${T_OWNER_ANY})`,
-  cash: `${OPER} AND direction='out' AND (${T_CASH})`,
-  cashdep: `${OPER} AND direction='in' AND (${T_CASHDEP})`,
-  owner_roman: `${OPER} AND direction='out' AND NOT (${T_INTERNAL}) AND NOT (${T_CASH}) AND ${T_OWNER_ROMAN}`,
-  owner_tetiana: `${OPER} AND direction='out' AND NOT (${T_INTERNAL}) AND NOT (${T_CASH}) AND ${T_OWNER_TETIANA}`,
-  owner_yuriy: `${OPER} AND direction='out' AND NOT (${T_INTERNAL}) AND NOT (${T_CASH}) AND ${T_OWNER_YURIY}`,
-};
-// combined cash movement (withdrawals + deposits) for the «Готівковий рух» drill-down
-BUCKET.cashmove = `((${BUCKET.cash}) OR (${BUCKET.cashdep}))`;
-
-// ── Expense categories ────────────────────────────────────────────────────────
-// Every `expenses` transaction falls into exactly one category: first matching
-// pattern wins (order matters — e.g. a card payment at ORLEN is fuel, not "card").
-// Unmatched → "other". Assignments confirmed against the company's cost registers.
-const EXPENSE_CATS: [key: string, pattern: string][] = [
-  ["zus", `${TXT} ~ 'ZUS|ZAK.AD UB|SK.ADKA'`],
-  ["vat", `${TXT} ~ 'SKARBOW|/SFP/|VAT-7'`],
-  ["seizure", `${TXT} ~ 'EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\.'`],
-  ["salary", T_SALARY],
-  ["zaliczki", `${TXT} ~ 'ZALICZK'`],
-  // all bank commissions in one place: transfers, deposits, cash withdrawals,
-  // account/card/package maintenance, e-banking (GOonline), ELIXIR transfer fees
-  ["fees", `${TXT} ~ 'PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE'`],
-  ["fuel", `${TXT} ~ 'ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW'`],
-  ["housing", `${TXT} ~ 'BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM'`],
-  ["car_repair", `${TXT} ~ 'TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII'`],
-  ["office_rent", `${TXT} ~ 'ODROW..-PIENI|PIENI..EK'`],
-  ["clothing", `${TXT} ~ '\\yULAN\\y'`],
-  ["multisport", `${TXT} ~ 'BENEFIT'`],
-  ["trainer", `${TXT} ~ 'PALUSI.SKI|PALUSINSKI'`],
-  ["leasing", `${TXT} ~ 'LEASING|VOLKSWAGEN|SANTANDER CONSUMER|AUDI|TOYOTA'`],
-  ["credit", `${TXT} ~ 'KREDYT|SP.ATA KAPITA|SP.ATA ODSET'`],
-  ["services", `${TXT} ~ 'TKM|RACHUNKOW|KANCELARIA|ADWOKA|NOTARI|ONESOFT|LUXMED|MEDYCZN'`],
-  ["marketing", `${TXT} ~ 'FB\\.|FACEBOOK|FACEBK|GOOGLE|TIKTOK|OLX|FREELINE|META PLATFORM|OTOMOTO'`],
-  ["permits", `${TXT} ~ 'WOJEWODZKI|WOJEW.DZKI|ZEZWOLEN|OP.ATA SKARBOWA'`],
-  ["b2b", `${TXT} ~ 'ANDROSHCHUK|SIMONIAN'`],
-  // card purchases by merchant type (cash withdrawals by card are NOT here — they're in the cash bucket)
-  ["taxi", `${TXT} ~ '\\yBOLT\\y|BOLT\\.EU|\\yUBER\\y|FREENOW|ITAXI'`],
-  ["travel", `${TXT} ~ 'AIRBNB|BOOKI|KIWI\\.COM|GOTOGATE|RAINBOW|HOTEL|GETYOURGUIDE|RYANAIR|WIZZ|\\yLOT\\y|BKG-|ESKY|INTERCITY|BILET\\.|DISCOVERCARS'`],
-  ["shops", `${TXT} ~ 'ZABKA|.ABKA|BIEDRONKA|LIDL|AUCHAN|CARREFOUR|KAUFLAND|PEPCO|ACTION|DEALZ|STOKROTKA|LEWIATAN|TRANSGOURMET'`],
-  ["tech", `${TXT} ~ 'X-KOM|MEDIA MARKT|MEDIA SATURN|EURO-NET|KOMPUTRONIK|SMARTSPOT|RTV EURO|APPLE|ALLEGRO'`],
-  ["household", `${TXT} ~ '\\yOBI\\y|BRICOMAN|CASTORAMA|LEROY|JYSK|IKEA|STALPOL|TEDI|SUPERHOBBY|DEDRA|DOMATOR|MAT[- ]?BUD|\\yPSB\\y|MR.WKA|BUDOWLAN|HURTOWNIA|MERKURY|BUDMAT'`],
-  ["card", `${TXT} ~ 'BEZGOT|KART. DEBET'`],
-];
-// per-category exclusive condition: matches its own pattern and none of the earlier ones
-function catCondition(key: string): string | null {
-  const idx = EXPENSE_CATS.findIndex(([k]) => k === key);
-  if (idx < 0 && key !== "other") return null;
-  const base = BUCKET.expenses!;
-  if (key === "other") return `${base} AND NOT (${EXPENSE_CATS.map(([, p]) => `(${p})`).join(" OR ")})`;
-  const earlier = EXPENSE_CATS.slice(0, idx).map(([, p]) => `(${p})`).join(" OR ");
-  return `${base} AND (${EXPENSE_CATS[idx]![1]})${earlier ? ` AND NOT (${earlier})` : ""}`;
-}
-
-// period (year or year+month) → [from, to] ISO date strings
-function periodRange(year: string, month?: string): [string, string] {
-  if (month && /^(0[1-9]|1[0-2])$/.test(month)) {
-    const last = new Date(Number(year), Number(month), 0).getDate();
-    return [`${year}-${month}-01`, `${year}-${month}-${last}`];
-  }
-  return [`${year}-01-01`, `${year}-12-31`];
-}
-
 // ── Balance at a date ──────────────────────────────────────────────────────────
 // Per account: latest statement closing ≤ date PLUS transactions booked after that
 // closing up to the date. The supplement matters because some banks close statements
 // mid-month (e.g. the 29th) — without it, month-boundary days would be missed.
-async function balanceAt(dateStr: string, companyId: number | null): Promise<number> {
+export async function balanceAt(dateStr: string, companyId: number | null): Promise<number> {
   const co = companyId ? sql`AND company_id = ${companyId}` : sql``;
   const r = await db.execute<{ bal: number }>(sql`
     WITH last_close AS (
       SELECT DISTINCT ON (account) account, closing_date, closing_balance FROM bank_statements
       WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)} ${co}
-      ORDER BY account, closing_date DESC
+      -- a file may hold several statement sections closing on the SAME day
+      -- (e.g. 2026/001/2 and /3 both close 27.01) — the later section must win,
+      -- otherwise the tie is broken arbitrarily and balances drift by the gap
+      ORDER BY account, closing_date DESC, opening_date DESC, statement_no DESC
     )
     SELECT coalesce(sum(
       lc.closing_balance + coalesce((
@@ -221,7 +129,7 @@ router.get("/bank/expense-categories", async (req, res) => {
 
   const caseExpr = EXPENSE_CATS.map(([k, p]) => `WHEN (${p}) THEN '${k}'`).join(" ");
   const rows = await db.execute(sql`
-    SELECT CASE ${sql.raw(caseExpr)} ELSE 'other' END AS cat,
+    SELECT CASE WHEN ${sql.raw(MC)} IS NOT NULL THEN ${sql.raw(MC)} ${sql.raw(caseExpr)} ELSE 'other' END AS cat,
            coalesce(sum(amount), 0) AS total, count(*) AS n
     FROM bank_transactions
     WHERE ${sql.raw(BUCKET.expenses!)} AND value_date >= ${from} AND value_date <= ${to} ${coCond}
@@ -311,10 +219,115 @@ router.get("/bank/meta", async (_req, res) => {
   ok(res, { companies, years: years.map(y => y.year) });
 });
 
-// Manual re-sync from Drive
+// Manual re-sync from Drive (statements) + the cash-register sheet
 router.post("/bank/sync", async (_req, res) => {
-  try { ok(res, await syncBankTransactions()); }
-  catch (e: any) { logger.error({ err: e?.message }, "bank sync failed"); fail(res, 500, e?.message || "sync failed"); }
+  try {
+    const bank = await syncBankTransactions();
+    let cash: CashSyncResult | { error: string };
+    try { cash = await syncCashRegister(); } catch (e: any) { cash = { error: e?.message ?? "cash sync failed" }; }
+    ok(res, { ...bank, cash });
+  } catch (e: any) { logger.error({ err: e?.message }, "bank sync failed"); fail(res, 500, e?.message || "sync failed"); }
+});
+
+// ── Manual re-categorization ──────────────────────────────────────────────────
+// Move an expense transaction to another category, or mark it as an owner's
+// personal spend (owner_*). null resets to automatic classification.
+router.patch("/bank/transactions/:id/category", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const category = req.body?.category ?? null;
+  const validKeys = new Set([...EXPENSE_CATS.map(([k]) => k), "other", ...OWNER_KEYS]);
+  if (category !== null && !validKeys.has(String(category))) return fail(res, 400, "unknown category");
+  const [row] = await db.select({ id: bankTransactionsTable.id, direction: bankTransactionsTable.direction })
+    .from(bankTransactionsTable).where(eq(bankTransactionsTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  if (row.direction !== "out") return fail(res, 400, "only expense transactions can be re-categorized");
+  const [updated] = await db.update(bankTransactionsTable)
+    .set({ manualCategory: category ? String(category) : null })
+    .where(eq(bankTransactionsTable.id, id)).returning();
+  ok(res, updated);
+});
+
+// ── Counterparty → category rules ─────────────────────────────────────────────
+// «Перенести контрагента в категорію»: applies to all existing transactions of the
+// counterparty and to future imports (sync hook). Owner payouts are never touched.
+router.get("/bank/counterparty-rules", async (_req, res) => {
+  const rules = await db.select().from(counterpartyRulesTable).orderBy(desc(counterpartyRulesTable.id));
+  ok(res, { rules });
+});
+
+router.post("/bank/counterparty-rules", async (req, res) => {
+  const pattern = String(req.body?.pattern ?? "").trim();
+  const category = String(req.body?.category ?? "");
+  if (pattern.length < 3) return fail(res, 400, "pattern must be at least 3 characters");
+  const validKeys = new Set([...EXPENSE_CATS.map(([k]) => k), "other"]); // owner categories can't be a rule target
+  if (!validKeys.has(category)) return fail(res, 400, "unknown category");
+  const [rule] = await db.insert(counterpartyRulesTable).values({ pattern, category }).returning();
+  const updated = await applyCounterpartyRules({ ruleId: rule!.id });
+  ok(res, { rule, updated });
+});
+
+router.delete("/bank/counterparty-rules/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [rule] = await db.select().from(counterpartyRulesTable).where(eq(counterpartyRulesTable.id, id));
+  if (!rule) return fail(res, 404, "not found");
+  // rolling back: clear the manual categories this rule set (owner overrides untouched)
+  await db.execute(sql`
+    UPDATE bank_transactions SET manual_category = NULL
+    WHERE direction='out' AND manual_category = ${rule.category}
+      AND upper(coalesce(counterparty,'')) LIKE ${"%" + rule.pattern.toUpperCase() + "%"}`);
+  await db.delete(counterpartyRulesTable).where(eq(counterpartyRulesTable.id, id));
+  ok(res, { ok: true });
+});
+
+// ── Office cash box (сейф) ────────────────────────────────────────────────────
+// Summary for a period: opening = openings of each firm's FIRST month in the period,
+// closing = opening + Σin − Σout. Entries come from the office's STAN KASY sheet.
+router.get("/bank/cash", async (req, res) => {
+  const year = /^\d{4}$/.test(String(req.query.year)) ? String(req.query.year) : String(new Date().getFullYear());
+  const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
+  const companyId = req.query.companyId ? Number(req.query.companyId) : null;
+  const fromM = month ? `${year}-${month}` : `${year}-01`;
+  const toM = month ? `${year}-${month}` : `${year}-12`;
+
+  const conds = [gte(cashEntriesTable.periodMonth, fromM), lte(cashEntriesTable.periodMonth, toM)];
+  if (companyId) conds.push(eq(cashEntriesTable.companyId, companyId));
+  const entries = await db.select().from(cashEntriesTable).where(and(...conds))
+    .orderBy(asc(cashEntriesTable.periodMonth), asc(cashEntriesTable.sortIdx));
+
+  // per firm: opening of its first month in range; inflow/outflow across the range
+  const perFirm = new Map<number, { opening: number; openMonth: string | null; inflow: number; outflow: number }>();
+  for (const e of entries) {
+    const f = perFirm.get(e.companyId ?? 0) ?? { opening: 0, openMonth: null, inflow: 0, outflow: 0 };
+    if (e.kind === "opening") { if (f.openMonth === null || e.periodMonth < f.openMonth) { f.opening = e.amount; f.openMonth = e.periodMonth; } }
+    else if (e.kind === "in") f.inflow += e.amount;
+    else if (e.kind === "out") f.outflow += e.amount;
+    perFirm.set(e.companyId ?? 0, f);
+  }
+  const round = (n: number) => Math.round(n * 100) / 100;
+  let opening = 0, inflow = 0, outflow = 0;
+  for (const f of perFirm.values()) { opening += f.opening; inflow += f.inflow; outflow += f.outflow; }
+  ok(res, {
+    year, month: month ?? null, companyId,
+    opening: round(opening), inflow: round(inflow), outflow: round(outflow),
+    closing: round(opening + inflow - outflow),
+    counts: { in: entries.filter(e => e.kind === "in").length, out: entries.filter(e => e.kind === "out").length },
+  });
+});
+
+// Cash entries list (drill-down)
+router.get("/bank/cash/entries", async (req, res) => {
+  const year = /^\d{4}$/.test(String(req.query.year)) ? String(req.query.year) : String(new Date().getFullYear());
+  const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
+  const companyId = req.query.companyId ? Number(req.query.companyId) : null;
+  const conds = [gte(cashEntriesTable.periodMonth, month ? `${year}-${month}` : `${year}-01`), lte(cashEntriesTable.periodMonth, month ? `${year}-${month}` : `${year}-12`)];
+  if (companyId) conds.push(eq(cashEntriesTable.companyId, companyId));
+  if (req.query.kind === "in" || req.query.kind === "out") conds.push(eq(cashEntriesTable.kind, String(req.query.kind)));
+  else conds.push(inArray(cashEntriesTable.kind, ["in", "out"]));
+  const rows = await db.select().from(cashEntriesTable).where(and(...conds))
+    .orderBy(desc(cashEntriesTable.periodMonth), desc(cashEntriesTable.sortIdx)).limit(500);
+  ok(res, { rows });
 });
 
 export default router;

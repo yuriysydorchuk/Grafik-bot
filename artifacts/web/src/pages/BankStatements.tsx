@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Search, RefreshCw, X, Wallet, ArrowDownLeft, ArrowUpRight, Banknote, PiggyBank } from "lucide-react";
-import { get, post } from "../lib/api";
+import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
+import { CAT_LABELS, RECAT_OPTIONS, recatLabel } from "../lib/financeCats";
 
 interface Txn {
   id: number; companyId: number | null; account: string | null; valueDate: string; bookingDate: string | null;
   direction: "in" | "out"; amount: number; currency: string;
   counterparty: string | null; counterpartyAccount: string | null; title: string | null; txType: string | null;
   statementNo: string | null; bankRef: string | null; fileName: string | null; entityFolder: string | null;
+  manualCategory: string | null;
 }
 interface Meta { companies: { id: number; name: string }[]; years: string[] }
 interface Summary {
@@ -27,15 +29,6 @@ const zl2 = (n: number) => `${(n ?? 0).toLocaleString("uk-UA", { minimumFraction
 const MONTHS_UK = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 type Bucket = string; // "income" | "expenses" | ... | "cat:<category>"
 
-const CAT_LABELS: Record<string, string> = {
-  zus: "ZUS", vat: "Податки (VAT, US)", seizure: "Зайняття (komornik)", salary: "Зарплати", zaliczki: "Аванси (zaliczki)",
-  fees: "Комісії банку (перекази, вплати, зняття)", fuel: "Паливо", housing: "Житло / готелі",
-  car_repair: "Ремонт авто", office_rent: "Оренда офісу", clothing: "Одяг", multisport: "Мультиспорт (Benefit)",
-  trainer: "Тренер (Palusiński)", leasing: "Лізинг / авто",
-  credit: "Кредит", services: "Послуги (бух., юристи)", marketing: "Маркетинг", permits: "Дозволи / уряд",
-  b2b: "Підрядники B2B", taxi: "Таксі (Bolt, Uber)", travel: "Подорожі / відрядження", shops: "Магазини (продукти)",
-  tech: "Техніка / електроніка", household: "Госптовари / буд", card: "Інші карткові", other: "Інше",
-};
 // categories that drill down per firm before showing the transaction list
 const FIRM_DRILL = new Set(["salary", "zaliczki"]);
 
@@ -83,6 +76,7 @@ export default function BankStatements() {
   const [detail2, setDetail2] = useState<string | null>(null); // selected expense category
   const [detail3, setDetail3] = useState<number | null>(null); // selected firm inside a firm-drill category
   const [syncing, setSyncing] = useState(false);
+  const [showRules, setShowRules] = useState(false);
 
   const meta = useQuery<Meta>({ queryKey: ["bank-meta"], queryFn: () => get("/bank/meta") });
   const cq = companyId ? `&companyId=${companyId}` : "";
@@ -121,7 +115,9 @@ export default function BankStatements() {
           try { await post("/bank/sync"); qc.invalidateQueries({ queryKey: ["bank-summary"] }); qc.invalidateQueries({ queryKey: ["bank-txns"] }); }
           finally { setSyncing(false); }
         }}><RefreshCw className="mr-1 h-4 w-4" />{t("Синхронізувати")}</Button>
+        <Button variant="ghost" onClick={() => setShowRules(true)}>{t("Правила контрагентів")}</Button>
       </div>
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
 
       {summary.isFetching && !s ? <Spinner /> : !s ? <Empty>{t("Немає даних")}</Empty> : (
         <>
@@ -143,6 +139,8 @@ export default function BankStatements() {
             <MiniMetric label={t("Сидорчук Тетяна (вкл. для Сидорчук Даніеля)")} value={s.owner_tetiana} count={s.counts.owner_tetiana} active={detail === "owner_tetiana"} onClick={() => { setDetail(detail === "owner_tetiana" ? null : "owner_tetiana"); setDetail2(null); }} />
             <MiniMetric label={t("Сидорчук Юрій")} value={s.owner_yuriy} count={s.counts.owner_yuriy} active={detail === "owner_yuriy"} onClick={() => { setDetail(detail === "owner_yuriy" ? null : "owner_yuriy"); setDetail2(null); }} />
           </div>
+
+          <CashBox year={year} monthNum={monthNum} companyId={companyId} />
 
           <Reconciliation year={year} monthNum={monthNum} companyId={companyId} />
 
@@ -274,6 +272,64 @@ function FirmBreakdown({ bucket, title, year, monthNum, selected, onSelect }: { 
   );
 }
 
+interface CashResp { opening: number; inflow: number; outflow: number; closing: number; counts: { in: number; out: number } }
+interface CashEntry { id: number; companyId: number | null; periodMonth: string; entryDate: string | null; kind: string; amount: number; description: string | null; note: string | null }
+
+// Office cash box (сейф): opening/in/out/closing from the office's STAN KASY sheet.
+function CashBox({ year, monthNum, companyId }: { year: string; monthNum: string; companyId: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const params = new URLSearchParams({ year });
+  if (monthNum) params.set("month", monthNum);
+  if (companyId) params.set("companyId", companyId);
+  const data = useQuery<CashResp>({ queryKey: ["bank-cash", params.toString()], queryFn: () => get(`/bank/cash?${params}`) });
+  const list = useQuery<{ rows: CashEntry[] }>({ queryKey: ["bank-cash-entries", params.toString()], queryFn: () => get(`/bank/cash/entries?${params}`), enabled: open });
+  const s = data.data;
+  return (
+    <>
+      <div className="mt-5 mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("Готівкова каса (сейф в офісі)")}</div>
+      {data.isFetching && !s ? <Spinner /> : !s ? null : (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MiniMetric label={t("Каса на початок")} value={s.opening} />
+          <MiniMetric label={t("Покладено в касу (знято з карти)")} value={s.inflow} count={s.counts.in} active={open} onClick={() => setOpen(o => !o)} />
+          <MiniMetric label={t("Видано з каси готівкою")} value={s.outflow} count={s.counts.out} active={open} onClick={() => setOpen(o => !o)} />
+          <MiniMetric label={t("Каса на кінець")} value={s.closing} />
+        </div>
+      )}
+      {open && (
+        <Card className="mt-3 p-0">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <div className="text-sm font-semibold text-slate-700">{t("Рухи каси")}</div>
+            <button onClick={() => setOpen(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X className="h-4 w-4" /></button>
+          </div>
+          {list.isFetching && !list.data ? <div className="p-5"><Spinner /></div> : !(list.data?.rows.length) ? <div className="p-5"><Empty>{t("Немає рухів")}</Empty></div> : (
+            <div className="max-h-[480px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="border-b border-slate-200 text-xs uppercase text-slate-400">
+                  <th className="px-3 py-2 text-left">{t("Дата")}</th>
+                  <th className="px-3 py-2 text-left">{t("Опис")}</th>
+                  <th className="px-3 py-2 text-left">{t("Нотатка")}</th>
+                  <th className="px-3 py-2 text-right">{t("Сума")}</th>
+                </tr></thead>
+                <tbody>
+                  {list.data!.rows.map(e => (
+                    <tr key={e.id} className="border-b border-slate-100">
+                      <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">{e.entryDate ?? e.periodMonth}</td>
+                      <td className="px-3 py-1.5 text-slate-700"><div className="max-w-[340px] truncate">{e.description || "—"}</div></td>
+                      <td className="px-3 py-1.5 text-xs text-slate-400"><div className="max-w-[260px] truncate">{e.note}</div></td>
+                      <td className={`whitespace-nowrap px-3 py-1.5 text-right font-medium tabular-nums ${e.kind === "in" ? "text-emerald-600" : "text-rose-600"}`}>{e.kind === "in" ? "+" : "−"}{zl2(e.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+    </>
+  );
+}
+
 interface ReconcileResp {
   opening: number; closingStatement: number; computedClosing: number; residual: number; netFlow: number;
   parts: { income: number; expenses: number; cashmove: number; owners: number; vat_refund: number; vat_moves: number; internal: number };
@@ -392,6 +448,14 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
   if (companyId) params.set("companyId", companyId);
   if (q) params.set("q", q);
   const data = useQuery<ListResp>({ queryKey: ["bank-txns", params.toString()], queryFn: () => get(`/bank/transactions?${params}`) });
+  const isCashMoveBucket = bucket === "cashmove";
+  const recParams = new URLSearchParams({ year });
+  if (monthNum) recParams.set("month", monthNum);
+  if (companyId) recParams.set("companyId", companyId);
+  const rec = useQuery<{ unmatchedBankIds: number[]; unmatchedBankTotal: number; unmatchedCashIds: number[]; unmatchedCashTotal: number; bankTotal: number; cashTotal: number }>({
+    queryKey: ["cash-reconcile", recParams.toString()], queryFn: () => get(`/cash/reconcile?${recParams}`), enabled: isCashMoveBucket,
+  });
+  const unmatchedBank = new Set(rec.data?.unmatchedBankIds ?? []);
   const rows = data.data?.rows ?? [];
   const total = data.data?.total ?? 0;
   const coName = (id: number | null) => companies.find(c => c.id === id)?.name ?? "—";
@@ -425,6 +489,23 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X className="h-4 w-4" /></button>
         </div>
       </div>
+      {isCashMoveBucket && rec.data && (rec.data.unmatchedBankIds.length > 0 || rec.data.unmatchedCashIds.length > 0) && (
+        <div className="space-y-0.5 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+          {rec.data.unmatchedBankIds.length > 0 && (
+            <div>⚠ {t("{n} знять на {v} без пари в касі (підсвічені нижче)", { n: rec.data.unmatchedBankIds.length, v: zl(rec.data.unmatchedBankTotal) })}</div>
+          )}
+          {rec.data.unmatchedCashIds.length > 0 && (
+            <div>⚠ {t("у касі {n} приходів на {v} без пари в банку (див. сторінку Каса)", { n: rec.data.unmatchedCashIds.length, v: zl(rec.data.unmatchedCashTotal) })}</div>
+          )}
+          <div className="font-medium">
+            {(() => { const net = rec.data.bankTotal - rec.data.cashTotal;
+              const base = t("підсумок за період: знято з банку {a}, вписано в касу {b}", { a: zl(rec.data.bankTotal), b: zl(rec.data.cashTotal) });
+              return net > 0.005 ? `${base} — ${t("в касі не вистачає {v}", { v: zl(net) })}`
+                : net < -0.005 ? `${base} — ${t("в касу вписано на {v} більше", { v: zl(-net) })}`
+                : `${base} — ${t("сходиться; непарні записи нижче — лише розбіжності дат/сум")}`; })()}
+          </div>
+        </div>
+      )}
       {data.isFetching && !data.data ? <div className="p-6"><Spinner /></div> : rows.length === 0 ? <div className="p-6"><Empty>{t("Немає операцій")}</Empty></div> : (
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -439,10 +520,11 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
             </thead>
             <tbody>
               {rows.map(r => (
-                <tr key={r.id} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50/60" onClick={() => setSelected(r)}>
+                <tr key={r.id} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50/60 ${unmatchedBank.has(r.id) ? "bg-amber-50" : ""}`} onClick={() => setSelected(r)}>
                   <td className="whitespace-nowrap px-3 py-2 text-slate-500">{r.valueDate}</td>
                   {!companyId && <td className="px-3 py-2 text-slate-600">{coName(r.companyId)}</td>}
                   <td className="px-3 py-2 text-slate-700">
+                    {unmatchedBank.has(r.id) && <div className="text-[11px] font-medium text-amber-600">{t("не знайдено в касі")}</div>}
                     {isCashMove
                       ? <span className="tabular-nums text-slate-500">{shortAcct(r.account)}</span>
                       : (
@@ -452,7 +534,10 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
                         </>
                       )}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">{isCashMove ? (r.direction === "out" ? t("Зняття") : t("Внесення")) : t(humanType(r))}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">
+                    {isCashMove ? (r.direction === "out" ? t("Зняття") : t("Внесення")) : t(humanType(r))}
+                    {r.manualCategory && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(recatLabel(r.manualCategory))}>✎</span>}
+                  </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${isCashMove ? (r.direction === "out" ? "text-amber-600" : "text-emerald-600") : r.direction === "in" ? "text-emerald-600" : "text-slate-700"}`}>
                     {isCashMove ? (r.direction === "out" ? "−" : "+") : ""}{zl(r.amount)}
                   </td>
@@ -476,10 +561,62 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
   );
 }
 
-// Full details of a single transaction — everything the statement carries.
+// Full details of a single transaction — everything the statement carries,
+// plus manual re-categorization for expense transactions.
+function RulesModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const rules = useQuery<{ rules: { id: number; pattern: string; category: string }[] }>({
+    queryKey: ["bank-rules"], queryFn: () => get("/bank/counterparty-rules"),
+  });
+  const invalidateAll = () => ["bank-rules", "bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  return (
+    <Modal open title={t("Правила контрагентів")} onClose={onClose}>
+      <div className="mb-3 text-sm text-slate-500">{t("Усі транзакції контрагента (наявні та майбутні) автоматично отримують вказану категорію. Виплат власникам правила не торкаються.")}</div>
+      {rules.isFetching && !rules.data ? <Spinner /> : !(rules.data?.rules.length) ? <Empty>{t("Правил ще немає — створи з вікна транзакції (галочка «застосувати до всіх»)")}</Empty> : (
+        <table className="w-full text-sm">
+          <tbody>
+            {rules.data!.rules.map(r => (
+              <tr key={r.id} className="border-b border-slate-100 last:border-0">
+                <td className="py-2 font-medium text-slate-700">{r.pattern}</td>
+                <td className="py-2 text-slate-500">→ {t(recatLabel(r.category))}</td>
+                <td className="py-2 text-right">
+                  <button className="p-1 text-slate-300 hover:text-rose-500" title={t("Видалити правило (категорії цих транзакцій скинуться на авто)")}
+                    onClick={async () => { if (confirm(t("Видалити правило? Категорії його транзакцій повернуться до автоматичних."))) { await del(`/bank/counterparty-rules/${r.id}`); invalidateAll(); } }}>
+                    <X className="h-4 w-4" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Modal>
+  );
+}
+
 function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: number; name: string }[]; onClose: () => void }) {
   const t = useT();
+  const qc = useQueryClient();
+  const [cat, setCat] = useState<string>(r.manualCategory ?? "");
+  const [saving, setSaving] = useState(false);
+  const [forAll, setForAll] = useState(false);
+  const [pattern, setPattern] = useState(cleanName(r.counterparty, r.title, r.txType));
   const coName = companies.find(c => c.id === r.companyId)?.name ?? "—";
+  const invalidateAll = () => ["bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-rules"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  const saveCat = async (value: string | null) => {
+    setSaving(true);
+    try {
+      if (forAll && value && !value.startsWith("owner_")) {
+        await post("/bank/counterparty-rules", { pattern, category: value });
+      } else {
+        await patch(`/bank/transactions/${r.id}/category`, { category: value });
+      }
+      invalidateAll();
+      onClose();
+    } finally { setSaving(false); }
+  };
+  const isOwnerCat = !!cat && cat.startsWith("owner_");
   const Row = ({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) => (
     value == null || value === "" ? null : (
       <div className="flex gap-3 border-b border-slate-100 py-2 text-sm last:border-0">
@@ -508,6 +645,33 @@ function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: n
       <Row label={t("№ витягу")} value={r.statementNo} mono />
       <Row label={t("Файл витягу")} value={r.fileName} mono />
       <Row label={t("Папка")} value={r.entityFolder} />
+      {r.direction === "out" && (
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="mb-1.5 text-xs font-medium text-slate-500">
+            {t("Категорія")}{r.manualCategory && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{t("змінена вручну")}</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            <Select value={cat} onChange={e => setCat(e.target.value)} className="flex-1">
+              <option value="">{t("— автоматична —")}</option>
+              {RECAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+            </Select>
+            <Button loading={saving} disabled={!forAll && (cat || null) === (r.manualCategory ?? null)} onClick={() => saveCat(cat || null)}>{t("Зберегти")}</Button>
+            {r.manualCategory && <Button variant="secondary" loading={saving} onClick={() => saveCat(null)}>{t("Скинути на авто")}</Button>}
+          </div>
+          {!isOwnerCat && !!cat && (
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={forAll} onChange={e => setForAll(e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
+              {t("застосувати до всіх транзакцій цього контрагента (і майбутніх)")}
+            </label>
+          )}
+          {forAll && !isOwnerCat && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs text-slate-400">{t("Шаблон контрагента (входження в назву; можна вкоротити, напр. лише прізвище)")}</div>
+              <Input value={pattern} onChange={e => setPattern(e.target.value)} />
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }

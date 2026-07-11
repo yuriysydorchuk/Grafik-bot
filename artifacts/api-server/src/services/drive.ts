@@ -46,7 +46,7 @@ const shiftFillFor = (n: number) => SHIFT_FILL[n - 1] ?? "FF6B7280";
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-function getDriveAuth() {
+export function getDriveAuth() {
   // Preferred: OAuth2 as the admin's own Google account.
   // Service accounts have NO Drive storage quota, so file uploads fail with
   // "Service Accounts do not have storage quota". Uploading as a real user
