@@ -25,7 +25,7 @@ import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
-import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { randomInviteCode } from "../lib/invite";
 
 const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -625,6 +625,8 @@ router.delete("/worker-documents/:id", RW, async (req, res) => {
 router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (req, res) => {
   const id = Number(req.params.id);
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
+  const realMime = sniffDocMime(req.file.buffer);
+  if (!realMime || !DOC_MIME_WHITELIST.has(realMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
   const [doc] = await db.select({ filePath: workerDocumentsTable.filePath }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc) return fail(res, 404, "Документ не знайдено");
 
@@ -637,7 +639,7 @@ router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (r
   const [d] = await db.update(workerDocumentsTable).set({
     filePath: relPath,
     fileName: originalName,
-    fileMime: req.file.mimetype,
+    fileMime: realMime,
     updatedAt: new Date(),
   }).where(eq(workerDocumentsTable.id, id)).returning();
   deleteStoredFile(doc.filePath); // remove the previous file, if any
@@ -652,6 +654,9 @@ router.get("/worker-documents/:id/file", RW, async (req, res) => {
   const abs = path.resolve(UPLOADS_ROOT, doc.filePath);
   if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
   if (doc.fileMime) res.type(doc.fileMime);
+  // The stored MIME is now validated by magic bytes on upload; still force nosniff so the
+  // browser can't reinterpret the response as an executable type.
+  res.setHeader("X-Content-Type-Options", "nosniff");
   const downloadName = encodeURIComponent(doc.fileName || `document-${id}`);
   res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${downloadName}`);
   fs.createReadStream(abs).pipe(res);
@@ -1133,7 +1138,7 @@ router.delete("/vehicles/:id", DRIVER_RW, async (req, res) => {
   ok(res, { ok: true });
 });
 
-router.get("/drivers/:id/invite", async (req, res) => {
+router.get("/drivers/:id/invite", DRIVER_RW, async (req, res) => {
   const id = Number(req.params.id);
   const d = (await db.select().from(driversTable).where(eq(driversTable.id, id)))[0];
   if (!d) return fail(res, 404, "Не знайдено");

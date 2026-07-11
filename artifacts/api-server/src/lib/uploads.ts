@@ -19,6 +19,23 @@ export function ensureUploadDirs(): void {
   fs.mkdirSync(WORKER_DOCS_DIR, { recursive: true });
 }
 
+// The multipart MIME is client-declared and NOT trustworthy. Sniff magic bytes so a
+// mislabeled HTML/SVG payload can't be stored under an allowed type and later served
+// inline into an admin's same-origin session (CSP is disabled app-wide). Returns the
+// detected MIME, or null when the content matches none of the accepted document types.
+export function sniffDocMime(buf: Buffer): string | null {
+  if (buf.length >= 4 && buf.toString("latin1", 0, 4) === "%PDF") return "application/pdf";
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 8 && buf.toString("latin1", 0, 8) === "\x89PNG\r\n\x1a\n") return "image/png";
+  if (buf.length >= 12 && buf.toString("latin1", 0, 4) === "RIFF" && buf.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  if (buf.length >= 12 && buf.toString("latin1", 4, 8) === "ftyp" && /hei[cf]|mif1|heix/.test(buf.toString("latin1", 8, 12))) return "image/heic";
+  // .docx is a ZIP (PK) container; legacy .doc is an OLE compound file.
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07))
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (buf.length >= 8 && buf.toString("hex", 0, 8) === "d0cf11e0a1b11ae1") return "application/msword";
+  return null;
+}
+
 // A collision-proof on-disk name that preserves the original extension.
 export function makeStoredName(originalName: string): string {
   const ext = path.extname(originalName).slice(0, 12).replace(/[^.a-zA-Z0-9]/g, "");

@@ -46,6 +46,19 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// CSRF defense-in-depth: state-changing requests must carry a custom header the
+// browser only lets same-origin JS set (a cross-site <form> POST cannot). SameSite=Lax
+// already blocks most cross-site cookie sends; this closes the residual gap without a
+// token round-trip. Login/2FA are exempt — they run before a session cookie exists.
+app.use("/api", (req, res, next) => {
+  const unsafe = req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS";
+  const authPost = req.path === "/auth/login" || req.path === "/auth/verify-2fa";
+  if (unsafe && !authPost && req.get("X-Requested-With") !== "grafik") {
+    return res.status(403).json({ error: "csrf" });
+  }
+  return next();
+});
+
 app.use("/api", router);
 
 // ─── Serve the built web panel (artifacts/web/dist) ────────────────────────────

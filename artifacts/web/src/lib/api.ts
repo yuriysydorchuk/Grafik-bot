@@ -2,7 +2,7 @@
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "grafik", ...(opts.headers || {}) },
     ...opts,
   });
   if (res.status === 401) {
@@ -25,7 +25,7 @@ export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 // Multipart upload — let the browser set the multipart boundary itself, so we
 // must omit the JSON Content-Type that `api()` sends by default.
 export async function upload<T = any>(p: string, form: FormData): Promise<T> {
-  const res = await fetch(`/api${p}`, { method: "POST", credentials: "include", body: form });
+  const res = await fetch(`/api${p}`, { method: "POST", credentials: "include", headers: { "X-Requested-With": "grafik" }, body: form });
   if (res.status === 401) {
     if (!location.pathname.startsWith("/login")) location.href = "/login";
     throw new Error("unauthorized");
