@@ -80,6 +80,7 @@ import { isAdmin, getAdmin, getWorker, getDriver } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
+  farewellReportMonths, sendReportOffer,
   notifyWorkerAdvance,
 } from "./notify";
 
@@ -1338,29 +1339,24 @@ async function askReportHours(ctx: Context, tid: string, data: any) {
   );
 }
 
-bot.hears(trAll("menu.report"), async (ctx) => {
-  const worker = await getWorker(String(ctx.from.id));
-  const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+type ReportWorker = { id: number; fullName: string; factoryId: number | null };
 
-  const now = nowWarsaw();
-  const day = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const inLastWeek = daysInMonth - day < 7;   // останні 7 днів місяця
-  const inFirstWeek = day <= 7;               // перші 7 днів місяця
-
-  if (!inLastWeek && !inFirstWeek) {
-    const daysLeft = daysInMonth - day;
-    return ctx.reply(t(lang, "report.window", { days: daysLeft }), await workerMenuFor(worker, lang));
-  }
-
-  // Визначаємо за який місяць рапорт (спільна логіка з нагадуванням з офісу)
-  const reportMonth = reportMonthFor(now);
+// Advance the report dialog for a concrete month: preset factory → straight to
+// hours; otherwise factories from the worker's approved shifts of that month
+// (a mid-month transfer yields two) + their current factory as a fallback.
+async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, reportMonth: string, lang: Lang, presetFactoryId?: number) {
   const monthLabel = reportMonthLabel(lang, reportMonth);
 
-  // Фабрики працівника з його затверджених змін ЗВІТНОГО місяця (тиждень, що містить
-  // 1-ше число, може починатися ще в попередньому місяці — беремо тижні з запасом
-  // у 6 днів і фільтруємо кожну зміну за фактичною датою).
+  if (presetFactoryId) {
+    const [pf] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
+      .from(factoriesTable).where(eq(factoriesTable.id, presetFactoryId));
+    if (pf?.name) {
+      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, lang });
+    }
+  }
+
+  // Тиждень, що містить 1-ше число, може починатися ще в попередньому місяці —
+  // беремо тижні з запасом у 6 днів і фільтруємо кожну зміну за фактичною датою.
   const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const [ry, rm] = reportMonth.split("-").map(Number);
   const monthStart = `${reportMonth}-01`;
@@ -1379,10 +1375,6 @@ bot.hears(trAll("menu.report"), async (ctx) => {
       lt(scheduleWeeksTable.weekStart, monthEnd),
     ));
 
-  // Factories the worker can file a report for: those from their approved shifts in the
-  // report month (a mid-month transfer yields two), plus their current factory as a
-  // fallback so workers WITHOUT approved shifts can still submit. If neither exists,
-  // we can't determine a factory → show an error.
   const seen = new Set<number>();
   const uniqueFactories: { id: number; name: string | null }[] = [];
   for (const r of factoryRows) {
@@ -1400,19 +1392,19 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   }
 
   if (uniqueFactories.length === 0) {
-    return ctx.reply(t(lang, "report.noFactory"), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
+    return ctx.reply(t(lang, "report.noFactory"), { parse_mode: "Markdown" });
   }
 
   if (uniqueFactories.length === 1) {
     // Одна фабрика — питаємо години, далі фото
-    return askReportHours(ctx, String(ctx.from.id), {
+    return askReportHours(ctx, tid, {
       workerId: worker.id, workerName: worker.fullName,
       month: reportMonth, factory: uniqueFactories[0]!.name, lang,
     });
   }
 
   // Кілька фабрик — запитуємо яку
-  setState(String(ctx.from.id), "report:select_factory", {
+  setState(tid, "report:select_factory", {
     workerId: worker.id, workerName: worker.fullName,
     month: reportMonth, factories: uniqueFactories.map(f => f.name), lang,
   });
@@ -1420,6 +1412,82 @@ bot.hears(trAll("menu.report"), async (ctx) => {
     t(lang, "report.pickFactoryHdr", { month: monthLabel }),
     { parse_mode: "Markdown", ...Markup.keyboard([...uniqueFactories.map(f => [f.name!]), [t(lang, "menu.back")]]).resize() },
   );
+}
+
+const monthStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+// Reports are accepted the WHOLE month: through the 7th the default is still the
+// previous month, afterwards — the current one; the other month is one tap away.
+bot.hears(trAll("menu.report"), async (ctx) => {
+  const worker = await getWorker(String(ctx.from.id));
+  const lang = wlang(worker);
+  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+
+  const now = nowWarsaw();
+  const defaultMonth = reportMonthFor(now);
+  const curMonth = monthStr(now);
+  const prevMonth = monthStr(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const otherMonth = defaultMonth === curMonth ? prevMonth : curMonth;
+
+  await ctx.reply(t(lang, "report.otherMonthHint"), {
+    reply_markup: { inline_keyboard: [[{ text: `📄 ${reportMonthLabel(lang, otherMonth)}`, callback_data: `repi:${otherMonth}:0` }]] },
+  });
+  return startReportFlow(ctx, String(ctx.from.id), worker, defaultMonth, lang);
+});
+
+// Report entry via a personal inline button (the small "other month" button, a
+// farewell offer after firing, or a transfer offer). Fired workers keep this
+// entry point for 30 days — the rest of the menu is already gone for them.
+const REPORT_GRACE_MS = 30 * 24 * 3600_000;
+async function getWorkerForReport(tid: string): Promise<ReportWorker & { language: string | null } | undefined> {
+  const active = await getWorker(tid);
+  if (active) return active;
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.telegramId, tid));
+  if (w && !w.isActive && w.firedAt && Date.now() - new Date(w.firedAt).getTime() <= REPORT_GRACE_MS) return w;
+  return undefined;
+}
+
+// Office confirmed/declined offering a farewell report to a just-fired worker.
+bot.action(/^fireoff:(\d+|x)$/, async (ctx) => {
+  const admin = await getAdmin(String(ctx.from.id));
+  if (!admin) return ctx.answerCbQuery();
+  const al = olang(admin);
+  await ctx.answerCbQuery();
+  const v = (ctx.match as RegExpMatchArray)[1]!;
+  if (v === "x") {
+    try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+    return;
+  }
+  const workerId = Number(v);
+  const sent = await sendReportOffer(workerId, { months: await farewellReportMonths(workerId), textKey: "report.firedOffer" });
+  try {
+    await ctx.editMessageText(sent
+      ? tb(al, "✅ Пропозицію здати рапорт надіслано.")
+      : tb(al, "⚠️ Не вдалося надіслати — працівник не підключений до бота."));
+  } catch { /* ignore */ }
+  return;
+});
+
+bot.action(/^repi:(\d{4}-\d{2}):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const worker = await getWorkerForReport(tid);
+  if (!worker) {
+    await ctx.answerCbQuery();
+    return ctx.reply(t("uk", "report.expired"));
+  }
+  const lang = wlang(worker);
+  const month = (ctx.match as RegExpMatchArray)[1]!;
+  const facId = Number((ctx.match as RegExpMatchArray)[2]);
+  // Sane months only: not in the future, not older than ~3 months (string compare works for YYYY-MM)
+  const now = nowWarsaw();
+  const oldest = monthStr(new Date(now.getFullYear(), now.getMonth() - 3, 1));
+  if (month > monthStr(now) || month < oldest) {
+    await ctx.answerCbQuery();
+    return ctx.reply(t(lang, "report.expired"));
+  }
+  await ctx.answerCbQuery();
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  return startReportFlow(ctx, tid, worker, month, lang, facId || undefined);
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2831,9 +2899,11 @@ bot.on("document", async (ctx) => {
 // Shared by the photo handler and the document handler (photo sent as a file).
 async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId: string, mime: string) {
   clearState(tid);
+  // A recently-fired worker (farewell report) has no active row and no menu —
+  // take the language from the dialog state and hide the keyboard for them.
   const worker = await getWorker(tid);
-  const lang = wlang(worker);
-  const menu = await workerMenuFor(worker, lang);
+  const lang = worker ? wlang(worker) : asLang(data.lang);
+  const menu = worker ? await workerMenuFor(worker, lang) : Markup.removeKeyboard();
   await ctx.reply(t(lang, "report.uploading"));
   try {
     const fileLink = await ctx.telegram.getFileLink(fileId);
@@ -4098,7 +4168,20 @@ bot.on("text", async (ctx) => {
     if (bhears("✅ Так, звільнити").includes(text)) {
       await db.update(workersTable).set({ status: "fired", isActive: false, firedAt: new Date() }).where(eq(workersTable.id, data.workerId));
       clearState(tid);
-      return ctx.reply(tb(al, "✅ *{name}* звільнений(-а).", { name: data.workerName }), { parse_mode: "Markdown", ...managementMenu(al) });
+      await ctx.reply(tb(al, "✅ *{name}* звільнений(-а).", { name: data.workerName }), { parse_mode: "Markdown", ...managementMenu(al) });
+      // Farewell report: ask the office whether to offer the leaver to submit
+      // a report for the current month (the offer button lives 30 days).
+      const [fw] = await db.select({ telegramId: workersTable.telegramId }).from(workersTable).where(eq(workersTable.id, data.workerId));
+      if (fw?.telegramId) {
+        return ctx.reply(
+          tb(al, "Запропонувати *{name}* здати рапорт у боті?", { name: data.workerName }),
+          { parse_mode: "Markdown", ...Markup.inlineKeyboard([[
+            Markup.button.callback(tb(al, "📄 Так, надіслати"), `fireoff:${data.workerId}`),
+            Markup.button.callback(tb(al, "Ні"), "fireoff:x"),
+          ]]) },
+        );
+      }
+      return;
     }
     clearState(tid);
     return ctx.reply(tb(al, "Скасовано."), managementMenu(al));

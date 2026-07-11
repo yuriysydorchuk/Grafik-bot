@@ -3,14 +3,15 @@ import { db } from "@workspace/db";
 import {
   workersTable, driversTable, adminsTable,
   scheduleEntriesTable, factoriesTable, notificationsTable,
-  scheduleWeeksTable, driverShiftAssignmentsTable,
+  scheduleWeeksTable, driverShiftAssignmentsTable, monthlyReportsTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and, count, desc, ne } from "drizzle-orm";
+import { eq, and, count, desc, ne, gte, lt } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { setState } from "./state";
 import { DAY_UK, SHIFT_SHORT, splitMessage, mdSafe } from "./display";
-import { t, asLang, dayShort, type Lang } from "./i18n";
+import { t, asLang, dayShort, DATE_LOCALE, type Lang } from "./i18n";
+import { nowWarsaw } from "./time";
 import { DAYS, DAY_NAMES_UK } from "../services/sheets";
 
 // localized short labels for schedule lines
@@ -31,6 +32,84 @@ export async function sendLongMessage(
     await bot.telegram.sendMessage(chatId, chunk, options as any);
     await sleep(80);
   }
+}
+
+// ─── Report offers (fired / transferred workers) ─────────────────────────────
+// Inline «repi:<month>:<factoryId>» buttons open the bot report flow for that
+// month bypassing the calendar default; fired workers keep the entry for 30 days.
+
+const reportMonthLbl = (lang: Lang, m: string) => new Date(`${m}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
+const monthStr2 = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+// Which months a leaver may still owe a report for: always the current month;
+// in the first 7 days also the previous one, unless it's already submitted.
+export async function farewellReportMonths(workerId: number): Promise<string[]> {
+  const now = nowWarsaw();
+  const months = [monthStr2(now)];
+  if (now.getDate() <= 7) {
+    const prev = monthStr2(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    const has = await db.select({ id: monthlyReportsTable.id }).from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.workerId, workerId), eq(monthlyReportsTable.month, prev))).limit(1);
+    if (has.length === 0) months.unshift(prev);
+  }
+  return months;
+}
+
+export async function sendReportOffer(
+  workerId: number,
+  opts: { months: string[]; factoryId?: number; textKey: "report.firedOffer" | "report.transferOffer"; params?: Record<string, string | number> },
+): Promise<boolean> {
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w?.telegramId || opts.months.length === 0) return false;
+  const lang = asLang(w.language);
+  const buttons = opts.months.map(m => [{ text: `📄 ${reportMonthLbl(lang, m)}`, callback_data: `repi:${m}:${opts.factoryId ?? 0}` }]);
+  try {
+    await bot.telegram.sendMessage(w.telegramId, t(lang, opts.textKey, opts.params as any), {
+      parse_mode: "Markdown", reply_markup: { inline_keyboard: buttons },
+    } as any);
+    return true;
+  } catch {
+    return false; // worker blocked the bot etc.
+  }
+}
+
+// Worker moved to another factory mid-month: offer a report for the OLD factory
+// (only if they actually have approved shifts there this month).
+export async function offerTransferReport(workerId: number, oldFactoryId: number): Promise<boolean> {
+  const now = nowWarsaw();
+  const month = monthStr2(now);
+  const monthStart = `${month}-01`;
+  const monthEnd = monthStr2(new Date(now.getFullYear(), now.getMonth() + 1, 1)) + "-01";
+  const weekFrom = new Date(monthStart + "T00:00:00");
+  weekFrom.setDate(weekFrom.getDate() - 6);
+  const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const DAYS_ORDER: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const rows = await db
+    .select({ day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
+    .from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(
+      eq(scheduleEntriesTable.workerId, workerId),
+      eq(scheduleEntriesTable.factoryId, oldFactoryId),
+      eq(scheduleWeeksTable.status, "approved"),
+      gte(scheduleWeeksTable.weekStart, ymd(weekFrom)),
+      lt(scheduleWeeksTable.weekStart, monthEnd),
+    ));
+  const worked = rows.some(r => {
+    if (!r.weekStart) return false;
+    const d = new Date(String(r.weekStart) + "T00:00:00");
+    d.setDate(d.getDate() + Math.max(0, DAYS_ORDER.indexOf(r.day)));
+    const ds = ymd(d);
+    return ds >= monthStart && ds < monthEnd;
+  });
+  if (!worked) return false;
+  const [w] = await db.select({ language: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId));
+  const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, oldFactoryId));
+  const lang = asLang(w?.language);
+  return sendReportOffer(workerId, {
+    months: [month], factoryId: oldFactoryId, textKey: "report.transferOffer",
+    params: { factory: fac?.name ?? "—", month: reportMonthLbl(lang, month) },
+  });
 }
 
 export async function notifyAdmins(text: string, options: Record<string, unknown> = {}) {

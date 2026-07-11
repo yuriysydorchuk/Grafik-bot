@@ -289,6 +289,11 @@ const EN: Record<string, string> = {
   "водія не призначено": "no driver assigned",
   "Сповіщено працівників:": "Workers notified:",
   "водіїв:": "drivers:",
+  // ── farewell report (fire modal) ──
+  "Запропонувати здати рапорт у боті": "Offer to submit a report in the bot",
+  "Працівник отримає кнопку «здати рапорт» за відпрацьований місяць — діє 30 днів": "The worker gets a “submit report” button for the worked month — valid for 30 days",
+  "працівник не підключений до бота": "the worker is not connected to the bot",
+  "Пропозицію здати рапорт надіслано в бот": "Report offer sent to the bot",
   // ── fleet (vehicles) ──
   "Автопарк": "Fleet",
   "Додати авто": "Add vehicle",

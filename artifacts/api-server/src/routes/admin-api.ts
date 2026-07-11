@@ -344,6 +344,7 @@ const strOrNull = (v: unknown): string | null => (v == null ? null : String(v).t
 router.patch("/workers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, language, hourlyRate, isStudent, under26, selfTransport } = req.body ?? {};
+  const [before] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, id));
   const patch: any = {};
   if (fullName !== undefined) patch.fullName = String(fullName).trim();
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
@@ -370,13 +371,30 @@ router.patch("/workers/:id", RW, async (req, res) => {
     if (under26 !== undefined) patch.under26 = !!under26;
   }
   const [w] = await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning();
+  // Mid-month factory change: offer a report for the OLD factory right away
+  // (fire-and-forget; only sent if they actually worked there this month).
+  if (before?.factoryId && patch.factoryId !== undefined && patch.factoryId !== before.factoryId && w?.telegramId) {
+    import("../bot/notify")
+      .then(m => m.offerTransferReport(w.id, before.factoryId!))
+      .catch(err => logger.error({ err }, "transfer report offer failed"));
+  }
   ok(res, w);
 });
 
 router.post("/workers/:id/fire", RW, async (req, res) => {
   const id = Number(req.params.id);
+  const offerReport = !!(req.body ?? {}).offerReport;
   const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt: new Date() }).where(eq(workersTable.id, id)).returning();
-  ok(res, w);
+  // Farewell report: on the scheduler's request the leaver gets inline month
+  // buttons in the bot (entry stays valid 30 days after firing).
+  let reportOffered = false;
+  if (offerReport && w?.telegramId) {
+    try {
+      const { farewellReportMonths, sendReportOffer } = await import("../bot/notify");
+      reportOffered = await sendReportOffer(w.id, { months: await farewellReportMonths(w.id), textKey: "report.firedOffer" });
+    } catch (e) { logger.error({ err: e }, "farewell report offer failed"); }
+  }
+  ok(res, { ...w, reportOffered });
 });
 
 router.post("/workers/:id/restore", RW, async (req, res) => {

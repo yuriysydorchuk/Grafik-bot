@@ -184,6 +184,10 @@ const D: Dict = {
   // ── monthly report submission ──
   "report.window":        { uk: "⏰ Рапорти можна подавати за 7 днів до кінця місяця або в перші 7 днів нового.\n\nДо кінця місяця: {days} днів.", en: "⏰ Reports can be submitted in the last 7 days of the month or the first 7 days of the next one.\n\nDays left until month end: {days}.", es: "⏰ Los reportes se pueden enviar en los últimos 7 días del mes o los primeros 7 días del siguiente.\n\nDías hasta fin de mes: {days}.", ru: "⏰ Рапорты можно подавать за 7 дней до конца месяца или в первые 7 дней нового.\n\nДо конца месяца: {days} дней.", pl: "⏰ Raporty można składać w ostatnich 7 dniach miesiąca lub w pierwszych 7 dniach nowego.\n\nDo końca miesiąca: {days} dni." },
   "report.noFactory":     { uk: "📄 Не вдалося визначити вашу фабрику для рапорту. Зверніться до адміністратора.", en: "📄 Could not determine your factory for the report. Contact the administrator.", es: "📄 No se pudo determinar tu fábrica para el reporte. Contacta al administrador.", ru: "📄 Не удалось определить вашу фабрику для рапорта. Обратитесь к администратору.", pl: "📄 Nie udało się ustalić Twojej fabryki dla raportu. Skontaktuj się z administratorem." },
+  "report.otherMonthHint":{ uk: "Потрібен рапорт за інший місяць? Натисніть:", en: "Need to report for a different month? Tap:", es: "¿Necesitas reportar otro mes? Toca:", ru: "Нужен рапорт за другой месяц? Нажмите:", pl: "Potrzebny raport za inny miesiąc? Naciśnij:" },
+  "report.firedOffer":    { uk: "Дякуємо за роботу! 🙏\n\nЯкщо ще не здали — можете здати рапорт за відпрацьовані години. Оберіть місяць (кнопка діє 30 днів):", en: "Thank you for your work! 🙏\n\nIf you haven't yet, you can submit a report for your worked hours. Choose the month (the button works for 30 days):", es: "¡Gracias por tu trabajo! 🙏\n\nSi aún no lo has hecho, puedes enviar el reporte de tus horas trabajadas. Elige el mes (el botón funciona 30 días):", ru: "Спасибо за работу! 🙏\n\nЕсли ещё не сдали — можете сдать рапорт за отработанные часы. Выберите месяц (кнопка действует 30 дней):", pl: "Dziękujemy za pracę! 🙏\n\nJeśli jeszcze tego nie zrobiłeś(-aś), możesz złożyć raport za przepracowane godziny. Wybierz miesiąc (przycisk działa 30 dni):" },
+  "report.transferOffer": { uk: "Ви перейшли на іншу фабрику. Якщо хочете, здайте рапорт по *{factory}* за {month}:", en: "You have moved to another factory. If you wish, submit a report for *{factory}* for {month}:", es: "Has pasado a otra fábrica. Si quieres, envía el reporte de *{factory}* de {month}:", ru: "Вы перешли на другую фабрику. Если хотите, сдайте рапорт по *{factory}* за {month}:", pl: "Przeszedłeś(-aś) do innej fabryki. Jeśli chcesz, złóż raport dla *{factory}* za {month}:" },
+  "report.expired":       { uk: "⏰ Це посилання вже недійсне. Зверніться, будь ласка, в офіс.", en: "⏰ This link is no longer valid. Please contact the office.", es: "⏰ Este enlace ya no es válido. Por favor, contacta la oficina.", ru: "⏰ Эта ссылка уже недействительна. Пожалуйста, обратитесь в офис.", pl: "⏰ Ten link jest już nieważny. Skontaktuj się z biurem." },
   "report.pickFactoryHdr":{ uk: "📄 Рапорт за *{month}*\n\nОберіть фабрику для рапорту:", en: "📄 Report for *{month}*\n\nChoose the factory for the report:", es: "📄 Reporte de *{month}*\n\nElige la fábrica para el reporte:", ru: "📄 Рапорт за *{month}*\n\nВыберите фабрику для рапорта:", pl: "📄 Raport za *{month}*\n\nWybierz fabrykę dla raportu:" },
   "report.pickFactory":   { uk: "Оберіть фабрику:", en: "Choose a factory:", es: "Elige una fábrica:", ru: "Выберите фабрику:", pl: "Wybierz fabrykę:" },
   "report.pickFromList":  { uk: "Оберіть фабрику зі списку.", en: "Choose a factory from the list.", es: "Elige una fábrica de la lista.", ru: "Выберите фабрику из списка.", pl: "Wybierz fabrykę z listy." },
@@ -624,6 +628,11 @@ const BOT_EN: Record<string, string> = {
   "Видалено": "Deleted",
   // ── shift cancellation (driver notice) ──
   "❌ Зміну скасовано: {factory} · {date} · {shift} зміна. Її прибрано з вашого графіку.": "❌ Shift cancelled: {factory} · {date} · shift {shift}. It was removed from your schedule.",
+  // ── farewell report offer (office) ──
+  "Запропонувати *{name}* здати рапорт у боті?": "Offer *{name}* to submit a report in the bot?",
+  "📄 Так, надіслати": "📄 Yes, send",
+  "✅ Пропозицію здати рапорт надіслано.": "✅ Report offer sent.",
+  "⚠️ Не вдалося надіслати — працівник не підключений до бота.": "⚠️ Could not send — the worker is not connected to the bot.",
   // @bot-en-append
 };
 

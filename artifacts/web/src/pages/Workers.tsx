@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, type Worker, type Factory, type Company, type Position } from "../lib/api";
-import { Button, Input, Select, Card, Spinner, Badge, Empty } from "../components/ui";
+import { Button, Input, Select, Card, Spinner, Badge, Empty, Modal } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
@@ -29,9 +29,14 @@ export default function Workers() {
   const [showInactive, setShowInactive] = useState(false);
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
+  const [firing, setFiring] = useState<Worker | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
-  const fire = useMutation({ mutationFn: (id: number) => post(`/workers/${id}/fire`), onSuccess: () => { invalidate(); toast.success(t("Працівника звільнено")); } });
+  const fire = useMutation({
+    mutationFn: (v: { id: number; offerReport: boolean }) => post<{ reportOffered?: boolean }>(`/workers/${v.id}/fire`, { offerReport: v.offerReport }),
+    onSuccess: (r) => { invalidate(); setFiring(null); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const restore = useMutation({ mutationFn: (id: number) => post(`/workers/${id}/restore`), onSuccess: () => { invalidate(); toast.success(t("Відновлено")); } });
   const remove = useMutation({ mutationFn: (id: number) => del(`/workers/${id}`), onSuccess: () => { invalidate(); toast.success(t("Працівника видалено")); }, onError: (e: any) => toast.error(e.message) });
   const invite = useMutation({
@@ -116,7 +121,7 @@ export default function Workers() {
                       <button onClick={() => setEdit(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
                       {w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
                       {w.isActive
-                        ? <button onClick={async () => { if (await confirm({ title: t("Звільнити {name}?", { name: w.fullName }), message: t("Працівник стане неактивним і не потраплятиме в графік."), danger: true, confirmText: t("Звільнити") })) fire.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
+                        ? <button onClick={() => setFiring(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
                         : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>}
                       {!w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
                     </div>
@@ -129,7 +134,40 @@ export default function Workers() {
       </Card>
 
       {(adding || edit) && <WorkerModal worker={edit} factories={factories} companies={companies} isOwner={isOwner} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { invalidate(); setAdding(false); setEdit(null); }} />}
+
+      {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport) => fire.mutate({ id: firing.id, offerReport })} />}
     </>
+  );
+}
+
+// Firing confirm with the "offer a farewell report" option: the leaver gets inline
+// month buttons in the bot and can submit within 30 days after firing.
+function FireModal({ worker, loading, onClose, onFire }: { worker: Worker; loading: boolean; onClose: () => void; onFire: (offerReport: boolean) => void }) {
+  const t = useT();
+  const [offerReport, setOfferReport] = useState(!!worker.telegramId);
+  return (
+    <Modal open onClose={onClose} title={t("Звільнити {name}?", { name: worker.fullName })}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-600">{t("Працівник стане неактивним і не потраплятиме в графік.")}</p>
+        <label className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${worker.telegramId ? "border-slate-200" : "border-slate-100 bg-slate-50 opacity-60"}`}>
+          <input type="checkbox" className="mt-0.5" disabled={!worker.telegramId} checked={offerReport} onChange={e => setOfferReport(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Запропонувати здати рапорт у боті")}</span>
+            <span className="block text-xs text-slate-500">
+              {worker.telegramId
+                ? t("Працівник отримає кнопку «здати рапорт» за відпрацьований місяць — діє 30 днів")
+                : t("працівник не підключений до бота")}
+            </span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant="danger" loading={loading} onClick={() => onFire(offerReport && !!worker.telegramId)}>
+            <UserX className="h-4 w-4" /> {t("Звільнити")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
