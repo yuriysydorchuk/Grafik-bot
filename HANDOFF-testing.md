@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 125 тестів; загальне 38.6% → 43.3% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 136 тестів; загальне ~45% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -41,6 +41,18 @@
 - `routes/admin-operational.integration.test.ts` — PUT /orders (сітка/заміна/сума breakdown),
   PATCH schedule/entry status, absence approve (пошиftна/цілоденна → entry absent) / reject.
 
+**Крок 4 — admins/roles + money-endpoints:**
+- `routes/admins-roles.integration.test.ts` — POST/PATCH/DELETE /admins під `requireMainAdmin`
+  (owner-не-main→403, головного не демоутнути/видалити, reset-web бампає token_version),
+  roles CRUD (фільтр невідомих caps/pages, owner незмінний, system/in-use не видалити).
+- `routes/finance.integration.test.ts` — pnl viewFinance-гейт + валідація entries;
+  /bank/transactions bucket/місяць/`cat:` (роут коректно вплітає BUCKET/catCondition).
+
+**Знайдено тестом (2-й баг сесії):** `DELETE /admins/:id` падав 500 для будь-кого, хто
+входив (FK `admin_sessions`/`login_events`) чи вів рекрутинг — головний адмін не міг
+видалити звільненого. Виправлено в хендлері: транзакційний cleanup (сесії delete,
+аудит/рекрутинг-посилання SET NULL, далі delete). Без міграції.
+
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
 
@@ -67,7 +79,7 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 125 тестів — з `TEST_DATABASE_URL` усі 125 pass; без нього 88 pass + 37 skip.
+Стан: 136 тестів — з `TEST_DATABASE_URL` усі 136 pass; без нього 88 pass + 48 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
