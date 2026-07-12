@@ -5,7 +5,7 @@ import {
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
   scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable, pnlEntriesTable,
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
-  funnelsTable, candidatesTable, candidateActivityTable,
+  funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -19,6 +19,7 @@ export {
   availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable,
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
+  driverWorkdaysTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
