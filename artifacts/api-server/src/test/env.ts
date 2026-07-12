@@ -17,3 +17,5 @@ process.env.SESSION_SECRET ||= "integration-test-secret";
 process.env.LOG_LEVEL ||= "silent";
 // Skip the external geo lookup (best-effort network call) during tests.
 process.env.GEOIP_ENABLED ||= "0";
+// Keep uploaded test files out of the repo tree.
+process.env.UPLOADS_DIR ||= "/tmp/grafik-test-uploads";

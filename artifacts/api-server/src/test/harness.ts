@@ -4,7 +4,7 @@ import {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable, driversTable, workersTable,
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
   scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable, pnlEntriesTable,
-  companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable,
+  companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -16,7 +16,8 @@ export {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable,
   driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
   availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable,
-  bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable,
+  bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
+  workerDocumentsTable, advanceRequestsTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -35,7 +36,7 @@ export async function resetDb(): Promise<void> {
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
     "schedule_weeks, schedule_entries, bank_transactions, pnl_entries, " +
-    "companies, document_types, vehicles RESTART IDENTITY CASCADE",
+    "companies, document_types, vehicles, advance_requests RESTART IDENTITY CASCADE",
   ));
 }
 
