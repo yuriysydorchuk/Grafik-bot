@@ -10,7 +10,7 @@ import {
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
-  vehiclesTable, shiftCancellationsTable,
+  vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -3024,7 +3024,17 @@ router.delete("/admins/:id", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (id === (await mainAdminId())) return fail(res, 400, "Не можна видалити головного власника");
   if (id === (req as AuthedRequest).admin?.adminId) return fail(res, 400, "Не можна видалити власний акаунт");
-  await db.delete(adminsTable).where(eq(adminsTable.id, id));
+  // Clean up FK references first, or the delete fails (500) for anyone who ever logged in
+  // or touched recruitment. Audit rows (login_events, candidate_activity) are kept but
+  // unlinked; ephemeral sessions are dropped.
+  await db.transaction(async (tx) => {
+    await tx.delete(adminSessionsTable).where(eq(adminSessionsTable.adminId, id));
+    await tx.update(loginEventsTable).set({ adminId: null }).where(eq(loginEventsTable.adminId, id));
+    await tx.update(candidateActivityTable).set({ adminId: null }).where(eq(candidateActivityTable.adminId, id));
+    await tx.update(candidatesTable).set({ assignedAdminId: null }).where(eq(candidatesTable.assignedAdminId, id));
+    await tx.update(advanceRequestsTable).set({ decidedBy: null }).where(eq(advanceRequestsTable.decidedBy, id));
+    await tx.delete(adminsTable).where(eq(adminsTable.id, id));
+  });
   ok(res, { ok: true });
 });
 

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable, driversTable, workersTable,
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
-  scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
+  scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable, pnlEntriesTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -14,7 +14,8 @@ import { createToken, SESSION_COOKIE, invalidateRolesCache, hashPassword } from 
 export {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable,
   driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
-  availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
+  availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable,
+  bankTransactionsTable, pnlEntriesTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -32,7 +33,7 @@ export async function resetDb(): Promise<void> {
   await db.execute(sql.raw(
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
-    "schedule_weeks, schedule_entries, bank_transactions RESTART IDENTITY CASCADE",
+    "schedule_weeks, schedule_entries, bank_transactions, pnl_entries RESTART IDENTITY CASCADE",
   ));
 }
 
