@@ -67,7 +67,13 @@ pnpm --filter @workspace/api-server run build  # тільки бекенд → d
 pnpm --filter @workspace/web run build         # тільки веб → artifacts/web/dist
 
 # Тести
-pnpm --filter @workspace/api-server run test   # node --test (напр. bot/time.test.ts)
+pnpm --filter @workspace/api-server run test   # node --test: чисті юніти БЕЗ БД (напр. bot/time.test.ts)
+# Інтеграційні (*.integration.test.ts, supertest+Postgres) САМІ скіпаються без TEST_DATABASE_URL.
+# Ганяти з одноразовою БД (НЕ дев-базою — харнес форсує DATABASE_URL=TEST_DATABASE_URL і truncate):
+#   createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
+#     for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
+#   TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
+# CI: job `check` (юніти, без БД) + job `integration` (Postgres-сервіс) — .github/workflows/ci.yml
 
 # Прод-процес (pm2)
 pm2 start ecosystem.config.cjs                 # старт (процес `grafik-bot`)

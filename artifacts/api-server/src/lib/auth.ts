@@ -18,6 +18,9 @@ export function verifyPassword(password: string, stored: string | null | undefin
   try {
     const salt = Buffer.from(saltHex!, "hex");
     const expected = Buffer.from(hashHex!, "hex");
+    // A hash whose hex decodes to nothing (malformed/empty) would otherwise vacuously
+    // match any password via timingSafeEqual(empty, empty) — reject it outright.
+    if (salt.length === 0 || expected.length === 0) return false;
     const actual = scryptSync(password, salt, expected.length);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   } catch {

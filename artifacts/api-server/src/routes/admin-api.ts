@@ -26,31 +26,8 @@ import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateS
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
+import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
-
-const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-
-// Actual calendar date (YYYY-MM-DD) of a schedule entry = its week's Monday + day offset.
-// Month-scoped reports must attribute each shift to the month of its real date, not the
-// week's Monday — otherwise a week straddling the boundary (e.g. Mon 29 Jun–Sun 5 Jul)
-// counts entirely under June and July shows empty until the next full week.
-function entryDateStr(weekStart: string, day: string | null): string {
-  const d = new Date(String(weekStart) + "T00:00:00");
-  d.setDate(d.getDate() + Math.max(0, DAYS.indexOf(day as DayOfWeek)));
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-// Lower bound for the week filter: any week whose Monday is up to 6 days before the month
-// start can still contain days that fall inside the month.
-function weekFromForMonth(monthStart: string): string {
-  const d = new Date(monthStart + "T00:00:00");
-  d.setDate(d.getDate() - 6);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function addDaysStr(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 const router: IRouter = Router();
 
