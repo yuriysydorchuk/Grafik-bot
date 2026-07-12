@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 153 тести; загальне ~47% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 160 тестів; загальне ~48% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -64,6 +64,11 @@
   HTML під виглядом `.pdf` ВІДХИЛЯЄТЬСЯ (magic-byte — security Finding 2 наскрізь), download з `nosniff`.
   `env.ts` ставить `UPLOADS_DIR=/tmp/grafik-test-uploads` (файли тестів поза репо).
 
+**Крок 7 — рекрутинг-CRM:**
+- `routes/recruitment.integration.test.ts` — funnels (задані/дефолтні стадії, in-use delete-гард);
+  candidates (create → перша стадія + activity, валідація переходу стадії, convert→worker+hired з
+  блоком повторного, bonus paid → прапорець + activity); editData-гейт.
+
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
 
@@ -90,7 +95,7 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 153 тести — з `TEST_DATABASE_URL` усі 153 pass; без нього 88 pass + 65 skip.
+Стан: 160 тестів — з `TEST_DATABASE_URL` усі 160 pass; без нього 88 pass + 72 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
