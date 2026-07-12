@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 178 тестів; загальне ~51% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 183 тести; загальне ~52% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -82,6 +82,9 @@
   (обхід час-гейтованого білдера); `boardDate` у майбутньому вимикає wall-clock auto-absent пас.
 - `bot/absence-office.integration.test.ts` (4) — `absence_approve` (пошиftна/цілоденна → entry absent),
   `absence_reject` (rejected, entry scheduled), невідомий id без падіння.
+- `bot/driver-workday.integration.test.ts` (5) — зміна/пробіг: старт (пробіл-зрізання) відкриває
+  workday, нечисловий km відхиляється, кінець рахує дистанцію (end<start відхиляється), незакрита
+  зміна з попереднього дня авто-закривається, вибір авто (`wdveh`) чіпляє `vehicle_id`.
 
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
@@ -109,12 +112,12 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 178 тестів — з `TEST_DATABASE_URL` усі 178 pass; без нього 88 pass + 90 skip.
+Стан: 183 тести — з `TEST_DATABASE_URL` усі 183 pass; без нього 88 pass + 95 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
-Бот-флоу тепер має вхід (`botHarness.ts`) — далі варто розширити на водійський pickup-флоу,
-реєстрацію/відсутності працівника, офісні дії. `notify.ts`/`scheduler.ts` — сповіщення/cron
+Бот-флоу вже широко покритий (прив'язки, посадка, workday/пробіг, офісні відсутності). Лишається:
+реєстрація/відсутність-запит з боку працівника, диспозиційність (availability). `notify.ts`/`scheduler.ts` — сповіщення/cron
 (потребують стабу часу + перехоплення `sent`, той самий харнес). Route-тести admin-api ще мають
 запас (аналітичні GET-и dashboard/hours/reliability). Money-math у глибину (акруал/звірка/P&L)
 — окремий високоцінний напрям. `--experimental-test-coverage` у CI поки не увімкнено (5-хв додача).
