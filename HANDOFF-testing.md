@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 160 тестів; загальне ~48% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 171 тест; загальне ~50% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -69,6 +69,15 @@
   candidates (create → перша стадія + activity, валідація переходу стадії, convert→worker+hired з
   блоком повторного, bonus paid → прапорець + activity); editData-гейт.
 
+**Крок 8 — бот-флоу (найбільша темна зона):**
+- `src/test/botHarness.ts` — ганяє РЕАЛЬНІ Telegraf-хендлери через `bot.handleUpdate(fakeUpdate)`
+  проти тестової БД. **Вихідні Telegram-виклики перехоплюються на ПРОТОТИПІ `Telegram.callApi`**
+  (Telegraf будує per-update telegram-instance, тож instance-стаб недостатній — це був головний
+  підводний камінь). Хелпери: `sendStart`/`sendText`/`pressButton`, `sent`/`sentText`. Нуль правок у проді.
+- `bot/deeplink.integration.test.ts` (7) — emp/drv/adm bind, гарди (вже-використано, зайнятий TG,
+  невідомий код), fac self-signup (кирилиця відхиляється, латиниця створює працівника — ганяє start + on(text)+state).
+- `bot/roles.integration.test.ts` (4) — `getAdmin` виключає веб-роль 'driver', `getWorker`/`getDriver` лише active.
+
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
 
@@ -95,14 +104,15 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 160 тестів — з `TEST_DATABASE_URL` усі 160 pass; без нього 88 pass + 72 skip.
+Стан: 171 тест — з `TEST_DATABASE_URL` усі 171 pass; без нього 88 pass + 83 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
-Найбільший непокритий обсяг: `bot/index.ts` (~4600), великі роути `admin-api.ts`, `notify.ts`,
-`scheduler.ts`. Route-тести робляться так само, як `security.integration` (seed + supertest).
-Бот-флоу складніший (Telegraf-контексти) — окрема оцінка перед роботою. `--experimental-test-coverage`
-у CI поки не увімкнено (5-хв додача, якщо хочемо тримати цифру на очах).
+Бот-флоу тепер має вхід (`botHarness.ts`) — далі варто розширити на водійський pickup-флоу,
+реєстрацію/відсутності працівника, офісні дії. `notify.ts`/`scheduler.ts` — сповіщення/cron
+(потребують стабу часу + перехоплення `sent`, той самий харнес). Route-тести admin-api ще мають
+запас (аналітичні GET-и dashboard/hours/reliability). Money-math у глибину (акруал/звірка/P&L)
+— окремий високоцінний напрям. `--experimental-test-coverage` у CI поки не увімкнено (5-хв додача).
 
 ## Гілки
 
