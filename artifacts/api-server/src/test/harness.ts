@@ -1,13 +1,20 @@
 import "./env.ts"; // MUST be first — sets DATABASE_URL before @workspace/db evaluates
 import { randomBytes } from "node:crypto";
-import { db, adminsTable, adminSessionsTable, rolesTable, driversTable, workersTable } from "@workspace/db";
+import {
+  db, adminsTable, adminSessionsTable, rolesTable, driversTable, workersTable,
+  factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
+  scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
+} from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
 import { createToken, SESSION_COOKIE, invalidateRolesCache, hashPassword } from "../lib/auth.ts";
 
 // Re-exported so integration tests import ONLY from the harness — this guarantees env.ts
 // runs before @workspace/db is evaluated (import order within a test file is otherwise fragile).
-export { db, driversTable, workersTable };
+export {
+  db, driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
+  availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
+};
 
 // Integration tests are opt-in: they need a real, disposable Postgres pointed to by
 // TEST_DATABASE_URL. `pnpm test` without it runs only the pure unit tests.
@@ -21,7 +28,9 @@ export async function resetDb(): Promise<void> {
   const url = process.env.TEST_DATABASE_URL ?? "";
   if (!/test/i.test(url)) throw new Error("resetDb refused: TEST_DATABASE_URL is not a *test* database");
   await db.execute(sql.raw(
-    "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles RESTART IDENTITY CASCADE",
+    "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
+    "factories, positions, factory_orders, availability, absence_requests, " +
+    "schedule_weeks, schedule_entries, bank_transactions RESTART IDENTITY CASCADE",
   ));
 }
 
