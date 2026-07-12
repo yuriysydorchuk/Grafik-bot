@@ -1,7 +1,7 @@
 import "./env.ts"; // MUST be first — sets DATABASE_URL before @workspace/db evaluates
 import { randomBytes } from "node:crypto";
 import {
-  db, adminsTable, adminSessionsTable, rolesTable, driversTable, workersTable,
+  db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable, driversTable, workersTable,
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
   scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
 } from "@workspace/db";
@@ -12,9 +12,11 @@ import { createToken, SESSION_COOKIE, invalidateRolesCache, hashPassword } from 
 // Re-exported so integration tests import ONLY from the harness — this guarantees env.ts
 // runs before @workspace/db is evaluated (import order within a test file is otherwise fragile).
 export {
-  db, driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
+  db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable,
+  driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
   availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable,
 };
+export { hashPassword, SESSION_COOKIE };
 
 // Integration tests are opt-in: they need a real, disposable Postgres pointed to by
 // TEST_DATABASE_URL. `pnpm test` without it runs only the pure unit tests.

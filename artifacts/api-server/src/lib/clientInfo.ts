@@ -27,7 +27,8 @@ export function parseDevice(ua: string | undefined | null): string | null {
 }
 
 // A private / loopback address never resolves to a public location — skip the lookup.
-function isPrivateIp(ip: string): boolean {
+// Exported for testing: this predicate gates the outbound geo lookup (SSRF-adjacent).
+export function isPrivateIp(ip: string): boolean {
   const v = ip.replace(/^::ffff:/, "");
   return (
     v === "127.0.0.1" || v === "::1" || v === "localhost" ||
