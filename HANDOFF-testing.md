@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 171 тест; загальне ~50% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 178 тестів; загальне ~51% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -77,6 +77,11 @@
 - `bot/deeplink.integration.test.ts` (7) — emp/drv/adm bind, гарди (вже-використано, зайнятий TG,
   невідомий код), fac self-signup (кирилиця відхиляється, латиниця створює працівника — ганяє start + on(text)+state).
 - `bot/roles.integration.test.ts` (4) — `getAdmin` виключає веб-роль 'driver', `getWorker`/`getDriver` лише active.
+- `bot/driver-boarding.integration.test.ts` (3) — посадка `brd:ok`: боарднутий → present+pickedUpBy,
+  заміна → замінений absent «заміна», no-op без стану. Стан `boarding` засівається напряму
+  (обхід час-гейтованого білдера); `boardDate` у майбутньому вимикає wall-clock auto-absent пас.
+- `bot/absence-office.integration.test.ts` (4) — `absence_approve` (пошиftна/цілоденна → entry absent),
+  `absence_reject` (rejected, entry scheduled), невідомий id без падіння.
 
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
@@ -104,7 +109,7 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 171 тест — з `TEST_DATABASE_URL` усі 171 pass; без нього 88 pass + 83 skip.
+Стан: 178 тестів — з `TEST_DATABASE_URL` усі 178 pass; без нього 88 pass + 90 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
