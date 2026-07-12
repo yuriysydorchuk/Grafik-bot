@@ -6,7 +6,7 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 183 тести; загальне ~52% рядків.**
+аналіз покриття тестами й нарощування. **Покриття: 63 → 189 тестів; загальне ~53% рядків.**
 Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
@@ -85,6 +85,9 @@
 - `bot/driver-workday.integration.test.ts` (5) — зміна/пробіг: старт (пробіл-зрізання) відкриває
   workday, нечисловий km відхиляється, кінець рахує дистанцію (end<start відхиляється), незакрита
   зміна з попереднього дня авто-закривається, вибір авто (`wdveh`) чіпляє `vehicle_id`.
+- `bot/worker-requests.integration.test.ts` (6) — аванс `adv:new`→сума→коментар (кома-десяткові,
+  «-»=без нотатки), >500 відхиляється, ліміт 1/день; відсутність `absence:enter_reason` (засіяно
+  напряму — обхід час-гейтованого списку) → цілоденна (shift NULL) і пошиftна pending з причиною.
 
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
@@ -112,7 +115,7 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 183 тести — з `TEST_DATABASE_URL` усі 183 pass; без нього 88 pass + 95 skip.
+Стан: 189 тестів — з `TEST_DATABASE_URL` усі 189 pass; без нього 88 pass + 101 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
