@@ -6,8 +6,8 @@
 ## Контекст
 
 Сесія почалась із defensive security review (див. `HANDOFF-security-review.md`), далі —
-аналіз покриття тестами й нарощування. **Покриття: 63 → 102 тести.** Заміряно
-`node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
+аналіз покриття тестами й нарощування. **Покриття: 63 → 125 тестів; загальне 38.6% → 43.3% рядків.**
+Заміряно `node --test --experimental-test-coverage`: до робіт ефективне покриття бекенду було ~10%
 (тести чіпали лише ~21% рядків, усередині них 49%), зміщене у бік фінансових парсерів.
 
 ## Що додано
@@ -32,6 +32,14 @@
 - `services/bankClassify.integration.test.ts` (8) — реальна Postgres-семантика регексів:
   income vs internal, owner-виплата vs card-fee, cash (стем BANKOMA) vs комісія, кредит-рахунок,
   first-match категорій (ORLEN=fuel), `\y`-межа (ULAN ≠ ULANOWSKI), manual override, salary.
+
+**Крок 3 — auth-флоу + операційне ядро (пізніше в сесії):**
+- `lib/clientInfo.test.ts` (pure) — `parseDevice` + `isPrivateIp` (SSRF-гейт; `isPrivateIp` експортовано). 24.6%→77%.
+- `routes/auth.integration.test.ts` — повний логін→2FA→сесія→`/me` (Telegram-код через стаб
+  `bot.telegram.sendMessage`), bad_password/no_telegram/bad_2fa, logout-ревокація, звірка `login_events`. auth.ts 33%→88%.
+- `routes/workers.integration.test.ts` — фін-поля пишуться лише під `viewFinance` (mass-assignment guard), editData-гейт, CSRF.
+- `routes/admin-operational.integration.test.ts` — PUT /orders (сітка/заміна/сума breakdown),
+  PATCH schedule/entry status, absence approve (пошиftна/цілоденна → entry absent) / reject.
 
 **CI** (`.github/workflows/ci.yml`): job `check` (юніти, без БД) + новий job `integration`
 з Postgres-17 сервісом (вантажить `schema.sql` + усі міграції, ганяє тести з `TEST_DATABASE_URL`).
@@ -59,7 +67,7 @@ createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
   for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
 TEST_DATABASE_URL=postgres://localhost/grafik_bot_test pnpm --filter @workspace/api-server run test
 ```
-Стан: 102 тести — з `TEST_DATABASE_URL` усі 102 pass; без нього 81 pass + 21 skip.
+Стан: 125 тестів — з `TEST_DATABASE_URL` усі 125 pass; без нього 88 pass + 37 skip.
 
 ## Що далі (кандидати на тому ж харнесі)
 
