@@ -34,7 +34,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
   // All writes are deferred: the plan is computed in memory first, then applied in ONE
   // transaction at the end — a crash mid-generation must not leave a half-wiped week.
   let existingWeek: { id: number } | undefined; // week row to reuse (per-factory mode)
-  let draftToReplace: number | null = null;     // draft week id to wipe (full regen)
+  let draftToReuse: number | null = null;       // draft week id whose entries are wiped (full regen)
   let entryIdsToDelete: number[] = [];
   if (factoryId) {
     // Use the SAME week row the panel displays (approved preferred, else latest) so a
@@ -63,10 +63,13 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
       entryIdsToDelete = existing.filter(e => !slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift)).map(e => e.id);
     }
   } else {
-    // Full regeneration — the existing draft is replaced inside the final transaction
+    // Full regeneration — the existing draft's ENTRIES are replaced inside the final
+    // transaction, but the week ROW is kept: driver assignments / cancellations made
+    // ahead reference it by id, and deleting it would fail on FK (or orphan them).
     const existingWeeks = await db.select().from(scheduleWeeksTable)
-      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "draft")));
-    draftToReplace = existingWeeks[0]?.id ?? null;
+      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "draft")))
+      .orderBy(desc(scheduleWeeksTable.id));
+    draftToReuse = existingWeeks[0]?.id ?? null;
   }
 
   // Load all active workers
@@ -306,7 +309,7 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     }
   }
 
-  // Apply the plan atomically: (re)create the week row, wipe replaced entries,
+  // Apply the plan atomically: reuse/create the week row, wipe replaced entries,
   // batch-insert the new ones. Nothing is written if any step fails.
   const weekId = await db.transaction(async (tx) => {
     let wid: number;
@@ -321,12 +324,13 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
         await tx.delete(scheduleEntriesTable).where(inArray(scheduleEntriesTable.id, entryIdsToDelete));
       }
     } else {
-      if (draftToReplace != null) {
-        await tx.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, draftToReplace));
-        await tx.delete(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, draftToReplace));
+      if (draftToReuse != null) {
+        await tx.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, draftToReuse));
+        wid = draftToReuse;
+      } else {
+        const [w] = await tx.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning();
+        wid = w!.id;
       }
-      const [w] = await tx.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning();
-      wid = w!.id;
     }
     if (pending.length) {
       await tx.insert(scheduleEntriesTable).values(

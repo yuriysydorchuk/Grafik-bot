@@ -215,7 +215,8 @@ async function checkPreShiftNotifications() {
     const week = getCurrentMonday();
 
     const weeks = await db.select().from(scheduleWeeksTable)
-      .where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")));
+      .where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")))
+      .orderBy(desc(scheduleWeeksTable.id));
     if (weeks.length === 0) return;
     const weekId = weeks[0]!.id;
 
@@ -385,7 +386,8 @@ async function sendPickupReminder(
 ) {
   const { day: assignDay, weekStart } = pickupAssignmentSlot(todayName, getCurrentMonday(), shiftStart, shiftEnd);
   const weeks = await db.select().from(scheduleWeeksTable)
-    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
+    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")))
+    .orderBy(desc(scheduleWeeksTable.id));
   if (weeks.length === 0) return;
   if (await isCellCancelled(weeks[0]!.id, factoryId, assignDay, shift)) return;
 
@@ -437,7 +439,8 @@ export async function notifyHeadDriverPickupGaps() {
     // The week that contains tomorrow: next week's Monday when today is Sunday
     const weekStart = day === "mon" ? getNextMonday() : getCurrentMonday();
     const weeks = await db.select().from(scheduleWeeksTable)
-      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
+      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")))
+      .orderBy(desc(scheduleWeeksTable.id));
     if (weeks.length === 0) return;
 
     const { detectPickupGaps } = await import("./pickupGaps");

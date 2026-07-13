@@ -1762,7 +1762,9 @@ router.post("/schedule/approve", RW, async (req, res) => {
 // Add a worker to a shift (manual edit)
 router.post("/schedule/entry", RW, async (req, res) => {
   const { weekStart, workerId, factoryId, day, shift } = req.body ?? {};
-  const week = (await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)))[0];
+  // Same row resolution as GET /schedule: prefer the approved row, else the newest
+  const weekCands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
+  const week = weekCands.find(w => w.status === "approved") ?? weekCands[0];
   if (!week) return fail(res, 404, "Тиждень не знайдено");
   // avoid duplicate / two shifts same day
   const existing = await db.select().from(scheduleEntriesTable)
@@ -2550,7 +2552,8 @@ async function substitutesFor(weekStart: string, day: DayOfWeek, shift: Shift, f
   const availIds = new Set(avail.map(a => a.wid).filter((x): x is number => x != null));
   if (availIds.size === 0) return [];
   const week = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
-    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved"))))[0];
+    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")))
+    .orderBy(desc(scheduleWeeksTable.id)))[0];
   let scheduled = new Set<number>();
   if (week) {
     const sch = await db.select({ wid: scheduleEntriesTable.workerId }).from(scheduleEntriesTable)
@@ -2616,7 +2619,8 @@ router.post("/absence-requests/:id/approve", RW, async (req, res) => {
   await db.update(absenceRequestsTable).set({ status: "accepted" }).where(eq(absenceRequestsTable.id, id));
   // mark the matching schedule entry absent (whole-day request → every scheduled shift that day)
   const week = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
-    .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved"))))[0];
+    .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved")))
+    .orderBy(desc(scheduleWeeksTable.id)))[0];
   if (week) {
     if (r.shift == null) {
       await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null })
@@ -2651,7 +2655,8 @@ router.post("/absence-requests/:id/substitute", RW, async (req, res) => {
   if (!subId) return fail(res, 400, "Оберіть заміну");
   await db.update(absenceRequestsTable).set({ status: "substituted", substituteWorkerId: subId }).where(eq(absenceRequestsTable.id, id));
   const week = (await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
-    .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved"))))[0];
+    .where(and(eq(scheduleWeeksTable.weekStart, String(r.weekStart)), eq(scheduleWeeksTable.status, "approved")))
+    .orderBy(desc(scheduleWeeksTable.id)))[0];
   let factoryId: number | null = null;
   if (week) {
     const [e] = await db.select().from(scheduleEntriesTable)

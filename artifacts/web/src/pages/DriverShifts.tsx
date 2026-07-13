@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send, CopyPlus, Truck, ChevronRight, Check, Clock } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, put, DAYS, DAY_UK, type DayCode, type ShiftCode } from "../lib/api";
-import { upcomingWeeks, dayDate, weekLabel } from "../lib/dates";
+import { upcomingWeeks, dayDate, weekLabel, mondayOf } from "../lib/dates";
 import { usePersisted } from "../lib/hooks";
 import { WeekSelect } from "../components/WeekSelect";
 import { Button, Card, Empty, Badge, Modal, Spinner } from "../components/ui";
@@ -17,12 +17,22 @@ type FactoryBoard = { id: number; name: string; shiftCount: number; cells: Cell[
 type DriverRow = { id: number; name: string; seats: number | null; isHeadDriver: boolean; telegramId: string | null };
 type Board = { weekStart: string; hasWeek: boolean; factories: FactoryBoard[]; drivers: DriverRow[] };
 
-const prevWeek = (weekStart: string) => {
-  const d = new Date(weekStart + "T00:00:00"); d.setDate(d.getDate() - 7);
+// Local YYYY-MM-DD at weekStart + offset days (never UTC — see lib/dates.ts)
+const ymdAt = (weekStart: string, offset: number) => {
+  const d = new Date(weekStart + "T00:00:00"); d.setDate(d.getDate() + offset);
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 };
+const prevWeek = (weekStart: string) => ymdAt(weekStart, -7);
+const nextWeek = (weekStart: string) => ymdAt(weekStart, 7);
 const dayIdx = (d: DayCode) => DAYS.indexOf(d);
+const todayYmd = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+// A day already in the past can't receive new assignments — the bot reads today's
+// runs from the week the day belongs to, so a "past" assignment never reaches drivers.
+const isPastDay = (weekStart: string, d: DayCode) => ymdAt(weekStart, dayIdx(d)) < todayYmd();
 const isWeekend = (d: DayCode) => d === "sat" || d === "sun";
 const cellKey = (factoryId: number, day: DayCode, shift: ShiftCode) => `${factoryId}:${day}-${shift}`;
 const initials = (name: string) => name.split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase();
@@ -36,6 +46,13 @@ export default function DriverShifts() {
   const confirm = useConfirm();
   const [weekStart, setWeekStart] = usePersisted<string>("sel.dshift.week", upcomingWeeks()[0]!.value);
   const [editDriver, setEditDriver] = useState<DriverRow | null>(null);
+
+  // The persisted selection must not resurrect a finished week: assigning into it
+  // silently lands in the past (recurring head-driver trap on weekends).
+  const currentMonday = mondayOf(new Date());
+  useEffect(() => { if (weekStart < currentMonday) setWeekStart(currentMonday); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const dow = new Date().getDay(); // 0=Sun, 6=Sat
+  const showNextWeekHint = weekStart === currentMonday && (dow === 6 || dow === 0);
 
   const { data, isFetching } = useQuery<Board>({
     queryKey: ["driver-board", weekStart], enabled: !!weekStart,
@@ -62,6 +79,21 @@ export default function DriverShifts() {
       <PageHeader title={t("Призначення водіїв")} subtitle={t("Огляд усіх фабрик і змін — оберіть водія, щоб призначити")} />
 
       <WeekSelect value={weekStart} onChange={setWeekStart} className="mb-4" />
+
+      {showNextWeekHint && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+          <span>💡 {t("Плануєте наступний тиждень? Зараз відкрито тиждень, що вже закінчується.")}</span>
+          <button type="button" onClick={() => setWeekStart(nextWeek(currentMonday))}
+            className="rounded-lg bg-sky-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-sky-700">
+            {t("Перейти на {week}", { week: weekLabel(nextWeek(currentMonday)) })}
+          </button>
+        </div>
+      )}
+      {weekStart < currentMonday && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ⚠️ {t("Це минулий тиждень. Нові призначення тут бот водіям не покаже.")}
+        </div>
+      )}
 
       {isFetching && !data ? <Spinner /> : (
         <>
@@ -140,7 +172,8 @@ function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
             <tr className="text-xs text-slate-400">
               <th className="sticky left-0 z-10 bg-white px-4 py-2 text-left font-medium">{t("Зміна")}</th>
               {days.map(d => (
-                <th key={d} className={`min-w-24 px-3 py-2 text-center font-medium ${isWeekend(d) ? "bg-slate-50/70" : ""}`}>
+                <th key={d} title={isPastDay(weekStart, d) ? t("День уже минув") : undefined}
+                  className={`min-w-24 px-3 py-2 text-center font-medium ${isWeekend(d) ? "bg-slate-50/70" : ""} ${isPastDay(weekStart, d) ? "opacity-50" : ""}`}>
                   <div className="text-slate-500">{DAY_UK[d]}</div>
                   <div className="font-normal text-slate-300">{dayDate(weekStart, dayIdx(d))}</div>
                 </th>
@@ -158,7 +191,7 @@ function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
                   const c = cellOf(d, s);
                   if (!c) return <td key={d} className={`px-3 py-2.5 text-center text-slate-200 ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>—</td>;
                   return (
-                    <td key={d} className={`px-3 py-2.5 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
+                    <td key={d} className={`px-3 py-2.5 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""} ${isPastDay(weekStart, d) ? "opacity-50" : ""}`}>
                       {c.cancelled && <div className="mb-1"><Badge color="rose">❌ {t("скасовано")}</Badge></div>}
                       <div className="text-sm font-semibold text-slate-700">{c.headcount} <span className="font-normal text-slate-400">{t("ос.")}</span></div>
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
@@ -241,7 +274,8 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
 
         {!factories.length ? <Empty>{t("Немає змін для призначення")}</Empty> : factories.map(f => {
           const shifts = shiftsOf(f), days = daysOf(f);
-          const selectable = f.cells.filter(c => !c.cancelled); // bulk toggles must not touch cancelled cells
+          // Bulk toggles must not touch cancelled cells nor days already in the past
+          const selectable = f.cells.filter(c => !c.cancelled && !isPastDay(weekStart, c.day));
           const allKeys = selectable.map(c => cellKey(f.id, c.day, c.shift));
           const rowKeys = (s: ShiftCode) => selectable.filter(c => c.shift === s).map(c => cellKey(f.id, c.day, c.shift));
           const colKeys = (d: DayCode) => selectable.filter(c => c.day === d).map(c => cellKey(f.id, c.day, c.shift));
@@ -257,10 +291,13 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                     <tr className="text-xs text-slate-400">
                       <th className="px-3 py-2 text-left font-medium">{t("Зміна")}</th>
                       {days.map(d => (
-                        <th key={d} className={`min-w-20 px-2 py-2 text-center font-medium ${isWeekend(d) ? "bg-slate-50/70" : ""}`}>
+                        <th key={d} title={isPastDay(weekStart, d) ? t("День уже минув") : undefined}
+                          className={`min-w-20 px-2 py-2 text-center font-medium ${isWeekend(d) ? "bg-slate-50/70" : ""} ${isPastDay(weekStart, d) ? "opacity-50" : ""}`}>
                           <div className="text-slate-500">{DAY_UK[d]}</div>
                           <div className="font-normal text-slate-300">{dayDate(weekStart, dayIdx(d))}</div>
-                          <div className="mt-1"><BulkChip on={allSel(colKeys(d))} onClick={() => setMany(colKeys(d), !allSel(colKeys(d)))}>{t("весь день")}</BulkChip></div>
+                          {!isPastDay(weekStart, d) && (
+                            <div className="mt-1"><BulkChip on={allSel(colKeys(d))} onClick={() => setMany(colKeys(d), !allSel(colKeys(d)))}>{t("весь день")}</BulkChip></div>
+                          )}
                         </th>
                       ))}
                     </tr>
@@ -286,6 +323,22 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                             return (
                               <td key={d} className={`px-2 py-2 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
                                 <div className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-2 text-[10px] font-medium text-rose-600">❌ {t("скасовано")}</div>
+                              </td>
+                            );
+                          }
+                          if (isPastDay(weekStart, d)) {
+                            // Read-only: show what was assigned, but block new toggles — the day
+                            // is over, drivers would never see an assignment made "into the past"
+                            return (
+                              <td key={d} className={`px-2 py-2 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""}`}>
+                                <div title={t("День уже минув")}
+                                  className={`flex w-full flex-col items-center gap-0.5 rounded-lg border px-2 py-1.5 opacity-50 ${on ? "border-red-300 bg-red-100 text-red-700" : "border-slate-200 bg-slate-50 text-slate-400"}`}>
+                                  {on ? <Check className="h-4 w-4" /> : <span className="text-sm font-bold">{c.headcount}</span>}
+                                  <span className="text-[10px] font-medium">{t("минув")}</span>
+                                </div>
+                                {onP && (
+                                  <div className="mt-1 w-full rounded-md border border-sky-200 bg-sky-50 px-1 py-0.5 text-[10px] font-medium text-sky-600 opacity-60">🔙 {t("забрати")}</div>
+                                )}
                               </td>
                             );
                           }

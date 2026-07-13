@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   hasTestDb, resetDb, closeDb, db,
   factoriesTable, workersTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
-  scheduleEntriesTable,
+  scheduleEntriesTable, scheduleWeeksTable, driversTable, driverShiftAssignmentsTable,
 } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 import { generateSchedule } from "./scheduleGenerator.ts";
@@ -112,4 +112,29 @@ test("'all' mode releases everyone Mon–Sat with fixed-shift workers pinned to 
   assert.equal(boundRows.length, 6);
   assert.ok(boundRows.every(r => r.shift === "1"), "bound worker must always be on shift 1");
   assert.ok(rows.some(r => r.workerId === flex), "flexible worker must be scheduled too");
+});
+
+test("full regeneration reuses the draft week row — driver assignments made ahead survive", opts, async () => {
+  const f = await mkFactory({ usesAvailability: true });
+  const w = await mkWorker(f);
+  await mkAvail(w, "mon", "1");
+  await mkOrder(f, "mon", "1", 1);
+
+  const first = await generateSchedule(WEEK);
+  // The head driver assigns himself onto the still-draft week (the weekend workflow)
+  const [drv] = await db.insert(driversTable).values({ name: "D" }).returning({ id: driversTable.id });
+  await db.insert(driverShiftAssignmentsTable).values({
+    weekId: first.weekId, factoryId: f, dayOfWeek: "mon", shift: "1", driverId: drv!.id, kind: "delivery",
+  });
+
+  // Re-generating the whole week used to DELETE the draft row → FK violation
+  // («Помилка генерації») or orphaned assignments. Now the row is reused.
+  const second = await generateSchedule(WEEK);
+  assert.equal(second.weekId, first.weekId, "full regen must keep the same week row");
+  const weeks = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, WEEK));
+  assert.equal(weeks.length, 1, "no duplicate week rows after regen");
+  const assigns = await db.select().from(driverShiftAssignmentsTable)
+    .where(eq(driverShiftAssignmentsTable.weekId, second.weekId));
+  assert.equal(assigns.length, 1, "driver assignment must survive full regeneration");
+  assert.equal((await entriesFor(second.weekId)).length, 1, "entries regenerated");
 });

@@ -5,7 +5,7 @@ import {
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, availabilityTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and, ne, isNotNull } from "drizzle-orm";
+import { eq, and, ne, desc, isNotNull } from "drizzle-orm";
 import { workerMenu, headDriverMenu, driverMenu } from "./menus";
 import { DAY_UK, SHIFT_SHORT } from "./display";
 import { t, tb, dayShort, type Lang } from "./i18n";
@@ -385,7 +385,7 @@ export async function showFactoryWeekSchedule(ctx: Context, weekId: number, week
 }
 
 export async function showDriverShift(ctx: Context, driverId: number, weekStart: string, day: DayOfWeek, lang: Lang = "uk") {
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")));
+  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
   if (weeks.length === 0) return ctx.reply(tb(lang, "Немає активного графіку."), driverMenu(lang));
   const driver = (await db.select().from(driversTable).where(eq(driversTable.id, driverId)))[0];
   const menu = driver?.isHeadDriver ? headDriverMenu(lang) : driverMenu(lang);

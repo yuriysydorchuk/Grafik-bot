@@ -273,6 +273,7 @@ const BOT_EN: Record<string, string> = {
   "Бути на фабриці на:": "Be at the factory at:",
   "забрати": "pick up",
   "🔙 *Нове призначення — забрати зі зміни*\n\n🏭 {factory} · {shift}\n📅 {day}\n🕒 Бути на фабриці на: {end}": "🔙 *New assignment — pick up from shift*\n\n🏭 {factory} · {shift}\n📅 {day}\n🕒 Be at the factory at: {end}",
+  "ℹ️ Сьогодні у вас лише 🔙 «Забрати зі зміни»:\n{list}\n\nЗавіз людей НА зміну вам не призначений, тому поїздки/посадки немає. Якщо ви маєте везти людей на зміну — перевірте призначення (слот завозу, а не «забрати»).": "ℹ️ Today you only have 🔙 “Pick up from shift”:\n{list}\n\nNo delivery run TO the shift is assigned to you, so there is no trip/boarding. If you are supposed to drive people to the shift — check the assignment (the delivery slot, not “pick up”).",
   // ── driver workday (odometer / mileage) ──
   "🚗 Почати зміну": "🚗 Start shift",
   "🏁 Закінчити зміну": "🏁 Finish shift",
@@ -696,6 +697,7 @@ const BOT_RU: Record<string, string> = {
   "забрати": "забрать",
   "Бути на фабриці на:": "Быть на фабрике к:",
   "🔙 *Нове призначення — забрати зі зміни*\n\n🏭 {factory} · {shift}\n📅 {day}\n🕒 Бути на фабриці на: {end}": "🔙 *Новое назначение — забрать со смены*\n\n🏭 {factory} · {shift}\n📅 {day}\n🕒 Быть на фабрике к: {end}",
+  "ℹ️ Сьогодні у вас лише 🔙 «Забрати зі зміни»:\n{list}\n\nЗавіз людей НА зміну вам не призначений, тому поїздки/посадки немає. Якщо ви маєте везти людей на зміну — перевірте призначення (слот завозу, а не «забрати»).": "ℹ️ Сегодня у вас только 🔙 «Забрать со смены»:\n{list}\n\nЗавоз людей НА смену вам не назначен, поэтому поездки/посадки нет. Если вы должны везти людей на смену — проверьте назначение (слот завоза, а не «забрать»).",
   // ── trips ──
   "Поїздку розпочато!": "Поездка начата!",
   "Вчасно на місці збору": "Вовремя на месте сбора",
