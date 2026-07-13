@@ -530,6 +530,16 @@ const EN: Record<string, string> = {
   "Аванси (zaliczki)": "Advances (zaliczki)",
   "Хостел": "Hostel",
   "Штрафи (разом)": "Penalties (total)",
+  "Колонки": "Columns",
+  "Податки працівника з карти": "Worker taxes on bank part",
+  "Σ колонки «До виплати» по рядках фабрики": "Σ of the “To pay” column across factory rows",
+  "Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок": "Σ “Declared net (bank)” — the declared part paid to the account",
+  "Σ (Księg. brutto − Księg. netto): ПДФО + внески ZUS, утримані з офіційної частини": "Σ (declared gross − declared net): PIT + employee ZUS withheld from the declared part",
+  "Σ оподатковуваного Księg. brutto × 20,48%": "Σ taxable declared gross × 20.48%",
+  "Σ колонки «Готівка»": "Σ of the “Cash” column",
+  "Якби готівку платили офіційно: (брутто-еквівалент − готівка) + брутто-еквівалент × 20,48% ZUS. Студенти не рахуються — у них податків немає.": "If cash were paid officially: (gross equivalent − cash) + gross equivalent × 20.48% ZUS. Students excluded — they pay no taxes.",
+  "Σ колонки Hostel": "Σ of the Hostel column",
+  "Σ колонки Karta pobytu": "Σ of the Karta pobytu column",
 
   // ── Mileage report ──
   "Звіт по пробігу": "Mileage report",
