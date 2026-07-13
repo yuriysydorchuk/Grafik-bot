@@ -5,12 +5,12 @@
 import { db } from "@workspace/db";
 import {
   svodniRowsTable, svodniTabChecksTable, factoriesTable, workersTable,
-  payrollSourcesTable,
+  payrollSourcesTable, companiesTable,
 } from "@workspace/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { matchWorker } from "../bot/workerMatch";
-import { norm, key, num, cell } from "./payrollSummaries";
+import { norm, key, num, cell, cleanName } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
   computeMismatch, type SvodniParsedTab, type GotowkaRow,
@@ -58,11 +58,16 @@ function parseSummaryTab(rows: unknown[][]): Map<string, { hours: number | null;
   return out;
 }
 
-// фабрики системи: як у payrollSummaries — точний key, потім префікс
+// назви вкладок, що відрізняються від довідника фабрик (одрукування у сводних)
+const FACTORY_LABEL_ALIASES: Record<string, string> = {
+  ALLMIZ: "ALMIZ",
+};
+
+// фабрики системи: аліас → точний key → префікс
 async function factoryIdByLabel(): Promise<(label: string) => number | null> {
   const rows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
   return (label: string) => {
-    const k = key(label);
+    const k = FACTORY_LABEL_ALIASES[key(label)] ?? key(label);
     const exact = rows.find(f => key(f.name) === k);
     if (exact) return exact.id;
     const pref = rows.find(f => key(f.name).startsWith(k) || k.startsWith(key(f.name)));
@@ -116,7 +121,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   for (const tab of tabs) {
     const factoryId = facId(tab.factoryLabel);
     tab.rows.forEach((row, sortIdx) => {
-      const m = matchWorker(row.rawName, allWorkers);
+      // імена в сводних із дописками («- wózkowy», «*(2000 zl na kartu)») — матчимо очищене
+      const m = matchWorker(cleanName(row.rawName), allWorkers);
       const workerId = m.confident?.id ?? null;
       if (workerId) res.matched++; else res.unmatched++;
       if (row.mismatch) res.mismatches++;
@@ -198,6 +204,77 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   });
   res.rows = rowsToInsert.length;
   return res;
+}
+
+// Перематчування незматчених рядків (після додавання працівників у систему):
+// рядки сводних живуть постійно, тож щойно людина зʼявляється в workers —
+// цей прохід підвʼязує її історію за іменем.
+export async function rematchSvodni(): Promise<{ linked: number }> {
+  const allWorkers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode })
+    .from(workersTable);
+  const unmatched = await db.select({ id: svodniRowsTable.id, rawName: svodniRowsTable.rawName })
+    .from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "unmatched"));
+  let linked = 0;
+  for (const row of unmatched) {
+    const m = matchWorker(cleanName(row.rawName), allWorkers);
+    if (!m.confident) continue;
+    await db.update(svodniRowsTable)
+      .set({ workerId: m.confident.id, linkStatus: "auto" })
+      .where(eq(svodniRowsTable.id, row.id));
+    linked++;
+  }
+  return { linked };
+}
+
+// Створює в довіднику відсутні фабрики зі сводних: фабрика — той самий запис,
+// що використовують графік/зарплати/фінанси. companyId — за фірмою (ES/ESO/Klinex).
+export async function ensureSvodniFactories(): Promise<{ created: string[] }> {
+  const companies = await db.select().from(companiesTable);
+  const companyByFirm = (firm: string | null) =>
+    companies.find(c => firm && key(c.name) === key(firm))?.id ?? null;
+  const missing = await db.selectDistinct({ label: svodniRowsTable.factoryLabel, firm: svodniRowsTable.firm })
+    .from(svodniRowsTable).where(isNull(svodniRowsTable.factoryId));
+  const created: string[] = [];
+  for (const m of missing) {
+    const [f] = await db.insert(factoriesTable)
+      .values({ name: m.label, companyId: companyByFirm(m.firm) })
+      .returning({ id: factoriesTable.id });
+    await db.update(svodniRowsTable)
+      .set({ factoryId: f!.id })
+      .where(and(eq(svodniRowsTable.factoryLabel, m.label), isNull(svodniRowsTable.factoryId)));
+    created.push(m.label);
+  }
+  return { created };
+}
+
+// Застосовує «правдиві» ставки/студент/до-26 зі сводної місяця до профілів
+// зматчених працівників (перевага рядку зі ставкою; оновлюються лише зміни).
+export interface RatesApplyResult { updated: number; skipped: number }
+export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesApplyResult> {
+  const rows = await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, periodMonth),
+  ));
+  const perWorker = new Map<number, typeof rows[number]>();
+  for (const r of rows) {
+    if (r.workerId == null) continue;
+    const cur = perWorker.get(r.workerId);
+    if (!cur || (cur.rateBrutto == null && r.rateBrutto != null)) perWorker.set(r.workerId, r);
+  }
+  const workers = await db.select().from(workersTable)
+    .where(inArray(workersTable.id, [...perWorker.keys()]));
+  let updated = 0, skipped = 0;
+  for (const w of workers) {
+    const s = perWorker.get(w.id)!;
+    const set: Partial<typeof workersTable.$inferInsert> = {};
+    if (s.rateBrutto != null && s.rateBrutto !== w.hourlyRate) set.hourlyRate = s.rateBrutto;
+    if (s.rateNetto != null && s.rateNetto !== w.hourlyRateNetto) set.hourlyRateNetto = s.rateNetto;
+    if (s.isStudent != null && s.isStudent !== w.isStudent) set.isStudent = s.isStudent;
+    if (s.under26 != null && s.under26 !== w.under26) set.under26 = s.under26;
+    if (!Object.keys(set).length) { skipped++; continue; }
+    await db.update(workersTable).set(set).where(eq(workersTable.id, w.id));
+    updated++;
+  }
+  return { updated, skipped };
 }
 
 // gotówka-книга фірми → рядки конкретного місяця (вкладка «MM.YYYY»)
