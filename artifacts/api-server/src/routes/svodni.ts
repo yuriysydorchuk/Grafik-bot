@@ -5,14 +5,14 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, workersTable } from "@workspace/db";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { svodniRowsTable, svodniTabChecksTable, workersTable, factoriesTable, companiesTable } from "@workspace/db";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
 import { logger } from "../lib/logger";
 import { matchWorker } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
-import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers } from "../services/svodniSync";
+import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26 } from "../services/svodniSync";
 import { computePayout } from "../services/svodni";
 
 const router: IRouter = Router();
@@ -152,6 +152,86 @@ const PAYOUT_COMPONENTS = new Set([
   "dojazd", "kara", "komornik", "kaucja", "potracenia",
 ]);
 
+// Додати людину в сводну фабрики: наявного працівника (рядок префілиться з
+// профілю — ставки, студент, до-26, дата народження) або нового — тоді профіль
+// створюється автоматично і далі заповнюється просто з таблиці.
+router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const periodMonth = validMonth(req.body?.periodMonth) ? String(req.body.periodMonth) : null;
+  const city = String(req.body?.city ?? "").trim();
+  const factoryLabel = String(req.body?.factoryLabel ?? "").trim();
+  const workerId = req.body?.workerId != null ? Number(req.body.workerId) : null;
+  const newName = String(req.body?.newWorkerName ?? "").trim();
+  if (!periodMonth || !city || !factoryLabel) return fail(res, 400, "periodMonth, city, factoryLabel обовʼязкові");
+  if (!workerId && !newName) return fail(res, 400, "вкажи працівника або імʼя нового");
+
+  // фабрика/фірма з довідника (для нового працівника — його фабрика)
+  const factories = await db.select().from(factoriesTable);
+  const norm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const factory = factories.find(f => norm(f.name) === norm(factoryLabel))
+    ?? factories.find(f => norm(f.name).startsWith(norm(factoryLabel)) || norm(factoryLabel).startsWith(norm(f.name)));
+  const companies = await db.select().from(companiesTable);
+  const firm = factory?.companyId ? companies.find(c => c.id === factory.companyId)?.name ?? null : null;
+
+  let worker: typeof workersTable.$inferSelect | undefined;
+  if (workerId) {
+    [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+    if (!worker) return fail(res, 404, "працівника не знайдено");
+  } else {
+    // новий профіль: код — наступний вільний, фабрика/фірма — з цієї сводної
+    const [codeRow] = await db.select({ max: sql<number>`coalesce(max(${workersTable.workerCode}::int), 0)` })
+      .from(workersTable).where(sql`${workersTable.workerCode} ~ '^[0-9]+$'`);
+    [worker] = await db.insert(workersTable).values({
+      fullName: newName, workerCode: String((codeRow?.max ?? 0) + 1).padStart(5, "0"),
+      factoryId: factory?.id ?? null, companyId: factory?.companyId ?? null,
+    }).returning();
+  }
+
+  const [{ maxSort }] = await db.select({ maxSort: sql<number>`coalesce(max(${svodniRowsTable.sortIdx}), -1)` })
+    .from(svodniRowsTable).where(and(
+      eq(svodniRowsTable.periodMonth, periodMonth), eq(svodniRowsTable.city, city),
+      eq(svodniRowsTable.factoryLabel, factoryLabel)));
+
+  // префіл із профілю — властивості людини «їдуть» за нею між місяцями
+  const under26 = worker!.birthDate ? isUnder26(worker!.birthDate) : worker!.under26;
+  const hr: Record<string, string> = {};
+  if (worker!.birthDate) {
+    const [y, m, d] = worker!.birthDate.split("-");
+    hr.dataUrodzenia = `${d}.${m}.${y}`;
+  }
+  const [created] = await db.insert(svodniRowsTable).values({
+    periodMonth, city, firm, factoryLabel, factoryId: factory?.id ?? null,
+    sortIdx: (maxSort ?? -1) + 1, rawName: worker!.fullName,
+    workerId: worker!.id, linkStatus: "confirmed", manual: true,
+    rateBrutto: worker!.hourlyRate ?? null, rateNetto: worker!.hourlyRateNetto ?? null,
+    isStudent: worker!.isStudent, under26,
+    extras: {}, hr, sheetValues: {},
+  }).returning();
+  ok(res, serializeRow(created!, worker!.fullName, canSensitive(req)));
+});
+
+router.delete("/svodni/rows/:id", requireCap("svodni"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  await db.delete(svodniRowsTable).where(eq(svodniRowsTable.id, id));
+  ok(res, { ok: true });
+});
+
+// профільні властивості людини: правка в сводній оновлює профіль працівника
+// (і навпаки — профіль префілиться при додаванні в наступні місяці)
+async function syncWorkerProfile(workerId: number, field: string, merged: any) {
+  const set: Partial<typeof workersTable.$inferInsert> = {};
+  if (field === "rateBrutto" && merged.rateBrutto != null) set.hourlyRate = merged.rateBrutto;
+  if (field === "rateNetto") set.hourlyRateNetto = merged.rateNetto;
+  if (field === "isStudent" && merged.isStudent != null) set.isStudent = merged.isStudent;
+  if (field === "under26" && merged.under26 != null) set.under26 = merged.under26;
+  if (field === "hr.dataUrodzenia") {
+    const raw = String(merged.hr?.dataUrodzenia ?? "").trim();
+    const bd = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : parseSheetDate(raw);
+    if (bd) { set.birthDate = bd; set.under26 = isUnder26(bd); }
+  }
+  if (Object.keys(set).length) await db.update(workersTable).set(set).where(eq(workersTable.id, workerId));
+}
+
 router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
@@ -184,6 +264,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       set.extras = extras;
     }
     await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
+    if (row.workerId) await syncWorkerProfile(row.workerId, field, { hr: set.hr ?? row.hr });
     const [u] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
       .from(svodniRowsTable)
       .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
@@ -231,6 +312,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   }
 
   await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
+  if (row.workerId) await syncWorkerProfile(row.workerId, field, merged);
   const [updated] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))

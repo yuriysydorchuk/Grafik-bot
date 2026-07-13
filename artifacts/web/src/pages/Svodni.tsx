@@ -8,12 +8,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
   Coins, CreditCard, Banknote, PiggyBank, HandCoins,
-  Home, Gavel, IdCard, GraduationCap, Wallet,
+  Home, Gavel, IdCard, GraduationCap, Wallet, UserPlus, Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { get, post, patch } from "../lib/api";
-import { Button, Card, Empty, Badge, Spinner, Select } from "../components/ui";
+import { get, post, patch, del } from "../lib/api";
+import { Button, Card, Empty, Badge, Spinner, Select, Modal, Input } from "../components/ui";
+import { useConfirm } from "../components/confirm";
 import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
@@ -256,7 +257,7 @@ export default function Svodni() {
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
-          <FactoryTable month={effMonth} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
+          <FactoryTable month={effMonth} city={effCity} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
             visible={visible} cityExtraKeys={cityExtraKeys} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
@@ -331,12 +332,20 @@ function EditableCell({ row, field, value, month, text, strong, options }: {
   );
 }
 
-function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtraKeys, hideEmptyCols, onHideCol, cityRows }: {
-  month: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
+function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, hideEmptyCols, onHideCol, cityRows }: {
+  month: string; city: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
   visible: Set<string>; cityExtraKeys: string[]; hideEmptyCols: boolean;
   onHideCol: (key: string) => void; cityRows: Row[];
 }) {
   const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [adding, setAdding] = useState(false);
+  const removeRow = useMutation({
+    mutationFn: (id: number) => del(`/svodni/rows/${id}`),
+    onSuccess: (_r, id) => qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: old.rows.filter(r => r.id !== id) } : old),
+    onError: (e: any) => toast.error(e.message),
+  });
   const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
   // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху)
   const hasVal = (k: string) => rows.some(r =>
@@ -374,7 +383,12 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
             </span>
           : <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"><CircleCheck className="h-3.5 w-3.5" /> {t("звірено")}</span>}
         <span className="ml-auto text-[11px] text-slate-400">{t("клік по клітинці — редагування")}</span>
+        <button onClick={() => setAdding(true)}
+          className="flex items-center gap-1 rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700">
+          <UserPlus className="h-3.5 w-3.5" /> {t("Додати людину")}
+        </button>
       </div>
+      {adding && <AddPersonModal month={month} city={city} factoryLabel={label} onClose={() => setAdding(false)} />}
       <div className="max-h-[70vh] overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-20 bg-white shadow-sm">
@@ -414,6 +428,11 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
                           ⚠
                         </span>
                       )}
+                      <button type="button" title={t("Видалити рядок")}
+                        onClick={async () => { if (await confirm({ title: t("Видалити рядок?"), message: `${r.rawName} — ${t("рядок зникне зі сводної цього місяця")}`, confirmText: t("Видалити") })) removeRow.mutate(r.id); }}
+                        className="invisible ml-0.5 rounded p-0.5 text-slate-300 transition hover:bg-rose-50 hover:text-rose-500 group-hover/row:visible">
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     </span>
                   </td>
                   {openCols.map(([k]) => (
@@ -536,6 +555,63 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
         textValue={`${stud} / ${nonStud}${unknown ? ` (+${unknown})` : ""}`}
         formula={t("Студент = без податків (netto = brutto). Невідомо — статус у сводній не вказаний.") + (unknown ? ` +${unknown} ${t("невідомо")}` : "")} />
     </div>
+  );
+}
+
+// Додавання людини у сводну фабрики: пошук по базі (рядок префілиться з
+// профілю) або створення нового працівника — профіль зʼявляється автоматично.
+function AddPersonModal({ month, city, factoryLabel, onClose }: {
+  month: string; city: string; factoryLabel: string; onClose: () => void;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const { data: workers } = useQuery<{ id: number; fullName: string; factoryName?: string | null; isActive?: boolean }[]>({
+    queryKey: ["workers"], queryFn: () => get("/workers"),
+  });
+  const addRow = useMutation({
+    mutationFn: (p: { workerId?: number; newWorkerName?: string }) =>
+      post<Row>("/svodni/rows", { periodMonth: month, city, factoryLabel, ...p }),
+    onSuccess: (created) => {
+      qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: [...old.rows, created] } : old);
+      qc.invalidateQueries({ queryKey: ["workers"] });
+      toast.success(t("Додано"));
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const needle = q.trim().toLowerCase();
+  const found = (workers ?? [])
+    .filter(w => needle && w.fullName.toLowerCase().includes(needle))
+    .slice(0, 12);
+  const exact = (workers ?? []).some(w => w.fullName.toLowerCase() === needle);
+
+  return (
+    <Modal open onClose={onClose} title={`${t("Додати людину")} — ${factoryLabel} · ${month}`}>
+      <div className="space-y-3">
+        <Input autoFocus placeholder={t("Імʼя працівника (пошук по базі або нове)")} value={q} onChange={e => setQ(e.target.value)} />
+        {needle.length >= 2 && (
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {found.map(w => (
+              <button key={w.id} onClick={() => addRow.mutate({ workerId: w.id })} disabled={addRow.isPending}
+                className="flex w-full items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-left text-sm transition hover:border-red-300 hover:bg-red-50/40">
+                <span className="font-medium text-slate-700">{w.fullName}</span>
+                <span className="text-xs text-slate-400">{w.factoryName ?? ""}{w.isActive === false ? ` · ${t("звільнений")}` : ""}</span>
+              </button>
+            ))}
+            {!exact && (
+              <button onClick={() => addRow.mutate({ newWorkerName: q.trim() })} disabled={addRow.isPending}
+                className="flex w-full items-center gap-2 rounded-lg border border-dashed border-emerald-300 bg-emerald-50/50 px-3 py-2 text-left text-sm font-medium text-emerald-700 transition hover:bg-emerald-50">
+                <UserPlus className="h-4 w-4" /> {t("Створити нового працівника")} «{q.trim()}»
+              </button>
+            )}
+          </div>
+        )}
+        <p className="text-[11px] leading-relaxed text-slate-400">
+          {t("Рядок префілиться з профілю (ставки, студент, до-26, дата народження). Новому працівнику профіль створюється автоматично — далі його можна заповнювати прямо з таблиці: правки ставок/статусів синхронізуються з профілем і підтягнуться в наступні місяці.")}
+        </p>
+      </div>
+    </Modal>
   );
 }
 
