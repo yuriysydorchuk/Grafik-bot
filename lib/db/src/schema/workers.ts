@@ -762,6 +762,7 @@ export const svodniRowsTable = pgTable("svodni_rows", {
   hr: jsonb("hr").notNull().default({}),
   sheetValues: jsonb("sheet_values").notNull().default({}),
   mismatch: jsonb("mismatch"),                   // null = наш перерахунок збігся з таблицею
+  manual: boolean("manual").notNull().default(false), // рядок правлений на сайті → синк його не перезаписує
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

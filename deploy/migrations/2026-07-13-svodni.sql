@@ -69,3 +69,6 @@ CREATE TABLE IF NOT EXISTS svodni_tab_checks (
 CREATE INDEX IF NOT EXISTS svodni_tab_checks_month_city ON svodni_tab_checks (period_month, city);
 
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS hourly_rate_netto real;
+
+-- Ручні правки на сайті: manual-рядки не перезаписуються синком із Google
+ALTER TABLE svodni_rows ADD COLUMN IF NOT EXISTS manual boolean NOT NULL DEFAULT false;
