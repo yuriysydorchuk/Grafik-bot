@@ -83,7 +83,11 @@ export function matchSvodniName<T extends WLike>(rawName: string, workers: T[]):
   const cleaned = cleanName(rawName);
   const m = matchWorker(cleaned, workers);
   if (m.confident) return m.confident;
-  const reverse = m.candidates.filter(w => nameScore(w.fullName, cleaned) >= 0.99);
+  // сводна з 3–5 токенами може мати < 0.55 у прямому скорі — зворотний прохід
+  // по всіх працівниках (ім'я працівника має ≥2 токени і всі вони в сводній)
+  const reverse = workers.filter(w =>
+    normalizeName(w.fullName).split(" ").filter(t => t.length >= 2).length >= 2 &&
+    nameScore(w.fullName, cleaned) >= 0.99);
   return reverse.length === 1 ? reverse[0]! : null;
 }
 
