@@ -34,9 +34,11 @@ type Row = {
   gotowka?: number | null; konto?: number | null;
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
+  rowColor: string | null;
 };
 type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
-type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; sensitive: boolean };
+type TabMeta = { city: string; factoryLabel: string; colOrder: string[]; info: { stawkaEurocash?: (string | number)[][] } };
+type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
 // колонки відкритого шару: [поле, заголовок]
@@ -306,7 +308,8 @@ export default function Svodni() {
       ) : (
         <div className="space-y-4">
           <FactoryTable month={effMonth} city={effCity} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
-            visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows} />
+            visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows}
+            meta={data?.tabMeta?.find(m => m.factoryLabel === effFactory && (effCity === OFFICE_CITY || m.city === effCity))} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
       )}
@@ -380,10 +383,10 @@ function EditableCell({ row, field, value, month, text, strong, options }: {
   );
 }
 
-function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, cityHrCols, hideEmptyCols, onHideCol, cityRows }: {
+function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, cityHrCols, hideEmptyCols, onHideCol, cityRows, meta }: {
   month: string; city: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
   visible: Set<string>; cityExtraKeys: string[]; cityHrCols: [string, string][]; hideEmptyCols: boolean;
-  onHideCol: (key: string) => void; cityRows: Row[];
+  onHideCol: (key: string) => void; cityRows: Row[]; meta?: TabMeta;
 }) {
   const t = useT();
   const qc = useQueryClient();
@@ -402,11 +405,27 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
     (r as any)[k] != null);
   // у порожній фабриці колонки показуються всі (інакше не було б чого бачити)
   const show = (k: string) => visible.has(k) && (!hideEmptyCols || rows.length === 0 || hasVal(k));
-  const openCols = OPEN_COLS.filter(([k]) => show(k));
+  // єдиний список колонок у порядку таблиці Google (colOrder вкладки);
+  // колонки поза colOrder — у каталожному порядку в кінці, закритий шар — окремо
+  const cols = useMemo(() => {
+    const defs: { key: string; label: string; kind: "open" | "extra" | "hr" }[] = [
+      ...OPEN_COLS.map(([k, h]) => ({ key: k as string, label: h, kind: "open" as const })),
+      ...cityExtraKeys.map(k => ({ key: `extras.${k}`, label: extraLabel(k), kind: "extra" as const })),
+      ...cityHrCols.map(([k, h]) => ({ key: k, label: h, kind: "hr" as const })),
+    ];
+    const orderIdx = new Map((meta?.colOrder ?? []).map((k, i) => [k, i]));
+    return defs
+      .map((d, i) => ({ ...d, ord: orderIdx.get(d.key) ?? 1000 + i }))
+      .sort((a, b) => a.ord - b.ord);
+  }, [cityExtraKeys, cityHrCols, meta]);
+  const shownCols = cols.filter(d => show(d.key));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
-  const extraKeys = cityExtraKeys.filter(k => show(`extras.${k}`));
-  const hrCols = cityHrCols.filter(([k]) => show(k));
-  const colCount = 1 + openCols.length + extraKeys.length + hrCols.length + sensCols.length;
+  const colCount = 1 + shownCols.length + sensCols.length;
+  // м'який фон рядка з кольору позначки в таблиці (блендинг із білим)
+  const tint = (hex: string, a: number) => {
+    const v = (o: number) => Math.round(255 - (255 - parseInt(hex.slice(o, o + 2), 16)) * a);
+    return `rgb(${v(1)},${v(3)},${v(5)})`;
+  };
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -438,14 +457,32 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
       </div>
       {adding && <AddPersonModal month={month} factoryLabel={label} onClose={() => setAdding(false)}
         city={rows[0]?.city ?? (label === EXTRA_STUDENTS ? OFFICE_CITY : city)} />}
+      {meta?.info?.stawkaEurocash && (
+        <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-3">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Ставки Eurocash (за діапазонами годин)")}</div>
+          <div className="overflow-x-auto">
+            <table className="border-collapse text-[11px]">
+              <tbody>
+                {meta.info.stawkaEurocash.map((row, i) => (
+                  <tr key={i} className={i === 0 ? "font-semibold text-slate-700" : "text-slate-600"}>
+                    {row.map((c, j) => (
+                      <td key={j} className={`whitespace-nowrap border border-slate-200 bg-white px-2 py-1 tabular-nums ${j === 0 ? "font-medium text-slate-500" : "text-right"}`}>
+                        {typeof c === "number" ? fmt(r2(c)) : c}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div className="max-h-[70vh] overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-20 bg-white shadow-sm">
             <tr>
               <th className="sticky left-0 z-30 bg-white px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Працівник")}</th>
-              {openCols.map(([k, h]) => <Th key={k} label={t(h)} strong={k === "doWyplaty"} onHide={() => onHideCol(k)} />)}
-              {extraKeys.map(k => <Th key={k} label={t(extraLabel(k))} onHide={() => onHideCol(`extras.${k}`)} />)}
-              {hrCols.map(([k, h]) => <Th key={k} label={t(h)} left onHide={() => onHideCol(k)} />)}
+              {shownCols.map(d => <Th key={d.key} label={t(d.label)} strong={d.key === "doWyplaty"} left={d.kind === "hr"} onHide={() => onHideCol(d.key)} />)}
               {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} />)}
             </tr>
           </thead>
@@ -461,12 +498,15 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     <td colSpan={colCount} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{r.section}</td>
                   </tr>
                 ) : null,
-                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}>
-                  <td className={`sticky left-0 z-10 whitespace-nowrap px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}>
-                    <span className="inline-flex items-center gap-1.5">
+                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}
+                  style={r.rowColor ? { backgroundColor: tint(r.rowColor, 0.3) } : undefined}>
+                  <td className={`sticky left-0 z-10 max-w-56 whitespace-nowrap px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}
+                    style={r.rowColor ? { backgroundColor: tint(r.rowColor, 0.3), boxShadow: `inset 3px 0 0 ${r.rowColor}` } : undefined}
+                    title={r.workerName ?? r.rawName}>
+                    <span className="flex max-w-full items-center gap-1.5">
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
                       {r.workerId
-                        ? <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
+                        ? <Link href={`/workers/${r.workerId}`} className="truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
                         : <EditableCell row={r} field="rawName" value={r.rawName} month={month} text />}
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {r.isStudent && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
@@ -484,19 +524,13 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       </button>
                     </span>
                   </td>
-                  {openCols.map(([k]) => (
-                    <td key={k} className={`px-1 py-0.5 text-right ${k === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}>
-                      <EditableCell row={r} field={k} value={r[k]} month={month} strong={k === "doWyplaty"} />
+                  {shownCols.map(d => d.kind === "hr" ? (
+                    <td key={d.key} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
+                      <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)} />
                     </td>
-                  ))}
-                  {extraKeys.map(k => (
-                    <td key={k} className="px-1 py-0.5 text-right text-slate-600">
-                      <EditableCell row={r} field={`extras.${k}`} value={r.extras[k]} month={month} />
-                    </td>
-                  ))}
-                  {hrCols.map(([k]) => (
-                    <td key={k} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
-                      <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text options={hrOptions.get(k)} />
+                  ) : (
+                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" && !r.rowColor ? "bg-red-50/40" : ""} text-slate-600`}>
+                      <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} />
                     </td>
                   ))}
                   {sensCols.map(([k]) => (
@@ -511,13 +545,13 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
           <tfoot className="sticky bottom-0 z-20">
             <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
               <td className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5">{t("Разом")}</td>
-              {openCols.map(([k]) => (
-                <td key={k} className={`px-1.5 py-2.5 text-right tabular-nums ${k === "doWyplaty" ? "text-red-700" : ""}`}>
-                  {["rateBrutto", "rateNetto"].includes(k) ? "" : fmt(sum(r => r[k] as number | null))}
+              {shownCols.map(d => d.kind === "hr" || ["rateBrutto", "rateNetto"].includes(d.key) ? <td key={d.key} /> : (
+                <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "text-red-700" : ""}`}>
+                  {fmt(sum(r => d.kind === "extra"
+                    ? (typeof r.extras[d.key.slice(7)] === "number" ? r.extras[d.key.slice(7)] as number : 0)
+                    : r[d.key as keyof Row & string] as number | null))}
                 </td>
               ))}
-              {extraKeys.map(k => <td key={k} className="px-1.5 py-2.5 text-right tabular-nums">{fmt(sum(r => typeof r.extras[k] === "number" ? r.extras[k] as number : 0))}</td>)}
-              {hrCols.map(([k]) => <td key={k} />)}
               {sensCols.map(([k]) => <td key={k} className="bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums">{fmt(sum(r => r[k] as number | null))}</td>)}
             </tr>
           </tfoot>

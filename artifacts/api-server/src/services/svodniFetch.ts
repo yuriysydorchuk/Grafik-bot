@@ -31,10 +31,43 @@ async function readAllTabs(api: ReturnType<typeof google.sheets>, spreadsheetId:
   return grids;
 }
 
-export async function readSourceGrids(src: Src): Promise<Map<string, unknown[][]>> {
+// Фони клітинок (перші 8 колонок): кольорові позначки рядків у сводних —
+// дзеркалимо їх як колір рядка. null = без кольору.
+export async function readAllTabColors(api: ReturnType<typeof google.sheets>, spreadsheetId: string): Promise<Map<string, (string | null)[][]>> {
+  const res = await api.spreadsheets.get({
+    spreadsheetId,
+    ranges: [], // усі вкладки
+    fields: "sheets(properties(title),data(rowData(values(effectiveFormat.backgroundColor))))",
+  });
+  const hex = (c?: { red?: number | null; green?: number | null; blue?: number | null } | null) =>
+    c ? "#" + [c.red, c.green, c.blue].map(v => Math.round((v ?? 0) * 255).toString(16).padStart(2, "0")).join("") : null;
+  const out = new Map<string, (string | null)[][]>();
+  for (const sh of res.data.sheets ?? []) {
+    const title = sh.properties?.title ?? "";
+    const rows = (sh.data?.[0]?.rowData ?? []).map(r =>
+      (r.values ?? []).slice(0, 8).map(v => hex(v.effectiveFormat?.backgroundColor)));
+    if (title) out.set(title, rows);
+  }
+  return out;
+}
+
+export interface SourceData {
+  grids: Map<string, unknown[][]>;
+  colors: Map<string, (string | null)[][]>;
+}
+
+// кольори — best-effort: якщо їх не вдалося прочитати, імпорт іде без них
+async function colorsSafe(api: ReturnType<typeof google.sheets>, spreadsheetId: string): Promise<Map<string, (string | null)[][]>> {
+  try { return await readAllTabColors(api, spreadsheetId); }
+  catch { return new Map(); }
+}
+
+export async function readSourceGrids(src: Src): Promise<SourceData> {
   const auth = saAuth();
   const api = google.sheets({ version: "v4", auth });
-  if (src.kind !== "xlsx") return readAllTabs(api, src.spreadsheetId);
+  if (src.kind !== "xlsx") {
+    return { grids: await readAllTabs(api, src.spreadsheetId), colors: await colorsSafe(api, src.spreadsheetId) };
+  }
 
   // xlsx → тимчасовий Google Sheet від OAuth-користувача (see payrollSummaries)
   const saDrive = google.drive({ version: "v3", auth });
@@ -56,7 +89,7 @@ export async function readSourceGrids(src: Src): Promise<Map<string, unknown[][]
     });
     tempId = up.data.id ?? null;
     if (!tempId) throw new Error("xlsx → gsheet conversion failed");
-    return await readAllTabs(userSheets, tempId);
+    return { grids: await readAllTabs(userSheets, tempId), colors: await colorsSafe(userSheets, tempId) };
   } finally {
     if (tempId) await userDrive.files.delete({ fileId: tempId, supportsAllDrives: true }).catch(() => {});
   }

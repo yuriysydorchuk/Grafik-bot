@@ -75,3 +75,19 @@ ALTER TABLE svodni_rows ADD COLUMN IF NOT EXISTS manual boolean NOT NULL DEFAULT
 
 -- Дата народження працівника: з неї автоматично виводиться «до 26» (податки)
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS birth_date date;
+
+-- Колір рядка з таблиці Google (ручні позначки по документах/статусах)
+ALTER TABLE svodni_rows ADD COLUMN IF NOT EXISTS row_color text;
+
+-- Метадані вкладки: порядок колонок як у таблиці + інфо-блоки (STAWKA EUROCASH)
+CREATE TABLE IF NOT EXISTS svodni_tab_meta (
+    id serial PRIMARY KEY,
+    period_month text NOT NULL,
+    city text NOT NULL,
+    firm text,
+    factory_label text NOT NULL,
+    col_order jsonb NOT NULL DEFAULT '[]'::jsonb,  -- ключі колонок у порядку таблиці
+    info jsonb NOT NULL DEFAULT '{}'::jsonb,       -- { stawkaEurocash: [[...]] }
+    created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS svodni_tab_meta_month_city ON svodni_tab_meta (period_month, city);

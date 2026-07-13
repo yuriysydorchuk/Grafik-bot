@@ -526,6 +526,7 @@ const EN: Record<string, string> = {
   "Дні відпрац.": "Days worked",
   "Кінець студій": "Studies end",
   "Години (текст)": "Hours (text)",
+  "Ставки Eurocash (за діапазонами годин)": "Eurocash rates (by hour ranges)",
   "Клікни, щоб редагувати": "Click to edit",
   "є ручні правки": "has manual edits",
   "Загальна ЗП": "Total pay",

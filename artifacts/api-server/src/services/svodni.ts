@@ -41,6 +41,8 @@ export interface SvodniParsedRow {
   hr: Record<string, string>;
   sheetValues: Record<string, number>; // клітинки з обчислюваних колонок — для звірки
   mismatch: Record<string, { ours: number; sheet: number }> | null;
+  /** індекс рядка у сітці вкладки — щоб підтягнути фон рядка (кольори позначок) */
+  sheetRow?: number;
 }
 
 export interface SvodniParsedTab {
@@ -50,6 +52,12 @@ export interface SvodniParsedTab {
   /** значення рядка SUMA вкладки за канонічними ключами (для tab_checks) */
   sheetSuma: Record<string, number>;
   counts: { workers?: number; students?: number; over26?: number };
+  /** колонка імені у сітці (для кольорів рядків) */
+  nameCol?: number;
+  /** ключі колонок у порядку таблиці: core-ключ | extras.<k> | hr.<k> */
+  colOrder?: string[];
+  /** інформаційні блоки вкладки, напр. STAWKA EUROCASH (сирі рядки) */
+  info?: { stawkaEurocash?: (string | number)[][] };
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -149,7 +157,19 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
   }
   colOf.set(doWyplatyCol, { key: "doWyplaty", core: true });
 
-  const out: SvodniParsedTab = { factoryLabel, firmGuess: null, rows: [], sheetSuma: {}, counts: {} };
+  const out: SvodniParsedTab = { factoryLabel, firmGuess: null, rows: [], sheetSuma: {}, counts: {}, nameCol };
+  // порядок колонок як у таблиці (для рендера вкладки тим самим порядком);
+  // сумарна «premia» стає на місце першої преміальної колонки
+  const colOrder: string[] = [];
+  let premiaPlaced = false;
+  for (const i of [...new Set([...colOf.keys(), ...hrOf.keys()])].sort((a, b) => a - b)) {
+    const c = colOf.get(i);
+    if (c) {
+      if (c.premia && !premiaPlaced) { colOrder.push("premia"); premiaPlaced = true; }
+      colOrder.push(c.core ? c.key : `extras.${c.key}`);
+    } else colOrder.push(`hr.${hrOf.get(i)!}`);
+  }
+  out.colOrder = colOrder;
   let section: string | null = null;
   let r = 1;
   for (; r < rows.length; r++) {
@@ -188,6 +208,7 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
     row.isStudent = powiadTxt === "STUD" || /STUDENT/.test(zusTxt) ? true : zusTxt ? false : null;
     row.under26 = /DO ?26/.test(zusTxt) ? true : /WYZEJ ?26/.test(zusTxt) ? false : null;
     if (powiadTxt === "STUD") row.hoursNotified = null;
+    row.sheetRow = r;
     out.rows.push(row);
   }
 
@@ -231,6 +252,19 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
   if (hasPremiaAgram) for (const row of out.rows) {
     const pes = typeof row.extras.premiaEs === "number" ? (row.extras.premiaEs as number) : 0;
     if (pes && row.premia != null) row.premia = r2(row.premia - pes) || null;
+  }
+
+  // інфо-блок «STAWKA EUROCASH» — ставки за діапазонами годин (дзеркалимо як є)
+  for (let i = r; i < rows.length; i++) {
+    if (norm(cell(rows[i], 0)) !== "STAWKA EUROCASH") continue;
+    const block: (string | number)[][] = [];
+    for (let j = i; j < Math.min(i + 5, rows.length); j++) {
+      const rr = (rows[j] ?? []).map(c => (typeof c === "number" ? r2(c) : String(c ?? "")));
+      while (rr.length && rr[rr.length - 1] === "") rr.pop();
+      if (rr.length) block.push(rr);
+    }
+    if (block.length) out.info = { ...(out.info ?? {}), stawkaEurocash: block };
+    break;
   }
 
   // нижній блок księgowość/готівка (як у payrollSummaries.parseFactoryTab)
@@ -400,6 +434,20 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
         zl: idx(/^ZL\.?$/), doplata: idx(/^DOPLATA/), konto: idx(/^KONTO$/), ksieg: idx(/KSIEGOWOSC/),
         pow: idx(/^POW/), wniosek: idx(/WNIOSEK/), uwagi: idx(/^UWAGI$/),
       };
+      out.nameCol = c.name;
+      // порядок колонок вкладки — за індексами в хедері
+      const KEY_OF: Record<string, string> = {
+        status: "hr.status", hours: "hours", stB: "rateBrutto", stN: "rateNetto",
+        premia: "premia", hostel: "hostel", potr: "potracenia", zal: "zaliczka",
+        migawka: "extras.migawka", dojazd: "dojazd", odziez: "odziez",
+        dokumenty: "extras.dokumenty", razem: "doWyplaty", kontoH: "extras.kontoH",
+        ew: "hoursDeclared", hRest: "extras.gotowkaH", doplata: "extras.doplataEs",
+        konto: "konto", pow: "hr.powOsw", wniosek: "hr.wniosekZaliczki", uwagi: "hr.uwagi",
+      };
+      out.colOrder = Object.entries(c)
+        .filter(([k, i]) => i >= 0 && k !== "name" && KEY_OF[k])
+        .sort((a, b) => a[1] - b[1])
+        .map(([k]) => KEY_OF[k]!);
       continue;
     }
     if (!c) continue;
@@ -466,6 +514,7 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
         p.hr.kontoNr = kontoRaw; // номер банківського рахунку
       }
     }
+    p.sheetRow = r;
     out.rows.push(p);
   }
   if (!out.rows.length) return null;
