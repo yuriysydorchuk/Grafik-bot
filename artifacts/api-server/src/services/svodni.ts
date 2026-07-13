@@ -505,17 +505,21 @@ export function overlayGotowka(tab: SvodniParsedTab, rows: GotowkaRow[]) {
 // Люблін/Познань: hours×rateNetto (+нічні +доплати +премії) − всі відрахування.
 // Лодзь: hours×rateNetto + migawka + premia − zaliczka − potrącenia − hostel (+dojazd/odzież/dokumenty…).
 const TOL = 0.05; // заокруглення в таблицях
-export function computeMismatch(row: SvodniParsedRow, city: "Люблін" | "Познань" | "Лодзь"): void {
-  const sheet = row.doWyplaty;
-  if (sheet == null || row.hours == null) return;
+
+// Чистий розрахунок «до виплати» з компонентів рядка (формула таблиці) —
+// використовується і для звірки з клітинкою, і для перерахунку після
+// ручного редагування на сайті. null = бракує даних (годин/ставки).
+type PayoutLike = Pick<SvodniParsedRow,
+  "hours" | "rateNetto" | "premia" | "zaliczka" | "zaliczkaBd" | "hostel" | "odziez"
+  | "dojazd" | "kara" | "komornik" | "kaucja" | "potracenia" | "extras">;
+export function computePayout(row: PayoutLike, city: "Люблін" | "Познань" | "Лодзь"): number | null {
+  if (row.hours == null || row.rateNetto == null) return null;
   const ex = (k: string) => (typeof row.extras[k] === "number" ? (row.extras[k] as number) : 0);
-  let ours: number | null = null;
+  let ours: number;
   if (city === "Лодзь") {
-    if (row.rateNetto == null) return;
     ours = row.hours * row.rateNetto + ex("migawka") + (row.premia ?? 0) + (row.dojazd ?? 0)
       - (row.zaliczka ?? 0) - (row.potracenia ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0) - ex("dokumenty");
   } else {
-    if (row.rateNetto == null) return;
     ours = row.hours * row.rateNetto
       + ex("nocneH") * ex("doplataNocna")
       + (row.premia ?? 0) + ex("oplataKierowcy") + ex("doplataEs") + ex("zwrotKosztow")
@@ -523,8 +527,14 @@ export function computeMismatch(row: SvodniParsedRow, city: "Люблін" | "П
       - (row.dojazd ?? 0) - (row.kara ?? 0) - (row.komornik ?? 0) - (row.kaucja ?? 0)
       - (row.potracenia ?? 0) - ex("badania") - ex("kartaPobytu") - ex("karaKlient") - ex("karaEs") - ex("zadluzenie");
   }
+  return r2(ours);
+}
+
+export function computeMismatch(row: SvodniParsedRow, city: "Люблін" | "Познань" | "Лодзь"): void {
+  const sheet = row.doWyplaty;
+  if (sheet == null) return;
+  const ours = computePayout(row, city);
   if (ours == null) return;
-  ours = r2(ours);
   row.sheetValues.doWyplaty = sheet;
   if (Math.abs(ours - sheet) > TOL) {
     row.mismatch = { ...(row.mismatch ?? {}), doWyplaty: { ours, sheet } };

@@ -216,20 +216,27 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   }
 
   await db.transaction(async tx => {
-    const delWhere = and(
+    const scope = and(
       eq(svodniRowsTable.periodMonth, periodMonth), eq(svodniRowsTable.city, city),
       ...(firm ? [eq(svodniRowsTable.firm, firm)] : []),
     );
-    await tx.delete(svodniRowsTable).where(delWhere);
+    // правлені на сайті рядки — джерело правди: лишаються, а парсовані
+    // дублікати тих самих людей (фабрика+імʼя) не вставляються
+    const manualRows = await tx.select({ factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName })
+      .from(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, true)));
+    const manualKeys = new Set(manualRows.map(m => `${key(m.factoryLabel)}::${key(cleanName(m.rawName))}`));
+    await tx.delete(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, false)));
     const delChecks = and(
       eq(svodniTabChecksTable.periodMonth, periodMonth), eq(svodniTabChecksTable.city, city),
       ...(firm ? [eq(svodniTabChecksTable.firm, firm)] : []),
     );
     await tx.delete(svodniTabChecksTable).where(delChecks);
-    if (rowsToInsert.length) await tx.insert(svodniRowsTable).values(rowsToInsert);
+    const fresh = rowsToInsert.filter(r => !manualKeys.has(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`));
+    if (fresh.length) await tx.insert(svodniRowsTable).values(fresh);
     if (checksToInsert.length) await tx.insert(svodniTabChecksTable).values(checksToInsert);
+    res.rows = fresh.length + manualRows.length;
+    if (manualRows.length) res.notes.push(`збережено ручних рядків: ${manualRows.length}`);
   });
-  res.rows = rowsToInsert.length;
   return res;
 }
 
