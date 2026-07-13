@@ -83,8 +83,24 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   ok(res, { month, city, cities, rows, checks, sensitive });
 });
 
-// незматчені люди: місто · фабрика · місяці + кандидати для привʼязки
+// незматчені люди: місто · фабрика · місяці + кандидати для привʼязки;
+// окремо — позначені «зовнішніми» (не працівники агенції), щоб можна було повернути
 router.get("/svodni/unmatched", requireCap("svodni"), async (_req, res) => {
+  const extRows = await db.select({
+    rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
+    factoryLabel: svodniRowsTable.factoryLabel, periodMonth: svodniRowsTable.periodMonth,
+  }).from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "external"));
+  const extGrouped = new Map<string, { rawName: string; city: string; factories: Set<string>; months: Set<string> }>();
+  for (const r of extRows) {
+    const k = `${r.city}::${cleanName(r.rawName).toUpperCase()}`;
+    const g = extGrouped.get(k) ?? extGrouped.set(k, { rawName: r.rawName, city: r.city, factories: new Set(), months: new Set() }).get(k)!;
+    g.factories.add(r.factoryLabel);
+    g.months.add(r.periodMonth);
+  }
+  const external = [...extGrouped.values()].map(g => ({
+    rawName: g.rawName, city: g.city, factories: [...g.factories].sort(), months: [...g.months].sort(),
+  })).sort((a, b) => a.city.localeCompare(b.city) || a.rawName.localeCompare(b.rawName));
+
   const rows = await db.select({
     rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
     factoryLabel: svodniRowsTable.factoryLabel, periodMonth: svodniRowsTable.periodMonth,
@@ -103,7 +119,7 @@ router.get("/svodni/unmatched", requireCap("svodni"), async (_req, res) => {
     factories: [...g.factories].sort(), months: [...g.months].sort(),
     candidates: matchWorker(cleanName(g.rawName), workers).candidates.slice(0, 4).map(w => ({ id: w.id, name: w.fullName })),
   })).sort((a, b) => a.city.localeCompare(b.city) || a.rawName.localeCompare(b.rawName));
-  ok(res, { people: out });
+  ok(res, { people: out, external });
 });
 
 // ручна привʼязка / «зовнішній» / скидання — на всі рядки цього імені в місті
@@ -136,6 +152,12 @@ const OPEN_NUM_FIELDS = new Set([
 ]);
 const SENS_NUM_FIELDS = new Set(["hoursDeclared", "ksiegBrutto", "ksiegNetto", "gotowka", "konto"]);
 const TEXT_FIELDS = new Set(["rawName", "section"]);
+// кадрові текстові поля (hr.*) + текстовий ZUS-статус у extras
+const HR_TEXT_FIELDS = new Set([
+  "zusStatus", "zaswiadczenieDo", "zaswiadczenieWystawione", "koniecStudiow",
+  "wniosekZaliczki", "dataStart", "dataLiczymy", "dataWypowiedzenia",
+  "dataUrodzenia", "dniOdpracowane", "status", "uwagi", "powOsw", "kontoNr",
+]);
 const BOOL_FIELDS = new Set(["isStudent", "under26"]);
 const EXTRA_FIELDS = new Set([
   "nocneH", "doplataNocna", "oplataKierowcy", "doplataEs", "badania", "nakladki",
@@ -153,16 +175,37 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   const rawValue = req.body?.value;
   const isExtra = field.startsWith("extras.");
   const extraKey = isExtra ? field.slice(7) : null;
+  const isHr = field.startsWith("hr.");
+  const hrKey = isHr ? field.slice(3) : null;
+  const isZusStatus = isExtra && extraKey === "zusStatus";
   const sensitiveField = SENS_NUM_FIELDS.has(field);
   if (sensitiveField && !canSensitive(req)) return fail(res, 403, "forbidden");
   if (!OPEN_NUM_FIELDS.has(field) && !sensitiveField && !TEXT_FIELDS.has(field) && !BOOL_FIELDS.has(field)
-    && !(isExtra && extraKey && EXTRA_FIELDS.has(extraKey))) return fail(res, 400, "поле не редагується");
+    && !(isExtra && extraKey && (EXTRA_FIELDS.has(extraKey) || isZusStatus))
+    && !(isHr && hrKey && HR_TEXT_FIELDS.has(hrKey))) return fail(res, 400, "поле не редагується");
 
   const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, id));
   if (!row) return fail(res, 404, "not found");
 
   const set: Record<string, unknown> = { manual: true, mismatch: null };
   const extras = { ...(row.extras as Record<string, unknown>) };
+  if (isHr || isZusStatus) {
+    const v = String(rawValue ?? "").trim();
+    if (isHr) {
+      const hr = { ...(row.hr as Record<string, unknown>) };
+      if (v) hr[hrKey!] = v; else delete hr[hrKey!];
+      set.hr = hr;
+    } else {
+      if (v) extras.zusStatus = v; else delete extras.zusStatus;
+      set.extras = extras;
+    }
+    await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
+    const [u] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
+      .from(svodniRowsTable)
+      .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
+      .where(eq(svodniRowsTable.id, id));
+    return ok(res, serializeRow(u!.r, u!.workerName, canSensitive(req)));
+  }
   if (TEXT_FIELDS.has(field)) {
     const v = String(rawValue ?? "").trim();
     if (field === "rawName" && !v) return fail(res, 400, "імʼя не може бути порожнім");

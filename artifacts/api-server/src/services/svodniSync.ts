@@ -303,12 +303,33 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
     if (s.rateBrutto != null && s.rateBrutto !== w.hourlyRate) set.hourlyRate = s.rateBrutto;
     if (s.rateNetto != null && s.rateNetto !== w.hourlyRateNetto) set.hourlyRateNetto = s.rateNetto;
     if (s.isStudent != null && s.isStudent !== w.isStudent) set.isStudent = s.isStudent;
-    if (s.under26 != null && s.under26 !== w.under26) set.under26 = s.under26;
+    // дата народження зі сводної (dd.mm.yyyy) → профіль; «до 26» виводиться з неї
+    const bd = parseSheetDate((s.hr as Record<string, string> | null)?.dataUrodzenia);
+    if (bd && bd !== w.birthDate) set.birthDate = bd;
+    const effBd = bd ?? w.birthDate;
+    const under26 = effBd ? isUnder26(effBd) : s.under26;
+    if (under26 != null && under26 !== w.under26) set.under26 = under26;
     if (!Object.keys(set).length) { skipped++; continue; }
     await db.update(workersTable).set(set).where(eq(workersTable.id, w.id));
     updated++;
   }
   return { updated, skipped };
+}
+
+// «21.12.2003» / «1.9.2005» → «2003-12-21» (невалідне → null)
+export function parseSheetDate(s: string | null | undefined): string | null {
+  if (!s) return null;
+  const m = String(s).trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (!m) return null;
+  const [, d, mo, y] = m;
+  const dd = Number(d), mm = Number(mo);
+  if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
+  return `${y}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+}
+export function isUnder26(birthDate: string, at: Date = new Date()): boolean {
+  const bd = new Date(birthDate + "T00:00:00");
+  const cutoff = new Date(bd.getFullYear() + 26, bd.getMonth(), bd.getDate());
+  return at < cutoff;
 }
 
 // gotówka-книга фірми → рядки конкретного місяця (вкладка «MM.YYYY»)

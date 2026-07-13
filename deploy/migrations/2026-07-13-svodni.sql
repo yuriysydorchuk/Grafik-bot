@@ -72,3 +72,6 @@ ALTER TABLE workers ADD COLUMN IF NOT EXISTS hourly_rate_netto real;
 
 -- Ручні правки на сайті: manual-рядки не перезаписуються синком із Google
 ALTER TABLE svodni_rows ADD COLUMN IF NOT EXISTS manual boolean NOT NULL DEFAULT false;
+
+-- Дата народження працівника: з неї автоматично виводиться «до 26» (податки)
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS birth_date date;

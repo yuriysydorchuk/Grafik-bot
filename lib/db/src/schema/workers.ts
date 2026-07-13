@@ -61,6 +61,7 @@ export const workersTable = pgTable("workers", {
   selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
+  birthDate: date("birth_date"), // з дати народження виводиться «до 26» (податкова пільга)
   hourlyRate: real("hourly_rate").notNull().default(31.5), // gross PLN/hour
   hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться
   isStudent: boolean("is_student").notNull().default(false),
