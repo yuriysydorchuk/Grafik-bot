@@ -45,6 +45,14 @@ const OPEN_COLS: [keyof Row & string, string][] = [
 const SENS_COLS: [keyof Row & string, string][] = [
   ["hoursDeclared", "Год. księg."], ["ksiegBrutto", "Księg. brutto"], ["ksiegNetto", "Księg. netto (конто)"], ["gotowka", "Готівка"],
 ];
+// кадрові текстові колонки (hr.*) + ZUS-статус (extras.zusStatus)
+const HR_COLS: [string, string][] = [
+  ["extras.zusStatus", "Księgowość (статус)"],
+  ["hr.zaswiadczenieDo", "Zaświadczenie до"],
+  ["hr.zaswiadczenieWystawione", "Zaśw. виставлено"],
+  ["hr.wniosekZaliczki", "Wniosek zaliczki"],
+  ["hr.dataUrodzenia", "Дата народження"],
+];
 const EXTRA_LABEL: Record<string, string> = {
   nocneH: "Нічні [год]", doplataNocna: "Допл. нічні", oplataKierowcy: "Оплата водія",
   doplataEs: "Dopłata ES", badania: "Badania", nakladki: "Nakładki", zwrotKosztow: "Zwrot kosztów",
@@ -64,6 +72,10 @@ export default function Svodni() {
   const [factory, setFactory] = useState<string>("");
   const [showLinks, setShowLinks] = useState(false);
   const [showCols, setShowCols] = useState(false);
+  const [hideEmpty, setHideEmpty] = useState(() => localStorage.getItem("svodni.hideEmpty") === "1");
+  const [hideKsieg, setHideKsieg] = useState(() => localStorage.getItem("svodni.hideKsieg") === "1");
+  const toggleEmpty = () => setHideEmpty(v => { localStorage.setItem("svodni.hideEmpty", v ? "0" : "1"); return !v; });
+  const toggleKsieg = () => setHideKsieg(v => { localStorage.setItem("svodni.hideKsieg", v ? "0" : "1"); return !v; });
   // видимість колонок: дефолт — усі; вибір зберігається в браузері
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem("svodni.hiddenCols") ?? "[]")); } catch { return new Set(); }
@@ -97,9 +109,17 @@ export default function Svodni() {
   const allColumns: [string, string][] = useMemo(() => [
     ...OPEN_COLS as [string, string][],
     ...cityExtraKeys.map(k => [`extras.${k}`, EXTRA_LABEL[k]!] as [string, string]),
+    ...HR_COLS,
     ...(data?.sensitive ? SENS_COLS as [string, string][] : []),
   ], [cityExtraKeys, data?.sensitive]);
-  const visible = useMemo(() => new Set(allColumns.map(([k]) => k).filter(k => !hiddenCols.has(k))), [allColumns, hiddenCols]);
+  const visible = useMemo(() => {
+    const v = new Set(allColumns.map(([k]) => k).filter(k => !hiddenCols.has(k)));
+    if (hideKsieg) for (const [k] of SENS_COLS) v.delete(k);
+    return v;
+  }, [allColumns, hiddenCols, hideKsieg]);
+  const shownRows = useMemo(
+    () => hideEmpty ? rows.filter(r => r.hours != null || r.doWyplaty != null) : rows,
+    [rows, hideEmpty]);
 
   const sync = useMutation({
     mutationFn: () => post("/svodni/sync", { months: [effMonth] }),
@@ -135,6 +155,10 @@ export default function Svodni() {
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => setShowCols(v => !v)}><Columns3 className="h-4 w-4" /> {t("Колонки")}</Button>
+          <Button variant="secondary" onClick={toggleEmpty}>{hideEmpty ? t("Показати порожні рядки") : t("Сховати порожні рядки")}</Button>
+          {data?.sensitive && (
+            <Button variant="secondary" onClick={toggleKsieg}>{hideKsieg ? t("Показати księgowe") : t("Сховати księgowe")}</Button>
+          )}
           <Button variant="secondary" onClick={() => setShowLinks(v => !v)}><Users className="h-4 w-4" /> {t("Привʼязки")}</Button>
           <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()}><Link2 className="h-4 w-4" /> {t("Перематчити")}</Button>
           <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate()}><RefreshCw className="h-4 w-4" /> {t("Синк із Google")}</Button>
@@ -176,7 +200,7 @@ export default function Svodni() {
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
-          <FactoryTable month={effMonth} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
+          <FactoryTable month={effMonth} label={effFactory} rows={shownRows} checks={checks} sensitive={!!data?.sensitive}
             visible={visible} cityExtraKeys={cityExtraKeys} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
@@ -228,6 +252,8 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
   const openCols = OPEN_COLS.filter(([k]) => visible.has(k));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => visible.has(k)) : [];
   const extraKeys = cityExtraKeys.filter(k => visible.has(`extras.${k}`));
+  const hrCols = HR_COLS.filter(([k]) => visible.has(k));
+  const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
   const badChecks = checks.filter(c => !c.ok);
   const sum = (f: (r: Row) => number | null | undefined) => r2(rows.reduce((a, r) => a + (f(r) ?? 0), 0));
 
@@ -250,6 +276,7 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
               <th className="sticky left-0 z-10 bg-white px-3 py-2 text-left font-medium">{t("Працівник")}</th>
               {openCols.map(([k, h]) => <th key={k} className="px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(h)}</th>)}
               {extraKeys.map(k => <th key={k} className="px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(EXTRA_LABEL[k]!)}</th>)}
+              {hrCols.map(([k, h]) => <th key={k} className="px-1.5 py-2 text-left font-medium whitespace-nowrap">{t(h)}</th>)}
               {sensCols.map(([k, h]) => <th key={k} className="bg-amber-50/60 px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(h)}</th>)}
             </tr>
           </thead>
@@ -283,6 +310,11 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
                     <EditableCell row={r} field={`extras.${k}`} value={r.extras[k]} month={month} />
                   </td>
                 ))}
+                {hrCols.map(([k]) => (
+                  <td key={k} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
+                    <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text />
+                  </td>
+                ))}
                 {sensCols.map(([k]) => (
                   <td key={k} className="bg-amber-50/40 px-1 py-0.5 text-right text-slate-600">
                     <EditableCell row={r} field={k} value={r[k]} month={month} sensitive />
@@ -298,6 +330,7 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
                 </td>
               ))}
               {extraKeys.map(k => <td key={k} className="px-1.5 py-2 text-right tabular-nums">{fmt(sum(r => typeof r.extras[k] === "number" ? r.extras[k] as number : 0))}</td>)}
+              {hrCols.map(([k]) => <td key={k} />)}
               {sensCols.map(([k]) => <td key={k} className="bg-amber-50/60 px-1.5 py-2 text-right tabular-nums">{fmt(sum(r => r[k] as number | null))}</td>)}
             </tr>
           </tbody>
@@ -361,6 +394,8 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
         formula={`${t("Σ (Księg. brutto − Księg. netto): ПДФО + внески ZUS, утримані з офіційної частини")} = ${z(ksiegBrutto)} − ${z(r2(ksiegBrutto - workerTax))} = ${z(workerTax)}`} />}
       {sensitive && <Item label={t("ZUS роботодавця (оцінка)")} value={employerZus}
         formula={`${t("Σ оподатковуваного Księg. brutto × 20,48%")} = ${z(taxableBrutto)} × 0,2048 = ${z(employerZus)}`} />}
+      {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} accent="text-rose-700"
+        formula={`${t("Утримання з працівника + ZUS роботодавця — повна податкова вартість офіційної частини")} = ${z(workerTax)} + ${z(employerZus)} = ${z(r2(workerTax + employerZus))}`} />}
       {sensitive && <Item label={t("ЗП готівкою")} value={gotowka} accent="text-amber-700"
         formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}`} />}
       {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} accent="text-emerald-700"
@@ -371,6 +406,20 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
       <Item label={t("Штрафи (разом)")} value={kary}
         formula={`Σ Kara + ${t("Кара клієнта")} + ${t("Кара ES")} = ${z(karaSum)} + ${z(karaKl)} + ${z(karaEs)} = ${z(kary)}`} />
       <Item label={t("Karta pobytu")} value={kartaPobytu} formula={`${t("Σ колонки Karta pobytu")} = ${z(kartaPobytu)}`} />
+      {(() => {
+        const stud = rows.filter(r => r.isStudent === true).length;
+        const nonStud = rows.filter(r => r.isStudent === false).length;
+        const unknown = rows.length - stud - nonStud;
+        return (
+          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2"
+            title={t("Студент = без податків (netto = brutto). Невідомо — статус у сводній не вказаний.")}>
+            <div className="text-[11px] text-slate-400">{t("Студенти / не студенти")}</div>
+            <div className="text-sm font-semibold text-slate-700">
+              {stud} / {nonStud}{unknown ? <span className="font-normal text-slate-400"> (+{unknown} {t("невідомо")})</span> : null}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -379,8 +428,9 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
 function UnmatchedPanel() {
   const t = useT();
   const qc = useQueryClient();
-  const { data } = useQuery<{ people: Unmatched[] }>({ queryKey: ["svodni-unmatched"], queryFn: () => get("/svodni/unmatched") });
+  const { data } = useQuery<{ people: Unmatched[]; external: Omit<Unmatched, "candidates">[] }>({ queryKey: ["svodni-unmatched"], queryFn: () => get("/svodni/unmatched") });
   const people = data?.people ?? [];
+  const external = data?.external ?? [];
   const link = useMutation({
     mutationFn: (p: { rawName: string; city: string; workerId?: number; status: string }) => post("/svodni/link", p),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["svodni"] }); qc.invalidateQueries({ queryKey: ["svodni-unmatched"] }); toast.success(t("Збережено")); },
@@ -422,6 +472,32 @@ function UnmatchedPanel() {
             </tbody>
           </table>
         </div>
+      )}
+      {external.length > 0 && (
+        <>
+          <div className="border-y border-slate-100 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500"
+            title={t("Позначені «зовнішніми»: не працівники агенції (офіс, разові). Рядки лишаються в таблицях сводних.")}>
+            {t("Зовнішні (не працівники агенції)")} ({external.length})
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            <table className="w-full text-xs">
+              <tbody className="divide-y divide-slate-100">
+                {external.map(p => (
+                  <tr key={`ext-${p.city}-${p.rawName}`}>
+                    <td className="px-4 py-1.5 text-slate-500">{p.rawName}</td>
+                    <td className="px-2 py-1.5 text-slate-400">{t(p.city)} · {p.factories.join(", ")}</td>
+                    <td className="px-2 py-1.5 text-right">
+                      <button onClick={() => link.mutate({ rawName: p.rawName, city: p.city, status: "unmatched" })}
+                        className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200">
+                        {t("повернути в список")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </Card>
   );

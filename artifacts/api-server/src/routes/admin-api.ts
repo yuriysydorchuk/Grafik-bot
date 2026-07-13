@@ -344,6 +344,14 @@ router.patch("/workers/:id", RW, async (req, res) => {
   }
   if (language !== undefined) patch.language = strOrNull(language);
   if (selfTransport !== undefined) patch.selfTransport = !!selfTransport;
+  const { birthDate } = req.body ?? {};
+  if (birthDate !== undefined) {
+    const bd = strOrNull(birthDate);
+    if (bd && !/^\d{4}-\d{2}-\d{2}$/.test(bd)) return fail(res, 400, "Дата народження — формат YYYY-MM-DD");
+    patch.birthDate = bd;
+    // «до 26» — податкова властивість, виводиться з дати народження
+    if (bd) patch.under26 = new Date(bd).getTime() > Date.now() - 26 * 365.25 * 86400000;
+  }
   // payroll fields — owner only
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
@@ -487,7 +495,8 @@ router.get("/workers/:id", RW, async (req, res) => {
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
-    ...(isOwner ? { hourlyRate: w.hourlyRate, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
+    birthDate: w.birthDate,
+    ...(isOwner ? { hourlyRate: w.hourlyRate, hourlyRateNetto: w.hourlyRateNetto, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
     stats: {
       month: thisMonth, monthShifts: monShifts, monthHours: round(monHours), monthAbsent: monAbsent,
       totalShifts: allShifts, totalHours: round(allHours), totalAbsent: allAbsent, reliability: rel, referralCount,

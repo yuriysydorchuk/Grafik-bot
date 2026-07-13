@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car,
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake
 } from "lucide-react";
 import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label } from "../components/ui";
@@ -20,7 +20,8 @@ interface WorkerProfile {
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
-  hourlyRate?: number; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
+  hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
+  birthDate?: string | null;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
   factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
   recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
@@ -107,6 +108,7 @@ export default function WorkerDetail() {
           {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
+          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} />
           {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
         </div>
       </Card>
@@ -334,5 +336,40 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
         </div>
       </div>
     </Modal>
+  );
+}
+
+
+// Дата народження з інлайн-редагуванням; «до 26» виводиться автоматично
+// (податкова пільга) і зберігається у профілі при зміні дати.
+function BirthDateRow({ workerId, birthDate }: { workerId: number; birthDate: string | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(birthDate ?? "");
+  const save = useMutation({
+    mutationFn: () => patch(`/workers/${workerId}`, { birthDate: draft || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : null;
+  return (
+    <div className="flex items-center gap-2">
+      <Cake className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Дата народження")}:</span>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="date" value={draft} onChange={e => setDraft(e.target.value)}
+            className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : (
+        <button className="font-medium text-slate-700 hover:text-red-600" onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }}>
+          {birthDate ? new Date(birthDate + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
+          {under26 != null && <span className={under26 ? "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" : "ml-1 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500"}>{under26 ? "<26" : "26+"}</span>}
+        </button>
+      )}
+    </div>
   );
 }
