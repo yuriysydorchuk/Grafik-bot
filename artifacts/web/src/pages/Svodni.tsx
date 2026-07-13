@@ -5,7 +5,11 @@
 // приходить з API лише з capability svodniSensitive — показуємо, що прийшло.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3 } from "lucide-react";
+import {
+  RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
+  Coins, CreditCard, Percent, Landmark, Banknote, PiggyBank, HandCoins,
+  Home, Gavel, IdCard, GraduationCap, Wallet,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { get, post, patch } from "../lib/api";
@@ -34,7 +38,7 @@ type Check = { factoryLabel: string; metric: string; ours: number | null; sheetS
 type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; sensitive: boolean };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
-// колонки відкритого шару: [поле, заголовок] — показуються лише непорожні
+// колонки відкритого шару: [поле, заголовок]
 const OPEN_COLS: [keyof Row & string, string][] = [
   ["hoursNotified", "Год. повід."], ["hours", "Години"], ["shifts", "Зміни"],
   ["rateBrutto", "Ставка бр."], ["rateNetto", "Ставка нет."], ["premia", "Премія"],
@@ -80,12 +84,15 @@ export default function Svodni() {
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem("svodni.hiddenCols") ?? "[]")); } catch { return new Set(); }
   });
-  const toggleCol = (k: string) => setHiddenCols(prev => {
-    const n = new Set(prev);
-    n.has(k) ? n.delete(k) : n.add(k);
+  const setHidden = (n: Set<string>) => {
+    setHiddenCols(n);
     try { localStorage.setItem("svodni.hiddenCols", JSON.stringify([...n])); } catch { /* ignore */ }
-    return n;
-  });
+  };
+  const toggleCol = (k: string) => {
+    const n = new Set(hiddenCols);
+    n.has(k) ? n.delete(k) : n.add(k);
+    setHidden(n);
+  };
 
   const { data: monthsData } = useQuery<{ months: string[] }>({ queryKey: ["svodni-months"], queryFn: () => get("/svodni/months") });
   const months = monthsData?.months ?? [];
@@ -118,7 +125,6 @@ export default function Svodni() {
     return v;
   }, [allColumns, hiddenCols, hideKsieg]);
 
-
   const sync = useMutation({
     mutationFn: () => post("/svodni/sync", { months: [effMonth] }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["svodni"] }); toast.success(t("Синхронізовано з Google")); },
@@ -135,60 +141,100 @@ export default function Svodni() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  // маркери на вкладки фабрик: розбіжності/ручні правки
+  const factoryFlags = useMemo(() => {
+    const m = new Map<string, { count: number; mismatch: boolean; manual: boolean }>();
+    for (const f of factories) {
+      const fr = cityRows.filter(r => r.factoryLabel === f);
+      m.set(f, { count: fr.length, mismatch: fr.some(r => r.mismatch), manual: fr.some(r => r.manual) });
+    }
+    return m;
+  }, [factories, cityRows]);
+
   return (
     <>
       <PageHeader title={t("Сводні")} subtitle={t("Зарплатні таблиці по містах — дзеркало з перевіркою формул")} />
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <Select value={effMonth} onChange={e => setMonth(e.target.value)}>
-          {months.map(m => <option key={m} value={m}>{m}</option>)}
-        </Select>
-        <div className="flex rounded-lg border border-slate-200 bg-white p-0.5">
-          {(data?.cities ?? []).map(c => (
-            <button key={c} onClick={() => { setCity(c); setFactory(""); }}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-red-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-              {t(c)}
-            </button>
-          ))}
-        </div>
-        <div className="ml-auto flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setShowCols(v => !v)}><Columns3 className="h-4 w-4" /> {t("Колонки")}</Button>
-          <Button variant="secondary" onClick={toggleEmptyCols}>{hideEmptyCols ? t("Показати порожні колонки") : t("Сховати порожні колонки")}</Button>
-          {data?.sensitive && (
-            <Button variant="secondary" onClick={toggleKsieg}>{hideKsieg ? t("Показати księgowe") : t("Сховати księgowe")}</Button>
-          )}
-          <Button variant="secondary" onClick={() => setShowLinks(v => !v)}><Users className="h-4 w-4" /> {t("Привʼязки")}</Button>
-          <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()}><Link2 className="h-4 w-4" /> {t("Перематчити")}</Button>
-          <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate()}><RefreshCw className="h-4 w-4" /> {t("Синк із Google")}</Button>
-          {can(me, "viewFinance") && (
-            <Button variant="secondary" loading={applyRates.isPending} onClick={() => applyRates.mutate()}>{t("Застосувати ставки в профілі")}</Button>
-          )}
-        </div>
-      </div>
-
-      {/* фільтр колонок: усе видно за замовчуванням, вимкнене — сховано */}
-      {showCols && (
-        <Card className="mb-4 p-3">
-          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-            {allColumns.map(([k, h]) => (
-              <label key={k} className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-600">
-                <input type="checkbox" checked={!hiddenCols.has(k)} onChange={() => toggleCol(k)} />
-                {t(h)}
-              </label>
+      {/* панель керування */}
+      <Card className="mb-4 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={effMonth} onChange={e => setMonth(e.target.value)} className="font-medium">
+            {months.map(m => <option key={m} value={m}>{m}</option>)}
+          </Select>
+          <div className="flex rounded-xl bg-slate-100 p-1">
+            {(data?.cities ?? []).map(c => (
+              <button key={c} onClick={() => { setCity(c); setFactory(""); }}
+                className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                {t(c)}
+              </button>
             ))}
           </div>
-        </Card>
-      )}
+          <div className="mx-1 hidden h-6 w-px bg-slate-200 sm:block" />
+          <button onClick={() => setShowCols(v => !v)}
+            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${showCols ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+            <Columns3 className="h-3.5 w-3.5" /> {t("Колонки")}
+          </button>
+          <button onClick={toggleEmptyCols}
+            className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${hideEmptyCols ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+            title={t("Ховає колонки без жодного значення в цій фабриці")}>
+            {t("Без порожніх колонок")}
+          </button>
+          {data?.sensitive && (
+            <button onClick={toggleKsieg}
+              className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${hideKsieg ? "bg-amber-500 text-white" : "text-amber-700 hover:bg-amber-50"}`}
+              title={t("Швидко сховати/показати księgowe колонки")}>
+              {hideKsieg ? t("Księgowe: сховано") : t("Księgowe: видно")}
+            </button>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => setShowLinks(v => !v)}><Users className="h-4 w-4" /> {t("Привʼязки")}</Button>
+            <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()} title={t("Пробує підвʼязати нерозпізнаних людей до працівників")}><Link2 className="h-4 w-4" /></Button>
+            <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate()} title={t("Синк із Google")}><RefreshCw className="h-4 w-4" /></Button>
+            {can(me, "viewFinance") && (
+              <Button variant="secondary" loading={applyRates.isPending} onClick={() => applyRates.mutate()}>{t("Ставки → профілі")}</Button>
+            )}
+          </div>
+        </div>
+
+        {/* фільтр колонок */}
+        {showCols && (
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <div className="mb-2 flex items-center gap-3 text-[11px]">
+              <span className="font-semibold uppercase tracking-wide text-slate-400">{t("Видимі колонки")}</span>
+              <button className="text-red-600 hover:underline" onClick={() => setHidden(new Set())}>{t("показати всі")}</button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {allColumns.map(([k, h]) => {
+                const on = !hiddenCols.has(k);
+                return (
+                  <button key={k} onClick={() => toggleCol(k)}
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${on ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "bg-slate-50 text-slate-400 ring-1 ring-slate-200 line-through"}`}>
+                    {t(h)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </Card>
 
       {/* вкладки фабрик міста */}
       {factories.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-1">
-          {factories.map(f => (
-            <button key={f} onClick={() => setFactory(f)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${effFactory === f ? "bg-slate-800 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-slate-400"}`}>
-              {f}
-            </button>
-          ))}
+        <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
+          {factories.map(f => {
+            const fl = factoryFlags.get(f)!;
+            const active = effFactory === f;
+            return (
+              <button key={f} onClick={() => setFactory(f)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  active ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                {f}
+                <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>{fl.count}</span>
+                {fl.mismatch && <span title={t("є розбіжності формул")}>⚠</span>}
+                {fl.manual && <PencilLine className={`h-3 w-3 ${active ? "text-red-100" : "text-sky-500"}`} />}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -207,14 +253,15 @@ export default function Svodni() {
   );
 }
 
-// Заголовок колонки з кнопкою «сховати» (з\'являється при наведенні)
-function Th({ label, onHide, left, amber }: { label: string; onHide: () => void; left?: boolean; amber?: boolean }) {
+// Заголовок колонки з кнопкою «сховати» (зʼявляється при наведенні)
+function Th({ label, onHide, left, amber, strong }: { label: string; onHide: () => void; left?: boolean; amber?: boolean; strong?: boolean }) {
   return (
-    <th className={`group/th px-1.5 py-2 font-medium whitespace-nowrap ${left ? "text-left" : "text-right"} ${amber ? "bg-amber-50/60" : ""}`}>
+    <th className={`group/th px-1.5 py-2.5 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide ${
+      left ? "text-left" : "text-right"} ${amber ? "bg-amber-50 text-amber-700/70" : strong ? "bg-red-50/70 text-red-700/80" : "text-slate-400"}`}>
       <span className="inline-flex items-center gap-0.5">
         {label}
         <button type="button" onClick={onHide} title="Сховати колонку"
-          className="invisible rounded px-0.5 text-slate-300 hover:bg-slate-100 hover:text-slate-500 group-hover/th:visible">×</button>
+          className="invisible rounded px-0.5 text-slate-300 hover:bg-slate-200 hover:text-slate-600 group-hover/th:visible">×</button>
       </span>
     </th>
   );
@@ -222,8 +269,8 @@ function Th({ label, onHide, left, amber }: { label: string; onHide: () => void;
 
 // Редагована клітинка: клік → інпут (для кадрових — випадаючий список значень
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
-function EditableCell({ row, field, value, month, sensitive, text, options }: {
-  row: Row; field: string; value: unknown; month: string; sensitive?: boolean; text?: boolean; options?: string[];
+function EditableCell({ row, field, value, month, text, strong, options }: {
+  row: Row; field: string; value: unknown; month: string; text?: boolean; strong?: boolean; options?: string[];
 }) {
   const t = useT();
   const qc = useQueryClient();
@@ -246,7 +293,7 @@ function EditableCell({ row, field, value, month, sensitive, text, options }: {
         onChange={e => { if (e.target.value === "__other__") { setFreeText(true); setDraft(""); } else save.mutate(e.target.value); }}
         onBlur={() => setEditing(false)}
         onKeyDown={e => { if (e.key === "Escape") setEditing(false); }}
-        className="w-44 rounded border border-red-300 px-1 py-0.5 text-left text-xs focus:outline-none">
+        className="w-44 rounded-md border border-red-400 bg-white px-1 py-1 text-left text-xs shadow-sm focus:outline-none">
         <option value="">{"—"}</option>
         {options.map(o => <option key={o} value={o}>{o}</option>)}
         <option value="__other__">{t("(інше…)")}</option>
@@ -258,15 +305,16 @@ function EditableCell({ row, field, value, month, sensitive, text, options }: {
       <input autoFocus value={draft} onChange={e => setDraft(e.target.value)}
         onBlur={() => save.mutate(draft)}
         onKeyDown={e => { if (e.key === "Enter") save.mutate(draft); if (e.key === "Escape") { setEditing(false); setFreeText(false); } }}
-        className={`w-20 rounded border border-red-300 px-1 py-0.5 text-right text-xs focus:outline-none ${text ? "w-40 text-left" : ""}`} />
+        className={`rounded-md border border-red-400 bg-white px-1 py-1 text-right text-xs shadow-sm focus:outline-none ${text ? "w-40 text-left" : "w-20"}`} />
     );
   }
   return (
     <button type="button"
       onClick={() => { setDraft(value == null ? "" : String(value)); setEditing(true); }}
       title={t("Клікни, щоб редагувати")}
-      className={`block w-full cursor-text rounded px-1 py-0.5 text-right tabular-nums hover:bg-red-50 ${text ? "text-left" : ""} ${sensitive ? "" : ""}`}>
-      {text ? String(value ?? "") : fmt(value) || <span className="text-slate-300">—</span>}
+      className={`block w-full cursor-text rounded px-1 py-1 tabular-nums transition hover:bg-red-50 hover:ring-1 hover:ring-red-200 ${
+        text ? "text-left" : "text-right"} ${strong ? "font-semibold text-slate-900" : ""}`}>
+      {text ? (String(value ?? "") || <span className="text-slate-300">—</span>) : (fmt(value) || <span className="text-slate-300">—</span>)}
     </button>
   );
 }
@@ -288,6 +336,7 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
   const extraKeys = cityExtraKeys.filter(k => show(`extras.${k}`));
   const hrCols = HR_COLS.filter(([k]) => show(k));
+  const colCount = 1 + openCols.length + extraKeys.length + hrCols.length + sensCols.length;
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -302,89 +351,100 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2.5">
-        <span className="text-sm font-semibold text-slate-700">{label}</span>
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3">
+        <span className="text-sm font-bold tracking-tight text-slate-800">{label}</span>
         <Badge color="slate">{rows.length} {t("ос.")}</Badge>
         {rows.some(r => r.manual) && <Badge color="blue">✎ {t("є ручні правки")}</Badge>}
         {badChecks.length
-          ? <span className="flex items-center gap-1 text-xs font-medium text-amber-600" title={badChecks.map(c => `${c.metric}: ${c.ours} ≠ ${c.sheetSuma ?? c.summaryTab}`).join("; ")}>
+          ? <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700" title={badChecks.map(c => `${c.metric}: ${c.ours} ≠ ${c.sheetSuma ?? c.summaryTab}`).join("; ")}>
               <CircleAlert className="h-3.5 w-3.5" /> {t("суми не сходяться")}
             </span>
-          : <span className="flex items-center gap-1 text-xs font-medium text-emerald-600"><CircleCheck className="h-3.5 w-3.5" /> {t("звірено")}</span>}
+          : <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"><CircleCheck className="h-3.5 w-3.5" /> {t("звірено")}</span>}
+        <span className="ml-auto text-[11px] text-slate-400">{t("клік по клітинці — редагування")}</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="max-h-[70vh] overflow-auto">
         <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr className="text-[11px] text-slate-400">
-              <th className="sticky left-0 z-10 bg-white px-3 py-2 text-left font-medium">{t("Працівник")}</th>
-              {openCols.map(([k, h]) => <Th key={k} label={t(h)} onHide={() => onHideCol(k)} />)}
+          <thead className="sticky top-0 z-20 bg-white shadow-sm">
+            <tr>
+              <th className="sticky left-0 z-30 bg-white px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Працівник")}</th>
+              {openCols.map(([k, h]) => <Th key={k} label={t(h)} strong={k === "doWyplaty"} onHide={() => onHideCol(k)} />)}
               {extraKeys.map(k => <Th key={k} label={t(EXTRA_LABEL[k]!)} onHide={() => onHideCol(`extras.${k}`)} />)}
               {hrCols.map(([k, h]) => <Th key={k} label={t(h)} left onHide={() => onHideCol(k)} />)}
               {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} />)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {rows.map(r => (
-              <tr key={r.id} className={r.mismatch ? "bg-rose-50/50" : undefined}>
-                <td className="sticky left-0 z-10 bg-white px-3 py-1 whitespace-nowrap">
-                  <span className="inline-flex items-center gap-1">
-                    {r.manual && <PencilLine className="h-3 w-3 text-sky-500" aria-label={t("є ручні правки")} />}
-                    {r.workerId
-                      ? <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600">{r.workerName ?? r.rawName}</Link>
-                      : <EditableCell row={r} field="rawName" value={r.rawName} month={month} text />}
-                    {r.linkStatus === "unmatched" && <span className="text-[10px] text-amber-600" title={t("Немає в системі")}>●</span>}
-                    {r.isStudent && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
-                    {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
-                    {r.mismatch && (
-                      <span className="text-[10px] font-medium text-rose-600"
-                        title={Object.entries(r.mismatch).map(([k, v]) => `${k}: ${t("наш розрахунок")} ${v.ours} ≠ ${t("у таблиці")} ${v.sheet}`).join("\n")}>
-                        ⚠
-                      </span>
-                    )}
-                  </span>
-                </td>
-                {openCols.map(([k]) => (
-                  <td key={k} className="px-1 py-0.5 text-right text-slate-600">
-                    <EditableCell row={r} field={k} value={r[k]} month={month} />
+            {rows.map((r, i) => {
+              const sectionChanged = r.section && r.section !== rows[i - 1]?.section;
+              return [
+                sectionChanged ? (
+                  <tr key={`sec-${r.id}`} className="bg-slate-50/80">
+                    <td colSpan={colCount} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{r.section}</td>
+                  </tr>
+                ) : null,
+                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}>
+                  <td className={`sticky left-0 z-10 whitespace-nowrap px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}>
+                    <span className="inline-flex items-center gap-1.5">
+                      {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
+                      {r.workerId
+                        ? <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
+                        : <EditableCell row={r} field="rawName" value={r.rawName} month={month} text />}
+                      {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
+                      {r.isStudent && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
+                      {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
+                      {r.mismatch && (
+                        <span className="cursor-help text-[11px] font-medium text-rose-600"
+                          title={Object.entries(r.mismatch).map(([k, v]) => `${k}: ${t("наш розрахунок")} ${v.ours} ≠ ${t("у таблиці")} ${v.sheet}`).join("\n")}>
+                          ⚠
+                        </span>
+                      )}
+                    </span>
                   </td>
-                ))}
-                {extraKeys.map(k => (
-                  <td key={k} className="px-1 py-0.5 text-right text-slate-600">
-                    <EditableCell row={r} field={`extras.${k}`} value={r.extras[k]} month={month} />
-                  </td>
-                ))}
-                {hrCols.map(([k]) => (
-                  <td key={k} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
-                    <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text options={hrOptions.get(k)} />
-                  </td>
-                ))}
-                {sensCols.map(([k]) => (
-                  <td key={k} className="bg-amber-50/40 px-1 py-0.5 text-right text-slate-600">
-                    <EditableCell row={r} field={k} value={r[k]} month={month} sensitive />
-                  </td>
-                ))}
-              </tr>
-            ))}
-            <tr className="bg-slate-50 font-semibold text-slate-700">
-              <td className="sticky left-0 z-10 bg-slate-50 px-3 py-2">{t("Разом")}</td>
+                  {openCols.map(([k]) => (
+                    <td key={k} className={`px-1 py-0.5 text-right ${k === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}>
+                      <EditableCell row={r} field={k} value={r[k]} month={month} strong={k === "doWyplaty"} />
+                    </td>
+                  ))}
+                  {extraKeys.map(k => (
+                    <td key={k} className="px-1 py-0.5 text-right text-slate-600">
+                      <EditableCell row={r} field={`extras.${k}`} value={r.extras[k]} month={month} />
+                    </td>
+                  ))}
+                  {hrCols.map(([k]) => (
+                    <td key={k} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
+                      <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text options={hrOptions.get(k)} />
+                    </td>
+                  ))}
+                  {sensCols.map(([k]) => (
+                    <td key={k} className="bg-amber-50/50 px-1 py-0.5 text-right text-slate-700">
+                      <EditableCell row={r} field={k} value={r[k]} month={month} />
+                    </td>
+                  ))}
+                </tr>,
+              ];
+            })}
+          </tbody>
+          <tfoot className="sticky bottom-0 z-20">
+            <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
+              <td className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5">{t("Разом")}</td>
               {openCols.map(([k]) => (
-                <td key={k} className="px-1.5 py-2 text-right tabular-nums">
+                <td key={k} className={`px-1.5 py-2.5 text-right tabular-nums ${k === "doWyplaty" ? "text-red-700" : ""}`}>
                   {["rateBrutto", "rateNetto"].includes(k) ? "" : fmt(sum(r => r[k] as number | null))}
                 </td>
               ))}
-              {extraKeys.map(k => <td key={k} className="px-1.5 py-2 text-right tabular-nums">{fmt(sum(r => typeof r.extras[k] === "number" ? r.extras[k] as number : 0))}</td>)}
+              {extraKeys.map(k => <td key={k} className="px-1.5 py-2.5 text-right tabular-nums">{fmt(sum(r => typeof r.extras[k] === "number" ? r.extras[k] as number : 0))}</td>)}
               {hrCols.map(([k]) => <td key={k} />)}
-              {sensCols.map(([k]) => <td key={k} className="bg-amber-50/60 px-1.5 py-2 text-right tabular-nums">{fmt(sum(r => r[k] as number | null))}</td>)}
+              {sensCols.map(([k]) => <td key={k} className="bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums">{fmt(sum(r => r[k] as number | null))}</td>)}
             </tr>
-          </tbody>
+          </tfoot>
         </table>
       </div>
     </Card>
   );
 }
 
-// Підсумок фабрики: ЗП/карта/податок/готівка/економія/аванси/хостел/штрафи/karta pobytu.
-// Чутливі позиції — лише коли API віддав закритий шар.
+// Підсумок фабрики: ЗП/карта/податки/готівка/економія/аванси/хостел/штрафи/karta pobytu.
+// Чутливі позиції — лише коли API віддав закритий шар. Тултіп = формула з числами.
 function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) {
   const t = useT();
   const sum = (f: (r: Row) => number | null | undefined) => r2(rows.reduce((a, r) => a + (f(r) ?? 0), 0));
@@ -415,59 +475,59 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
   const karaSum = sum(r => r.kara), karaKl = sum(r => ex(r, "karaKlient")), karaEs = sum(r => ex(r, "karaEs"));
   const kary = r2(karaSum + karaKl + karaEs);
   const kartaPobytu = sum(r => ex(r, "kartaPobytu"));
+  const stud = rows.filter(r => r.isStudent === true).length;
+  const nonStud = rows.filter(r => r.isStudent === false).length;
+  const unknown = rows.length - stud - nonStud;
 
-  // тултіп = формула з реальними числами, як в екселі
-  const Item = ({ label, value, accent, formula }: { label: string; value: number; accent?: string; formula: string }) => (
-    <div className="group relative rounded-xl border border-slate-200 bg-white px-3 py-2" title={formula}>
-      <div className="text-[11px] text-slate-400">{label}</div>
-      <div className={`text-sm font-semibold tabular-nums ${accent ?? "text-slate-700"}`}>{z(value)}</div>
-      <div className="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden w-max max-w-md rounded-lg bg-slate-800 px-2.5 py-1.5 text-[11px] leading-relaxed text-white shadow-lg group-hover:block">
+  const Item = ({ label, value, icon: Icon, tone, formula, textValue }: {
+    label: string; value?: number; icon: any; tone: string; formula: string; textValue?: string;
+  }) => (
+    <div className="group relative flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 transition hover:border-slate-300 hover:shadow-sm">
+      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${tone}`}>
+        <Icon className="h-4.5 w-4.5" />
+      </span>
+      <div className="min-w-0">
+        <div className="truncate text-[11px] text-slate-400">{label}</div>
+        <div className="text-sm font-bold tabular-nums text-slate-800">{textValue ?? z(value!)}</div>
+      </div>
+      <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-max max-w-md rounded-lg bg-slate-800 px-3 py-2 text-[11px] leading-relaxed text-white shadow-xl group-hover:block">
         {formula}
       </div>
     </div>
   );
 
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-      <Item label={t("Загальна ЗП")} value={total} accent="text-slate-900"
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <Item label={t("Загальна ЗП")} value={total} icon={Coins} tone="bg-slate-800 text-white"
         formula={`${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(total)}`} />
-      {sensitive && <Item label={t("ЗП на карту")} value={konto}
+      {sensitive && <Item label={t("ЗП на карту")} value={konto} icon={CreditCard} tone="bg-sky-50 text-sky-600"
         formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(konto)}`} />}
-      {sensitive && <Item label={t("Податки працівника з карти")} value={workerTax}
-        formula={`${t("Σ (Księg. brutto − Księg. netto): ПДФО + внески ZUS, утримані з офіційної частини")} = ${z(ksiegBrutto)} − ${z(r2(ksiegBrutto - workerTax))} = ${z(workerTax)}`} />}
-      {sensitive && <Item label={t("ZUS роботодавця (оцінка)")} value={employerZus}
-        formula={`${t("Σ оподатковуваного Księg. brutto × 20,48%")} = ${z(taxableBrutto)} × 0,2048 = ${z(employerZus)}`} />}
-      {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} accent="text-rose-700"
-        formula={`${t("Утримання з працівника + ZUS роботодавця — повна податкова вартість офіційної частини")} = ${z(workerTax)} + ${z(employerZus)} = ${z(r2(workerTax + employerZus))}`} />}
-      {sensitive && <Item label={t("ЗП готівкою")} value={gotowka} accent="text-amber-700"
+      {sensitive && <Item label={t("ЗП готівкою")} value={gotowka} icon={Banknote} tone="bg-amber-50 text-amber-600"
         formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}`} />}
-      {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} accent="text-emerald-700"
+      {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} icon={PiggyBank} tone="bg-emerald-50 text-emerald-600"
         formula={`${t("Якби готівку платили офіційно: (брутто-еквівалент − готівка) + брутто-еквівалент × 20,48% ZUS. Студенти не рахуються — у них податків немає.")} (${z(savedParts.bruttoEq)} − ${z(savedParts.got)}) + ${z(savedParts.bruttoEq)} × 0,2048 = ${z(saved)}`} />}
-      <Item label={t("Аванси (zaliczki)")} value={zaliczki}
+      {sensitive && <Item label={t("Податки працівника з карти")} value={workerTax} icon={Percent} tone="bg-rose-50 text-rose-500"
+        formula={`${t("Σ (Księg. brutto − Księg. netto): ПДФО + внески ZUS, утримані з офіційної частини")} = ${z(ksiegBrutto)} − ${z(r2(ksiegBrutto - workerTax))} = ${z(workerTax)}`} />}
+      {sensitive && <Item label={t("ZUS роботодавця (оцінка)")} value={employerZus} icon={Landmark} tone="bg-rose-50 text-rose-500"
+        formula={`${t("Σ оподатковуваного Księg. brutto × 20,48%")} = ${z(taxableBrutto)} × 0,2048 = ${z(employerZus)}`} />}
+      {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} icon={Wallet} tone="bg-rose-600 text-white"
+        formula={`${t("Утримання з працівника + ZUS роботодавця — повна податкова вартість офіційної частини")} = ${z(workerTax)} + ${z(employerZus)} = ${z(r2(workerTax + employerZus))}`} />}
+      <Item label={t("Аванси (zaliczki)")} value={zaliczki} icon={HandCoins} tone="bg-violet-50 text-violet-600"
         formula={`Σ Zaliczka + Σ Zaliczka BD = ${z(zalA)} + ${z(zalBd)} = ${z(zaliczki)}`} />
-      <Item label={t("Хостел")} value={hostel} formula={`${t("Σ колонки Hostel")} = ${z(hostel)}`} />
-      <Item label={t("Штрафи (разом)")} value={kary}
+      <Item label={t("Хостел")} value={hostel} icon={Home} tone="bg-slate-100 text-slate-600"
+        formula={`${t("Σ колонки Hostel")} = ${z(hostel)}`} />
+      <Item label={t("Штрафи (разом)")} value={kary} icon={Gavel} tone="bg-orange-50 text-orange-600"
         formula={`Σ Kara + ${t("Кара клієнта")} + ${t("Кара ES")} = ${z(karaSum)} + ${z(karaKl)} + ${z(karaEs)} = ${z(kary)}`} />
-      <Item label={t("Karta pobytu")} value={kartaPobytu} formula={`${t("Σ колонки Karta pobytu")} = ${z(kartaPobytu)}`} />
-      {(() => {
-        const stud = rows.filter(r => r.isStudent === true).length;
-        const nonStud = rows.filter(r => r.isStudent === false).length;
-        const unknown = rows.length - stud - nonStud;
-        return (
-          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2"
-            title={t("Студент = без податків (netto = brutto). Невідомо — статус у сводній не вказаний.")}>
-            <div className="text-[11px] text-slate-400">{t("Студенти / не студенти")}</div>
-            <div className="text-sm font-semibold text-slate-700">
-              {stud} / {nonStud}{unknown ? <span className="font-normal text-slate-400"> (+{unknown} {t("невідомо")})</span> : null}
-            </div>
-          </div>
-        );
-      })()}
+      <Item label={t("Karta pobytu")} value={kartaPobytu} icon={IdCard} tone="bg-slate-100 text-slate-600"
+        formula={`${t("Σ колонки Karta pobytu")} = ${z(kartaPobytu)}`} />
+      <Item label={t("Студенти / не студенти")} icon={GraduationCap} tone="bg-sky-50 text-sky-600"
+        textValue={`${stud} / ${nonStud}${unknown ? ` (+${unknown})` : ""}`}
+        formula={t("Студент = без податків (netto = brutto). Невідомо — статус у сводній не вказаний.") + (unknown ? ` +${unknown} ${t("невідомо")}` : "")} />
     </div>
   );
 }
 
-// Панель незматчених: привʼязати до працівника / позначити зовнішнім
+// Панель незматчених: привʼязка людини зі сводної до працівника системи
 function UnmatchedPanel() {
   const t = useT();
   const qc = useQueryClient();
@@ -480,24 +540,31 @@ function UnmatchedPanel() {
   });
 
   return (
-    <Card className="mb-5 overflow-hidden">
-      <div className="border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700">
-        {t("Не привʼязані до працівників")} ({people.length})
+    <Card className="mb-4 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 bg-gradient-to-r from-amber-50 to-white px-4 py-3">
+        <Users className="h-4 w-4 text-amber-500" />
+        <span className="text-sm font-bold text-slate-800">{t("Не привʼязані до працівників")}</span>
+        <Badge color="amber">{people.length}</Badge>
       </div>
       {!people.length ? <div className="p-4 text-sm text-slate-400">{t("Всі рядки привʼязані")} 🎉</div> : (
         <div className="max-h-96 overflow-y-auto">
           <table className="w-full text-xs">
             <tbody className="divide-y divide-slate-100">
               {people.map(p => (
-                <tr key={`${p.city}-${p.rawName}`}>
-                  <td className="px-4 py-1.5 font-medium text-slate-700">{p.rawName}</td>
-                  <td className="px-2 py-1.5 text-slate-500">{t(p.city)} · {p.factories.join(", ")}</td>
-                  <td className="px-2 py-1.5 text-slate-400">{p.months.map(m => m.slice(5)).join(", ")}</td>
-                  <td className="px-2 py-1.5">
+                <tr key={`${p.city}-${p.rawName}`} className="hover:bg-slate-50/60">
+                  <td className="px-4 py-2 font-semibold text-slate-700">{p.rawName}</td>
+                  <td className="px-2 py-2 text-slate-500">{t(p.city)} · {p.factories.join(", ")}</td>
+                  <td className="px-2 py-2">
+                    <span className="flex flex-wrap gap-1">
+                      {p.months.map(m => <span key={m} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{m.slice(5)}.{m.slice(2, 4)}</span>)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
                     <div className="flex flex-wrap justify-end gap-1">
+                      {p.candidates.length === 0 && <span className="text-[11px] text-slate-300">{t("кандидатів немає")}</span>}
                       {p.candidates.map(c => (
                         <button key={c.id} onClick={() => link.mutate({ rawName: p.rawName, city: p.city, workerId: c.id, status: "confirmed" })}
-                          className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100"
+                          className="rounded-lg bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-100"
                           title={t("Привʼязати до")}>
                           <Link2 className="mr-0.5 inline h-3 w-3" />{c.name}
                         </button>
