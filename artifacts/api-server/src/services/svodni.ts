@@ -166,7 +166,10 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
       else if (/EURO ?SUP/.test(v)) out.firmGuess = "ES";
       if (out.firmGuess) break;
     }
+    const hasAnyNumber = [...colOf.keys()].some(i => num(rows[r]?.[i]) != null);
+    const powiadMark = powiadCol >= 0 ? norm(cell(rows[r], powiadCol)) : "";
     const row = emptyRow(section, name);
+    (row as any).__hasNum = hasAnyNumber || powiadMark === "STUD";
     let premiaSum: number | null = null;
     for (const [i, c] of colOf) {
       const v = rows[r]?.[i];
@@ -203,6 +206,24 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
     if (/^(W TYM )?STUDENTOW|^W TYM STUDENTOW/.test(label) && v != null && out.counts.students == null) out.counts.students = Math.round(v);
     if (/WYZEJ ?26/.test(label) && v != null) out.counts.over26 = Math.round(v);
   }
+
+  // Розділювачі позицій («OSOBY FUNKCYJNE», «LIDERZY», назви ліній) — рядки без
+  // жодного числа. Але лише коли У ВКЛАДЦІ Є числові рядки: у травневих ANDROS
+  // головна таблиця — самі імена (дані в нижньому блоці), там усі рядки — люди.
+  if (out.rows.some(x => (x as any).__hasNum)) {
+    const filtered: typeof out.rows = [];
+    let divSection: string | null = null;
+    let prevLoopSection: string | null | undefined;
+    for (const x of out.rows) {
+      if (prevLoopSection !== undefined && x.section !== prevLoopSection) divSection = null; // нова секція таблиці
+      prevLoopSection = x.section;
+      if (!(x as any).__hasNum) { divSection = x.rawName; continue; }
+      if (divSection) x.section = divSection;
+      filtered.push(x);
+    }
+    out.rows = filtered;
+  }
+  for (const x of out.rows) delete (x as any).__hasNum;
 
   // Premia ES на вкладках AGRAM — ставка-індикатор бонусної програми (1/1,5),
   // яку Agram платить окремо: формула Do wypłaty її НЕ додає. Прибираємо з premia.
