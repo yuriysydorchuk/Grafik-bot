@@ -125,6 +125,46 @@ test("реімпорт не перезаписує ручні рядки", opts,
   assert.ok(rows.some(r => r.rawName === "NOWAK ANNA" && !r.manual));
 });
 
+test("додавання людини: префіл із профілю; новий — авто-створення профілю; правки синхронізуються назад", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  // наявний працівник із властивостями в профілі
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Duda Piotr", hourlyRate: 32.9, hourlyRateNetto: 26.55, isStudent: false, birthDate: "2003-05-10",
+  }).returning();
+  const r1 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", workerId: w!.id });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.rawName, "Duda Piotr");
+  assert.equal(r1.body.rateBrutto, 32.9, "ставка брутто префілиться з профілю");
+  assert.equal(r1.body.rateNetto, 26.55);
+  assert.equal(r1.body.under26, true, "до-26 виводиться з дати народження");
+  assert.equal(r1.body.manual, true);
+
+  // формули на доданому рядку: години → до виплати
+  const r2 = await request(app).patch(`/api/svodni/rows/${r1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 100 });
+  assert.equal(r2.body.doWyplaty, 2655, "100 × 26.55");
+
+  // правка ставки в таблиці → профіль оновлюється (підтягнеться в наступні місяці)
+  await request(app).patch(`/api/svodni/rows/${r1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "rateNetto", value: 27 });
+  const [wAfter] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(wAfter!.hourlyRateNetto, 27, "профіль синхронізовано зі сводною");
+
+  // новий працівник: створюється профіль
+  const r3 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", newWorkerName: "Nowicki Adam" });
+  assert.equal(r3.status, 200);
+  assert.ok(r3.body.workerId, "новому створено профіль");
+  const [nw] = await db.select().from(workersTable).where(eq(workersTable.id, r3.body.workerId));
+  assert.equal(nw!.fullName, "Nowicki Adam");
+  assert.ok(nw!.workerCode, "код призначено автоматично");
+
+  // видалення рядка
+  const r4 = await request(app).delete(`/api/svodni/rows/${r3.body.id}`).set("Cookie", owner).set(H);
+  assert.equal(r4.status, 200);
+});
+
 test("привʼязка: POST /svodni/link підвʼязує всі рядки імені в місті", opts, async () => {
   await seedRow();
   await seedRow({ periodMonth: "2026-05" }); // та сама людина, інший місяць
