@@ -82,7 +82,9 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     .filter(c => tabAllowed(c.factoryLabel));
 
   const cities = (await db.selectDistinct({ c: svodniRowsTable.city }).from(svodniRowsTable)
-    .where(eq(svodniRowsTable.periodMonth, month))).map(x => x.c).sort();
+    .where(eq(svodniRowsTable.periodMonth, month))).map(x => x.c)
+    .filter(c => sensitive || c !== "Офіс") // віртуальне «місто» вкладки офісу
+    .sort();
 
   ok(res, { month, city, cities, rows, checks, sensitive });
 });

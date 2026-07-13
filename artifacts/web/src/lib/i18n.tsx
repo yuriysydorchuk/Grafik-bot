@@ -501,6 +501,7 @@ const EN: Record<string, string> = {
   "Люблін": "Lublin",
   "Познань": "Poznań",
   "Лодзь": "Łódź",
+  "Офіс": "Office",
   "Год. повід.": "Notif. h",
   "Ставка бр.": "Rate gross",
   "Ставка нет.": "Rate net",

@@ -65,7 +65,9 @@ const EXTRA_LABEL: Record<string, string> = {
   zadluzenie: "Заборгованість", migawka: "Migawka", dokumenty: "Dokumenty", workListHours: "Work List [год]",
 };
 const EXTRA_STUDENTS = "Додаткові студенти";
+const OFFICE_CITY = "Офіс"; // віртуальна вкладка поряд із містами
 const OFFICE_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
+const isSpecial = (label: string) => OFFICE_RE.test(label) || label === EXTRA_STUDENTS;
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : "";
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
@@ -105,17 +107,28 @@ export default function Svodni() {
     queryKey: ["svodni", effMonth], enabled: !!effMonth,
     queryFn: () => get(`/svodni?month=${effMonth}`),
   });
-  const effCity = city || data?.cities?.[0] || "";
-  const cityRows = useMemo(() => (data?.rows ?? []).filter(r => r.city === effCity), [data, effCity]);
+  const cityTabs = useMemo(() => [
+    ...(data?.cities ?? []).filter(c => c !== OFFICE_CITY),
+    ...(data?.sensitive ? [OFFICE_CITY] : []),
+  ], [data]);
+  const effCity = cityTabs.includes(city) ? city : cityTabs[0] ?? "";
+  // «Офіс» збирає офісні вкладки всіх міст + додаткових студентів;
+  // з міських вкладок вони відповідно прибрані
+  const cityRows = useMemo(() => (data?.rows ?? []).filter(r =>
+    effCity === OFFICE_CITY ? isSpecial(r.factoryLabel) : (r.city === effCity && !isSpecial(r.factoryLabel))
+  ), [data, effCity]);
   // фабрики міста: з рядків ∪ зі звірок імпорту — порожні вкладки (фабрика без
   // людей цього місяця) теж мають бути видимі з повним набором колонок
   const factories = useMemo(() => {
     const set = new Set(cityRows.map(r => r.factoryLabel));
-    for (const c of (data?.checks ?? [])) {
-      if (c.city === effCity && !c.factoryLabel.includes(" + ")) set.add(c.factoryLabel);
+    if (effCity === OFFICE_CITY) {
+      set.add(EXTRA_STUDENTS); // завжди доступна для наповнення
+    } else {
+      for (const c of (data?.checks ?? [])) {
+        if (c.city === effCity && !c.factoryLabel.includes(" + ") && !isSpecial(c.factoryLabel)) set.add(c.factoryLabel);
+      }
     }
-    if (data?.sensitive) set.add(EXTRA_STUDENTS); // віртуальна вкладка оптимізації
-    const rank = (f: string) => f === EXTRA_STUDENTS ? 3 : OFFICE_RE.test(f) ? 2 : cityRows.some(r => r.factoryLabel === f) ? 0 : 1;
+    const rank = (f: string) => f === EXTRA_STUDENTS ? 2 : cityRows.some(r => r.factoryLabel === f) ? 0 : 1;
     return [...set].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   }, [cityRows, data, effCity]);
   const effFactory = factories.includes(factory) ? factory : factories[0] ?? "";
@@ -175,10 +188,10 @@ export default function Svodni() {
             {months.map(m => <option key={m} value={m}>{m}</option>)}
           </Select>
           <div className="flex rounded-xl bg-slate-100 p-1">
-            {(data?.cities ?? []).map(c => (
+            {cityTabs.map(c => (
               <button key={c} onClick={() => { setCity(c); setFactory(""); }}
                 className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                {t(c)}
+                {c === OFFICE_CITY ? "🏢 " : ""}{t(c)}
               </button>
             ))}
           </div>
@@ -237,7 +250,7 @@ export default function Svodni() {
           {factories.map(f => {
             const fl = factoryFlags.get(f)!;
             const active = effFactory === f;
-            const special = f === EXTRA_STUDENTS || OFFICE_RE.test(f);
+            const special = f === EXTRA_STUDENTS;
             return (
               <button key={f} onClick={() => setFactory(f)}
                 className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
@@ -391,7 +404,8 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
           <UserPlus className="h-3.5 w-3.5" /> {t("Додати людину")}
         </button>
       </div>
-      {adding && <AddPersonModal month={month} city={city} factoryLabel={label} onClose={() => setAdding(false)} />}
+      {adding && <AddPersonModal month={month} factoryLabel={label} onClose={() => setAdding(false)}
+        city={rows[0]?.city ?? (label === EXTRA_STUDENTS ? OFFICE_CITY : city)} />}
       <div className="max-h-[70vh] overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-20 bg-white shadow-sm">
