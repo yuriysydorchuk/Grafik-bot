@@ -17,8 +17,11 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const validMonth = (m: any) => typeof m === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
 const validDate = (s: any) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-router.get("/ksef/months", async (_req, res) => {
-  const r: any = await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices ORDER BY 1 DESC`);
+const validKind = (k: any): "sale" | "purchase" => (k === "purchase" ? "purchase" : "sale");
+
+router.get("/ksef/months", async (req, res) => {
+  const kind = validKind(req.query.kind);
+  const r: any = await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices WHERE kind = ${kind} ORDER BY 1 DESC`);
   ok(res, { months: ((r.rows ?? r) as any[]).map(x => String(x.m)) });
 });
 
@@ -26,11 +29,11 @@ router.get("/ksef", async (req, res) => {
   const month = validMonth(req.query.month) ? String(req.query.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const companyId = Number(req.query.companyId) || null;
+  const kind = validKind(req.query.kind);
 
-  const where = companyId
-    ? and(eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.companyId, companyId))
-    : eq(ksefInvoicesTable.revenueMonth, month);
-  const rows = await db.select().from(ksefInvoicesTable).where(where)
+  const conds = [eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind)];
+  if (companyId) conds.push(eq(ksefInvoicesTable.companyId, companyId));
+  const rows = await db.select().from(ksefInvoicesTable).where(and(...conds))
     .orderBy(asc(ksefInvoicesTable.companyId), desc(ksefInvoicesTable.issueDate), asc(ksefInvoicesTable.invoiceNumber));
   const companies = new Map((await db.select().from(companiesTable)).map(c => [c.id, c.name]));
 
@@ -38,12 +41,16 @@ router.get("/ksef", async (req, res) => {
     // manual override wins; otherwise the bank match decides
     const paid = inv.manualStatus ? inv.manualStatus === "paid" : inv.paidDate != null;
     const paidDate = inv.manualStatus === "paid" ? inv.manualPaidDate ?? inv.paidDate : inv.manualStatus ? null : inv.paidDate;
-    return { ...inv, firm: companies.get(inv.companyId) ?? "?", paid, effPaidDate: paidDate, paidSource: inv.manualStatus ? "manual" : inv.paidDate ? "bank" : null };
+    // paid_via records HOW the auto-match decided (bank/register/korekta); older
+    // rows without it fall back to txn-presence inference
+    const paidSource = inv.manualStatus ? "manual" : inv.paidDate ? inv.paidVia ?? (inv.paidTxnId ? "bank" : "register") : null;
+    return { ...inv, firm: companies.get(inv.companyId) ?? "?", paid, effPaidDate: paidDate, paidSource };
   });
 
+  // sales group by client, purchases by supplier
   const byClient = new Map<string, { client: string; count: number; net: number; gross: number; unpaidGross: number }>();
   for (const inv of invoices) {
-    const label = inv.clientLabel ?? inv.buyerName ?? "—";
+    const label = kind === "purchase" ? inv.sellerName ?? "—" : inv.clientLabel ?? inv.buyerName ?? "—";
     const g = byClient.get(label) ?? byClient.set(label, { client: label, count: 0, net: 0, gross: 0, unpaidGross: 0 }).get(label)!;
     g.count++;
     g.net = r2(g.net + inv.net);
@@ -59,7 +66,7 @@ router.get("/ksef", async (req, res) => {
     unpaidGross: r2(invoices.filter(i => !i.paid).reduce((a, i) => a + i.gross, 0)),
   };
   ok(res, {
-    month, invoices,
+    month, kind, invoices,
     byClient: [...byClient.values()].sort((a, b) => b.net - a.net),
     totals,
     firms: [...new Set(invoices.map(i => i.firm))].sort(),

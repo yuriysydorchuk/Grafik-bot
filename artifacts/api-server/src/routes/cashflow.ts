@@ -9,7 +9,7 @@ import { cashEntriesTable, companiesTable } from "@workspace/db";
 import { and, eq, gte, lte, isNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
-import { BUCKET, EXPENSE_CATS, MC, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, periodRange } from "../services/bankClassify";
+import { BUCKET, EXPENSE_CATS, MC, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, catCondition, periodRange } from "../services/bankClassify";
 import { balanceAt } from "./bank";
 import { cashPosition, cashBoxesAt, cashCategory } from "./cash";
 import { openObligations, openObligationRows } from "./obligations";
@@ -127,6 +127,94 @@ router.get("/cashflow", async (req, res) => {
     obligations: { receivable: obligations.receivable, payable: round2(obligations.payable + unpaidInvoices), unpaidInvoices },
     netPosition: round2(closing + obligations.receivable - obligations.payable - unpaidInvoices),
     reconcile: { computedClosing, residual: round2(closing - computedClosing) },
+  });
+});
+
+// ── Drill-down list («Кешфлоу» → клік по категорії/пошук) ────────────────────
+// Merged movements for the period: bank transactions (same single-source SQL
+// classification as the aggregates above) + cash-box entries (cashCategory).
+// cat: expense key | "other" | owner_* | "income" | "vat_refund" | "" (everything).
+router.get("/cashflow/entries", async (req, res) => {
+  const year = /^\d{4}$/.test(String(req.query.year)) ? String(req.query.year) : String(new Date().getFullYear());
+  const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
+  const [from, to] = periodRange(year, month);
+  const fromM = from.slice(0, 7), toM = to.slice(0, 7);
+  const cat = String(req.query.cat ?? "");
+  const source = req.query.source === "bank" || req.query.source === "cash" ? String(req.query.source) : "";
+  const companyId = req.query.companyId ? Number(req.query.companyId) : null;
+  const q = String(req.query.q ?? "").trim();
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+  let bankCond: string | null;
+  if (!cat) bankCond = OPER;
+  else if (cat === "income") bankCond = BUCKET.income!;
+  else if (cat === "vat_refund") bankCond = `direction='in' AND NOT (${T_INTERNAL}) AND (${T_VATREF})`;
+  else if (cat.startsWith("owner_") && BUCKET[cat]) bankCond = BUCKET[cat]!;
+  else bankCond = catCondition(cat);
+  if (!bankCond) { res.status(400).json({ error: "unknown cat" }); return; }
+  // готівкова сторона є лише у витратних категорій і виплат власникам
+  const cashApplicable = !cat || cat === "other" || cat.startsWith("owner_") || EXPENSE_CATS.some(([k]) => k === cat);
+
+  // bank side: top-(offset+limit) rows by date + full count/sums for the filter
+  let bankRows: any[] = [], bankTotal = 0, bankIn = 0, bankOut = 0;
+  if (source !== "cash") {
+    const co = companyId ? sql`AND company_id = ${companyId}` : sql``;
+    const qq = q ? sql`AND (counterparty ILIKE ${"%" + q + "%"} OR title ILIKE ${"%" + q + "%"} OR tx_type ILIKE ${"%" + q + "%"})` : sql``;
+    const base = sql`FROM bank_transactions WHERE ${sql.raw(bankCond)} AND value_date >= ${from} AND value_date <= ${to} ${co} ${qq}`;
+    const [rowsR, aggR] = await Promise.all([
+      db.execute(sql`SELECT id, company_id, value_date, direction, amount, counterparty, title, tx_type, account, manual_category ${base} ORDER BY value_date DESC, id DESC LIMIT ${offset + limit}`),
+      db.execute(sql`SELECT count(*) AS n,
+        coalesce(sum(amount) FILTER (WHERE direction='in'), 0) AS s_in,
+        coalesce(sum(amount) FILTER (WHERE direction='out'), 0) AS s_out ${base}`),
+    ]);
+    bankRows = rowsOf(rowsR);
+    const a: any = rowsOf(aggR)[0] ?? {};
+    bankTotal = Number(a.n ?? 0); bankIn = Number(a.s_in ?? 0); bankOut = Number(a.s_out ?? 0);
+  }
+
+  // cash side: a period holds dozens of rows — load & classify in JS (single
+  // source: cashCategory), so no SQL duplicate of the CASH_AUTO patterns
+  let cashRows: (typeof cashEntriesTable.$inferSelect)[] = [];
+  if (source !== "bank" && cashApplicable) {
+    const conds = [gte(cashEntriesTable.periodMonth, fromM), lte(cashEntriesTable.periodMonth, toM), isNull(cashEntriesTable.transferGroup)];
+    if (companyId) conds.push(eq(cashEntriesTable.companyId, companyId));
+    const entries = await db.select().from(cashEntriesTable).where(and(...conds));
+    const ql = q.toLowerCase();
+    cashRows = entries.filter(e => {
+      if (e.kind !== "in" && e.kind !== "out") return false;
+      if (cat && (e.kind !== "out" || (cashCategory(e) ?? "other") !== cat)) return false;
+      if (ql && !`${e.description ?? ""} ${e.note ?? ""}`.toLowerCase().includes(ql)) return false;
+      return true;
+    });
+  }
+  const cashIn = round2(cashRows.filter(e => e.kind === "in").reduce((s, e) => s + e.amount, 0));
+  const cashOut = round2(cashRows.filter(e => e.kind === "out").reduce((s, e) => s + e.amount, 0));
+
+  const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
+  const coName = (id: number | null) => companies.find(c => c.id === id)?.name ?? null;
+  // merged page: bank top-(offset+limit) ∪ ALL matching cash rows covers the true
+  // top-(offset+limit) of the union, so the slice below is a correct page
+  const unified = [
+    ...bankRows.map((r: any) => ({
+      id: `b${r.id}`, source: "bank" as const, date: String(r.value_date), firm: coName(r.company_id),
+      direction: r.direction as "in" | "out", amount: round2(Number(r.amount)),
+      who: r.counterparty ?? null, title: r.title ?? null, txType: r.tx_type ?? null,
+      account: r.account ?? null, box: null as string | null, manualCategory: r.manual_category ?? null,
+    })),
+    ...cashRows.map(e => ({
+      id: `c${e.id}`, source: "cash" as const, date: e.entryDate ?? `${e.periodMonth}-01`, firm: coName(e.companyId),
+      direction: (e.kind === "in" ? "in" : "out") as "in" | "out", amount: round2(e.amount),
+      who: e.description ?? null, title: e.note ?? null, txType: null, account: null,
+      box: e.box ?? null, manualCategory: e.manualCategory ?? null,
+    })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  ok(res, {
+    year, month: month ?? null, cat: cat || null, from, to,
+    rows: unified.slice(offset, offset + limit),
+    total: bankTotal + cashRows.length, limit, offset,
+    sums: { in: round2(bankIn + cashIn), out: round2(bankOut + cashOut), bank: round2(bankIn + bankOut), cash: round2(cashIn + cashOut) },
   });
 });
 

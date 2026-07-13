@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Search, RefreshCw, X, Wallet, ArrowDownLeft, ArrowUpRight, Banknote, PiggyBank } from "lucide-react";
 import { get, post, patch, del } from "../lib/api";
@@ -22,7 +22,7 @@ interface Summary {
   counts: Record<string, number>;
 }
 interface ExpenseCats { categories: { key: string; total: number; n: number }[] }
-interface ListResp { rows: Txn[]; total: number; limit: number; offset: number }
+interface ListResp { rows: Txn[]; total: number; sums: { in: number; out: number }; limit: number; offset: number }
 
 const zl = (n: number) => `${Math.round(n ?? 0).toLocaleString("uk-UA")} zł`;
 const zl2 = (n: number) => `${(n ?? 0).toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
@@ -75,6 +75,7 @@ export default function BankStatements() {
   const [detail, setDetail] = useState<Bucket | null>(null);
   const [detail2, setDetail2] = useState<string | null>(null); // selected expense category
   const [detail3, setDetail3] = useState<number | null>(null); // selected firm inside a firm-drill category
+  const [globalQ, setGlobalQ] = useState(""); // top-bar search across ALL transactions
   const [syncing, setSyncing] = useState(false);
   const [showRules, setShowRules] = useState(false);
 
@@ -110,6 +111,13 @@ export default function BankStatements() {
             {meta.data?.companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </Select>
         </div>
+        <div>
+          <div className="mb-1 text-xs text-slate-500">{t("Пошук")}</div>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+            <Input value={globalQ} onChange={e => setGlobalQ(e.target.value)} placeholder={t("контрагент, призначення…")} className="w-56 pl-8" />
+          </div>
+        </div>
         <Button variant="secondary" loading={syncing} onClick={async () => {
           setSyncing(true);
           try { await post("/bank/sync"); qc.invalidateQueries({ queryKey: ["bank-summary"] }); qc.invalidateQueries({ queryKey: ["bank-txns"] }); }
@@ -118,6 +126,11 @@ export default function BankStatements() {
         <Button variant="ghost" onClick={() => setShowRules(true)}>{t("Правила контрагентів")}</Button>
       </div>
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+
+      {globalQ.trim().length >= 2 && (
+        <DetailPanel bucket="all" year={year} monthNum={monthNum} companyId={companyId}
+          companies={meta.data?.companies ?? []} query={globalQ} onClose={() => setGlobalQ("")} />
+      )}
 
       {summary.isFetching && !s ? <Spinner /> : !s ? <Empty>{t("Немає даних")}</Empty> : (
         <>
@@ -321,6 +334,14 @@ function CashBox({ year, monthNum, companyId }: { year: string; monthNum: string
                     </tr>
                   ))}
                 </tbody>
+                <tfoot><tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                  <td colSpan={3} className="px-3 py-2 text-slate-700">{t("Разом ({n} операцій)", { n: list.data!.rows.length })}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+                    <span className="text-emerald-600">+{zl2(list.data!.rows.filter(e => e.kind === "in").reduce((s, e) => s + e.amount, 0))}</span>
+                    <span className="text-slate-400"> / </span>
+                    <span className="text-rose-600">−{zl2(list.data!.rows.filter(e => e.kind === "out").reduce((s, e) => s + e.amount, 0))}</span>
+                  </td>
+                </tr></tfoot>
               </table>
             </div>
           )}
@@ -434,19 +455,31 @@ function MiniMetric({ label, value, count, exact, active, onClick }: { label: st
   );
 }
 
-function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: { bucket: Bucket; year: string; monthNum: string; companyId: string; companies: { id: number; name: string }[]; onClose: () => void }) {
+function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onClose }: { bucket: Bucket; year: string; monthNum: string; companyId: string; companies: { id: number; name: string }[]; query?: string; onClose: () => void }) {
   const t = useT();
-  const [q, setQ] = useState("");
+  const [qLocal, setQLocal] = useState("");
+  const q = query ?? qLocal; // controlled by the top-bar search in the "all" panel
+  const [dir, setDir] = useState<"" | "in" | "out">("");
+  const [catSel, setCatSel] = useState(""); // category filter in the global-search panel
+  const [minAmount, setMinAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
   const [sort, setSort] = useState<"date" | "amount" | "counterparty">("date");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Txn | null>(null);
   const limit = 100;
+  const isAll = bucket === "all";
+  useEffect(() => { setOffset(0); }, [q, dir, catSel, minAmount, maxAmount]);
 
-  const params = new URLSearchParams({ bucket, sort, order, limit: String(limit), offset: String(offset) });
+  const params = new URLSearchParams({ sort, order, limit: String(limit), offset: String(offset) });
+  if (!isAll) params.set("bucket", bucket);
+  else if (catSel) params.set("bucket", `cat:${catSel}`);
+  else if (dir) params.set("direction", dir);
   if (monthNum) params.set("month", `${year}-${monthNum}`); else params.set("year", year);
   if (companyId) params.set("companyId", companyId);
   if (q) params.set("q", q);
+  if (minAmount) params.set("minAmount", minAmount);
+  if (maxAmount) params.set("maxAmount", maxAmount);
   const data = useQuery<ListResp>({ queryKey: ["bank-txns", params.toString()], queryFn: () => get(`/bank/transactions?${params}`) });
   const isCashMoveBucket = bucket === "cashmove";
   const recParams = new URLSearchParams({ year });
@@ -464,6 +497,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
   const title = bucket.startsWith("cat:")
     ? t(CAT_LABELS[bucket.slice(4)] ?? bucket.slice(4))
     : ({
+        all: t("Пошук по всіх операціях"),
         income: t("Приходи — від кого і коли"), expenses: t("Витрати"),
         cashmove: t("Готівковий рух — зняття та внесення"),
         owner_roman: t("Виплати — Сидорчук Роман"), owner_tetiana: t("Виплати — Сидорчук Тетяна (вкл. для Сидорчук Даніеля)"), owner_yuriy: t("Виплати — Сидорчук Юрій"),
@@ -481,11 +515,28 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
     <Card className="mt-5 p-0">
       <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
         <div className="font-semibold text-slate-700">{title}</div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-            <Input value={q} onChange={e => { setQ(e.target.value); setOffset(0); }} placeholder={t("пошук…")} className="w-48 pl-8" />
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {isAll && (
+            <>
+              <Select value={catSel} onChange={e => setCatSel(e.target.value)} className="w-44">
+                <option value="">{t("Всі категорії")}</option>
+                {Object.entries(CAT_LABELS).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
+              </Select>
+              <Select value={dir} onChange={e => setDir(e.target.value as any)} className="w-32" disabled={!!catSel}>
+                <option value="">{t("Всі напрями")}</option>
+                <option value="in">{t("Приходи")}</option>
+                <option value="out">{t("Витрати")}</option>
+              </Select>
+            </>
+          )}
+          <Input value={minAmount} onChange={e => setMinAmount(e.target.value)} placeholder={t("сума від")} className="w-24" inputMode="decimal" />
+          <Input value={maxAmount} onChange={e => setMaxAmount(e.target.value)} placeholder={t("до")} className="w-24" inputMode="decimal" />
+          {query == null && (
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <Input value={q} onChange={e => setQLocal(e.target.value)} placeholder={t("пошук…")} className="w-48 pl-8" />
+            </div>
+          )}
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X className="h-4 w-4" /></button>
         </div>
       </div>
@@ -539,11 +590,22 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, onClose }: 
                     {r.manualCategory && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(recatLabel(r.manualCategory))}>✎</span>}
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${isCashMove ? (r.direction === "out" ? "text-amber-600" : "text-emerald-600") : r.direction === "in" ? "text-emerald-600" : "text-slate-700"}`}>
-                    {isCashMove ? (r.direction === "out" ? "−" : "+") : ""}{zl(r.amount)}
+                    {isCashMove || isAll ? (r.direction === "out" ? "−" : "+") : ""}{zl(r.amount)}
                   </td>
                 </tr>
               ))}
             </tbody>
+            {data.data && (
+              <tfoot><tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                <td colSpan={companyId ? 3 : 4} className="px-3 py-2 text-slate-700">{t("Разом ({n} операцій)", { n: total })}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+                  {data.data.sums.in > 0 && <span className="text-emerald-600">+{zl2(data.data.sums.in)}</span>}
+                  {data.data.sums.in > 0 && data.data.sums.out > 0 && <span className="text-slate-400"> / </span>}
+                  {data.data.sums.out > 0 && <span className="text-slate-700">−{zl2(data.data.sums.out)}</span>}
+                  {data.data.sums.in === 0 && data.data.sums.out === 0 && "—"}
+                </td>
+              </tr></tfoot>
+            )}
           </table>
         </div>
       )}

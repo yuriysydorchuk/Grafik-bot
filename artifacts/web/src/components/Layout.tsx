@@ -84,9 +84,11 @@ const NAV: NavGroup[] = [
 ];
 
 const ALL_ITEMS = NAV.flatMap(g => g.items);
+// segment-boundary match, otherwise /cash lights up on /cashflow too
+const isUnder = (loc: string, href: string) => href === "/" ? loc === "/" : loc === href || loc.startsWith(href + "/");
 const titleFor = (loc: string) => {
   const match = ALL_ITEMS
-    .filter(i => (i.href === "/" ? loc === "/" : loc.startsWith(i.href)))
+    .filter(i => isUnder(loc, i.href))
     .sort((a, b) => b.href.length - a.href.length)[0];
   return match?.label ?? "Euro Support";
 };
@@ -136,7 +138,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
             )}
             <div className="space-y-0.5">
               {group.items.map(({ href, label, icon: Icon }) => {
-                const active = href === "/" ? loc === "/" : loc.startsWith(href);
+                const active = isUnder(loc, href);
                 return (
                   <Link key={href} href={href} onClick={() => setOpen(false)} title={rail ? t(label) : undefined}
                     className={cn(

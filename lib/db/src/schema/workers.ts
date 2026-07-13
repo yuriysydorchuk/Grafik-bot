@@ -721,12 +721,18 @@ export const payrollOfficeRowsTable = pgTable("payroll_office_rows", {
 export const ksefInvoicesTable = pgTable("ksef_invoices", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").notNull().references(() => companiesTable.id),
-  ksefNumber: text("ksef_number").notNull().unique(),
+  // sale = ми виставили (Subject1), purchase = виставили нам (Subject2). Inter-firm
+  // invoices legally appear twice (seller's sale + buyer's purchase) → unique is
+  // (ksef_number, kind), not ksef_number alone.
+  kind: text("kind").notNull().default("sale"),
+  ksefNumber: text("ksef_number").notNull(),
   invoiceNumber: text("invoice_number").notNull(),
   issueDate: date("issue_date").notNull(),
   invoicingDate: date("invoicing_date"),        // accepted by KSeF
   buyerNip: text("buyer_nip"),
   buyerName: text("buyer_name"),
+  sellerNip: text("seller_nip"),                // purchases: who invoiced us
+  sellerName: text("seller_name"),
   net: real("net").notNull(),
   vat: real("vat").notNull().default(0),
   gross: real("gross").notNull(),
@@ -735,12 +741,17 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   revenueMonth: text("revenue_month").notNull(),// "YYYY-MM" — P&L month (issue − 1)
   clientLabel: text("client_label"),            // mapped P&L client name
   segment: text("segment").notNull().default("main"), // main | cleaning (wspólnoty)
+  invoiceHash: text("invoice_hash"),            // KSeF metadata hash
+  correctedHash: text("corrected_hash"),        // korekta → hash of the corrected invoice
   paidDate: date("paid_date"),                  // from bank matching (by invoice number in title)
   paidTxnId: integer("paid_txn_id"),            // bank_transactions.id
+  paidVia: text("paid_via"),                    // bank | register | korekta (how auto-paid was decided)
   manualStatus: text("manual_status"),          // paid | unpaid | NULL (auto)
   manualPaidDate: date("manual_paid_date"),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
-});
+}, t => [
+  uniqueIndex("ksef_invoices_number_kind_uniq").on(t.ksefNumber, t.kind),
+]);
 
 // Web-panel login sessions — one row per successful web login. The session id is embedded
 // in the HMAC token (sid); authRequired looks it up so a single device can be revoked

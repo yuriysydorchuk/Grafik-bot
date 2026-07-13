@@ -68,12 +68,12 @@ Grafik-bot/
 
 **Фінансовий блок (owner; деплой-чекліст — `HANDOFF-finance-suite.md`):**
 - `routes/cash.ts` — каса: `GET /cash/summary|entries`, `POST /cash/transfer`, CRUD записів, `PATCH …/category`, `POST /cash/sync` (сейфи office/yuriy/tetiana, `cash_entries.box`, `transfer_group`)
-- `routes/cashflow.ts` — `GET /cashflow` (потоки + рівняння звірки), `GET /balance` (зріз на кінець місяця: гроші + належності + неоплачені фактури)
+- `routes/cashflow.ts` — `GET /cashflow` (потоки + рівняння звірки), `GET /cashflow/entries` (дрил-даун рухів: банк+готівка по категорії, пошук/фільтри/пагінація), `GET /balance` (зріз на кінець місяця: гроші + належності + неоплачені фактури)
 - `routes/obligations.ts` — CRUD належностей (as-of: `arisen_date`/`settled_at`)
 - `routes/invoices.ts` — фактури витрат: CRUD + `POST /invoices/sync` (3 таблиці Faktury Kosztowe, ручні статуси через `manual_*`)
 - `routes/pnl.ts` — `GET /pnl?month&segment(main|cleaning)`, CRUD `/pnl/entries` (дохід нетто+брутто; собівартість = повна ЗП; маржа = нетто − собівартість)
 - `routes/payroll.ts` — зведені ЗП: `GET /payroll?month&region&firm`, `/payroll/months|sources|sync|reconcile`, `POST/DELETE /payroll/name-match`, `DELETE /payroll/folders/:id`
-- `routes/ksef.ts` — продажні фактури KSeF: `GET /ksef?month`, `PATCH /ksef/invoices/:id`, `POST /ksef/sync|rematch` (акруал M−1, оплата = номер фактури в назві вхідного переказу)
+- `routes/ksef.ts` — фактури KSeF: `GET /ksef?month&kind(sale|purchase)`, `PATCH /ksef/invoices/:id`, `POST /ksef/sync|rematch`. Продажі: акруал M−1, оплата = номер у назві вхідного переказу; закупівлі (Subject2, довідково, у P&L не йдуть): місяць за датою виставлення, оплата = вихідний переказ з номером і сумою / реєстр Faktury Kosztowe / коректа (однозначна пара)
 
 **Рекрутинг:** `GET/POST/PATCH/DELETE /funnels`, `GET/POST /candidates`, `GET/PATCH/DELETE /candidates/:id`, `POST /candidates/:id/activity|assign|bonus|convert|followup`, `GET /staff`
 

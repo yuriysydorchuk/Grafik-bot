@@ -162,43 +162,56 @@ export async function syncKsef(): Promise<KsefSyncResult> {
     if (!company?.nip) { result.errors.push(`${name}: немає NIP у довіднику фірм`); continue; }
     try {
       const access = await authenticate(company.nip, token);
-      // incremental: from 14 days before the newest stored invoice (or 2026-01-01),
-      // in windows of ≤80 days (API limit is 3 months per query)
-      const last: any = await db.execute(sql`SELECT max(issue_date) AS d FROM ksef_invoices WHERE company_id = ${company.id}`);
-      const lastDate = (last.rows ?? last)[0]?.d as string | null;
-      let from = lastDate ? new Date(new Date(lastDate).getTime() - 14 * 86400e3) : new Date("2026-01-01T00:00:00Z");
-      const now = new Date();
-      while (from < now) {
-        const to = new Date(Math.min(from.getTime() + 80 * 86400e3, now.getTime()));
-        for (let pageOffset = 0; ; pageOffset++) {
-          const q = await jfetch(`/invoices/query/metadata?pageOffset=${pageOffset}&pageSize=100`, {
-            method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${access}` },
-            body: JSON.stringify({
-              subjectType: "Subject1",
-              dateRange: { dateType: "Issue", from: from.toISOString(), to: to.toISOString() },
-            }),
-          });
-          if (q.status !== 200) throw new Error(`query: HTTP ${q.status} ${JSON.stringify(q.body).slice(0, 150)}`);
-          const invoices = q.body.invoices ?? [];
-          result.fetched += invoices.length;
-          for (const m of invoices) {
-            const issue = String(m.issueDate).slice(0, 10);
-            const revenueMonth = revenueMonthFor(issue);
-            touchedMonths.add(revenueMonth);
-            const inserted = await db.insert(ksefInvoicesTable).values({
-              companyId: company.id, ksefNumber: m.ksefNumber, invoiceNumber: m.invoiceNumber,
-              issueDate: issue, invoicingDate: m.invoicingDate ? String(m.invoicingDate).slice(0, 10) : null,
-              buyerNip: m.buyer?.identifier?.value ?? null, buyerName: m.buyer?.name ?? null,
-              net: Number(m.netAmount ?? 0), vat: Number(m.vatAmount ?? 0), gross: Number(m.grossAmount ?? 0),
-              currency: m.currency ?? "PLN", invoiceType: m.invoiceType ?? null,
-              revenueMonth, clientLabel: mapBuyerToClient(m.buyer?.name ?? null),
-              segment: segmentForBuyer(m.buyer?.name ?? null),
-            }).onConflictDoNothing({ target: ksefInvoicesTable.ksefNumber }).returning({ id: ksefInvoicesTable.id });
-            result.inserted += inserted.length;
+      // sale = ми виставили (Subject1), purchase = виставили нам (Subject2).
+      // Sales land in the P&L month «issue − 1»; purchases are display-only and
+      // grouped by the calendar issue month (owner's call).
+      for (const kind of ["sale", "purchase"] as const) {
+        // incremental: from 14 days before the newest stored invoice (or 2026-01-01),
+        // in windows of ≤80 days (API limit is 3 months per query)
+        const last: any = await db.execute(sql`SELECT max(issue_date) AS d FROM ksef_invoices WHERE company_id = ${company.id} AND kind = ${kind}`);
+        const lastDate = (last.rows ?? last)[0]?.d as string | null;
+        let from = lastDate ? new Date(new Date(lastDate).getTime() - 14 * 86400e3) : new Date("2026-01-01T00:00:00Z");
+        const now = new Date();
+        while (from < now) {
+          const to = new Date(Math.min(from.getTime() + 80 * 86400e3, now.getTime()));
+          for (let pageOffset = 0; ; pageOffset++) {
+            const q = await jfetch(`/invoices/query/metadata?pageOffset=${pageOffset}&pageSize=100`, {
+              method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${access}` },
+              body: JSON.stringify({
+                subjectType: kind === "sale" ? "Subject1" : "Subject2",
+                dateRange: { dateType: "Issue", from: from.toISOString(), to: to.toISOString() },
+              }),
+            });
+            if (q.status !== 200) throw new Error(`query: HTTP ${q.status} ${JSON.stringify(q.body).slice(0, 150)}`);
+            const invoices = q.body.invoices ?? [];
+            result.fetched += invoices.length;
+            for (const m of invoices) {
+              const issue = String(m.issueDate).slice(0, 10);
+              const revenueMonth = kind === "sale" ? revenueMonthFor(issue) : issue.slice(0, 7);
+              if (kind === "sale") touchedMonths.add(revenueMonth);
+              // upsert: existing rows only get their hashes backfilled (needed for
+              // korekta↔original linking); xmax=0 distinguishes fresh inserts
+              const upserted = await db.insert(ksefInvoicesTable).values({
+                companyId: company.id, kind, ksefNumber: m.ksefNumber, invoiceNumber: m.invoiceNumber,
+                issueDate: issue, invoicingDate: m.invoicingDate ? String(m.invoicingDate).slice(0, 10) : null,
+                buyerNip: m.buyer?.identifier?.value ?? null, buyerName: m.buyer?.name ?? null,
+                sellerNip: m.seller?.nip ?? null, sellerName: m.seller?.name ?? null,
+                net: Number(m.netAmount ?? 0), vat: Number(m.vatAmount ?? 0), gross: Number(m.grossAmount ?? 0),
+                currency: m.currency ?? "PLN", invoiceType: m.invoiceType ?? null,
+                revenueMonth,
+                clientLabel: kind === "sale" ? mapBuyerToClient(m.buyer?.name ?? null) : null,
+                segment: kind === "sale" ? segmentForBuyer(m.buyer?.name ?? null) : "main",
+                invoiceHash: m.invoiceHash ?? null, correctedHash: m.hashOfCorrectedInvoice ?? null,
+              }).onConflictDoUpdate({
+                target: [ksefInvoicesTable.ksefNumber, ksefInvoicesTable.kind],
+                set: { invoiceHash: sql`excluded.invoice_hash`, correctedHash: sql`excluded.corrected_hash` },
+              }).returning({ isNew: sql<boolean>`(xmax = 0)` });
+              result.inserted += upserted.filter(r => r.isNew).length;
+            }
+            if (invoices.length < 100) break;
           }
-          if (invoices.length < 100) break;
+          from = new Date(to.getTime() + 1);
         }
-        from = new Date(to.getTime() + 1);
       }
       result.companies++;
     } catch (e) {
@@ -233,41 +246,104 @@ export async function matchKsefPayments(): Promise<number> {
   };
   await run(sql`
     UPDATE ksef_invoices i
-    SET paid_date = t.value_date, paid_txn_id = t.id
+    SET paid_date = t.value_date, paid_txn_id = t.id, paid_via = 'bank'
     FROM bank_transactions t
-    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
+    WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND abs(t.amount - i.gross) <= 0.02`);
   await run(sql`
     UPDATE ksef_invoices i
-    SET paid_date = t.value_date, paid_txn_id = t.id
+    SET paid_date = t.value_date, paid_txn_id = t.id, paid_via = 'bank'
     FROM bank_transactions t
-    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
+    WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND abs(t.amount - i.gross) <= 0.02`);
   await run(sql`
     WITH pairs AS (
       SELECT i.id AS inv_id, k.id AS kor_id, t.id AS txn_id, t.value_date
       FROM ksef_invoices i
-      JOIN ksef_invoices k ON k.company_id = i.company_id
+      JOIN ksef_invoices k ON k.company_id = i.company_id AND k.kind = 'sale'
         AND coalesce(k.buyer_nip, '?') = coalesce(i.buyer_nip, '!')
         AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL AND k.id <> i.id
       JOIN bank_transactions t ON t.direction = 'in' AND t.value_date >= i.issue_date
         AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
         AND abs(t.amount - (i.gross + k.gross)) <= 0.02
-      WHERE i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
+      WHERE i.kind = 'sale' AND i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
     )
-    UPDATE ksef_invoices x SET paid_date = p.value_date, paid_txn_id = p.txn_id
+    UPDATE ksef_invoices x SET paid_date = p.value_date, paid_txn_id = p.txn_id, paid_via = 'bank'
     FROM pairs p WHERE x.id = p.inv_id OR x.id = p.kor_id`);
   await run(sql`
     UPDATE ksef_invoices i
-    SET paid_date = t.value_date, paid_txn_id = t.id
+    SET paid_date = t.value_date, paid_txn_id = t.id, paid_via = 'bank'
     FROM bank_transactions t
-    WHERE i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
+    WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND NOT EXISTS (SELECT 1 FROM ksef_invoices x WHERE x.paid_txn_id = t.id)`);
+  // purchases: OUR outgoing transfer from the same firm carrying the invoice
+  // number, exact gross — anything else stays manual (no amount-only heuristics)
+  await run(sql`
+    UPDATE ksef_invoices i
+    SET paid_date = t.value_date, paid_txn_id = t.id, paid_via = 'bank'
+    FROM bank_transactions t
+    WHERE i.kind = 'purchase' AND i.paid_date IS NULL AND t.direction = 'out' AND t.value_date >= i.issue_date
+      AND t.company_id = i.company_id
+      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND abs(t.amount - i.gross) <= 0.02`);
+  // purchases the office register (Faktury Kosztowe) marks paid but the bank
+  // can't see: «Gotówka» (cash) and transfers without the number in the title.
+  // Anchor = exact invoice number + amount (not amount alone); paid_txn_id stays
+  // NULL — the UI shows these as «реєстр», not «витяг».
+  await run(sql`
+    UPDATE ksef_invoices k
+    SET paid_date = coalesce(reg.paid_date, reg.due_date, k.issue_date), paid_via = 'register'
+    FROM (
+      SELECT DISTINCT ON (upper(trim(number)), amount) upper(trim(number)) AS num, amount,
+             coalesce(manual_paid_date, paid_date) AS paid_date, due_date
+      FROM invoices
+      WHERE number IS NOT NULL
+        AND CASE WHEN manual_status IS NOT NULL THEN manual_status = 'paid' ELSE NOT unpaid END
+      ORDER BY upper(trim(number)), amount, coalesce(manual_paid_date, paid_date) DESC NULLS LAST
+    ) reg
+    WHERE k.kind = 'purchase' AND k.paid_date IS NULL AND k.manual_status IS NULL
+      AND reg.num = upper(trim(k.invoice_number))
+      AND abs(reg.amount - k.gross) <= 0.05`);
+  // purchase invoice fully cancelled by its korekta: the exact link comes from
+  // KSeF metadata (corrected_hash = original's invoice_hash — suppliers reissue
+  // invoices this way, e.g. to another of our firms), amounts must zero out.
+  // Both legs get settled at the korekta issue date; no money moved.
+  await run(sql`
+    WITH pairs AS (
+      SELECT i.id AS inv_id, k.id AS kor_id, k.issue_date
+      FROM ksef_invoices i
+      JOIN ksef_invoices k ON k.kind = 'purchase' AND k.company_id = i.company_id
+        AND k.corrected_hash IS NOT NULL AND k.corrected_hash = i.invoice_hash
+        AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL
+        AND abs(i.gross + k.gross) <= 0.02
+      WHERE i.kind = 'purchase' AND i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
+    )
+    UPDATE ksef_invoices x SET paid_date = p.issue_date, paid_via = 'korekta'
+    FROM pairs p WHERE x.id = p.inv_id OR x.id = p.kor_id`);
+  // fallback for korekty without the metadata link (suppliers rarely fill it):
+  // same seller NIP + same firm + amounts zero out + korekta not older than the
+  // invoice — but ONLY when the pairing is unambiguous in both directions
+  // (exactly one candidate invoice for the korekta and vice versa). Ambiguous
+  // cases (two open invoices with the same amount) stay manual by design.
+  await run(sql`
+    WITH cand AS (
+      SELECT k.id AS kor_id, i.id AS inv_id, k.issue_date,
+             count(*) OVER (PARTITION BY k.id) AS n_inv,
+             count(*) OVER (PARTITION BY i.id) AS n_kor
+      FROM ksef_invoices k
+      JOIN ksef_invoices i ON i.kind = 'purchase' AND i.company_id = k.company_id
+        AND i.seller_nip IS NOT NULL AND i.seller_nip = k.seller_nip
+        AND i.gross > 0 AND i.paid_date IS NULL AND i.manual_status IS NULL
+        AND abs(i.gross + k.gross) <= 0.02 AND i.issue_date <= k.issue_date
+      WHERE k.kind = 'purchase' AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL
+    )
+    UPDATE ksef_invoices x SET paid_date = c.issue_date, paid_via = 'korekta'
+    FROM cand c WHERE (x.id = c.inv_id OR x.id = c.kor_id) AND c.n_inv = 1 AND c.n_kor = 1`);
   return total;
 }
 
@@ -283,7 +359,8 @@ export async function ksefReceivablesAt(asOf: string): Promise<{
   credits: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] };
 }> {
   const r2 = (n: number) => Math.round(n * 100) / 100;
-  const rows = await db.select().from(ksefInvoicesTable).where(sql`${ksefInvoicesTable.issueDate} <= ${asOf}`);
+  const rows = await db.select().from(ksefInvoicesTable)
+    .where(and(eq(ksefInvoicesTable.kind, "sale"), sql`${ksefInvoicesTable.issueDate} <= ${asOf}`));
   const perClient = new Map<string, { client: string; count: number; gross: number }>();
   for (const inv of rows) {
     if (inv.segment === "cleaning") continue;
@@ -318,7 +395,8 @@ export async function ksefReceivablesAt(asOf: string): Promise<{
 // P&L revenue per client for the month (netto), source='ksef'; the cleaning
 // sub-business (wspólnoty) goes into its own segment
 export async function feedPnlRevenue(revenueMonth: string) {
-  const rows = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.revenueMonth, revenueMonth));
+  const rows = await db.select().from(ksefInvoicesTable)
+    .where(and(eq(ksefInvoicesTable.revenueMonth, revenueMonth), eq(ksefInvoicesTable.kind, "sale")));
   const byClient = new Map<string, { net: number; gross: number; count: number; firms: Set<string>; segment: string }>();
   const companies = new Map((await db.select().from(companiesTable)).map(c => [c.id, c.name]));
   for (const inv of rows) {

@@ -196,6 +196,9 @@ router.get("/bank/transactions", async (req, res) => {
   } else if (typeof q.bucket === "string" && BUCKET[q.bucket]) conds.push(sql.raw(BUCKET[q.bucket]!));
   else if (q.direction === "in" || q.direction === "out") conds.push(eq(bankTransactionsTable.direction, String(q.direction)));
   if (q.q) { const like = `%${String(q.q)}%`; conds.push(or(ilike(bankTransactionsTable.counterparty, like), ilike(bankTransactionsTable.title, like), ilike(bankTransactionsTable.txType, like))); }
+  const minA = Number(String(q.minAmount ?? "").replace(",", ".")), maxA = Number(String(q.maxAmount ?? "").replace(",", "."));
+  if (q.minAmount && Number.isFinite(minA)) conds.push(gte(bankTransactionsTable.amount, minA));
+  if (q.maxAmount && Number.isFinite(maxA)) conds.push(lte(bankTransactionsTable.amount, maxA));
   const where = conds.length ? and(...conds) : undefined;
 
   const sortCol = { date: bankTransactionsTable.valueDate, amount: bankTransactionsTable.amount, counterparty: bankTransactionsTable.counterparty }[String(q.sort)] ?? bankTransactionsTable.valueDate;
@@ -205,9 +208,15 @@ router.get("/bank/transactions", async (req, res) => {
 
   const [rows, [tot]] = await Promise.all([
     db.select().from(bankTransactionsTable).where(where).orderBy(dir(sortCol), desc(bankTransactionsTable.id)).limit(limit).offset(offset),
-    db.select({ n: count() }).from(bankTransactionsTable).where(where),
+    // totals over the WHOLE filter (not the page) — for the «Разом» footer row
+    db.select({
+      n: count(),
+      sumIn: sql<number>`coalesce(sum(amount) FILTER (WHERE direction='in'), 0)`,
+      sumOut: sql<number>`coalesce(sum(amount) FILTER (WHERE direction='out'), 0)`,
+    }).from(bankTransactionsTable).where(where),
   ]);
-  ok(res, { rows, total: tot?.n ?? 0, limit, offset });
+  const r2 = (n: any) => Math.round(Number(n ?? 0) * 100) / 100;
+  ok(res, { rows, total: tot?.n ?? 0, sums: { in: r2(tot?.sumIn), out: r2(tot?.sumOut) }, limit, offset });
 });
 
 // Filter option lists — only companies that actually have bank data (drops RS/TS)
