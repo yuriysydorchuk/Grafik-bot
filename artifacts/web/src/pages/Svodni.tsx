@@ -50,7 +50,8 @@ const OPEN_COLS: [keyof Row & string, string][] = [
 const SENS_COLS: [keyof Row & string, string][] = [
   ["hoursDeclared", "Год. księg."], ["ksiegBrutto", "Księg. brutto"], ["ksiegNetto", "Księg. netto (конто)"], ["gotowka", "Готівка"],
 ];
-// кадрові текстові колонки (hr.*) + ZUS-статус (extras.zusStatus)
+// кадрові текстові колонки (hr.*) + ZUS-статус (extras.zusStatus): базовий набір
+// показується завжди, решта (Stanowisko, Linia, Nr osobowy…) — коли є дані в місті
 const HR_COLS: [string, string][] = [
   ["extras.zusStatus", "Księgowość (статус)"],
   ["hr.zaswiadczenieDo", "Zaświadczenie до"],
@@ -58,12 +59,26 @@ const HR_COLS: [string, string][] = [
   ["hr.wniosekZaliczki", "Wniosek zaliczki"],
   ["hr.dataUrodzenia", "Дата народження"],
 ];
+const HR_LABEL: Record<string, string> = {
+  zusStatus: "Księgowość (статус)", zaswiadczenieDo: "Zaświadczenie до",
+  zaswiadczenieWystawione: "Zaśw. виставлено", wniosekZaliczki: "Wniosek zaliczki",
+  dataUrodzenia: "Дата народження", nrOsobowy: "Nr osobowy", stanowisko: "Stanowisko",
+  linia: "Linia", szkolenie: "Szkolenie", oddzial: "Oddział", firma: "Firma",
+  status: "Status", umowaOd: "Umowa od", umowaDo: "Umowa do",
+  dataStart: "Початок роботи", dataLiczymy: "Дата відліку", dataWypowiedzenia: "Wypowiedzenie",
+  dniOdpracowane: "Дні відпрац.", koniecStudiow: "Кінець студій", uwagi: "Uwagi",
+  powOsw: "Pow./Ośw.", hoursText: "Години (текст)", kontoNr: "Nr konta",
+};
 const EXTRA_LABEL: Record<string, string> = {
   nocneH: "Нічні [год]", doplataNocna: "Допл. нічні", oplataKierowcy: "Оплата водія",
   doplataEs: "Dopłata ES", badania: "Badania", nakladki: "Nakładki", zwrotKosztow: "Zwrot kosztów",
   kartaPobytu: "Karta pobytu", karaKlient: "Кара клієнта", karaEs: "Кара ES",
   zadluzenie: "Заборгованість", migawka: "Migawka", dokumenty: "Dokumenty", workListHours: "Work List [год]",
+  premiaBase: "Premia (кол.)", premiaAgram: "Premia Agram", premiaEs: "Premia ES",
+  ksiegHours: "Godzin faktycznie", kontoH: "Конто [год]", gotowkaH: "Готівка [год]",
 };
+const EXTRA_ORDER = Object.keys(EXTRA_LABEL);
+const extraLabel = (k: string) => EXTRA_LABEL[k] ?? k;
 const EXTRA_STUDENTS = "Додаткові студенти";
 const OFFICE_CITY = "Офіс"; // віртуальна вкладка поряд із містами
 const OFFICE_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
@@ -135,16 +150,33 @@ export default function Svodni() {
   useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = useMemo(() => cityRows.filter(r => r.factoryLabel === effFactory), [cityRows, effFactory]);
   const checks = useMemo(() => (data?.checks ?? []).filter(c => c.factoryLabel.split(" + ").includes(effFactory)), [data, effFactory]);
-  // extras, що зустрічаються в місті цього місяця (колонки для фільтра)
-  const cityExtraKeys = useMemo(
-    () => Object.keys(EXTRA_LABEL).filter(k => cityRows.some(r => typeof r.extras[k] === "number")),
-    [cityRows]);
+  // extras, що зустрічаються в місті цього місяця (усі числові ключі з даних,
+  // не лише відомі каталогу — фабричні нюанси на кшталт Sushi мають свої колонки)
+  const cityExtraKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const r of cityRows) for (const [k, v] of Object.entries(r.extras)) {
+      if (typeof v === "number" && k !== "blockOnly") keys.add(k);
+    }
+    const idx = (k: string) => { const i = EXTRA_ORDER.indexOf(k); return i < 0 ? EXTRA_ORDER.length : i; };
+    return [...keys].sort((a, b) => idx(a) - idx(b) || a.localeCompare(b));
+  }, [cityRows]);
+  // кадрові колонки: базовий набір + усі hr-ключі, що є в даних міста
+  const cityHrCols = useMemo(() => {
+    const cols = new Map<string, string>(HR_COLS);
+    const order = Object.keys(HR_LABEL);
+    const found = new Set<string>();
+    for (const r of cityRows) for (const k of Object.keys(r.hr)) if (r.hr[k]) found.add(k);
+    const dynamic = [...found].filter(k => !cols.has(`hr.${k}`))
+      .sort((a, b) => (order.indexOf(a) + 1 || order.length + 1) - (order.indexOf(b) + 1 || order.length + 1) || a.localeCompare(b));
+    for (const k of dynamic) cols.set(`hr.${k}`, HR_LABEL[k] ?? k);
+    return [...cols.entries()] as [string, string][];
+  }, [cityRows]);
   const allColumns: [string, string][] = useMemo(() => [
     ...OPEN_COLS as [string, string][],
-    ...cityExtraKeys.map(k => [`extras.${k}`, EXTRA_LABEL[k]!] as [string, string]),
-    ...HR_COLS,
+    ...cityExtraKeys.map(k => [`extras.${k}`, extraLabel(k)] as [string, string]),
+    ...cityHrCols,
     ...(data?.sensitive ? SENS_COLS as [string, string][] : []),
-  ], [cityExtraKeys, data?.sensitive]);
+  ], [cityExtraKeys, cityHrCols, data?.sensitive]);
   const visible = useMemo(() => {
     const v = new Set(allColumns.map(([k]) => k).filter(k => !hiddenCols.has(k)));
     if (hideKsieg) for (const [k] of SENS_COLS) v.delete(k);
@@ -274,7 +306,7 @@ export default function Svodni() {
       ) : (
         <div className="space-y-4">
           <FactoryTable month={effMonth} city={effCity} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
-            visible={visible} cityExtraKeys={cityExtraKeys} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows} />
+            visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
       )}
@@ -348,9 +380,9 @@ function EditableCell({ row, field, value, month, text, strong, options }: {
   );
 }
 
-function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, hideEmptyCols, onHideCol, cityRows }: {
+function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, cityHrCols, hideEmptyCols, onHideCol, cityRows }: {
   month: string; city: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
-  visible: Set<string>; cityExtraKeys: string[]; hideEmptyCols: boolean;
+  visible: Set<string>; cityExtraKeys: string[]; cityHrCols: [string, string][]; hideEmptyCols: boolean;
   onHideCol: (key: string) => void; cityRows: Row[];
 }) {
   const t = useT();
@@ -373,17 +405,17 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   const openCols = OPEN_COLS.filter(([k]) => show(k));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
   const extraKeys = cityExtraKeys.filter(k => show(`extras.${k}`));
-  const hrCols = HR_COLS.filter(([k]) => show(k));
+  const hrCols = cityHrCols.filter(([k]) => show(k));
   const colCount = 1 + openCols.length + extraKeys.length + hrCols.length + sensCols.length;
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
     const m = new Map<string, string[]>();
-    for (const [k] of HR_COLS) {
+    for (const [k] of cityHrCols) {
       const vals = [...new Set(cityRows.map(r => String(hrVal(r, k) ?? "")).filter(Boolean))].sort();
       m.set(k, vals);
     }
     return m;
-  }, [cityRows]);
+  }, [cityRows, cityHrCols]);
   const badChecks = checks.filter(c => !c.ok);
   const sum = (f: (r: Row) => number | null | undefined) => r2(rows.reduce((a, r) => a + (f(r) ?? 0), 0));
 
@@ -412,7 +444,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
             <tr>
               <th className="sticky left-0 z-30 bg-white px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Працівник")}</th>
               {openCols.map(([k, h]) => <Th key={k} label={t(h)} strong={k === "doWyplaty"} onHide={() => onHideCol(k)} />)}
-              {extraKeys.map(k => <Th key={k} label={t(EXTRA_LABEL[k]!)} onHide={() => onHideCol(`extras.${k}`)} />)}
+              {extraKeys.map(k => <Th key={k} label={t(extraLabel(k))} onHide={() => onHideCol(`extras.${k}`)} />)}
               {hrCols.map(([k, h]) => <Th key={k} label={t(h)} left onHide={() => onHideCol(k)} />)}
               {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} />)}
             </tr>

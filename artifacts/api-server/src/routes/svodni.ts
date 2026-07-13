@@ -26,6 +26,7 @@ const canSensitive = (req: AuthedRequest) => hasCap(req.admin!.role, req.admin!.
 // Відповідь API: закритий шар (księgowość/готівка/конто + чутливі extras)
 // віддається лише з capability svodniSensitive — фільтрація тут, не в UI.
 const SENSITIVE_EXTRAS = new Set(["kontoH", "gotowkaH", "doplataEs"]);
+const SENSITIVE_HR = new Set(["kontoNr"]); // номер банківського рахунку
 function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean) {
   const base: Record<string, unknown> = {
     id: r.id, city: r.city, firm: r.firm, factoryLabel: r.factoryLabel, factoryId: r.factoryId,
@@ -38,7 +39,8 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     potracenia: r.potracenia, doWyplaty: r.doWyplaty, brutto: r.brutto,
     isStudent: r.isStudent, under26: r.under26,
     extras: sensitive ? r.extras : Object.fromEntries(Object.entries(r.extras as Record<string, unknown>).filter(([k]) => !SENSITIVE_EXTRAS.has(k))),
-    hr: r.hr, mismatch: r.mismatch,
+    hr: sensitive ? r.hr : Object.fromEntries(Object.entries(r.hr as Record<string, unknown>).filter(([k]) => !SENSITIVE_HR.has(k))),
+    mismatch: r.mismatch,
   };
   if (sensitive) {
     base.hoursDeclared = r.hoursDeclared;
@@ -147,12 +149,17 @@ const HR_TEXT_FIELDS = new Set([
   "zusStatus", "zaswiadczenieDo", "zaswiadczenieWystawione", "koniecStudiow",
   "wniosekZaliczki", "dataStart", "dataLiczymy", "dataWypowiedzenia",
   "dataUrodzenia", "dniOdpracowane", "status", "uwagi", "powOsw", "kontoNr",
+  "stanowisko", "linia", "szkolenie", "nrOsobowy", "firma", "oddzial",
+  "umowaOd", "umowaDo", "hoursText",
 ]);
 const BOOL_FIELDS = new Set(["isStudent", "under26"]);
 const EXTRA_FIELDS = new Set([
   "nocneH", "doplataNocna", "oplataKierowcy", "doplataEs", "badania", "nakladki",
   "zwrotKosztow", "kartaPobytu", "karaKlient", "karaEs", "zadluzenie", "migawka", "dokumenty", "workListHours",
+  "premiaBase", "premiaAgram", "premiaEs", "ksiegHours", "kontoH", "gotowkaH",
 ]);
+// не компоненти виплати — правка не перераховує do wypłaty
+const NON_PAYOUT_EXTRAS = new Set(["workListHours", "ksiegHours", "kontoH", "gotowkaH", "premiaBase", "premiaAgram", "premiaEs"]);
 const PAYOUT_COMPONENTS = new Set([
   "hours", "rateNetto", "premia", "zaliczka", "zaliczkaBd", "hostel", "odziez",
   "dojazd", "kara", "komornik", "kaucja", "potracenia",
@@ -251,7 +258,9 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   const isHr = field.startsWith("hr.");
   const hrKey = isHr ? field.slice(3) : null;
   const isZusStatus = isExtra && extraKey === "zusStatus";
-  const sensitiveField = SENS_NUM_FIELDS.has(field);
+  const sensitiveField = SENS_NUM_FIELDS.has(field)
+    || (isExtra && !!extraKey && SENSITIVE_EXTRAS.has(extraKey))
+    || (isHr && hrKey === "kontoNr");
   if (sensitiveField && !canSensitive(req)) return fail(res, 403, "forbidden");
   if (!OPEN_NUM_FIELDS.has(field) && !sensitiveField && !TEXT_FIELDS.has(field) && !BOOL_FIELDS.has(field)
     && !(isExtra && extraKey && (EXTRA_FIELDS.has(extraKey) || isZusStatus))
@@ -297,7 +306,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 
   // перерахунок похідних (сайт — джерело: mismatch скидається)
   const merged: any = { ...row, ...set, extras: set.extras ?? row.extras };
-  const affectsPayout = PAYOUT_COMPONENTS.has(field) || (isExtra && extraKey !== "workListHours");
+  const affectsPayout = PAYOUT_COMPONENTS.has(field) || (isExtra && !NON_PAYOUT_EXTRAS.has(extraKey!));
   if (affectsPayout) {
     const payout = computePayout(merged, row.city as any);
     if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
