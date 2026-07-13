@@ -13,14 +13,17 @@ import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
-  computeMismatch, type SvodniParsedTab, type GotowkaRow,
+  parseOfficeTab, computeMismatch, type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const CHECK_TOL = 0.06;
 
 type City = "Люблін" | "Познань" | "Лодзь";
-const SKIP_TABS = /GODZIN.*MIES|TOTAL.*MIES|MAILE DO FV|^OFFICE|^ОФИС|^ОФІС|WORK ?LIST|^ЛИСТ|NOTATKA/i;
+const SKIP_TABS = /GODZIN.*MIES|TOTAL.*MIES|MAILE DO FV|WORK ?LIST|^ЛИСТ|NOTATKA/i;
+export const OFFICE_TAB_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
+// віртуальна вкладка «Додаткові студенти» (оптимізація) — лише для svodniSensitive
+export const EXTRA_STUDENTS_LABEL = "Додаткові студенти";
 
 export interface SvodniImportInput {
   sourceId: number | null;
@@ -118,7 +121,9 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   const tabs: SvodniParsedTab[] = [];
   for (const [t, rows] of grids) {
     if (SKIP_TABS.test(t.trim())) continue;
-    const parsed = city === "Лодзь" ? parseLodzFullTab(t, rows) : parseLublinTab(t, rows);
+    const parsed = OFFICE_TAB_RE.test(t.trim())
+      ? parseOfficeTab(t.trim(), rows)
+      : city === "Лодзь" ? parseLodzFullTab(t, rows) : parseLublinTab(t, rows);
     if (!parsed) continue;
     if (input.gotowka?.length) {
       overlayGotowka(parsed, input.gotowka.filter(g => key(g.factory) === key(t) || key(t).startsWith(key(g.factory))));
@@ -149,14 +154,15 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   const checksToInsert: (typeof svodniTabChecksTable.$inferInsert)[] = [];
   for (const tab of tabs) {
     const factoryId = facId(tab.factoryLabel);
+    const isOffice = OFFICE_TAB_RE.test(tab.factoryLabel);
     tab.rows.forEach((row, sortIdx) => {
-      const workerId = matchSvodniName(row.rawName, allWorkers)?.id ?? null;
-      if (workerId) res.matched++; else res.unmatched++;
+      const workerId = isOffice ? null : matchSvodniName(row.rawName, allWorkers)?.id ?? null;
+      if (workerId) res.matched++; else if (!isOffice) res.unmatched++;
       if (row.mismatch) res.mismatches++;
       rowsToInsert.push({
         periodMonth, city, firm: firm ?? tab.firmGuess, factoryLabel: tab.factoryLabel, factoryId,
         sourceId: input.sourceId, sortIdx, section: row.section, rawName: row.rawName,
-        workerId, linkStatus: workerId ? "auto" : "unmatched",
+        workerId, linkStatus: workerId ? "auto" : isOffice ? "office" : "unmatched",
         hoursNotified: row.hoursNotified, hours: row.hours, shifts: row.shifts,
         rateBrutto: row.rateBrutto, rateNetto: row.rateNetto, premia: row.premia,
         zaliczka: row.zaliczka, zaliczkaBd: row.zaliczkaBd, hostel: row.hostel,
@@ -193,7 +199,10 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   if (summary) {
     for (const [label, sm] of summary) {
       const matched = tabs.filter(t => {
+        // офісні вкладки і кириличні назви (порожній латинський key) — поза зведенням
+        if (OFFICE_TAB_RE.test(t.factoryLabel)) return false;
         const tk = key(t.factoryLabel);
+        if (!tk || !label) return false;
         return tk === label || tk.startsWith(label) || label.startsWith(tk);
       });
       if (!matched.length) continue;
@@ -270,6 +279,8 @@ export async function ensureSvodniFactories(): Promise<{ created: string[] }> {
     .from(svodniRowsTable).where(isNull(svodniRowsTable.factoryId));
   const created: string[] = [];
   for (const m of missing) {
+    if (OFFICE_TAB_RE.test(m.label) || m.label === EXTRA_STUDENTS_LABEL) continue; // не фабрики
+
     const [f] = await db.insert(factoriesTable)
       .values({ name: m.label, companyId: companyByFirm(m.firm) })
       .returning({ id: factoriesTable.id });

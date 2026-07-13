@@ -455,6 +455,48 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
   return out;
 }
 
+// ── Офісні вкладки (OFFICE ES / OFFICE KLINEX / Офис Лодзь …) ────────────────
+// Люблін: name | status | godziny | stawka | brutto | umowa od/do | koniec
+// studiów | zaświadczenie (+секції «LUBLIN», «STUDENTY», «Kierowcy | godziny»).
+// Лодзь: Biuro | godziny | migawka | zaliczka | stawka | razem.
+export function parseOfficeTab(tabLabel: string, rows: unknown[][]): SvodniParsedTab | null {
+  const out: SvodniParsedTab = { factoryLabel: tabLabel, firmGuess: null, rows: [], sheetSuma: {}, counts: {} };
+  const isLodz = rows.some(r => (r ?? []).some(c => /MIGAWKA/.test(norm(String(c ?? "")))));
+  let section: string | null = null;
+  for (const row of rows) {
+    const name = cell(row, 0);
+    if (!name) continue;
+    const n = norm(name);
+    if (/^BIURO$/.test(n)) continue; // заголовок лодзької вкладки
+    if (/^LUBLIN|^LODZ|OFFICE|STUDENTY/.test(n) && num(row?.[4]) == null && num(row?.[5]) == null) { section = name; continue; }
+    if (/^\d/.test(name) || isServiceRow(name)) continue;
+    // секційні заголовки всередині («Kierowcy | godziny | stawka»)
+    if (/GODZIN|DNI/.test(norm(cell(row, 1))) || /GODZIN|DNI/.test(norm(cell(row, 2)))) { section = name; continue; }
+    const p = emptyRow(section, name);
+    if (isLodz) {
+      const h = num(row?.[1]);
+      if (h != null) p.hours = h; else if (cell(row, 1)) p.hr.hoursText = cell(row, 1);
+      const mig = num(row?.[2]); if (mig != null) p.extras.migawka = mig;
+      p.zaliczka = num(row?.[3]);
+      p.rateBrutto = num(row?.[4]);
+      p.doWyplaty = num(row?.[5]);
+    } else {
+      if (cell(row, 1)) p.hr.status = cell(row, 1);
+      const h = num(row?.[2]);
+      if (h != null) p.hours = h; else if (cell(row, 2)) p.hr.hoursText = cell(row, 2);
+      p.rateBrutto = num(row?.[3]);
+      p.doWyplaty = num(row?.[4]);
+      const d5 = dateCell(row, 5); if (d5) p.hr.umowaOd = d5;
+      const d6 = dateCell(row, 6); if (d6) p.hr.umowaDo = d6;
+      const d7 = dateCell(row, 7); if (d7) p.hr.koniecStudiow = d7;
+      const d8 = dateCell(row, 8); if (d8) p.hr.zaswiadczenieDo = d8;
+    }
+    if (p.doWyplaty == null && p.hours == null && !p.hr.hoursText) continue;
+    out.rows.push(p);
+  }
+  return out.rows.length ? out : null;
+}
+
 // «WYPŁATA GOTÓWKĄ <фірма>»: вкладка = місяць MM.YYYY, рядки Imie/Nazwisko |
 // Fabryka | Razem | Na konto | (Dopłata) | Na renke → фактичний розподіл.
 export interface GotowkaRow { name: string; factory: string; razem: number | null; konto: number; renke: number }

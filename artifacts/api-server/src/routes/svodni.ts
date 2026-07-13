@@ -12,7 +12,7 @@ import { hasCap } from "../lib/roles";
 import { logger } from "../lib/logger";
 import { matchWorker } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
-import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26 } from "../services/svodniSync";
+import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout } from "../services/svodni";
 
 const router: IRouter = Router();
@@ -70,12 +70,16 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     .where(where)
     .orderBy(asc(svodniRowsTable.factoryLabel), asc(svodniRowsTable.sortIdx));
 
-  const rows = raw.map(({ r, workerName }) => serializeRow(r, workerName, sensitive));
+  // офісні вкладки і «Додаткові студенти» — лише із закритим доступом
+  const tabAllowed = (label: string) => sensitive || (!OFFICE_TAB_RE.test(label) && label !== EXTRA_STUDENTS_LABEL);
+  const rows = raw.filter(({ r }) => tabAllowed(r.factoryLabel))
+    .map(({ r, workerName }) => serializeRow(r, workerName, sensitive));
 
-  const checks = await db.select().from(svodniTabChecksTable).where(
+  const checks = (await db.select().from(svodniTabChecksTable).where(
     city
       ? and(eq(svodniTabChecksTable.periodMonth, month), eq(svodniTabChecksTable.city, city))
-      : eq(svodniTabChecksTable.periodMonth, month));
+      : eq(svodniTabChecksTable.periodMonth, month)))
+    .filter(c => tabAllowed(c.factoryLabel));
 
   const cities = (await db.selectDistinct({ c: svodniRowsTable.city }).from(svodniRowsTable)
     .where(eq(svodniRowsTable.periodMonth, month))).map(x => x.c).sort();
@@ -163,6 +167,9 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
   const newName = String(req.body?.newWorkerName ?? "").trim();
   if (!periodMonth || !city || !factoryLabel) return fail(res, 400, "periodMonth, city, factoryLabel обовʼязкові");
   if (!workerId && !newName) return fail(res, 400, "вкажи працівника або імʼя нового");
+  if ((OFFICE_TAB_RE.test(factoryLabel) || factoryLabel === EXTRA_STUDENTS_LABEL) && !canSensitive(req)) {
+    return fail(res, 403, "forbidden");
+  }
 
   // фабрика/фірма з довідника (для нового працівника — його фабрика)
   const factories = await db.select().from(factoriesTable);

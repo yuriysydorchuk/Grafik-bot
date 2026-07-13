@@ -125,6 +125,28 @@ test("реімпорт не перезаписує ручні рядки", opts,
   assert.ok(rows.some(r => r.rawName === "NOWAK ANNA" && !r.manual));
 });
 
+test("офісні вкладки і «Додаткові студенти» — лише з svodniSensitive", opts, async () => {
+  await seedRow({ factoryLabel: "OFFICE ES", rawName: "OFFICE PERSON", linkStatus: "office" });
+  await seedRow({ factoryLabel: "Додаткові студенти", rawName: "OPT STUDENT" });
+  await seedRow(); // звичайна фабрика TESTOWA
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+
+  const rBase = (await request(app).get("/api/svodni?month=2026-06").set("Cookie", base)).body;
+  assert.deepEqual([...new Set(rBase.rows.map((r: any) => r.factoryLabel))], ["TESTOWA"], "спецвкладки приховані без sensitive");
+
+  const rFull = (await request(app).get("/api/svodni?month=2026-06").set("Cookie", full)).body;
+  const labels = new Set(rFull.rows.map((r: any) => r.factoryLabel));
+  assert.ok(labels.has("OFFICE ES") && labels.has("Додаткові студенти"));
+
+  // додавання в спецвкладку без sensitive — 403
+  const deny = await request(app).post("/api/svodni/rows").set("Cookie", base).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "Додаткові студенти", newWorkerName: "X Y" });
+  assert.equal(deny.status, 403);
+});
+
 test("додавання людини: префіл із профілю; новий — авто-створення профілю; правки синхронізуються назад", opts, async () => {
   const owner = (await seedAdmin({ role: "owner" })).cookie;
   // наявний працівник із властивостями в профілі
