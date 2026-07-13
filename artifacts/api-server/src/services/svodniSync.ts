@@ -9,7 +9,7 @@ import {
 } from "@workspace/db";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
-import { matchWorker } from "../bot/workerMatch";
+import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
@@ -63,6 +63,30 @@ const FACTORY_LABEL_ALIASES: Record<string, string> = {
   ALLMIZ: "ALMIZ",
 };
 
+// Матчинг імені сводної до працівника. Обробляє два системні кейси:
+//  1) дублікатні рядки однієї людини (fired + active після повторного найму)
+//     блокують «впевнений» матч нічиєю 1.0/1.0 → дедуп: активний > новіший;
+//  2) сводна пише повне імʼя з middle-іменами («ELHAGALY MOHAMED HELAL
+//     ABDELSATAR» vs «Elhagaly Mohamed») → зворотний скоринг: усі токени
+//     системного імені присутні в імені сводної.
+type WLike = { id: number; fullName: string; workerCode: string | null; isActive?: boolean };
+export function dedupeWorkers<T extends WLike>(workers: T[]): T[] {
+  const byName = new Map<string, T>();
+  for (const w of workers) {
+    const k = normalizeName(w.fullName);
+    const cur = byName.get(k);
+    if (!cur || (w.isActive && !cur.isActive) || (w.isActive === cur.isActive && w.id > cur.id)) byName.set(k, w);
+  }
+  return [...byName.values()];
+}
+export function matchSvodniName<T extends WLike>(rawName: string, workers: T[]): T | null {
+  const cleaned = cleanName(rawName);
+  const m = matchWorker(cleaned, workers);
+  if (m.confident) return m.confident;
+  const reverse = m.candidates.filter(w => nameScore(w.fullName, cleaned) >= 0.99);
+  return reverse.length === 1 ? reverse[0]! : null;
+}
+
 // фабрики системи: аліас → точний key → префікс
 async function factoryIdByLabel(): Promise<(label: string) => number | null> {
   const rows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
@@ -111,9 +135,10 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     tabs.push(parsed);
   }
 
-  // матчинг людей: активні + звільнені (сводна легально містить звільнених)
-  const allWorkers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode })
-    .from(workersTable);
+  // матчинг людей: активні + звільнені (сводна легально містить звільнених),
+  // дублікати однієї людини схлопуються (активний рядок виграє)
+  const allWorkers = dedupeWorkers(await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
+    .from(workersTable));
   const facId = await factoryIdByLabel();
 
   const rowsToInsert: (typeof svodniRowsTable.$inferInsert)[] = [];
@@ -121,9 +146,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   for (const tab of tabs) {
     const factoryId = facId(tab.factoryLabel);
     tab.rows.forEach((row, sortIdx) => {
-      // імена в сводних із дописками («- wózkowy», «*(2000 zl na kartu)») — матчимо очищене
-      const m = matchWorker(cleanName(row.rawName), allWorkers);
-      const workerId = m.confident?.id ?? null;
+      const workerId = matchSvodniName(row.rawName, allWorkers)?.id ?? null;
       if (workerId) res.matched++; else res.unmatched++;
       if (row.mismatch) res.mismatches++;
       rowsToInsert.push({
@@ -210,16 +233,16 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
 // рядки сводних живуть постійно, тож щойно людина зʼявляється в workers —
 // цей прохід підвʼязує її історію за іменем.
 export async function rematchSvodni(): Promise<{ linked: number }> {
-  const allWorkers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode })
-    .from(workersTable);
+  const allWorkers = dedupeWorkers(await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
+    .from(workersTable));
   const unmatched = await db.select({ id: svodniRowsTable.id, rawName: svodniRowsTable.rawName })
     .from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "unmatched"));
   let linked = 0;
   for (const row of unmatched) {
-    const m = matchWorker(cleanName(row.rawName), allWorkers);
-    if (!m.confident) continue;
+    const w = matchSvodniName(row.rawName, allWorkers);
+    if (!w) continue;
     await db.update(svodniRowsTable)
-      .set({ workerId: m.confident.id, linkStatus: "auto" })
+      .set({ workerId: w.id, linkStatus: "auto" })
       .where(eq(svodniRowsTable.id, row.id));
     linked++;
   }
