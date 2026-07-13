@@ -62,6 +62,7 @@ export const workersTable = pgTable("workers", {
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
   hourlyRate: real("hourly_rate").notNull().default(31.5), // gross PLN/hour
+  hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться
   isStudent: boolean("is_student").notNull().default(false),
   under26: boolean("under_26").notNull().default(false),
   firedAt: timestamp("fired_at"),
@@ -712,6 +713,73 @@ export const payrollOfficeRowsTable = pgTable("payroll_office_rows", {
   koniecStudiow: text("koniec_studiow"),
   zaswiadczenie: text("zaswiadczenie"),
   sortIdx: integer("sort_idx").notNull().default(0),
+});
+
+// Сводні — повне дзеркало зарплатних таблиць по містах (крок до ведення на
+// сайті). Рядок = людина × фабрика × місяць з усіма колонками таблиці;
+// чутливий шар (фактичні vs księgowość години, готівка) віддається лише з
+// capability svodniSensitive. extras — фабричні нюанси (нічні, водійські,
+// migawka, Ew.-години…), hr — кадрове, sheet_values/mismatch — звірка формул.
+export const svodniRowsTable = pgTable("svodni_rows", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(),   // YYYY-MM
+  city: text("city").notNull(),                  // Люблін | Познань | Лодзь
+  firm: text("firm"),                            // ES | ESO | Klinex
+  factoryLabel: text("factory_label").notNull(), // назва вкладки-фабрики
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  sourceId: integer("source_id").references(() => payrollSourcesTable.id),
+  sortIdx: integer("sort_idx").notNull().default(0),
+  section: text("section"),                      // секція вкладки (KOBIETY / NIE OPODATKOWANE / …)
+  rawName: text("raw_name").notNull(),
+  workerId: integer("worker_id").references(() => workersTable.id),
+  linkStatus: text("link_status").notNull().default("unmatched"), // auto | confirmed | unmatched | external
+  hoursNotified: real("hours_notified"),
+  hours: real("hours"),                          // фактичні години (відкритий шар)
+  shifts: real("shifts"),
+  rateBrutto: real("rate_brutto"),
+  rateNetto: real("rate_netto"),
+  premia: real("premia"),
+  zaliczka: real("zaliczka"),
+  zaliczkaBd: real("zaliczka_bd"),
+  hostel: real("hostel"),
+  odziez: real("odziez"),
+  dojazd: real("dojazd"),
+  kara: real("kara"),
+  komornik: real("komornik"),
+  kaucja: real("kaucja"),
+  potracenia: real("potracenia"),
+  doWyplaty: real("do_wyplaty"),                 // повне netto до виплати
+  brutto: real("brutto"),
+  // закритий шар (лише svodniSensitive)
+  hoursDeclared: real("hours_declared"),
+  ksiegBrutto: real("ksieg_brutto"),
+  ksiegNetto: real("ksieg_netto"),
+  gotowka: real("gotowka"),
+  konto: real("konto"),
+  isStudent: boolean("is_student"),
+  under26: boolean("under_26"),
+  extras: jsonb("extras").notNull().default({}),
+  hr: jsonb("hr").notNull().default({}),
+  sheetValues: jsonb("sheet_values").notNull().default({}),
+  mismatch: jsonb("mismatch"),                   // null = наш перерахунок збігся з таблицею
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Контроль сум по вкладці: сума наших рядків vs рядок SUMA у вкладці vs
+// зведення (GODZIN MIESIĘCZNIE / Total Miesiąc) — розбіжність видно одразу.
+export const svodniTabChecksTable = pgTable("svodni_tab_checks", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(),
+  city: text("city").notNull(),
+  firm: text("firm"),
+  factoryLabel: text("factory_label").notNull(),
+  metric: text("metric").notNull(),              // hours | do_wyplaty | gotowka | …
+  ours: real("ours"),
+  sheetSuma: real("sheet_suma"),
+  summaryTab: real("summary_tab"),
+  ok: boolean("ok").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // Sales invoices mirrored from KSeF (Krajowy System e-Faktur), per firm.

@@ -5,13 +5,15 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
   viewFinance: "Фінанси (ставки, рахунки)",
   assignDrivers: "Водійські дії (борд, призначення, посадка)",
   deleteWorkers: "Видаляти працівників назавжди",
+  svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",
+  svodniSensitive: "Сводні — закритий шар (księgowość, готівка)",
 };
 
 // Pages a role can be granted access to (nav + route guards).
@@ -20,7 +22,7 @@ export const PAGE_LABEL: Record<string, string> = {
   "/orders": "Замовлення", "/availability": "Доступність", "/reliability": "Надійність",
   "/hours": "Облік годин", "/absences": "Відсутності", "/advances": "Аванси", "/trips": "Поїздки",
   "/mileage": "Звіт по пробігу",
-  "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/balance": "Баланс", "/obligations": "Належності", "/invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/ksef": "KSeF", "/settings": "Налаштування",
+  "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/balance": "Баланс", "/obligations": "Належності", "/invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/svodni": "Сводні", "/ksef": "KSeF", "/settings": "Налаштування",
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
   "/drivers": "Водії", "/factories": "Фабрики", "/admins": "Адміни",
 };

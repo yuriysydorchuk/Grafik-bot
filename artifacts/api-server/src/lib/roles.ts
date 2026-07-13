@@ -6,19 +6,21 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
   viewFinance: "Фінанси (ставки, рахунки)",
   assignDrivers: "Водійські дії (борд, призначення, посадка)",
   deleteWorkers: "Видаляти працівників назавжди",
+  svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",
+  svodniSensitive: "Сводні — закритий шар (księgowość, готівка)",
 };
 
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
 export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
-  "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/balance", "/obligations", "/invoices", "/pnl", "/payroll", "/ksef", "/settings",
+  "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/balance", "/obligations", "/invoices", "/pnl", "/payroll", "/svodni", "/ksef", "/settings",
   "/workers", "/recruitment", "/broadcast", "/drivers", "/factories", "/admins",
 ] as const;
 
