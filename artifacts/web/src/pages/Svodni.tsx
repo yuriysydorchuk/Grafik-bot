@@ -64,6 +64,8 @@ const EXTRA_LABEL: Record<string, string> = {
   kartaPobytu: "Karta pobytu", karaKlient: "Кара клієнта", karaEs: "Кара ES",
   zadluzenie: "Заборгованість", migawka: "Migawka", dokumenty: "Dokumenty", workListHours: "Work List [год]",
 };
+const EXTRA_STUDENTS = "Додаткові студенти";
+const OFFICE_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : "";
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
@@ -112,11 +114,9 @@ export default function Svodni() {
     for (const c of (data?.checks ?? [])) {
       if (c.city === effCity && !c.factoryLabel.includes(" + ")) set.add(c.factoryLabel);
     }
-    return [...set].sort((a, b) => {
-      const ea = cityRows.some(r => r.factoryLabel === a) ? 0 : 1;
-      const eb = cityRows.some(r => r.factoryLabel === b) ? 0 : 1;
-      return ea - eb || a.localeCompare(b); // порожні — в кінець
-    });
+    if (data?.sensitive) set.add(EXTRA_STUDENTS); // віртуальна вкладка оптимізації
+    const rank = (f: string) => f === EXTRA_STUDENTS ? 3 : OFFICE_RE.test(f) ? 2 : cityRows.some(r => r.factoryLabel === f) ? 0 : 1;
+    return [...set].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   }, [cityRows, data, effCity]);
   const effFactory = factories.includes(factory) ? factory : factories[0] ?? "";
   useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -237,11 +237,14 @@ export default function Svodni() {
           {factories.map(f => {
             const fl = factoryFlags.get(f)!;
             const active = effFactory === f;
+            const special = f === EXTRA_STUDENTS || OFFICE_RE.test(f);
             return (
               <button key={f} onClick={() => setFactory(f)}
                 className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
-                  active ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
-                {f}
+                  active ? "border-red-600 bg-red-600 text-white shadow-sm"
+                  : special ? "border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-400"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                {f === EXTRA_STUDENTS ? "🎓 " : OFFICE_RE.test(f) ? "🏢 " : ""}{f}
                 <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>{fl.count}</span>
                 {fl.mismatch && <span title={t("є розбіжності формул")}>⚠</span>}
                 {fl.manual && <PencilLine className={`h-3 w-3 ${active ? "text-red-100" : "text-sky-500"}`} />}
