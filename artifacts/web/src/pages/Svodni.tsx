@@ -5,7 +5,7 @@
 // приходить з API лише з capability svodniSensitive — показуємо, що прийшло.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Link2, UserX, CircleAlert, CircleCheck, Users, PencilLine, Columns3 } from "lucide-react";
+import { RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { get, post, patch } from "../lib/api";
@@ -72,9 +72,9 @@ export default function Svodni() {
   const [factory, setFactory] = useState<string>("");
   const [showLinks, setShowLinks] = useState(false);
   const [showCols, setShowCols] = useState(false);
-  const [hideEmpty, setHideEmpty] = useState(() => localStorage.getItem("svodni.hideEmpty") === "1");
+  const [hideEmptyCols, setHideEmptyCols] = useState(() => localStorage.getItem("svodni.hideEmptyCols") === "1");
   const [hideKsieg, setHideKsieg] = useState(() => localStorage.getItem("svodni.hideKsieg") === "1");
-  const toggleEmpty = () => setHideEmpty(v => { localStorage.setItem("svodni.hideEmpty", v ? "0" : "1"); return !v; });
+  const toggleEmptyCols = () => setHideEmptyCols(v => { localStorage.setItem("svodni.hideEmptyCols", v ? "0" : "1"); return !v; });
   const toggleKsieg = () => setHideKsieg(v => { localStorage.setItem("svodni.hideKsieg", v ? "0" : "1"); return !v; });
   // видимість колонок: дефолт — усі; вибір зберігається в браузері
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(() => {
@@ -117,9 +117,7 @@ export default function Svodni() {
     if (hideKsieg) for (const [k] of SENS_COLS) v.delete(k);
     return v;
   }, [allColumns, hiddenCols, hideKsieg]);
-  const shownRows = useMemo(
-    () => hideEmpty ? rows.filter(r => r.hours != null || r.doWyplaty != null) : rows,
-    [rows, hideEmpty]);
+
 
   const sync = useMutation({
     mutationFn: () => post("/svodni/sync", { months: [effMonth] }),
@@ -155,7 +153,7 @@ export default function Svodni() {
         </div>
         <div className="ml-auto flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => setShowCols(v => !v)}><Columns3 className="h-4 w-4" /> {t("Колонки")}</Button>
-          <Button variant="secondary" onClick={toggleEmpty}>{hideEmpty ? t("Показати порожні рядки") : t("Сховати порожні рядки")}</Button>
+          <Button variant="secondary" onClick={toggleEmptyCols}>{hideEmptyCols ? t("Показати порожні колонки") : t("Сховати порожні колонки")}</Button>
           {data?.sensitive && (
             <Button variant="secondary" onClick={toggleKsieg}>{hideKsieg ? t("Показати księgowe") : t("Сховати księgowe")}</Button>
           )}
@@ -200,8 +198,8 @@ export default function Svodni() {
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
-          <FactoryTable month={effMonth} label={effFactory} rows={shownRows} checks={checks} sensitive={!!data?.sensitive}
-            visible={visible} cityExtraKeys={cityExtraKeys} />
+          <FactoryTable month={effMonth} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
+            visible={visible} cityExtraKeys={cityExtraKeys} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
       )}
@@ -209,27 +207,57 @@ export default function Svodni() {
   );
 }
 
-// Редагована клітинка: клік → інпут, Enter/blur → PATCH. Порожнє значення = очистити.
-function EditableCell({ row, field, value, month, sensitive, text }: {
-  row: Row; field: string; value: unknown; month: string; sensitive?: boolean; text?: boolean;
+// Заголовок колонки з кнопкою «сховати» (з\'являється при наведенні)
+function Th({ label, onHide, left, amber }: { label: string; onHide: () => void; left?: boolean; amber?: boolean }) {
+  return (
+    <th className={`group/th px-1.5 py-2 font-medium whitespace-nowrap ${left ? "text-left" : "text-right"} ${amber ? "bg-amber-50/60" : ""}`}>
+      <span className="inline-flex items-center gap-0.5">
+        {label}
+        <button type="button" onClick={onHide} title="Сховати колонку"
+          className="invisible rounded px-0.5 text-slate-300 hover:bg-slate-100 hover:text-slate-500 group-hover/th:visible">×</button>
+      </span>
+    </th>
+  );
+}
+
+// Редагована клітинка: клік → інпут (для кадрових — випадаючий список значень
+// колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
+function EditableCell({ row, field, value, month, sensitive, text, options }: {
+  row: Row; field: string; value: unknown; month: string; sensitive?: boolean; text?: boolean; options?: string[];
 }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [freeText, setFreeText] = useState(false);
   const [draft, setDraft] = useState("");
   const save = useMutation({
     mutationFn: (v: string) => patch<Row>(`/svodni/rows/${row.id}`, { field, value: v === "" ? null : v }),
     onSuccess: (updated) => {
       qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: old.rows.map(r => r.id === updated.id ? updated : r) } : old);
       setEditing(false);
+      setFreeText(false);
     },
-    onError: (e: any) => { toast.error(e.message); setEditing(false); },
+    onError: (e: any) => { toast.error(e.message); setEditing(false); setFreeText(false); },
   });
+  if (editing && options?.length && !freeText) {
+    // випадаючий список значень колонки (як в екселі) + «(інше…)» для свого тексту
+    return (
+      <select autoFocus value={draft}
+        onChange={e => { if (e.target.value === "__other__") { setFreeText(true); setDraft(""); } else save.mutate(e.target.value); }}
+        onBlur={() => setEditing(false)}
+        onKeyDown={e => { if (e.key === "Escape") setEditing(false); }}
+        className="w-44 rounded border border-red-300 px-1 py-0.5 text-left text-xs focus:outline-none">
+        <option value="">{"—"}</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        <option value="__other__">{t("(інше…)")}</option>
+      </select>
+    );
+  }
   if (editing) {
     return (
       <input autoFocus value={draft} onChange={e => setDraft(e.target.value)}
         onBlur={() => save.mutate(draft)}
-        onKeyDown={e => { if (e.key === "Enter") save.mutate(draft); if (e.key === "Escape") setEditing(false); }}
+        onKeyDown={e => { if (e.key === "Enter") save.mutate(draft); if (e.key === "Escape") { setEditing(false); setFreeText(false); } }}
         className={`w-20 rounded border border-red-300 px-1 py-0.5 text-right text-xs focus:outline-none ${text ? "w-40 text-left" : ""}`} />
     );
   }
@@ -243,17 +271,32 @@ function EditableCell({ row, field, value, month, sensitive, text }: {
   );
 }
 
-function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtraKeys }: {
+function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtraKeys, hideEmptyCols, onHideCol, cityRows }: {
   month: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
-  visible: Set<string>; cityExtraKeys: string[];
+  visible: Set<string>; cityExtraKeys: string[]; hideEmptyCols: boolean;
+  onHideCol: (key: string) => void; cityRows: Row[];
 }) {
   const t = useT();
-  // колонки не ховаються за порожнечею — керує фільтр «Колонки» зверху
-  const openCols = OPEN_COLS.filter(([k]) => visible.has(k));
-  const sensCols = sensitive ? SENS_COLS.filter(([k]) => visible.has(k)) : [];
-  const extraKeys = cityExtraKeys.filter(k => visible.has(`extras.${k}`));
-  const hrCols = HR_COLS.filter(([k]) => visible.has(k));
   const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
+  // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху)
+  const hasVal = (k: string) => rows.some(r =>
+    k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
+    k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
+    (r as any)[k] != null);
+  const show = (k: string) => visible.has(k) && (!hideEmptyCols || hasVal(k));
+  const openCols = OPEN_COLS.filter(([k]) => show(k));
+  const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
+  const extraKeys = cityExtraKeys.filter(k => show(`extras.${k}`));
+  const hrCols = HR_COLS.filter(([k]) => show(k));
+  // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
+  const hrOptions = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const [k] of HR_COLS) {
+      const vals = [...new Set(cityRows.map(r => String(hrVal(r, k) ?? "")).filter(Boolean))].sort();
+      m.set(k, vals);
+    }
+    return m;
+  }, [cityRows]);
   const badChecks = checks.filter(c => !c.ok);
   const sum = (f: (r: Row) => number | null | undefined) => r2(rows.reduce((a, r) => a + (f(r) ?? 0), 0));
 
@@ -274,10 +317,10 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
           <thead>
             <tr className="text-[11px] text-slate-400">
               <th className="sticky left-0 z-10 bg-white px-3 py-2 text-left font-medium">{t("Працівник")}</th>
-              {openCols.map(([k, h]) => <th key={k} className="px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(h)}</th>)}
-              {extraKeys.map(k => <th key={k} className="px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(EXTRA_LABEL[k]!)}</th>)}
-              {hrCols.map(([k, h]) => <th key={k} className="px-1.5 py-2 text-left font-medium whitespace-nowrap">{t(h)}</th>)}
-              {sensCols.map(([k, h]) => <th key={k} className="bg-amber-50/60 px-1.5 py-2 text-right font-medium whitespace-nowrap">{t(h)}</th>)}
+              {openCols.map(([k, h]) => <Th key={k} label={t(h)} onHide={() => onHideCol(k)} />)}
+              {extraKeys.map(k => <Th key={k} label={t(EXTRA_LABEL[k]!)} onHide={() => onHideCol(`extras.${k}`)} />)}
+              {hrCols.map(([k, h]) => <Th key={k} label={t(h)} left onHide={() => onHideCol(k)} />)}
+              {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} />)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -312,7 +355,7 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
                 ))}
                 {hrCols.map(([k]) => (
                   <td key={k} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
-                    <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text />
+                    <EditableCell row={r} field={k} value={hrVal(r, k)} month={month} text options={hrOptions.get(k)} />
                   </td>
                 ))}
                 {sensCols.map(([k]) => (
@@ -428,9 +471,8 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
 function UnmatchedPanel() {
   const t = useT();
   const qc = useQueryClient();
-  const { data } = useQuery<{ people: Unmatched[]; external: Omit<Unmatched, "candidates">[] }>({ queryKey: ["svodni-unmatched"], queryFn: () => get("/svodni/unmatched") });
+  const { data } = useQuery<{ people: Unmatched[] }>({ queryKey: ["svodni-unmatched"], queryFn: () => get("/svodni/unmatched") });
   const people = data?.people ?? [];
-  const external = data?.external ?? [];
   const link = useMutation({
     mutationFn: (p: { rawName: string; city: string; workerId?: number; status: string }) => post("/svodni/link", p),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["svodni"] }); qc.invalidateQueries({ queryKey: ["svodni-unmatched"] }); toast.success(t("Збережено")); },
@@ -460,11 +502,6 @@ function UnmatchedPanel() {
                           <Link2 className="mr-0.5 inline h-3 w-3" />{c.name}
                         </button>
                       ))}
-                      <button onClick={() => link.mutate({ rawName: p.rawName, city: p.city, status: "external" })}
-                        className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-200"
-                        title={t("Поза системою (не працівник)")}>
-                        <UserX className="mr-0.5 inline h-3 w-3" />{t("зовнішній")}
-                      </button>
                     </div>
                   </td>
                 </tr>
@@ -472,32 +509,6 @@ function UnmatchedPanel() {
             </tbody>
           </table>
         </div>
-      )}
-      {external.length > 0 && (
-        <>
-          <div className="border-y border-slate-100 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-500"
-            title={t("Позначені «зовнішніми»: не працівники агенції (офіс, разові). Рядки лишаються в таблицях сводних.")}>
-            {t("Зовнішні (не працівники агенції)")} ({external.length})
-          </div>
-          <div className="max-h-48 overflow-y-auto">
-            <table className="w-full text-xs">
-              <tbody className="divide-y divide-slate-100">
-                {external.map(p => (
-                  <tr key={`ext-${p.city}-${p.rawName}`}>
-                    <td className="px-4 py-1.5 text-slate-500">{p.rawName}</td>
-                    <td className="px-2 py-1.5 text-slate-400">{t(p.city)} · {p.factories.join(", ")}</td>
-                    <td className="px-2 py-1.5 text-right">
-                      <button onClick={() => link.mutate({ rawName: p.rawName, city: p.city, status: "unmatched" })}
-                        className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200">
-                        {t("повернути в список")}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
       )}
     </Card>
   );

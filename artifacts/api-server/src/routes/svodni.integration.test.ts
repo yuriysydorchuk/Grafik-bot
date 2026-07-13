@@ -87,6 +87,15 @@ test("редагування: перерахунок до виплати, manual
   assert.equal(r2.status, 200);
   assert.equal(r2.body.gotowka, 1802.5, "готівка = до виплати − конто");
 
+  // księgowe години: netto/brutto зі ставок, konto, готівка — як формули таблиці
+  const r3 = await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", full).set(H)
+    .send({ field: "hoursDeclared", value: 100 });
+  assert.equal(r3.status, 200);
+  assert.equal(r3.body.ksiegNetto, 2535, "ksiegNetto = 100 × 25.35");
+  assert.equal(r3.body.ksiegBrutto, 3140, "ksiegBrutto = 100 × 31.4");
+  assert.equal(r3.body.konto, 2535);
+  assert.equal(r3.body.gotowka, 1267.5, "готівка = 3802.5 − 2535");
+
   // невідоме поле не редагується
   assert.equal((await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", full).set(H)
     .send({ field: "workerId", value: 1 })).status, 400);

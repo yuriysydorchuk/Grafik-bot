@@ -83,24 +83,8 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   ok(res, { month, city, cities, rows, checks, sensitive });
 });
 
-// незматчені люди: місто · фабрика · місяці + кандидати для привʼязки;
-// окремо — позначені «зовнішніми» (не працівники агенції), щоб можна було повернути
+// незматчені люди: місто · фабрика · місяці + кандидати для привʼязки
 router.get("/svodni/unmatched", requireCap("svodni"), async (_req, res) => {
-  const extRows = await db.select({
-    rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
-    factoryLabel: svodniRowsTable.factoryLabel, periodMonth: svodniRowsTable.periodMonth,
-  }).from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "external"));
-  const extGrouped = new Map<string, { rawName: string; city: string; factories: Set<string>; months: Set<string> }>();
-  for (const r of extRows) {
-    const k = `${r.city}::${cleanName(r.rawName).toUpperCase()}`;
-    const g = extGrouped.get(k) ?? extGrouped.set(k, { rawName: r.rawName, city: r.city, factories: new Set(), months: new Set() }).get(k)!;
-    g.factories.add(r.factoryLabel);
-    g.months.add(r.periodMonth);
-  }
-  const external = [...extGrouped.values()].map(g => ({
-    rawName: g.rawName, city: g.city, factories: [...g.factories].sort(), months: [...g.months].sort(),
-  })).sort((a, b) => a.city.localeCompare(b.city) || a.rawName.localeCompare(b.rawName));
-
   const rows = await db.select({
     rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
     factoryLabel: svodniRowsTable.factoryLabel, periodMonth: svodniRowsTable.periodMonth,
@@ -119,7 +103,7 @@ router.get("/svodni/unmatched", requireCap("svodni"), async (_req, res) => {
     factories: [...g.factories].sort(), months: [...g.months].sort(),
     candidates: matchWorker(cleanName(g.rawName), workers).candidates.slice(0, 4).map(w => ({ id: w.id, name: w.fullName })),
   })).sort((a, b) => a.city.localeCompare(b.city) || a.rawName.localeCompare(b.rawName));
-  ok(res, { people: out, external });
+  ok(res, { people: out });
 });
 
 // ручна привʼязка / «зовнішній» / скидання — на всі рядки цього імені в місті
@@ -127,9 +111,9 @@ router.post("/svodni/link", requireCap("svodni"), async (req, res) => {
   const rawName = String(req.body?.rawName ?? "").trim();
   const city = String(req.body?.city ?? "").trim();
   const workerId = req.body?.workerId != null ? Number(req.body.workerId) : null;
-  const status = String(req.body?.status ?? (workerId ? "confirmed" : "external"));
+  const status = String(req.body?.status ?? "confirmed");
   if (!rawName || !city) return fail(res, 400, "rawName і city обовʼязкові");
-  if (!["confirmed", "external", "unmatched"].includes(status)) return fail(res, 400, "bad status");
+  if (!["confirmed", "unmatched"].includes(status)) return fail(res, 400, "bad status");
   if (status === "confirmed" && !workerId) return fail(res, 400, "workerId обовʼязковий для confirmed");
   const all = await db.select({ id: svodniRowsTable.id, rawName: svodniRowsTable.rawName })
     .from(svodniRowsTable).where(eq(svodniRowsTable.city, city));
@@ -231,11 +215,19 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       set.brutto = Math.round(merged.hours * merged.rateBrutto * 100) / 100;
     }
   }
-  const ksiegNetto = field === "konto" ? merged.konto : merged.ksiegNetto;
-  if ((affectsPayout || field === "ksiegNetto" || field === "konto") && ksiegNetto != null && merged.doWyplaty != null) {
+  // księgowa частина: години księg. → netto/brutto зі ставок; konto ↔ ksiegNetto;
+  // готівка = до виплати − ksiegNetto (+ Dopłata ES) — та сама формула, що в таблиці
+  const rnd = (n: number) => Math.round(n * 100) / 100;
+  if (field === "hoursDeclared" && merged.hoursDeclared != null) {
+    if (merged.rateNetto != null) { merged.ksiegNetto = rnd(merged.hoursDeclared * merged.rateNetto); set.ksiegNetto = merged.ksiegNetto; set.konto = merged.ksiegNetto; }
+    if (merged.rateBrutto != null) { merged.ksiegBrutto = rnd(merged.hoursDeclared * merged.rateBrutto); set.ksiegBrutto = merged.ksiegBrutto; }
+  }
+  if (field === "konto") { merged.ksiegNetto = merged.konto; set.ksiegNetto = merged.konto; }
+  if (field === "ksiegNetto") set.konto = merged.ksiegNetto;
+  const touchesKsieg = ["hoursDeclared", "ksiegNetto", "ksiegBrutto", "konto"].includes(field);
+  if ((affectsPayout || touchesKsieg) && merged.ksiegNetto != null && merged.doWyplaty != null) {
     const doplata = typeof merged.extras?.doplataEs === "number" ? merged.extras.doplataEs : 0;
-    set.gotowka = Math.round((merged.doWyplaty - ksiegNetto + doplata) * 100) / 100;
-    if (field === "konto") set.ksiegNetto = merged.konto;
+    set.gotowka = rnd(merged.doWyplaty - merged.ksiegNetto + doplata);
   }
 
   await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
