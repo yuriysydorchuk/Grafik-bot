@@ -159,8 +159,12 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       const workerId = isOffice ? null : matchSvodniName(row.rawName, allWorkers)?.id ?? null;
       if (workerId) res.matched++; else if (!isOffice) res.unmatched++;
       if (row.mismatch) res.mismatches++;
+      // студентські секції офісних вкладок (LUBLIN STUDENTY ES/KLINEX) — це
+      // оптимізаційні студенти: живуть у вкладці «Додаткові студенти»
+      const isOptStudent = isOffice && /STUDENT/i.test(row.section ?? "");
       rowsToInsert.push({
-        periodMonth, city, firm: firm ?? tab.firmGuess, factoryLabel: tab.factoryLabel, factoryId,
+        periodMonth, city, firm: firm ?? tab.firmGuess,
+        factoryLabel: isOptStudent ? EXTRA_STUDENTS_LABEL : tab.factoryLabel, factoryId,
         sourceId: input.sourceId, sortIdx, section: row.section, rawName: row.rawName,
         workerId, linkStatus: workerId ? "auto" : isOffice ? "office" : "unmatched",
         hoursNotified: row.hoursNotified, hours: row.hours, shifts: row.shifts,
