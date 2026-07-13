@@ -23,7 +23,7 @@ import { T_SALARY } from "./bankClassify";
 // emerytalne 9,76% + rentowe 6,5% + wypadkowe ~1,67% + FP 2,45% + FGŚP 0,1%
 export const EMPLOYER_ZUS_RATE = 0.2048;
 
-const num = (v: unknown): number | null => {
+export const num = (v: unknown): number | null => {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   const s = String(v ?? "").trim();
   if (!s || s === "-" || /#REF|#DIV|#N\/A/i.test(s)) return null;
@@ -31,9 +31,9 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 const int = (v: unknown): number | null => { const n = num(v); return n == null ? null : Math.round(n); };
-const cell = (r: unknown[] | undefined, i: number): string => String(r?.[i] ?? "").trim();
+export const cell = (r: unknown[] | undefined, i: number): string => String(r?.[i] ?? "").trim();
 // office tabs carry dates; UNFORMATTED_VALUE returns them as sheet serials (46099 → 23.03.2026)
-const dateCell = (r: unknown[] | undefined, i: number): string | null => {
+export const dateCell = (r: unknown[] | undefined, i: number): string | null => {
   const s = cell(r, i);
   if (!s) return null;
   const n = Number(s);
@@ -43,12 +43,12 @@ const dateCell = (r: unknown[] | undefined, i: number): string | null => {
   }
   return s;
 };
-const norm = (s: string) =>
+export const norm = (s: string) =>
   s.toUpperCase()
     .replace(/[ĄĆĘŁŃÓŚŹŻ]/g, ch => ({ Ą: "A", Ć: "C", Ę: "E", Ł: "L", Ń: "N", Ó: "O", Ś: "S", Ź: "Z", Ż: "Z" }[ch] ?? ch))
     .replace(/\s+/g, " ").trim();
 // matching key: letters/digits only («InPost [LDZ]» ↔ tab «InPost LDZ», «TOP-2» ↔ «TOP - 2»)
-const key = (s: string) => norm(s).replace(/[^A-Z0-9]/g, "");
+export const key = (s: string) => norm(s).replace(/[^A-Z0-9]/g, "");
 
 // factory → firm, where the tab name lies: verified by the per-person bank
 // reconciliation («Звірка ЗП → По фабриках») — workers of these Lublin
@@ -68,7 +68,7 @@ const TAB_ALIASES: Record<string, string[]> = {
   PAKSERVICE: ["PAKSERWIS"],
 };
 
-const isServiceRow = (name: string) =>
+export const isServiceRow = (name: string) =>
   /^(SUMA|ILOSC|ILOŚĆ|W TYM|RAZEM|RAMZEM|NIE OPODATKOWANE|OPODATKOWANE|LUBLIN|STOLBEC|СТОЛБЕЦ|NAZWISKO|IMIE|IMIĘ)/i.test(norm(name));
 
 export interface WorkerRow {
