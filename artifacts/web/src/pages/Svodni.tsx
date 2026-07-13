@@ -421,11 +421,6 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   const shownCols = cols.filter(d => show(d.key));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
   const colCount = 1 + shownCols.length + sensCols.length;
-  // м'який фон рядка з кольору позначки в таблиці (блендинг із білим)
-  const tint = (hex: string, a: number) => {
-    const v = (o: number) => Math.round(255 - (255 - parseInt(hex.slice(o, o + 2), 16)) * a);
-    return `rgb(${v(1)},${v(3)},${v(5)})`;
-  };
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -498,16 +493,14 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     <td colSpan={colCount} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{r.section}</td>
                   </tr>
                 ) : null,
-                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}
-                  style={r.rowColor ? { backgroundColor: tint(r.rowColor, 0.3) } : undefined}>
-                  <td className={`sticky left-0 z-10 max-w-56 whitespace-nowrap px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}
-                    style={r.rowColor ? { backgroundColor: tint(r.rowColor, 0.3), boxShadow: `inset 3px 0 0 ${r.rowColor}` } : undefined}
+                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}>
+                  <td className={`sticky left-0 z-10 px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}
                     title={r.workerName ?? r.rawName}>
-                    <span className="flex max-w-full items-center gap-1.5">
+                    <span className="flex w-56 items-center gap-1.5">
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
                       {r.workerId
-                        ? <Link href={`/workers/${r.workerId}`} className="truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
-                        : <EditableCell row={r} field="rawName" value={r.rawName} month={month} text />}
+                        ? <Link href={`/workers/${r.workerId}`} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
+                        : <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text /></span>}
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {r.isStudent && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
                       {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
@@ -529,7 +522,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)} />
                     </td>
                   ) : (
-                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" && !r.rowColor ? "bg-red-50/40" : ""} text-slate-600`}>
+                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}>
                       <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} />
                     </td>
                   ))}
