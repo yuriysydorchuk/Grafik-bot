@@ -898,17 +898,16 @@ bot.action("adv:new", async (ctx) => {
   const worker = await getWorker(tid);
   const lang = wlang(worker);
   if (!worker) return;
-  // Rate limit: at most 1 request per day and 3 per month (all statuses counted),
-  // computed on the Warsaw calendar.
-  const today = warsawDateStr();
-  const month = today.slice(0, 7);
-  const reqs = await db.select({ createdAt: advanceRequestsTable.createdAt })
-    .from(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, worker.id));
-  const warsawDay = (d: Date) => new Date(d).toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" });
-  const dayCount = reqs.filter(r => warsawDay(r.createdAt) === today).length;
-  const monthCount = reqs.filter(r => warsawDay(r.createdAt).slice(0, 7) === month).length;
-  if (dayCount >= 1) return ctx.reply(t(lang, "adv.limitDay"));
-  if (monthCount >= 3) return ctx.reply(t(lang, "adv.limitMonth"));
+  // Rate limit: at most 1 request per day and 3 per month (all statuses counted).
+  // Counted in SQL on the DB server's clock: created_at is a naive timestamp in that
+  // same clock (prod = Berlin = Warsaw wall time), while the driver would parse it
+  // into a UTC-shifted Date — a JS-side day comparison drifts by 2h around midnight.
+  const [cnt] = await db.select({
+    day: sql<number>`count(*) filter (where ${advanceRequestsTable.createdAt} >= date_trunc('day', now()::timestamp))`,
+    month: sql<number>`count(*) filter (where ${advanceRequestsTable.createdAt} >= date_trunc('month', now()::timestamp))`,
+  }).from(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, worker.id));
+  if (Number(cnt?.day ?? 0) >= 1) return ctx.reply(t(lang, "adv.limitDay"));
+  if (Number(cnt?.month ?? 0) >= 3) return ctx.reply(t(lang, "adv.limitMonth"));
   setState(tid, "advance:enter_amount", { workerId: worker.id, lang });
   return ctx.reply(t(lang, "adv.askAmount"), cancelKb(lang));
 });

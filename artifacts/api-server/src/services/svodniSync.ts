@@ -4,7 +4,7 @@
 // Google), syncSvodni() — повний цикл із Google (реєстр = payroll_sources).
 import { db } from "@workspace/db";
 import {
-  svodniRowsTable, svodniTabChecksTable, factoriesTable, workersTable,
+  svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, factoriesTable, workersTable,
   payrollSourcesTable, companiesTable,
 } from "@workspace/db";
 import { and, eq, inArray, isNull } from "drizzle-orm";
@@ -33,6 +33,8 @@ export interface SvodniImportInput {
   grids: Map<string, unknown[][]>;
   /** Лодзь: рядки WYPŁATA GOTÓWKĄ цієї фірми за цей місяць */
   gotowka?: GotowkaRow[];
+  /** фони клітинок вкладок (hex або null), tab → [рядок][колонка] — кольори позначок */
+  colors?: Map<string, (string | null)[][]>;
 }
 
 export interface SvodniImportResult {
@@ -119,12 +121,15 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   for (const [t, rows] of grids) if (/GODZIN.*MIES|TOTAL.*MIES/i.test(norm(t))) summary = parseSummaryTab(rows);
 
   const tabs: SvodniParsedTab[] = [];
+  const tabColors = new Map<SvodniParsedTab, (string | null)[][]>();
   for (const [t, rows] of grids) {
     if (SKIP_TABS.test(t.trim())) continue;
     const parsed = OFFICE_TAB_RE.test(t.trim())
       ? parseOfficeTab(t.trim(), rows)
       : city === "Лодзь" ? parseLodzFullTab(t, rows) : parseLublinTab(t, rows);
     if (!parsed) continue;
+    const clr = input.colors?.get(t);
+    if (clr) tabColors.set(parsed, clr);
     if (input.gotowka?.length) {
       overlayGotowka(parsed, input.gotowka.filter(g => key(g.factory) === key(t) || key(t).startsWith(key(g.factory))));
     }
@@ -152,9 +157,23 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
 
   const rowsToInsert: (typeof svodniRowsTable.$inferInsert)[] = [];
   const checksToInsert: (typeof svodniTabChecksTable.$inferInsert)[] = [];
+  const metaToInsert: (typeof svodniTabMetaTable.$inferInsert)[] = [];
   for (const tab of tabs) {
     const factoryId = facId(tab.factoryLabel);
     const isOffice = OFFICE_TAB_RE.test(tab.factoryLabel);
+    if (tab.colOrder?.length || tab.info) {
+      metaToInsert.push({
+        periodMonth, city, firm: firm ?? tab.firmGuess, factoryLabel: tab.factoryLabel,
+        colOrder: tab.colOrder ?? [], info: tab.info ?? {},
+      });
+    }
+    const clr = tabColors.get(tab);
+    // фон рядка = фон клітинки з іменем; білий/відсутній → без кольору
+    const rowColorOf = (row: (typeof tab.rows)[number]): string | null => {
+      if (!clr || row.sheetRow == null || tab.nameCol == null) return null;
+      const c = clr[row.sheetRow]?.[tab.nameCol];
+      return c && c !== "#ffffff" ? c : null;
+    };
     tab.rows.forEach((row, sortIdx) => {
       const workerId = isOffice ? null : matchSvodniName(row.rawName, allWorkers)?.id ?? null;
       if (workerId) res.matched++; else if (!isOffice) res.unmatched++;
@@ -177,6 +196,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         gotowka: row.gotowka, konto: row.konto,
         isStudent: row.isStudent, under26: row.under26,
         extras: row.extras, hr: row.hr, sheetValues: row.sheetValues, mismatch: row.mismatch,
+        rowColor: rowColorOf(row),
       });
     });
 
@@ -244,9 +264,14 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       ...(firm ? [eq(svodniTabChecksTable.firm, firm)] : []),
     );
     await tx.delete(svodniTabChecksTable).where(delChecks);
+    await tx.delete(svodniTabMetaTable).where(and(
+      eq(svodniTabMetaTable.periodMonth, periodMonth), eq(svodniTabMetaTable.city, city),
+      ...(firm ? [eq(svodniTabMetaTable.firm, firm)] : []),
+    ));
     const fresh = rowsToInsert.filter(r => !manualKeys.has(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`));
     if (fresh.length) await tx.insert(svodniRowsTable).values(fresh);
     if (checksToInsert.length) await tx.insert(svodniTabChecksTable).values(checksToInsert);
+    if (metaToInsert.length) await tx.insert(svodniTabMetaTable).values(metaToInsert);
     res.rows = fresh.length + manualRows.length;
     if (manualRows.length) res.notes.push(`збережено ручних рядків: ${manualRows.length}`);
   });
@@ -383,12 +408,12 @@ export async function syncSvodni(months: string[]): Promise<Record<string, Svodn
     const city = cityOfRegion(src.region);
     if (!city) continue;
     try {
-      const grids = await readSourceGrids(src);
+      const { grids, colors } = await readSourceGrids(src);
       const gotowka = city === "Лодзь" && src.firm
         ? gotowkaRowsForMonth(gotowkaByFirm.get(src.firm) ?? new Map(), src.periodMonth)
         : undefined;
       out[`${city} ${src.periodMonth}${src.firm ? " " + src.firm : ""}`] = await importSvodniGrids({
-        sourceId: src.id, periodMonth: src.periodMonth, city, firm: src.firm, grids, gotowka,
+        sourceId: src.id, periodMonth: src.periodMonth, city, firm: src.firm, grids, gotowka, colors,
       });
     } catch (e) {
       logger.warn({ sourceId: src.id, err: String(e) }, "svodni: source import failed");

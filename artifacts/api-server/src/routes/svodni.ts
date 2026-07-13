@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, workersTable, factoriesTable, companiesTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, workersTable, factoriesTable, companiesTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -40,7 +40,7 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     isStudent: r.isStudent, under26: r.under26,
     extras: sensitive ? r.extras : Object.fromEntries(Object.entries(r.extras as Record<string, unknown>).filter(([k]) => !SENSITIVE_EXTRAS.has(k))),
     hr: sensitive ? r.hr : Object.fromEntries(Object.entries(r.hr as Record<string, unknown>).filter(([k]) => !SENSITIVE_HR.has(k))),
-    mismatch: r.mismatch,
+    mismatch: r.mismatch, rowColor: r.rowColor,
   };
   if (sensitive) {
     base.hoursDeclared = r.hoursDeclared;
@@ -88,7 +88,15 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     .filter(c => sensitive || c !== "Офіс") // віртуальне «місто» вкладки офісу
     .sort();
 
-  ok(res, { month, city, cities, rows, checks, sensitive });
+  // метадані вкладок: порядок колонок як у таблиці + інфо-блоки (STAWKA EUROCASH)
+  const tabMeta = (await db.select().from(svodniTabMetaTable).where(
+    city
+      ? and(eq(svodniTabMetaTable.periodMonth, month), eq(svodniTabMetaTable.city, city))
+      : eq(svodniTabMetaTable.periodMonth, month)))
+    .filter(m => tabAllowed(m.factoryLabel))
+    .map(m => ({ city: m.city, factoryLabel: m.factoryLabel, colOrder: m.colOrder, info: m.info }));
+
+  ok(res, { month, city, cities, rows, checks, tabMeta, sensitive });
 });
 
 // незматчені люди: місто · фабрика · місяці + кандидати для привʼязки

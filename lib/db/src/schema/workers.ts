@@ -764,6 +764,7 @@ export const svodniRowsTable = pgTable("svodni_rows", {
   sheetValues: jsonb("sheet_values").notNull().default({}),
   mismatch: jsonb("mismatch"),                   // null = наш перерахунок збігся з таблицею
   manual: boolean("manual").notNull().default(false), // рядок правлений на сайті → синк його не перезаписує
+  rowColor: text("row_color"),                   // фон рядка з таблиці Google (ручні позначки)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -781,6 +782,19 @@ export const svodniTabChecksTable = pgTable("svodni_tab_checks", {
   summaryTab: real("summary_tab"),
   ok: boolean("ok").notNull(),
   note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Метадані вкладки сводної: порядок колонок як у таблиці Google + інформаційні
+// блоки (напр. «STAWKA EUROCASH» — ставки за діапазонами годин).
+export const svodniTabMetaTable = pgTable("svodni_tab_meta", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(),
+  city: text("city").notNull(),
+  firm: text("firm"),
+  factoryLabel: text("factory_label").notNull(),
+  colOrder: jsonb("col_order").notNull().default([]), // ключі колонок у порядку таблиці
+  info: jsonb("info").notNull().default({}),          // { stawkaEurocash: [[...]] }
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
