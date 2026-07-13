@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
-  Coins, CreditCard, Percent, Landmark, Banknote, PiggyBank, HandCoins,
+  Coins, CreditCard, Banknote, PiggyBank, HandCoins,
   Home, Gavel, IdCard, GraduationCap, Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -34,7 +34,7 @@ type Row = {
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
 };
-type Check = { factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
+type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
 type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; sensitive: boolean };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
@@ -104,7 +104,19 @@ export default function Svodni() {
   });
   const effCity = city || data?.cities?.[0] || "";
   const cityRows = useMemo(() => (data?.rows ?? []).filter(r => r.city === effCity), [data, effCity]);
-  const factories = useMemo(() => [...new Set(cityRows.map(r => r.factoryLabel))], [cityRows]);
+  // фабрики міста: з рядків ∪ зі звірок імпорту — порожні вкладки (фабрика без
+  // людей цього місяця) теж мають бути видимі з повним набором колонок
+  const factories = useMemo(() => {
+    const set = new Set(cityRows.map(r => r.factoryLabel));
+    for (const c of (data?.checks ?? [])) {
+      if (c.city === effCity && !c.factoryLabel.includes(" + ")) set.add(c.factoryLabel);
+    }
+    return [...set].sort((a, b) => {
+      const ea = cityRows.some(r => r.factoryLabel === a) ? 0 : 1;
+      const eb = cityRows.some(r => r.factoryLabel === b) ? 0 : 1;
+      return ea - eb || a.localeCompare(b); // порожні — в кінець
+    });
+  }, [cityRows, data, effCity]);
   const effFactory = factories.includes(factory) ? factory : factories[0] ?? "";
   useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = useMemo(() => cityRows.filter(r => r.factoryLabel === effFactory), [cityRows, effFactory]);
@@ -240,7 +252,7 @@ export default function Svodni() {
 
       {showLinks && <UnmatchedPanel />}
 
-      {isFetching && !data ? <Spinner /> : !rows.length ? (
+      {isFetching && !data ? <Spinner /> : !factories.length ? (
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
@@ -331,7 +343,8 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
     k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
     k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
     (r as any)[k] != null);
-  const show = (k: string) => visible.has(k) && (!hideEmptyCols || hasVal(k));
+  // у порожній фабриці колонки показуються всі (інакше не було б чого бачити)
+  const show = (k: string) => visible.has(k) && (!hideEmptyCols || rows.length === 0 || hasVal(k));
   const openCols = OPEN_COLS.filter(([k]) => show(k));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
   const extraKeys = cityExtraKeys.filter(k => show(`extras.${k}`));
@@ -374,6 +387,9 @@ function FactoryTable({ month, label, rows, checks, sensitive, visible, cityExtr
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
+            {rows.length === 0 && (
+              <tr><td colSpan={colCount} className="px-3 py-6 text-center text-sm text-slate-400">{t("У цій фабриці немає людей цього місяця")}</td></tr>
+            )}
             {rows.map((r, i) => {
               const sectionChanged = r.section && r.section !== rows[i - 1]?.section;
               return [
@@ -506,12 +522,8 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
         formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}`} />}
       {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} icon={PiggyBank} tone="bg-emerald-50 text-emerald-600"
         formula={`${t("Якби готівку платили офіційно: (брутто-еквівалент − готівка) + брутто-еквівалент × 20,48% ZUS. Студенти не рахуються — у них податків немає.")} (${z(savedParts.bruttoEq)} − ${z(savedParts.got)}) + ${z(savedParts.bruttoEq)} × 0,2048 = ${z(saved)}`} />}
-      {sensitive && <Item label={t("Податки працівника з карти")} value={workerTax} icon={Percent} tone="bg-rose-50 text-rose-500"
-        formula={`${t("Σ (Księg. brutto − Księg. netto): ПДФО + внески ZUS, утримані з офіційної частини")} = ${z(ksiegBrutto)} − ${z(r2(ksiegBrutto - workerTax))} = ${z(workerTax)}`} />}
-      {sensitive && <Item label={t("ZUS роботодавця (оцінка)")} value={employerZus} icon={Landmark} tone="bg-rose-50 text-rose-500"
-        formula={`${t("Σ оподатковуваного Księg. brutto × 20,48%")} = ${z(taxableBrutto)} × 0,2048 = ${z(employerZus)}`} />}
       {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} icon={Wallet} tone="bg-rose-600 text-white"
-        formula={`${t("Утримання з працівника + ZUS роботодавця — повна податкова вартість офіційної частини")} = ${z(workerTax)} + ${z(employerZus)} = ${z(r2(workerTax + employerZus))}`} />}
+        formula={`${t("Утримання з працівника + ZUS роботодавця — повна податкова вартість офіційної частини")}: (${z(ksiegBrutto)} − ${z(r2(ksiegBrutto - workerTax))}) + ${z(taxableBrutto)} × 0,2048 = ${z(workerTax)} + ${z(employerZus)} = ${z(r2(workerTax + employerZus))}`} />}
       <Item label={t("Аванси (zaliczki)")} value={zaliczki} icon={HandCoins} tone="bg-violet-50 text-violet-600"
         formula={`Σ Zaliczka + Σ Zaliczka BD = ${z(zalA)} + ${z(zalBd)} = ${z(zaliczki)}`} />
       <Item label={t("Хостел")} value={hostel} icon={Home} tone="bg-slate-100 text-slate-600"

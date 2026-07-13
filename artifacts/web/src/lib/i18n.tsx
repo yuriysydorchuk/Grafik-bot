@@ -550,6 +550,7 @@ const EN: Record<string, string> = {
   "є розбіжності формул": "has formula mismatches",
   "клік по клітинці — редагування": "click a cell to edit",
   "кандидатів немає": "no candidates",
+  "У цій фабриці немає людей цього місяця": "No people at this factory this month",
   "Показати księgowe": "Show declared data",
   "Сховати księgowe": "Hide declared data",
   "Księgowość (статус)": "Księgowość (status)",
