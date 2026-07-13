@@ -72,6 +72,7 @@ const NAV: NavGroup[] = [
       { href: "/invoices", label: "Фактури", icon: FileText },
       { href: "/pnl", label: "P&L", icon: BarChart3 },
       { href: "/payroll", label: "Зарплати", icon: Banknote },
+      { href: "/svodni", label: "Сводні", icon: Banknote },
       { href: "/ksef", label: "KSeF", icon: FileText },
     ],
   },

@@ -312,6 +312,8 @@ router.post("/workers", RW, async (req, res) => {
     if (under26 !== undefined) values.under26 = !!under26;
   }
   const [w] = await db.insert(workersTable).values(values).returning();
+  // нова людина могла вже фігурувати в сводних — підвʼязуємо її історію за іменем
+  import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
   ok(res, w);
 });
 
