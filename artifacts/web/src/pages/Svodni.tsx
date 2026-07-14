@@ -83,6 +83,7 @@ const EXTRA_ORDER = Object.keys(EXTRA_LABEL);
 const extraLabel = (k: string) => EXTRA_LABEL[k] ?? k;
 const EXTRA_STUDENTS = "Додаткові студенти";
 const OFFICE_CITY = "Офіс"; // віртуальна вкладка поряд із містами
+const TOTAL_CITY = "Підсумок"; // віртуальна вкладка: підсумок по всьому місяцю
 const OFFICE_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
 const isSpecial = (label: string) => OFFICE_RE.test(label) || label === EXTRA_STUDENTS;
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : "";
@@ -127,16 +128,19 @@ export default function Svodni() {
   const cityTabs = useMemo(() => [
     ...(data?.cities ?? []).filter(c => c !== OFFICE_CITY),
     ...(data?.sensitive ? [OFFICE_CITY] : []),
+    ...((data?.rows.length ?? 0) > 0 ? [TOTAL_CITY] : []),
   ], [data]);
   const effCity = cityTabs.includes(city) ? city : cityTabs[0] ?? "";
   // «Офіс» збирає офісні вкладки всіх міст + додаткових студентів;
   // з міських вкладок вони відповідно прибрані
   const cityRows = useMemo(() => (data?.rows ?? []).filter(r =>
+    effCity === TOTAL_CITY ? false :
     effCity === OFFICE_CITY ? isSpecial(r.factoryLabel) : (r.city === effCity && !isSpecial(r.factoryLabel))
   ), [data, effCity]);
   // фабрики міста: з рядків ∪ зі звірок імпорту — порожні вкладки (фабрика без
   // людей цього місяця) теж мають бути видимі з повним набором колонок
   const factories = useMemo(() => {
+    if (effCity === TOTAL_CITY) return [];
     const set = new Set(cityRows.map(r => r.factoryLabel));
     if (effCity === OFFICE_CITY) {
       set.add(EXTRA_STUDENTS); // завжди доступна для наповнення
@@ -225,7 +229,7 @@ export default function Svodni() {
             {cityTabs.map(c => (
               <button key={c} onClick={() => { setCity(c); setFactory(""); }}
                 className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                {c === OFFICE_CITY ? "🏢 " : ""}{t(c)}
+                {c === OFFICE_CITY ? "🏢 " : c === TOTAL_CITY ? "📊 " : ""}{t(c)}
               </button>
             ))}
           </div>
@@ -303,7 +307,12 @@ export default function Svodni() {
 
       {showLinks && <UnmatchedPanel />}
 
-      {isFetching && !data ? <Spinner /> : !factories.length ? (
+      {isFetching && !data ? <Spinner /> : effCity === TOTAL_CITY ? (
+        <div className="space-y-4">
+          <SummaryBlock rows={data?.rows ?? []} sensitive={!!data?.sensitive} />
+          <TotalBreakdown rows={data?.rows ?? []} sensitive={!!data?.sensitive} />
+        </div>
+      ) : !factories.length ? (
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
@@ -631,6 +640,114 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
         textValue={`${stud} / ${nonStud}${unknown ? ` (+${unknown})` : ""}`}
         formula={t("Студент = без податків (netto = brutto). Невідомо — статус у сводній не вказаний.") + (unknown ? ` +${unknown} ${t("невідомо")}` : "")} />
     </div>
+  );
+}
+
+// Вкладка «Підсумок»: розбивка місяця по містах і фабриках із проміжними
+// підсумками міст і загальним рядком. Закриті колонки — лише з sensitive.
+function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) {
+  const t = useT();
+  const ex = (r: Row, k: string) => (typeof r.extras[k] === "number" ? (r.extras[k] as number) : 0);
+  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; zaliczki: number; hostel: number; kary: number; students: number };
+  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
+  const add = (a: Agg, r: Row) => {
+    a.count += 1;
+    a.hours += r.hours ?? 0;
+    a.pay += r.doWyplaty ?? 0;
+    a.konto += r.konto ?? r.ksiegNetto ?? 0;
+    a.gotowka += r.gotowka ?? 0;
+    a.zaliczki += (r.zaliczka ?? 0) + (r.zaliczkaBd ?? 0);
+    a.hostel += r.hostel ?? 0;
+    a.kary += (r.kara ?? 0) + ex(r, "karaKlient") + ex(r, "karaEs");
+    if (r.isStudent) a.students += 1;
+  };
+  // місто → фабрика → агрегат (офісні вкладки і додаткові студенти — під «Офіс»)
+  const { cities, grand } = useMemo(() => {
+    const byCity = new Map<string, Map<string, Agg>>();
+    const grand = zero();
+    for (const r of rows) {
+      const c = isSpecial(r.factoryLabel) ? OFFICE_CITY : r.city;
+      const m = byCity.get(c) ?? byCity.set(c, new Map()).get(c)!;
+      const a = m.get(r.factoryLabel) ?? m.set(r.factoryLabel, zero()).get(r.factoryLabel)!;
+      add(a, r);
+      add(grand, r);
+    }
+    const cities = [...byCity.entries()]
+      .sort((a, b) => (a[0] === OFFICE_CITY ? 1 : 0) - (b[0] === OFFICE_CITY ? 1 : 0) || a[0].localeCompare(b[0]))
+      .map(([c, m]) => {
+        const total = zero();
+        const factories = [...m.entries()].sort((a, b) => b[1].pay - a[1].pay || a[0].localeCompare(b[0]));
+        for (const [, a] of factories) {
+          total.count += a.count; total.hours += a.hours; total.pay += a.pay; total.konto += a.konto;
+          total.gotowka += a.gotowka; total.zaliczki += a.zaliczki; total.hostel += a.hostel;
+          total.kary += a.kary; total.students += a.students;
+        }
+        return { city: c, factories, total };
+      });
+    return { cities, grand };
+  }, [rows]);
+
+  const num = (v: number) => <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(v))}</td>;
+  const cells = (a: Agg, payCls = "") => (
+    <>
+      <td className="px-2 py-1.5 text-right tabular-nums">{a.count}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.hours))}</td>
+      <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
+      {sensitive && num(a.konto)}
+      {sensitive && num(a.gotowka)}
+      {num(a.zaliczki)}
+      {num(a.hostel)}
+      {num(a.kary)}
+      <td className="px-2 py-1.5 text-right tabular-nums text-sky-700">{a.students}</td>
+    </>
+  );
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3 text-sm font-bold tracking-tight text-slate-800">
+        {t("Розбивка по містах і фабриках")}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              <th className="px-3 py-2.5 text-left">{t("Фабрика")}</th>
+              <th className="px-2 py-2.5 text-right">{t("Людей")}</th>
+              <th className="px-2 py-2.5 text-right">{t("Години")}</th>
+              <th className="px-2 py-2.5 text-right">{t("До виплати")}</th>
+              {sensitive && <th className="px-2 py-2.5 text-right">{t("На карту")}</th>}
+              {sensitive && <th className="px-2 py-2.5 text-right">{t("Готівка")}</th>}
+              <th className="px-2 py-2.5 text-right">{t("Аванси")}</th>
+              <th className="px-2 py-2.5 text-right">{t("Хостел")}</th>
+              <th className="px-2 py-2.5 text-right">{t("Штрафи")}</th>
+              <th className="px-2 py-2.5 text-right">{t("Студ.")}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {cities.map(({ city, factories, total }) => [
+              <tr key={`c-${city}`} className="bg-slate-50/80">
+                <td className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                  {city === OFFICE_CITY ? "🏢 " : ""}{t(city)}
+                </td>
+                {cells(total)}
+              </tr>,
+              ...factories.map(([f, a]) => (
+                <tr key={`${city}-${f}`} className="hover:bg-red-50/30">
+                  <td className="whitespace-nowrap px-3 py-1.5 pl-6 text-slate-600">{f === EXTRA_STUDENTS ? "🎓 " : ""}{f === EXTRA_STUDENTS ? t(f) : f}</td>
+                  {cells(a)}
+                </tr>
+              )),
+            ])}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
+              <td className="px-3 py-2.5">{t("Разом")}</td>
+              {cells(grand, "text-red-700")}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </Card>
   );
 }
 
