@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch,
+  parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch, parseOfficeTab,
 } from "./svodni.ts";
 
 const near = (actual: number | null | undefined, expected: number, msg?: string) =>
@@ -172,8 +172,25 @@ test("Лодзь: KONTO з номером рахунку не стає сумо�
   ];
   const p = parseLodzFullTab("PRINT EXTRA", rows)!;
   const w = p.rows[0]!;
-  assert.equal(w.konto, null);
+  // номер рахунку не парситься як гроші; обмежений розклад → усе офіційно (konto = RAZEM)
   assert.equal(w.hr.kontoNr, "68 1600 1462 1742 3750 4000 0001");
+  assert.equal(w.konto, 3140);
+  assert.equal(w.ksiegNetto, 3140);
+});
+
+test("Офіс: людина без сум, але з умовою/ставкою — лишається в списку", () => {
+  const rows = [
+    [46174],
+    ["LUBLIN OFFICE ES", "", "GODZINY", "STAWKA", "BRUTTO", "UMOWA OD", "UMOWA DO"],
+    ["OUADOUD BILAL", "STUD", "", 31.4, "", 46127, 46387],
+    ["KOTELENETS OLENA", "ZUS", 60, 31.4, 1884, 46086, "NIEOKREŚLONY"],
+    ["випадковий текст", "", "", "", "", "", ""],
+  ];
+  const p = parseOfficeTab("OFFICE ES", rows)!;
+  assert.deepEqual(p.rows.map(r => r.rawName), ["OUADOUD BILAL", "KOTELENETS OLENA"]);
+  assert.equal(p.rows[0]!.rateBrutto, 31.4);
+  assert.equal(p.rows[0]!.doWyplaty, null);
+  assert.ok(p.rows[0]!.hr.umowaOd);
 });
 
 test("Лодзь: WYPŁATA GOTÓWKĄ накладається на фабричні рядки без Ew.-даних", () => {
