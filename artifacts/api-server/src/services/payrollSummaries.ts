@@ -59,7 +59,8 @@ const FIRM_OVERRIDES: Record<string, string> = {
 };
 
 // summary-row label → factory tab name(s); keys are `key()`-normalized
-const TAB_ALIASES: Record<string, string[]> = {
+// (exported: svodniSync uses the same aliases for the WYPŁATA GOTÓWKĄ overlay)
+export const TAB_ALIASES: Record<string, string[]> = {
   AGRAM: ["AGRAM", "AGRAMMOTYCZ"],
   ANDROS: ["ANDROSKLINEX", "ANDROSEUROSUPORT", "ANDROSEUROSUPPORT"],
   BLC: ["SUPERDROB"],

@@ -316,6 +316,9 @@ function mergeKsiegBlock(rows: unknown[][], from: number, out: SvodniParsedTab, 
       if (nameCol >= 0) start = r + 1;
       continue;
     }
+    // хедер чужої нижньої таблиці (Eurocash: «Nazwisko i Imię … KOŃCOWE
+    // ROZLICZENIE» — розрахунок для клієнта) — нижче księgowość-блоку немає
+    if (labels.some(h => /NAZWISKO|KONCOWE ROZLICZ/.test(h))) break;
     // варіант (b): безлейбловий — імʼя з головної таблиці + ≥4 числа праворуч
     const nm = cell(line, mainNameCol);
     if (nm && mainKeys.has(key(cleanName(nm)))) {
@@ -489,8 +492,10 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
     const stN = p.rateNetto ?? 0;
     const stB = p.rateBrutto ?? 0;
     if (c.ew >= 0 && stN > 0) {
-      const ew = num(row[c.ew]);
-      if (ew != null) {
+      // повний Ew.-розклад: порожня клітинка = 0 офіційних годин (усе готівкою) —
+      // так само рахує зарплатний модуль (parseLodzTab)
+      const ew = num(row[c.ew]) ?? 0;
+      {
         const doplata = c.doplata >= 0 ? num(row[c.doplata]) ?? 0 : 0;
         p.hoursDeclared = ew;
         p.ksiegBrutto = r2(ew * stB);
@@ -514,6 +519,10 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
         p.hr.kontoNr = kontoRaw; // номер банківського рахунку
       }
     }
+    // обмежений розклад (ES/ESO без Ew., KONTO = номер рахунку): вважаємо все
+    // офіційним (konto = RAZEM), як parseLodzTab зарплатного модуля;
+    // WYPŁATA GOTÓWKĄ-оверлей далі поправляє тих, хто отримує частину готівкою
+    if (p.ksiegNetto == null) { p.ksiegNetto = razem; p.konto = razem; }
     p.sheetRow = r;
     out.rows.push(p);
   }
@@ -561,7 +570,12 @@ export function parseOfficeTab(tabLabel: string, rows: unknown[][]): SvodniParse
       const d7 = dateCell(row, 7); if (d7) p.hr.koniecStudiow = d7;
       const d8 = dateCell(row, 8); if (d8) p.hr.zaswiadczenieDo = d8;
     }
-    if (p.doWyplaty == null && p.hours == null && !p.hr.hoursText) continue;
+    // людина без сум — все одно людина (умова/ставка/статус, суму ще не вписали);
+    // скіпаємо лише рядки взагалі без даних (випадковий текст у колонці імен)
+    const hasData = p.doWyplaty != null || p.hours != null || !!p.hr.hoursText
+      || p.rateBrutto != null || p.zaliczka != null || p.extras.migawka != null
+      || !!p.hr.status || !!p.hr.umowaOd || !!p.hr.umowaDo;
+    if (!hasData) continue;
     out.rows.push(p);
   }
   return out.rows.length ? out : null;

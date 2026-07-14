@@ -10,7 +10,7 @@ import {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
-import { norm, key, num, cell, cleanName } from "./payrollSummaries";
+import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
   parseOfficeTab, computeMismatch, type SvodniParsedTab, type GotowkaRow,
@@ -131,7 +131,12 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     const clr = input.colors?.get(t);
     if (clr) tabColors.set(parsed, clr);
     if (input.gotowka?.length) {
-      overlayGotowka(parsed, input.gotowka.filter(g => key(g.factory) === key(t) || key(t).startsWith(key(g.factory))));
+      // книга готівки підписує фабрики канонічно («Pak-Service»), вкладки — по-своєму
+      // («PAK-SERWIS») — ті самі аліаси, що в зарплатному модулі
+      overlayGotowka(parsed, input.gotowka.filter(g => {
+        const gk = key(g.factory), tk = key(t);
+        return gk === tk || tk.startsWith(gk) || (TAB_ALIASES[gk] ?? []).includes(tk);
+      }));
     }
     for (const row of parsed.rows) {
       computeMismatch(row, city);
