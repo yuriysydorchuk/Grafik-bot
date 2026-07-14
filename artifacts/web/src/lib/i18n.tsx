@@ -1099,6 +1099,8 @@ const EN: Record<string, string> = {
   "Далі": "Next",
   "Всі категорії": "All categories",
   "Разом ({n} операцій)": "Total ({n} transactions)",
+  "Правило застосовано до {n} транзакцій": "Rule applied to {n} transactions",
+  "Правило не зматчило жодної транзакції — перевір шаблон у «Правилах контрагентів». Відкриту операцію перенесено.": "The rule didn't match any transactions — check the pattern in “Counterparty rules”. The opened transaction was moved.",
 
   // ── KSeF purchases tab ──
   "Продажі": "Sales",

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { ArrowDown, ArrowUp, Search, RefreshCw, X, Wallet, ArrowDownLeft, ArrowUpRight, Banknote, PiggyBank } from "lucide-react";
 import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
@@ -44,6 +45,16 @@ function cleanName(cp: string | null, title: string | null, txType: string | nul
   if ((m = s.match(/^(.*?)\s+SP[ÓO]?[ŁL]KA\s+AKCYJNA/i))) return cut(m[1]!, "S.A.");
   if ((m = s.match(/^(.*?)\s+S\.\s?A\.(?:\s|$)/i))) return cut(m[1]!, "S.A.");
   return s.split(/\s+(?:UL\.|AL\.|OS\.|PL\.\s|\d{2}-\d{3})/i)[0]!.trim();
+}
+
+// Default pattern for a counterparty rule. Rules match the RAW counterparty field
+// with LIKE, so the normalized display name from cleanName() ("Sp z o.o" → "Sp. z o.o.")
+// may not be a substring of it — cut the raw string before the legal form/address instead.
+function rulePattern(cp: string | null, title: string | null, txType: string | null): string {
+  const s = (cp || "").replace(/^[A-Z]{0,2}\d{20,28}\s*/, "").trim();
+  if (!s) return (title || txType || "").trim();
+  const m = s.match(/^(.*?)\s+(?:SP[ÓO]?[ŁL]KA\s+(?:Z\s+O|AKCYJNA)|SP\.?\s?Z\s?O\.?\s?O|S\.\s?A\.(?:\s|$)|UL\.|AL\.|OS\.|PL\.\s|\d{2}-\d{3})/i);
+  return (m ? m[1]! : s).trim();
 }
 
 // Human-readable operation kind from the raw MT940 type/title codes.
@@ -663,20 +674,26 @@ function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: n
   const [cat, setCat] = useState<string>(r.manualCategory ?? "");
   const [saving, setSaving] = useState(false);
   const [forAll, setForAll] = useState(false);
-  const [pattern, setPattern] = useState(cleanName(r.counterparty, r.title, r.txType));
+  const [pattern, setPattern] = useState(rulePattern(r.counterparty, r.title, r.txType));
   const coName = companies.find(c => c.id === r.companyId)?.name ?? "—";
   const invalidateAll = () => ["bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-rules"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
   const saveCat = async (value: string | null) => {
     setSaving(true);
     try {
       if (forAll && value && !value.startsWith("owner_")) {
-        await post("/bank/counterparty-rules", { pattern, category: value });
+        const res = await post<{ updated: number }>("/bank/counterparty-rules", { pattern, category: value });
+        // the rule matches the raw counterparty field — move the opened transaction
+        // explicitly so the visible result never depends on the pattern matching
+        await patch(`/bank/transactions/${r.id}/category`, { category: value });
+        if (res.updated > 0) toast.success(t("Правило застосовано до {n} транзакцій", { n: res.updated }));
+        else toast.warning(t("Правило не зматчило жодної транзакції — перевір шаблон у «Правилах контрагентів». Відкриту операцію перенесено."));
       } else {
         await patch(`/bank/transactions/${r.id}/category`, { category: value });
       }
       invalidateAll();
       onClose();
-    } finally { setSaving(false); }
+    } catch (e: any) { toast.error(e?.message ?? String(e)); }
+    finally { setSaving(false); }
   };
   const isOwnerCat = !!cat && cat.startsWith("owner_");
   const Row = ({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) => (
