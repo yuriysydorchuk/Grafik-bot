@@ -292,7 +292,9 @@ export async function showHdSlots(ctx: Context, tid: string, data: any, lang: La
     .select({ factoryId: driverShiftAssignmentsTable.factoryId, shift: driverShiftAssignmentsTable.shift, driverName: driversTable.name })
     .from(driverShiftAssignmentsTable)
     .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
-    .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, day)));
+    // this flow assigns the DELIVERY driver — pickup rows («забрати зі зміни»)
+    // must not show as ✅ here, and the toggle must never touch them
+    .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, day), eq(driverShiftAssignmentsTable.kind, "delivery")));
 
   const map = new Map<string, { factoryId: number; factoryName: string; shift: Shift; count: number; drivers: string[] }>();
   for (const e of entries) {

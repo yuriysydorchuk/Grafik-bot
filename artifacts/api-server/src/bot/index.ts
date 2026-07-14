@@ -4003,7 +4003,7 @@ bot.on("text", async (ctx) => {
     const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
     const assigned = await db.select({ driverId: driverShiftAssignmentsTable.driverId })
       .from(driverShiftAssignmentsTable)
-      .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, data.day), eq(driverShiftAssignmentsTable.shift, slot.shift), eq(driverShiftAssignmentsTable.factoryId, slot.factoryId)));
+      .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, data.day), eq(driverShiftAssignmentsTable.shift, slot.shift), eq(driverShiftAssignmentsTable.factoryId, slot.factoryId), eq(driverShiftAssignmentsTable.kind, "delivery")));
     const assignedIds = new Set(assigned.map(a => a.driverId));
     setState(tid, "hd:select_driver", { ...data, factoryId: slot.factoryId, factoryName: slot.factoryName, shift: slot.shift });
     return ctx.reply(
@@ -4021,13 +4021,13 @@ bot.on("text", async (ctx) => {
     if (!match) return ctx.reply(tb(dl, "Водія не знайдено. Оберіть зі списку."));
     const already = await db.select({ id: driverShiftAssignmentsTable.id })
       .from(driverShiftAssignmentsTable)
-      .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, data.day), eq(driverShiftAssignmentsTable.shift, data.shift), eq(driverShiftAssignmentsTable.factoryId, data.factoryId), eq(driverShiftAssignmentsTable.driverId, match.id)));
+      .where(and(eq(driverShiftAssignmentsTable.weekId, data.weekId), eq(driverShiftAssignmentsTable.dayOfWeek, data.day), eq(driverShiftAssignmentsTable.shift, data.shift), eq(driverShiftAssignmentsTable.factoryId, data.factoryId), eq(driverShiftAssignmentsTable.driverId, match.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
     if (already.length > 0) {
       // Toggle off — unassign
       await db.delete(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.id, already[0]!.id));
       await ctx.reply(tb(dl, "➖ *{name}* знятий зі зміни.", { name: match.name }), { parse_mode: "Markdown" });
     } else {
-      await db.insert(driverShiftAssignmentsTable).values({ weekId: data.weekId, factoryId: data.factoryId, dayOfWeek: data.day, shift: data.shift, driverId: match.id });
+      await db.insert(driverShiftAssignmentsTable).values({ weekId: data.weekId, factoryId: data.factoryId, dayOfWeek: data.day, shift: data.shift, driverId: match.id, kind: "delivery" });
       if (match.telegramId) await notifyDriverOfAssignment(match.telegramId, data.weekId, data.day, data.shift, data.weekStart, data.factoryId);
       await ctx.reply(`✅ *${match.name}* → ${data.factoryName} · ${SHIFT_SHORT[data.shift as Shift]}`, { parse_mode: "Markdown" });
     }
