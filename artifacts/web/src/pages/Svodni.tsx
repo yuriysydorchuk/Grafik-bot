@@ -240,16 +240,18 @@ export default function Svodni() {
   useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows = useMemo(() => cityRows.filter(r => r.factoryLabel === effFactory), [cityRows, effFactory]);
   const checks = useMemo(() => (data?.checks ?? []).filter(c => c.factoryLabel.split(" + ").includes(effFactory)), [data, effFactory]);
-  // extras, що зустрічаються в місті цього місяця (усі числові ключі з даних,
-  // не лише відомі каталогу — фабричні нюанси на кшталт Sushi мають свої колонки)
+  // extras-колонки міста: каталожні (для ручного вводу — нічні, migawka, кари…)
+  // ЗАВЖДИ доступні, навіть порожні (тумблер «Без порожніх колонок» їх ховає);
+  // плюс усі числові ключі з даних (фабричні нюанси на кшталт Sushi)
   const cityExtraKeys = useMemo(() => {
-    const keys = new Set<string>();
+    const SENSITIVE = new Set(["kontoH", "gotowkaH", "doplataEs", "godzFaktBlock", "zaliczkaBlock"]);
+    const keys = new Set<string>(EXTRA_ORDER.filter(k => data?.sensitive || !SENSITIVE.has(k)));
     for (const r of cityRows) for (const [k, v] of Object.entries(r.extras)) {
       if (typeof v === "number" && k !== "blockOnly") keys.add(k);
     }
     const idx = (k: string) => { const i = EXTRA_ORDER.indexOf(k); return i < 0 ? EXTRA_ORDER.length : i; };
     return [...keys].sort((a, b) => idx(a) - idx(b) || a.localeCompare(b));
-  }, [cityRows]);
+  }, [cityRows, data?.sensitive]);
   // кадрові колонки: базовий набір + усі hr-ключі, що є в даних міста
   const cityHrCols = useMemo(() => {
     const cols = new Map<string, string>(HR_COLS);
