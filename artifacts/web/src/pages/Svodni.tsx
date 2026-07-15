@@ -422,6 +422,25 @@ function Th({ label, onHide, left, amber, strong }: { label: string; onHide: () 
   );
 }
 
+// Глобальний тултіп формул: singleton із position:fixed — показується миттєво
+// при наведенні і не ріжеться overflow-скролом таблиці (на відміну від title).
+let tipEl: HTMLDivElement | null = null;
+function showFormulaTip(e: React.MouseEvent, text: string) {
+  if (!tipEl) {
+    tipEl = document.createElement("div");
+    tipEl.className = "pointer-events-none fixed z-50 max-w-md whitespace-pre-line rounded-lg bg-slate-800 px-3 py-2 text-[11px] leading-relaxed text-white shadow-xl";
+    document.body.appendChild(tipEl);
+  }
+  tipEl.textContent = text;
+  tipEl.style.display = "block";
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const w = Math.min(tipEl.offsetWidth, 448);
+  tipEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
+  const h = tipEl.offsetHeight;
+  tipEl.style.top = `${r.top - h - 6 < 4 ? r.bottom + 6 : r.top - h - 6}px`;
+}
+function hideFormulaTip() { if (tipEl) tipEl.style.display = "none"; }
+
 // Редагована клітинка: клік → інпут (для кадрових — випадаючий список значень
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
 function EditableCell({ row, field, value, month, text, strong, options, formula }: {
@@ -465,8 +484,10 @@ function EditableCell({ row, field, value, month, text, strong, options, formula
   }
   return (
     <button type="button"
-      onClick={() => { setDraft(value == null ? "" : String(value)); setEditing(true); }}
-      title={formula ? `${formula}\n\n${t("Клікни, щоб редагувати")}` : t("Клікни, щоб редагувати")}
+      onClick={() => { hideFormulaTip(); setDraft(value == null ? "" : String(value)); setEditing(true); }}
+      title={formula ? undefined : t("Клікни, щоб редагувати")}
+      onMouseEnter={formula ? (e) => showFormulaTip(e, formula) : undefined}
+      onMouseLeave={formula ? hideFormulaTip : undefined}
       className={`block w-full cursor-text rounded px-1 py-1 tabular-nums transition hover:bg-red-50 hover:ring-1 hover:ring-red-200 ${
         text ? "text-left" : "text-right"} ${strong ? "font-semibold text-slate-900" : ""} ${formula ? "underline decoration-dotted decoration-slate-300 underline-offset-2" : ""}`}>
       {text ? (String(value ?? "") || <span className="text-slate-300">—</span>) : (fmt(value) || <span className="text-slate-300">—</span>)}
