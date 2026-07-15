@@ -45,9 +45,13 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
     telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport, ...finance,
   };
   const save = useMutation({
-    mutationFn: () => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, base),
+    mutationFn: (force?: boolean) => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, force ? { ...base, force: true } : base),
     onSuccess: () => { toast.success(worker ? t("Збережено") : t("Додано")); onSaved(); },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => {
+      // 409 — схожа людина вже є: даємо свідомо створити дубль або відмовитись
+      if (e.status === 409 && window.confirm(`${e.message}\n\n${t("Створити нового працівника все одно?")}`)) save.mutate(true);
+      else if (e.status !== 409) toast.error(e.message);
+    },
   });
   return (
     <Modal open onClose={onClose} title={worker ? t("Редагувати працівника") : t("Новий працівник")}>
@@ -116,7 +120,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
         )}
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} onClick={() => fullName.trim() && save.mutate()}>{t("Зберегти")}</Button>
+          <Button loading={save.isPending} onClick={() => fullName.trim() && save.mutate(false)}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>

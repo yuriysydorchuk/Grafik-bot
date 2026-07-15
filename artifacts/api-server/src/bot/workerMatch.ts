@@ -100,3 +100,17 @@ export function matchWorker<T extends WorkerLike>(input: string, workers: T[]): 
   if (best.score >= threshold && clearWinner) return { confident: best.w, candidates };
   return { confident: null, candidates };
 }
+
+// Імовірний дубль перед створенням нового працівника: точний збіг
+// нормалізованого імені (без регістру/діакритики/порядку слів) або впевнений
+// matchWorker. Активний профіль пріоритетніший за звільнений.
+export function findLikelyDuplicate<T extends WorkerLike & { isActive?: boolean | null }>(
+  name: string, workers: T[],
+): T | null {
+  const nk = normalizeName(name).split(" ").sort().join(" ");
+  const exact = workers.filter(w => normalizeName(w.fullName).split(" ").sort().join(" ") === nk);
+  const pick = (list: T[]) => list.find(w => w.isActive) ?? list[0] ?? null;
+  if (exact.length) return pick(exact);
+  const m = matchWorker(name, workers);
+  return m.confident ?? null;
+}

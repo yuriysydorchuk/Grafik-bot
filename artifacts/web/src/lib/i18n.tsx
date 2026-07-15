@@ -544,6 +544,7 @@ const EN: Record<string, string> = {
   "Студент до 26: усе на конто, готівки немає": "Student under 26: all to the bank, no cash",
   "Potrącenia": "Potrącenia",
   "Приховано колонок — клікни, щоб показати список": "Columns hidden — click to see the list",
+  "Створити нового працівника все одно?": "Create a new worker anyway?",
   "Поляк / Полька": "Polish citizen",
   "Год. факт (księg.)": "Actual h (ksieg.)",
   "Zaliczka (księg.)": "Zaliczka (ksieg.)",

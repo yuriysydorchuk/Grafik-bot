@@ -245,6 +245,8 @@ const BOT_EN: Record<string, string> = {
   // ── advances (admin) ──
   "Аванс відхилено": "Advance rejected",
   "Запит не знайдено.": "Request not found.",
+  "⚠️ Схожий працівник уже є: *{name}* (код {code}{fired}). Якщо це та сама людина — «✖️ Скасувати».":
+    "⚠️ A similar worker already exists: *{name}* (code {code}{fired}). If it's the same person — press “✖️ Cancel”.",
   // ── menus / buttons ──
   "📋 Замовлення фабрик": "📋 Factory orders",
   "📊 Читати таблицю": "📊 Read spreadsheet",

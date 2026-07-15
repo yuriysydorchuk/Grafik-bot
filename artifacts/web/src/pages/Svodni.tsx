@@ -893,7 +893,7 @@ function AddPersonModal({ month, city, factoryLabel, onClose }: {
     queryKey: ["workers"], queryFn: () => get("/workers"),
   });
   const addRow = useMutation({
-    mutationFn: (p: { workerId?: number; newWorkerName?: string }) =>
+    mutationFn: (p: { workerId?: number; newWorkerName?: string; force?: boolean }) =>
       post<Row>("/svodni/rows", { periodMonth: month, city, factoryLabel, ...p }),
     onSuccess: (created) => {
       qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: [...old.rows, created] } : old);
@@ -901,7 +901,11 @@ function AddPersonModal({ month, city, factoryLabel, onClose }: {
       toast.success(t("Додано"));
       onClose();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any, vars) => {
+      // 409 — схожа людина вже є: підтвердження перед свідомим створенням дубля
+      if (e.status === 409 && window.confirm(`${e.message}\n\n${t("Створити нового працівника все одно?")}`)) addRow.mutate({ ...vars, force: true });
+      else if (e.status !== 409) toast.error(e.message);
+    },
   });
   const needle = q.trim().toLowerCase();
   const found = (workers ?? [])
