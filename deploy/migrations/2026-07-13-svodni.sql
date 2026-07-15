@@ -99,3 +99,12 @@ ALTER TABLE workers ADD COLUMN IF NOT EXISTS notify_hours real;
 
 -- Вік («до 26») — не форма легалізації: старі do26-значення стають zus (zgłoszony)
 UPDATE workers SET legal_status = 'zus' WHERE legal_status = 'do26';
+
+-- DEZYNFEKCJA і SERWIS PLUS — одна фірма: зливаємо авто-створену фабрику (no-op, якщо її немає)
+UPDATE svodni_rows SET factory_id = (SELECT id FROM factories WHERE name = 'SERWIS PLUS' LIMIT 1)
+  WHERE factory_id = (SELECT id FROM factories WHERE name = 'DEZYNFEKCJA' LIMIT 1);
+UPDATE monthly_reports SET factory_id = (SELECT id FROM factories WHERE name = 'SERWIS PLUS' LIMIT 1)
+  WHERE factory_id = (SELECT id FROM factories WHERE name = 'DEZYNFEKCJA' LIMIT 1);
+DELETE FROM factories f WHERE f.name = 'DEZYNFEKCJA'
+  AND NOT EXISTS (SELECT 1 FROM workers w WHERE w.factory_id = f.id)
+  AND NOT EXISTS (SELECT 1 FROM schedule_entries se WHERE se.factory_id = f.id);
