@@ -787,6 +787,20 @@ export const svodniTabChecksTable = pgTable("svodni_tab_checks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Хостели: зняття з ЗП за місяць. Джерело колонки Hostel у сводній —
+// «Години підтверджені → до сводної» тягне суму по (місяць, працівник).
+export const hostelDeductionsTable = pgTable("hostel_deductions", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  city: text("city"),
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  factoryLabel: text("factory_label"),
+  amount: real("amount").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Метадані вкладки сводної: порядок колонок як у таблиці Google + інформаційні
 // блоки (напр. «STAWKA EUROCASH» — ставки за діапазонами годин).
 export const svodniTabMetaTable = pgTable("svodni_tab_meta", {

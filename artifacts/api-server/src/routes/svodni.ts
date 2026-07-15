@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, workersTable, factoriesTable, companiesTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, workersTable, factoriesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -446,6 +446,20 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   const cityByFactory = new Map<number, string>();
   for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
 
+  // системні джерела відрахувань: виплачені аванси місяця → Zaliczka,
+  // зняття за хостел (вкладка «Хостели») → Hostel
+  const advances = await db.select().from(advanceRequestsTable).where(and(
+    inArray(advanceRequestsTable.workerId, workerIds), eq(advanceRequestsTable.status, "paid"),
+    sql`${advanceRequestsTable.paidAt} >= ${monthStart}`, sql`${advanceRequestsTable.paidAt} < ${monthEnd}`,
+  ));
+  const advByWorker = new Map<number, number>();
+  for (const a of advances) advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
+  const hostels = await db.select().from(hostelDeductionsTable).where(and(
+    eq(hostelDeductionsTable.periodMonth, month), inArray(hostelDeductionsTable.workerId, workerIds),
+  ));
+  const hostelByWorker = new Map<number, number>();
+  for (const h of hostels) hostelByWorker.set(h.workerId, (hostelByWorker.get(h.workerId) ?? 0) + h.amount);
+
   const existing = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.periodMonth, month));
   const existByKey = new Map(existing.map(r => [`${r.workerId ?? 0}|${r.factoryLabel}`, r]));
   const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -458,15 +472,23 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const city = (pair.factoryId != null ? cityByFactory.get(pair.factoryId) : null) ?? "Люблін";
     const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
     if (prev) {
-      // повторне підтвердження: оновлюємо лише години, перераховуємо формули
-      // з наявних компонентів рядка (ручні відрахування не затираються)
-      const merged: any = { ...prev, hours: r2(pair.hours) };
+      // повторне підтвердження: оновлюємо години + системні відрахування
+      // (аванси/хостели — їх джерело тепер система), перераховуємо формули;
+      // інші ручні правки (кари, odzież…) не затираються
+      const zal = advByWorker.get(pair.workerId);
+      const hos = hostelByWorker.get(pair.workerId);
+      const merged: any = {
+        ...prev, hours: r2(pair.hours),
+        zaliczka: zal != null ? r2(zal) : prev.zaliczka,
+        hostel: hos != null ? r2(hos) : prev.hostel,
+      };
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
       applyLegalDefaults(merged, true, (w.legalStatus ?? null) as any);
       await db.update(svodniRowsTable).set({
-        hours: merged.hours, doWyplaty: merged.doWyplaty, brutto: merged.brutto,
+        hours: merged.hours, zaliczka: merged.zaliczka, hostel: merged.hostel,
+        doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
         ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
         manual: true, mismatch: null,
@@ -483,7 +505,8 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
       hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
       rateBrutto: w.hourlyRate ?? null, rateNetto: w.hourlyRateNetto ?? null,
-      zaliczka: null, // аванси/штрафи/хостел — вручну в сводній (поки не ведуться на сайті)
+      zaliczka: advByWorker.has(pair.workerId) ? r2(advByWorker.get(pair.workerId)!) : null,
+      hostel: hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
       extras: {}, hr, sheetValues: {}, mismatch: null,
       doWyplaty: null, brutto: null,
@@ -496,6 +519,61 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     created++;
   }
   ok(res, { month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate });
+});
+
+// ── Хостели: зняття з ЗП за місяць (джерело колонки Hostel у сводній) ────────
+router.get("/hostels", requireCap("svodni"), async (req, res) => {
+  const month = validMonth(req.query.month) ? String(req.query.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const rows = await db.select({ h: hostelDeductionsTable, workerName: workersTable.fullName, factoryName: factoriesTable.name })
+    .from(hostelDeductionsTable)
+    .leftJoin(workersTable, eq(hostelDeductionsTable.workerId, workersTable.id))
+    .leftJoin(factoriesTable, eq(hostelDeductionsTable.factoryId, factoriesTable.id))
+    .where(eq(hostelDeductionsTable.periodMonth, month));
+  const months = await db.selectDistinct({ m: hostelDeductionsTable.periodMonth }).from(hostelDeductionsTable);
+  ok(res, {
+    month,
+    months: months.map(x => x.m).sort().reverse(),
+    rows: rows.map(({ h, workerName, factoryName }) => ({
+      id: h.id, workerId: h.workerId, workerName, city: h.city,
+      factoryId: h.factoryId, factoryLabel: factoryName ?? h.factoryLabel, amount: h.amount, note: h.note,
+    })).sort((a, b) => (a.city ?? "").localeCompare(b.city ?? "") || (a.factoryLabel ?? "").localeCompare(b.factoryLabel ?? "") || (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
+  });
+});
+router.post("/hostels", requireCap("svodni"), async (req, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  const workerId = Number(req.body?.workerId);
+  const amount = Number(req.body?.amount);
+  if (!month || !Number.isFinite(workerId) || !Number.isFinite(amount) || amount <= 0) {
+    return fail(res, 400, "month, workerId і сума > 0 обовʼязкові");
+  }
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w) return fail(res, 404, "працівника не знайдено");
+  const [fac] = w.factoryId != null ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [];
+  const cityRow = w.factoryId != null
+    ? (await db.select({ city: svodniRowsTable.city }).from(svodniRowsTable)
+        .where(eq(svodniRowsTable.factoryId, w.factoryId)).orderBy(desc(svodniRowsTable.id)).limit(1))[0]
+    : undefined;
+  const [created] = await db.insert(hostelDeductionsTable).values({
+    periodMonth: month, workerId, amount: Math.round(amount * 100) / 100,
+    city: cityRow?.city ?? "Люблін", factoryId: w.factoryId, factoryLabel: fac?.name ?? null,
+    note: String(req.body?.note ?? "").trim() || null,
+  }).returning();
+  ok(res, created);
+});
+router.patch("/hostels/:id", requireCap("svodni"), async (req, res) => {
+  const id = Number(req.params.id);
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(id) || !Number.isFinite(amount) || amount <= 0) return fail(res, 400, "сума > 0");
+  const [u] = await db.update(hostelDeductionsTable).set({ amount: Math.round(amount * 100) / 100 })
+    .where(eq(hostelDeductionsTable.id, id)).returning();
+  ok(res, u ?? {});
+});
+router.delete("/hostels/:id", requireCap("svodni"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  await db.delete(hostelDeductionsTable).where(eq(hostelDeductionsTable.id, id));
+  ok(res, { ok: true });
 });
 
 router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {

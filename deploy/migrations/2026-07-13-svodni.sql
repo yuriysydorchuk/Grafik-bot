@@ -108,3 +108,17 @@ UPDATE monthly_reports SET factory_id = (SELECT id FROM factories WHERE name = '
 DELETE FROM factories f WHERE f.name = 'DEZYNFEKCJA'
   AND NOT EXISTS (SELECT 1 FROM workers w WHERE w.factory_id = f.id)
   AND NOT EXISTS (SELECT 1 FROM schedule_entries se WHERE se.factory_id = f.id);
+
+-- Хостели: зняття з ЗП за місяць (джерело для колонки Hostel у сводній)
+CREATE TABLE IF NOT EXISTS hostel_deductions (
+    id serial PRIMARY KEY,
+    period_month text NOT NULL,               -- YYYY-MM
+    worker_id integer NOT NULL REFERENCES workers(id),
+    city text,
+    factory_id integer REFERENCES factories(id),
+    factory_label text,
+    amount real NOT NULL,
+    note text,
+    created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hostel_deductions_month ON hostel_deductions (period_month);
