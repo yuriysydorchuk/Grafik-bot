@@ -4,8 +4,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard
 } from "lucide-react";
+import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
@@ -21,7 +22,7 @@ interface WorkerProfile {
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
-  birthDate?: string | null;
+  birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
   factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
   recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
@@ -109,6 +110,8 @@ export default function WorkerDetail() {
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} />
+          <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} />
+          <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} />
           {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
         </div>
       </Card>
@@ -342,6 +345,62 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
 
 // Дата народження з інлайн-редагуванням; «до 26» виводиться автоматично
 // (податкова пільга) і зберігається у профілі при зміні дати.
+// Форма легалізації: select із канонічних статусів (двосторонній синк зі сводними)
+function LegalStatusRow({ workerId, legalStatus }: { workerId: number; legalStatus: LegalStatus | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (v: string) => patch(`/workers/${workerId}`, { legalStatus: v || null }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["worker"] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+  const badge = legalStatus ? LEGAL_BADGE[legalStatus] : null;
+  return (
+    <div className="flex items-center gap-2">
+      <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Форма легалізації")}:</span>
+      <select value={legalStatus ?? ""} onChange={e => save.mutate(e.target.value)}
+        className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
+        <option value="">—</option>
+        {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
+      </select>
+      {badge && <span className={`rounded px-1 text-[10px] font-medium ${badge.cls}`}>{badge.short}</span>}
+    </div>
+  );
+}
+
+// Години в повідомленні (powiadomienie — дозвіл на працю): показуються в сводній
+function NotifyHoursRow({ workerId, notifyHours }: { workerId: number; notifyHours: number | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const save = useMutation({
+    mutationFn: () => patch(`/workers/${workerId}`, { notifyHours: draft === "" ? null : Number(draft) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <div className="flex items-center gap-2">
+      <Clock className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Год. у повідомленні")}:</span>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : (
+        <button className="font-medium text-slate-700 hover:text-red-600"
+          onClick={() => { setDraft(notifyHours == null ? "" : String(notifyHours)); setEditing(true); }}>
+          {notifyHours != null ? `${notifyHours} ${t("год")}` : t("вказати")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function BirthDateRow({ workerId, birthDate }: { workerId: number; birthDate: string | null }) {
   const t = useT();
   const qc = useQueryClient();

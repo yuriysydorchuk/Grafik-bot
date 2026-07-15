@@ -66,6 +66,8 @@ export const workersTable = pgTable("workers", {
   hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться
   isStudent: boolean("is_student").notNull().default(false),
   under26: boolean("under_26").notNull().default(false),
+  legalStatus: text("legal_status"), // форма легалізації: student | dyplom | do26 | zus | oczekuje | karta_pobytu | staly_pobyt | polak
+  notifyHours: real("notify_hours"), // години в powiadomieniu (дозвіл на працю)
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

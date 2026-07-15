@@ -125,6 +125,38 @@ const HR_COLS: { re: RegExp; key: string }[] = [
 // секційні рядки всередині вкладки (не людина, не сервіс)
 const SECTION_RE = /^(KOBIETY|MEZCZYZNI|NIE OPODATKOWANE|OPODATKOWANE|STUDENCI|NIE STUDENCI)$/;
 
+// ── форма легалізації: канонічні статуси з тексту колонки Księgowość ─────────
+// Каталог продубльований у web/src/lib/legalStatus.ts — тримати синхронними.
+export const LEGAL_STATUSES = ["student", "dyplom", "do26", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
+export type LegalStatus = (typeof LEGAL_STATUSES)[number];
+export function legalStatusOf(zusText: string | null | undefined): LegalStatus | null {
+  const s = norm(String(zusText ?? ""));
+  if (!s) return null;
+  if (/DYPLOM/.test(s)) return "dyplom";
+  if (/NIE ?ZGLOSZON|CZEKAMY/.test(s)) return "oczekuje";
+  if (/KART[YA] POBYTU|DECYZJA/.test(s)) return "karta_pobytu";
+  if (/STALY POBYT/.test(s)) return "staly_pobyt";
+  if (/POLAK|POLKA/.test(s)) return "polak";
+  if (/STUDENT/.test(s)) return "student";
+  if (/DO ?26/.test(s)) return "do26";
+  if (/WYZEJ ?26/.test(s)) return "zus";
+  return null;
+}
+
+// ── фабрико-специфічні формули księgowих годин (як в екселі) ─────────────────
+// Eurocash: Godzin Faktycznie = Do wypłaty / 30,5;
+// Sushi: Godzin Faktycznie = (Do wypłaty + Zaliczka) / 24,6; BRUTTO = godz × 30,5.
+export function computeKsiegHours(factoryLabel: string, row: Pick<SvodniParsedRow, "doWyplaty" | "zaliczka">): { ksiegHours: number; brutto?: number } | null {
+  const f = norm(factoryLabel);
+  if (row.doWyplaty == null) return null;
+  if (/^EUROCASH/.test(f)) return { ksiegHours: r2(row.doWyplaty / 30.5) };
+  if (/SUSHI/.test(f)) {
+    const h = r2((row.doWyplaty + (row.zaliczka ?? 0)) / 24.6);
+    return { ksiegHours: h, brutto: r2(h * 30.5) };
+  }
+  return null;
+}
+
 // ── Люблін / Познань: одна вкладка = одна фабрика ────────────────────────────
 export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniParsedTab | null {
   const header = rows[0];
@@ -280,7 +312,7 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
 //     головної таблиці має ≥4 числа праворуч.
 function mergeKsiegBlock(rows: unknown[][], from: number, out: SvodniParsedTab, mainNameCol: number) {
   const mainKeys = new Set(out.rows.map(w => key(cleanName(w.rawName))));
-  let start = -1, faktCol = -1, ksieg = -1, bru = -1, net = -1, got = -1, nameCol = -1;
+  let start = -1, faktCol = -1, ksieg = -1, bru = -1, net = -1, got = -1, zal = -1, nameCol = -1;
   for (let r = from; r < rows.length && start < 0; r++) {
     const line = rows[r] ?? [];
     const labels = line.map(c => norm(String(c ?? "")));
@@ -294,6 +326,7 @@ function mergeKsiegBlock(rows: unknown[][], from: number, out: SvodniParsedTab, 
       const bruLbl = idx(/^BRUTTO/); bru = bruLbl >= 0 ? bruLbl : ksieg + 1;
       const netLbl = idx(/^NETTO/); net = netLbl >= 0 ? netLbl : bru + 1;
       got = gotLbl >= 0 ? gotLbl : net + 1;
+      const zalLbl = idx(/^ZALICZK/); zal = zalLbl > got ? zalLbl : -1; // блокова zaliczka — праворуч від готівки
       const firstData = rows[r + 1] ?? [];
       for (let j = faktCol - 1; j >= 0; j--) {
         const v = String(firstData[j] ?? "").trim();
@@ -351,6 +384,7 @@ function mergeKsiegBlock(rows: unknown[][], from: number, out: SvodniParsedTab, 
         ksiegNetto: num(rows[i]?.[net]),
         gotowka: num(rows[i]?.[got]),
         faktBlock: num(rows[i]?.[faktCol]),
+        zaliczkaBlock: zal >= 0 ? num(rows[i]?.[zal]) : null,
       };
       if (m >= 0) {
         used.add(m);
@@ -361,12 +395,15 @@ function mergeKsiegBlock(rows: unknown[][], from: number, out: SvodniParsedTab, 
         w.gotowka = vals.gotowka;
         w.konto = vals.ksiegNetto;
         if (w.hours == null) w.hours = vals.faktBlock;
+        if (vals.faktBlock != null) w.extras.godzFaktBlock = vals.faktBlock;
+        if (vals.zaliczkaBlock != null) w.extras.zaliczkaBlock = vals.zaliczkaBlock;
       } else {
         // людина є лише в нижньому блоці (у головній таблиці її нема — звільнена
         // або нульова виплата): додаємо окремим рядком, помічаємо blockOnly
         const row = emptyRow(null, name);
         row.extras.blockOnly = 1;
         row.hours = vals.faktBlock;
+        if (vals.zaliczkaBlock != null) row.extras.zaliczkaBlock = vals.zaliczkaBlock;
         row.hoursDeclared = vals.hoursDeclared;
         row.ksiegBrutto = vals.ksiegBrutto;
         row.ksiegNetto = vals.ksiegNetto;

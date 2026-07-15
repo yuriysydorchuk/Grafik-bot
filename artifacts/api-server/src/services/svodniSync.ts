@@ -13,7 +13,7 @@ import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
-  parseOfficeTab, computeMismatch, type SvodniParsedTab, type GotowkaRow,
+  parseOfficeTab, computeMismatch, legalStatusOf, type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -354,6 +354,10 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
     const effBd = bd ?? w.birthDate;
     const under26 = effBd ? isUnder26(effBd) : s.under26;
     if (under26 != null && under26 !== w.under26) set.under26 = under26;
+    // форма легалізації з тексту Księgowość + години в повідомленні
+    const ls = legalStatusOf((s.extras as Record<string, unknown> | null)?.zusStatus as string);
+    if (ls && ls !== w.legalStatus) set.legalStatus = ls;
+    if (s.hoursNotified != null && s.hoursNotified !== w.notifyHours) set.notifyHours = s.hoursNotified;
     if (!Object.keys(set).length) { skipped++; continue; }
     await db.update(workersTable).set(set).where(eq(workersTable.id, w.id));
     updated++;
