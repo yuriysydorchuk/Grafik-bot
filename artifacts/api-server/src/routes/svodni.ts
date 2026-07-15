@@ -13,7 +13,7 @@ import { logger } from "../lib/logger";
 import { matchWorker } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
-import { computePayout, computeKsiegHours, legalStatusOf } from "../services/svodni";
+import { computePayout, computeKsiegHours, legalStatusOf, applyLegalDefaults } from "../services/svodni";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -338,6 +338,13 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       set.extras = extras2;
       merged.extras = extras2;
       if (kh.brutto != null) { set.brutto = kh.brutto; merged.brutto = kh.brutto; }
+    }
+    // статусні правила бухгалтерії: студент до 26 → все на конто; не зголошений → все готівкою
+    if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+      applyLegalDefaults(merged, true);
+      for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+        if (merged[k] !== row[k]) set[k] = merged[k];
+      }
     }
   }
   // księgowa частина: години księg. → netto/brutto зі ставок; konto ↔ ksiegNetto;

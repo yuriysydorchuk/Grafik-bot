@@ -13,7 +13,7 @@ import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
-  parseOfficeTab, computeMismatch, legalStatusOf, type SvodniParsedTab, type GotowkaRow,
+  parseOfficeTab, computeMismatch, legalStatusOf, applyLegalDefaults, type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -139,6 +139,9 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       }));
     }
     for (const row of parsed.rows) {
+      // статусні правила бухгалтерії: студент до 26 → все на конто;
+      // не зголошений → все готівкою (заповнений блок сильніший)
+      if (!OFFICE_TAB_RE.test(t.trim())) applyLegalDefaults(row);
       computeMismatch(row, city);
       // Познань: звірка годин із Work List (за Nr Osobowy у hr)
       if (workList && row.hr.nrOsobowy) {

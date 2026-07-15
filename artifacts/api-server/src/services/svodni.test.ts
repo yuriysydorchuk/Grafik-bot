@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch, parseOfficeTab,
-  legalStatusOf, computeKsiegHours,
+  legalStatusOf, computeKsiegHours, applyLegalDefaults,
 } from "./svodni.ts";
 
 const near = (actual: number | null | undefined, expected: number, msg?: string) =>
@@ -187,10 +187,36 @@ test("форма легалізації: текст Księgowość → канон
   assert.equal(legalStatusOf("Zgłoszony, Decyzja Karty Pobytu"), "karta_pobytu");
   assert.equal(legalStatusOf("Zgłoszony, stały pobyt"), "staly_pobyt");
   assert.equal(legalStatusOf("Zgłoszony Polak / Polka"), "polak");
-  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Do 26"), "do26");
-  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Wyżej 26"), "zus");
+  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Do 26"), "powiadomienie");
+  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Wyżej 26"), "powiadomienie");
+  assert.equal(legalStatusOf("Zgłoszony, Do 26"), "do26");
   assert.equal(legalStatusOf(""), null);
   assert.equal(legalStatusOf("щось невідоме"), null);
+});
+
+test("розклад за статусом: студент до 26 → все на конто; не зголошений → все готівкою", () => {
+  const rows = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["STUDENTKA ANNA", "STUD", 100, 31.4, 31.4, 3140, "Zgłoszony, do 26, student"],
+    ["CZEKAJACY JAN", "", 100, 31.4, 25.35, 2535, "NIE ZGŁOSZONO, CZEKAMY NA ZEZWOLENIE"],
+    ["ZWYKLY PIOTR", "", 100, 31.4, 25.35, 2535, "Zgłoszony, Powiadomienie, Wyżej 26"],
+  ];
+  const p = parseLublinTab("TESTOWA", rows)!;
+  for (const r of p.rows) applyLegalDefaults(r);
+  const [stud, czek, zwykly] = p.rows;
+  assert.equal(stud!.konto, 3140, "студент до 26: все до виплати йде на конто");
+  assert.equal(stud!.ksiegNetto, 3140);
+  assert.equal(stud!.ksiegBrutto, 3140, "студент: netto = brutto");
+  assert.equal(stud!.gotowka, 0);
+  assert.equal(stud!.hoursDeclared, 100);
+  assert.equal(czek!.gotowka, 2535, "не зголошений: все готівкою");
+  assert.equal(czek!.konto, 0);
+  assert.equal(czek!.hoursDeclared, 0);
+  assert.equal(zwykly!.konto, null, "звичайний нерозписаний — лишається порожнім (блок заповнить бухгалтерія)");
+  // force-перерахунок (правка на сайті) переписує наявний розклад студента
+  stud!.hours = 120; stud!.doWyplaty = 3768;
+  applyLegalDefaults(stud!, true);
+  assert.equal(stud!.konto, 3768);
 });
 
 test("Godzin Faktycznie: Eurocash = виплата/30,5; Sushi = (виплата+zaliczka)/24,6 і brutto", () => {
