@@ -912,6 +912,28 @@ bot.action("adv:new", async (ctx) => {
   return ctx.reply(t(lang, "adv.askAmount"), cancelKb(lang));
 });
 
+// Обʼєднання дубліката профілю — лише після ручного затвердження адміном
+// (кнопка під сповіщенням про самореєстрацію). keep = профіль офіса, drop = новий.
+bot.action("wmerge_skip", async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!(await isAdmin(tid))) { await ctx.answerCbQuery("Лише для адміністрації"); return; }
+  await ctx.answerCbQuery("Ок, лишаю два профілі");
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+});
+bot.action(/^wmerge_(\d+)_(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  if (!(await isAdmin(tid))) { await ctx.answerCbQuery("Лише для адміністрації"); return; }
+  const keepId = Number((ctx as any).match[1]);
+  const dropId = Number((ctx as any).match[2]);
+  const { mergeWorkers } = await import("../services/workerMerge");
+  const r = await mergeWorkers(keepId, dropId);
+  await ctx.answerCbQuery(r.ok ? "Обʼєднано" : r.error);
+  if (r.ok) {
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    await ctx.reply(`✅ Профілі обʼєднано: залишився №${keepId}, дублікат видалено. Telegram і всі записи перенесені.`);
+  }
+});
+
 // Admin acts on an advance straight from the Telegram notification.
 bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   const tid = String(ctx.from.id);
@@ -3128,37 +3150,34 @@ bot.on("text", async (ctx) => {
       clearState(tid);
       return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
     }
-    // Захист від дублікатів: якщо офіс уже завів цю людину (профіль без Telegram),
-    // привʼязуємо наявний профіль замість створення нового.
-    const allWorkers = await db.select().from(workersTable);
-    const dup = findLikelyDuplicate(fullName, allWorkers);
-    let claimed: typeof allWorkers[number] | null = null;
-    if (dup && !dup.telegramId && dup.isActive) {
-      await db.update(workersTable).set({
-        telegramId: tid,
-        ...(dup.factoryId == null && data.factoryId ? { factoryId: data.factoryId } : {}),
-      }).where(eq(workersTable.id, dup.id));
-      claimed = dup;
-    } else {
-      const code = await genWorkerCode();
-      await db.insert(workersTable).values({
-        fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code,
-      });
-    }
+    // Дублікат-детект: якщо офіс уже завів схожу людину — профіль усе одно
+    // створюємо (людина одразу працює з ботом), а адмін отримує кнопки
+    // «Обʼєднати» / «Різні люди»: злиття — ЛИШЕ після ручного затвердження.
+    const dup = findLikelyDuplicate(fullName, await db.select().from(workersTable));
+    const code = await genWorkerCode();
+    const [freshWorker] = await db.insert(workersTable).values({
+      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code,
+    }).returning();
     clearState(tid);
     // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
     try {
       const staff = await db.select().from(adminsTable);
-      const dupNote = claimed
-        ? `\n🔗 Привʼязано до наявного профілю №${escapeHtml(claimed.workerCode ?? String(claimed.id))} (дублікат не створено).`
-        : dup ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}.` : "";
+      const dupNote = dup
+        ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}${dup.isActive ? "" : " (звільнений)"}.`
+        : "";
+      const dupKb = dup && freshWorker ? {
+        inline_keyboard: [[
+          { text: `🔗 Обʼєднати (лишити №${dup.workerCode ?? dup.id})`, callback_data: `wmerge_${dup.id}_${freshWorker.id}` },
+          { text: "👥 Різні люди", callback_data: "wmerge_skip" },
+        ]],
+      } : undefined;
       for (const a of staff) {
         if (!a.telegramId) continue;
         if (a.role !== "owner" && a.role !== "scheduler") continue;
         await bot.telegram.sendMessage(
           a.telegramId,
           `🆕 Новий працівник зареєструвався сам:\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`,
-          { parse_mode: "HTML" },
+          { parse_mode: "HTML", ...(dupKb ? { reply_markup: dupKb } : {}) },
         );
       }
     } catch { /* notification is best-effort */ }

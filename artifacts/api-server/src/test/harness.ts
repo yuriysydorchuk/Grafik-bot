@@ -6,7 +6,7 @@ import {
   scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable, pnlEntriesTable,
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
-  driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable,
+  driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -20,7 +20,7 @@ export {
   availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable,
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
-  driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable,
+  driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -39,7 +39,7 @@ export async function resetDb(): Promise<void> {
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
     "schedule_weeks, schedule_entries, bank_transactions, pnl_entries, " +
-    "svodni_rows, svodni_tab_checks, svodni_tab_meta, " +
+    "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity RESTART IDENTITY CASCADE",
   ));
