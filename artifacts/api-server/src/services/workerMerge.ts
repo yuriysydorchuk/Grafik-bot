@@ -8,15 +8,17 @@ import {
   availabilityTable, absenceRequestsTable, advanceRequestsTable, candidatesTable,
   workerDocumentsTable, unplannedWorkersTable, hoursDisputesTable,
 } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok: true } | { ok: false; error: string }> {
   if (keepId === dropId) return { ok: false, error: "той самий профіль" };
   const [keep] = await db.select().from(workersTable).where(eq(workersTable.id, keepId));
   const [drop] = await db.select().from(workersTable).where(eq(workersTable.id, dropId));
   if (!keep || !drop) return { ok: false, error: "профіль не знайдено" };
-  if (keep.telegramId && drop.telegramId && keep.telegramId !== drop.telegramId) {
-    return { ok: false, error: "обидва профілі мають різні Telegram — обʼєднувати треба вручну" };
+  // Telegram головного профілю — пріоритетний: у ЗВІЛЬНЕНОГО дубля інший Telegram
+  // просто відкидається. Відмова — лише коли обидва профілі активні з різними tg.
+  if (keep.telegramId && drop.telegramId && keep.telegramId !== drop.telegramId && drop.isActive) {
+    return { ok: false, error: "обидва профілі активні з різними Telegram — обʼєднувати треба вручну" };
   }
 
   await db.transaction(async tx => {
@@ -45,6 +47,16 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
       if (clash.length) await tx.delete(monthlyReportsTable).where(eq(monthlyReportsTable.id, r.id));
       else await tx.update(monthlyReportsTable).set({ workerId: keepId }).where(eq(monthlyReportsTable.id, r.id));
     }
+    // планові (scheduled) клітинки дубля, що повторюють клітинку keep того ж
+    // дня і зміни — сміття з подвійного заведення, не переносимо
+    await tx.execute(sql`
+      DELETE FROM schedule_entries se
+      WHERE se.worker_id = ${dropId} AND se.status = 'scheduled'
+        AND EXISTS (
+          SELECT 1 FROM schedule_entries k
+          WHERE k.worker_id = ${keepId} AND k.week_id = se.week_id
+            AND k.day_of_week = se.day_of_week AND k.shift = se.shift
+        )`);
     await tx.update(scheduleEntriesTable).set({ workerId: keepId }).where(eq(scheduleEntriesTable.workerId, dropId));
     await tx.update(svodniRowsTable).set({ workerId: keepId }).where(eq(svodniRowsTable.workerId, dropId));
     await tx.update(availabilityTable).set({ workerId: keepId }).where(eq(availabilityTable.workerId, dropId));
