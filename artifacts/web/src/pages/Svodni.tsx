@@ -581,12 +581,19 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
   const z = (n: number) => `${n.toFixed(2)} zł`;
 
   const total = sum(r => r.doWyplaty);
+  // офіс у сводних ведеться брутто, фабрики — нетто «до виплати» (для тултіпа)
+  const officePay = sum(r => isSpecial(r.factoryLabel) ? r.doWyplaty : 0);
+  const factoryPay = r2(total - officePay);
   const konto = sum(r => r.konto ?? r.ksiegNetto);
   const ksiegBrutto = sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto) ? r.ksiegBrutto : 0);
   const workerTax = r2(ksiegBrutto - sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto) ? r.ksiegNetto : 0));
   const taxableBrutto = sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto + 0.01) ? r.ksiegBrutto : 0);
   const employerZus = r2(taxableBrutto * 0.2048);
   const gotowka = sum(r => r.gotowka);
+  // не розписано: сума «до виплати» рядків без розкладу konto/готівка (офіс +
+  // фабрики, де бухгалтерія ще не заповнила блок); doplataEs — легальний надлишок
+  const doplataEsSum = sum(r => ex(r, "doplataEs"));
+  const nierozp = r2(total - (konto + gotowka - doplataEsSum));
   // економія: якби готівкова частина йшла офіційно — брутто-еквівалент + ZUS
   // роботодавця мінус сама готівка; студенти без податків → економії немає
   const savedParts = rows.reduce((acc, r) => {
@@ -628,11 +635,15 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <Item label={t("Загальна ЗП")} value={total} icon={Coins} tone="bg-slate-800 text-white"
-        formula={`${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(total)}`} />
+        formula={officePay > 0
+          ? `${t("Σ колонки «До виплати»")}: ${t("фабрики (нетто)")} ${z(factoryPay)} + ${t("офіс (брутто)")} ${z(officePay)} = ${z(total)}`
+          : `${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(total)}`} />
       {sensitive && <Item label={t("ЗП на карту")} value={konto} icon={CreditCard} tone="bg-sky-50 text-sky-600"
-        formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(konto)}`} />}
+        formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(konto)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
       {sensitive && <Item label={t("ЗП готівкою")} value={gotowka} icon={Banknote} tone="bg-amber-50 text-amber-600"
-        formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}`} />}
+        formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
+      {sensitive && nierozp > 0.5 && <Item label={t("Не розписано (конто/готівка)")} value={nierozp} icon={CircleAlert} tone="bg-slate-100 text-slate-500"
+        formula={`${t("Загальна ЗП − (На карту + Готівка − Dopłata ES) — офіс і фабрики, де бухгалтерія ще не розписала офіційну частину")}: ${z(total)} − (${z(konto)} + ${z(gotowka)} − ${z(doplataEsSum)}) = ${z(nierozp)}`} />}
       {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} icon={PiggyBank} tone="bg-emerald-50 text-emerald-600"
         formula={`${t("Якби готівку платили офіційно: (брутто-еквівалент − готівка) + брутто-еквівалент × 20,48% ZUS. Студенти не рахуються — у них податків немає.")} (${z(savedParts.bruttoEq)} − ${z(savedParts.got)}) + ${z(savedParts.bruttoEq)} × 0,2048 = ${z(saved)}`} />}
       {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} icon={Wallet} tone="bg-rose-600 text-white"
@@ -657,19 +668,22 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
 function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) {
   const t = useT();
   const ex = (r: Row, k: string) => (typeof r.extras[k] === "number" ? (r.extras[k] as number) : 0);
-  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; zaliczki: number; hostel: number; kary: number; students: number };
-  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
+  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; doplata: number; zaliczki: number; hostel: number; kary: number; students: number };
+  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, doplata: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
   const add = (a: Agg, r: Row) => {
     a.count += 1;
     a.hours += r.hours ?? 0;
     a.pay += r.doWyplaty ?? 0;
     a.konto += r.konto ?? r.ksiegNetto ?? 0;
     a.gotowka += r.gotowka ?? 0;
+    a.doplata += ex(r, "doplataEs");
     a.zaliczki += (r.zaliczka ?? 0) + (r.zaliczkaBd ?? 0);
     a.hostel += r.hostel ?? 0;
     a.kary += (r.kara ?? 0) + ex(r, "karaKlient") + ex(r, "karaEs");
     if (r.isStudent) a.students += 1;
   };
+  // не розписано = виплата без розкладу konto/готівка (блок ще не заповнений)
+  const nierozpOf = (a: Agg) => r2(a.pay - (a.konto + a.gotowka - a.doplata));
   // місто → фабрика → агрегат (офісні вкладки і додаткові студенти — під «Офіс»)
   const { cities, grand } = useMemo(() => {
     const byCity = new Map<string, Map<string, Agg>>();
@@ -688,8 +702,8 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
         const factories = [...m.entries()].sort((a, b) => b[1].pay - a[1].pay || a[0].localeCompare(b[0]));
         for (const [, a] of factories) {
           total.count += a.count; total.hours += a.hours; total.pay += a.pay; total.konto += a.konto;
-          total.gotowka += a.gotowka; total.zaliczki += a.zaliczki; total.hostel += a.hostel;
-          total.kary += a.kary; total.students += a.students;
+          total.gotowka += a.gotowka; total.doplata += a.doplata; total.zaliczki += a.zaliczki;
+          total.hostel += a.hostel; total.kary += a.kary; total.students += a.students;
         }
         return { city: c, factories, total };
       });
@@ -704,6 +718,7 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
       <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
       {sensitive && num(a.konto)}
       {sensitive && num(a.gotowka)}
+      {sensitive && <td className="px-2 py-1.5 text-right tabular-nums text-slate-400">{nierozpOf(a) > 0.5 ? fmt(nierozpOf(a)) : ""}</td>}
       {num(a.zaliczki)}
       {num(a.hostel)}
       {num(a.kary)}
@@ -726,6 +741,7 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
               <th className="px-2 py-2.5 text-right">{t("До виплати")}</th>
               {sensitive && <th className="px-2 py-2.5 text-right">{t("На карту")}</th>}
               {sensitive && <th className="px-2 py-2.5 text-right">{t("Готівка")}</th>}
+              {sensitive && <th className="px-2 py-2.5 text-right" title={t("Виплата, для якої бухгалтерія ще не розписала конто/готівку")}>{t("Не розп.")}</th>}
               <th className="px-2 py-2.5 text-right">{t("Аванси")}</th>
               <th className="px-2 py-2.5 text-right">{t("Хостел")}</th>
               <th className="px-2 py-2.5 text-right">{t("Штрафи")}</th>
