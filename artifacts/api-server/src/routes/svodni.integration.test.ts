@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -218,4 +218,39 @@ test("привʼязка: POST /svodni/link підвʼязує всі рядки
 
   const rows = await db.select().from(svodniRowsTable);
   assert.ok(rows.every(r => r.workerId === w!.id && r.linkStatus === "confirmed"));
+});
+
+test("«Години підтверджені → до сводної»: рядок із профільними даними і формулами; повтор — оновлення", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Kowalski Jan", workerCode: "00001", hourlyRate: 31.4, hourlyRateNetto: 31.4,
+    isStudent: true, under26: true, legalStatus: "student", notifyHours: 40, birthDate: "2004-05-05",
+  }).returning();
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: null, hoursReported: 100 });
+
+  const r1 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.created, 1);
+
+  const [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.workerId, w!.id);
+  assert.equal(row!.hours, 100);
+  assert.equal(row!.rateNetto, 31.4, "ставка з профілю");
+  assert.equal(row!.hoursNotified, 40, "год. повідомлення з профілю");
+  assert.equal(row!.doWyplaty, 3140, "формула: години × ставка нетто");
+  assert.equal(row!.konto, 3140, "студент до 26 → все на конто");
+  assert.equal(row!.gotowka, 0);
+  assert.equal(row!.manual, true, "сайт — джерело: синк не перезапише");
+  assert.equal((row!.hr as any).dataUrodzenia, "05.05.2004");
+
+  // повторне підтвердження з новими годинами → update, не дубль
+  await db.update(monthlyReportsTable).set({ hoursReported: 120 }).where(eq(monthlyReportsTable.workerId, w!.id));
+  const r2 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r2.body.updated, 1);
+  assert.equal(r2.body.created, 0);
+  const rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.hours, 120);
+  assert.equal(rows[0]!.doWyplaty, 3768);
 });

@@ -381,6 +381,122 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   ok(res, serializeRow(updated!.r, updated!.workerName, canSensitive(req), updated!.workerLegal));
 });
 
+// «Години підтверджені → до сводної»: створює/оновлює сводну місяця з обліку
+// годин (сайт — джерело). Години: рапорт місяця (пріоритет) або затверджені
+// явки; ставки/статуси/дата народження — з профілю; аванси (paid) → zaliczka.
+// Формули ті самі, що в таблицях: до виплати, brutto, статусні правила księg.
+router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+
+  // 1) фактичні години по парі (працівник, фабрика): явки затверджених тижнів
+  const { scheduleEntriesTable, scheduleWeeksTable } = await import("@workspace/db");
+  const { weekFromForMonth, entryDateStr } = await import("../lib/dates");
+  const { factoryShiftHours } = await import("../bot/time");
+  const facRows = await db.select().from(factoriesTable);
+  const facById = new Map(facRows.map(f => [f.id, f]));
+  const att = await db.select({
+    workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId,
+    shift: scheduleEntriesTable.shift, hoursOverride: scheduleEntriesTable.hoursOverride,
+    day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
+  }).from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(
+      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      sql`${scheduleWeeksTable.weekStart} >= ${weekFromForMonth(monthStart)}`, sql`${scheduleWeeksTable.weekStart} < ${monthEnd}`,
+    ));
+  const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
+  const hoursByPair = new Map<string, { workerId: number; factoryId: number | null; hours: number }>();
+  for (const r of att) {
+    if (!r.workerId) continue;
+    const date = entryDateStr(String(r.weekStart), r.day);
+    if (date < monthStart || date >= monthEnd) continue;
+    const cur = hoursByPair.get(key2(r.workerId, r.factoryId))
+      ?? hoursByPair.set(key2(r.workerId, r.factoryId), { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(key2(r.workerId, r.factoryId))!;
+    cur.hours += r.hoursOverride ?? factoryShiftHours(r.factoryId != null ? facById.get(r.factoryId) : undefined, r.shift as any);
+  }
+  // 2) рапорти місяця — пріоритет над явками (та сама політика, що у фінансах)
+  const { monthlyReportsTable } = await import("@workspace/db");
+  const reports = await db.select().from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
+  for (const r of reports) {
+    const k = key2(r.workerId, r.factoryId);
+    const cur = hoursByPair.get(k) ?? hoursByPair.set(k, { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(k)!;
+    cur.hours = r.hoursReported;
+  }
+
+  // 3) профілі, аванси (paid у цьому місяці), місто фабрики (з історії сводних)
+  const workerIds = [...new Set([...hoursByPair.values()].map(p => p.workerId))];
+  if (!workerIds.length) return fail(res, 400, "у цьому місяці немає підтверджених годин");
+  const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
+  const wById = new Map(workers.map(w => [w.id, w]));
+  const { advanceRequestsTable } = await import("@workspace/db");
+  const advances = await db.select().from(advanceRequestsTable).where(and(
+    inArray(advanceRequestsTable.workerId, workerIds), eq(advanceRequestsTable.status, "paid"),
+    sql`${advanceRequestsTable.paidAt} >= ${monthStart}`, sql`${advanceRequestsTable.paidAt} < ${monthEnd}`,
+  ));
+  const advByWorker = new Map<number, number>();
+  for (const a of advances) advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
+  const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, id: svodniRowsTable.id })
+    .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
+  const cityByFactory = new Map<number, string>();
+  for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
+
+  const existing = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.periodMonth, month));
+  const existByKey = new Map(existing.map(r => [`${r.workerId ?? 0}|${r.factoryLabel}`, r]));
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  let created = 0, updated = 0, skippedNoRate = 0;
+  for (const pair of hoursByPair.values()) {
+    const w = wById.get(pair.workerId);
+    if (!w) continue;
+    const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
+    const factoryLabel = fac?.name ?? "Без фабрики";
+    const city = (pair.factoryId != null ? cityByFactory.get(pair.factoryId) : null) ?? "Люблін";
+    const zal = advByWorker.get(pair.workerId);
+    const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
+    if (prev) {
+      // повторне підтвердження: оновлюємо лише години, перераховуємо формули
+      // з наявних компонентів рядка (ручні відрахування не затираються)
+      const merged: any = { ...prev, hours: r2(pair.hours) };
+      const payout = computePayout(merged, city as any);
+      if (payout != null) merged.doWyplaty = payout;
+      if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
+      applyLegalDefaults(merged, true);
+      await db.update(svodniRowsTable).set({
+        hours: merged.hours, doWyplaty: merged.doWyplaty, brutto: merged.brutto,
+        hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
+        ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
+        manual: true, mismatch: null,
+      }).where(eq(svodniRowsTable.id, prev.id));
+      updated++;
+      continue;
+    }
+    const hr: Record<string, string> = {};
+    if (w.birthDate) { const [yy, mm, dd] = w.birthDate.split("-"); hr.dataUrodzenia = `${dd}.${mm}.${yy}`; }
+    const under26 = w.birthDate ? isUnder26(w.birthDate) : w.under26;
+    const row: any = {
+      periodMonth: month, city, firm: null, factoryLabel, factoryId: pair.factoryId,
+      sortIdx: created, rawName: w.fullName, workerId: w.id, linkStatus: "confirmed",
+      manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
+      hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
+      rateBrutto: w.hourlyRate ?? null, rateNetto: w.hourlyRateNetto ?? null,
+      zaliczka: zal != null ? r2(zal) : null,
+      isStudent: w.isStudent, under26,
+      extras: {}, hr, sheetValues: {}, mismatch: null,
+      doWyplaty: null, brutto: null,
+    };
+    if (row.rateNetto == null) skippedNoRate++;
+    row.doWyplaty = computePayout(row, city as any);
+    if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
+    applyLegalDefaults(row, true);
+    await db.insert(svodniRowsTable).values(row);
+    created++;
+  }
+  ok(res, { month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate });
+});
+
 router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {
   ok(res, await rematchSvodni());
 });

@@ -44,6 +44,14 @@ export default function Hours() {
     }),
     onError: (e: any) => toast.error(e.message),
   });
+  // «Години підтверджені → до сводної»: переносить місяць в сводну (сайт — джерело)
+  const toSvodni = useMutation({
+    mutationFn: () => post<{ created: number; updated: number; workers: number; noNettoRate: number }>("/svodni/from-hours", { month }),
+    onSuccess: (r) => toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
+      description: r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : undefined,
+    }),
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>();
@@ -76,6 +84,12 @@ export default function Hours() {
         )}
         {canEdit && (
           <div className="ml-auto flex items-center gap-2">
+            {can(me, "svodni") && (
+              <Button loading={toSvodni.isPending}
+                onClick={() => window.confirm(t("Перенести підтверджені години {month} до сводної? Рядки створяться/оновляться з даними з профілів.", { month: monthLabel })) && toSvodni.mutate()}>
+                <Check className="h-4 w-4" /> {t("Години підтверджені → до сводної")}
+              </Button>
+            )}
             <Button variant="secondary" loading={remind.isPending} onClick={() => remind.mutate()}><BellRing className="h-4 w-4" /> {t("Нагадати про рапорт")}</Button>
             <a href={`/api/hours/report-excel?month=${month}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> {t("Excel рапорту")}</a>
           </div>
