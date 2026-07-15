@@ -63,9 +63,11 @@ function parseSummaryTab(rows: unknown[][]): Map<string, { hours: number | null;
   return out;
 }
 
-// назви вкладок, що відрізняються від довідника фабрик (одрукування у сводних)
+// назви вкладок, що відрізняються від довідника фабрик (одрукування у сводних;
+// DEZYNFEKCJA і SERWIS PLUS — одна фірма, у довіднику живе SERWIS PLUS)
 const FACTORY_LABEL_ALIASES: Record<string, string> = {
   ALLMIZ: "ALMIZ",
+  DEZYNFEKCJA: "SERWISPLUS",
 };
 
 // Матчинг імені сводної до працівника. Обробляє два системні кейси:
