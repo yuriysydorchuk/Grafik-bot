@@ -137,32 +137,33 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       if (parts.length < 2) return null;
       return parts.map(k => `${extraLabel(k)} ${f(ex(k))}`).join(" + ") + ` = ${f(r.premia)}`;
     }
-    case "hoursDeclared":
+    case "hoursDeclared": {
       if (studentDo26) return `${t("Студент до 26: усі години офіційні")} = ${f(r.hoursDeclared)}`;
-      if (oczekuje) return `${t("Не зголошений: офіційних годин немає")} = 0`;
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.hours != null && r.hoursDeclared != null)
         return `${t("Офіційно — години oświadczenia, але не більше відпрацьованих")}: min(${f(r.hoursNotified)}, ${f(r.hours)}) = ${f(r.hoursDeclared)}`;
-      return null;
+      if (oczekuje || !r.legalStatus) return `${t("Не оформлений: офіційних годин немає")} = 0`;
+      return `${t("Оформлений без год. oświadczenia: усі години офіційні")} = ${f(r.hoursDeclared)}`;
+    }
     case "ksiegNetto":
       if (studentDo26) return `${t("Студент до 26: усе «До виплати» йде на конто")} = ${f(r.ksiegNetto)}`;
-      if (oczekuje) return `${t("Не зголошений: все готівкою")} → 0`;
-      if (r.hoursDeclared != null && r.rateNetto != null && r.ksiegNetto != null)
+      if (r.hoursDeclared != null && r.hoursNotified != null && r.hoursNotified > 0 && r.rateNetto != null && r.ksiegNetto != null)
         return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка нет.")} ${f(r.rateNetto)} = ${f(r.ksiegNetto)}`;
-      return null;
+      if (oczekuje || !r.legalStatus) return `${t("Не оформлений: все готівкою")} → 0`;
+      return `${t("Оформлений: усе «До виплати» на конто")} = ${f(r.ksiegNetto)}`;
     case "ksiegBrutto":
       if (studentDo26) return `${t("Студент: без податків (brutto = netto)")} = ${f(r.ksiegBrutto)}`;
-      if (oczekuje) return `${t("Не зголошений: все готівкою")} → 0`;
+      if (oczekuje || !r.legalStatus) return `${t("Не оформлений: все готівкою")} → 0`;
       if (r.hoursDeclared != null && r.rateBrutto != null && r.ksiegBrutto != null)
         return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка бр.")} ${f(r.rateBrutto)} = ${f(r.ksiegBrutto)}`;
       return null;
     case "konto":
       return r.konto != null ? `= ${t("Księg. netto (конто)")} ${f(r.konto)}` : null;
     case "gotowka":
-      if (oczekuje) return `${t("Не зголошений: усе «До виплати» готівкою")} = ${f(r.gotowka)}`;
       if (studentDo26) return `${t("Студент до 26: усе на конто, готівки немає")} = 0`;
-      if (r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
+      if (r.hoursNotified != null && r.hoursNotified > 0 && r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
         return `${t("До виплати")} ${f(r.doWyplaty)} − ${t("Księg. netto (конто)")} ${f(r.ksiegNetto)}${ex("doplataEs") ? ` + Dopłata ES ${f(ex("doplataEs"))}` : ""} = ${f(r.gotowka)}`;
-      return null;
+      if (oczekuje || !r.legalStatus) return `${t("Не оформлений: усе «До виплати» готівкою")} = ${f(r.gotowka)}`;
+      return `${t("Оформлений: усе на конто, готівки немає")} = 0`;
     case "extras.ksiegHours":
       if (/^EUROCASH/i.test(r.factoryLabel) && r.doWyplaty != null)
         return `${t("До виплати")} ${f(r.doWyplaty)} / 30,5 = ${f(ex("ksiegHours"))}`;

@@ -146,27 +146,35 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
 
 // Правила розкладу konto/готівка за статусом (як веде бухгалтерія):
 // 1) студент до 26 — податків немає, все «до виплати» іде на конто;
-// 2) не зголошений (чекає дозвіл) — офіційно платити не можна, все готівкою;
-// 3) є години в oświadczeniu/powiadomieniu — офіційно йдуть години oświadczenia
-//    (але не більше реально відпрацьованих), решта готівкою.
+// 2) є години в oświadczeniu/powiadomieniu — офіційно йдуть години oświadczenia
+//    (але не більше реально відпрацьованих), решта готівкою;
+// 3) легально оформлений БЕЗ вписаних год. oświadczenia — все на карту;
+// 4) не оформлений (не зголошений / без форми легалізації) — все готівкою.
+// Статус — з тексту Księgowość рядка або з профілю працівника (profileLegal).
 // force: перерахунок після ручної правки на сайті (переписує наявний розклад);
-// без force (імпорт) — заповнений бухгалтерією блок сильніший.
-export function applyLegalDefaults(row: SvodniParsedRow, force = false): void {
+// без force (google-імпорт) — заповнений бухгалтерією блок сильніший, а рядки
+// без статусу лишаються нерозписаними (відсутність тексту ≠ «не оформлений»).
+export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileLegal: LegalStatus | null = null): void {
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
-  if (row.isStudent && row.under26) {
+  const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? profileLegal;
+  const allKonto = () => {
     row.hoursDeclared = row.hours;
-    row.ksiegBrutto = row.doWyplaty; // студент: netto = brutto
     row.ksiegNetto = row.doWyplaty;
     row.konto = row.doWyplaty;
     row.gotowka = 0;
-  } else if (legalStatusOf(String(row.extras.zusStatus ?? "")) === "oczekuje") {
+  };
+  const allGotowka = () => {
     row.hoursDeclared = 0;
     row.ksiegBrutto = 0;
     row.ksiegNetto = 0;
     row.konto = 0;
     row.gotowka = row.doWyplaty;
+  };
+  if (row.isStudent && row.under26) {
+    allKonto();
+    row.ksiegBrutto = row.doWyplaty; // студент: netto = brutto
   } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && row.rateNetto != null) {
     const declared = Math.min(row.hoursNotified, row.hours);
     row.hoursDeclared = r2(declared);
@@ -174,6 +182,11 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false): void {
     row.ksiegBrutto = row.rateBrutto != null ? r2(declared * row.rateBrutto) : null;
     row.konto = row.ksiegNetto;
     row.gotowka = r2(row.doWyplaty - row.ksiegNetto + doplata);
+  } else if (ls === "oczekuje" || (ls == null && force)) {
+    allGotowka(); // не оформлений
+  } else if (ls != null) {
+    allKonto(); // легально оформлений без oświadczenia-годин
+    row.ksiegBrutto = row.hours != null && row.rateBrutto != null ? r2(row.hours * row.rateBrutto) : null;
   }
 }
 

@@ -355,7 +355,12 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   // виплати, і від правки «Год. повід.» / студент / до-26
   const affectsLegal = affectsPayout || field === "hoursNotified" || BOOL_FIELDS.has(field);
   if (affectsLegal && !OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
-    applyLegalDefaults(merged, true);
+    let profileLegal: string | null = null;
+    if (row.workerId) {
+      const [pw] = await db.select({ ls: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, row.workerId));
+      profileLegal = pw?.ls ?? null;
+    }
+    applyLegalDefaults(merged, true, profileLegal as any);
     for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
       if (merged[k] !== row[k]) set[k] = merged[k];
     }
@@ -459,7 +464,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true);
+      applyLegalDefaults(merged, true, (w.legalStatus ?? null) as any);
       await db.update(svodniRowsTable).set({
         hours: merged.hours, doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
@@ -486,7 +491,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (row.rateNetto == null) skippedNoRate++;
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true);
+    applyLegalDefaults(row, true, (w.legalStatus ?? null) as any);
     await db.insert(svodniRowsTable).values(row);
     created++;
   }
