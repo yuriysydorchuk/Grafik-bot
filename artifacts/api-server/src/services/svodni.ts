@@ -569,6 +569,7 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
     if (c.migawka >= 0) { const v = num(row[c.migawka]); if (v != null) p.extras.migawka = v; }
     if (c.dokumenty >= 0) { const v = num(row[c.dokumenty]); if (v != null) p.extras.dokumenty = v; }
     if (c.kontoH >= 0) { const v = num(row[c.kontoH]); if (v != null) p.extras.kontoH = v; }
+    if (c.ksieg >= 0) { const v = cell(row, c.ksieg); if (v) p.extras.zusStatus = v; } // Księgowość-статус (форма легалізації)
     if (c.pow >= 0) { const v = cell(row, c.pow); if (v) p.hr.powOsw = v; }
     if (c.wniosek >= 0) { const v = cell(row, c.wniosek); if (v) p.hr.wniosekZaliczki = v; }
     if (c.uwagi >= 0) { const v = cell(row, c.uwagi); if (v) p.hr.uwagi = v; }
