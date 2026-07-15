@@ -2190,6 +2190,28 @@ router.get("/hours", RW, async (req, res) => {
     const target = wRows.find(w => w.factoryId === curFacByWorker.get(r.workerId)) ?? wRows[0];
     if (target && !repByKey.has(rowKey(r.workerId, target.factoryId))) repByKey.set(rowKey(r.workerId, target.factoryId), r);
   }
+  // Рапорт по парі (працівник, фабрика) без жодної явки (переведення всередині
+  // місяця, місяці імпортовані зі сводних) — показуємо рядком з 0 змін, а не губимо.
+  const orphanReports = reports.filter(r => r.factoryId != null && !byWorkerFactory.has(rowKey(r.workerId, r.factoryId)));
+  if (orphanReports.length) {
+    const ids = [...new Set(orphanReports.map(r => r.workerId))];
+    const infos = await db.select({
+      id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
+      rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+    }).from(workersTable).where(inArray(workersTable.id, ids));
+    const infoById = new Map(infos.map(w => [w.id, w]));
+    for (const r of orphanReports) {
+      const w = infoById.get(r.workerId);
+      if (!w) continue;
+      const fac = facById.get(r.factoryId!);
+      byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
+        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
+        factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
+        rate: effRate(posRates, r.factoryId, w.positionId, w.rate ?? rates.defaultRate), isStudent: !!w.isStudent, under26: !!w.under26,
+        byShift: {} as Record<string, number>, shifts: 0, hours: 0,
+      });
+    }
+  }
   const workers = [...byWorkerFactory.values()]
     .map(w => {
       const hours = round2(w.hours);
