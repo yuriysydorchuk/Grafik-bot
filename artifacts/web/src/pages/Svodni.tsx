@@ -93,6 +93,85 @@ const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? Strin
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
 
+// Формула клітинки з реальними числами («як в екселі») — показується в тултіпі.
+// Дзеркалить перерахунок бекенду: computePayout / computeKsiegHours / applyLegalDefaults.
+function cellFormula(r: Row, key: string, t: (s: string) => string): string | null {
+  const ex = (k: string) => (typeof r.extras[k] === "number" ? (r.extras[k] as number) : 0);
+  const f = (v: number | null | undefined) => fmt(r2(v ?? 0));
+  const studentDo26 = !!r.isStudent && !!r.under26;
+  const oczekuje = r.legalStatus === "oczekuje";
+  // сума з компонентів: [лейбл, значення, знак]; нульові пропускаються
+  const build = (parts: [string, number | null | undefined, 1 | -1][], total: number | null | undefined) => {
+    const used = parts.filter(([, v]) => v != null && v !== 0);
+    if (!used.length || total == null) return null;
+    return used.map(([l, v, s], i) => `${i === 0 ? (s < 0 ? "−" : "") : s > 0 ? " + " : " − "}${l} ${f(Math.abs(v!))}`).join("") + ` = ${f(total)}`;
+  };
+  switch (key) {
+    case "doWyplaty": {
+      if (r.city === "Лодзь") return build([
+        [`${t("Години")} ${f(r.hours)} × ${t("Ставка нет.")}`, (r.hours ?? 0) * (r.rateNetto ?? 0), 1],
+        ["Migawka", ex("migawka"), 1], [t("Премія"), r.premia, 1], ["Dojazd", r.dojazd, 1],
+        ["Zaliczka", r.zaliczka, -1], ["Potrącenia", r.potracenia, -1], ["Hostel", r.hostel, -1],
+        ["Odzież", r.odziez, -1], ["Dokumenty", ex("dokumenty"), -1],
+      ], r.doWyplaty);
+      return build([
+        [`${t("Години")} ${f(r.hours)} × ${t("Ставка нет.")}`, (r.hours ?? 0) * (r.rateNetto ?? 0), 1],
+        [`${t("Нічні [год]")} ${f(ex("nocneH"))} × ${t("Допл. нічні")}`, ex("nocneH") * ex("doplataNocna"), 1],
+        [t("Премія"), r.premia, 1], [t("Оплата водія"), ex("oplataKierowcy"), 1],
+        ["Dopłata ES", ex("doplataEs"), 1], ["Zwrot kosztów", ex("zwrotKosztow"), 1],
+        ["Zaliczka", r.zaliczka, -1], ["Zaliczka BD", r.zaliczkaBd, -1], ["Hostel", r.hostel, -1],
+        ["Odzież", r.odziez, -1], ["Dojazd", r.dojazd, -1], ["Kara", r.kara, -1],
+        ["Komornik", r.komornik, -1], ["Kaucja", r.kaucja, -1], [t("Potrącenia"), r.potracenia, -1],
+        ["Badania", ex("badania"), -1], ["Karta pobytu", ex("kartaPobytu"), -1],
+        [t("Кара клієнта"), ex("karaKlient"), -1], [t("Кара ES"), ex("karaEs"), -1],
+        [t("Заборгованість"), ex("zadluzenie"), -1],
+      ], r.doWyplaty);
+    }
+    case "brutto":
+      if (/SUSHI/i.test(r.factoryLabel)) return `Godzin fakt ${f(ex("ksiegHours"))} × 30,5 = ${f(r.brutto)}`;
+      if (r.hours != null && r.rateBrutto != null && r.brutto != null)
+        return `${t("Години")} ${f(r.hours)} × ${t("Ставка бр.")} ${f(r.rateBrutto)} = ${f(r.brutto)}`;
+      return null;
+    case "premia": {
+      const parts = ["premiaBase", "premiaAgram", "premiaEs"].filter(k => ex(k));
+      if (parts.length < 2) return null;
+      return parts.map(k => `${extraLabel(k)} ${f(ex(k))}`).join(" + ") + ` = ${f(r.premia)}`;
+    }
+    case "hoursDeclared":
+      if (studentDo26) return `${t("Студент до 26: усі години офіційні")} = ${f(r.hoursDeclared)}`;
+      if (oczekuje) return `${t("Не зголошений: офіційних годин немає")} = 0`;
+      return null;
+    case "ksiegNetto":
+      if (studentDo26) return `${t("Студент до 26: усе «До виплати» йде на конто")} = ${f(r.ksiegNetto)}`;
+      if (oczekuje) return `${t("Не зголошений: все готівкою")} → 0`;
+      if (r.hoursDeclared != null && r.rateNetto != null && r.ksiegNetto != null)
+        return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка нет.")} ${f(r.rateNetto)} = ${f(r.ksiegNetto)}`;
+      return null;
+    case "ksiegBrutto":
+      if (studentDo26) return `${t("Студент: без податків (brutto = netto)")} = ${f(r.ksiegBrutto)}`;
+      if (oczekuje) return `${t("Не зголошений: все готівкою")} → 0`;
+      if (r.hoursDeclared != null && r.rateBrutto != null && r.ksiegBrutto != null)
+        return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка бр.")} ${f(r.rateBrutto)} = ${f(r.ksiegBrutto)}`;
+      return null;
+    case "konto":
+      return r.konto != null ? `= ${t("Księg. netto (конто)")} ${f(r.konto)}` : null;
+    case "gotowka":
+      if (oczekuje) return `${t("Не зголошений: усе «До виплати» готівкою")} = ${f(r.gotowka)}`;
+      if (studentDo26) return `${t("Студент до 26: усе на конто, готівки немає")} = 0`;
+      if (r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
+        return `${t("До виплати")} ${f(r.doWyplaty)} − ${t("Księg. netto (конто)")} ${f(r.ksiegNetto)}${ex("doplataEs") ? ` + Dopłata ES ${f(ex("doplataEs"))}` : ""} = ${f(r.gotowka)}`;
+      return null;
+    case "extras.ksiegHours":
+      if (/^EUROCASH/i.test(r.factoryLabel) && r.doWyplaty != null)
+        return `${t("До виплати")} ${f(r.doWyplaty)} / 30,5 = ${f(ex("ksiegHours"))}`;
+      if (/SUSHI/i.test(r.factoryLabel) && r.doWyplaty != null)
+        return `(${t("До виплати")} ${f(r.doWyplaty)} + Zaliczka ${f(r.zaliczka)}) / 24,6 = ${f(ex("ksiegHours"))}`;
+      return null;
+    default:
+      return null;
+  }
+}
+
 export default function Svodni() {
   const t = useT();
   const me = useMe();
@@ -345,8 +424,8 @@ function Th({ label, onHide, left, amber, strong }: { label: string; onHide: () 
 
 // Редагована клітинка: клік → інпут (для кадрових — випадаючий список значень
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
-function EditableCell({ row, field, value, month, text, strong, options }: {
-  row: Row; field: string; value: unknown; month: string; text?: boolean; strong?: boolean; options?: string[];
+function EditableCell({ row, field, value, month, text, strong, options, formula }: {
+  row: Row; field: string; value: unknown; month: string; text?: boolean; strong?: boolean; options?: string[]; formula?: string | null;
 }) {
   const t = useT();
   const qc = useQueryClient();
@@ -387,9 +466,9 @@ function EditableCell({ row, field, value, month, text, strong, options }: {
   return (
     <button type="button"
       onClick={() => { setDraft(value == null ? "" : String(value)); setEditing(true); }}
-      title={t("Клікни, щоб редагувати")}
+      title={formula ? `${formula}\n\n${t("Клікни, щоб редагувати")}` : t("Клікни, щоб редагувати")}
       className={`block w-full cursor-text rounded px-1 py-1 tabular-nums transition hover:bg-red-50 hover:ring-1 hover:ring-red-200 ${
-        text ? "text-left" : "text-right"} ${strong ? "font-semibold text-slate-900" : ""}`}>
+        text ? "text-left" : "text-right"} ${strong ? "font-semibold text-slate-900" : ""} ${formula ? "underline decoration-dotted decoration-slate-300 underline-offset-2" : ""}`}>
       {text ? (String(value ?? "") || <span className="text-slate-300">—</span>) : (fmt(value) || <span className="text-slate-300">—</span>)}
     </button>
   );
@@ -541,12 +620,12 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     </td>
                   ) : (
                     <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}>
-                      <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} />
+                      <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} formula={cellFormula(r, d.key, t)} />
                     </td>
                   ))}
                   {sensCols.map(([k]) => (
                     <td key={k} className="bg-amber-50/50 px-1 py-0.5 text-right text-slate-700">
-                      <EditableCell row={r} field={k} value={r[k]} month={month} />
+                      <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)} />
                     </td>
                   ))}
                 </tr>,

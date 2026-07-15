@@ -96,3 +96,6 @@ CREATE INDEX IF NOT EXISTS svodni_tab_meta_month_city ON svodni_tab_meta (period
 -- staly_pobyt/polak) і години в повідомленні (powiadomienie) — з сводних
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS legal_status text;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS notify_hours real;
+
+-- Вік («до 26») — не форма легалізації: старі do26-значення стають zus (zgłoszony)
+UPDATE workers SET legal_status = 'zus' WHERE legal_status = 'do26';

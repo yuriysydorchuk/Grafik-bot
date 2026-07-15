@@ -189,7 +189,8 @@ test("форма легалізації: текст Księgowość → канон
   assert.equal(legalStatusOf("Zgłoszony Polak / Polka"), "polak");
   assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Do 26"), "powiadomienie");
   assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Wyżej 26"), "powiadomienie");
-  assert.equal(legalStatusOf("Zgłoszony, Do 26"), "do26");
+  assert.equal(legalStatusOf("Zgłoszony, Wyżej 26"), "zus");
+  assert.equal(legalStatusOf("Zgłoszony, Do 26"), "zus"); // вік — не форма легалізації
   assert.equal(legalStatusOf(""), null);
   assert.equal(legalStatusOf("щось невідоме"), null);
 });
