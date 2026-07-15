@@ -349,12 +349,15 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       merged.extras = extras2;
       if (kh.brutto != null) { set.brutto = kh.brutto; merged.brutto = kh.brutto; }
     }
-    // статусні правила бухгалтерії: студент до 26 → все на конто; не зголошений → все готівкою
-    if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
-      applyLegalDefaults(merged, true);
-      for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
-        if (merged[k] !== row[k]) set[k] = merged[k];
-      }
+  }
+  // статусні правила бухгалтерії (студент до 26 → конто; не зголошений → готівка;
+  // год. oświadczenia → конто, решта готівкою): перераховуються і від компонентів
+  // виплати, і від правки «Год. повід.» / студент / до-26
+  const affectsLegal = affectsPayout || field === "hoursNotified" || BOOL_FIELDS.has(field);
+  if (affectsLegal && !OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+    applyLegalDefaults(merged, true);
+    for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+      if (merged[k] !== row[k]) set[k] = merged[k];
     }
   }
   // księgowa частина: години księg. → netto/brutto зі ставок; konto ↔ ksiegNetto;
