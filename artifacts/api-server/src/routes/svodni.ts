@@ -382,9 +382,10 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 });
 
 // «Години підтверджені → до сводної»: створює/оновлює сводну місяця з обліку
-// годин (сайт — джерело). Години: рапорт місяця (пріоритет) або затверджені
-// явки; ставки/статуси/дата народження — з профілю; аванси (paid) → zaliczka.
-// Формули ті самі, що в таблицях: до виплати, brutto, статусні правила księg.
+// годин (сайт — джерело). Береться ЛИШЕ облік годин (рапорт місяця пріоритетно,
+// інакше затверджені явки) і профіль працівника (ставки/статуси/дата народження/
+// год. повідомлення). Аванси, штрафи, хостел тощо поки вписуються вручну в
+// сводній — формули перерахують. Google-таблиці тут не використовуються.
 router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
@@ -427,18 +428,11 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     cur.hours = r.hoursReported;
   }
 
-  // 3) профілі, аванси (paid у цьому місяці), місто фабрики (з історії сводних)
+  // 3) профілі та місто фабрики (з історії сводних)
   const workerIds = [...new Set([...hoursByPair.values()].map(p => p.workerId))];
   if (!workerIds.length) return fail(res, 400, "у цьому місяці немає підтверджених годин");
   const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
   const wById = new Map(workers.map(w => [w.id, w]));
-  const { advanceRequestsTable } = await import("@workspace/db");
-  const advances = await db.select().from(advanceRequestsTable).where(and(
-    inArray(advanceRequestsTable.workerId, workerIds), eq(advanceRequestsTable.status, "paid"),
-    sql`${advanceRequestsTable.paidAt} >= ${monthStart}`, sql`${advanceRequestsTable.paidAt} < ${monthEnd}`,
-  ));
-  const advByWorker = new Map<number, number>();
-  for (const a of advances) advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
   const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, id: svodniRowsTable.id })
     .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
   const cityByFactory = new Map<number, string>();
@@ -454,7 +448,6 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = fac?.name ?? "Без фабрики";
     const city = (pair.factoryId != null ? cityByFactory.get(pair.factoryId) : null) ?? "Люблін";
-    const zal = advByWorker.get(pair.workerId);
     const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
     if (prev) {
       // повторне підтвердження: оновлюємо лише години, перераховуємо формули
@@ -482,7 +475,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
       hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
       rateBrutto: w.hourlyRate ?? null, rateNetto: w.hourlyRateNetto ?? null,
-      zaliczka: zal != null ? r2(zal) : null,
+      zaliczka: null, // аванси/штрафи/хостел — вручну в сводній (поки не ведуться на сайті)
       isStudent: w.isStudent, under26,
       extras: {}, hr, sheetValues: {}, mismatch: null,
       doWyplaty: null, brutto: null,
