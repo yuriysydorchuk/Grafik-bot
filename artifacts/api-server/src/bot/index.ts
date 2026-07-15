@@ -24,7 +24,7 @@ import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
-import { matchWorker } from "./workerMatch";
+import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import {
@@ -2900,27 +2900,31 @@ bot.on("document", async (ctx) => {
     const allCodes = await db.select({ code: workersTable.workerCode }).from(workersTable);
     let maxCode = allCodes.map(r => parseInt(r.code ?? "0", 10)).filter(n => !isNaN(n)).reduce((a, b) => Math.max(a, b), 0);
 
+    // Дубль-захист: порівнюємо нормалізовано (регістр/діакритика/порядок слів),
+    // а не точним рядком — «BANDA PANASHE» і «Banda Panashe» — одна людина
+    const allForDup = await db.select().from(workersTable);
     for (const row of dataRows) {
       const fullName = (row[0] ?? "").trim();
       if (!fullName) continue;
       const telegramId = row[1]?.trim() || undefined;
       const workerCode = row[2]?.trim() || undefined;
 
-      const existing = await db.select().from(workersTable).where(eq(workersTable.fullName, fullName));
-      if (existing.length > 0) {
+      const existingDup = findLikelyDuplicate(fullName, allForDup);
+      if (existingDup) {
         // Update if new data provided
         if (telegramId || workerCode) {
           await db.update(workersTable).set({
             ...(telegramId ? { telegramId } : {}),
             ...(workerCode ? { workerCode } : {}),
-          }).where(eq(workersTable.id, existing[0]!.id));
+          }).where(eq(workersTable.id, existingDup.id));
           updated++;
         } else { skipped++; }
         continue;
       }
       maxCode++;
       const newCode = workerCode ?? String(maxCode).padStart(5, "0");
-      await db.insert(workersTable).values({ fullName, workerCode: newCode, telegramId });
+      const [fresh] = await db.insert(workersTable).values({ fullName, workerCode: newCode, telegramId }).returning();
+      if (fresh) allForDup.push(fresh); // дубль усередині самого файлу теж ловимо
       added++;
     }
 
@@ -3124,20 +3128,36 @@ bot.on("text", async (ctx) => {
       clearState(tid);
       return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
     }
-    const code = await genWorkerCode();
-    await db.insert(workersTable).values({
-      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code,
-    });
+    // Захист від дублікатів: якщо офіс уже завів цю людину (профіль без Telegram),
+    // привʼязуємо наявний профіль замість створення нового.
+    const allWorkers = await db.select().from(workersTable);
+    const dup = findLikelyDuplicate(fullName, allWorkers);
+    let claimed: typeof allWorkers[number] | null = null;
+    if (dup && !dup.telegramId && dup.isActive) {
+      await db.update(workersTable).set({
+        telegramId: tid,
+        ...(dup.factoryId == null && data.factoryId ? { factoryId: data.factoryId } : {}),
+      }).where(eq(workersTable.id, dup.id));
+      claimed = dup;
+    } else {
+      const code = await genWorkerCode();
+      await db.insert(workersTable).values({
+        fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code,
+      });
+    }
     clearState(tid);
     // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
     try {
       const staff = await db.select().from(adminsTable);
+      const dupNote = claimed
+        ? `\n🔗 Привʼязано до наявного профілю №${escapeHtml(claimed.workerCode ?? String(claimed.id))} (дублікат не створено).`
+        : dup ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}.` : "";
       for (const a of staff) {
         if (!a.telegramId) continue;
         if (a.role !== "owner" && a.role !== "scheduler") continue;
         await bot.telegram.sendMessage(
           a.telegramId,
-          `🆕 Новий працівник зареєструвався сам:\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}\n\nПеревірте/відредагуйте в панелі (Працівники).`,
+          `🆕 Новий працівник зареєструвався сам:\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`,
           { parse_mode: "HTML" },
         );
       }
@@ -3338,6 +3358,13 @@ bot.on("text", async (ctx) => {
     if (!data.name) {
       data.name = text;
       setState(tid, "add_worker", data);
+      // неблокуюче попередження про ймовірний дубль (та сама людина вже в базі)
+      const dup = findLikelyDuplicate(text, await db.select().from(workersTable));
+      if (dup) {
+        await ctx.reply(tb(al, "⚠️ Схожий працівник уже є: *{name}* (код {code}{fired}). Якщо це та сама людина — «✖️ Скасувати».", {
+          name: mdSafe(dup.fullName), code: dup.workerCode ?? String(dup.id), fired: dup.isActive ? "" : ", звільнений",
+        }), { parse_mode: "Markdown" });
+      }
       return promptAddWorkerStep(ctx, data, al);
     }
 

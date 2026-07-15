@@ -12,7 +12,13 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   }
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new Error(data?.error || `Помилка ${res.status}`);
+  if (!res.ok) {
+    // статус і тіло відповіді доступні обробникам (напр. 409 «схожий працівник»)
+    const err: any = new Error(data?.error || `Помилка ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data as T;
 }
 

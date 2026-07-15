@@ -29,6 +29,7 @@ import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffD
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
 import { LEGAL_STATUSES } from "../services/svodni";
+import { findLikelyDuplicate } from "../bot/workerMatch";
 
 const router: IRouter = Router();
 
@@ -294,8 +295,18 @@ const normGender = (g: any): string | null => (g === "male" || g === "female") ?
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
 
 router.post("/workers", RW, async (req, res) => {
-  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport } = req.body ?? {};
+  const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport, force } = req.body ?? {};
   if (!fullName?.trim()) return fail(res, 400, "Вкажіть ім'я");
+  // захист від дублікатів: схоже імʼя вже в базі → 409; force=true створює свідомо
+  if (!force) {
+    const likely = findLikelyDuplicate(String(fullName), await db.select().from(workersTable));
+    if (likely) {
+      return res.status(409).json({
+        error: `Схожий працівник уже є: ${likely.fullName} (№${likely.workerCode ?? likely.id}${likely.isActive ? "" : ", звільнений"})`,
+        duplicate: { id: likely.id, fullName: likely.fullName, workerCode: likely.workerCode, isActive: likely.isActive },
+      });
+    }
+  }
   let code = workerCode?.trim();
   if (code && !/^\d+$/.test(code)) return fail(res, 400, "Код — лише цифри");
   if (!code) code = await nextWorkerCode();

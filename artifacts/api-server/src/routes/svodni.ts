@@ -10,7 +10,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
 import { logger } from "../lib/logger";
-import { matchWorker } from "../bot/workerMatch";
+import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, computeKsiegHours, legalStatusOf, applyLegalDefaults } from "../services/svodni";
@@ -203,6 +203,16 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
     if (!worker) return fail(res, 404, "працівника не знайдено");
   } else {
+    // захист від дублікатів: схоже імʼя вже в базі → 409; force=true створює свідомо
+    if (!req.body?.force) {
+      const likely = findLikelyDuplicate(newName, await db.select().from(workersTable));
+      if (likely) {
+        return res.status(409).json({
+          error: `Схожий працівник уже є: ${likely.fullName} (№${likely.workerCode ?? likely.id}${likely.isActive ? "" : ", звільнений"})`,
+          duplicate: { id: likely.id, fullName: likely.fullName, workerCode: likely.workerCode, isActive: likely.isActive },
+        });
+      }
+    }
     // новий профіль: код — наступний вільний, фабрика/фірма — з цієї сводної
     const [codeRow] = await db.select({ max: sql<number>`coalesce(max(${workersTable.workerCode}::int), 0)` })
       .from(workersTable).where(sql`${workersTable.workerCode} ~ '^[0-9]+$'`);
