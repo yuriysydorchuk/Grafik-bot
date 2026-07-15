@@ -140,6 +140,8 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
     case "hoursDeclared":
       if (studentDo26) return `${t("Студент до 26: усі години офіційні")} = ${f(r.hoursDeclared)}`;
       if (oczekuje) return `${t("Не зголошений: офіційних годин немає")} = 0`;
+      if (r.hoursNotified != null && r.hoursNotified > 0 && r.hours != null && r.hoursDeclared != null)
+        return `${t("Офіційно — години oświadczenia, але не більше відпрацьованих")}: min(${f(r.hoursNotified)}, ${f(r.hours)}) = ${f(r.hoursDeclared)}`;
       return null;
     case "ksiegNetto":
       if (studentDo26) return `${t("Студент до 26: усе «До виплати» йде на конто")} = ${f(r.ksiegNetto)}`;

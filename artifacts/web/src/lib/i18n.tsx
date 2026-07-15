@@ -537,6 +537,7 @@ const EN: Record<string, string> = {
   "Повний ZUS (zgłoszony)": "Full ZUS (registered)",
   "Студент до 26: усі години офіційні": "Student under 26: all hours are declared",
   "Не зголошений: офіційних годин немає": "Not registered: no declared hours",
+  "Офіційно — години oświadczenia, але не більше відпрацьованих": "Declared — the oświadczenie hours, capped by hours actually worked",
   "Студент до 26: усе «До виплати» йде на конто": "Student under 26: the whole pay goes to the bank",
   "Не зголошений: все готівкою": "Not registered: everything in cash",
   "Студент: без податків (brutto = netto)": "Student: no taxes (gross = net)",

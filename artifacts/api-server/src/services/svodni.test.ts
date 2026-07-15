@@ -215,6 +215,22 @@ test("розклад за статусом: студент до 26 → все н
   assert.equal(czek!.konto, 0);
   assert.equal(czek!.hoursDeclared, 0);
   assert.equal(zwykly!.konto, null, "звичайний нерозписаний — лишається порожнім (блок заповнить бухгалтерія)");
+  // правило 3: години з oświadczenia (powiadomienie) → на карту, решта готівкою
+  const rows3 = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["OSWIADCZENIE JAN", 100, 150, 31.4, 25.35, 3802.5, "Zgłoszony, Powiadomienie, Wyżej 26"],
+    ["MENSZE PIOTR", 100, 80, 31.4, 25.35, 2028, "Zgłoszony, Powiadomienie, Wyżej 26"],
+  ];
+  const p3 = parseLublinTab("TESTOWA", rows3)!;
+  for (const r of p3.rows) applyLegalDefaults(r);
+  const [oswiad, mensze] = p3.rows;
+  assert.equal(oswiad!.hoursDeclared, 100, "офіційно — години oświadczenia");
+  assert.equal(oswiad!.ksiegNetto, 2535, "конто = 100 × 25.35");
+  assert.equal(oswiad!.ksiegBrutto, 3140);
+  assert.equal(oswiad!.gotowka, 1267.5, "решта готівкою: 3802.5 − 2535");
+  assert.equal(mensze!.hoursDeclared, 80, "відпрацював менше oświadczenia → реальні години");
+  assert.equal(mensze!.ksiegNetto, 2028);
+  assert.equal(mensze!.gotowka, 0);
   // force-перерахунок (правка на сайті) переписує наявний розклад студента
   stud!.hours = 120; stud!.doWyplaty = 3768;
   applyLegalDefaults(stud!, true);

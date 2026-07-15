@@ -145,13 +145,16 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
 }
 
 // Правила розкладу konto/готівка за статусом (як веде бухгалтерія):
-// студент до 26 — податків немає, все «до виплати» іде на конто;
-// не зголошений (чекає дозвіл) — офіційно платити не можна, все готівкою.
+// 1) студент до 26 — податків немає, все «до виплати» іде на конто;
+// 2) не зголошений (чекає дозвіл) — офіційно платити не можна, все готівкою;
+// 3) є години в oświadczeniu/powiadomieniu — офіційно йдуть години oświadczenia
+//    (але не більше реально відпрацьованих), решта готівкою.
 // force: перерахунок після ручної правки на сайті (переписує наявний розклад);
 // без force (імпорт) — заповнений бухгалтерією блок сильніший.
 export function applyLegalDefaults(row: SvodniParsedRow, force = false): void {
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
+  const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
   if (row.isStudent && row.under26) {
     row.hoursDeclared = row.hours;
     row.ksiegBrutto = row.doWyplaty; // студент: netto = brutto
@@ -164,6 +167,13 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false): void {
     row.ksiegNetto = 0;
     row.konto = 0;
     row.gotowka = row.doWyplaty;
+  } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && row.rateNetto != null) {
+    const declared = Math.min(row.hoursNotified, row.hours);
+    row.hoursDeclared = r2(declared);
+    row.ksiegNetto = r2(declared * row.rateNetto);
+    row.ksiegBrutto = row.rateBrutto != null ? r2(declared * row.rateBrutto) : null;
+    row.konto = row.ksiegNetto;
+    row.gotowka = r2(row.doWyplaty - row.ksiegNetto + doplata);
   }
 }
 
