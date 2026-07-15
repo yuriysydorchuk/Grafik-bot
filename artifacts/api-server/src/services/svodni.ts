@@ -127,7 +127,8 @@ const SECTION_RE = /^(KOBIETY|MEZCZYZNI|NIE OPODATKOWANE|OPODATKOWANE|STUDENCI|N
 
 // ── форма легалізації: канонічні статуси з тексту колонки Księgowość ─────────
 // Каталог продубльований у web/src/lib/legalStatus.ts — тримати синхронними.
-export const LEGAL_STATUSES = ["student", "dyplom", "powiadomienie", "do26", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
+// Вік («до 26 / після») — ОКРЕМА властивість (under26/birthDate), не форма легалізації.
+export const LEGAL_STATUSES = ["student", "dyplom", "powiadomienie", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
 export type LegalStatus = (typeof LEGAL_STATUSES)[number];
 export function legalStatusOf(zusText: string | null | undefined): LegalStatus | null {
   const s = norm(String(zusText ?? ""));
@@ -139,8 +140,7 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
   if (/POLAK|POLKA/.test(s)) return "polak";
   if (/STUDENT/.test(s)) return "student";
   if (/POWIADOMIENIE/.test(s)) return "powiadomienie"; // зголошений повідомленням
-  if (/DO ?26/.test(s)) return "do26";
-  if (/WYZEJ ?26/.test(s)) return "zus";
+  if (/ZGLOSZON/.test(s)) return "zus"; // зголошений без уточнення («Zgłoszony, Do 26» — вік окремо)
   return null;
 }
 

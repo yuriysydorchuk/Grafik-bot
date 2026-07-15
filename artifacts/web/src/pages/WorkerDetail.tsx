@@ -109,7 +109,7 @@ export default function WorkerDetail() {
           {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
-          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} />
+          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} />
           <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} />
           <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} />
           {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
@@ -401,7 +401,7 @@ function NotifyHoursRow({ workerId, notifyHours }: { workerId: number; notifyHou
   );
 }
 
-function BirthDateRow({ workerId, birthDate }: { workerId: number; birthDate: string | null }) {
+function BirthDateRow({ workerId, birthDate, under26Fallback }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -411,7 +411,8 @@ function BirthDateRow({ workerId, birthDate }: { workerId: number; birthDate: st
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
-  const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : null;
+  // вік — окрема властивість (не форма легалізації): з дати, без дати — з профілю
+  const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : under26Fallback ?? null;
   return (
     <div className="flex items-center gap-2">
       <Cake className="h-4 w-4 shrink-0 text-slate-400" />
