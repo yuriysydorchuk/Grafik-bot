@@ -214,7 +214,26 @@ test("розклад за статусом: студент до 26 → все н
   assert.equal(czek!.gotowka, 2535, "не зголошений: все готівкою");
   assert.equal(czek!.konto, 0);
   assert.equal(czek!.hoursDeclared, 0);
-  assert.equal(zwykly!.konto, null, "звичайний нерозписаний — лишається порожнім (блок заповнить бухгалтерія)");
+  assert.equal(zwykly!.konto, 2535, "легально оформлений (powiadomienie) без год. oświadczenia — все на карту");
+  assert.equal(zwykly!.gotowka, 0);
+  assert.equal(zwykly!.ksiegBrutto, 3140, "оподатковувана база = години × ставка брутто");
+  // не оформлений (без статусу) при force (сайтовий флоу) — все готівкою;
+  // без force (google-імпорт без тексту статусу) — лишається нерозписаним
+  const rowsF = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto"],
+    ["BEZ STATUSU JAN", "", 100, 31.4, 25.35, 2535],
+  ];
+  const pf = parseLublinTab("TESTOWA", rowsF)!;
+  applyLegalDefaults(pf.rows[0]!);
+  assert.equal(pf.rows[0]!.konto, null, "google-імпорт без статусу — нерозписаний");
+  applyLegalDefaults(pf.rows[0]!, true);
+  assert.equal(pf.rows[0]!.gotowka, 2535, "сайтовий флоу без форми легалізації — все готівкою");
+  assert.equal(pf.rows[0]!.konto, 0);
+  // профільний статус (сайтові рядки без zusStatus): оформлений → все на карту
+  const pf2 = parseLublinTab("TESTOWA", rowsF)!;
+  applyLegalDefaults(pf2.rows[0]!, true, "zus");
+  assert.equal(pf2.rows[0]!.konto, 2535, "оформлений за профілем — все на карту");
+  assert.equal(pf2.rows[0]!.gotowka, 0);
   // правило 3: години з oświadczenia (powiadomienie) → на карту, решта готівкою
   const rows3 = [
     [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
