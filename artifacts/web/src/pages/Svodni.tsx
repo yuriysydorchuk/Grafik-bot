@@ -319,6 +319,11 @@ export default function Svodni() {
           <button onClick={() => setShowCols(v => !v)}
             className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${showCols ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
             <Columns3 className="h-3.5 w-3.5" /> {t("Колонки")}
+            {hiddenCols.size > 0 && (
+              <span className="rounded-full bg-rose-100 px-1.5 text-[10px] font-semibold text-rose-700" title={t("Приховано колонок — клікни, щоб показати список")}>
+                −{hiddenCols.size}
+              </span>
+            )}
           </button>
           <button onClick={toggleEmptyCols}
             className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${hideEmptyCols ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"}`}

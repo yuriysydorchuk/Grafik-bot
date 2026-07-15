@@ -543,6 +543,7 @@ const EN: Record<string, string> = {
   "Не зголошений: усе «До виплати» готівкою": "Not registered: the whole pay in cash",
   "Студент до 26: усе на конто, готівки немає": "Student under 26: all to the bank, no cash",
   "Potrącenia": "Potrącenia",
+  "Приховано колонок — клікни, щоб показати список": "Columns hidden — click to see the list",
   "Поляк / Полька": "Polish citizen",
   "Год. факт (księg.)": "Actual h (ksieg.)",
   "Zaliczka (księg.)": "Zaliczka (ksieg.)",

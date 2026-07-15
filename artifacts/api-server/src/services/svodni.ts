@@ -582,8 +582,14 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
     }
     // обмежений розклад (ES/ESO без Ew., KONTO = номер рахунку): вважаємо все
     // офіційним (konto = RAZEM), як parseLodzTab зарплатного модуля;
-    // WYPŁATA GOTÓWKĄ-оверлей далі поправляє тих, хто отримує частину готівкою
-    if (p.ksiegNetto == null) { p.ksiegNetto = razem; p.konto = razem; }
+    // WYPŁATA GOTÓWKĄ-оверлей далі поправляє тих, хто отримує частину готівкою.
+    // Год. księg. — колонка «NA KONTO "h"» таблиці, без неї — konto / ставка
+    if (p.ksiegNetto == null) {
+      p.ksiegNetto = razem;
+      p.konto = razem;
+      const kontoH = typeof p.extras.kontoH === "number" ? (p.extras.kontoH as number) : null;
+      p.hoursDeclared = kontoH != null ? r2(kontoH) : stN > 0 ? r2(razem / stN) : null;
+    }
     p.sheetRow = r;
     out.rows.push(p);
   }
