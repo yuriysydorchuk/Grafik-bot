@@ -127,7 +127,7 @@ const SECTION_RE = /^(KOBIETY|MEZCZYZNI|NIE OPODATKOWANE|OPODATKOWANE|STUDENCI|N
 
 // ── форма легалізації: канонічні статуси з тексту колонки Księgowość ─────────
 // Каталог продубльований у web/src/lib/legalStatus.ts — тримати синхронними.
-export const LEGAL_STATUSES = ["student", "dyplom", "do26", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
+export const LEGAL_STATUSES = ["student", "dyplom", "powiadomienie", "do26", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
 export type LegalStatus = (typeof LEGAL_STATUSES)[number];
 export function legalStatusOf(zusText: string | null | undefined): LegalStatus | null {
   const s = norm(String(zusText ?? ""));
@@ -138,9 +138,33 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
   if (/STALY POBYT/.test(s)) return "staly_pobyt";
   if (/POLAK|POLKA/.test(s)) return "polak";
   if (/STUDENT/.test(s)) return "student";
+  if (/POWIADOMIENIE/.test(s)) return "powiadomienie"; // зголошений повідомленням
   if (/DO ?26/.test(s)) return "do26";
   if (/WYZEJ ?26/.test(s)) return "zus";
   return null;
+}
+
+// Правила розкладу konto/готівка за статусом (як веде бухгалтерія):
+// студент до 26 — податків немає, все «до виплати» іде на конто;
+// не зголошений (чекає дозвіл) — офіційно платити не можна, все готівкою.
+// force: перерахунок після ручної правки на сайті (переписує наявний розклад);
+// без force (імпорт) — заповнений бухгалтерією блок сильніший.
+export function applyLegalDefaults(row: SvodniParsedRow, force = false): void {
+  if (row.doWyplaty == null) return;
+  if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
+  if (row.isStudent && row.under26) {
+    row.hoursDeclared = row.hours;
+    row.ksiegBrutto = row.doWyplaty; // студент: netto = brutto
+    row.ksiegNetto = row.doWyplaty;
+    row.konto = row.doWyplaty;
+    row.gotowka = 0;
+  } else if (legalStatusOf(String(row.extras.zusStatus ?? "")) === "oczekuje") {
+    row.hoursDeclared = 0;
+    row.ksiegBrutto = 0;
+    row.ksiegNetto = 0;
+    row.konto = 0;
+    row.gotowka = row.doWyplaty;
+  }
 }
 
 // ── фабрико-специфічні формули księgowих годин (як в екселі) ─────────────────

@@ -534,6 +534,7 @@ const EN: Record<string, string> = {
   "До 26": "Under 26",
   "Повний ZUS (wyżej 26)": "Full ZUS (over 26)",
   "Не зголошений (чекає дозвіл)": "Not registered (awaiting permit)",
+  "Powiadomienie (зголошений повідомленням)": "Powiadomienie (registered by notification)",
   "Поляк / Полька": "Polish citizen",
   "Год. факт (księg.)": "Actual h (ksieg.)",
   "Zaliczka (księg.)": "Zaliczka (ksieg.)",
