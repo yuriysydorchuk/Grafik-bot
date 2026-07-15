@@ -28,6 +28,7 @@ import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/pa
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
+import { LEGAL_STATUSES } from "../services/svodni";
 
 const router: IRouter = Router();
 
@@ -352,6 +353,19 @@ router.patch("/workers/:id", RW, async (req, res) => {
     // «до 26» — податкова властивість, виводиться з дати народження
     if (bd) patch.under26 = new Date(bd).getTime() > Date.now() - 26 * 365.25 * 86400000;
   }
+  // форма легалізації (student|dyplom|do26|zus|oczekuje|karta_pobytu|staly_pobyt|polak) + години в повідомленні
+  const { legalStatus, notifyHours } = req.body ?? {};
+  if (legalStatus !== undefined) {
+    const ls = strOrNull(legalStatus);
+    if (ls && !LEGAL_STATUSES.includes(ls as any)) return fail(res, 400, "Невідома форма легалізації");
+    patch.legalStatus = ls;
+    if (ls) patch.isStudent = ls === "student";
+  }
+  if (notifyHours !== undefined) {
+    const nh = notifyHours == null || notifyHours === "" ? null : Number(notifyHours);
+    if (nh != null && (!Number.isFinite(nh) || nh < 0)) return fail(res, 400, "Години в повідомленні — число");
+    patch.notifyHours = nh;
+  }
   // payroll fields — owner only
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
@@ -496,6 +510,7 @@ router.get("/workers/:id", RW, async (req, res) => {
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
     birthDate: w.birthDate,
+    legalStatus: w.legalStatus, notifyHours: w.notifyHours,
     ...(isOwner ? { hourlyRate: w.hourlyRate, hourlyRateNetto: w.hourlyRateNetto, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
     stats: {
       month: thisMonth, monthShifts: monShifts, monthHours: round(monHours), monthAbsent: monAbsent,

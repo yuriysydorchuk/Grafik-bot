@@ -13,7 +13,7 @@ import { logger } from "../lib/logger";
 import { matchWorker } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
-import { computePayout } from "../services/svodni";
+import { computePayout, computeKsiegHours, legalStatusOf } from "../services/svodni";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -25,9 +25,9 @@ const canSensitive = (req: AuthedRequest) => hasCap(req.admin!.role, req.admin!.
 
 // Відповідь API: закритий шар (księgowość/готівка/конто + чутливі extras)
 // віддається лише з capability svodniSensitive — фільтрація тут, не в UI.
-const SENSITIVE_EXTRAS = new Set(["kontoH", "gotowkaH", "doplataEs"]);
+const SENSITIVE_EXTRAS = new Set(["kontoH", "gotowkaH", "doplataEs", "godzFaktBlock", "zaliczkaBlock"]);
 const SENSITIVE_HR = new Set(["kontoNr"]); // номер банківського рахунку
-function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean) {
+function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean, workerLegal?: string | null) {
   const base: Record<string, unknown> = {
     id: r.id, city: r.city, firm: r.firm, factoryLabel: r.factoryLabel, factoryId: r.factoryId,
     sortIdx: r.sortIdx, section: r.section, rawName: r.rawName,
@@ -41,6 +41,8 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     extras: sensitive ? r.extras : Object.fromEntries(Object.entries(r.extras as Record<string, unknown>).filter(([k]) => !SENSITIVE_EXTRAS.has(k))),
     hr: sensitive ? r.hr : Object.fromEntries(Object.entries(r.hr as Record<string, unknown>).filter(([k]) => !SENSITIVE_HR.has(k))),
     mismatch: r.mismatch, rowColor: r.rowColor,
+    // форма легалізації: з тексту Księgowość рядка, fallback — профіль працівника
+    legalStatus: legalStatusOf((r.extras as Record<string, unknown>).zusStatus as string) ?? workerLegal ?? null,
   };
   if (sensitive) {
     base.hoursDeclared = r.hoursDeclared;
@@ -66,7 +68,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const where = city
     ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city))
     : eq(svodniRowsTable.periodMonth, month);
-  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
+  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(where)
@@ -75,7 +77,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   // офісні вкладки і «Додаткові студенти» — лише із закритим доступом
   const tabAllowed = (label: string) => sensitive || (!OFFICE_TAB_RE.test(label) && label !== EXTRA_STUDENTS_LABEL);
   const rows = raw.filter(({ r }) => tabAllowed(r.factoryLabel))
-    .map(({ r, workerName }) => serializeRow(r, workerName, sensitive));
+    .map(({ r, workerName, workerLegal }) => serializeRow(r, workerName, sensitive, workerLegal));
 
   const checks = (await db.select().from(svodniTabChecksTable).where(
     city
@@ -164,10 +166,10 @@ const BOOL_FIELDS = new Set(["isStudent", "under26"]);
 const EXTRA_FIELDS = new Set([
   "nocneH", "doplataNocna", "oplataKierowcy", "doplataEs", "badania", "nakladki",
   "zwrotKosztow", "kartaPobytu", "karaKlient", "karaEs", "zadluzenie", "migawka", "dokumenty", "workListHours",
-  "premiaBase", "premiaAgram", "premiaEs", "ksiegHours", "kontoH", "gotowkaH",
+  "premiaBase", "premiaAgram", "premiaEs", "ksiegHours", "kontoH", "gotowkaH", "godzFaktBlock", "zaliczkaBlock",
 ]);
 // не компоненти виплати — правка не перераховує do wypłaty
-const NON_PAYOUT_EXTRAS = new Set(["workListHours", "ksiegHours", "kontoH", "gotowkaH", "premiaBase", "premiaAgram", "premiaEs"]);
+const NON_PAYOUT_EXTRAS = new Set(["workListHours", "ksiegHours", "kontoH", "gotowkaH", "premiaBase", "premiaAgram", "premiaEs", "godzFaktBlock", "zaliczkaBlock"]);
 const PAYOUT_COMPONENTS = new Set([
   "hours", "rateNetto", "premia", "zaliczka", "zaliczkaBd", "hostel", "odziez",
   "dojazd", "kara", "komornik", "kaucja", "potracenia",
@@ -227,10 +229,11 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     sortIdx: (maxSort ?? -1) + 1, rawName: worker!.fullName,
     workerId: worker!.id, linkStatus: "confirmed", manual: true,
     rateBrutto: worker!.hourlyRate ?? null, rateNetto: worker!.hourlyRateNetto ?? null,
+    hoursNotified: worker!.notifyHours ?? null,
     isStudent: worker!.isStudent, under26,
     extras: {}, hr, sheetValues: {},
   }).returning();
-  ok(res, serializeRow(created!, worker!.fullName, canSensitive(req)));
+  ok(res, serializeRow(created!, worker!.fullName, canSensitive(req), worker!.legalStatus));
 });
 
 router.delete("/svodni/rows/:id", requireCap("svodni"), async (req, res) => {
@@ -248,6 +251,12 @@ async function syncWorkerProfile(workerId: number, field: string, merged: any) {
   if (field === "rateNetto") set.hourlyRateNetto = merged.rateNetto;
   if (field === "isStudent" && merged.isStudent != null) set.isStudent = merged.isStudent;
   if (field === "under26" && merged.under26 != null) set.under26 = merged.under26;
+  if (field === "hoursNotified") set.notifyHours = merged.hoursNotified ?? null;
+  if (field === "extras.zusStatus") {
+    // текст Księgowość → канонічна форма легалізації в профілі (якщо розпізнали)
+    const ls = legalStatusOf(merged.extras?.zusStatus);
+    if (ls) { set.legalStatus = ls; set.isStudent = ls === "student"; }
+  }
   if (field === "hr.dataUrodzenia") {
     const raw = String(merged.hr?.dataUrodzenia ?? "").trim();
     const bd = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : parseSheetDate(raw);
@@ -290,12 +299,12 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       set.extras = extras;
     }
     await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
-    if (row.workerId) await syncWorkerProfile(row.workerId, field, { hr: set.hr ?? row.hr });
-    const [u] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
+    if (row.workerId) await syncWorkerProfile(row.workerId, field, { hr: set.hr ?? row.hr, extras: set.extras ?? row.extras });
+    const [u] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
       .from(svodniRowsTable)
       .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
       .where(eq(svodniRowsTable.id, id));
-    return ok(res, serializeRow(u!.r, u!.workerName, canSensitive(req)));
+    return ok(res, serializeRow(u!.r, u!.workerName, canSensitive(req), u!.workerLegal));
   }
   if (TEXT_FIELDS.has(field)) {
     const v = String(rawValue ?? "").trim();
@@ -321,6 +330,15 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
     if ((field === "hours" || field === "rateBrutto") && merged.hours != null && merged.rateBrutto != null) {
       set.brutto = Math.round(merged.hours * merged.rateBrutto * 100) / 100;
     }
+    // фабричні формули Godzin Faktycznie (Eurocash: /30,5; Sushi: (виплата+zaliczka)/24,6 і BRUTTO = godz×30,5)
+    const kh = computeKsiegHours(row.factoryLabel, merged);
+    if (kh) {
+      const extras2 = { ...(set.extras as Record<string, unknown> ?? row.extras as Record<string, unknown>) };
+      extras2.ksiegHours = kh.ksiegHours;
+      set.extras = extras2;
+      merged.extras = extras2;
+      if (kh.brutto != null) { set.brutto = kh.brutto; merged.brutto = kh.brutto; }
+    }
   }
   // księgowa частина: години księg. → netto/brutto зі ставок; konto ↔ ksiegNetto;
   // готівка = до виплати − ksiegNetto (+ Dopłata ES) — та сама формула, що в таблиці
@@ -339,11 +357,11 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 
   await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, id));
   if (row.workerId) await syncWorkerProfile(row.workerId, field, merged);
-  const [updated] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName })
+  const [updated] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(eq(svodniRowsTable.id, id));
-  ok(res, serializeRow(updated!.r, updated!.workerName, canSensitive(req)));
+  ok(res, serializeRow(updated!.r, updated!.workerName, canSensitive(req), updated!.workerLegal));
 });
 
 router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {

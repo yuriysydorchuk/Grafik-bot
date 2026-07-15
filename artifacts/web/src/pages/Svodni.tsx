@@ -19,6 +19,7 @@ import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
+import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 
 type Row = {
   id: number; city: string; firm: string | null; factoryLabel: string; factoryId: number | null;
@@ -35,6 +36,7 @@ type Row = {
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
   rowColor: string | null;
+  legalStatus: string | null; // форма легалізації (з Księgowość або профілю)
 };
 type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
 type TabMeta = { city: string; factoryLabel: string; colOrder: string[]; info: { stawkaEurocash?: (string | number)[][] } };
@@ -78,6 +80,7 @@ const EXTRA_LABEL: Record<string, string> = {
   zadluzenie: "Заборгованість", migawka: "Migawka", dokumenty: "Dokumenty", workListHours: "Work List [год]",
   premiaBase: "Premia (кол.)", premiaAgram: "Premia Agram", premiaEs: "Premia ES",
   ksiegHours: "Godzin faktycznie", kontoH: "Конто [год]", gotowkaH: "Готівка [год]",
+  godzFaktBlock: "Год. факт (księg.)", zaliczkaBlock: "Zaliczka (księg.)",
 };
 const EXTRA_ORDER = Object.keys(EXTRA_LABEL);
 const extraLabel = (k: string) => EXTRA_LABEL[k] ?? k;
@@ -511,8 +514,14 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                         ? <Link href={`/workers/${r.workerId}`} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
                         : <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text /></span>}
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
-                      {r.isStudent && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
+                      {(r.isStudent || r.legalStatus === "student") && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700" title={t(LEGAL_LABEL.student)}>STUD</span>}
                       {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
+                      {r.legalStatus && r.legalStatus !== "student" && LEGAL_BADGE[r.legalStatus as LegalStatus] && (
+                        <span className={`shrink-0 rounded px-1 text-[10px] font-medium ${LEGAL_BADGE[r.legalStatus as LegalStatus]!.cls}`}
+                          title={`${t("Форма легалізації")}: ${t(LEGAL_LABEL[r.legalStatus as LegalStatus])}${r.extras.zusStatus ? ` — ${r.extras.zusStatus}` : ""}`}>
+                          {LEGAL_BADGE[r.legalStatus as LegalStatus]!.short}
+                        </span>
+                      )}
                       {r.mismatch && (
                         <span className="cursor-help text-[11px] font-medium text-rose-600"
                           title={Object.entries(r.mismatch).map(([k, v]) => `${k}: ${t("наш розрахунок")} ${v.ours} ≠ ${t("у таблиці")} ${v.sheet}`).join("\n")}>

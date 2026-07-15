@@ -91,3 +91,8 @@ CREATE TABLE IF NOT EXISTS svodni_tab_meta (
     created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS svodni_tab_meta_month_city ON svodni_tab_meta (period_month, city);
+
+-- Форма легалізації працівника (student/dyplom/do26/zus/oczekuje/karta_pobytu/
+-- staly_pobyt/polak) і години в повідомленні (powiadomienie) — з сводних
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS legal_status text;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS notify_hours real;

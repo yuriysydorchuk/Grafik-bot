@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch, parseOfficeTab,
+  legalStatusOf, computeKsiegHours,
 } from "./svodni.ts";
 
 const near = (actual: number | null | undefined, expected: number, msg?: string) =>
@@ -176,6 +177,28 @@ test("Лодзь: KONTO з номером рахунку не стає сумо�
   assert.equal(w.hr.kontoNr, "68 1600 1462 1742 3750 4000 0001");
   assert.equal(w.konto, 3140);
   assert.equal(w.ksiegNetto, 3140);
+});
+
+test("форма легалізації: текст Księgowość → канонічний статус", () => {
+  assert.equal(legalStatusOf("Zgłoszony, do 26, student"), "student");
+  assert.equal(legalStatusOf("Zgłoszo, wyżej 26, student"), "student");
+  assert.equal(legalStatusOf("Posiada Dyplom ukończenia studiów"), "dyplom");
+  assert.equal(legalStatusOf("NIE ZGŁOSZONO, CZEKAMY NA ZEZWOLENIE"), "oczekuje");
+  assert.equal(legalStatusOf("Zgłoszony, Decyzja Karty Pobytu"), "karta_pobytu");
+  assert.equal(legalStatusOf("Zgłoszony, stały pobyt"), "staly_pobyt");
+  assert.equal(legalStatusOf("Zgłoszony Polak / Polka"), "polak");
+  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Do 26"), "do26");
+  assert.equal(legalStatusOf("Zgłoszony, Powiadomienie, Wyżej 26"), "zus");
+  assert.equal(legalStatusOf(""), null);
+  assert.equal(legalStatusOf("щось невідоме"), null);
+});
+
+test("Godzin Faktycznie: Eurocash = виплата/30,5; Sushi = (виплата+zaliczka)/24,6 і brutto", () => {
+  assert.deepEqual(computeKsiegHours("EUROCASH LUBLIN", { doWyplaty: 6100, zaliczka: null }), { ksiegHours: 200 });
+  const sushi = computeKsiegHours("Sushi&Food Factory", { doWyplaty: 4000, zaliczka: 920 })!;
+  assert.equal(sushi.ksiegHours, 200);
+  assert.equal(sushi.brutto, 6100);
+  assert.equal(computeKsiegHours("AGRAM", { doWyplaty: 1000, zaliczka: 0 }), null);
 });
 
 test("Офіс: людина без сум, але з умовою/ставкою — лишається в списку", () => {
