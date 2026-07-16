@@ -43,7 +43,7 @@ for (const [name, kind, got] of JOBS) {
     const p = kind === "Ł" ? parseLodzFullTab(t, rows) : parseLublinTab(t, rows);
     if (!p) continue;
     if (gotRows.length) overlayGotowka(p, gotRows.filter(g => key(g.factory) === key(t) || key(t).startsWith(key(g.factory))));
-    for (const r of p.rows) { applyLegalDefaults(r); addTo(orig, facName(t), r); }
+    for (const r of p.rows) { applyLegalDefaults(r, false, { factoryLabel: t }); addTo(orig, facName(t), r); }
   }
 }
 // сайт

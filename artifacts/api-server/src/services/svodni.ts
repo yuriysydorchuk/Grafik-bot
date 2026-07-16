@@ -163,12 +163,30 @@ export function factoryDeclaredCap(factoryLabel: string | null | undefined, hour
   return null;
 }
 
-export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileLegal: LegalStatus | null = null, factoryLabel: string | null = null): void {
+// Стандартна księgowa пара ставок (umowa zlecenie): конто декларується по НИЖЧІЙ
+// зі ставок — фабричній чи стандартній (LST платить 26,35, а декларує по 25,35;
+// Sushi платить 24,60 — декларує по своїй). Решта до повного нетто — готівкою.
+export const KSIEG_STD_NETTO = 25.35;
+export const KSIEG_STD_BRUTTO = 31.4;
+
+export interface LegalCtx {
+  profileLegal?: LegalStatus | null;
+  factoryLabel?: string | null;
+  /** побажання працівника (примітки профілю) — найвищий пріоритет */
+  payoutPref?: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null;
+}
+
+export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: LegalCtx = {}): void {
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
-  const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? profileLegal;
-  const capH = factoryDeclaredCap(factoryLabel, row.hours ?? null);
+  const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? ctx.profileLegal ?? null;
+  const capH = factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null);
+  // неоподаткована ставка (netto = brutto, студентська) декларується як є;
+  // оподаткована — по нижчій зі ставок (фабрична LST 26,35 → стандартна 25,35)
+  const untaxed = row.rateBrutto != null && row.rateNetto != null && row.rateBrutto <= row.rateNetto + 0.001;
+  const ksiegNettoRate = row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO)) : null;
+  const ksiegBruttoRate = row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO)) : null;
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)].
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
@@ -178,24 +196,30 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileL
     const cut = konto !== r2(targetKonto);
     row.konto = konto;
     row.ksiegNetto = konto;
-    row.hoursDeclared = cut && row.rateNetto ? r2(konto / row.rateNetto) : declaredHours;
+    row.hoursDeclared = cut && ksiegNettoRate ? r2(konto / ksiegNettoRate) : declaredHours;
     row.ksiegBrutto = studentBrutto
       ? konto // студент: netto = brutto
-      : row.hoursDeclared != null && row.rateBrutto != null ? r2(row.hoursDeclared * row.rateBrutto) : null;
+      : row.hoursDeclared != null && ksiegBruttoRate != null ? r2(row.hoursDeclared * ksiegBruttoRate) : null;
     row.gotowka = r2(row.doWyplaty! - konto + doplata);
   };
-  if (row.isStudent && row.under26) {
+  const pref = ctx.payoutPref;
+  if (pref && (pref.kind === "all_konto" || pref.value != null)) {
+    // побажання працівника — понад статуси й oświadczenie (заробив менше → менша сума через cap)
+    if (pref.kind === "all_konto") finish(row.doWyplaty, row.hours ?? null);
+    else if (pref.kind === "hours") finish((pref.value ?? 0) * (ksiegNettoRate ?? 0), r2(pref.value ?? 0));
+    else finish(pref.value ?? 0, ksiegNettoRate ? r2(Math.min(Math.max(pref.value ?? 0, 0), cap) / ksiegNettoRate) : null);
+  } else if (row.isStudent && row.under26) {
     finish(row.doWyplaty, row.hours ?? null, true);
-  } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && row.rateNetto != null) {
+  } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && ksiegNettoRate != null) {
     const declared = Math.min(row.hoursNotified, row.hours, capH ?? Infinity);
-    finish(declared * row.rateNetto, r2(declared));
+    finish(declared * ksiegNettoRate, r2(declared));
   } else if (ls === "oczekuje" || (ls == null && force)) {
     finish(0, 0); // не оформлений — все готівкою
   } else if (ls != null) {
     // оформлений без oświadczenia-годин: все на карту, але не вище фабричної стелі годин
-    if (capH != null && row.rateNetto != null && row.hours != null) {
+    if (capH != null && ksiegNettoRate != null && row.hours != null) {
       const declared = Math.min(row.hours, capH);
-      finish(declared * row.rateNetto, r2(declared));
+      finish(declared * ksiegNettoRate, r2(declared));
     } else {
       finish(row.doWyplaty, row.hours ?? null);
     }

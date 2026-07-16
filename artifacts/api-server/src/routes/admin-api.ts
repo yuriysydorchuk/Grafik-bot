@@ -377,6 +377,23 @@ router.patch("/workers/:id", RW, async (req, res) => {
     if (nh != null && (!Number.isFinite(nh) || nh < 0)) return fail(res, 400, "Години в повідомленні — число");
     patch.notifyHours = nh;
   }
+  // примітка і побажання по виплаті — лише з доступом до закритого шару сводних
+  const { note, payoutPrefKind, payoutPrefValue } = req.body ?? {};
+  if (note !== undefined || payoutPrefKind !== undefined || payoutPrefValue !== undefined) {
+    if (!hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")) return fail(res, 403, "forbidden");
+    if (note !== undefined) patch.note = strOrNull(note);
+    if (payoutPrefKind !== undefined) {
+      const k = strOrNull(payoutPrefKind);
+      if (k && !["all_konto", "hours", "amount"].includes(k)) return fail(res, 400, "Невідомий тип побажання");
+      patch.payoutPrefKind = k;
+      if (!k) patch.payoutPrefValue = null;
+    }
+    if (payoutPrefValue !== undefined) {
+      const v = payoutPrefValue == null || payoutPrefValue === "" ? null : Number(payoutPrefValue);
+      if (v != null && (!Number.isFinite(v) || v < 0)) return fail(res, 400, "Значення побажання — число");
+      patch.payoutPrefValue = v;
+    }
+  }
   // payroll fields — owner only
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
@@ -522,6 +539,9 @@ router.get("/workers/:id", RW, async (req, res) => {
     language: w.language,
     birthDate: w.birthDate,
     legalStatus: w.legalStatus, notifyHours: w.notifyHours,
+    ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
+      ? { note: w.note, payoutPrefKind: w.payoutPrefKind, payoutPrefValue: w.payoutPrefValue }
+      : {}),
     ...(isOwner ? { hourlyRate: w.hourlyRate, hourlyRateNetto: w.hourlyRateNetto, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
     stats: {
       month: thisMonth, monthShifts: monShifts, monthHours: round(monHours), monthAbsent: monAbsent,

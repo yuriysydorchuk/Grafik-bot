@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet
 } from "lucide-react";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
@@ -23,6 +23,7 @@ interface WorkerProfile {
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
+  note?: string | null; payoutPrefKind?: string | null; payoutPrefValue?: number | null;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
   factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
   recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
@@ -112,8 +113,12 @@ export default function WorkerDetail() {
           <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} />
           <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} />
           <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} />
+          {w.payoutPrefKind !== undefined && (
+            <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} />
+          )}
           {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
         </div>
+        {w.note !== undefined && <NoteBlock workerId={w.id} note={w.note ?? null} />}
       </Card>
 
       {/* KPI grid */}
@@ -345,6 +350,74 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
 
 // Дата народження з інлайн-редагуванням; «до 26» виводиться автоматично
 // (податкова пільга) і зберігається у профілі при зміні дати.
+// Побажання по виплаті (лише svodniSensitive): найвищий пріоритет у розкладі
+// konto/готівка — понад статус і год. oświadczenia (менше заробив → менша сума)
+const PAYOUT_PREF_LABEL: Record<string, string> = {
+  all_konto: "Все на конто", hours: "N годин на конто", amount: "Сума на конто",
+};
+function PayoutPrefRow({ workerId, kind, value }: { workerId: number; kind: string | null; value: number | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  const save = useMutation({
+    mutationFn: (p: { payoutPrefKind?: string | null; payoutPrefValue?: number | null }) => patch(`/workers/${workerId}`, p),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["worker"] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <div className="flex items-center gap-2">
+      <Wallet className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Побажання по виплаті")}:</span>
+      <select value={kind ?? ""} onChange={e => save.mutate({ payoutPrefKind: e.target.value || null })}
+        className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
+        <option value="">{t("— за правилами —")}</option>
+        {Object.entries(PAYOUT_PREF_LABEL).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
+      </select>
+      {(kind === "hours" || kind === "amount") && (
+        <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
+          onBlur={() => { const v = draft === "" ? null : Number(draft); if (v !== value) save.mutate({ payoutPrefValue: v }); }}
+          placeholder={kind === "hours" ? t("год") : "zł"}
+          className="w-24 rounded border border-slate-300 px-1 py-0.5 text-sm" />
+      )}
+    </div>
+  );
+}
+
+// Примітка (лише svodniSensitive)
+function NoteBlock({ workerId, note }: { workerId: number; note: string | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const save = useMutation({
+    mutationFn: () => patch(`/workers/${workerId}`, { note: draft.trim() || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-600">
+        <FileText className="h-3.5 w-3.5" /> {t("Примітка (закритий доступ)")}
+      </div>
+      {editing ? (
+        <div className="space-y-2">
+          <textarea autoFocus value={draft} onChange={e => setDraft(e.target.value)} rows={3}
+            className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
+          <div className="flex gap-2">
+            <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+            <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+          </div>
+        </div>
+      ) : (
+        <button className="w-full rounded-lg bg-amber-50/60 px-3 py-2 text-left text-sm text-slate-700 hover:bg-amber-50"
+          onClick={() => { setDraft(note ?? ""); setEditing(true); }}>
+          {note || <span className="text-slate-400">{t("додати примітку…")}</span>}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Форма легалізації: select із канонічних статусів (двосторонній синк зі сводними)
 function LegalStatusRow({ workerId, legalStatus }: { workerId: number; legalStatus: LegalStatus | null }) {
   const t = useT();

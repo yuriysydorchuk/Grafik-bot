@@ -39,7 +39,7 @@ const rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.pe
 let recalc = 0;
 for (const r of rows) {
   const merged = { ...r };
-  applyLegalDefaults(merged, true, r.workerId ? wById.get(r.workerId)?.legalStatus ?? null : null);
+  applyLegalDefaults(merged, true, { profileLegal: r.workerId ? wById.get(r.workerId)?.legalStatus ?? null : null, factoryLabel: target?.factoryLabel ?? r?.factory_label ?? null });
   const changed = ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"].filter(k => merged[k] !== r[k]);
   if (!changed.length) continue;
   await db.update(svodniRowsTable).set(Object.fromEntries(changed.map(k => [k, merged[k]])))

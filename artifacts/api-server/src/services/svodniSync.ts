@@ -143,7 +143,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     for (const row of parsed.rows) {
       // статусні правила бухгалтерії: студент до 26 → все на конто;
       // не зголошений → все готівкою (заповнений блок сильніший)
-      if (!OFFICE_TAB_RE.test(t.trim())) applyLegalDefaults(row, false, null, t.trim());
+      if (!OFFICE_TAB_RE.test(t.trim())) applyLegalDefaults(row, false, { factoryLabel: t.trim() });
       computeMismatch(row, city);
       // Познань: звірка годин із Work List (за Nr Osobowy у hr)
       if (workList && row.hr.nrOsobowy) {

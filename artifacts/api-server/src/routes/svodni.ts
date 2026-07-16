@@ -27,7 +27,7 @@ const canSensitive = (req: AuthedRequest) => hasCap(req.admin!.role, req.admin!.
 // віддається лише з capability svodniSensitive — фільтрація тут, не в UI.
 const SENSITIVE_EXTRAS = new Set(["kontoH", "gotowkaH", "doplataEs", "godzFaktBlock", "zaliczkaBlock"]);
 const SENSITIVE_HR = new Set(["kontoNr"]); // номер банківського рахунку
-function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean, workerLegal?: string | null) {
+function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean, workerLegal?: string | null, workerPref?: { kind: string; value: number | null } | null) {
   const base: Record<string, unknown> = {
     id: r.id, city: r.city, firm: r.firm, factoryLabel: r.factoryLabel, factoryId: r.factoryId,
     sortIdx: r.sortIdx, section: r.section, rawName: r.rawName,
@@ -45,6 +45,7 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     legalStatus: legalStatusOf((r.extras as Record<string, unknown>).zusStatus as string) ?? workerLegal ?? null,
   };
   if (sensitive) {
+    base.payoutPref = workerPref ?? null; // побажання працівника (примітки профілю)
     base.hoursDeclared = r.hoursDeclared;
     base.ksiegBrutto = r.ksiegBrutto;
     base.ksiegNetto = r.ksiegNetto;
@@ -68,7 +69,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const where = city
     ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city))
     : eq(svodniRowsTable.periodMonth, month);
-  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
+  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(where)
@@ -77,7 +78,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   // офісні вкладки і «Додаткові студенти» — лише із закритим доступом
   const tabAllowed = (label: string) => sensitive || (!OFFICE_TAB_RE.test(label) && label !== EXTRA_STUDENTS_LABEL);
   const rows = raw.filter(({ r }) => tabAllowed(r.factoryLabel))
-    .map(({ r, workerName, workerLegal }) => serializeRow(r, workerName, sensitive, workerLegal));
+    .map(({ r, workerName, workerLegal, prefKind, prefValue }) => serializeRow(r, workerName, sensitive, workerLegal, prefKind ? { kind: prefKind, value: prefValue ?? null } : null));
 
   const checks = (await db.select().from(svodniTabChecksTable).where(
     city
@@ -356,11 +357,14 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   const affectsLegal = affectsPayout || field === "hoursNotified" || BOOL_FIELDS.has(field);
   if (affectsLegal && !OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     let profileLegal: string | null = null;
+    let payoutPref: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null = null;
     if (row.workerId) {
-      const [pw] = await db.select({ ls: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, row.workerId));
+      const [pw] = await db.select({ ls: workersTable.legalStatus, pk: workersTable.payoutPrefKind, pv: workersTable.payoutPrefValue })
+        .from(workersTable).where(eq(workersTable.id, row.workerId));
       profileLegal = pw?.ls ?? null;
+      payoutPref = pw?.pk ? { kind: pw.pk as any, value: pw.pv ?? null } : null;
     }
-    applyLegalDefaults(merged, true, profileLegal as any, row.factoryLabel);
+    applyLegalDefaults(merged, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref });
     for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
       if (merged[k] !== row[k]) set[k] = merged[k];
     }
@@ -485,7 +489,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, (w.legalStatus ?? null) as any, factoryLabel);
+      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null });
       await db.update(svodniRowsTable).set({
         hours: merged.hours, zaliczka: merged.zaliczka, hostel: merged.hostel,
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
@@ -514,7 +518,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (row.rateNetto == null) skippedNoRate++;
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true, (w.legalStatus ?? null) as any, factoryLabel);
+    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null });
     await db.insert(svodniRowsTable).values(row);
     created++;
   }

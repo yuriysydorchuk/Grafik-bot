@@ -122,3 +122,8 @@ CREATE TABLE IF NOT EXISTS hostel_deductions (
     created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS hostel_deductions_month ON hostel_deductions (period_month);
+
+-- Примітка (sensitive) і побажання працівника по виплаті: all_konto | hours | amount
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS note text;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS payout_pref_kind text;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS payout_pref_value real;

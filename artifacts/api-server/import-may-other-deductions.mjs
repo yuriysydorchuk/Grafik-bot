@@ -58,7 +58,7 @@ for (const [name, kind] of JOBS) {
       merged.extras = extras;
       const payout = computePayout(merged, target.city);
       if (payout != null) merged.doWyplaty = payout;
-      applyLegalDefaults(merged, true, wById.get(target.workerId)?.legalStatus ?? null);
+      applyLegalDefaults(merged, true, { profileLegal: wById.get(target.workerId)?.legalStatus ?? null, factoryLabel: target?.factoryLabel ?? r?.factory_label ?? null });
       await db.update(svodniRowsTable).set({
         dojazd: merged.dojazd, kara: merged.kara, komornik: merged.komornik,
         potracenia: merged.potracenia, odziez: merged.odziez, kaucja: merged.kaucja,
