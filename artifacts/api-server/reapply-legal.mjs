@@ -10,7 +10,7 @@ const rows = await db.select({ r: svodniRowsTable, ls: workersTable.legalStatus 
 let n = 0;
 for (const { r, ls } of rows) {
   const merged = { ...r };
-  applyLegalDefaults(merged, true, ls ?? null);
+  applyLegalDefaults(merged, true, ls ?? null, r.factoryLabel);
   const changed = ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"]
     .filter(k => merged[k] !== r[k]);
   if (!changed.length) continue;

@@ -286,6 +286,41 @@ test("Godzin Faktycznie: Eurocash = виплата/30,5; Sushi = (виплата
   assert.equal(computeKsiegHours("AGRAM", { doWyplaty: 1000, zaliczka: 0 }), null);
 });
 
+test("фабрична стеля księgowych годин: DEZYNFEKCJA/LST — 70 при 200+, інакше 60", () => {
+  const mk = (hours, doWyplaty) => {
+    const p = parseLublinTab("LST", [
+      [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+      ["TEST OSOBA", "", hours, 31.4, 25.35, doWyplaty, "Zgłoszony, Powiadomienie, Wyżej 26"],
+    ])!;
+    return p.rows[0]!;
+  };
+  // 202 год ≥ 200 → стеля 70: konto = 70 × 25.35
+  const a = mk(202, 202 * 25.35);
+  applyLegalDefaults(a, true, null, "LST");
+  assert.equal(a.hoursDeclared, 70);
+  assert.equal(a.ksiegNetto, 1774.5);
+  // 161 год < 200 → стеля 60
+  const b = mk(161, 161 * 25.35);
+  applyLegalDefaults(b, true, null, "DEZYNFEKCJA");
+  assert.equal(b.hoursDeclared, 60);
+  assert.equal(b.ksiegNetto, 1521);
+  // відпрацював менше стелі → реальні години
+  const c = mk(26, 26 * 25.35);
+  applyLegalDefaults(c, true, null, "SERWIS PLUS");
+  assert.equal(c.hoursDeclared, 26);
+  // студента до 26 стеля не стосується — все на конто
+  const st = parseLublinTab("LST", [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["STUDENTKA LST", "STUD", 220, 31.4, 31.4, 6908, "Zgłoszony, do 26, student"],
+  ])!.rows[0]!;
+  applyLegalDefaults(st, true, null, "LST");
+  assert.equal(st.konto, 6908);
+  // інші фабрики — без стелі
+  const d = mk(202, 202 * 25.35);
+  applyLegalDefaults(d, true, null, "AGRAM");
+  assert.equal(d.hoursDeclared, 202);
+});
+
 test("Офіс: людина без сум, але з умовою/ставкою — лишається в списку", () => {
   const rows = [
     [46174],
