@@ -360,7 +360,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       const [pw] = await db.select({ ls: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, row.workerId));
       profileLegal = pw?.ls ?? null;
     }
-    applyLegalDefaults(merged, true, profileLegal as any);
+    applyLegalDefaults(merged, true, profileLegal as any, row.factoryLabel);
     for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
       if (merged[k] !== row[k]) set[k] = merged[k];
     }
@@ -485,7 +485,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, (w.legalStatus ?? null) as any);
+      applyLegalDefaults(merged, true, (w.legalStatus ?? null) as any, factoryLabel);
       await db.update(svodniRowsTable).set({
         hours: merged.hours, zaliczka: merged.zaliczka, hostel: merged.hostel,
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
@@ -514,7 +514,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (row.rateNetto == null) skippedNoRate++;
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true, (w.legalStatus ?? null) as any);
+    applyLegalDefaults(row, true, (w.legalStatus ?? null) as any, factoryLabel);
     await db.insert(svodniRowsTable).values(row);
     created++;
   }

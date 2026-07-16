@@ -154,11 +154,21 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
 // force: перерахунок після ручної правки на сайті (переписує наявний розклад);
 // без force (google-імпорт) — заповнений бухгалтерією блок сильніший, а рядки
 // без статусу лишаються нерозписаними (відсутність тексту ≠ «не оформлений»).
-export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileLegal: LegalStatus | null = null): void {
+// Фабричні стелі księgowych годин (діють на всіх, КРІМ студентів до 26):
+// DEZYNFEKCJA/SERWIS PLUS і LST — максимум 70 год, якщо реально відпрацьовано
+// 200+, інакше максимум 60; відпрацював менше стелі — реальні години.
+export function factoryDeclaredCap(factoryLabel: string | null | undefined, hours: number | null): number | null {
+  if (!factoryLabel || hours == null) return null;
+  if (/DEZYNFEKCJA|SERWIS\s*PLUS|^LST\b/i.test(norm(factoryLabel))) return hours >= 200 ? 70 : 60;
+  return null;
+}
+
+export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileLegal: LegalStatus | null = null, factoryLabel: string | null = null): void {
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? profileLegal;
+  const capH = factoryDeclaredCap(factoryLabel, row.hours ?? null);
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)].
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
@@ -177,12 +187,18 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileL
   if (row.isStudent && row.under26) {
     finish(row.doWyplaty, row.hours ?? null, true);
   } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && row.rateNetto != null) {
-    const declared = Math.min(row.hoursNotified, row.hours);
+    const declared = Math.min(row.hoursNotified, row.hours, capH ?? Infinity);
     finish(declared * row.rateNetto, r2(declared));
   } else if (ls === "oczekuje" || (ls == null && force)) {
     finish(0, 0); // не оформлений — все готівкою
   } else if (ls != null) {
-    finish(row.doWyplaty, row.hours ?? null); // оформлений без oświadczenia-годин — все на карту
+    // оформлений без oświadczenia-годин: все на карту, але не вище фабричної стелі годин
+    if (capH != null && row.rateNetto != null && row.hours != null) {
+      const declared = Math.min(row.hours, capH);
+      finish(declared * row.rateNetto, r2(declared));
+    } else {
+      finish(row.doWyplaty, row.hours ?? null);
+    }
   }
 }
 
@@ -578,6 +594,7 @@ export function parseLodzFullTab(factoryLabel: string, rows: unknown[][]): Svodn
       const ew = num(row[c.ew]) ?? 0;
       {
         const doplata = c.doplata >= 0 ? num(row[c.doplata]) ?? 0 : 0;
+        p.extras.ewH = ew; // маркер: години зі СПРАВЖНЬОЇ таблички евіденції (Ew.)
         p.hoursDeclared = ew;
         p.ksiegBrutto = r2(ew * stB);
         p.ksiegNetto = r2(ew * stN);
