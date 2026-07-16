@@ -40,7 +40,7 @@ for (const j of JOBS) {
     const parsed = j.city === "Лодзь" ? parseLodzFullTab(t, rows) : parseLublinTab(t, rows);
     if (!parsed) continue;
     if (got.length) overlayGotowka(parsed, got.filter(g => key(g.factory) === key(t) || key(t).startsWith(key(g.factory))));
-    for (const r of parsed.rows) { applyLegalDefaults(r); addOrig(r, t); }
+    for (const r of parsed.rows) { applyLegalDefaults(r, false, { factoryLabel: t }); addOrig(r, t); }
   }
 }
 

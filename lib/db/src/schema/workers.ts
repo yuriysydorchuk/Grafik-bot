@@ -68,6 +68,9 @@ export const workersTable = pgTable("workers", {
   under26: boolean("under_26").notNull().default(false),
   legalStatus: text("legal_status"), // форма легалізації: student | dyplom | do26 | zus | oczekuje | karta_pobytu | staly_pobyt | polak
   notifyHours: real("notify_hours"), // години в powiadomieniu (дозвіл на працю)
+  note: text("note"), // примітка (видима лише з доступом svodniSensitive)
+  payoutPrefKind: text("payout_pref_kind"), // побажання по виплаті: all_konto | hours | amount (найвищий пріоритет у розкладі konto/готівка)
+  payoutPrefValue: real("payout_pref_value"), // N годин або сума — для kind hours|amount
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

@@ -33,6 +33,7 @@ type Row = {
   isStudent: boolean | null; under26: boolean | null;
   hoursDeclared?: number | null; ksiegBrutto?: number | null; ksiegNetto?: number | null;
   gotowka?: number | null; konto?: number | null;
+  payoutPref?: { kind: string; value: number | null } | null;
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
   rowColor: string | null;
@@ -100,6 +101,12 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
   const f = (v: number | null | undefined) => fmt(r2(v ?? 0));
   const studentDo26 = !!r.isStudent && !!r.under26;
   const oczekuje = r.legalStatus === "oczekuje";
+  const pref = r.payoutPref;
+  const prefText = pref
+    ? pref.kind === "all_konto" ? t("Побажання працівника: все на конто")
+      : pref.kind === "hours" ? `${t("Побажання працівника")}: ${fmt(pref.value ?? 0)} ${t("год")} ${t("на конто")}`
+      : `${t("Побажання працівника")}: ${fmt(pref.value ?? 0)} zł ${t("на конто")}`
+    : null;
   // сума з компонентів: [лейбл, значення, знак]; нульові пропускаються
   const build = (parts: [string, number | null | undefined, 1 | -1][], total: number | null | undefined) => {
     const used = parts.filter(([, v]) => v != null && v !== 0);
@@ -138,6 +145,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       return parts.map(k => `${extraLabel(k)} ${f(ex(k))}`).join(" + ") + ` = ${f(r.premia)}`;
     }
     case "hoursDeclared": {
+      if (prefText) return `${prefText}`;
       if (studentDo26) return `${t("Студент до 26: усі години офіційні")} = ${f(r.hoursDeclared)}`;
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.hours != null && r.hoursDeclared != null)
         return `${t("Офіційно — години oświadczenia, але не більше відпрацьованих")}: min(${f(r.hoursNotified)}, ${f(r.hours)}) = ${f(r.hoursDeclared)}`;
@@ -145,6 +153,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       return `${t("Оформлений без год. oświadczenia: усі години офіційні")} = ${f(r.hoursDeclared)}`;
     }
     case "ksiegNetto":
+      if (prefText) return `${prefText} = ${f(r.ksiegNetto)}`;
       if (studentDo26) return `${t("Студент до 26: усе «До виплати» йде на конто")} = ${f(r.ksiegNetto)}`;
       if (r.hoursDeclared != null && r.hoursNotified != null && r.hoursNotified > 0 && r.rateNetto != null && r.ksiegNetto != null)
         return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка нет.")} ${f(r.rateNetto)} = ${f(r.ksiegNetto)}`;
@@ -159,6 +168,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
     case "konto":
       return r.konto != null ? `= ${t("Księg. netto (конто)")} ${f(r.konto)}` : null;
     case "gotowka":
+      if (prefText) return `${prefText}; ${t("решта готівкою")} = ${f(r.gotowka)}`;
       if (studentDo26) return `${t("Студент до 26: усе на конто, готівки немає")} = 0`;
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
         return `${t("До виплати")} ${f(r.doWyplaty)} − ${t("Księg. netto (конто)")} ${f(r.ksiegNetto)}${ex("doplataEs") ? ` + Dopłata ES ${f(ex("doplataEs"))}` : ""} = ${f(r.gotowka)}`;

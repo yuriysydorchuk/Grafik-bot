@@ -4,13 +4,13 @@ import { eq } from "drizzle-orm";
 import { applyLegalDefaults } from "./src/services/svodni.ts";
 
 const MONTH = process.argv[2] ?? "2026-05";
-const rows = await db.select({ r: svodniRowsTable, ls: workersTable.legalStatus })
+const rows = await db.select({ r: svodniRowsTable, ls: workersTable.legalStatus, pk: workersTable.payoutPrefKind, pv: workersTable.payoutPrefValue })
   .from(svodniRowsTable).leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
   .where(eq(svodniRowsTable.periodMonth, MONTH));
 let n = 0;
-for (const { r, ls } of rows) {
+for (const { r, ls, pk, pv } of rows) {
   const merged = { ...r };
-  applyLegalDefaults(merged, true, ls ?? null, r.factoryLabel);
+  applyLegalDefaults(merged, true, { profileLegal: ls ?? null, factoryLabel: r.factoryLabel, payoutPref: pk ? { kind: pk, value: pv ?? null } : null });
   const changed = ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"]
     .filter(k => merged[k] !== r[k]);
   if (!changed.length) continue;

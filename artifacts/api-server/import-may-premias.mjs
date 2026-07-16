@@ -47,7 +47,7 @@ for (const [name, kind] of [["lublin-2026-05","L"],["poznan-2026-05","L"],["lodz
       merged.extras = extras;
       const payout = computePayout(merged, target.city);
       if (payout != null) merged.doWyplaty = payout;
-      applyLegalDefaults(merged, true, wById.get(target.workerId)?.legalStatus ?? null);
+      applyLegalDefaults(merged, true, { profileLegal: wById.get(target.workerId)?.legalStatus ?? null, factoryLabel: target?.factoryLabel ?? r?.factory_label ?? null });
       await db.update(svodniRowsTable).set({
         premia: merged.premia, extras: merged.extras, doWyplaty: merged.doWyplaty,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
