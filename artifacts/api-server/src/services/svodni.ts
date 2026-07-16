@@ -159,34 +159,30 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, profileL
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? profileLegal;
-  const allKonto = () => {
-    row.hoursDeclared = row.hours;
-    row.ksiegNetto = row.doWyplaty;
-    row.konto = row.doWyplaty;
-    row.gotowka = 0;
-  };
-  const allGotowka = () => {
-    row.hoursDeclared = 0;
-    row.ksiegBrutto = 0;
-    row.ksiegNetto = 0;
-    row.konto = 0;
-    row.gotowka = row.doWyplaty;
+  // На карту не можна переказати більше, ніж людині взагалі належить:
+  // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)].
+  // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
+  const cap = Math.max(row.doWyplaty, 0);
+  const finish = (targetKonto: number, declaredHours: number | null, studentBrutto = false) => {
+    const konto = r2(Math.max(0, Math.min(targetKonto, cap)));
+    const cut = konto !== r2(targetKonto);
+    row.konto = konto;
+    row.ksiegNetto = konto;
+    row.hoursDeclared = cut && row.rateNetto ? r2(konto / row.rateNetto) : declaredHours;
+    row.ksiegBrutto = studentBrutto
+      ? konto // студент: netto = brutto
+      : row.hoursDeclared != null && row.rateBrutto != null ? r2(row.hoursDeclared * row.rateBrutto) : null;
+    row.gotowka = r2(row.doWyplaty! - konto + doplata);
   };
   if (row.isStudent && row.under26) {
-    allKonto();
-    row.ksiegBrutto = row.doWyplaty; // студент: netto = brutto
+    finish(row.doWyplaty, row.hours ?? null, true);
   } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && row.rateNetto != null) {
     const declared = Math.min(row.hoursNotified, row.hours);
-    row.hoursDeclared = r2(declared);
-    row.ksiegNetto = r2(declared * row.rateNetto);
-    row.ksiegBrutto = row.rateBrutto != null ? r2(declared * row.rateBrutto) : null;
-    row.konto = row.ksiegNetto;
-    row.gotowka = r2(row.doWyplaty - row.ksiegNetto + doplata);
+    finish(declared * row.rateNetto, r2(declared));
   } else if (ls === "oczekuje" || (ls == null && force)) {
-    allGotowka(); // не оформлений
+    finish(0, 0); // не оформлений — все готівкою
   } else if (ls != null) {
-    allKonto(); // легально оформлений без oświadczenia-годин
-    row.ksiegBrutto = row.hours != null && row.rateBrutto != null ? r2(row.hours * row.rateBrutto) : null;
+    finish(row.doWyplaty, row.hours ?? null); // оформлений без oświadczenia-годин — все на карту
   }
 }
 
