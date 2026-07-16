@@ -234,6 +234,28 @@ test("розклад за статусом: студент до 26 → все н
   applyLegalDefaults(pf2.rows[0]!, true, "zus");
   assert.equal(pf2.rows[0]!.konto, 2535, "оформлений за профілем — все на карту");
   assert.equal(pf2.rows[0]!.gotowka, 0);
+  // кеп: на карту не більше, ніж належить (відрахування зʼїли виплату) —
+  // Романов: 64 год, oświadczenie 40, але доВиплати −0.40 → конто 0, не 1014
+  const rowsCap = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Hostel", "Do wypłaty Netto", "Księgowość"],
+    ["ROMANOV TEST", 40, 64, 31.4, 25.35, 1622.8, -0.4, "Zgłoszony, Powiadomienie, Wyżej 26"],
+  ];
+  const pc = parseLublinTab("TESTOWA", rowsCap)!;
+  applyLegalDefaults(pc.rows[0]!, true);
+  assert.equal(pc.rows[0]!.konto, 0, "виплата ≤ 0 → на конто нічого");
+  assert.equal(pc.rows[0]!.hoursDeclared, 0);
+  assert.equal(pc.rows[0]!.ksiegBrutto, 0);
+  near(pc.rows[0]!.gotowka, -0.4, "залишок (борг) видно в готівці");
+  // частковий кеп: належить менше, ніж oświadczenie×ставка → конто = виплата
+  const rowsCap2 = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Hostel", "Do wypłaty Netto", "Księgowość"],
+    ["CZESC KONTO", 40, 64, 31.4, 25.35, 1122.4, 500, "Zgłoszony, Powiadomienie, Wyżej 26"],
+  ];
+  const pc2 = parseLublinTab("TESTOWA", rowsCap2)!;
+  applyLegalDefaults(pc2.rows[0]!, true);
+  assert.equal(pc2.rows[0]!.konto, 500, "конто обрізане до належної виплати");
+  near(pc2.rows[0]!.hoursDeclared, 19.72, "księgowe години — від фактичного конто");
+  assert.equal(pc2.rows[0]!.gotowka, 0);
   // правило 3: години з oświadczenia (powiadomienie) → на карту, решта готівкою
   const rows3 = [
     [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
