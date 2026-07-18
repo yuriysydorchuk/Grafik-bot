@@ -3,13 +3,14 @@
 // used both by the summary metrics and the drill-down lists so they always agree.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { bankTransactionsTable, cashEntriesTable, companiesTable, counterpartyRulesTable } from "@workspace/db";
+import { bankTransactionsTable, cashEntriesTable, companiesTable, counterpartyRulesTable, expenseCategoriesTable } from "@workspace/db";
 import { and, eq, gte, lte, lt, or, ilike, asc, desc, count, sql, inArray } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { syncBankTransactions, applyCounterpartyRules } from "../services/bankStatements";
+import { syncBankTransactions, applyCounterpartyRules, RULE_HAYSTACK } from "../services/bankStatements";
 import {
-  BUCKET, EXPENSE_CATS, OWNER_KEYS, MC, TXT, OPER, catCondition, periodRange,
+  BUCKET, OWNER_KEYS, MC, TXT, OPER, catCondition, catCaseExpr, patternCondition,
+  getExpenseCats, invalidateExpenseCats, periodRange,
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
 import { syncCashRegister, type CashSyncResult } from "../services/cashRegister";
@@ -127,9 +128,8 @@ router.get("/bank/expense-categories", async (req, res) => {
   const [from, to] = periodRange(year, month);
   const coCond = companyId ? sql`AND company_id = ${companyId}` : sql``;
 
-  const caseExpr = EXPENSE_CATS.map(([k, p]) => `WHEN (${p}) THEN '${k}'`).join(" ");
   const rows = await db.execute(sql`
-    SELECT CASE WHEN ${sql.raw(MC)} IS NOT NULL THEN ${sql.raw(MC)} ${sql.raw(caseExpr)} ELSE 'other' END AS cat,
+    SELECT ${sql.raw(catCaseExpr(await getExpenseCats()))} AS cat,
            coalesce(sum(amount), 0) AS total, count(*) AS n
     FROM bank_transactions
     WHERE ${sql.raw(BUCKET.expenses!)} AND value_date >= ${from} AND value_date <= ${to} ${coCond}
@@ -143,7 +143,7 @@ router.get("/bank/breakdown", async (req, res) => {
   const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
   const [from, to] = periodRange(year, month);
   const b = String(req.query.bucket || "");
-  const cond = b.startsWith("cat:") ? catCondition(b.slice(4)) : BUCKET[b] ?? null;
+  const cond = b.startsWith("cat:") ? catCondition(b.slice(4), await getExpenseCats()) : BUCKET[b] ?? null;
   if (!cond) return fail(res, 400, "unknown bucket");
   const rows = await db.execute(sql`
     SELECT company_id, coalesce(sum(amount),0) AS total, count(*) AS n
@@ -191,7 +191,7 @@ router.get("/bank/transactions", async (req, res) => {
     conds.push(gte(bankTransactionsTable.valueDate, `${q.month}-01`), lt(bankTransactionsTable.valueDate, next));
   }
   if (typeof q.bucket === "string" && q.bucket.startsWith("cat:")) {
-    const cond = catCondition(q.bucket.slice(4));
+    const cond = catCondition(q.bucket.slice(4), await getExpenseCats());
     if (cond) conds.push(sql.raw(cond));
   } else if (typeof q.bucket === "string" && BUCKET[q.bucket]) conds.push(sql.raw(BUCKET[q.bucket]!));
   else if (q.direction === "in" || q.direction === "out") conds.push(eq(bankTransactionsTable.direction, String(q.direction)));
@@ -239,14 +239,19 @@ router.post("/bank/sync", async (_req, res) => {
 });
 
 // ── Manual re-categorization ──────────────────────────────────────────────────
+// Valid targets for a manual override: every DB category + virtual keys.
+async function validCatKeys(withOwners = true): Promise<Set<string>> {
+  const cats = await getExpenseCats();
+  return new Set([...cats.map(c => c.key), "other", ...(withOwners ? OWNER_KEYS : [])]);
+}
+
 // Move an expense transaction to another category, or mark it as an owner's
 // personal spend (owner_*). null resets to automatic classification.
 router.patch("/bank/transactions/:id/category", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const category = req.body?.category ?? null;
-  const validKeys = new Set([...EXPENSE_CATS.map(([k]) => k), "other", ...OWNER_KEYS]);
-  if (category !== null && !validKeys.has(String(category))) return fail(res, 400, "unknown category");
+  if (category !== null && !(await validCatKeys()).has(String(category))) return fail(res, 400, "unknown category");
   const [row] = await db.select({ id: bankTransactionsTable.id, direction: bankTransactionsTable.direction })
     .from(bankTransactionsTable).where(eq(bankTransactionsTable.id, id));
   if (!row) return fail(res, 404, "not found");
@@ -255,6 +260,116 @@ router.patch("/bank/transactions/:id/category", async (req, res) => {
     .set({ manualCategory: category ? String(category) : null })
     .where(eq(bankTransactionsTable.id, id)).returning();
   ok(res, updated);
+});
+
+// Batch re-categorization — the multi-select in the transactions list.
+router.post("/bank/transactions/recategorize", async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : [];
+  if (ids.length === 0) return fail(res, 400, "ids required");
+  if (ids.length > 500) return fail(res, 400, "too many ids (max 500)");
+  const category = req.body?.category ?? null;
+  if (category !== null && !(await validCatKeys()).has(String(category))) return fail(res, 400, "unknown category");
+  const updated = await db.update(bankTransactionsTable)
+    .set({ manualCategory: category ? String(category) : null })
+    .where(and(inArray(bankTransactionsTable.id, ids), eq(bankTransactionsTable.direction, "out")))
+    .returning({ id: bankTransactionsTable.id });
+  ok(res, { updated: updated.length, skipped: ids.length - updated.length });
+});
+
+// ── Expense categories CRUD ───────────────────────────────────────────────────
+// Categories are owner-editable rows in expense_categories (see bankClassify.ts
+// for the pattern mini-DSL). Virtual keys (other, owner_*) are not manageable.
+
+// Pattern must compile as Postgres regexes — a broken pattern would break every
+// classification query, so each term is test-evaluated (parameterized) first.
+async function checkPattern(pattern: string): Promise<string | null> {
+  const terms = pattern.split("\n").flatMap(l => l.split(" + ")).map(t => t.trim()).filter(Boolean);
+  if (terms.length === 0) return "pattern is empty";
+  for (const t of terms) {
+    try { await db.execute(sql`SELECT '' ~ ${t}`); }
+    catch (e: any) { return `bad regex «${t}»: ${e?.message ?? "error"}`; }
+  }
+  return null;
+}
+
+router.get("/bank/categories", async (_req, res) => {
+  const cats = await getExpenseCats();
+  // usage counts over ALL expenses — shown in the management modal
+  const counts = new Map<string, number>();
+  const rows = await db.execute(sql`
+    SELECT ${sql.raw(catCaseExpr(cats))} AS cat, count(*) AS n
+    FROM bank_transactions WHERE ${sql.raw(BUCKET.expenses!)} GROUP BY 1`);
+  for (const r of rowsOf(rows)) counts.set(String(r.cat), Number(r.n));
+  ok(res, {
+    categories: cats.map(c => ({ ...c, txCount: counts.get(c.key) ?? 0 })),
+    otherCount: counts.get("other") ?? 0,
+  });
+});
+
+const RESERVED_KEYS = new Set(["other", ...OWNER_KEYS, "deposit", "transfer", "income", "vat_refund"]);
+
+router.post("/bank/categories", async (req, res) => {
+  const label = String(req.body?.label ?? "").trim();
+  if (label.length < 2) return fail(res, 400, "label must be at least 2 characters");
+  const pattern = String(req.body?.pattern ?? "").trim() || null;
+  if (pattern) { const err = await checkPattern(pattern); if (err) return fail(res, 400, err); }
+  // key: latin slug from the label when possible, otherwise a generated cat_<n>
+  const slug = label.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30);
+  const cats = await getExpenseCats();
+  const taken = new Set([...cats.map(c => c.key), ...RESERVED_KEYS]);
+  let key = slug.length >= 2 && !taken.has(slug) ? slug : "";
+  if (!key) { let n = cats.length + 1; while (taken.has(`cat_${n}`)) n++; key = `cat_${n}`; }
+  const maxSort = cats.reduce((m, c) => Math.max(m, c.sortOrder), 0);
+  const [row] = await db.insert(expenseCategoriesTable)
+    .values({ key, label, pattern, sortOrder: maxSort + 10 }).returning();
+  invalidateExpenseCats();
+  ok(res, row);
+});
+
+router.patch("/bank/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [cat] = await db.select().from(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, id));
+  if (!cat) return fail(res, 404, "not found");
+  const patch: Partial<{ label: string; pattern: string | null; sortOrder: number }> = {};
+  if (req.body?.label !== undefined) {
+    const label = String(req.body.label).trim();
+    if (label.length < 2) return fail(res, 400, "label must be at least 2 characters");
+    patch.label = label;
+  }
+  if (req.body?.pattern !== undefined) {
+    const pattern = String(req.body.pattern ?? "").trim() || null;
+    if (pattern) { const err = await checkPattern(pattern); if (err) return fail(res, 400, err); }
+    patch.pattern = pattern;
+  }
+  if (req.body?.sortOrder !== undefined) {
+    const so = Number(req.body.sortOrder);
+    if (!Number.isFinite(so)) return fail(res, 400, "bad sortOrder");
+    patch.sortOrder = so;
+  }
+  if (Object.keys(patch).length === 0) return fail(res, 400, "nothing to update");
+  const [updated] = await db.update(expenseCategoriesTable).set(patch).where(eq(expenseCategoriesTable.id, id)).returning();
+  invalidateExpenseCats();
+  ok(res, updated);
+});
+
+// Deleting a category moves everything it held to «Інше»: manual overrides (bank
+// and cash) are re-pinned to 'other', rules targeting it are removed, and its
+// auto-pattern disappears so pattern-matched rows fall through naturally.
+router.delete("/bank/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [cat] = await db.select().from(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, id));
+  if (!cat) return fail(res, 404, "not found");
+  await db.transaction(async tx => {
+    await tx.update(bankTransactionsTable).set({ manualCategory: "other" }).where(eq(bankTransactionsTable.manualCategory, cat.key));
+    await tx.update(cashEntriesTable).set({ manualCategory: "other" }).where(eq(cashEntriesTable.manualCategory, cat.key));
+    await tx.delete(counterpartyRulesTable).where(eq(counterpartyRulesTable.category, cat.key));
+    await tx.delete(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, id));
+  });
+  invalidateExpenseCats();
+  ok(res, { ok: true });
 });
 
 // ── Counterparty → category rules ─────────────────────────────────────────────
@@ -269,11 +384,35 @@ router.post("/bank/counterparty-rules", async (req, res) => {
   const pattern = String(req.body?.pattern ?? "").trim();
   const category = String(req.body?.category ?? "");
   if (pattern.length < 3) return fail(res, 400, "pattern must be at least 3 characters");
-  const validKeys = new Set([...EXPENSE_CATS.map(([k]) => k), "other"]); // owner categories can't be a rule target
-  if (!validKeys.has(category)) return fail(res, 400, "unknown category");
+  // owner categories can't be a rule target
+  if (!(await validCatKeys(false)).has(category)) return fail(res, 400, "unknown category");
   const [rule] = await db.insert(counterpartyRulesTable).values({ pattern, category }).returning();
   const updated = await applyCounterpartyRules({ ruleId: rule!.id });
   ok(res, { rule, updated });
+});
+
+// rolling back a rule: clear the manual categories it set (owner overrides untouched)
+async function unapplyRule(rule: { pattern: string; category: string }): Promise<void> {
+  await db.execute(sql`
+    UPDATE bank_transactions SET manual_category = NULL
+    WHERE direction='out' AND manual_category = ${rule.category}
+      AND ${sql.raw(RULE_HAYSTACK)} LIKE ${"%" + rule.pattern.toUpperCase().replace(/\s+/g, " ") + "%"}`);
+}
+
+router.patch("/bank/counterparty-rules/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [rule] = await db.select().from(counterpartyRulesTable).where(eq(counterpartyRulesTable.id, id));
+  if (!rule) return fail(res, 404, "not found");
+  const pattern = req.body?.pattern !== undefined ? String(req.body.pattern).trim() : rule.pattern;
+  const category = req.body?.category !== undefined ? String(req.body.category) : rule.category;
+  if (pattern.length < 3) return fail(res, 400, "pattern must be at least 3 characters");
+  if (!(await validCatKeys(false)).has(category)) return fail(res, 400, "unknown category");
+  if (pattern === rule.pattern && category === rule.category) return ok(res, { rule, updated: 0 });
+  await unapplyRule(rule); // detach what the OLD rule matched, then re-apply the new one
+  const [updated] = await db.update(counterpartyRulesTable).set({ pattern, category }).where(eq(counterpartyRulesTable.id, id)).returning();
+  const n = await applyCounterpartyRules({ ruleId: id });
+  ok(res, { rule: updated, updated: n });
 });
 
 router.delete("/bank/counterparty-rules/:id", async (req, res) => {
@@ -281,11 +420,7 @@ router.delete("/bank/counterparty-rules/:id", async (req, res) => {
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [rule] = await db.select().from(counterpartyRulesTable).where(eq(counterpartyRulesTable.id, id));
   if (!rule) return fail(res, 404, "not found");
-  // rolling back: clear the manual categories this rule set (owner overrides untouched)
-  await db.execute(sql`
-    UPDATE bank_transactions SET manual_category = NULL
-    WHERE direction='out' AND manual_category = ${rule.category}
-      AND upper(coalesce(counterparty,'')) LIKE ${"%" + rule.pattern.toUpperCase() + "%"}`);
+  await unapplyRule(rule);
   await db.delete(counterpartyRulesTable).where(eq(counterpartyRulesTable.id, id));
   ok(res, { ok: true });
 });

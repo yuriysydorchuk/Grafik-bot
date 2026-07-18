@@ -5,7 +5,7 @@ import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
-import { RECAT_OPTIONS, cashCatLabel } from "../lib/financeCats";
+import { useCats } from "../lib/financeCats";
 
 interface Meta { companies: { id: number; name: string }[]; years: string[]; boxes: string[] }
 interface Summary {
@@ -27,6 +27,7 @@ const BOX_LABELS: Record<string, string> = { office: "Каса офісу", yuri
 export default function CashRegister() {
   const t = useT();
   const qc = useQueryClient();
+  const { label: catLabel, recatOptions } = useCats();
   const now = new Date();
   const [year, setYear] = useState(String(now.getFullYear()));
   const [monthNum, setMonthNum] = useState(String(now.getMonth() + 1).padStart(2, "0"));
@@ -174,7 +175,7 @@ export default function CashRegister() {
                     </td>
                     <td className="px-3 py-1.5">
                       {e.kind === "out" && e.category && (e.category === "transfer" ? (
-                        <span className="text-xs text-slate-400">{t(cashCatLabel(e.category))}</span>
+                        <span className="text-xs text-slate-400">{t(catLabel(e.category))}</span>
                       ) : (
                         <select
                           value={e.category}
@@ -182,7 +183,7 @@ export default function CashRegister() {
                           className={`max-w-[170px] cursor-pointer truncate rounded border-0 bg-transparent p-0 text-xs focus:ring-0 ${e.manualCategory ? "font-medium text-sky-700" : "text-slate-500"}`}
                           title={e.manualCategory ? t("категорію змінено вручну") : t("категорія авто — можна змінити")}
                         >
-                          {RECAT_OPTIONS.concat([{ value: "deposit", label: "Вплата на рахунок" }]).map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+                          {recatOptions.concat([{ value: "deposit", label: "Вплата на рахунок" }]).map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
                         </select>
                       ))}
                     </td>

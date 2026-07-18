@@ -10,7 +10,7 @@ import {
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
-  vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable,
+  vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -2243,11 +2243,19 @@ router.get("/hours", RW, async (req, res) => {
       });
     }
   }
+  // місто фабрики — з історії сводних (для групування і кнопок «→ до сводної»)
+  const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city })
+    .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
+  const cityByFactory = new Map<number, string>();
+  for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
   const workers = [...byWorkerFactory.values()]
     .map(w => {
       const hours = round2(w.hours);
       const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
-      const base: any = { ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null };
+      const base: any = {
+        ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
+        city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Люблін",
+      };
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
         base.gross = round2(p.gross); base.net = round2(p.net); base.laborCost = round2(p.laborCost);
@@ -2773,6 +2781,7 @@ router.get("/advances", RW, async (_req, res) => {
     .select({
       id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
+      factoryId: workersTable.factoryId,
       amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
       status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
       decidedAt: advanceRequestsTable.decidedAt, paidAt: advanceRequestsTable.paidAt,
@@ -2782,7 +2791,14 @@ router.get("/advances", RW, async (_req, res) => {
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .orderBy(desc(advanceRequestsTable.id));
-  ok(res, rows);
+  // місто фабрики — з історії сводних (той самий фолбек, що у from-hours)
+  const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, id: svodniRowsTable.id })
+    .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
+  const cityByFactory = new Map<number, string>();
+  for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
+  ok(res, rows.map(({ factoryId, ...r }) => ({
+    ...r, city: factoryId != null ? (cityByFactory.get(factoryId) ?? "Люблін") : "Люблін",
+  })));
 });
 
 // Approve / reject / mark-paid. Each notifies the worker of the new status.

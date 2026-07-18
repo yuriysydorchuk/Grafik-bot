@@ -50,7 +50,7 @@ export interface Me { id: number; name: string; username: string; isMain: boolea
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
-  amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
+  city: string; amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
   adminNote: string | null; decidedAt: string | null; paidAt: string | null; createdAt: string;
 }
 export interface Company { id: number; name: string; workerCount?: number }

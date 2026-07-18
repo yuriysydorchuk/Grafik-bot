@@ -4,7 +4,7 @@
 // Google), syncSvodni() — повний цикл із Google (реєстр = payroll_sources).
 import { db } from "@workspace/db";
 import {
-  svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, factoriesTable, workersTable,
+  svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, factoriesTable, workersTable,
   payrollSourcesTable, companiesTable,
 } from "@workspace/db";
 import { and, eq, inArray, isNull } from "drizzle-orm";
@@ -13,10 +13,18 @@ import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
-  parseOfficeTab, computeMismatch, legalStatusOf, applyLegalDefaults, type SvodniParsedTab, type GotowkaRow,
+  parseOfficeTab, computeMismatch, computePayout, legalStatusOf, applyLegalDefaults, ksiegRatesOf, type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+
+// ЗУС-нетто зі ставки брутто (umowa zlecenie, без PIT): мінус соцвнески
+// zleceniobiorcy 11,26% (emerytalne 9,76% + rentowe 1,5%), мінус здоровотна 9%
+// від решти. Канонічна пара 31,40 → 25,35 — тримаємо точною.
+export function nettoOfBrutto(brutto: number): number {
+  if (Math.abs(brutto - 31.4) < 0.001) return 25.35;
+  return r2(brutto * (1 - 0.1126) * (1 - 0.09));
+}
 const CHECK_TOL = 0.06;
 
 type City = "Люблін" | "Познань" | "Лодзь";
@@ -35,6 +43,8 @@ export interface SvodniImportInput {
   gotowka?: GotowkaRow[];
   /** фони клітинок вкладок (hex або null), tab → [рядок][колонка] — кольори позначок */
   colors?: Map<string, (string | null)[][]>;
+  /** затверджені (🔒) вкладки: їхні наявні рядки/чеки/мету імпорт не чіпає */
+  lockedLabels?: string[];
 }
 
 export interface SvodniImportResult {
@@ -122,6 +132,18 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   let summary: Map<string, { hours: number | null; doZaplaty: number | null }> | null = null;
   for (const [t, rows] of grids) if (/GODZIN.*MIES|TOTAL.*MIES/i.test(norm(t))) summary = parseSummaryTab(rows);
 
+  // матчинг людей: активні + звільнені (сводна легально містить звільнених),
+  // дублікати однієї людини схлопуються (активний рядок виграє). Потрібен уже
+  // тут: профільні властивості (легалізація, oświadczenie-години, побажання)
+  // підставляються у рядки живої таблиці ПЕРЕД розкладом конто/готівки.
+  const allWorkers = dedupeWorkers(await db.select({
+    id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive,
+    legalStatus: workersTable.legalStatus, payoutPrefKind: workersTable.payoutPrefKind, payoutPrefValue: workersTable.payoutPrefValue,
+    notifyHours: workersTable.notifyHours,
+  }).from(workersTable));
+  type WorkerLite = (typeof allWorkers)[number];
+  const rowWorker = new Map<object, WorkerLite>(); // parsed row → матчнутий працівник
+
   const tabs: SvodniParsedTab[] = [];
   const tabColors = new Map<SvodniParsedTab, (string | null)[][]>();
   for (const [t, rows] of grids) {
@@ -140,10 +162,85 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         return gk === tk || tk.startsWith(gk) || (TAB_ALIASES[gk] ?? []).includes(tk);
       }));
     }
+    // новачки без ставки на вкладках зі становісками (Sushi): беруть найменшу
+    // брутто-ставку свого становіска; без становіска — найменшу «Pracownik»
+    const minByStan = new Map<string, number>();
     for (const row of parsed.rows) {
+      const st = String(row.hr.stanowisko ?? "").trim();
+      if (st && row.rateBrutto != null && row.rateBrutto <= 100) {
+        minByStan.set(st, Math.min(minByStan.get(st) ?? Infinity, row.rateBrutto));
+      }
+    }
+    for (const row of parsed.rows) {
+      // жива (недорахована) таблиця: Do wypłaty ще порожнє, але години і ставка
+      // вже є — рахуємо формулою самі (mismatch не виникає: нема з чим звіряти).
+      // Ставка нетто, якщо її ще не проставили: студент → нетто = брутто
+      // (неоподатковано); інакше — ЗУС-нетто (соцвнески 11,26% + здоровотна 9%,
+      // без PIT — так виходить канонічна пара 31,40 → 25,35).
+      if (!OFFICE_TAB_RE.test(t.trim()) && !row.extras.blockOnly) {
+        if (row.rateBrutto == null && minByStan.size && row.hours != null) {
+          const st = String(row.hr.stanowisko ?? "").trim();
+          row.rateBrutto = minByStan.get(st) ?? minByStan.get("Pracownik") ?? null;
+        }
+        if (row.rateNetto == null && row.rateBrutto != null && row.rateBrutto <= 100) {
+          row.rateNetto = (row.isStudent || legalStatusOf(String(row.extras.zusStatus ?? "")) === "student")
+            ? row.rateBrutto
+            : nettoOfBrutto(row.rateBrutto);
+        }
+        if (row.doWyplaty == null && row.hours != null && row.rateNetto != null) {
+          const payout = computePayout(row, city);
+          if (payout != null) row.doWyplaty = payout;
+        }
+        // жива формула без зарплатної складової: колонка Netto (год × ставка) ще
+        // порожня, тож Do wypłaty з таблиці = premia − відрахування (буває
+        // від'ємне). Детект: таблична сума явно менша за розрахунок без
+        // зарплатної частини і близька до нього (±невидимі нам складники) —
+        // тоді додаємо год × ставка, зберігаючи решту табличної формули.
+        if (row.doWyplaty != null && row.hours != null && row.rateNetto != null) {
+          const base = row.hours * row.rateNetto;
+          const ours = computePayout(row, city);
+          if (ours != null && base > 0
+            && row.doWyplaty < ours - base / 2
+            && Math.abs((ours - base) - row.doWyplaty) <= Math.max(500, 0.1 * base)) {
+            row.doWyplaty = r2(row.doWyplaty + base);
+          }
+        }
+      }
       // статусні правила бухгалтерії: студент до 26 → все на конто;
-      // не зголошений → все готівкою (заповнений блок сильніший)
-      if (!OFFICE_TAB_RE.test(t.trim())) applyLegalDefaults(row, false, { factoryLabel: t.trim() });
+      // не зголошений → все готівкою (заповнений блок сильніший).
+      // Прогалини таблиці добираються з профілю: год. повідомлення,
+      // форма легалізації, побажання по виплаті.
+      if (!OFFICE_TAB_RE.test(t.trim())) {
+        const w = !row.extras.blockOnly ? matchSvodniName(row.rawName, allWorkers) : null;
+        if (w) {
+          rowWorker.set(row, w);
+          if (row.hoursNotified == null && w.notifyHours != null && w.notifyHours > 0) row.hoursNotified = w.notifyHours;
+        }
+        applyLegalDefaults(row, false, {
+          factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any,
+          payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
+        });
+        // нормалізація księgowego конто зі «зменшеними годинами»: konto завжди
+        // по księgowій парі (25,35), навіть якщо в таблиці вписано по платіжній
+        // ставці з преміями (MOTYCZ 60 × 27,85) — надлишок іде в готівку.
+        // Чіпаємо ЛИШЕ konto виду «declared × платіжна ставка» — konto з
+        // премією («все на конто») чи інші ручні числа не зачіпаються.
+        if (!row.extras.blockOnly && row.ksiegNetto != null && row.hoursDeclared != null && row.doWyplaty != null
+          && row.rateNetto != null && Math.abs(row.ksiegNetto - row.hoursDeclared * row.rateNetto) <= 0.06) {
+          const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? (w?.legalStatus as any) ?? null;
+          const kr = ksiegRatesOf(row, ls);
+          if (kr.netto != null && row.rateNetto > kr.netto + 0.001) {
+            const expect = r2(row.hoursDeclared * kr.netto);
+            if (row.ksiegNetto - expect > 0.06) {
+              const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
+              row.ksiegNetto = expect;
+              row.konto = expect;
+              row.ksiegBrutto = kr.brutto != null ? r2(row.hoursDeclared * kr.brutto) : row.ksiegBrutto;
+              row.gotowka = r2(row.doWyplaty - expect + doplata);
+            }
+          }
+        }
+      }
       computeMismatch(row, city);
       // Познань: звірка годин із Work List (за Nr Osobowy у hr)
       if (workList && row.hr.nrOsobowy) {
@@ -159,10 +256,6 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     tabs.push(parsed);
   }
 
-  // матчинг людей: активні + звільнені (сводна легально містить звільнених),
-  // дублікати однієї людини схлопуються (активний рядок виграє)
-  const allWorkers = dedupeWorkers(await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
-    .from(workersTable));
   const facId = await factoryIdByLabel();
 
   const rowsToInsert: (typeof svodniRowsTable.$inferInsert)[] = [];
@@ -185,7 +278,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       return c && c !== "#ffffff" ? c : null;
     };
     tab.rows.forEach((row, sortIdx) => {
-      const workerId = isOffice ? null : matchSvodniName(row.rawName, allWorkers)?.id ?? null;
+      const workerId = isOffice ? null
+        : (rowWorker.get(row) ?? matchSvodniName(row.rawName, allWorkers))?.id ?? null;
       if (workerId) res.matched++; else if (!isOffice) res.unmatched++;
       if (row.mismatch) res.mismatches++;
       // студентські секції офісних вкладок (LUBLIN STUDENTY ES/KLINEX) — це
@@ -201,7 +295,11 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         zaliczka: row.zaliczka, zaliczkaBd: row.zaliczkaBd, hostel: row.hostel,
         odziez: row.odziez, dojazd: row.dojazd, kara: row.kara, komornik: row.komornik,
         kaucja: row.kaucja, potracenia: row.potracenia,
-        doWyplaty: row.doWyplaty, brutto: row.brutto,
+        // лодзькі вкладки не мають колонки Brutto — рахуємо год × ставка бр.
+        // (лише погодинні ставки; офісні фікс-оклади в rateBrutto не множимо)
+        doWyplaty: row.doWyplaty,
+        brutto: row.brutto ?? (!isOffice && row.hours != null && row.rateBrutto != null && row.rateBrutto <= 100
+          ? r2(row.hours * row.rateBrutto) : null),
         hoursDeclared: row.hoursDeclared, ksiegBrutto: row.ksiegBrutto, ksiegNetto: row.ksiegNetto,
         gotowka: row.gotowka, konto: row.konto,
         isStudent: row.isStudent, under26: row.under26,
@@ -259,6 +357,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   }
 
   await db.transaction(async tx => {
+    // затверджені вкладки: їхні рядки/чеки/мета не видаляються і не вставляються
+    const lockedNorm = new Set((input.lockedLabels ?? []).map(l => key(l)));
     const scope = and(
       eq(svodniRowsTable.periodMonth, periodMonth), eq(svodniRowsTable.city, city),
       ...(firm ? [eq(svodniRowsTable.firm, firm)] : []),
@@ -268,16 +368,37 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     const manualRows = await tx.select({ factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName })
       .from(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, true)));
     const manualKeys = new Set(manualRows.map(m => `${key(m.factoryLabel)}::${key(cleanName(m.rawName))}`));
-    await tx.delete(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, false)));
+    if (lockedNorm.size) {
+      // видаляємо не-ручні лише поза локами (порівняння нормалізоване — робимо в JS)
+      const cand = await tx.select({ id: svodniRowsTable.id, factoryLabel: svodniRowsTable.factoryLabel })
+        .from(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, false)));
+      const ids = cand.filter(c => !lockedNorm.has(key(c.factoryLabel))).map(c => c.id);
+      if (ids.length) await tx.delete(svodniRowsTable).where(inArray(svodniRowsTable.id, ids));
+    } else {
+      await tx.delete(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, false)));
+    }
     const delChecks = and(
       eq(svodniTabChecksTable.periodMonth, periodMonth), eq(svodniTabChecksTable.city, city),
       ...(firm ? [eq(svodniTabChecksTable.firm, firm)] : []),
     );
-    await tx.delete(svodniTabChecksTable).where(delChecks);
-    await tx.delete(svodniTabMetaTable).where(and(
-      eq(svodniTabMetaTable.periodMonth, periodMonth), eq(svodniTabMetaTable.city, city),
-      ...(firm ? [eq(svodniTabMetaTable.firm, firm)] : []),
-    ));
+    if (lockedNorm.size) {
+      const cand = await tx.select({ id: svodniTabChecksTable.id, factoryLabel: svodniTabChecksTable.factoryLabel })
+        .from(svodniTabChecksTable).where(delChecks);
+      const ids = cand.filter(c => !lockedNorm.has(key(c.factoryLabel))).map(c => c.id);
+      if (ids.length) await tx.delete(svodniTabChecksTable).where(inArray(svodniTabChecksTable.id, ids));
+      const candM = await tx.select({ id: svodniTabMetaTable.id, factoryLabel: svodniTabMetaTable.factoryLabel })
+        .from(svodniTabMetaTable).where(and(
+          eq(svodniTabMetaTable.periodMonth, periodMonth), eq(svodniTabMetaTable.city, city),
+          ...(firm ? [eq(svodniTabMetaTable.firm, firm)] : [])));
+      const idsM = candM.filter(c => !lockedNorm.has(key(c.factoryLabel))).map(c => c.id);
+      if (idsM.length) await tx.delete(svodniTabMetaTable).where(inArray(svodniTabMetaTable.id, idsM));
+    } else {
+      await tx.delete(svodniTabChecksTable).where(delChecks);
+      await tx.delete(svodniTabMetaTable).where(and(
+        eq(svodniTabMetaTable.periodMonth, periodMonth), eq(svodniTabMetaTable.city, city),
+        ...(firm ? [eq(svodniTabMetaTable.firm, firm)] : []),
+      ));
+    }
     const fresh = rowsToInsert.filter(r => !manualKeys.has(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`));
     if (fresh.length) await tx.insert(svodniRowsTable).values(fresh);
     if (checksToInsert.length) await tx.insert(svodniTabChecksTable).values(checksToInsert);
@@ -406,10 +527,17 @@ export function cityOfRegion(region: string): City | null {
 // Повний цикл із Google: читає всі книги місяця з реєстру payroll_sources.
 // Використовує ту саму механіку читання, що й syncPayrollSummaries (gsheet
 // напряму; xlsx — через тимчасову конвертацію у Google Sheet).
-export async function syncSvodni(months: string[]): Promise<Record<string, SvodniImportResult>> {
+export async function syncSvodni(months: string[], opts: { city?: string | null } = {}): Promise<Record<string, SvodniImportResult>> {
   const { readSourceGrids, readGotowkaGrids } = await import("./svodniFetch");
   const sources = await db.select().from(payrollSourcesTable)
     .where(inArray(payrollSourcesTable.periodMonth, months));
+  // затверджені вкладки/міста (svodni_locks) імпорт пропускає
+  const locks = await db.select().from(svodniLocksTable).where(inArray(svodniLocksTable.periodMonth, months));
+  const normL = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const cityLocked = (month: string, city: string) =>
+    locks.some(l => l.periodMonth === month && l.city === city && l.factoryLabel === "");
+  const tabLocked = (month: string, city: string, tab: string) =>
+    locks.some(l => l.periodMonth === month && l.city === city && l.factoryLabel !== "" && normL(l.factoryLabel) === normL(tab));
   const gotowkaSources = await db.select().from(payrollSourcesTable)
     .where(eq(payrollSourcesTable.kind, "gotowka"));
   const gotowkaByFirm = new Map<string, Map<string, unknown[][]>>();
@@ -421,13 +549,23 @@ export async function syncSvodni(months: string[]): Promise<Record<string, Svodn
   for (const src of sources) {
     const city = cityOfRegion(src.region);
     if (!city) continue;
+    if (opts.city && city !== opts.city) continue; // синк лише одного міста
+    if (cityLocked(src.periodMonth, city)) {
+      out[`${city} ${src.periodMonth}${src.firm ? " " + src.firm : ""}`] =
+        { rows: 0, matched: 0, unmatched: 0, mismatches: 0, checks: { ok: 0, bad: 0 }, notes: ["місто затверджено (🔒) — пропущено"] };
+      continue;
+    }
     try {
       const { grids, colors } = await readSourceGrids(src);
+      const lockedLabels: string[] = [];
+      for (const tab of [...grids.keys()]) {
+        if (tabLocked(src.periodMonth, city, tab.trim())) { lockedLabels.push(tab.trim()); grids.delete(tab); } // фабрику затверджено
+      }
       const gotowka = city === "Лодзь" && src.firm
         ? gotowkaRowsForMonth(gotowkaByFirm.get(src.firm) ?? new Map(), src.periodMonth)
         : undefined;
       out[`${city} ${src.periodMonth}${src.firm ? " " + src.firm : ""}`] = await importSvodniGrids({
-        sourceId: src.id, periodMonth: src.periodMonth, city, firm: src.firm, grids, gotowka, colors,
+        sourceId: src.id, periodMonth: src.periodMonth, city, firm: src.firm, grids, gotowka, colors, lockedLabels,
       });
     } catch (e) {
       logger.warn({ sourceId: src.id, err: String(e) }, "svodni: source import failed");

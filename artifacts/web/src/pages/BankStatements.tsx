@@ -6,7 +6,7 @@ import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
-import { CAT_LABELS, RECAT_OPTIONS, recatLabel } from "../lib/financeCats";
+import { useCats, type ExpenseCat } from "../lib/financeCats";
 
 interface Txn {
   id: number; companyId: number | null; account: string | null; valueDate: string; bookingDate: string | null;
@@ -89,6 +89,8 @@ export default function BankStatements() {
   const [globalQ, setGlobalQ] = useState(""); // top-bar search across ALL transactions
   const [syncing, setSyncing] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [showCats, setShowCats] = useState(false);
+  const { label: catLabel } = useCats();
 
   const meta = useQuery<Meta>({ queryKey: ["bank-meta"], queryFn: () => get("/bank/meta") });
   const cq = companyId ? `&companyId=${companyId}` : "";
@@ -134,8 +136,10 @@ export default function BankStatements() {
           try { await post("/bank/sync"); qc.invalidateQueries({ queryKey: ["bank-summary"] }); qc.invalidateQueries({ queryKey: ["bank-txns"] }); }
           finally { setSyncing(false); }
         }}><RefreshCw className="mr-1 h-4 w-4" />{t("Синхронізувати")}</Button>
+        <Button variant="ghost" onClick={() => setShowCats(true)}>{t("Категорії")}</Button>
         <Button variant="ghost" onClick={() => setShowRules(true)}>{t("Правила контрагентів")}</Button>
       </div>
+      {showCats && <CategoriesModal onClose={() => setShowCats(false)} />}
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
 
       {globalQ.trim().length >= 2 && (
@@ -179,7 +183,7 @@ export default function BankStatements() {
 
           {/* firm-drill categories (salary, zaliczki): firms first, then the list for the chosen firm */}
           {detail === "expenses" && detail2 && FIRM_DRILL.has(detail2) && !companyId && (
-            <FirmBreakdown bucket={`cat:${detail2}`} title={t(CAT_LABELS[detail2] ?? detail2)} year={year} monthNum={monthNum}
+            <FirmBreakdown bucket={`cat:${detail2}`} title={t(catLabel(detail2))} year={year} monthNum={monthNum}
               selected={detail3} onSelect={id => setDetail3(detail3 === id ? null : id)} />
           )}
           {detail === "expenses" && detail2 && (!FIRM_DRILL.has(detail2) || companyId || detail3 != null) && (
@@ -415,6 +419,7 @@ function Reconciliation({ year, monthNum, companyId }: { year: string; monthNum:
 // clicked, a row click opens that category's transaction list.
 function ExpenseBreakdown({ year, monthNum, companyId, selected, onSelect }: { year: string; monthNum: string; companyId: string; selected: string | null; onSelect: (k: string) => void }) {
   const t = useT();
+  const { label: catLabel } = useCats();
   const params = new URLSearchParams({ year });
   if (monthNum) params.set("month", monthNum);
   if (companyId) params.set("companyId", companyId);
@@ -434,7 +439,7 @@ function ExpenseBreakdown({ year, monthNum, companyId, selected, onSelect }: { y
             return (
               <button key={c.key} onClick={() => onSelect(c.key)}
                 className={`flex w-full items-center gap-3 border-b border-slate-100 px-4 py-2 text-left text-sm transition last:border-0 ${active ? "bg-red-50" : "hover:bg-slate-50"}`}>
-                <div className={`w-64 shrink-0 truncate ${active ? "font-semibold text-red-700" : "font-medium text-slate-700"}`}>{t(CAT_LABELS[c.key] ?? c.key)}</div>
+                <div className={`w-64 shrink-0 truncate ${active ? "font-semibold text-red-700" : "font-medium text-slate-700"}`}>{t(catLabel(c.key))}</div>
                 <div className="hidden flex-1 sm:block">
                   <div className="h-2 rounded-full bg-slate-100">
                     <div className={`h-2 rounded-full ${active ? "bg-red-400" : "bg-slate-300"}`} style={{ width: `${Math.max(share, 0.5)}%` }} />
@@ -468,6 +473,8 @@ function MiniMetric({ label, value, count, exact, active, onClick }: { label: st
 
 function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onClose }: { bucket: Bucket; year: string; monthNum: string; companyId: string; companies: { id: number; name: string }[]; query?: string; onClose: () => void }) {
   const t = useT();
+  const qc = useQueryClient();
+  const { label: catLabel, filterOptions, recatOptions } = useCats();
   const [qLocal, setQLocal] = useState("");
   const q = query ?? qLocal; // controlled by the top-bar search in the "all" panel
   const [dir, setDir] = useState<"" | "in" | "out">("");
@@ -478,9 +485,14 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Txn | null>(null);
+  // multi-select: re-categorize several expense transactions at once
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [bulkCat, setBulkCat] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
   const limit = 100;
   const isAll = bucket === "all";
   useEffect(() => { setOffset(0); }, [q, dir, catSel, minAmount, maxAmount]);
+  useEffect(() => { setPicked(new Set()); }, [bucket, q, dir, catSel, minAmount, maxAmount, offset]);
 
   const params = new URLSearchParams({ sort, order, limit: String(limit), offset: String(offset) });
   if (!isAll) params.set("bucket", bucket);
@@ -506,7 +518,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
   const shortAcct = (a: string | null) => a ? "…" + a.replace(/\s/g, "").slice(-6) : "—";
   const setSortCol = (col: typeof sort) => { if (sort === col) setOrder(o => o === "asc" ? "desc" : "asc"); else { setSort(col); setOrder("desc"); } setOffset(0); };
   const title = bucket.startsWith("cat:")
-    ? t(CAT_LABELS[bucket.slice(4)] ?? bucket.slice(4))
+    ? t(catLabel(bucket.slice(4)))
     : ({
         all: t("Пошук по всіх операціях"),
         income: t("Приходи — від кого і коли"), expenses: t("Витрати"),
@@ -531,7 +543,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
             <>
               <Select value={catSel} onChange={e => setCatSel(e.target.value)} className="w-44">
                 <option value="">{t("Всі категорії")}</option>
-                {Object.entries(CAT_LABELS).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
+                {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
               </Select>
               <Select value={dir} onChange={e => setDir(e.target.value as any)} className="w-32" disabled={!!catSel}>
                 <option value="">{t("Всі напрями")}</option>
@@ -551,6 +563,26 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X className="h-4 w-4" /></button>
         </div>
       </div>
+      {picked.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-red-100 bg-red-50/60 px-4 py-2 text-sm">
+          <span className="font-medium text-slate-700">{t("Вибрано: {n}", { n: picked.size })}</span>
+          <Select value={bulkCat} onChange={e => setBulkCat(e.target.value)} className="w-56">
+            <option value="">{t("— куди перенести —")}</option>
+            {recatOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          </Select>
+          <Button loading={bulkSaving} disabled={!bulkCat} onClick={async () => {
+            setBulkSaving(true);
+            try {
+              const res = await post<{ updated: number }>("/bank/transactions/recategorize", { ids: [...picked], category: bulkCat });
+              toast.success(t("Перенесено {n} транзакцій у «{cat}»", { n: res.updated, cat: t(catLabel(bulkCat)) }));
+              ["bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-cats"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+              setPicked(new Set()); setBulkCat("");
+            } catch (e: any) { toast.error(e?.message ?? String(e)); }
+            finally { setBulkSaving(false); }
+          }}>{t("Перенести")}</Button>
+          <button className="text-slate-400 hover:text-slate-600" onClick={() => setPicked(new Set())}>{t("зняти вибір")}</button>
+        </div>
+      )}
       {isCashMoveBucket && rec.data && (rec.data.unmatchedBankIds.length > 0 || rec.data.unmatchedCashIds.length > 0) && (
         <div className="space-y-0.5 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
           {rec.data.unmatchedBankIds.length > 0 && (
@@ -573,6 +605,17 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
           <table className="min-w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 text-xs uppercase text-slate-400">
+                {!isCashMove && (() => {
+                  const pageOut = rows.filter(r => r.direction === "out").map(r => r.id);
+                  const allPicked = pageOut.length > 0 && pageOut.every(id => picked.has(id));
+                  return (
+                    <th className="w-8 px-3 py-2.5">
+                      <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={allPicked} disabled={pageOut.length === 0}
+                        title={t("вибрати всі витратні на сторінці")}
+                        onChange={() => setPicked(allPicked ? new Set() : new Set(pageOut))} />
+                    </th>
+                  );
+                })()}
                 <SortH col="date" label={t("Дата")} />
                 {!companyId && <th className="px-3 py-2.5 text-left">{t("Фірма")}</th>}
                 {isCashMove ? <th className="px-3 py-2.5 text-left">{whoLabel}</th> : <SortH col="counterparty" label={whoLabel} />}
@@ -582,7 +625,15 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
             </thead>
             <tbody>
               {rows.map(r => (
-                <tr key={r.id} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50/60 ${unmatchedBank.has(r.id) ? "bg-amber-50" : ""}`} onClick={() => setSelected(r)}>
+                <tr key={r.id} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50/60 ${unmatchedBank.has(r.id) ? "bg-amber-50" : picked.has(r.id) ? "bg-red-50/50" : ""}`} onClick={() => setSelected(r)}>
+                  {!isCashMove && (
+                    <td className="px-3 py-2" onClick={e => e.stopPropagation()}>
+                      {r.direction === "out" && (
+                        <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={picked.has(r.id)}
+                          onChange={() => setPicked(p => { const n = new Set(p); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })} />
+                      )}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-3 py-2 text-slate-500">{r.valueDate}</td>
                   {!companyId && <td className="px-3 py-2 text-slate-600">{coName(r.companyId)}</td>}
                   <td className="px-3 py-2 text-slate-700">
@@ -598,7 +649,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">
                     {isCashMove ? (r.direction === "out" ? t("Зняття") : t("Внесення")) : t(humanType(r))}
-                    {r.manualCategory && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(recatLabel(r.manualCategory))}>✎</span>}
+                    {r.manualCategory && <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(catLabel(r.manualCategory))}>✎</span>}
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${isCashMove ? (r.direction === "out" ? "text-amber-600" : "text-emerald-600") : r.direction === "in" ? "text-emerald-600" : "text-slate-700"}`}>
                     {isCashMove || isAll ? (r.direction === "out" ? "−" : "+") : ""}{zl(r.amount)}
@@ -608,7 +659,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
             </tbody>
             {data.data && (
               <tfoot><tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
-                <td colSpan={companyId ? 3 : 4} className="px-3 py-2 text-slate-700">{t("Разом ({n} операцій)", { n: total })}</td>
+                <td colSpan={(companyId ? 3 : 4) + (isCashMove ? 0 : 1)} className="px-3 py-2 text-slate-700">{t("Разом ({n} операцій)", { n: total })}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                   {data.data.sums.in > 0 && <span className="text-emerald-600">+{zl2(data.data.sums.in)}</span>}
                   {data.data.sums.in > 0 && data.data.sums.out > 0 && <span className="text-slate-400"> / </span>}
@@ -634,35 +685,280 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
   );
 }
 
-// Full details of a single transaction — everything the statement carries,
-// plus manual re-categorization for expense transactions.
+// ── Counterparty rules management ─────────────────────────────────────────────
+function RuleRow({ rule, onChanged }: { rule: { id: number; pattern: string; category: string }; onChanged: () => void }) {
+  const t = useT();
+  const { filterOptions } = useCats();
+  const [pattern, setPattern] = useState(rule.pattern);
+  const [category, setCategory] = useState(rule.category);
+  const [saving, setSaving] = useState(false);
+  const dirty = pattern.trim() !== rule.pattern || category !== rule.category;
+  return (
+    <tr className="border-b border-slate-100 last:border-0">
+      <td className="py-1.5 pr-2"><Input value={pattern} onChange={e => setPattern(e.target.value)} className="w-full" /></td>
+      <td className="py-1.5 pr-2">
+        <Select value={category} onChange={e => setCategory(e.target.value)} className="w-44">
+          {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+        </Select>
+      </td>
+      <td className="whitespace-nowrap py-1.5 text-right">
+        {dirty && (
+          <Button loading={saving} onClick={async () => {
+            setSaving(true);
+            try {
+              const res = await patch<{ updated: number }>(`/bank/counterparty-rules/${rule.id}`, { pattern: pattern.trim(), category });
+              toast.success(t("Правило застосовано до {n} транзакцій", { n: res.updated }));
+              onChanged();
+            } catch (e: any) { toast.error(e?.message ?? String(e)); }
+            finally { setSaving(false); }
+          }}>{t("Зберегти")}</Button>
+        )}
+        <button className="ml-1 p-1 text-slate-300 hover:text-rose-500" title={t("Видалити правило (категорії цих транзакцій скинуться на авто)")}
+          onClick={async () => { if (confirm(t("Видалити правило? Категорії його транзакцій повернуться до автоматичних."))) { await del(`/bank/counterparty-rules/${rule.id}`); onChanged(); } }}>
+          <X className="h-4 w-4" />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// Inline editor for one category's auto-pattern — the same data as in the
+// «Категорії» modal, surfaced here so ALL classification rules live in one window.
+function CatAutoPatternRow({ cat, onChanged }: { cat: ExpenseCat; onChanged: () => void }) {
+  const t = useT();
+  const [pattern, setPattern] = useState(cat.pattern ?? "");
+  const [saving, setSaving] = useState(false);
+  const dirty = pattern.trim() !== (cat.pattern ?? "");
+  return (
+    <tr className="border-b border-slate-100 last:border-0">
+      <td className="w-52 py-1.5 pr-2 text-sm font-medium text-slate-700">{cat.label}</td>
+      <td className="py-1.5 pr-2">
+        <PatternChips value={pattern} onChange={setPattern} />
+      </td>
+      <td className="w-24 whitespace-nowrap py-1.5 text-right">
+        {dirty && (
+          <Button loading={saving} onClick={async () => {
+            setSaving(true);
+            try { await patch(`/bank/categories/${cat.id}`, { pattern: pattern.trim() }); toast.success(t("Збережено")); onChanged(); }
+            catch (e: any) { toast.error(e?.message ?? String(e)); }
+            finally { setSaving(false); }
+          }}>{t("Зберегти")}</Button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 function RulesModal({ onClose }: { onClose: () => void }) {
   const t = useT();
   const qc = useQueryClient();
+  const { filterOptions, cats } = useCats();
   const rules = useQuery<{ rules: { id: number; pattern: string; category: string }[] }>({
     queryKey: ["bank-rules"], queryFn: () => get("/bank/counterparty-rules"),
   });
-  const invalidateAll = () => ["bank-rules", "bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  const [newPattern, setNewPattern] = useState("");
+  const [newCat, setNewCat] = useState("");
+  const [adding, setAdding] = useState(false);
+  const invalidateAll = () => ["bank-rules", "bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-cats"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
   return (
-    <Modal open title={t("Правила контрагентів")} onClose={onClose}>
+    <Modal open title={t("Правила контрагентів")} onClose={onClose} size="lg">
       <div className="mb-3 text-sm text-slate-500">{t("Усі транзакції контрагента (наявні та майбутні) автоматично отримують вказану категорію. Виплат власникам правила не торкаються.")}</div>
-      {rules.isFetching && !rules.data ? <Spinner /> : !(rules.data?.rules.length) ? <Empty>{t("Правил ще немає — створи з вікна транзакції (галочка «застосувати до всіх»)")}</Empty> : (
+      <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <Input value={newPattern} onChange={e => setNewPattern(e.target.value)} placeholder={t("входження в назву контрагента, напр. Orange")} className="w-64 flex-1" />
+        <Select value={newCat} onChange={e => setNewCat(e.target.value)} className="w-44">
+          <option value="">{t("— категорія —")}</option>
+          {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+        </Select>
+        <Button loading={adding} disabled={newPattern.trim().length < 3 || !newCat} onClick={async () => {
+          setAdding(true);
+          try {
+            const res = await post<{ updated: number }>("/bank/counterparty-rules", { pattern: newPattern.trim(), category: newCat });
+            if (res.updated > 0) toast.success(t("Правило застосовано до {n} транзакцій", { n: res.updated }));
+            else toast.warning(t("Правило створено, але поки не зматчило жодної транзакції."));
+            setNewPattern(""); setNewCat("");
+            invalidateAll();
+          } catch (e: any) { toast.error(e?.message ?? String(e)); }
+          finally { setAdding(false); }
+        }}>{t("Додати")}</Button>
+      </div>
+      {rules.isFetching && !rules.data ? <Spinner /> : !(rules.data?.rules.length) ? <Empty>{t("Правил ще немає — додай тут або з вікна транзакції (галочка «застосувати до всіх»)")}</Empty> : (
         <table className="w-full text-sm">
           <tbody>
-            {rules.data!.rules.map(r => (
-              <tr key={r.id} className="border-b border-slate-100 last:border-0">
-                <td className="py-2 font-medium text-slate-700">{r.pattern}</td>
-                <td className="py-2 text-slate-500">→ {t(recatLabel(r.category))}</td>
-                <td className="py-2 text-right">
-                  <button className="p-1 text-slate-300 hover:text-rose-500" title={t("Видалити правило (категорії цих транзакцій скинуться на авто)")}
-                    onClick={async () => { if (confirm(t("Видалити правило? Категорії його транзакцій повернуться до автоматичних."))) { await del(`/bank/counterparty-rules/${r.id}`); invalidateAll(); } }}>
-                    <X className="h-4 w-4" />
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {rules.data!.rules.map(r => <RuleRow key={`${r.id}-${r.pattern}-${r.category}`} rule={r} onChanged={invalidateAll} />)}
           </tbody>
         </table>
+      )}
+
+      <div className="mt-6 mb-1 text-sm font-semibold text-slate-700">{t("Авто-патерни категорій")}</div>
+      <div className="mb-2 text-xs text-slate-400">
+        {t("Слова, за якими транзакції класифікуються автоматично: збіг будь-якого слова відносить транзакцію в категорію (перший збіг зверху вниз виграє). Без слів — категорія лише для ручного перенесення.")}
+      </div>
+      <table className="w-full text-sm">
+        <tbody>
+          {cats.map(c => <CatAutoPatternRow key={`${c.id}-${c.pattern}`} cat={c} onChanged={invalidateAll} />)}
+        </tbody>
+      </table>
+    </Modal>
+  );
+}
+
+// ── Expense categories management ─────────────────────────────────────────────
+// Add / rename / delete categories and tune their auto-classification patterns.
+function CatPatternHint() {
+  const t = useT();
+  return (
+    <div className="mt-1 text-xs text-slate-400">
+      {t("Патерн авто-віднесення: кожен рядок — окрема умова (АБО); « + » в рядку — всі частини мають збігтись (І); текст — regex по контрагенту+призначенню+типу. Порожньо = лише ручне перенесення.")}
+    </div>
+  );
+}
+
+// Friendly chip editor over the pattern DSL. A chip = one OR-alternative (word or
+// phrase the transaction text must contain). Splitting an existing pattern respects
+// regex brackets, so `MAT[- ]?BUD` stays one chip; AND-groups ("A + B") and any
+// hand-written regex survive round-trips as single chips. Chips serialize back as
+// one alternative per line — semantically identical to `|` for the classifier.
+function splitAlternatives(line: string): string[] {
+  const out: string[] = [];
+  let depth = 0, cur = "";
+  for (const ch of line) {
+    if (ch === "(" || ch === "[") depth++;
+    else if (ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
+    if (ch === "|" && depth === 0) { out.push(cur); cur = ""; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim()).filter(Boolean);
+}
+const patternToChips = (p: string) => p.split("\n").flatMap(l => l.includes(" + ") ? [l.trim()] : splitAlternatives(l)).filter(Boolean);
+
+function PatternChips({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const t = useT();
+  const [raw, setRaw] = useState(false);
+  const [input, setInput] = useState("");
+  const chips = patternToChips(value);
+  const add = () => {
+    const v = input.trim();
+    if (!v) return;
+    onChange([...chips, v.toUpperCase()].join("\n"));
+    setInput("");
+  };
+  if (raw) return (
+    <div>
+      <textarea value={value} onChange={e => onChange(e.target.value)} rows={Math.max(2, value.split("\n").length)}
+        className="w-full resize-y rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono text-xs focus:border-red-400 focus:outline-none" />
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <CatPatternHint />
+        <button className="shrink-0 text-[11px] text-slate-400 underline hover:text-slate-600" onClick={() => setRaw(false)}>{t("простий режим")}</button>
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1.5 focus-within:border-red-400">
+        {chips.map((c, i) => (
+          <span key={`${c}-${i}`} className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-xs text-sky-800">
+            {c}
+            <button className="text-sky-300 hover:text-rose-500" title={t("прибрати слово")}
+              onClick={() => onChange(chips.filter((_, j) => j !== i).join("\n"))}>
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+        <input value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          onBlur={add}
+          placeholder={chips.length ? t("+ ще слово") : t("додай слово, напр. ORLEN")}
+          className="min-w-[140px] flex-1 border-0 bg-transparent py-0.5 text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none" />
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-slate-400">
+        <span>{t("Транзакція потрапляє в категорію, якщо її текст містить будь-яке зі слів (Enter — додати)")}</span>
+        <button className="shrink-0 underline hover:text-slate-600" onClick={() => setRaw(true)}>{t("текстовий режим")}</button>
+      </div>
+    </div>
+  );
+}
+
+function CatRow({ cat, onChanged }: { cat: ExpenseCat; onChanged: () => void }) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [label, setLabel] = useState(cat.label);
+  const [pattern, setPattern] = useState(cat.pattern ?? "");
+  const [saving, setSaving] = useState(false);
+  return (
+    <div className="border-b border-slate-100 py-2 last:border-0">
+      <div className="flex items-center gap-2">
+        <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(v => !v)}>
+          <span className="truncate text-sm font-medium text-slate-700 hover:text-red-700">{cat.label}</span>
+          {cat.pattern ? <span className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">{t("авто")}</span>
+            : <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{t("ручна")}</span>}
+          {cat.pattern && !editing && (
+            <div className="mt-0.5 max-w-[440px] truncate font-mono text-[11px] text-slate-400" title={patternToChips(cat.pattern).join("  ·  ")}>
+              {patternToChips(cat.pattern).join("  ·  ")}
+            </div>
+          )}
+        </button>
+        <span className="shrink-0 text-xs tabular-nums text-slate-400">{t("{n} оп.", { n: cat.txCount ?? 0 })}</span>
+        <button className="shrink-0 p-1 text-slate-300 hover:text-rose-500" title={t("Видалити категорію")}
+          onClick={async () => {
+            if (!confirm(t("Видалити категорію «{name}»? Всі її транзакції ({n}) перейдуть в «Інше», правила на неї зникнуть.", { name: cat.label, n: cat.txCount ?? 0 }))) return;
+            try { await del(`/bank/categories/${cat.id}`); toast.success(t("Категорію видалено, транзакції перенесено в «Інше»")); onChanged(); }
+            catch (e: any) { toast.error(e?.message ?? String(e)); }
+          }}>
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      {editing && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="mb-1 text-xs font-medium text-slate-500">{t("Назва")}</div>
+          <Input value={label} onChange={e => setLabel(e.target.value)} className="mb-2 w-full" />
+          <div className="mb-1 text-xs font-medium text-slate-500">{t("Слова для авто-віднесення")}</div>
+          <PatternChips value={pattern} onChange={setPattern} />
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => { setEditing(false); setLabel(cat.label); setPattern(cat.pattern ?? ""); }}>{t("Скасувати")}</Button>
+            <Button loading={saving} disabled={label.trim().length < 2} onClick={async () => {
+              setSaving(true);
+              try {
+                await patch(`/bank/categories/${cat.id}`, { label: label.trim(), pattern: pattern.trim() });
+                toast.success(t("Збережено"));
+                setEditing(false); onChanged();
+              } catch (e: any) { toast.error(e?.message ?? String(e)); }
+              finally { setSaving(false); }
+            }}>{t("Зберегти")}</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoriesModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const { cats, otherCount } = useCats();
+  const [newLabel, setNewLabel] = useState("");
+  const [adding, setAdding] = useState(false);
+  const invalidateAll = () => ["bank-cats", "bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-rules", "cashflow", "cashflow-entries"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  return (
+    <Modal open title={t("Категорії витрат")} onClose={onClose} size="lg">
+      <div className="mb-3 text-sm text-slate-500">
+        {t("Порядок = пріоритет авто-віднесення (перший збіг виграє). «Інше» — службова: туди падає все, що не зматчилось ({n} оп.).", { n: otherCount })}
+      </div>
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder={t("назва нової категорії")} className="flex-1" />
+        <Button loading={adding} disabled={newLabel.trim().length < 2} onClick={async () => {
+          setAdding(true);
+          try {
+            await post("/bank/categories", { label: newLabel.trim() });
+            toast.success(t("Категорію додано — перенось транзакції вручну або створи правило контрагента"));
+            setNewLabel(""); invalidateAll();
+          } catch (e: any) { toast.error(e?.message ?? String(e)); }
+          finally { setAdding(false); }
+        }}>{t("Додати")}</Button>
+      </div>
+      {!cats.length ? <Spinner /> : (
+        <div className="max-h-[60vh] overflow-y-auto pr-1">
+          {cats.map(c => <CatRow key={`${c.id}-${c.label}-${c.pattern}`} cat={c} onChanged={invalidateAll} />)}
+        </div>
       )}
     </Modal>
   );
@@ -671,12 +967,17 @@ function RulesModal({ onClose }: { onClose: () => void }) {
 function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: number; name: string }[]; onClose: () => void }) {
   const t = useT();
   const qc = useQueryClient();
+  const { recatOptions } = useCats();
   const [cat, setCat] = useState<string>(r.manualCategory ?? "");
   const [saving, setSaving] = useState(false);
   const [forAll, setForAll] = useState(false);
-  const [pattern, setPattern] = useState(rulePattern(r.counterparty, r.title, r.txType));
+  // the rule can match by counterparty NAME or by its ACCOUNT number (IBAN)
+  const acct = (r.counterpartyAccount ?? "").replace(/\s/g, "");
+  const namePattern = rulePattern(r.counterparty, r.title, r.txType);
+  const [patMode, setPatMode] = useState<"name" | "account">("name");
+  const [pattern, setPattern] = useState(namePattern);
   const coName = companies.find(c => c.id === r.companyId)?.name ?? "—";
-  const invalidateAll = () => ["bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-rules"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  const invalidateAll = () => ["bank-txns", "bank-summary", "bank-expcats", "bank-breakdown", "bank-reconcile", "bank-rules", "bank-cats"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
   const saveCat = async (value: string | null) => {
     setSaving(true);
     try {
@@ -732,7 +1033,7 @@ function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: n
           <div className="flex items-center gap-2">
             <Select value={cat} onChange={e => setCat(e.target.value)} className="flex-1">
               <option value="">{t("— автоматична —")}</option>
-              {RECAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+              {recatOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
             </Select>
             <Button loading={saving} disabled={!forAll && (cat || null) === (r.manualCategory ?? null)} onClick={() => saveCat(cat || null)}>{t("Зберегти")}</Button>
             {r.manualCategory && <Button variant="secondary" loading={saving} onClick={() => saveCat(null)}>{t("Скинути на авто")}</Button>}
@@ -745,7 +1046,23 @@ function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: n
           )}
           {forAll && !isOwnerCat && (
             <div className="mt-2">
-              <div className="mb-1 text-xs text-slate-400">{t("Шаблон контрагента (входження в назву; можна вкоротити, напр. лише прізвище)")}</div>
+              {!!acct && (
+                <div className="mb-1.5 flex gap-4 text-sm text-slate-600">
+                  <label className="flex items-center gap-1.5">
+                    <input type="radio" checked={patMode === "name"} onChange={() => { setPatMode("name"); setPattern(namePattern); }} />
+                    {t("за назвою контрагента")}
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input type="radio" checked={patMode === "account"} onChange={() => { setPatMode("account"); setPattern(acct); }} />
+                    {t("за номером рахунку")}
+                  </label>
+                </div>
+              )}
+              <div className="mb-1 text-xs text-slate-400">
+                {patMode === "account"
+                  ? t("Всі транзакції на цей рахунок (наявні та майбутні) перейдуть у вибрану категорію")
+                  : t("Шаблон контрагента (входження в назву; можна вкоротити, напр. лише прізвище)")}
+              </div>
               <Input value={pattern} onChange={e => setPattern(e.target.value)} />
             </div>
           )}

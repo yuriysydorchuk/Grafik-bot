@@ -546,6 +546,22 @@ export const counterpartyRulesTable = pgTable("counterparty_rules", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Expense categories for bank/cash classification, editable by the owner in the web
+// panel. Seeded from the historical hardcoded list (migration 2026-07-15). `pattern`
+// is the auto-classification rule in a mini-DSL evaluated against the transaction
+// text (see bankClassify.ts patternCondition): each line is an OR-alternative, terms
+// joined by " + " within a line must ALL match, each term is a Postgres regex.
+// NULL pattern = manual-only category (reachable via re-categorization or rules).
+// "other" and owner_* are virtual keys and never live in this table.
+export const expenseCategoriesTable = pgTable("expense_categories", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),         // stable slug referenced by manual_category & rules
+  label: text("label").notNull(),
+  pattern: text("pattern"),
+  sortOrder: integer("sort_order").notNull().default(0), // classification priority: first match wins
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Receivables / payables («Належності»): who owes us and what we owe, per firm.
 // Manual for now; invoice sync and KSeF will feed this later.
 export const obligationsTable = pgTable("obligations", {
@@ -803,6 +819,18 @@ export const hostelDeductionsTable = pgTable("hostel_deductions", {
   note: text("note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Затвердження сводної: лок на фабрику (factoryLabel) або на ціле місто
+// (factoryLabel = ""). Залочені рядки не редагуються і не перезаписуються
+// імпортом/синком, доки лок не знімуть.
+export const svodniLocksTable = pgTable("svodni_locks", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  city: text("city").notNull(),
+  factoryLabel: text("factory_label").notNull().default(""), // "" = усе місто
+  lockedBy: integer("locked_by").references(() => adminsTable.id),
+  lockedAt: timestamp("locked_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("svodni_locks_scope_uq").on(t.periodMonth, t.city, t.factoryLabel)]);
 
 // Метадані вкладки сводної: порядок колонок як у таблиці Google + інформаційні
 // блоки (напр. «STAWKA EUROCASH» — ставки за діапазонами годин).

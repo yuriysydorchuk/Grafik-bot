@@ -61,48 +61,101 @@ export const BUCKET: Record<string, string> = {
 // combined cash movement (withdrawals + deposits) for the «Готівковий рух» drill-down
 BUCKET.cashmove = `((${BUCKET.cash}) OR (${BUCKET.cashdep}))`;
 
-// ── Expense categories ────────────────────────────────────────────────────────
-// Every `expenses` transaction falls into exactly one category: first matching
-// pattern wins (order matters — e.g. a card payment at ORLEN is fuel, not "card").
-// Unmatched → "other". Assignments confirmed against the company's cost registers.
-export const EXPENSE_CATS: [key: string, pattern: string][] = [
-  ["zus", `${TXT} ~ 'ZUS|ZAK.AD UB|SK.ADKA'`],
-  ["vat", `${TXT} ~ 'SKARBOW|/SFP/|VAT-7'`],
-  ["seizure", `${TXT} ~ 'EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\.'`],
-  ["salary", T_SALARY],
-  ["zaliczki", `${TXT} ~ 'ZALICZK'`],
+// ── Expense categories (DB-driven, owner-editable) ────────────────────────────
+// Categories live in the `expense_categories` table (seeded by migration
+// 2026-07-15 from the historical hardcoded list). Every `expenses` transaction
+// falls into exactly one category: manual_category wins; otherwise the first
+// matching pattern by sort_order (order matters — e.g. a card payment at ORLEN
+// is fuel, not "card"). Unmatched → "other" (virtual, not in the table).
+//
+// `pattern` mini-DSL: each line is an OR-alternative; terms joined by " + "
+// within a line must ALL match; each term is a Postgres regex evaluated against
+// TXT. Single quotes are escaped on composition, so a pattern can never break
+// out of the SQL literal.
+export type ExpenseCat = { id: number; key: string; label: string; pattern: string | null; sortOrder: number };
+
+export function patternCondition(pattern: string): string {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const ors = pattern.split("\n").map(l => l.trim()).filter(Boolean).map(line => {
+    const ands = line.split(" + ").map(t => t.trim()).filter(Boolean).map(t => `${TXT} ~ '${esc(t)}'`);
+    return ands.length > 1 ? `(${ands.join(" AND ")})` : ands[0]!;
+  });
+  if (ors.length === 0) return "FALSE";
+  return ors.length > 1 ? `(${ors.join(" OR ")})` : `(${ors[0]!})`;
+}
+
+// Seed list — the single source for the migration, the test harness and the labels
+// that existed before categories moved to the DB. NOT read at runtime.
+export const DEFAULT_EXPENSE_CATS: { key: string; label: string; pattern: string }[] = [
+  { key: "zus", label: "ZUS", pattern: "ZUS|ZAK.AD UB|SK.ADKA" },
+  { key: "vat", label: "Податки (VAT, US)", pattern: "SKARBOW|/SFP/|VAT-7" },
+  { key: "seizure", label: "Зайняття (komornik)", pattern: "EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\." },
+  { key: "salary", label: "Зарплати", pattern: "WYNAGRODZ|PENSJ\nRACHUNEK + UMOW" },
+  { key: "zaliczki", label: "Аванси (zaliczki)", pattern: "ZALICZK" },
   // all bank commissions in one place: transfers, deposits, cash withdrawals,
   // account/card/package maintenance, e-banking (GOonline), ELIXIR transfer fees
-  ["fees", `${TXT} ~ 'PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE'`],
-  ["fuel", `${TXT} ~ 'ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW'`],
-  ["housing", `${TXT} ~ 'BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM'`],
-  ["car_repair", `${TXT} ~ 'TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII'`],
-  ["office_rent", `${TXT} ~ 'ODROW..-PIENI|PIENI..EK'`],
-  ["clothing", `${TXT} ~ '\\yULAN\\y'`],
-  ["multisport", `${TXT} ~ 'BENEFIT'`],
-  ["trainer", `${TXT} ~ 'PALUSI.SKI|PALUSINSKI'`],
-  ["leasing", `${TXT} ~ 'LEASING|VOLKSWAGEN|SANTANDER CONSUMER|AUDI|TOYOTA'`],
-  ["credit", `${TXT} ~ 'KREDYT|SP.ATA KAPITA|SP.ATA ODSET'`],
-  ["services", `${TXT} ~ 'TKM|RACHUNKOW|KANCELARIA|ADWOKA|NOTARI|ONESOFT|LUXMED|MEDYCZN'`],
-  ["marketing", `${TXT} ~ 'FB\\.|FACEBOOK|FACEBK|GOOGLE|TIKTOK|OLX|FREELINE|META PLATFORM|OTOMOTO'`],
-  ["permits", `${TXT} ~ 'WOJEWODZKI|WOJEW.DZKI|ZEZWOLEN|OP.ATA SKARBOWA'`],
-  ["b2b", `${TXT} ~ 'ANDROSHCHUK|SIMONIAN'`],
+  { key: "fees", label: "Комісії банку (перекази, вплати, зняття)", pattern: "PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE" },
+  { key: "fuel", label: "Паливо", pattern: "ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW" },
+  { key: "housing", label: "Житло / готелі", pattern: "BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM" },
+  { key: "car_repair", label: "Ремонт авто", pattern: "TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII" },
+  { key: "office_rent", label: "Оренда офісу", pattern: "ODROW..-PIENI|PIENI..EK" },
+  { key: "clothing", label: "Одяг", pattern: "\\yULAN\\y" },
+  { key: "multisport", label: "Мультиспорт (Benefit)", pattern: "BENEFIT" },
+  { key: "trainer", label: "Тренер (Palusiński)", pattern: "PALUSI.SKI|PALUSINSKI" },
+  { key: "leasing", label: "Лізинг / авто", pattern: "LEASING|VOLKSWAGEN|SANTANDER CONSUMER|AUDI|TOYOTA" },
+  { key: "credit", label: "Кредит", pattern: "KREDYT|SP.ATA KAPITA|SP.ATA ODSET" },
+  { key: "services", label: "Послуги (бух., юристи)", pattern: "TKM|RACHUNKOW|KANCELARIA|ADWOKA|NOTARI|ONESOFT|LUXMED|MEDYCZN" },
+  { key: "marketing", label: "Маркетинг", pattern: "FB\\.|FACEBOOK|FACEBK|GOOGLE|TIKTOK|OLX|FREELINE|META PLATFORM|OTOMOTO" },
+  { key: "permits", label: "Дозволи / уряд", pattern: "WOJEWODZKI|WOJEW.DZKI|ZEZWOLEN|OP.ATA SKARBOWA" },
+  { key: "b2b", label: "Підрядники B2B", pattern: "ANDROSHCHUK|SIMONIAN" },
   // card purchases by merchant type (cash withdrawals by card are NOT here — they're in the cash bucket)
-  ["taxi", `${TXT} ~ '\\yBOLT\\y|BOLT\\.EU|\\yUBER\\y|FREENOW|ITAXI'`],
-  ["travel", `${TXT} ~ 'AIRBNB|BOOKI|KIWI\\.COM|GOTOGATE|RAINBOW|HOTEL|GETYOURGUIDE|RYANAIR|WIZZ|\\yLOT\\y|BKG-|ESKY|INTERCITY|BILET\\.|DISCOVERCARS'`],
-  ["shops", `${TXT} ~ 'ZABKA|.ABKA|BIEDRONKA|LIDL|AUCHAN|CARREFOUR|KAUFLAND|PEPCO|ACTION|DEALZ|STOKROTKA|LEWIATAN|TRANSGOURMET'`],
-  ["tech", `${TXT} ~ 'X-KOM|MEDIA MARKT|MEDIA SATURN|EURO-NET|KOMPUTRONIK|SMARTSPOT|RTV EURO|APPLE|ALLEGRO'`],
-  ["household", `${TXT} ~ '\\yOBI\\y|BRICOMAN|CASTORAMA|LEROY|JYSK|IKEA|STALPOL|TEDI|SUPERHOBBY|DEDRA|DOMATOR|MAT[- ]?BUD|\\yPSB\\y|MR.WKA|BUDOWLAN|HURTOWNIA|MERKURY|BUDMAT'`],
-  ["card", `${TXT} ~ 'BEZGOT|KART. DEBET'`],
+  { key: "taxi", label: "Таксі (Bolt, Uber)", pattern: "\\yBOLT\\y|BOLT\\.EU|\\yUBER\\y|FREENOW|ITAXI" },
+  { key: "travel", label: "Подорожі / відрядження", pattern: "AIRBNB|BOOKI|KIWI\\.COM|GOTOGATE|RAINBOW|HOTEL|GETYOURGUIDE|RYANAIR|WIZZ|\\yLOT\\y|BKG-|ESKY|INTERCITY|BILET\\.|DISCOVERCARS" },
+  { key: "shops", label: "Магазини (продукти)", pattern: "ZABKA|.ABKA|BIEDRONKA|LIDL|AUCHAN|CARREFOUR|KAUFLAND|PEPCO|ACTION|DEALZ|STOKROTKA|LEWIATAN|TRANSGOURMET" },
+  { key: "tech", label: "Техніка / електроніка", pattern: "X-KOM|MEDIA MARKT|MEDIA SATURN|EURO-NET|KOMPUTRONIK|SMARTSPOT|RTV EURO|APPLE|ALLEGRO" },
+  { key: "household", label: "Госптовари / буд", pattern: "\\yOBI\\y|BRICOMAN|CASTORAMA|LEROY|JYSK|IKEA|STALPOL|TEDI|SUPERHOBBY|DEDRA|DOMATOR|MAT[- ]?BUD|\\yPSB\\y|MR.WKA|BUDOWLAN|HURTOWNIA|MERKURY|BUDMAT" },
+  { key: "card", label: "Інші карткові", pattern: "BEZGOT|KART. DEBET" },
 ];
-// per-category exclusive condition: manual override wins; otherwise first matching pattern
-export function catCondition(key: string): string | null {
-  const idx = EXPENSE_CATS.findIndex(([k]) => k === key);
-  if (idx < 0 && key !== "other") return null;
+
+// In-memory cache of the category list — this is a single-process app, so
+// invalidating on every category mutation keeps it correct.
+let catsCache: ExpenseCat[] | null = null;
+export async function getExpenseCats(): Promise<ExpenseCat[]> {
+  if (!catsCache) {
+    const { db, expenseCategoriesTable } = await import("@workspace/db");
+    const { asc } = await import("drizzle-orm");
+    const rows = await db.select().from(expenseCategoriesTable)
+      .orderBy(asc(expenseCategoriesTable.sortOrder), asc(expenseCategoriesTable.id));
+    catsCache = rows.map(r => ({ id: r.id, key: r.key, label: r.label, pattern: r.pattern, sortOrder: r.sortOrder }));
+  }
+  return catsCache;
+}
+export function invalidateExpenseCats() { catsCache = null; }
+
+// per-category exclusive condition: manual override wins; otherwise first matching
+// pattern; a pattern-less (manual-only) category is reachable only via override
+export function catCondition(key: string, cats: ExpenseCat[]): string | null {
   const base = BUCKET.expenses!;
-  if (key === "other") return `${base} AND (${MC} = 'other' OR (${MC} IS NULL AND NOT (${EXPENSE_CATS.map(([, p]) => `(${p})`).join(" OR ")})))`;
-  const earlier = EXPENSE_CATS.slice(0, idx).map(([, p]) => `(${p})`).join(" OR ");
-  return `${base} AND (${MC} = '${key}' OR (${MC} IS NULL AND (${EXPENSE_CATS[idx]![1]})${earlier ? ` AND NOT (${earlier})` : ""}))`;
+  const esc = (s: string) => s.replace(/'/g, "''");
+  if (key === "other") {
+    const pats = cats.filter(c => c.pattern).map(c => patternCondition(c.pattern!));
+    const notAuto = pats.length ? ` AND NOT (${pats.join(" OR ")})` : "";
+    return `${base} AND (${MC} = 'other' OR (${MC} IS NULL${notAuto}))`;
+  }
+  const idx = cats.findIndex(c => c.key === key);
+  if (idx < 0) return null;
+  const cat = cats[idx]!;
+  const manual = `${MC} = '${esc(cat.key)}'`;
+  if (!cat.pattern) return `${base} AND ${manual}`;
+  const earlier = cats.slice(0, idx).filter(c => c.pattern).map(c => patternCondition(c.pattern!)).join(" OR ");
+  return `${base} AND (${manual} OR (${MC} IS NULL AND ${patternCondition(cat.pattern)}${earlier ? ` AND NOT (${earlier})` : ""}))`;
+}
+
+// CASE expression labelling every expenses row with its category key
+export function catCaseExpr(cats: ExpenseCat[]): string {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const whens = cats.filter(c => c.pattern).map(c => `WHEN ${patternCondition(c.pattern!)} THEN '${esc(c.key)}'`).join(" ");
+  return `CASE WHEN ${MC} IS NOT NULL THEN ${MC}${whens ? ` ${whens}` : ""} ELSE 'other' END`;
 }
 
 // period (year or year+month) → [from, to] ISO date strings

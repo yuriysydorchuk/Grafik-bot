@@ -7,10 +7,12 @@ import {
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
+  expenseCategoriesTable, counterpartyRulesTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
 import { createToken, SESSION_COOKIE, invalidateRolesCache, hashPassword } from "../lib/auth.ts";
+import { DEFAULT_EXPENSE_CATS, invalidateExpenseCats } from "../services/bankClassify.ts";
 
 // Re-exported so integration tests import ONLY from the harness — this guarantees env.ts
 // runs before @workspace/db is evaluated (import order within a test file is otherwise fragile).
@@ -21,6 +23,7 @@ export {
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
+  expenseCategoriesTable, counterpartyRulesTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -41,8 +44,14 @@ export async function resetDb(): Promise<void> {
     "schedule_weeks, schedule_entries, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, " +
     "companies, document_types, vehicles, advance_requests, " +
-    "funnels, candidates, candidate_activity RESTART IDENTITY CASCADE",
+    "funnels, candidates, candidate_activity, " +
+    "expense_categories, counterparty_rules RESTART IDENTITY CASCADE",
   ));
+  // classification queries need the category rows — restore the default seed
+  await db.insert(expenseCategoriesTable).values(
+    DEFAULT_EXPENSE_CATS.map((c, i) => ({ ...c, sortOrder: (i + 1) * 10 })),
+  );
+  invalidateExpenseCats();
 }
 
 // Insert a role with the given capabilities/pages, then invalidate the auth role cache so

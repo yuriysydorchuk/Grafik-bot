@@ -9,7 +9,7 @@ import { cashEntriesTable, companiesTable } from "@workspace/db";
 import { and, eq, gte, lte, isNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
-import { BUCKET, EXPENSE_CATS, MC, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, catCondition, periodRange } from "../services/bankClassify";
+import { BUCKET, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, catCondition, catCaseExpr, getExpenseCats, periodRange } from "../services/bankClassify";
 import { balanceAt } from "./bank";
 import { cashPosition, cashBoxesAt, cashCategory } from "./cash";
 import { openObligations, openObligationRows } from "./obligations";
@@ -47,10 +47,9 @@ router.get("/cashflow", async (req, res) => {
     FROM bank_transactions WHERE ${sql.raw(OPER)} AND value_date >= ${from} AND value_date <= ${to}`))[0] ?? {};
   const num = (v: any) => round2(Number(v ?? 0));
 
-  const caseExpr = EXPENSE_CATS.map(([k, p]) => `WHEN (${p}) THEN '${k}'`).join(" ");
   const bankCats: Record<string, number> = {};
   for (const r of rowsOf(await db.execute(sql`
-    SELECT CASE WHEN ${sql.raw(MC)} IS NOT NULL THEN ${sql.raw(MC)} ${sql.raw(caseExpr)} ELSE 'other' END AS cat,
+    SELECT ${sql.raw(catCaseExpr(await getExpenseCats()))} AS cat,
            coalesce(sum(amount), 0) AS total
     FROM bank_transactions
     WHERE ${sql.raw(BUCKET.expenses!)} AND value_date >= ${from} AND value_date <= ${to}
@@ -146,15 +145,16 @@ router.get("/cashflow/entries", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
 
+  const expenseCats = await getExpenseCats();
   let bankCond: string | null;
   if (!cat) bankCond = OPER;
   else if (cat === "income") bankCond = BUCKET.income!;
   else if (cat === "vat_refund") bankCond = `direction='in' AND NOT (${T_INTERNAL}) AND (${T_VATREF})`;
   else if (cat.startsWith("owner_") && BUCKET[cat]) bankCond = BUCKET[cat]!;
-  else bankCond = catCondition(cat);
+  else bankCond = catCondition(cat, expenseCats);
   if (!bankCond) { res.status(400).json({ error: "unknown cat" }); return; }
   // готівкова сторона є лише у витратних категорій і виплат власникам
-  const cashApplicable = !cat || cat === "other" || cat.startsWith("owner_") || EXPENSE_CATS.some(([k]) => k === cat);
+  const cashApplicable = !cat || cat === "other" || cat.startsWith("owner_") || expenseCats.some(c => c.key === cat);
 
   // bank side: top-(offset+limit) rows by date + full count/sums for the filter
   let bankRows: any[] = [], bankTotal = 0, bankIn = 0, bankOut = 0;

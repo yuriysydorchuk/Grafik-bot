@@ -1,16 +1,21 @@
+// «Аванси» — запити працівників на аванс. Аванс належить місяцю, в якому був
+// зроблений запит (createdAt); всередині місяця — групування місто → фабрика
+// (місто фабрики бекенд бере з історії сводних, як у from-hours).
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, X, Banknote } from "lucide-react";
+import { Check, X, Banknote, Landmark } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, type AdvanceRequest } from "../lib/api";
 import { Card, Spinner, Select, Empty, Badge, Modal, Button, Input, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { monthOptions } from "../lib/dates";
 import { useT } from "../lib/i18n";
 
 const STATUS_COLOR: Record<string, "amber" | "blue" | "rose" | "green"> = {
   pending: "amber", approved: "blue", rejected: "rose", paid: "green",
 };
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
+const r2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function Advances() {
   const t = useT();
@@ -19,6 +24,21 @@ export default function Advances() {
   const [rejecting, setRejecting] = useState<AdvanceRequest | null>(null);
   const [reason, setReason] = useState("");
   const { data = [], isFetching } = useQuery<AdvanceRequest[]>({ queryKey: ["advances"], queryFn: () => get("/advances") });
+
+  // місяці — стандартні останні 6 + всі, що реально є в даних (старі запити не губляться)
+  const months = useMemo(() => {
+    const base = monthOptions();
+    const seen = new Set(base.map(m => m.value));
+    for (const r of data) {
+      const v = r.createdAt.slice(0, 7);
+      if (!seen.has(v)) {
+        seen.add(v);
+        base.push({ value: v, label: new Date(`${v}-01T00:00:00`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" }) });
+      }
+    }
+    return base.sort((a, b) => b.value.localeCompare(a.value));
+  }, [data]);
+  const [month, setMonth] = useState(() => monthOptions()[0]!.value);
 
   const STATUS_LABEL: Record<string, string> = {
     pending: t("На розгляді"), approved: t("Затверджено"), rejected: t("Відхилено"), paid: t("Виплачено"),
@@ -36,17 +56,38 @@ export default function Advances() {
     setRejecting(null); setReason("");
   };
 
+  // запити на розгляді — завжди зверху, незалежно від вибраного місяця
   const pending = data.filter(r => r.status === "pending");
-  const rows = useMemo(() => filter === "all" ? data : data.filter(r => r.status === filter), [data, filter]);
+  const monthRows = useMemo(() => data.filter(r => r.createdAt.slice(0, 7) === month), [data, month]);
+  const rows = useMemo(() => filter === "all" ? monthRows : monthRows.filter(r => r.status === filter), [monthRows, filter]);
   const totals = useMemo(() => {
-    const sum = (s: string) => data.filter(r => r.status === s).reduce((a, r) => a + r.amount, 0);
+    const sum = (s: string) => r2(monthRows.filter(r => r.status === s).reduce((a, r) => a + r.amount, 0));
     return { requested: sum("pending"), approved: sum("approved"), paid: sum("paid") };
-  }, [data]);
+  }, [monthRows]);
+
+  // місто → фабрика → рядки (сортування: місто, фабрика, ім'я pl)
+  const groups = useMemo(() => {
+    const byCity = new Map<string, Map<string, AdvanceRequest[]>>();
+    for (const r of rows) {
+      const c = r.city || "—";
+      const f = r.factory ?? t("Без фабрики");
+      const m = byCity.get(c) ?? byCity.set(c, new Map()).get(c)!;
+      (m.get(f) ?? m.set(f, []).get(f)!).push(r);
+    }
+    for (const m of byCity.values()) for (const list of m.values())
+      list.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "pl") || a.createdAt.localeCompare(b.createdAt));
+    return [...byCity.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows, t]);
+
+  const sumOf = (list: AdvanceRequest[]) => r2(list.reduce((a, r) => a + r.amount, 0));
 
   return (
     <>
       <PageHeader title={t("Аванси")} subtitle={t("Запити працівників на аванс — розгляд, затвердження, виплата")} />
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
+          {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+        </Select>
         <Select value={filter} onChange={e => setFilter(e.target.value as any)} className="w-48">
           <option value="all">{t("Усі")}</option>
           <option value="pending">{t("На розгляді")}</option>
@@ -82,39 +123,61 @@ export default function Advances() {
         </Card>
       )}
 
-      {isFetching && !data.length ? <Spinner /> : !rows.length ? <Empty>{t("Немає запитів на аванс")}</Empty> : (
-        <Card className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr>
-                <th className="px-4 py-2.5">{t("Дата")}</th><th className="px-4 py-2.5">{t("Працівник")}</th>
-                <th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5 text-right">{t("Сума")}</th>
-                <th className="px-4 py-2.5">{t("Коментар")}</th><th className="px-4 py-2.5">{t("Статус")}</th>
-                <th className="px-4 py-2.5"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map(r => (
-                <tr key={r.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-2.5 text-slate-500">{fmtDate(r.createdAt)}</td>
-                  <td className="px-4 py-2.5 font-medium text-slate-700">{r.name ?? "—"}</td>
-                  <td className="px-4 py-2.5 text-slate-500">{r.factory ?? "—"}</td>
-                  <td className="px-4 py-2.5 text-right font-semibold text-slate-700">{r.amount} zł</td>
-                  <td className="px-4 py-2.5 text-slate-600">
-                    {r.comment || (!r.adminNote && <span className="text-slate-300">—</span>)}
-                    {r.status === "rejected" && r.adminNote && <div className="mt-0.5 text-xs text-rose-600">⛔ {r.adminNote}</div>}
-                  </td>
-                  <td className="px-4 py-2.5"><Badge color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status]}</Badge></td>
-                  <td className="px-4 py-2.5 text-right">
-                    {r.status === "approved" && (
-                      <button onClick={() => act.mutate({ id: r.id, action: "paid" })} disabled={act.isPending} className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Banknote className="h-4 w-4" /> {t("Виплачено")}</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+      {isFetching && !data.length ? <Spinner /> : !groups.length ? <Empty>{t("За цей місяць авансів немає")}</Empty> : (
+        <div className="space-y-5">
+          {groups.map(([city, byFactory]) => (
+            <Card key={city} className="overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3">
+                <Landmark className="h-4 w-4 text-slate-400" />
+                <span className="text-sm font-bold tracking-tight text-slate-800">{t(city)}</span>
+                <Badge color="slate">{[...byFactory.values()].reduce((a, rs) => a + rs.length, 0)}</Badge>
+                <span className="ml-auto text-sm font-semibold tabular-nums text-slate-700">
+                  {sumOf([...byFactory.values()].flat()).toFixed(2)} zł
+                </span>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+                  <tr>
+                    <th className="px-4 py-2">{t("Працівник")}</th><th className="px-4 py-2">{t("Дата")}</th>
+                    <th className="px-4 py-2 text-right">{t("Сума")}</th><th className="px-4 py-2">{t("Коментар")}</th>
+                    <th className="px-4 py-2">{t("Статус")}</th><th className="px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {[...byFactory.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([factory, list]) => [
+                    <tr key={`f-${factory}`} className="bg-slate-50/80">
+                      <td colSpan={2} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">{factory}</td>
+                      <td className="px-4 py-1.5 text-right text-[11px] font-semibold tabular-nums text-slate-500">{sumOf(list).toFixed(2)} zł</td>
+                      <td colSpan={3} />
+                    </tr>,
+                    ...list.map(r => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2 pl-8 font-medium text-slate-700">{r.name ?? "—"}</td>
+                        <td className="px-4 py-2 text-slate-500">
+                          {fmtDate(r.createdAt)}
+                          {r.status === "paid" && r.paidAt && r.paidAt.slice(0, 10) !== r.createdAt.slice(0, 10) && (
+                            <div className="text-xs text-emerald-600">💸 {fmtDate(r.paidAt)}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+                        <td className="px-4 py-2 text-slate-600">
+                          {r.comment || (!r.adminNote && <span className="text-slate-300">—</span>)}
+                          {r.status === "rejected" && r.adminNote && <div className="mt-0.5 text-xs text-rose-600">⛔ {r.adminNote}</div>}
+                        </td>
+                        <td className="px-4 py-2"><Badge color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status]}</Badge></td>
+                        <td className="px-4 py-2 text-right">
+                          {r.status === "approved" && (
+                            <button onClick={() => act.mutate({ id: r.id, action: "paid" })} disabled={act.isPending} className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Banknote className="h-4 w-4" /> {t("Виплачено")}</button>
+                          )}
+                        </td>
+                      </tr>
+                    )),
+                  ])}
+                </tbody>
+              </table>
+            </Card>
+          ))}
+        </div>
       )}
 
       {rejecting && (

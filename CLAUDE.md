@@ -149,7 +149,7 @@ psql "$DATABASE_URL" -c "ALTER TABLE ... ;"
 | `artifacts/api-server/src/services/drive.ts` | Google Drive: побудова Excel-графіку (сегрегація по посаді/статі), експорт, звіти |
 | `artifacts/api-server/src/services/sheets.ts` | Читання доступності з Google Sheets |
 | `artifacts/api-server/src/services/scheduler.ts` | node-cron: щотижневі нагадування, пресмінні сповіщення, housekeeping, щоденний імпорт витягів (06:00) |
-| `artifacts/api-server/src/routes/bank.ts` + `services/bankStatements.ts` | Витяги банків (owner): MT940-парсер (utf8/cp1250/cp852, баланси `:60F:/:62F:`), синк із Drive, SQL-класифікація (bucket-и/категорії — **єдине джерело правди**; Postgres межа слова `\y`, не `\b`), звірка до злотого. Веб: `web/src/pages/BankStatements.tsx` (/bank) |
+| `artifacts/api-server/src/routes/bank.ts` + `services/bankStatements.ts` | Витяги банків (owner): MT940-парсер (utf8/cp1250/cp852, баланси `:60F:/:62F:`), синк із Drive, SQL-класифікація (`services/bankClassify.ts` — **єдине джерело правди**: bucket-и в коді, категорії витрат — у БД `expense_categories` з owner-CRUD і патерн-DSL; Postgres межа слова `\y`, не `\b`), звірка до злотого. Веб: `web/src/pages/BankStatements.tsx` (/bank) |
 | `artifacts/api-server/src/services/email.ts` | Надсилання затвердженого графіку клієнту (nodemailer) |
 | `artifacts/api-server/src/lib/{auth,roles,payroll}.ts` | Сесії/HMAC, мапа можливостей ролей, розрахунок зарплат (umowa zlecenie) |
 | `artifacts/web/src/pages/` | Сторінки адмінпанелі (Schedule, Orders, Workers, Finance, Recruitment, Settings, …) |

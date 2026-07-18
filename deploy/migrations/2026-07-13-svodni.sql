@@ -127,3 +127,14 @@ CREATE INDEX IF NOT EXISTS hostel_deductions_month ON hostel_deductions (period_
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS note text;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS payout_pref_kind text;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS payout_pref_value real;
+
+-- Затвердження сводної: лок на фабрику або ціле місто (factory_label = '')
+CREATE TABLE IF NOT EXISTS svodni_locks (
+    id serial PRIMARY KEY,
+    period_month text NOT NULL,                -- YYYY-MM
+    city text NOT NULL,
+    factory_label text NOT NULL DEFAULT '',    -- '' = усе місто
+    locked_by integer REFERENCES admins(id),
+    locked_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS svodni_locks_scope_uq ON svodni_locks (period_month, city, factory_label);

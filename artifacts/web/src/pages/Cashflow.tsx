@@ -5,7 +5,7 @@ import { get } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
-import { CAT_LABELS, recatLabel } from "../lib/financeCats";
+import { useCats } from "../lib/financeCats";
 
 interface CatRow { key: string; bank: number; cash: number; total: number }
 interface Data {
@@ -33,6 +33,7 @@ const OWNER_LABELS: Record<string, string> = { owner_roman: "Сидорчук Р
 
 export default function Cashflow() {
   const t = useT();
+  const { label: catLabel } = useCats();
   const now = new Date();
   const [year, setYear] = useState(String(now.getFullYear()));
   const [monthNum, setMonthNum] = useState(String(now.getMonth() + 1).padStart(2, "0"));
@@ -120,7 +121,7 @@ export default function Cashflow() {
                   {d.expenses.filter(e => e.total > 0).map(e => (
                     <tr key={e.key} onClick={() => setDrill(drill === e.key ? null : e.key)}
                       className={`cursor-pointer border-b border-slate-100 ${drill === e.key ? "bg-red-50" : "hover:bg-slate-50"}`}>
-                      <td className={`px-4 py-1.5 font-medium ${drill === e.key ? "text-red-700" : "text-slate-700"}`}>{t(recatLabel(e.key))}</td>
+                      <td className={`px-4 py-1.5 font-medium ${drill === e.key ? "text-red-700" : "text-slate-700"}`}>{t(catLabel(e.key))}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-500">{e.bank ? zl(e.bank) : "—"}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-500">{e.cash ? zl(e.cash) : "—"}</td>
                       <td className="whitespace-nowrap px-4 py-1.5 text-right font-semibold tabular-nums text-slate-800">{zl(e.total)}</td>
@@ -241,12 +242,13 @@ function EntriesPanel({ year, monthNum, initialCat, query, onClose }: { year: st
   const d = data.data;
   const rows = d?.rows ?? [];
 
+  const { label: dbLabel, cats } = useCats();
   const catLabel = (k: string) =>
     k === "" ? t("Всі рухи") :
     k === "income" ? t("Надходження від клієнтів") :
     k === "vat_refund" ? t("Повернення VAT") :
-    k.startsWith("owner_") ? t(OWNER_LABELS[k] ?? k) : t(recatLabel(k));
-  const catOptions = ["", "income", "vat_refund", ...Object.keys(CAT_LABELS), "owner_roman", "owner_tetiana", "owner_yuriy"];
+    k.startsWith("owner_") ? t(OWNER_LABELS[k] ?? k) : t(dbLabel(k));
+  const catOptions = ["", "income", "vat_refund", ...cats.map(c => c.key), "other", "owner_roman", "owner_tetiana", "owner_yuriy"];
 
   return (
     <Card className="mt-4 p-0">
@@ -308,7 +310,7 @@ function EntriesPanel({ year, monthNum, initialCat, query, onClose }: { year: st
                   <td className="px-3 py-2 text-slate-700">
                     <div className="max-w-[420px] truncate font-medium">{r.who || r.title || r.txType || "—"}</div>
                     {r.who && r.title && <div className="max-w-[420px] truncate text-xs text-slate-400">{r.title}</div>}
-                    {r.manualCategory && <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(recatLabel(r.manualCategory))}>✎</span>}
+                    {r.manualCategory && <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t(dbLabel(r.manualCategory))}>✎</span>}
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums ${r.direction === "in" ? "text-emerald-600" : "text-slate-700"}`}>
                     {r.direction === "in" ? "+" : "−"}{zl(r.amount)}

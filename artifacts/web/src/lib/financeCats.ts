@@ -1,27 +1,42 @@
-// Expense category labels — shared by Витяги (/bank) and Каса (/cash).
-// Keys mirror EXPENSE_CATS in api-server/src/services/bankClassify.ts.
-export const CAT_LABELS: Record<string, string> = {
-  zus: "ZUS", vat: "Податки (VAT, US)", seizure: "Зайняття (komornik)", salary: "Зарплати", zaliczki: "Аванси (zaliczki)",
-  fees: "Комісії банку (перекази, вплати, зняття)", fuel: "Паливо", housing: "Житло / готелі",
-  car_repair: "Ремонт авто", office_rent: "Оренда офісу", clothing: "Одяг", multisport: "Мультиспорт (Benefit)",
-  trainer: "Тренер (Palusiński)", leasing: "Лізинг / авто",
-  credit: "Кредит", services: "Послуги (бух., юристи)", marketing: "Маркетинг", permits: "Дозволи / уряд",
-  b2b: "Підрядники B2B", taxi: "Таксі (Bolt, Uber)", travel: "Подорожі / відрядження", shops: "Магазини (продукти)",
-  tech: "Техніка / електроніка", household: "Госптовари / буд", card: "Інші карткові", other: "Інше",
-};
+// Expense categories — shared by Витяги (/bank), Кешфлоу (/cashflow) і Каса (/cash).
+// Categories are owner-editable rows in the DB (expense_categories, keys mirror
+// bank_transactions.manual_category); the hook loads them once per session.
+// Static labels remain only for virtual keys that never live in the table.
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { get } from "./api";
 
-// options for manual re-categorization: all expense categories + owners' personal
-export const RECAT_OPTIONS: { value: string; label: string }[] = [
-  ...Object.entries(CAT_LABELS).map(([value, label]) => ({ value, label })),
+export interface ExpenseCat { id: number; key: string; label: string; pattern: string | null; sortOrder: number; txCount?: number }
+
+export const OWNER_OPTIONS: { value: string; label: string }[] = [
   { value: "owner_roman", label: "Особисте — Сидорчук Роман" },
   { value: "owner_tetiana", label: "Особисте — Сидорчук Тетяна" },
   { value: "owner_yuriy", label: "Особисте — Сидорчук Юрій" },
 ];
-export const recatLabel = (key: string) => RECAT_OPTIONS.find(o => o.value === key)?.label ?? key;
 
 // cash-only pseudo-categories (internal moves, excluded from expenses)
 export const CASH_ONLY_LABELS: Record<string, string> = {
   deposit: "Вплата на рахунок",
   transfer: "Переміщення",
 };
-export const cashCatLabel = (key: string) => CASH_ONLY_LABELS[key] ?? recatLabel(key);
+
+export function useCats() {
+  const q = useQuery<{ categories: ExpenseCat[]; otherCount: number }>({
+    queryKey: ["bank-cats"], queryFn: () => get("/bank/categories"), staleTime: 60_000,
+  });
+  const cats = q.data?.categories ?? [];
+  const labels = useMemo(() => {
+    const m: Record<string, string> = { other: "Інше", ...CASH_ONLY_LABELS };
+    for (const c of cats) m[c.key] = c.label;
+    for (const o of OWNER_OPTIONS) m[o.value] = o.label;
+    return m;
+  }, [cats]);
+  // dropdown options: filterOptions — expense categories only; recatOptions — + owners'
+  const filterOptions = useMemo(() => [
+    ...cats.map(c => ({ value: c.key, label: c.label })),
+    { value: "other", label: "Інше" },
+  ], [cats]);
+  const recatOptions = useMemo(() => [...filterOptions, ...OWNER_OPTIONS], [filterOptions]);
+  const label = (key: string) => labels[key] ?? key;
+  return { cats, otherCount: q.data?.otherCount ?? 0, labels, filterOptions, recatOptions, label };
+}

@@ -15,11 +15,11 @@ interface Dispute { workerId: number; status: string }
 
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
-  factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
+  city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
-interface Group { key: string; name: string; factoryId: number | null; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
+interface Group { key: string; name: string; factoryId: number | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
 
 export default function Hours() {
   const t = useT();
@@ -44,25 +44,38 @@ export default function Hours() {
     }),
     onError: (e: any) => toast.error(e.message),
   });
-  // «Години підтверджені → до сводної»: переносить місяць в сводну (сайт — джерело)
+  // «Години підтверджені → до сводної»: весь місяць, одне місто або одна фабрика
   const toSvodni = useMutation({
-    mutationFn: () => post<{ created: number; updated: number; workers: number; noNettoRate: number }>("/svodni/from-hours", { month }),
+    mutationFn: (scope: { factoryId?: number; city?: string }) =>
+      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number }>("/svodni/from-hours", { month, ...scope }),
     onSuccess: (r) => toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
-      description: r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : undefined,
+      description: [
+        r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : null,
+        r.skippedLocked ? t("Пропущено затверджених фабрик: {n}", { n: r.skippedLocked }) : null,
+      ].filter(Boolean).join(" · ") || undefined,
     }),
     onError: (e: any) => toast.error(e.message),
   });
+  const confirmToSvodni = (label: string, scope: { factoryId?: number; city?: string }) => {
+    if (window.confirm(t("Перенести підтверджені години до сводної: {what}? Рядки створяться/оновляться з даними з профілів.", { what: label }))) toSvodni.mutate(scope);
+  };
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>();
     for (const r of data?.workers ?? []) {
       const key = r.factoryId != null ? `f${r.factoryId}` : "none";
-      if (!map.has(key)) map.set(key, { key, name: r.factory ?? t("Без фабрики"), factoryId: r.factoryId, n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0 });
+      if (!map.has(key)) map.set(key, { key, name: r.factory ?? t("Без фабрики"), factoryId: r.factoryId, city: r.city, n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0 });
       const g = map.get(key)!;
       g.rows.push(r); g.shifts += r.shifts; g.hours += r.hours; g.net += r.net ?? 0;
     }
     return [...map.values()];
   }, [data]);
+  // місто → його фабрики (для заголовків і кнопки «місто → до сводної»)
+  const cityGroups = useMemo(() => {
+    const map = new Map<string, Group[]>();
+    for (const g of groups) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [groups]);
 
   const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -86,7 +99,7 @@ export default function Hours() {
           <div className="ml-auto flex items-center gap-2">
             {can(me, "svodni") && (
               <Button loading={toSvodni.isPending}
-                onClick={() => window.confirm(t("Перенести підтверджені години {month} до сводної? Рядки створяться/оновляться з даними з профілів.", { month: monthLabel })) && toSvodni.mutate()}>
+                onClick={() => confirmToSvodni(`${monthLabel} — ${t("всі фабрики")}`, {})}>
                 <Check className="h-4 w-4" /> {t("Години підтверджені → до сводної")}
               </Button>
             )}
@@ -104,8 +117,22 @@ export default function Hours() {
       )}
 
       {isFetching && !data ? <Spinner /> : !groups.length ? <Empty>{t("За цей місяць немає затверджених змін")}</Empty> : (
-        <div className="space-y-6">
-          {groups.map(g => {
+        <div className="space-y-8">
+          {cityGroups.map(([city, cityGs]) => (
+          <div key={city}>
+            <div className="mb-3 flex items-center gap-2 border-b border-slate-200 pb-2">
+              <h2 className="text-base font-bold tracking-tight text-slate-800">{t(city)}</h2>
+              <Badge color="slate">{cityGs.length} {t("фабрик")}</Badge>
+              <Badge color="green">{round(cityGs.reduce((s, g) => s + g.hours, 0))} {t("год")}</Badge>
+              {can(me, "svodni") && canEdit && (
+                <button onClick={() => confirmToSvodni(city, { city })} disabled={toSvodni.isPending}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
+                  <Check className="h-3.5 w-3.5" /> {t("Місто → до сводної")}
+                </button>
+              )}
+            </div>
+            <div className="space-y-6">
+          {cityGs.map(g => {
             const cols = Array.from({ length: g.n }, (_, i) => String(i + 1));
             return (
               <div key={g.key}>
@@ -115,9 +142,17 @@ export default function Hours() {
                   <Badge color="slate">{g.shifts} {t("змін")}</Badge>
                   <Badge color="green">{round(g.hours)} {t("год")}</Badge>
                   {isOwner && <Badge color="green">{round(g.net)} {t("zł нетто")}</Badge>}
-                  {canEdit && g.factoryId != null && (
-                    <a href={`/api/hours/report-excel?month=${month}&factoryId=${g.factoryId}`} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {t("Excel рапорту")}</a>
+                  <span className="ml-auto inline-flex items-center gap-2">
+                  {can(me, "svodni") && canEdit && g.factoryId != null && (
+                    <button onClick={() => confirmToSvodni(g.name, { factoryId: g.factoryId! })} disabled={toSvodni.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
+                      <Check className="h-3.5 w-3.5" /> {t("До сводної")}
+                    </button>
                   )}
+                  {canEdit && g.factoryId != null && (
+                    <a href={`/api/hours/report-excel?month=${month}&factoryId=${g.factoryId}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {t("Excel рапорту")}</a>
+                  )}
+                  </span>
                 </div>
                 <Card className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -160,6 +195,9 @@ export default function Hours() {
               </div>
             );
           })}
+            </div>
+          </div>
+          ))}
         </div>
       )}
       {sel && <WorkerDaysModal workerId={sel.id} name={sel.name} month={month} monthLabel={monthLabel} onClose={() => setSel(null)} />}

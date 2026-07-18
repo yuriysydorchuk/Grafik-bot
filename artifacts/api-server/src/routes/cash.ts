@@ -12,7 +12,7 @@ import { db } from "@workspace/db";
 import { cashEntriesTable, bankTransactionsTable, companiesTable } from "@workspace/db";
 import { and, eq, gte, lte, asc, desc, inArray, isNull, sql } from "drizzle-orm";
 import { authRequired, requirePage } from "../lib/auth";
-import { BUCKET, periodRange, EXPENSE_CATS, OWNER_KEYS } from "../services/bankClassify";
+import { BUCKET, periodRange, getExpenseCats, OWNER_KEYS } from "../services/bankClassify";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -58,7 +58,10 @@ export function cashCategory(e: { kind: string; description: string | null; tran
   for (const [key, re] of CASH_AUTO) if (re.test(d)) return key;
   return "other";
 }
-const CASH_CAT_KEYS = new Set<string>([...EXPENSE_CATS.map(([k]) => k), ...OWNER_KEYS, "other", "deposit"]);
+// категорії каси = банківські (з БД) + owner_* + службові cash-only ключі
+async function cashCatKeys(): Promise<Set<string>> {
+  return new Set<string>([...(await getExpenseCats()).map(c => c.key), ...OWNER_KEYS, "other", "deposit"]);
+}
 
 // ── Ledger walk ────────────────────────────────────────────────────────────────
 // Months ascending per firm: balance carries over; an explicit sheet opening row
@@ -201,7 +204,7 @@ router.patch("/cash/entries/:id/category", async (req, res) => {
   if (row.kind !== "out") return fail(res, 400, "категорія лише для видатків");
   if (row.transferGroup) return fail(res, 400, "переміщення не категоризується");
   const category = req.body?.category ?? null; // null → reset to auto
-  if (category != null && !CASH_CAT_KEYS.has(String(category))) return fail(res, 400, "unknown category");
+  if (category != null && !(await cashCatKeys()).has(String(category))) return fail(res, 400, "unknown category");
   const [updated] = await db.update(cashEntriesTable).set({ manualCategory: category }).where(eq(cashEntriesTable.id, id)).returning();
   ok(res, { ...updated, category: cashCategory(updated!) });
 });

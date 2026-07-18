@@ -140,6 +140,7 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
   if (/POLAK|POLKA/.test(s)) return "polak";
   if (/STUDENT/.test(s)) return "student";
   if (/POWIADOMIENIE/.test(s)) return "powiadomienie"; // зголошений повідомленням
+  if (/ZEZWOLEN/.test(s)) return "zus"; // zezwolenie na pracę — оформлений
   if (/ZGLOSZON/.test(s)) return "zus"; // зголошений без уточнення («Zgłoszony, Do 26» — вік окремо)
   return null;
 }
@@ -176,17 +177,28 @@ export interface LegalCtx {
   payoutPref?: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null;
 }
 
+// Księgowa пара ставок рядка: студентська неоподаткована (netto = brutto)
+// декларується як є; всі інші — по нижчій зі ставок (фабрична LST 26,35 →
+// стандартна 25,35; ANDROS wózkowy 36/36 — теж стандартна пара).
+export function ksiegRatesOf(
+  row: Pick<SvodniParsedRow, "rateBrutto" | "rateNetto" | "isStudent">,
+  ls: LegalStatus | null,
+): { netto: number | null; brutto: number | null } {
+  const untaxed = (row.isStudent === true || ls === "student")
+    && row.rateBrutto != null && row.rateNetto != null && row.rateBrutto <= row.rateNetto + 0.001;
+  return {
+    netto: row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO)) : null,
+    brutto: row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO)) : null,
+  };
+}
+
 export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: LegalCtx = {}): void {
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? ctx.profileLegal ?? null;
   const capH = factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null);
-  // неоподаткована ставка (netto = brutto, студентська) декларується як є;
-  // оподаткована — по нижчій зі ставок (фабрична LST 26,35 → стандартна 25,35)
-  const untaxed = row.rateBrutto != null && row.rateNetto != null && row.rateBrutto <= row.rateNetto + 0.001;
-  const ksiegNettoRate = row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO)) : null;
-  const ksiegBruttoRate = row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO)) : null;
+  const { netto: ksiegNettoRate, brutto: ksiegBruttoRate } = ksiegRatesOf(row, ls);
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)].
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
@@ -197,9 +209,13 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
     row.konto = konto;
     row.ksiegNetto = konto;
     row.hoursDeclared = cut && ksiegNettoRate ? r2(konto / ksiegNettoRate) : declaredHours;
+    // księg. brutto — від фактичного конто: konto ÷ ставка нетто × ставка брутто
+    // (не «всі години × брутто» — конто може включати премію чи бути обрізаним)
     row.ksiegBrutto = studentBrutto
       ? konto // студент: netto = brutto
-      : row.hoursDeclared != null && ksiegBruttoRate != null ? r2(row.hoursDeclared * ksiegBruttoRate) : null;
+      : ksiegNettoRate != null && ksiegBruttoRate != null && ksiegNettoRate > 0
+        ? r2(konto / ksiegNettoRate * ksiegBruttoRate)
+        : row.hoursDeclared != null && ksiegBruttoRate != null ? r2(row.hoursDeclared * ksiegBruttoRate) : null;
     row.gotowka = r2(row.doWyplaty! - konto + doplata);
   };
   const pref = ctx.payoutPref;
@@ -216,9 +232,14 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   } else if (ls === "oczekuje" || (ls == null && force)) {
     finish(0, 0); // не оформлений — все готівкою
   } else if (ls != null) {
-    // оформлений без oświadczenia-годин: все на карту, але не вище фабричної стелі годин
-    if (capH != null && ksiegNettoRate != null && row.hours != null) {
-      const declared = Math.min(row.hours, capH);
+    // оформлений без oświadczenia-годин: все на карту, але не вище фабричної
+    // стелі годин. Бонусна ставка (платіжна нетто ВИЩА за księgową, напр.
+    // AGRAM 26,85 = 25,35 + 1,5 бонус): конто декларується по księgowій за
+    // фактичні години, бонусна різниця — готівкою.
+    const bonusPerHour = typeof row.extras.premiaEs === "number" ? (row.extras.premiaEs as number) : 0;
+    const bonusRate = (row.rateNetto != null && ksiegNettoRate != null && row.rateNetto > ksiegNettoRate + 0.001) || bonusPerHour > 0;
+    if ((capH != null || bonusRate) && ksiegNettoRate != null && row.hours != null) {
+      const declared = Math.min(row.hours, capH ?? Infinity);
       finish(declared * ksiegNettoRate, r2(declared));
     } else {
       finish(row.doWyplaty, row.hours ?? null);
@@ -774,8 +795,12 @@ export function computePayout(row: PayoutLike, city: "Люблін" | "Позн�
     ours = row.hours * row.rateNetto + ex("migawka") + (row.premia ?? 0) + (row.dojazd ?? 0)
       - (row.zaliczka ?? 0) - (row.potracenia ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0) - ex("dokumenty");
   } else {
+    // Premia ES — бонус за годину до БАЗОВОЇ нетто-ставки (AGRAM). Якщо ставка
+    // рядка вже містить бонус (вшита: netto ≥ 25,35 + бонус) — не додаємо вдруге.
+    const bonusPerH = row.rateNetto >= KSIEG_STD_NETTO + ex("premiaEs") - 0.01 ? 0 : ex("premiaEs");
     ours = row.hours * row.rateNetto
       + ex("nocneH") * ex("doplataNocna")
+      + bonusPerH * row.hours
       + (row.premia ?? 0) + ex("oplataKierowcy") + ex("doplataEs") + ex("zwrotKosztow")
       - (row.zaliczka ?? 0) - (row.zaliczkaBd ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0)
       - (row.dojazd ?? 0) - (row.kara ?? 0) - (row.komornik ?? 0) - (row.kaucja ?? 0)

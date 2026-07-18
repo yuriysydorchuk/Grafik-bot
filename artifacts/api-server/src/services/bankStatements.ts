@@ -118,8 +118,12 @@ export async function syncBankTransactions(filter?: (monthFolder: string) => boo
 }
 
 // ── Counterparty → category rules ──────────────────────────────────────────────
-// Bulk re-categorization by counterparty substring. Owner payouts are exempt:
-// neither auto-detected owner transfers nor per-txn owner overrides are touched.
+// Bulk re-categorization by a substring of the counterparty name OR its account
+// number (IBAN pattern → matches by account). Owner payouts are exempt: neither
+// auto-detected owner transfers nor per-txn owner overrides are touched.
+// The same haystack expression is used when a rule is rolled back (routes/bank.ts).
+export const RULE_HAYSTACK = `upper(coalesce(counterparty, '') || ' ' || coalesce(replace(counterparty_account, ' ', ''), ''))`;
+
 export async function applyCounterpartyRules(opts: { onlyUncategorized?: boolean; ruleId?: number } = {}): Promise<number> {
   const rules = opts.ruleId
     ? await db.select().from(counterpartyRulesTable).where(sqlRaw`id = ${opts.ruleId}`)
@@ -132,7 +136,7 @@ export async function applyCounterpartyRules(opts: { onlyUncategorized?: boolean
     const res: any = await db.execute(sqlRaw`
       UPDATE bank_transactions SET manual_category = ${r.category}
       WHERE direction = 'out'
-        AND upper(coalesce(counterparty, '')) LIKE ${"%" + r.pattern.toUpperCase() + "%"}
+        AND ${sqlRaw.raw(RULE_HAYSTACK)} LIKE ${"%" + r.pattern.toUpperCase().replace(/\s+/g, " ") + "%"}
         AND NOT (${sqlRaw.raw(T_OWNER_ANY)})
         AND manual_category IS DISTINCT FROM ${r.category}${guard}`);
     updated += Number(res?.rowCount ?? 0);

@@ -5,15 +5,15 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, workersTable, factoriesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
 import { logger } from "../lib/logger";
 import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
-import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
-import { computePayout, computeKsiegHours, legalStatusOf, applyLegalDefaults } from "../services/svodni";
+import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
+import { computePayout, computeKsiegHours, legalStatusOf, applyLegalDefaults, ksiegRatesOf } from "../services/svodni";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -55,9 +55,46 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
   return base;
 }
 
+// ── Затвердження: локи на фабрику або ціле місто (factoryLabel = "") ─────────
+// Залочений рядок не редагується/не видаляється; from-hours і синк із Google
+// його пропускають, доки лок не знімуть повторним натисканням.
+const normLabel = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+type LockRow = typeof svodniLocksTable.$inferSelect;
+async function monthLocks(month: string): Promise<LockRow[]> {
+  return db.select().from(svodniLocksTable).where(eq(svodniLocksTable.periodMonth, month));
+}
+function isLocked(locks: LockRow[], city: string, factoryLabel: string | null): boolean {
+  return locks.some(l => l.city === city
+    && (l.factoryLabel === "" || (factoryLabel != null && normLabel(l.factoryLabel) === normLabel(factoryLabel))));
+}
+
+// toggle: перший виклик ставить лок, повторний — знімає
+router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  const city = String(req.body?.city ?? "").trim();
+  const factoryLabel = String(req.body?.factoryLabel ?? "").trim(); // "" = усе місто
+  if (!month || !city) return fail(res, 400, "month і city обовʼязкові");
+  const existing = (await monthLocks(month)).find(l => l.city === city && l.factoryLabel === factoryLabel);
+  if (existing) {
+    await db.delete(svodniLocksTable).where(eq(svodniLocksTable.id, existing.id));
+    return ok(res, { locked: false });
+  }
+  await db.insert(svodniLocksTable).values({ periodMonth: month, city, factoryLabel, lockedBy: req.admin!.adminId });
+  ok(res, { locked: true });
+});
+
 router.get("/svodni/months", requireCap("svodni"), async (_req, res) => {
+  // місяці: з рядків ∪ з реєстру джерел ∪ поточний і попередній — щоб порожню
+  // сводну можна було почати (імпорт з Google або генерація з обліку годин)
   const rows = await db.selectDistinct({ m: svodniRowsTable.periodMonth }).from(svodniRowsTable);
-  ok(res, { months: rows.map(x => x.m).sort().reverse() });
+  const { payrollSourcesTable } = await import("@workspace/db");
+  const src = await db.selectDistinct({ m: payrollSourcesTable.periodMonth }).from(payrollSourcesTable);
+  const months = new Set([...rows.map(x => x.m), ...src.map(x => x.m)]);
+  const now = new Date();
+  for (const d of [now, new Date(now.getFullYear(), now.getMonth() - 1, 1)]) {
+    months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  ok(res, { months: [...months].sort().reverse() });
 });
 
 router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
@@ -86,8 +123,18 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       : eq(svodniTabChecksTable.periodMonth, month)))
     .filter(c => tabAllowed(c.factoryLabel));
 
-  const cities = (await db.selectDistinct({ c: svodniRowsTable.city }).from(svodniRowsTable)
-    .where(eq(svodniRowsTable.periodMonth, month))).map(x => x.c)
+  // міста: з рядків місяця ∪ з реєстру джерел (payroll_sources) — щоб місто
+  // без згенерованої сводної теж мало вкладку з кнопками синку/генерації
+  const { payrollSourcesTable } = await import("@workspace/db");
+  const monthSources = await db.select({ region: payrollSourcesTable.region })
+    .from(payrollSourcesTable).where(eq(payrollSourcesTable.periodMonth, month));
+  const citySet = new Set((await db.selectDistinct({ c: svodniRowsTable.city }).from(svodniRowsTable)
+    .where(eq(svodniRowsTable.periodMonth, month))).map(x => x.c));
+  for (const s of monthSources) {
+    const c = cityOfRegion(s.region);
+    if (c) citySet.add(c);
+  }
+  const cities = [...citySet]
     .filter(c => sensitive || c !== "Офіс") // віртуальне «місто» вкладки офісу
     .sort();
 
@@ -99,7 +146,8 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     .filter(m => tabAllowed(m.factoryLabel))
     .map(m => ({ city: m.city, factoryLabel: m.factoryLabel, colOrder: m.colOrder, info: m.info }));
 
-  ok(res, { month, city, cities, rows, checks, tabMeta, sensitive });
+  const locks = (await monthLocks(month)).map(l => ({ city: l.city, factoryLabel: l.factoryLabel }));
+  ok(res, { month, city, cities, rows, checks, tabMeta, sensitive, locks });
 });
 
 // незматчені люди: місто · фабрика · місяці + кандидати для привʼязки
@@ -170,7 +218,8 @@ const EXTRA_FIELDS = new Set([
   "premiaBase", "premiaAgram", "premiaEs", "ksiegHours", "kontoH", "gotowkaH", "godzFaktBlock", "zaliczkaBlock",
 ]);
 // не компоненти виплати — правка не перераховує do wypłaty
-const NON_PAYOUT_EXTRAS = new Set(["workListHours", "ksiegHours", "kontoH", "gotowkaH", "premiaBase", "premiaAgram", "premiaEs", "godzFaktBlock", "zaliczkaBlock"]);
+// premiaEs тут НЕМАЄ: це бонус за годину (AGRAM) — входить у формулу виплати
+const NON_PAYOUT_EXTRAS = new Set(["workListHours", "ksiegHours", "kontoH", "gotowkaH", "premiaBase", "premiaAgram", "godzFaktBlock", "zaliczkaBlock"]);
 const PAYOUT_COMPONENTS = new Set([
   "hours", "rateNetto", "premia", "zaliczka", "zaliczkaBd", "hostel", "odziez",
   "dojazd", "kara", "komornik", "kaucja", "potracenia",
@@ -190,6 +239,7 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
   if ((OFFICE_TAB_RE.test(factoryLabel) || factoryLabel === EXTRA_STUDENTS_LABEL) && !canSensitive(req)) {
     return fail(res, 403, "forbidden");
   }
+  if (isLocked(await monthLocks(periodMonth), city, factoryLabel)) return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
 
   // фабрика/фірма з довідника (для нового працівника — його фабрика)
   const factories = await db.select().from(factoriesTable);
@@ -250,6 +300,9 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
 router.delete("/svodni/rows/:id", requireCap("svodni"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, id));
+  if (row && isLocked(await monthLocks(row.periodMonth), row.city, row.factoryLabel))
+    return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
   await db.delete(svodniRowsTable).where(eq(svodniRowsTable.id, id));
   ok(res, { ok: true });
 });
@@ -296,6 +349,8 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 
   const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, id));
   if (!row) return fail(res, 404, "not found");
+  if (isLocked(await monthLocks(row.periodMonth), row.city, row.factoryLabel))
+    return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
 
   const set: Record<string, unknown> = { manual: true, mismatch: null };
   const extras = { ...(row.extras as Record<string, unknown>) };
@@ -373,8 +428,11 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   // готівка = до виплати − ksiegNetto (+ Dopłata ES) — та сама формула, що в таблиці
   const rnd = (n: number) => Math.round(n * 100) / 100;
   if (field === "hoursDeclared" && merged.hoursDeclared != null) {
-    if (merged.rateNetto != null) { merged.ksiegNetto = rnd(merged.hoursDeclared * merged.rateNetto); set.ksiegNetto = merged.ksiegNetto; set.konto = merged.ksiegNetto; }
-    if (merged.rateBrutto != null) { merged.ksiegBrutto = rnd(merged.hoursDeclared * merged.rateBrutto); set.ksiegBrutto = merged.ksiegBrutto; }
+    // ручні księg. години → по księgowій парі ставок (бонус понад стандартну
+    // пару в конто не входить), а не по платіжних ставках рядка
+    const kr = ksiegRatesOf(merged, legalStatusOf(merged.extras?.zusStatus) ?? null);
+    if (kr.netto != null) { merged.ksiegNetto = rnd(merged.hoursDeclared * kr.netto); set.ksiegNetto = merged.ksiegNetto; set.konto = merged.ksiegNetto; }
+    if (kr.brutto != null) { merged.ksiegBrutto = rnd(merged.hoursDeclared * kr.brutto); set.ksiegBrutto = merged.ksiegBrutto; }
   }
   if (field === "konto") { merged.ksiegNetto = merged.konto; set.ksiegNetto = merged.konto; }
   if (field === "ksiegNetto") set.konto = merged.ksiegNetto;
@@ -401,6 +459,9 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
+  // опційні фільтри: одна фабрика або ціле місто (без них — весь місяць)
+  const onlyFactoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : null;
+  const onlyCity = String(req.body?.city ?? "").trim() || null;
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
   const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
@@ -441,14 +502,31 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
 
   // 3) профілі та місто фабрики (з історії сводних)
-  const workerIds = [...new Set([...hoursByPair.values()].map(p => p.workerId))];
-  if (!workerIds.length) return fail(res, 400, "у цьому місяці немає підтверджених годин");
-  const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
-  const wById = new Map(workers.map(w => [w.id, w]));
   const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, id: svodniRowsTable.id })
     .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
   const cityByFactory = new Map<number, string>();
   for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
+  const cityOf = (factoryId: number | null) => (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Люблін";
+
+  // фільтри «одна фабрика» / «ціле місто» + пропуск затверджених фабрик/міст
+  const locks = await monthLocks(month);
+  let skippedLocked = 0;
+  for (const [k, pair] of [...hoursByPair]) {
+    if (onlyFactoryId != null && pair.factoryId !== onlyFactoryId) { hoursByPair.delete(k); continue; }
+    if (onlyCity && cityOf(pair.factoryId) !== onlyCity) { hoursByPair.delete(k); continue; }
+    const label = pair.factoryId != null ? facById.get(pair.factoryId)?.name ?? "Без фабрики" : "Без фабрики";
+    if (isLocked(locks, cityOf(pair.factoryId), label)) { hoursByPair.delete(k); skippedLocked++; }
+  }
+
+  const workerIds = [...new Set([...hoursByPair.values()].map(p => p.workerId))];
+  if (!workerIds.length) {
+    return fail(res, 400, skippedLocked ? "усе вибране затверджено (🔒) — спершу розблокуй" : "немає підтверджених годин у вибраному");
+  }
+  const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
+  const wById = new Map(workers.map(w => [w.id, w]));
+  // становіска: назва позиції працівника → секція рядка (для фабрик з посадами)
+  const positions = await db.select().from(positionsTable);
+  const posById = new Map(positions.map(p => [p.id, p.name]));
 
   // системні джерела відрахувань: виплачені аванси місяця → Zaliczka,
   // зняття за хостел (вкладка «Хостели») → Hostel
@@ -473,7 +551,9 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (!w) continue;
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = fac?.name ?? "Без фабрики";
-    const city = (pair.factoryId != null ? cityByFactory.get(pair.factoryId) : null) ?? "Люблін";
+    const city = cityOf(pair.factoryId);
+    // становіско (секція): позиція з профілю — для фабрик, що ведуть посади
+    const section = fac?.usesPositions && w.positionId != null ? posById.get(w.positionId) ?? null : null;
     const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
     if (prev) {
       // повторне підтвердження: оновлюємо години + системні відрахування
@@ -495,6 +575,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
         ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
+        section: section ?? prev.section,
         manual: true, mismatch: null,
       }).where(eq(svodniRowsTable.id, prev.id));
       updated++;
@@ -505,7 +586,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const under26 = w.birthDate ? isUnder26(w.birthDate) : w.under26;
     const row: any = {
       periodMonth: month, city, firm: null, factoryLabel, factoryId: pair.factoryId,
-      sortIdx: created, rawName: w.fullName, workerId: w.id, linkStatus: "confirmed",
+      section, sortIdx: created, rawName: w.fullName, workerId: w.id, linkStatus: "confirmed",
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
       hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
       rateBrutto: w.hourlyRate ?? null, rateNetto: w.hourlyRateNetto ?? null,
@@ -522,7 +603,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     await db.insert(svodniRowsTable).values(row);
     created++;
   }
-  ok(res, { month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate });
+  ok(res, { month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate, skippedLocked });
 });
 
 // ── Хостели: зняття з ЗП за місяць (джерело колонки Hostel у сводній) ────────
@@ -584,19 +665,122 @@ router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {
   ok(res, await rematchSvodni());
 });
 
-// повний синк із Google (книги місяців з реєстру /payroll) + фабрики
+// синк із Google (книги місяців з реєстру /payroll) + фабрики;
+// опційно city — тягне лише джерела цього міста; затверджені вкладки пропускаються
 router.post("/svodni/sync", requireCap("svodni"), async (req, res) => {
   const months: string[] = Array.isArray(req.body?.months) ? req.body.months.filter(validMonth) : [];
   if (!months.length) return fail(res, 400, "months=[YYYY-MM,…] обовʼязково");
+  const city = String(req.body?.city ?? "").trim() || null;
   try {
     const { syncSvodni } = await import("../services/svodniSync");
-    const result = await syncSvodni(months);
+    const result = await syncSvodni(months, { city });
     const factories = await ensureSvodniFactories();
     ok(res, { result, factories });
   } catch (e) {
     logger.error({ err: e }, "svodni sync failed");
     fail(res, 500, "Помилка синхронізації");
   }
+});
+
+// ── Excel-експорт сводної: весь місяць / місто / фабрика, з вибором колонок ──
+// Документ польською (правило проєкту). Сенситивні колонки — лише з svodniSensitive.
+const XLS_COLS: { key: string; header: string; sensitive?: boolean; get: (r: any) => unknown }[] = [
+  { key: "name", header: "Nazwisko i imię", get: r => r.workerName ?? r.rawName },
+  { key: "section", header: "Stanowisko", get: r => r.section },
+  { key: "hoursNotified", header: "Ilość godz w powiadomieniu", get: r => r.hoursNotified },
+  { key: "hours", header: "Ilość godzin", get: r => r.hours },
+  { key: "shifts", header: "Ilość zmian", get: r => r.shifts },
+  { key: "rateBrutto", header: "Stawka brutto", get: r => r.rateBrutto },
+  { key: "rateNetto", header: "Stawka netto", get: r => r.rateNetto },
+  { key: "premia", header: "Premia", get: r => r.premia },
+  { key: "zaliczka", header: "Zaliczka", get: r => r.zaliczka },
+  { key: "zaliczkaBd", header: "Zaliczka BD", get: r => r.zaliczkaBd },
+  { key: "hostel", header: "Hostel", get: r => r.hostel },
+  { key: "odziez", header: "Odzież", get: r => r.odziez },
+  { key: "dojazd", header: "Dojazd", get: r => r.dojazd },
+  { key: "kara", header: "Kara", get: r => r.kara },
+  { key: "komornik", header: "Komornik", get: r => r.komornik },
+  { key: "kaucja", header: "Kaucja", get: r => r.kaucja },
+  { key: "potracenia", header: "Potrącenia", get: r => r.potracenia },
+  { key: "brutto", header: "Brutto", get: r => r.brutto },
+  { key: "doWyplaty", header: "Do wypłaty", get: r => r.doWyplaty },
+  { key: "legalStatus", header: "Księgowość", get: r => (r.extras as any)?.zusStatus ?? r.legalStatus },
+  { key: "hoursDeclared", header: "Godziny księgowość", sensitive: true, get: r => r.hoursDeclared },
+  { key: "ksiegBrutto", header: "Księg. brutto", sensitive: true, get: r => r.ksiegBrutto },
+  { key: "ksiegNetto", header: "Księg. netto", sensitive: true, get: r => r.ksiegNetto },
+  { key: "konto", header: "Konto", sensitive: true, get: r => r.konto },
+  { key: "gotowka", header: "Gotówka", sensitive: true, get: r => r.gotowka },
+  { key: "kontoNr", header: "Nr konta", sensitive: true, get: r => (r.hr as any)?.kontoNr },
+];
+
+router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.query.month) ? String(req.query.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const city = String(req.query.city ?? "").trim() || null;
+  const factory = String(req.query.factory ?? "").trim() || null;
+  const sensitive = canSensitive(req);
+  const wanted = String(req.query.cols ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  const cols = XLS_COLS.filter(c =>
+    (sensitive || !c.sensitive) && (!wanted.length || c.key === "name" || wanted.includes(c.key)));
+
+  const where = [eq(svodniRowsTable.periodMonth, month)];
+  if (city) where.push(eq(svodniRowsTable.city, city));
+  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
+    .from(svodniRowsTable)
+    .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
+    .where(and(...where))
+    .orderBy(asc(svodniRowsTable.city), asc(svodniRowsTable.factoryLabel), asc(svodniRowsTable.sortIdx));
+  const tabAllowedX = (label: string) => sensitive || (!OFFICE_TAB_RE.test(label) && label !== EXTRA_STUDENTS_LABEL);
+  const rows = raw
+    .filter(({ r }) => tabAllowedX(r.factoryLabel))
+    .filter(({ r }) => !factory || normLabel(r.factoryLabel) === normLabel(factory))
+    .map(({ r, workerName, workerLegal }) => ({
+      ...r, workerName,
+      legalStatus: legalStatusOf((r.extras as any)?.zusStatus) ?? workerLegal ?? null,
+    }));
+  if (!rows.length) return fail(res, 404, "немає рядків за вибором");
+
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const byFactory = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const k = `${r.city} · ${r.factoryLabel}`;
+    (byFactory.get(k) ?? byFactory.set(k, []).get(k)!).push(r);
+  }
+  const collator = new Intl.Collator("pl");
+  for (const [label, list] of byFactory) {
+    // назва вкладки: обрізаємо заборонені символи Excel і 31 символ ліміту
+    const ws = wb.addWorksheet(label.replace(/[\\/?*[\]:]/g, " ").slice(0, 31));
+    ws.addRow(["Lp", ...cols.map(c => c.header)]).font = { bold: true };
+    // секції-становіска, всередині — за алфавітом; без секції — в кінець
+    const sections = new Map<string, typeof list>();
+    for (const r of list) (sections.get(r.section ?? "") ?? sections.set(r.section ?? "", []).get(r.section ?? "")!).push(r);
+    const sectionKeys = [...sections.keys()].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : collator.compare(a, b)));
+    let lp = 1;
+    for (const sec of sectionKeys) {
+      if (sec && sections.size > 1) {
+        const row = ws.addRow([sec]);
+        row.font = { bold: true };
+        ws.mergeCells(row.number, 1, row.number, cols.length + 1);
+      }
+      const people = sections.get(sec)!.sort((a, b) => collator.compare(String(a.workerName ?? a.rawName), String(b.workerName ?? b.rawName)));
+      for (const r of people) ws.addRow([lp++, ...cols.map(c => c.get(r) ?? "")]);
+    }
+    // сумарний рядок по числових колонках
+    const sums = cols.map(c => list.reduce((a, r) => {
+      const v = c.get(r);
+      return typeof v === "number" ? a + v : a;
+    }, 0));
+    const totalRow = ws.addRow(["", ...cols.map((c, i) => ["name", "section", "legalStatus", "kontoNr", "rateBrutto", "rateNetto"].includes(c.key) ? "" : Math.round(sums[i]! * 100) / 100)]);
+    totalRow.font = { bold: true };
+    ws.getCell(totalRow.number, 1).value = "Razem";
+    ws.columns.forEach((col, i) => { col.width = i === 1 ? 32 : 14; });
+  }
+  const buffer = await wb.xlsx.writeBuffer();
+  const namePart = factory ?? city ?? "wszystkie";
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Zestawienie ${namePart} ${month}.xlsx`)}"`);
+  res.send(Buffer.from(buffer));
 });
 
 // застосувати ставки/студент/до-26 місяця до профілів працівників (фінансова дія)
