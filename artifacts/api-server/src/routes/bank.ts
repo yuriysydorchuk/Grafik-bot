@@ -195,7 +195,18 @@ router.get("/bank/transactions", async (req, res) => {
     if (cond) conds.push(sql.raw(cond));
   } else if (typeof q.bucket === "string" && BUCKET[q.bucket]) conds.push(sql.raw(BUCKET[q.bucket]!));
   else if (q.direction === "in" || q.direction === "out") conds.push(eq(bankTransactionsTable.direction, String(q.direction)));
-  if (q.q) { const like = `%${String(q.q)}%`; conds.push(or(ilike(bankTransactionsTable.counterparty, like), ilike(bankTransactionsTable.title, like), ilike(bankTransactionsTable.txType, like))); }
+  if (q.q) {
+    const like = `%${String(q.q)}%`;
+    // рахунки матчимо без пробілів: IBAN копіюють як «PL61 1090 …», у базі — суцільно
+    const likeNs = `%${String(q.q).replace(/\s+/g, "")}%`;
+    conds.push(or(
+      ilike(bankTransactionsTable.counterparty, like),
+      ilike(bankTransactionsTable.title, like),
+      ilike(bankTransactionsTable.txType, like),
+      sql`replace(${bankTransactionsTable.counterpartyAccount}, ' ', '') ILIKE ${likeNs}`,
+      sql`replace(${bankTransactionsTable.account}, ' ', '') ILIKE ${likeNs}`,
+    ));
+  }
   const minA = Number(String(q.minAmount ?? "").replace(",", ".")), maxA = Number(String(q.maxAmount ?? "").replace(",", "."));
   if (q.minAmount && Number.isFinite(minA)) conds.push(gte(bankTransactionsTable.amount, minA));
   if (q.maxAmount && Number.isFinite(maxA)) conds.push(lte(bankTransactionsTable.amount, maxA));

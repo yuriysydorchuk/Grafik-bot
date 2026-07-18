@@ -18,10 +18,11 @@ beforeEach(async () => {
 after(async () => { if (hasTestDb) await closeDb(); });
 
 let seq = 0;
-async function insertTx(tx: { direction: "in" | "out"; date: string; counterparty?: string; title?: string; amount?: number }) {
+async function insertTx(tx: { direction: "in" | "out"; date: string; counterparty?: string; title?: string; amount?: number; account?: string; counterpartyAccount?: string }) {
   await db.insert(bankTransactionsTable).values({
     valueDate: tx.date, direction: tx.direction, amount: tx.amount ?? 100,
     counterparty: tx.counterparty ?? null, title: tx.title ?? null,
+    account: tx.account ?? null, counterpartyAccount: tx.counterpartyAccount ?? null,
     dedupHash: `fin-${seq++}`,
   });
 }
@@ -72,6 +73,27 @@ test("GET /bank/transactions month filter excludes neighbouring months", opts, a
   const rows = res.body.rows ?? res.body;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].counterparty, "MAY");
+});
+
+test("GET /bank/transactions?q= matches account numbers, ignoring spaces", opts, async () => {
+  await insertTx({ direction: "out", date: "2026-05-05", counterparty: "JAKAS FIRMA",
+    counterpartyAccount: "PL61109010140000071219812874" });
+  await insertTx({ direction: "out", date: "2026-05-06", counterparty: "INNA FIRMA",
+    account: "PL27114020040000300201355387" });
+  await insertTx({ direction: "out", date: "2026-05-07", counterparty: "TRZECIA" });
+
+  // IBAN контрагента, вставлений із пробілами як у банківському UI
+  const byCp = await request(app).get("/api/bank/transactions").set("Cookie", owner)
+    .query({ month: "2026-05", q: "PL61 1090 1014 0000 0712 1981 2874" });
+  assert.equal(byCp.status, 200);
+  assert.equal(byCp.body.rows.length, 1);
+  assert.equal(byCp.body.rows[0].counterparty, "JAKAS FIRMA");
+
+  // фрагмент власного рахунку (:25:)
+  const byOwn = await request(app).get("/api/bank/transactions").set("Cookie", owner)
+    .query({ month: "2026-05", q: "1140 2004" });
+  assert.equal(byOwn.body.rows.length, 1);
+  assert.equal(byOwn.body.rows[0].counterparty, "INNA FIRMA");
 });
 
 test("GET /bank/transactions?bucket=cat:fuel wires catCondition into the route", opts, async () => {
