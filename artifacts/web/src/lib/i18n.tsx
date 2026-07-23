@@ -974,8 +974,10 @@ const EN: Record<string, string> = {
   "до кінця": "to end",
   "на зміні": "on shift",
   "посадку не підтверджено": "boarding not confirmed",
+  "явку не відмічено": "attendance not marked",
   "усього": "total",
   "водій не призначений": "no driver assigned",
+  "без довозу": "no transport",
 
   // ── DetailModals ──
   "присутній": "present",

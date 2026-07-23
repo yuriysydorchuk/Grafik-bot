@@ -3242,7 +3242,7 @@ router.get("/live", async (_req, res) => {
         const st = fShifts[s - 1];
         const enRoute = trips.some(t => t.factoryId === f.id && t.shift === sc && t.pickup && !t.arrived);
         shiftsOut.push({
-          factoryId: f.id, factory: f.name, shift: s,
+          factoryId: f.id, factory: f.name, shift: s, usesTransport: f.usesTransport,
           start: st?.start ?? null, end: st?.end ?? null,
           startMin: st ? toMin(st.start) : null, endMin: st ? toMin(st.end) : null,
           drivers: assigns.filter(a => a.factoryId === f.id && a.shift === sc).map(a => ({ id: a.driverId, name: a.driverName })),

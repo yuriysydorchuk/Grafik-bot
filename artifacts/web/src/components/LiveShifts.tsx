@@ -14,6 +14,7 @@ const dateOf = (weekStart: string, day: DayCode) => {
 interface LiveWorker { workerId: number; name: string; status: string; enRoute: boolean; pickedUpBy: string | null }
 interface LiveShift {
   factoryId: number; factory: string; shift: number; start: string | null; end: string | null;
+  usesTransport: boolean;
   startMin: number | null; endMin: number | null;
   drivers: { id: number; name: string | null }[]; workers: LiveWorker[];
   present: number; absent: number; total: number; enRoute: boolean;
@@ -41,6 +42,8 @@ function shiftPhase(s: LiveShift, curMin: number, t: TFn): { label: string; colo
   // ── Before start: the boarding window ──
   if (cur < start) {
     const toStart = `${t("до початку")} ${fmtDur(start - cur, t)}`;
+    // No-transport factory: there is no boarding — workers get there on their own.
+    if (!s.usesTransport) return { label: toStart, color: "text-slate-500", bar: "bg-slate-300", pct: 0 };
     if (s.present > 0) return { label: `${t("забрано")} ${s.present} · ${toStart}`, color: "text-emerald-600", bar: "bg-emerald-500", pct: 0 };
     return { label: `${t("очікує посадки")} · ${toStart}`, color: "text-amber-600", bar: "bg-amber-400", pct: 0 };
   }
@@ -49,6 +52,9 @@ function shiftPhase(s: LiveShift, curMin: number, t: TFn): { label: string; colo
   const pct = Math.round(((cur - start) / (end - start)) * 100);
   const left = `${t("до кінця")} ${fmtDur(end - cur, t)}`;
   if (s.present > 0) return { label: `${t("на зміні")} ${fmtDur(cur - start, t)} · ${left}`, color: "text-emerald-600", bar: "bg-emerald-500", pct };
+  // No boarding to confirm on a no-transport factory — presence is marked manually,
+  // so an empty list is a reminder for the scheduler, not a driver alarm.
+  if (!s.usesTransport) return { label: `${t("явку не відмічено")} · ${left}`, color: "text-amber-600", bar: "bg-amber-400", pct };
   return { label: `${t("посадку не підтверджено")} · ${left}`, color: "text-rose-600", bar: "bg-rose-400", pct };
 }
 
@@ -110,7 +116,11 @@ export function LiveShifts() {
                 </div>
                 <div className="mt-2 flex items-center gap-1.5 border-t border-slate-100 pt-2 text-xs">
                   <Truck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                  <span className="text-slate-600">{s.drivers.map(d => d.name).filter(Boolean).join(", ") || t("водій не призначений")}</span>
+                  <span className="text-slate-600">
+                    {s.usesTransport
+                      ? s.drivers.map(d => d.name).filter(Boolean).join(", ") || t("водій не призначений")
+                      : t("без довозу")}
+                  </span>
                 </div>
               </div>
             );
