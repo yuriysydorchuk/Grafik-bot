@@ -6,7 +6,11 @@ import { useT } from "../lib/i18n";
 
 // Week picker: the 3 nearest weeks as buttons (current is the default) + an "Архів"
 // dropdown for older weeks that have data. Each entry shows ISO week № and Mon–Sun dates.
-export function WeekSelect({ value, onChange, className }: { value: string; onChange: (v: string) => void; className?: string }) {
+// `limit` trims the button row, `showArchive={false}` hides the dropdown — the Telegram
+// Mini App shows a slimmed-down picker (this week + next, no archive).
+export function WeekSelect({ value, onChange, className, limit, showArchive = true }: {
+  value: string; onChange: (v: string) => void; className?: string; limit?: number; showArchive?: boolean;
+}) {
   const t = useT();
   const { data: weeks = [] } = useQuery<WeekRow[]>({ queryKey: ["weeks"], queryFn: () => get("/weeks") });
   const statusOf = (ws: string) => weeks.find(w => w.weekStart === ws)?.status;
@@ -19,7 +23,7 @@ export function WeekSelect({ value, onChange, className }: { value: string; onCh
     return s === "approved" ? ` · ✓ ${t("затв.")}` : s === "draft" ? ` · ${t("чернетка")}` : "";
   };
 
-  const upcoming = upcomingWeeks();
+  const upcoming = limit ? upcomingWeeks().slice(0, limit) : upcomingWeeks();
   const upValues = new Set(upcoming.map(u => u.value));
   const archive = weeks.filter(w => w.entries > 0 && !upValues.has(w.weekStart)).sort((a, b) => b.weekStart.localeCompare(a.weekStart));
 
@@ -49,7 +53,7 @@ export function WeekSelect({ value, onChange, className }: { value: string; onCh
         );
       })}
 
-      {archive.length > 0 && (
+      {showArchive && archive.length > 0 && (
         <div className="flex flex-col justify-center">
           <span className="mb-0.5 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t("Архів")}</span>
           <Select

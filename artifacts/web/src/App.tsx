@@ -1,7 +1,10 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Route, Switch, Redirect } from "wouter";
 import { get, type Me } from "./lib/api";
+import { isTelegramWebApp, telegramLogin } from "./lib/telegram";
 import { canAccessPage } from "./lib/roles";
+import { useT } from "./lib/i18n";
 import { Spinner } from "./components/ui";
 import { Layout } from "./components/Layout";
 import Login from "./pages/Login";
@@ -40,14 +43,36 @@ import Admins from "./pages/Admins";
 import Security from "./pages/Security";
 
 export default function App() {
+  const t = useT();
   const onLogin = location.pathname.startsWith("/login");
+  // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
+  // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
+  const [tgReady, setTgReady] = useState(!isTelegramWebApp);
+  useEffect(() => {
+    if (!isTelegramWebApp) return;
+    telegramLogin().finally(() => setTgReady(true));
+  }, []);
   const { data: me, isLoading, isError } = useQuery<Me>({
-    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin,
+    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && tgReady,
   });
 
   if (onLogin) return <Login />;
-  if (isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
+  if (!tgReady || isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
   if (isError || !me) return <Login />;
+
+  // Inside Telegram the panel is a single-purpose Mini App: driver assignments only,
+  // no site chrome and no other pages — regardless of the user's web role.
+  if (isTelegramWebApp) {
+    return (
+      <div className="min-h-dvh bg-slate-50 px-3 py-4 sm:px-6">
+        <div className="mx-auto max-w-6xl">
+          {canAccessPage(me, "/driver-shifts")
+            ? <DriverShifts />
+            : <div className="py-10 text-center text-sm text-slate-500">{t("Ваша роль не має доступу до призначень водіїв.")}</div>}
+        </div>
+      </div>
+    );
+  }
 
   const guard = (path: string, el: React.ReactNode) =>
     canAccessPage(me, path) ? el : <Redirect to="/" />;

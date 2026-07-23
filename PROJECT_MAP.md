@@ -46,7 +46,7 @@ Grafik-bot/
 
 Префікс `/api`. Авторизація: сесійний cookie `grafik_session` (`authRequired`, HMAC-токен зі вшитим `token_version`); мутації під `requireRole(...)`; керування адмінами — `requireMainAdmin`. Фінанси — owner only. **Відкликання сесій:** `authRequired` звіряє `payload.tv` з `admins.token_version` щозапиту; logout / зміна пароля / reset-web інкрементять версію → всі старі токени адміна миттєво недійсні («вийти скрізь»). 2FA-код — `crypto.randomInt`.
 
-**Auth:** `POST /auth/login`, `POST /auth/verify-2fa`, `POST /auth/logout`, `GET /auth/me` · **Health:** `GET /healthz`
+**Auth:** `POST /auth/login`, `POST /auth/verify-2fa`, `POST /auth/telegram-webapp` (вхід із Telegram Mini App: верифікація WebApp `initData` HMAC-ом бот-токена — `lib/telegramWebApp.ts`, під тестами; сесія видається адміну з відповідним `telegram_id`), `POST /auth/logout`, `GET /auth/me` · **Health:** `GET /healthz`
 
 **Працівники/документи:** `GET/POST /workers`, `GET/PATCH /workers/:id`, `POST /workers/:id/fire|restore`, `DELETE /workers/:id` (hard-delete, owner), `GET /workers/:id/invite`, `GET/POST /workers/:id/documents`, `PATCH/DELETE /worker-documents/:id`, `POST/GET /worker-documents/:id/file` (аплоуд/стрім файлу, диск `uploads/`), `GET/POST/PATCH/DELETE /document-types`
 
@@ -94,7 +94,7 @@ Grafik-bot/
 Telegraf, **long-polling**, один інстанс. Деталі — [`artifacts/api-server/src/bot/README.md`](artifacts/api-server/src/bot/README.md).
 
 - **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал, `fac`=самореєстрація на фабрику; вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
-- **Навігація:** reply-keyboard меню за роллю (`menus.ts`); `bot.hears` (~53, двомовний матч через `bhears`).
+- **Навігація:** reply-keyboard меню за роллю (`menus.ts`); `bot.hears` (~53, двомовний матч через `bhears`). Головний водій має web_app-кнопку «🖥 Панель призначень» (Telegram Mini App: відкриває `/driver-shifts` панелі з авто-логіном через `POST /auth/telegram-webapp`; зʼявляється лише коли задано `WEB_APP_URL`).
 - **Дії:** inline-кнопки `bot.action` (~32) — підтвердження відсутностей, мова, редагування графіку.
 - **Введення:** `bot.on("text"|"photo"|"document")` у межах активного кроку діалогу.
 - **Стан діалогів:** власний (`state.ts`) — in-memory Map + write-through у `user_states` (переживає рестарт; відновлення `loadStates()`).

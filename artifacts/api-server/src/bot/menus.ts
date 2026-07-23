@@ -2,6 +2,9 @@ import { Markup } from "telegraf";
 import { t, tb, type Lang } from "./i18n";
 
 export const adminMenu = (lang: Lang = "uk") => Markup.keyboard([
+  // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
+  // (prod keeps it head-driver-only per owner's decision).
+  ...(process.env.WEB_APP_ADMIN === "1" && webAppUrl() ? [[Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]] : []),
   [tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")],
   [tb(lang, "✅ Перегляд графіків")],
   [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
@@ -24,10 +27,18 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   return Markup.keyboard(rows).resize();
 };
 
+// Mini App button: opens the admin panel inside Telegram (auto-login via initData).
+// Telegram rejects non-HTTPS web_app URLs, so the row appears only with a proper env.
+const webAppUrl = () => {
+  const base = process.env.WEB_APP_URL ?? "";
+  return base.startsWith("https://") ? base.replace(/\/$/, "") : null;
+};
+
 // `onShift` swaps the workday button: start it when the driver leaves the base,
 // finish it when they return (both ask for an odometer reading).
 export const headDriverMenu = (lang: Lang = "uk", onShift = false) => Markup.keyboard([
   [tb(lang, "📋 Призначити водіїв"), tb(lang, "📅 Графік тижня")],
+  ...(webAppUrl() ? [[Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]] : []),
   [tb(lang, "👥 Мій список водіїв"), tb(lang, "🚙 Авто")],
   [tb(lang, "📍 Моя зміна сьогодні"), tb(lang, "📅 Мій графік")],
   [onShift ? tb(lang, "🏁 Закінчити зміну") : tb(lang, "🚗 Почати зміну")],

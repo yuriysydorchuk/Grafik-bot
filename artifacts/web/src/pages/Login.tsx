@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button, Input, Label } from "../components/ui";
 import { useT } from "../lib/i18n";
+import { isTelegramWebApp, tgLoginError } from "../lib/telegram";
 
 async function postRaw(path: string, body: any) {
   const r = await fetch(`/api${path}`, {
@@ -52,6 +53,11 @@ export default function Login() {
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Панель графіків")}</p>
         </div>
 
+        {isTelegramWebApp && tgLoginError() && (
+          <div className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {t("Автовхід через Telegram не вдався:")} {tgLoginError()}
+          </div>
+        )}
         {stage === "login" ? (
           <form onSubmit={submitLogin} className="space-y-4">
             <div>

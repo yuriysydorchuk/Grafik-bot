@@ -82,14 +82,17 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
   }, [open, onClose]);
   if (!open) return null;
   const maxW = size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md";
+  // xl modals are real "work surfaces" (e.g. driver assignments) — go full-screen on phones
+  const overlay = size === "xl" ? "p-0 sm:p-4 sm:pt-20" : "p-4 pt-20";
+  const panel = size === "xl" ? "min-h-dvh rounded-none sm:min-h-0 sm:rounded-2xl" : "rounded-2xl";
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 pt-20 backdrop-blur-[2px] animate-fade-in" onClick={onClose}>
-      <div className={`w-full ${maxW} rounded-2xl bg-white shadow-xl ring-1 ring-slate-900/5 animate-pop-in`} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`} onClick={onClose}>
+      <div className={`w-full ${maxW} ${panel} bg-white shadow-xl ring-1 ring-slate-900/5 animate-pop-in`} onClick={e => e.stopPropagation()}>
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-5 py-3.5">
           <h3 className="text-base font-semibold text-slate-800">{title}</h3>
           <button onClick={onClose} className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"><X className="h-5 w-5" /></button>
         </div>
-        <div className="px-5 py-4">{children}</div>
+        <div className="px-4 py-4 sm:px-5">{children}</div>
       </div>
     </div>
   );

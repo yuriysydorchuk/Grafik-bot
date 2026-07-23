@@ -10,6 +10,7 @@ import { Button, Card, Empty, Badge, Modal, Spinner } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+import { isTelegramWebApp } from "../lib/telegram";
 
 type PickupGap = { reason: "none" | "capacity"; people: number; seats: number | null } | null;
 type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap; cancelled?: boolean };
@@ -39,6 +40,30 @@ const initials = (name: string) => name.split(/\s+/).slice(0, 2).map(w => w[0]).
 const shiftsOf = (f: FactoryBoard) => [...new Set(f.cells.map(c => c.shift))].sort() as ShiftCode[];
 const daysOf = (f: FactoryBoard) => DAYS.filter(d => f.cells.some(c => c.day === d));
 const hoursOf = (f: FactoryBoard, s: ShiftCode) => { const c = f.cells.find(c => c.shift === s); return c?.start && c?.end ? `${c.start}–${c.end}` : ""; };
+// Mobile layout shows one day at a time (chips row); default = today when it's inside the week
+const dayToday = (weekStart: string): DayCode => {
+  const i = DAYS.findIndex((_, idx) => ymdAt(weekStart, idx) === todayYmd());
+  return i >= 0 ? DAYS[i]! : "mon";
+};
+const daysUnion = (factories: FactoryBoard[]) => DAYS.filter(d => factories.some(f => f.cells.some(c => c.day === d)));
+
+// Horizontal day picker for phones (shared by the overview and the assign modal)
+function DayChips({ weekStart, days, value, onChange }: { weekStart: string; days: DayCode[]; value: DayCode; onChange: (d: DayCode) => void }) {
+  return (
+    <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+      {days.map(d => {
+        const past = isPastDay(weekStart, d);
+        return (
+          <button key={d} type="button" onClick={() => onChange(d)}
+            className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              value === d ? "bg-red-600 text-white shadow-sm" : "bg-white text-slate-600 ring-1 ring-slate-200"} ${past ? "opacity-50" : ""}`}>
+            {DAY_UK[d]} <span className={value === d ? "text-red-200" : "text-slate-400"}>{dayDate(weekStart, dayIdx(d))}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function DriverShifts() {
   const t = useT();
@@ -46,6 +71,8 @@ export default function DriverShifts() {
   const confirm = useConfirm();
   const [weekStart, setWeekStart] = usePersisted<string>("sel.dshift.week", upcomingWeeks()[0]!.value);
   const [editDriver, setEditDriver] = useState<DriverRow | null>(null);
+  const [mobileDay, setMobileDay] = useState<DayCode>(() => dayToday(weekStart));
+  useEffect(() => { setMobileDay(dayToday(weekStart)); }, [weekStart]);
 
   // The persisted selection must not resurrect a finished week: assigning into it
   // silently lands in the past (recurring head-driver trap on weekends).
@@ -78,7 +105,9 @@ export default function DriverShifts() {
     <>
       <PageHeader title={t("Призначення водіїв")} subtitle={t("Огляд усіх фабрик і змін — оберіть водія, щоб призначити")} />
 
-      <WeekSelect value={weekStart} onChange={setWeekStart} className="mb-4" />
+      {/* Telegram Mini App: slim picker — this week + next, no archive */}
+      <WeekSelect value={weekStart} onChange={setWeekStart} className="mb-4"
+        limit={isTelegramWebApp ? 2 : undefined} showArchive={!isTelegramWebApp} />
 
       {showNextWeekHint && (
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
@@ -100,10 +129,12 @@ export default function DriverShifts() {
           {/* Drivers first — the main working list: pick a driver, then assign shifts */}
           <div className="flex items-center justify-between">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700"><Truck className="h-4 w-4 text-red-600" /> {t("Водії")}</h3>
-            <Button variant="secondary" loading={copyPrev.isPending}
-              onClick={async () => { if (await confirm({ title: t("Скопіювати призначення?"), message: t("Призначення водіїв з тижня {week} замінять поточні цього тижня.", { week: weekLabel(prevWeek(weekStart)) }), confirmText: t("Скопіювати") })) copyPrev.mutate(); }}>
-              <CopyPlus className="h-4 w-4" /> {t("З попереднього тижня")}
-            </Button>
+            {!isTelegramWebApp && (
+              <Button variant="secondary" loading={copyPrev.isPending}
+                onClick={async () => { if (await confirm({ title: t("Скопіювати призначення?"), message: t("Призначення водіїв з тижня {week} замінять поточні цього тижня.", { week: weekLabel(prevWeek(weekStart)) }), confirmText: t("Скопіювати") })) copyPrev.mutate(); }}>
+                <CopyPlus className="h-4 w-4" /> {t("З попереднього тижня")}
+              </Button>
+            )}
           </div>
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {!drivers.length ? <Empty>{t("Немає водіїв. Додайте їх на вкладці «Водії».")}</Empty> : drivers.map(d => {
@@ -131,7 +162,8 @@ export default function DriverShifts() {
             <div className="mt-6"><Empty>{data?.hasWeek ? t("Немає змін у графіку на цей тиждень") : t("Графік на цей тиждень ще не згенеровано")}</Empty></div>
           ) : (
             <div className="mt-6 space-y-4">
-              {factories.map(f => <FactoryCard key={f.id} f={f} weekStart={weekStart} />)}
+              <div className="sm:hidden"><DayChips weekStart={weekStart} days={daysUnion(factories)} value={mobileDay} onChange={setMobileDay} /></div>
+              {factories.map(f => <FactoryCard key={f.id} f={f} weekStart={weekStart} mobileDay={mobileDay} />)}
             </div>
           )}
         </>
@@ -142,8 +174,8 @@ export default function DriverShifts() {
   );
 }
 
-// Overview: columns = days (horizontal), rows = shifts (vertical)
-function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
+// Overview: columns = days (horizontal), rows = shifts (vertical); phones get a one-day list
+function FactoryCard({ f, weekStart, mobileDay }: { f: FactoryBoard; weekStart: string; mobileDay: DayCode }) {
   const t = useT();
   const shifts = useMemo(() => shiftsOf(f), [f]);
   const days = useMemo(() => daysOf(f), [f]);
@@ -166,7 +198,45 @@ function FactoryCard({ f, weekStart }: { f: FactoryBoard; weekStart: string }) {
           <Send className="h-3.5 w-3.5" /> {t("Сповістити працівників")}
         </button>
       </div>
-      <div className="overflow-x-auto">
+      {/* Phone: just the day picked in the chips row, stacked vertically */}
+      <div className="sm:hidden">
+        {(() => {
+          const dayCells = f.cells.filter(c => c.day === mobileDay).sort((a, b) => a.shift.localeCompare(b.shift));
+          if (!dayCells.length) return <div className="px-4 py-3 text-sm text-slate-300">—</div>;
+          const past = isPastDay(weekStart, mobileDay);
+          return (
+            <div className={`divide-y divide-slate-100 ${past ? "opacity-50" : ""}`}>
+              {dayCells.map(c => (
+                <div key={c.shift} className="flex items-start gap-3 px-4 py-3">
+                  <div className="w-20 shrink-0">
+                    <div className="text-sm font-semibold text-slate-700">{c.shift} {t("зм")}</div>
+                    {c.start && c.end && <div className="text-[11px] text-slate-400">{c.start}–{c.end}</div>}
+                    <div className="mt-0.5 text-xs text-slate-500">{c.headcount} {t("ос.")}</div>
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    {c.cancelled && <div><Badge color="rose">❌ {t("скасовано")}</Badge></div>}
+                    <div className="flex flex-wrap gap-1">
+                      {c.drivers.length ? c.drivers.map(dr => (
+                        <span key={dr.id} className="rounded-md bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-700">{dr.name}</span>
+                      )) : <span className="text-xs text-slate-300">{t("без водія")}</span>}
+                    </div>
+                    {c.pickupDrivers.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {c.pickupDrivers.map(dr => (
+                          <span key={dr.id} className="rounded-md bg-sky-50 px-1.5 py-0.5 text-xs font-medium text-sky-700" title={t("Забрати зі зміни")}>🔙 {dr.name}</span>
+                        ))}
+                      </div>
+                    )}
+                    {c.pickupGap && <div><Badge color="amber">⚠️ {t("нема кому забрати")}</Badge></div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
+      {/* Desktop: full week table */}
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="text-xs text-slate-400">
@@ -240,6 +310,7 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
   }, [factories, driver.id]);
   const [sel, setSel] = useState<Set<string>>(new Set(initial));
   const [notify, setNotify] = useState(!!driver.telegramId);
+  const [mDay, setMDay] = useState<DayCode>(() => dayToday(weekStart));
 
   const toggle = (k: string) => setSel(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const setMany = (keys: string[], on: boolean) => setSel(prev => { const n = new Set(prev); for (const k of keys) on ? n.add(k) : n.delete(k); return n; });
@@ -270,9 +341,71 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
   return (
     <Modal open onClose={onClose} title={`${t("Призначення")} — ${driver.isHeadDriver ? "👑 " : ""}${driver.name}`} size="xl">
       <div className="space-y-4">
-        <p className="text-xs text-slate-400">{t("Натискайте клітинки, щоб призначити водія на зміну. Скористайтесь «вся фабрика» / «усі дні» / «весь день» для швидкого вибору.")}</p>
+        <p className="hidden text-xs text-slate-400 sm:block">{t("Натискайте клітинки, щоб призначити водія на зміну. Скористайтесь «вся фабрика» / «усі дні» / «весь день» для швидкого вибору.")}</p>
+        <p className="text-xs text-slate-400 sm:hidden">{t("Оберіть день і натискайте зміни, щоб призначити водія. 🔙 — забрати людей зі зміни.")}</p>
 
-        {!factories.length ? <Empty>{t("Немає змін для призначення")}</Empty> : factories.map(f => {
+        {/* Phone: one day at a time, big tap targets */}
+        {factories.length > 0 && (
+          <div className="space-y-3 sm:hidden">
+            <DayChips weekStart={weekStart} days={daysUnion(factories)} value={mDay} onChange={setMDay} />
+            {factories.map(f => {
+              const cells = f.cells.filter(c => c.day === mDay).sort((a, b) => a.shift.localeCompare(b.shift));
+              if (!cells.length) return null;
+              const past = isPastDay(weekStart, mDay);
+              const dayKeys = cells.filter(c => !c.cancelled && !past).map(c => cellKey(f.id, mDay, c.shift));
+              return (
+                <div key={f.id} className="overflow-hidden rounded-xl border border-slate-200">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
+                    <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-700"><Truck className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{f.name}</span></span>
+                    {dayKeys.length > 0 && <BulkChip on={allSel(dayKeys)} onClick={() => setMany(dayKeys, !allSel(dayKeys))}>{t("весь день")}</BulkChip>}
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {cells.map(c => {
+                      const k = cellKey(f.id, mDay, c.shift);
+                      const kp = k + "-p";
+                      const on = sel.has(k), onP = sel.has(kp);
+                      const others = c.drivers.filter(x => x.id !== driver.id);
+                      const othersP = c.pickupDrivers.filter(x => x.id !== driver.id);
+                      if (c.cancelled) {
+                        return (
+                          <div key={c.shift} className="px-3 py-2.5">
+                            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600">❌ {c.shift} {t("зм")} — {t("скасовано")}</div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={c.shift} className={`px-3 py-2.5 ${past ? "opacity-50" : ""}`}>
+                          <div className="flex items-stretch gap-2">
+                            <button type="button" disabled={past} onClick={() => toggle(k)}
+                              className={`flex flex-1 items-center justify-between rounded-lg border px-3 py-2.5 text-sm font-medium transition ${
+                                on ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-700 active:border-red-300"}`}>
+                              <span>{c.shift} {t("зм")}{c.start && c.end ? <span className={`ml-1.5 text-xs font-normal ${on ? "text-red-200" : "text-slate-400"}`}>{c.start}–{c.end}</span> : null}</span>
+                              <span className="flex items-center gap-1.5">
+                                {on && <Check className="h-4 w-4" />}
+                                <span className={`text-xs ${on ? "text-red-100" : "text-slate-500"}`}>{c.headcount} {t("ос.")}</span>
+                              </span>
+                            </button>
+                            <button type="button" disabled={past} onClick={() => toggle(kp)} title={t("Забрати зі зміни")}
+                              className={`shrink-0 rounded-lg border px-3 py-2.5 text-sm font-medium transition ${
+                                onP ? "border-sky-600 bg-sky-600 text-white" : c.pickupGap ? "border-amber-300 bg-amber-50 text-amber-700" : "border-slate-200 bg-white text-slate-400"}`}>
+                              🔙{onP ? " ✓" : c.pickupGap ? " ⚠️" : ""}
+                            </button>
+                          </div>
+                          {past && <div className="mt-1 text-[10px] text-slate-400">{t("минув")}</div>}
+                          {(others.length > 0 || othersP.length > 0) && (
+                            <div className="mt-1 text-[11px] text-slate-400">+{[...others.map(o => o.name), ...othersP.map(o => `🔙${o.name}`)].join(", ")}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!factories.length ? <Empty>{t("Немає змін для призначення")}</Empty> : <div className="hidden space-y-4 sm:block">{factories.map(f => {
           const shifts = shiftsOf(f), days = daysOf(f);
           // Bulk toggles must not touch cancelled cells nor days already in the past
           const selectable = f.cells.filter(c => !c.cancelled && !isPastDay(weekStart, c.day));
@@ -371,7 +504,7 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
               </div>
             </div>
           );
-        })}
+        })}</div>}
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
           <label className="flex items-center gap-1.5 text-sm text-slate-600">

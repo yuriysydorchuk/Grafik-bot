@@ -5,6 +5,7 @@ import { db } from "@workspace/db";
 import { adminsTable, rolesTable, adminSessionsTable, loginEventsTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { verifyPassword, createToken, verifyToken, authRequired, SESSION_COOKIE, type AuthedRequest } from "../lib/auth";
+import { verifyWebAppInitData } from "../lib/telegramWebApp";
 import { clientIp, parseDevice, lookupGeo } from "../lib/clientInfo";
 import { logger } from "../lib/logger";
 
@@ -116,6 +117,24 @@ router.post("/auth/verify-2fa", authLimiter, async (req, res) => {
   pending.delete(String(pendingId));
   const admin = (await db.select().from(adminsTable).where(eq(adminsTable.id, p.adminId)))[0];
   if (!admin) return res.status(401).json({ error: "Акаунт не знайдено" });
+  const sid = await setSession(req, res, admin);
+  await logEvent(req, "success", { adminId: admin.id, usernameTried: admin.username, sessionId: sid });
+  return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner" });
+});
+
+// Telegram Mini App: the panel opened inside Telegram logs in by the WebApp initData
+// signature instead of password+2FA. Telegram itself vouches for the user identity, so a
+// verified telegram_id mapping to an existing admin account is the whole authentication.
+router.post("/auth/telegram-webapp", authLimiter, async (req, res) => {
+  const { initData } = req.body ?? {};
+  const botToken = process.env.TELEGRAM_BOT_TOKEN ?? "";
+  const verified = verifyWebAppInitData(String(initData ?? ""), botToken);
+  if (!verified) return res.status(401).json({ error: "Не вдалося підтвердити Telegram-підпис. Відкрийте панель через кнопку в боті ще раз." });
+  const admin = (await db.select().from(adminsTable).where(eq(adminsTable.telegramId, String(verified.user.id))))[0];
+  if (!admin) {
+    await logEvent(req, "no_telegram", { usernameTried: `tg:${verified.user.id}` });
+    return res.status(403).json({ error: "Цей Telegram-акаунт не має доступу до панелі. Зверніться до власника." });
+  }
   const sid = await setSession(req, res, admin);
   await logEvent(req, "success", { adminId: admin.id, usernameTried: admin.username, sessionId: sid });
   return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner" });
