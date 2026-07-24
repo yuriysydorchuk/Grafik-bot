@@ -4,14 +4,14 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, SunMoon, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
 import { canAccessPage } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
 import { useT, useLang } from "../lib/i18n";
-import { useTheme, type ThemePref } from "../lib/theme";
+import { useTheme } from "../lib/theme";
 
 function LangToggle() {
   const { lang, setLang } = useLang();
@@ -27,17 +27,16 @@ function LangToggle() {
   );
 }
 
-// Cycles light → dark → system; in "system" the icon shows the source of truth.
+// Flips the RESOLVED theme, so every click visibly changes it (cycling through
+// "system" felt like a dead click). System stays the default until first use;
+// the icon shows what you'll get.
 function ThemeToggle() {
   const t = useT();
-  const { pref, dark, setPref } = useTheme();
-  const next: ThemePref = pref === "light" ? "dark" : pref === "dark" ? "system" : "light";
-  const title = pref === "light" ? t("Тема: світла") : pref === "dark" ? t("Тема: темна") : t("Тема: як у системі");
-  const Icon = pref === "system" ? SunMoon : dark ? Moon : Sun;
+  const { dark, setPref } = useTheme();
   return (
-    <button onClick={() => setPref(next)} title={title}
+    <button onClick={() => setPref(dark ? "light" : "dark")} title={dark ? t("Тема: світла") : t("Тема: темна")}
       className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:text-slate-700">
-      <Icon className="h-4 w-4" />
+      {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
   );
 }
