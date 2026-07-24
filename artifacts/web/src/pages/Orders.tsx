@@ -20,7 +20,9 @@ const sumReq = (lines: OrderRequirement[]) => lines.reduce((s, l) => s + (Number
 export default function Orders() {
   const t = useT();
   const qc = useQueryClient();
-  const { data: factories = [], isLoading } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const { data: allFactories = [], isLoading } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  // зарплатні фабрики без планування (Лодзь/Познань) у замовленнях не світяться
+  const factories = allFactories.filter(f => f.usesScheduling !== false);
   const [factoryId, setFactoryId] = usePersisted<string>("sel.factory", "");
   const [weekStart, setWeekStart] = useState(upcomingWeeks()[0]!.value);
   const [grid, setGrid] = useState<OrderMap>({});

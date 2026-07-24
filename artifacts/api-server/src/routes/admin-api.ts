@@ -1413,7 +1413,7 @@ function cleanStops(input: any): { name: string; time: string }[] | undefined {
 }
 
 router.post("/factories", RW, async (req, res) => {
-  const { name, address, companyId, shifts, genMode, usesAvailability, usesPositions, usesGender, usesTransport, showWorkerHours, showCode, invoiceRate, stops, positions } = req.body ?? {};
+  const { name, address, companyId, shifts, genMode, usesAvailability, usesPositions, usesGender, usesTransport, usesScheduling, showWorkerHours, showCode, invoiceRate, stops, positions } = req.body ?? {};
   if (!name?.trim()) return fail(res, 400, "Вкажіть назву");
   const cs = cleanShifts(shifts);
   const values: any = { name: name.trim(), address: address?.trim() || null, companyId: companyId ?? null };
@@ -1426,6 +1426,7 @@ router.post("/factories", RW, async (req, res) => {
   if (usesPositions !== undefined) values.usesPositions = !!usesPositions;
   if (usesGender !== undefined) values.usesGender = !!usesGender;
   if (usesTransport !== undefined) values.usesTransport = !!usesTransport;
+  if (usesScheduling !== undefined) values.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
@@ -1448,7 +1449,7 @@ router.post("/factories", RW, async (req, res) => {
 
 router.patch("/factories/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const { name, address, clientEmail, companyId, shifts, shiftCount, genMode, usesAvailability, usesPositions, usesGender, usesTransport, showWorkerHours, showCode, invoiceRate, positions } = req.body ?? {};
+  const { name, address, clientEmail, companyId, shifts, shiftCount, genMode, usesAvailability, usesPositions, usesGender, usesTransport, usesScheduling, showWorkerHours, showCode, invoiceRate, positions } = req.body ?? {};
   const patch: any = {};
   for (const [k, v] of Object.entries({ name, address, clientEmail })) {
     if (v !== undefined) patch[k] = v === "" ? null : v;
@@ -1485,6 +1486,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (usesPositions !== undefined) patch.usesPositions = !!usesPositions;
   if (usesGender !== undefined) patch.usesGender = !!usesGender;
   if (usesTransport !== undefined) patch.usesTransport = !!usesTransport;
+  if (usesScheduling !== undefined) patch.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) patch.showCode = !!showCode;
   const st = cleanStops(req.body?.stops);

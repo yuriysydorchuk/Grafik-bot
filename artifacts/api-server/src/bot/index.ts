@@ -44,9 +44,10 @@ const wlang = (w?: { language?: string | null } | null): Lang => asLang(w?.langu
 const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang: Lang = "uk") => {
   if (!worker?.factoryId) return workerMenu(lang);
   const [f] = await db
-    .select({ availability: factoriesTable.usesAvailability, hours: factoriesTable.showWorkerHours })
+    .select({ availability: factoriesTable.usesAvailability, hours: factoriesTable.showWorkerHours, scheduling: factoriesTable.usesScheduling })
     .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
-  return workerMenu(lang, f ? { availability: f.availability, hours: f.hours } : {});
+  // фабрика без планування (зарплатна, Лодзь/Познань): доступність не збираємо
+  return workerMenu(lang, f ? { availability: f.availability && f.scheduling, hours: f.hours } : {});
 };
 // Office/admin & driver chosen UI language (uk default; only uk/en offered)
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);

@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import { db } from "@workspace/db";
 import { availabilityTable, workersTable, factoriesTable, type DayOfWeek, type Shift } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
 const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -243,9 +243,12 @@ export async function getWorkersWhoHaventSubmitted(weekStart: string): Promise<W
 
   const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
 
-  // Manual factories don't collect availability — exclude their workers
+  // Manual factories don't collect availability — exclude their workers.
+  // Фабрики без планування (uses_scheduling=false, зарплатні Лодзь/Познань) — теж:
+  // їхнім людям бот доступність не пропонує і не нагадує
   const manualFactoryIds = new Set(
-    (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.usesAvailability, false)))
+    (await db.select({ id: factoriesTable.id }).from(factoriesTable)
+      .where(or(eq(factoriesTable.usesAvailability, false), eq(factoriesTable.usesScheduling, false))))
       .map(f => f.id)
   );
 

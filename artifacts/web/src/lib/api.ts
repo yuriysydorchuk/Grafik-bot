@@ -88,7 +88,7 @@ export interface Factory {
   shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; clientEmail: string | null;
   shiftCount: number; usesAvailability: boolean;
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;
-  usesTransport: boolean; showWorkerHours: boolean; showCode: boolean;
+  usesTransport: boolean; usesScheduling: boolean; showWorkerHours: boolean; showCode: boolean;
   positions: FactoryPositionConf[];
   shifts: { start: string; end: string }[];
   stops?: { name: string; time: string }[];

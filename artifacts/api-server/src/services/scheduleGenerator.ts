@@ -72,8 +72,17 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     draftToReuse = existingWeeks[0]?.id ?? null;
   }
 
+  // Фабрики без планування (uses_scheduling=false, зарплатні Лодзь/Познань):
+  // їхні замовлення і працівники в генерацію не потрапляють взагалі
+  const schedOff = new Set(
+    (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.usesScheduling, false))).map(f => f.id));
+  if (factoryId && schedOff.has(factoryId)) {
+    return { weekId: existingWeek?.id ?? 0, totalAssigned: 0, shortages: [], warnings: ["Фабрика без планування графіків (вимкнено в налаштуваннях)"] };
+  }
+
   // Load all active workers
-  const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+  const allWorkers = (await db.select().from(workersTable).where(eq(workersTable.isActive, true)))
+    .filter(w => w.factoryId == null || !schedOff.has(w.factoryId));
 
   // Load all availability for this week
   const allAvailability = await db.select().from(availabilityTable)
@@ -85,9 +94,10 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     .from(factoryOrdersTable)
     .leftJoin(factoriesTable, eq(factoryOrdersTable.factoryId, factoriesTable.id));
 
-  const allOrders = factoryId
+  const allOrders = (factoryId
     ? await ordersQuery.where(and(eq(factoryOrdersTable.weekStart, weekStart), eq(factoryOrdersTable.factoryId, factoryId)))
-    : await ordersQuery.where(eq(factoryOrdersTable.weekStart, weekStart));
+    : await ordersQuery.where(eq(factoryOrdersTable.weekStart, weekStart)))
+    .filter(o => !schedOff.has(o.factoryId));
 
   const shortages: ShortageInfo[] = [];
   const warnings: string[] = [];

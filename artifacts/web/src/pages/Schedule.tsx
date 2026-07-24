@@ -51,7 +51,9 @@ export default function Schedule() {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
-  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const { data: allFactories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  // зарплатні фабрики без планування (Лодзь/Познань) у графіку не світяться
+  const factories = allFactories.filter(f => f.usesScheduling !== false);
 
   const [factoryId, setFactoryId] = usePersisted<string>("sel.factory", "");
   const urlWeek = new URLSearchParams(location.search).get("week") ?? "";

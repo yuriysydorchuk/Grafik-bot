@@ -132,6 +132,7 @@ export const factoriesTable = pgTable("factories", {
   usesPositions: boolean("uses_positions").notNull().default(false), // does this factory differentiate work positions?
   usesGender: boolean("uses_gender").notNull().default(false),        // does this factory split orders by gender?
   usesTransport: boolean("uses_transport").notNull().default(true),   // agency provides pickup → show stops/pickup to workers
+  usesScheduling: boolean("uses_scheduling").notNull().default(true),  // false = фабрика лише зарплатна (Лодзь/Познань): без замовлень/графіків/доступності
   showWorkerHours: boolean("show_worker_hours").notNull().default(true), // show the "My hours" button to workers
   showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule
   clientEmail: text("client_email"), // where to send approved schedule

@@ -113,6 +113,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
     usesPositions: factory?.usesPositions ?? false,
     usesGender: factory?.usesGender ?? false,
     usesTransport: factory?.usesTransport ?? true,
+    usesScheduling: factory?.usesScheduling ?? true,
     showWorkerHours: factory?.showWorkerHours ?? true,
     showCode: factory?.showCode ?? true,
     invoiceRate: factory?.invoiceRate != null ? String(factory.invoiceRate) : "",
@@ -151,7 +152,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
     name: v.name.trim(), address: v.address, city: v.city.trim() || null, clientEmail: v.clientEmail,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
-    usesTransport: v.usesTransport, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
+    usesTransport: v.usesTransport, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
     positions: v.usesPositions ? posRows.map(r => ({ positionId: r.positionId, rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate) })) : [],
     shifts, stops: stops.filter(s => s.name.trim()),
     ...(isOwner ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon), clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
@@ -247,6 +248,10 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
           </label>
         </div>
         {/* What the worker sees in the bot — trims their menu buttons */}
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <input type="checkbox" checked={v.usesScheduling} onChange={e => setV({ ...v, usesScheduling: e.target.checked })} />
+          {t("Планування графіків (замовлення/генерація/доступність)")}
+        </label>
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Що бачить працівник у боті")}</p>
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">

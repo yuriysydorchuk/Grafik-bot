@@ -1354,6 +1354,7 @@ const EN: Record<string, string> = {
   "Стовпчик коду працівника": "Worker-code column",
   "Стовпчик «Стать» і розділення по посадах керуються перемикачами «Поділ за статтю» та «Розрізняти посади» вище.": "The “Gender” column and position split are controlled by the “Gender split” and “Differentiate positions” toggles above.",
   "Є довіз працівників (показувати зупинки)": "Workers get transport (show pickup stops)",
+  "Планування графіків (замовлення/генерація/доступність)": "Schedule planning (orders/generation/availability)",
   "Показувати кнопку «Мої години та зміни»": "Show the “My hours & shifts” button",
   "Кнопка «Заповнити доступність» зʼявляється лише в режимі «Працівники заповнюють доступність».": "The “Submit availability” button appears only in “Workers submit availability” mode.",
   "Генеруємо за замовленнями (всі активні)": "Generate from orders (all active)",
