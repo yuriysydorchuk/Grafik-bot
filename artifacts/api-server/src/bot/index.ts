@@ -53,6 +53,8 @@ const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);
 // Inline keyboard for choosing a language
 const langPickKeyboard = () => Markup.inlineKeyboard(LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `setlang:${l}`)]));
+// Language prompt readable BEFORE any language is known (all 5 worker languages).
+const LANG_PROMPT = "Оберіть мову / Choose your language / Elige idioma / Выберите язык / Wybierz język:";
 
 // Central handler-error trap: keep the bot alive on per-update errors, log + alert.
 // PII-safe — we report only the update TYPE and the error, never message text /
@@ -204,34 +206,31 @@ bot.start(async (ctx) => {
     if (code.toLowerCase().startsWith("ref")) {
       const referrerId = Number(code.slice(3));
       const referrer = (await db.select().from(workersTable).where(eq(workersTable.id, referrerId)))[0];
-      if (!referrer) return ctx.reply("❌ Посилання недійсне. Зверніться до того, хто його надіслав.");
+      if (!referrer) return ctx.reply("❌ Посилання недійсне. Зверніться до того, хто його надіслав.\n❌ Invalid link — please contact the person who sent it.");
       // already a worker?
       const asWorker = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
-      if (asWorker) return ctx.reply(`✅ Ви вже працівник (*${mdSafe(asWorker.fullName)}*) — запрошення не потрібне.`, { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wlang(asWorker))) });
-      // already a candidate?
+      if (asWorker) { const wl = wlang(asWorker); return ctx.reply(t(wl, "ref.alreadyWorker", { name: mdSafe(asWorker.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wl)) }); }
+      // already a candidate? (language unknown — bilingual)
       const asCand = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
-      if (asCand) return ctx.reply("✅ Ви вже у списку кандидатів. Менеджер зв'яжеться з вами найближчим часом.");
-      setState(tid, "candidate_signup:name", { referrerId, referrerName: referrer.fullName, factoryId: referrer.factoryId ?? null });
-      return ctx.reply(
-        `👋 Вітаємо! Вас запросив(ла) *${mdSafe(referrer.fullName)}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище* латиницею (наприклад: Jan Kowalski):`,
-        { parse_mode: "Markdown", ...Markup.removeKeyboard() },
-      );
+      if (asCand) return ctx.reply(t("uk", "ref.alreadyCand") + "\n" + t("en", "ref.alreadyCand"));
+      // language first — the whole application flow then runs in the chosen language (setlang)
+      setState(tid, "candidate_signup:lang", { referrerId, referrerName: referrer.fullName, factoryId: referrer.factoryId ?? null });
+      return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
 
     // Factory self-signup link: ?start=fac<factoryId> — person registers themselves
     if (code.toLowerCase().startsWith("fac")) {
       const factoryId = Number(code.slice(3));
       const fac = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
-      if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.");
+      if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.\n❌ Invalid link — please contact your administrator.");
       const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
       if (existing) {
-        return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
+        const wl = wlang(existing);
+        return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
       }
-      setState(tid, "worker_signup", { factoryId, factoryName: fac.name });
-      return ctx.reply(
-        `👋 Вітаємо! Реєстрація на фабрику *${mdSafe(fac.name)}*.\n\nВведіть ваше *ім'я та прізвище* латиницею (наприклад: Jan Kowalski):`,
-        { parse_mode: "Markdown", ...Markup.removeKeyboard() },
-      );
+      // language first — the name prompt and the rest of the flow follow in it (setlang)
+      setState(tid, "worker_signup:lang", { factoryId, factoryName: fac.name });
+      return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
 
     // Worker invite link: ?start=emp<code> — binds via an unguessable invite_code (NOT the
@@ -242,25 +241,33 @@ bot.start(async (ctx) => {
       if (workerByCode.length > 0) {
         const w = workerByCode[0]!;
         if (w.telegramId && w.telegramId !== tid) {
-          return ctx.reply("❌ Це посилання вже використано іншим акаунтом. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+          return ctx.reply("❌ Це посилання вже використано іншим акаунтом. Зверніться до адміністратора.\n❌ This link was already used by another account — please contact your administrator.");
         }
         if (!w.telegramId) {
           if (await tgTakenByWorker(tid, w.id)) {
-            return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого працівника. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+            return ctx.reply("❌ Цей Telegram уже прив'язаний до іншого працівника. Зверніться до адміністратора.\n❌ This Telegram is already linked to another worker — please contact your administrator.");
           }
           // Bind + burn the token (single-use): the link stops working once claimed.
           await db.update(workersTable).set({ telegramId: tid, inviteCode: null }).where(eq(workersTable.id, w.id));
         }
+        // No language yet (fresh bind) → ask it first; the greeting comes in it (setlang).
+        if (!w.language) {
+          return ctx.reply(
+            `✅ *${mdSafe(w.fullName)}*${w.workerCode ? ` — \`${w.workerCode}\`` : ""}\n\n${LANG_PROMPT}`,
+            { parse_mode: "Markdown", ...langPickKeyboard() },
+          );
+        }
+        const wl = wlang(w);
         return ctx.reply(
-          `✅ Привіт, *${mdSafe(w.fullName)}*!\n\nВас прив'язано до бота.${w.workerCode ? `\nВаш код: \`${w.workerCode}\`` : ""}`,
-          { parse_mode: "Markdown", ...(await workerMenuFor(w, wlang(w))) },
+          t(wl, "emp.linked", { name: mdSafe(w.fullName) }) + (w.workerCode ? `\n${t(wl, "emp.code", { code: w.workerCode })}` : ""),
+          { parse_mode: "Markdown", ...(await workerMenuFor(w, wl)) },
         );
       }
-      return ctx.reply("❌ Посилання недійсне або застаріле. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+      return ctx.reply("❌ Посилання недійсне або застаріле. Зверніться до адміністратора.\n❌ Invalid or expired link — please contact your administrator.");
     }
 
     // Unknown code or invalid link
-    return ctx.reply("❌ Посилання недійсне або код не знайдено. Зверніться до адміністратора.", { parse_mode: "Markdown" });
+    return ctx.reply("❌ Посилання недійсне або код не знайдено. Зверніться до адміністратора.\n❌ Invalid link or unknown code — please contact your administrator.");
   }
 
   const admin = await getAdmin(tid);
@@ -276,13 +283,13 @@ bot.start(async (ctx) => {
   const worker = await getWorker(tid);
   if (worker) {
     // First time (no language chosen) → ask language before anything
-    if (!worker.language) return ctx.reply(t("uk", "lang.choose") + " / Choose your language:", langPickKeyboard());
+    if (!worker.language) return ctx.reply(LANG_PROMPT, langPickKeyboard());
     const lang = wlang(worker);
     return ctx.reply(t(lang, "start.greet", { name: worker.fullName }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
 
   // Brand-new unregistered user → let them pick a language first (stored for registration)
-  return ctx.reply("Оберіть мову / Choose your language / Elige idioma:", langPickKeyboard());
+  return ctx.reply(LANG_PROMPT, langPickKeyboard());
 });
 
 // ─── /adminsetup ─────────────────────────────────────────────────────────────
@@ -801,8 +808,20 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
   try { await ctx.deleteMessage(); } catch { /* ignore */ }
   const worker = await getWorker(tid);
   if (worker) {
+    const firstPick = !worker.language; // fresh emp-link bind or first /start → greet, not "changed"
     await db.update(workersTable).set({ language: lang }).where(eq(workersTable.id, worker.id));
-    return ctx.reply(t(lang, "lang.changed"), await workerMenuFor(worker, lang));
+    return ctx.reply(t(lang, firstPick ? "start.greet" : "lang.changed", { name: worker.fullName }), await workerMenuFor(worker, lang));
+  }
+  const st = getState(tid);
+  // Factory self-signup: language chosen → ask the name in it, carry lang through the flow.
+  if (st?.action === "worker_signup:lang") {
+    setState(tid, "worker_signup", { ...st.data, lang });
+    return ctx.reply(t(lang, "signup.factory", { factory: mdSafe(st.data.factoryName) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+  }
+  // Referral signup: same — language first, then the application questions.
+  if (st?.action === "candidate_signup:lang") {
+    setState(tid, "candidate_signup:name", { ...st.data, lang });
+    return ctx.reply(t(lang, "ref.invited", { name: mdSafe(st.data.referrerName) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
   }
   // not a worker yet → remember choice for registration, show generic message
   setState(tid, "lang_pref", { lang });
@@ -3035,6 +3054,12 @@ bot.on("text", async (ctx) => {
   const state = getState(tid);
   if (!state && text !== "⬅️ Назад") return;
 
+  // Deep-link signup, language not picked yet — the person typed instead of
+  // tapping a button → repeat the picker (language-neutral prompt).
+  if (state?.action === "worker_signup:lang" || state?.action === "candidate_signup:lang") {
+    return ctx.reply(LANG_PROMPT, langPickKeyboard());
+  }
+
   // ── Factory shift times ───────────────────────────────────────────
   if (state?.action === "factory_times:select") {
     const al = olang(await getAdmin(tid));
@@ -3140,16 +3165,18 @@ bot.on("text", async (ctx) => {
   // ── Worker self-signup via factory link ───────────────────────────
   if (state?.action === "worker_signup") {
     const { data } = state;
+    const lang = asLang(data.lang); // chosen on the language step before the name prompt
     const fullName = text.trim().replace(/\s+/g, " ");
     // names are stored in Latin (Polish alphabet) only — Cyrillic is rejected up front
     if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
-      return ctx.reply("❌ Введіть ім'я та прізвище латиницею (наприклад: Jan Kowalski):");
+      return ctx.reply(t(lang, "signup.badName"));
     }
     // double-check this Telegram isn't already linked to a worker
     const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
     if (existing) {
       clearState(tid);
-      return ctx.reply(`✅ Ви вже зареєстровані як *${mdSafe(existing.fullName)}*.`, { parse_mode: "Markdown", ...(await workerMenuFor(existing, wlang(existing))) });
+      const wl = wlang(existing);
+      return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
     }
     // Дублікат-детект: якщо офіс уже завів схожу людину — профіль усе одно
     // створюємо (людина одразу працює з ботом), а адмін отримує кнопки
@@ -3157,7 +3184,7 @@ bot.on("text", async (ctx) => {
     const dup = findLikelyDuplicate(fullName, await db.select().from(workersTable));
     const code = await genWorkerCode();
     const [freshWorker] = await db.insert(workersTable).values({
-      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code,
+      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code, language: lang,
     }).returning();
     clearState(tid);
     // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
@@ -3183,29 +3210,31 @@ bot.on("text", async (ctx) => {
       }
     } catch { /* notification is best-effort */ }
     return ctx.reply(
-      `✅ Дякуємо, *${mdSafe(fullName)}*!\nВас додано до фабрики *${mdSafe(data.factoryName)}*.\n\nТепер ви можете заповнювати доступність через меню.`,
-      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, "uk")) },
+      t(lang, "signup.done", { name: mdSafe(fullName), factory: mdSafe(data.factoryName) }),
+      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, lang)) },
     );
   }
 
   // ── Referral candidate signup: name ───────────────────────────────
   if (state?.action === "candidate_signup:name") {
+    const lang = asLang(state.data.lang); // chosen on the language step before the name prompt
     const fullName = text.trim().replace(/\s+/g, " ");
     // same Latin-only rule as worker self-signup (candidate later converts to a worker)
     if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
-      return ctx.reply("❌ Введіть ім'я та прізвище латиницею (наприклад: Jan Kowalski):");
+      return ctx.reply(t(lang, "signup.badName"));
     }
     setState(tid, "candidate_signup:phone", { ...state.data, fullName });
-    return ctx.reply("📞 Введіть ваш *номер телефону* (або надішліть /skip):", { parse_mode: "Markdown" });
+    return ctx.reply(t(lang, "ref.phone"), { parse_mode: "Markdown" });
   }
 
   // ── Referral candidate signup: phone → create candidate ───────────
   if (state?.action === "candidate_signup:phone") {
     const { data } = state;
+    const lang = asLang(data.lang);
     const phone = text.trim() === "/skip" ? null : text.trim();
     // guard against duplicate candidate (same Telegram)
     const dup = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
-    if (dup) { clearState(tid); return ctx.reply("✅ Ви вже у списку кандидатів. Дякуємо!"); }
+    if (dup) { clearState(tid); return ctx.reply(t(lang, "ref.alreadyCand")); }
     const [cand] = await db.insert(candidatesTable).values({
       funnelId: await ensureReferralFunnel(), // built-in referral funnel — else invisible on the board
       referrerWorkerId: data.referrerId, fullName: data.fullName, telegramId: tid,
@@ -3228,7 +3257,7 @@ bot.on("text", async (ctx) => {
       }
     } catch { /* best-effort */ }
     return ctx.reply(
-      `✅ Дякуємо, *${mdSafe(data.fullName)}*! Вашу заявку прийнято.\nМенеджер зв'яжеться з вами найближчим часом. 📞`,
+      t(lang, "ref.done", { name: mdSafe(data.fullName) }),
       { parse_mode: "Markdown" },
     );
   }
