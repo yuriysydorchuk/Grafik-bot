@@ -4,7 +4,7 @@ import { Route, Switch, Redirect } from "wouter";
 import { get, type Me } from "./lib/api";
 import { isTelegramWebApp, telegramLogin } from "./lib/telegram";
 import { canAccessPage } from "./lib/roles";
-import { useT } from "./lib/i18n";
+import { useT, useLang } from "./lib/i18n";
 import { Spinner } from "./components/ui";
 import { Layout } from "./components/Layout";
 import Login from "./pages/Login";
@@ -42,8 +42,25 @@ import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
 
+// Compact УКР/EN/РУС switcher for the Telegram Mini App (the full Layout with its own
+// toggle is hidden there). Mirrors LangToggle in components/Layout.tsx.
+function TgLangToggle() {
+  const { lang, setLang } = useLang();
+  return (
+    <div className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-semibold">
+      {(["uk", "en", "ru"] as const).map(l => (
+        <button key={l} onClick={() => setLang(l)}
+          className={`rounded-md px-2 py-1 transition ${lang === l ? "bg-red-50 text-red-700" : "text-slate-400"}`}>
+          {l === "uk" ? "УКР" : l === "en" ? "EN" : "РУС"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const t = useT();
+  const { applyLang } = useLang();
   const onLogin = location.pathname.startsWith("/login");
   // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
   // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
@@ -55,6 +72,9 @@ export default function App() {
   const { data: me, isLoading, isError } = useQuery<Me>({
     queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && tgReady,
   });
+  // Server-stored language wins: the TG webview forgets localStorage between openings.
+  const serverLang = me?.lang;
+  useEffect(() => { if (serverLang) applyLang(serverLang); }, [serverLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (onLogin) return <Login />;
   if (!tgReady || isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
@@ -66,6 +86,7 @@ export default function App() {
     return (
       <div className="min-h-dvh bg-slate-50 px-3 py-4 sm:px-6">
         <div className="mx-auto max-w-6xl">
+          <div className="mb-3 flex justify-end"><TgLangToggle /></div>
           {canAccessPage(me, "/driver-shifts")
             ? <DriverShifts />
             : <div className="py-10 text-center text-sm text-slate-500">{t("Ваша роль не має доступу до призначень водіїв.")}</div>}

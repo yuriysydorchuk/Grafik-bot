@@ -233,6 +233,9 @@ export const adminsTable = pgTable("admins", {
   tokenVersion: integer("token_version").notNull().default(0), // bumped on logout / password change → invalidates all older session tokens
   inviteCode: text("invite_code").unique(),  // for ?start=adm<code> invite links
   language: text("language"), // uk | en (null = not chosen, defaults to uk)
+  // Web-panel language (uk | en | ru), persisted server-side: the Telegram Mini App webview
+  // loses localStorage between openings, so a client-side choice alone keeps resetting.
+  webLang: text("web_lang"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

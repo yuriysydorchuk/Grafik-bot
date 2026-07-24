@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
 import { randomBytes, randomInt } from "node:crypto";
 import { db } from "@workspace/db";
-import { adminsTable, rolesTable, adminSessionsTable, loginEventsTable } from "@workspace/db";
+import { adminsTable, rolesTable, adminSessionsTable, loginEventsTable, driversTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { verifyPassword, createToken, verifyToken, authRequired, SESSION_COOKIE, type AuthedRequest } from "../lib/auth";
 import { verifyWebAppInitData } from "../lib/telegramWebApp";
@@ -122,6 +122,17 @@ router.post("/auth/verify-2fa", authLimiter, async (req, res) => {
   return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner" });
 });
 
+const WEB_LANGS = ["uk", "en", "ru"] as const;
+
+// The panel language for this account: explicit web choice first; for drivers without one —
+// their bot language (the head driver lives in the drivers table, admins.language is uk|en only).
+async function webLangOf(admin: { webLang: string | null; telegramId: string | null }): Promise<string | null> {
+  if (admin.webLang && (WEB_LANGS as readonly string[]).includes(admin.webLang)) return admin.webLang;
+  if (!admin.telegramId) return null;
+  const [drv] = await db.select({ language: driversTable.language }).from(driversTable).where(eq(driversTable.telegramId, admin.telegramId));
+  return drv?.language && (WEB_LANGS as readonly string[]).includes(drv.language) ? drv.language : null;
+}
+
 // Telegram Mini App: the panel opened inside Telegram logs in by the WebApp initData
 // signature instead of password+2FA. Telegram itself vouches for the user identity, so a
 // verified telegram_id mapping to an existing admin account is the whole authentication.
@@ -137,7 +148,15 @@ router.post("/auth/telegram-webapp", authLimiter, async (req, res) => {
   }
   const sid = await setSession(req, res, admin);
   await logEvent(req, "success", { adminId: admin.id, usernameTried: admin.username, sessionId: sid });
-  return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner" });
+  return res.json({ id: admin.id, name: admin.name, username: admin.username, role: admin.role ?? "owner", lang: await webLangOf(admin) });
+});
+
+// Persist the panel language server-side (see webLangOf for why localStorage is not enough).
+router.post("/auth/web-lang", authRequired, async (req: AuthedRequest, res) => {
+  const lang = String(req.body?.lang ?? "");
+  if (!(WEB_LANGS as readonly string[]).includes(lang)) return res.status(400).json({ error: "invalid lang" });
+  await db.update(adminsTable).set({ webLang: lang }).where(eq(adminsTable.id, req.admin!.adminId));
+  return res.json({ ok: true });
 });
 
 router.post("/auth/logout", async (req, res) => {
@@ -161,6 +180,7 @@ router.get("/auth/me", authRequired, async (req: AuthedRequest, res) => {
     id: admin.id, name: admin.name, username: admin.username, isMain: !!admin.isMain,
     role: roleKey, roleLabel: role?.label ?? roleKey,
     caps: req.admin!.caps, pages: req.admin!.pages,
+    lang: await webLangOf(admin),
   });
 });
 

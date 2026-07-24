@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, closeDb, db, adminsTable, adminSessionsTable, loginEventsTable, SESSION_COOKIE } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, closeDb, db, adminsTable, adminSessionsTable, loginEventsTable, driversTable, SESSION_COOKIE } from "../test/harness.ts";
 import { signWebAppInitData } from "../lib/telegramWebApp.ts";
 
 // Вхід із Telegram Mini App: підписаний initData → сесія для адміна з відповідним
@@ -54,6 +54,21 @@ test("garbage / unsigned initData is rejected with 401", opts, async () => {
     assert.equal(res.status, 401, `must reject: ${String(bad).slice(0, 40)}`);
   }
   assert.equal((await db.select().from(adminSessionsTable)).length, 0, "no session may be created");
+});
+
+test("panel language: driver's bot language is the default, explicit web choice wins", opts, async () => {
+  await db.insert(adminsTable).values({ name: "HeadDrv", role: "driver", telegramId: "800100" });
+  await db.insert(driversTable).values({ name: "HeadDrv", telegramId: "800100", inviteCode: "HD1", isHeadDriver: true, language: "ru" });
+  const login = await request(app).post("/api/auth/telegram-webapp").set(H).send({ initData: initDataFor(800100) });
+  assert.equal(login.body.lang, "ru", "no explicit web choice → bot driver language");
+
+  const cookie = (login.headers["set-cookie"] as unknown as string[])!.find(c => c.startsWith(`${SESSION_COOKIE}=`))!;
+  const bad = await request(app).post("/api/auth/web-lang").set(H).set("Cookie", cookie).send({ lang: "de" });
+  assert.equal(bad.status, 400);
+  const ok = await request(app).post("/api/auth/web-lang").set(H).set("Cookie", cookie).send({ lang: "uk" });
+  assert.equal(ok.status, 200);
+  const me = await request(app).get("/api/auth/me").set("Cookie", cookie);
+  assert.equal(me.body.lang, "uk", "explicit web choice overrides the bot language");
 });
 
 test("the CSRF header guard covers the endpoint", opts, async () => {

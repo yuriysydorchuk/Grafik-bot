@@ -1493,15 +1493,22 @@ const RU: Record<string, string> = {
   "Пробіг оновлено": "Пробег обновлён",
 };
 
-const LangCtx = createContext<{ lang: Lang; setLang: (l: Lang) => void }>({ lang: "uk", setLang: () => {} });
+const LangCtx = createContext<{ lang: Lang; setLang: (l: Lang) => void; applyLang: (l: Lang) => void }>({ lang: "uk", setLang: () => {}, applyLang: () => {} });
 
 export function LangProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => {
     const v = (typeof localStorage !== "undefined" && localStorage.getItem("lang")) as Lang | null;
     return v === "en" || v === "uk" || v === "ru" ? v : "uk";
   });
-  const setLang = (l: Lang) => { try { localStorage.setItem("lang", l); } catch { /* ignore */ } setLangState(l); };
-  return <LangCtx.Provider value={{ lang, setLang }}>{children}</LangCtx.Provider>;
+  // applyLang: local apply only (server → client sync). setLang: explicit user choice —
+  // also persisted server-side, because the TG Mini App webview loses localStorage between
+  // openings and the panel language kept resetting to uk.
+  const applyLang = (l: Lang) => { try { localStorage.setItem("lang", l); } catch { /* ignore */ } setLangState(l); };
+  const setLang = (l: Lang) => {
+    applyLang(l);
+    import("./api").then(({ post }) => post("/auth/web-lang", { lang: l })).catch(() => { /* not logged in — local only */ });
+  };
+  return <LangCtx.Provider value={{ lang, setLang, applyLang }}>{children}</LangCtx.Provider>;
 }
 
 export function useLang() { return useContext(LangCtx); }
