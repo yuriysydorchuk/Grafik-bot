@@ -1,4 +1,4 @@
-# HANDOFF: Telegram Mini App «Панель призначень» (сесія 2026-07-23)
+# HANDOFF: Telegram Mini App «Панель призначень» (сесії 2026-07-23…24)
 
 Записка сесії. Довговічні факти вже перенесені: маршрут/бот-флоу → `PROJECT_MAP.md`, env → `CLAUDE.md`.
 
@@ -20,6 +20,13 @@
 ## Локальне тестування
 
 Telegram вимагає https → cloudflared quick tunnel: `cloudflared tunnel --url http://localhost:8080`, URL → `WEB_APP_URL` локального `.env`. Локальний бекенд живе під **локальним pm2** (процес `grafik-bot`): kill = авто-респавн; рестарт `pm2 restart grafik-bot`; `.env` перечитується при кожному старті (`node_args: --env-file`). Власник протестував наскрізно у своєму Telegram — авто-логін і TG-режим працюють.
+
+## Пост-релізні фікси (2026-07-24, за фідбеком головного водія)
+
+1. **Мова панелі злітала на укр** (коміт `691b87d`): вебвʼю Mini App не тримає localStorage між відкриттями. Мова тепер живе на сервері: `admins.web_lang` (міграція `2026-07-24-admin-web-lang.sql`), `/auth/me` і `/auth/telegram-webapp` віддають `lang` (явний вибір → фолбек на `drivers.language` по telegram_id), `POST /auth/web-lang` зберігає вибір перемикача; `LangProvider` має `applyLang` (лише локально) vs `setLang` (локально + POST). У TG-режимі зʼявився компактний перемикач УКР/EN/РУС.
+2. **AGRAM LUBLIN на борді призначень** (коміт `46a1018`): фабрики з `uses_transport=false` не фільтрувалися. Тепер виключені з УСІХ водійських поверхонь: `GET /driver-board`, `detectPickupGaps` (нічний пуш 19:00), бот-флоу «Призначити водіїв» і «Графік тижня». Дані були правильні — ігнорував код. Інтеграційні тести: `driver-board.integration.test.ts`.
+
+Обидва фікси на проді; водію відписано в бот після кожного викату.
 
 ## Стан деплою
 
