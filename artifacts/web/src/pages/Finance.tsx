@@ -11,6 +11,7 @@ import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT, useLang } from "../lib/i18n";
+import { useChartTheme } from "../lib/theme";
 import { useMemo } from "react";
 
 interface FacFin {
@@ -162,6 +163,7 @@ function pct(cur: number, prev: number): string {
 
 function ComparisonSection() {
   const t = useT();
+  const chart = useChartTheme();
   const [mode, setMode] = useState("mtd");
   const { data, isFetching } = useQuery<CompareResp>({ queryKey: ["finance-compare", mode], queryFn: () => get(`/finance/compare?mode=${mode}`) });
 
@@ -211,10 +213,10 @@ function ComparisonSection() {
                   <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-700"><mt.icon className="h-4 w-4 text-slate-400" />{t(mt.title)}</div>
                   <ResponsiveContainer width="100%" height={220}>
                     <BarChart data={rows} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#94a3b8" }} />
-                      <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} width={48} tickFormatter={(v: number) => mt.money ? `${Math.round(v / 1000)}k` : String(v)} />
-                      <Tooltip formatter={(v: any) => mt.money ? zl(Number(v)) : v} />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.grid} />
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: chart.tickMuted }} />
+                      <YAxis tick={{ fontSize: 11, fill: chart.tickMuted }} width={48} tickFormatter={(v: number) => mt.money ? `${Math.round(v / 1000)}k` : String(v)} />
+                      <Tooltip formatter={(v: any) => mt.money ? zl(Number(v)) : v} contentStyle={chart.tooltip} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
                       <Bar dataKey="Поточний" name={t("Поточний")} fill={mt.color} radius={[3, 3, 0, 0]} />
                       <Bar dataKey="Порівняння" name={t("Порівняння")} fill="#cbd5e1" radius={[3, 3, 0, 0]} />

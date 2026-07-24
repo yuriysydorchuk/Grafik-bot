@@ -61,6 +61,17 @@ export function Badge({ children, color = "slate" }: { children: ReactNode; colo
   return <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset", map[color])}>{children}</span>;
 }
 
+// Brand logo. The PNG's black caption vanishes on dark surfaces, so a
+// light-caption variant (logo-dark.png) is swapped in via the dark: variant.
+export function Logo({ className }: { className?: string }) {
+  return (
+    <>
+      <img src="/logo.png" alt="Euro Support" className={cn("object-contain dark:hidden", className)} />
+      <img src="/logo-dark.png" alt="Euro Support" className={cn("hidden object-contain dark:block", className)} />
+    </>
+  );
+}
+
 export function Spinner() {
   return <div className="flex items-center justify-center py-16 text-slate-400"><Loader2 className="h-6 w-6 animate-spin" /></div>;
 }

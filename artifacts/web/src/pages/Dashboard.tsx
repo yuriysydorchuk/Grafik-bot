@@ -18,6 +18,7 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, type TFn } from "../lib/i18n";
+import { useChartTheme } from "../lib/theme";
 
 interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
 
@@ -69,6 +70,7 @@ export default function Dashboard() {
     onSuccess: (r: any) => { qc.invalidateQueries({ queryKey: ["dashboard"] }); toast.success(t("Графік затверджено"), { description: (r.messages ?? []).join(" · ") }); },
     onError: (e: any) => toast.error(e.message),
   });
+  const chart = useChartTheme();
   if (isLoading || !data) return <Spinner />;
 
   const kpis = [
@@ -143,10 +145,10 @@ export default function Dashboard() {
           {data.planning.length === 0 ? <Empty>{t("Немає фабрик")}</Empty> : (
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={data.planning} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eef2f7" />
-                <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 12, fill: "#94a3b8" }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 13 }} />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chart.grid} />
+                <XAxis dataKey="name" tick={{ fontSize: 12, fill: chart.tick }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12, fill: chart.tickMuted }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip contentStyle={chart.tooltip} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="ordered" name={t("Замовлено")} fill="#94a3b8" radius={[4, 4, 0, 0]} maxBarSize={40} />
                 <Bar dataKey="assigned" name={t("Призначено")} fill="#e11d2a" radius={[4, 4, 0, 0]} maxBarSize={40} />
@@ -166,7 +168,7 @@ export default function Dashboard() {
                   <Pie data={attData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={2}>
                     {attData.map((d, i) => <Cell key={i} fill={d.color} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 13 }} />
+                  <Tooltip contentStyle={chart.tooltip} />
                 </PieChart>
               </ResponsiveContainer>
               <div className="mt-1 space-y-1 text-sm">

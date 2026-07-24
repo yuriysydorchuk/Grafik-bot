@@ -74,7 +74,7 @@ export default function Workers() {
       {/* Filters pinned under the top bar while the table scrolls (md+ only) —
           same pattern as Schedule: top-[52px] = desktop top-bar height − 1px,
           -mx-8/px-8 undo the main padding so the opaque strip spans full width. */}
-      <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-20 md:-mx-8 md:bg-[#f6f7f9] md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-20 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
         <div className="relative flex-1 min-w-50">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
           <Input placeholder={t("Пошук за іменем або кодом")} value={q} onChange={e => setQ(e.target.value)} className="pl-9" />

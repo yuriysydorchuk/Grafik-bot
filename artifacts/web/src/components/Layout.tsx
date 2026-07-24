@@ -4,13 +4,14 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, SunMoon, type LucideIcon,
 } from "lucide-react";
-import { cn } from "./ui";
+import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
 import { canAccessPage } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
 import { useT, useLang } from "../lib/i18n";
+import { useTheme, type ThemePref } from "../lib/theme";
 
 function LangToggle() {
   const { lang, setLang } = useLang();
@@ -23,6 +24,21 @@ function LangToggle() {
         </button>
       ))}
     </div>
+  );
+}
+
+// Cycles light → dark → system; in "system" the icon shows the source of truth.
+function ThemeToggle() {
+  const t = useT();
+  const { pref, dark, setPref } = useTheme();
+  const next: ThemePref = pref === "light" ? "dark" : pref === "dark" ? "system" : "light";
+  const title = pref === "light" ? t("Тема: світла") : pref === "dark" ? t("Тема: темна") : t("Тема: як у системі");
+  const Icon = pref === "system" ? SunMoon : dark ? Moon : Sun;
+  return (
+    <button onClick={() => setPref(next)} title={title}
+      className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:text-slate-700">
+      <Icon className="h-4 w-4" />
+    </button>
   );
 }
 
@@ -100,7 +116,7 @@ function Brand({ rail = false }: { rail?: boolean }) {
   const t = useT();
   return (
     <div className="flex items-center gap-3 px-5 py-5">
-      <img src="/logo.png" alt="Euro Support" className="h-10 w-10 shrink-0 object-contain" />
+      <Logo className="h-10 w-10 shrink-0" />
       <div className={cn("leading-tight", rail && "hidden group-hover/nav:block")}>
         <div className="text-sm font-bold tracking-tight text-slate-800">Euro Support</div>
         <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{t("Панель графіків")}</div>
@@ -201,9 +217,9 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
           <button onClick={() => setOpen(!open)} className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100">
             {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
-          <img src="/logo.png" alt="Euro Support" className="h-7 w-7 object-contain" />
+          <Logo className="h-7 w-7" />
           <span className="font-semibold text-slate-800">{t(titleFor(loc))}</span>
-          <div className="ml-auto flex items-center gap-2"><LangToggle /><NotificationBell /></div>
+          <div className="ml-auto flex items-center gap-2"><ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
         {/* desktop top bar */}
         <header className="sticky top-0 z-30 hidden items-center gap-2 border-b border-slate-200 bg-white/80 px-8 py-2.5 shadow-[0_1px_3px_rgb(15_23_42/0.04)] backdrop-blur md:flex">
@@ -211,7 +227,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
             {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </button>
           <span className="text-sm font-semibold text-slate-700">{t(titleFor(loc))}</span>
-          <div className="ml-auto flex items-center gap-2"><LangToggle /><NotificationBell /></div>
+          <div className="ml-auto flex items-center gap-2"><ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-8">{children}</main>
       </div>
