@@ -60,6 +60,9 @@ async function main() {
     // Restore persisted conversation states so in-progress flows survive restarts
     await loadStates();
 
+    // Мінімальна ставка року для сводних (налаштування) — в кеш формул
+    void import("./services/svodniSettings").then(m => m.loadKsiegMinRates());
+
     // Start bot in polling mode — bot.launch() returns a Promise that only
     // resolves when polling stops, so we must not await it here.
     bot.launch().catch((e) => {

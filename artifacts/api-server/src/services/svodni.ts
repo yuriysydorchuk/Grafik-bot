@@ -130,6 +130,23 @@ const SECTION_RE = /^(KOBIETY|MEZCZYZNI|NIE OPODATKOWANE|OPODATKOWANE|STUDENCI|N
 // Вік («до 26 / після») — ОКРЕМА властивість (under26/birthDate), не форма легалізації.
 export const LEGAL_STATUSES = ["student", "dyplom", "powiadomienie", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"] as const;
 export type LegalStatus = (typeof LEGAL_STATUSES)[number];
+
+// Профілі тепер зберігають канонічні форми сводної 2.0 — мапимо їх на статуси 1.0,
+// щоб правила konto/готівки першої сводної читали їх правильно.
+export function normalizeProfileLegal(status: string | null | undefined): LegalStatus | null {
+  const s = String(status ?? "").trim();
+  if (!s) return null;
+  if ((LEGAL_STATUSES as readonly string[]).includes(s)) return s as LegalStatus;
+  switch (s) {
+    case "student_do26":
+    case "student_po26":
+    case "do26": return "student";
+    case "oswiadczenie": return "powiadomienie";
+    case "zezwolenie": return "zus";
+    case "nieoformiony": return "oczekuje"; // не оформлений — усе готівкою
+    default: return null;
+  }
+}
 export function legalStatusOf(zusText: string | null | undefined): LegalStatus | null {
   const s = norm(String(zusText ?? ""));
   if (!s) return null;
@@ -139,6 +156,7 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
   if (/STALY POBYT/.test(s)) return "staly_pobyt";
   if (/POLAK|POLKA/.test(s)) return "polak";
   if (/STUDENT/.test(s)) return "student";
+  if (/^STUD(?!ENCI)/.test(s)) return "student"; // маркери STUD / STUD>26 з колонки повідомлень
   if (/POWIADOMIENIE/.test(s)) return "powiadomienie"; // зголошений повідомленням
   if (/ZEZWOLEN/.test(s)) return "zus"; // zezwolenie na pracę — оформлений
   if (/ZGLOSZON/.test(s)) return "zus"; // зголошений без уточнення («Zgłoszony, Do 26» — вік окремо)
@@ -167,14 +185,127 @@ export function factoryDeclaredCap(factoryLabel: string | null | undefined, hour
 // Стандартна księgowa пара ставок (umowa zlecenie): конто декларується по НИЖЧІЙ
 // зі ставок — фабричній чи стандартній (LST платить 26,35, а декларує по 25,35;
 // Sushi платить 24,60 — декларує по своїй). Решта до повного нетто — готівкою.
-export const KSIEG_STD_NETTO = 25.35;
-export const KSIEG_STD_BRUTTO = 31.4;
+// Мінімальна ставка року редагується в налаштуваннях сводних (веб) і
+// зберігається в settings (ключ ksieg_min_rates); тут — дефолт на 2026.
+let ksiegStdNetto = 25.35;
+let ksiegStdBrutto = 31.4;
+export const KSIEG_STD_NETTO = () => ksiegStdNetto;
+export const KSIEG_STD_BRUTTO = () => ksiegStdBrutto;
+export function setKsiegStd(netto: number, brutto: number): void {
+  if (Number.isFinite(netto) && netto > 0) ksiegStdNetto = netto;
+  if (Number.isFinite(brutto) && brutto > 0) ksiegStdBrutto = brutto;
+}
+
+// ── Бонуси Agram: додаються до ставки нетто (księgowa частина все одно ріжеться
+// стандартною парою, тож бонус іде готівкою; студенту до 26 — разом з усім).
+// Прапорці — у профілі працівника; детекція фабрик — по id (побажання власника).
+export const AGRAM_FACTORY_IDS = new Set([12, 13]); // 12=AGRAM MOTYCZ, 13=AGRAM LUBLIN
+export const AGRAM_CASH_PER_HOUR = 1; // готівковий бонус (частина ЗП налом): +1 зл/год
+
+/** Повних місяців між датами (YYYY-MM-DD, рядкова арифметика — без таймзон). */
+export function monthsBetween(fromDate: string, toDate: string): number {
+  const [fy, fm, fd] = fromDate.split("-").map(Number);
+  const [ty, tm, td] = toDate.split("-").map(Number);
+  let months = (ty! - fy!) * 12 + (tm! - fm!);
+  // кламп кінця місяця: найнятий 29–31-го «доживає» місяць в останній день
+  // коротшого місяця (31.12 + 6 міс = 30.06, а не «мінус місяць»)
+  const daysInTo = new Date(Date.UTC(ty!, tm!, 0)).getUTCDate();
+  if (td! < Math.min(fd!, daysInTo)) months--;
+  return months;
+}
+
+/** Останній день місяця сводної (YYYY-MM → YYYY-MM-DD). */
+export function monthEndStr(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  return `${month}-${String(new Date(Date.UTC(y!, m!, 0)).getUTCDate()).padStart(2, "0")}`;
+}
+
+/** Календарних днів між датами (YYYY-MM-DD, включно з першим днем не рахуємо). */
+export function daysBetween(fromDate: string, toDate: string): number {
+  return Math.round((Date.parse(toDate + "T12:00:00Z") - Date.parse(fromDate + "T12:00:00Z")) / 86400000);
+}
+
+/**
+ * Бонус Agram до ставки нетто, зл/год.
+ * Стаж: лише якщо в місяці відпрацьовано ≥160 год; від дати працевлаштування
+ * станом на кінець місяця сводної: до 30 днів → 0, від 30 днів → +1,
+ * від 60 днів → +1.5; галочка стоїть, а дати нема → +1.
+ * Нал: фіксований +1, від годин НЕ залежить (галочка = частина ЗП готівкою;
+ * людям на przelew не належить — у них галочка знята).
+ * Студентам до 26 бонуси не додаються взагалі (вирішується у викликачів).
+ * (Звірено з таблицею AGRAM 06.2026: Lomako 147 год → без стаж-бонусу,
+ * Nabieva 75 днів стажу → +1.5, Petrenko 34 дні → +1.)
+ */
+export const AGRAM_BONUS_MIN_HOURS = 160;
+export function agramBonusPerHour(
+  w: { agramStazBonus: boolean; agramCashBonus: boolean; employmentStartDate: string | null },
+  month: string,
+  monthHours?: number | null,
+): number {
+  let b = w.agramCashBonus ? AGRAM_CASH_PER_HOUR : 0;
+  const stazEligible = !(monthHours != null && monthHours < AGRAM_BONUS_MIN_HOURS);
+  if (w.agramStazBonus && stazEligible) {
+    if (!w.employmentStartDate) b += 1;
+    else {
+      const d = daysBetween(w.employmentStartDate, monthEndStr(month));
+      b += d >= 60 ? 1.5 : d >= 30 ? 1 : 0;
+    }
+  }
+  return r2(b);
+}
+
+// LST: той самий готівковий бонус +1 зл/год, що на Agram (частина ЗП налом),
+// але БЕЗ стажевого. Студентам до 26 не належить (нетто = брутто «як є»).
+export const LST_FACTORY_ID = 1;
+export const CASH_BONUS_FACTORY_IDS = new Set([...AGRAM_FACTORY_IDS, LST_FACTORY_ID]);
+/** Фабричний бонус до ставки нетто (не для студентів до 26 — гейтять викликачі). */
+export function factoryBonusPerHour(
+  w: { agramStazBonus: boolean; agramCashBonus: boolean; employmentStartDate: string | null },
+  factoryId: number | null | undefined,
+  month: string,
+  monthHours?: number | null,
+): number {
+  if (factoryId == null) return 0;
+  if (AGRAM_FACTORY_IDS.has(factoryId)) return agramBonusPerHour(w, month, monthHours);
+  if (factoryId === LST_FACTORY_ID) return w.agramCashBonus ? AGRAM_CASH_PER_HOUR : 0;
+  return 0;
+}
+
+// ── Резолюція базової пари ставок (без фабричних бонусів) ────────────────────
+// Пріоритет: профіль (якщо ставка вказана) → пара посади фабрики → найдешевша
+// посада (фабрика веде посади, а в профілі посада не вказана = «звичайний
+// працівник») → базова пара фабрики. Стандартну пару підставляють викликачі
+// за своїми правилами (без статусу / Agram). Студент до 26 неоподаткований:
+// нетто = брутто, профільна оподаткована нетто ігнорується.
+export type RatePair = { brutto: number | null; netto: number | null };
+export interface RateRules {
+  position?: RatePair | null; // пара посади людини на цій фабриці
+  cheapestPosition?: RatePair | null; // найдешевша посада фабрики (fallback без посади)
+  factory?: RatePair | null; // базова пара фабрики
+}
+export function resolveBaseRates(
+  w: { hourlyRate: number | null; hourlyRateNetto: number | null },
+  rules: RateRules,
+  stud26: boolean,
+): RatePair {
+  const rule = rules.position?.brutto != null ? rules.position
+    : rules.cheapestPosition?.brutto != null ? rules.cheapestPosition
+    : rules.factory?.brutto != null ? rules.factory : null;
+  const brutto = w.hourlyRate ?? rule?.brutto ?? null;
+  if (stud26) return { brutto, netto: brutto };
+  const netto = w.hourlyRateNetto
+    // нетто з правила беремо лише коли брутто теж звідти (або профільна = правилу)
+    ?? (rule && (w.hourlyRate == null || w.hourlyRate === rule.brutto) ? rule.netto : null);
+  return { brutto, netto };
+}
 
 export interface LegalCtx {
   profileLegal?: LegalStatus | null;
   factoryLabel?: string | null;
   /** побажання працівника (примітки профілю) — найвищий пріоритет */
   payoutPref?: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null;
+  /** місто рядка: у Любліні/Познані Dopłata ES вже сидить у doWyplaty, у Лодзі — поверх */
+  city?: string | null;
 }
 
 // Księgowa пара ставок рядка: студентська неоподаткована (netto = brutto)
@@ -187,8 +318,8 @@ export function ksiegRatesOf(
   const untaxed = (row.isStudent === true || ls === "student")
     && row.rateBrutto != null && row.rateNetto != null && row.rateBrutto <= row.rateNetto + 0.001;
   return {
-    netto: row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO)) : null,
-    brutto: row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO)) : null,
+    netto: row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO())) : null,
+    brutto: row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO())) : null,
   };
 }
 
@@ -196,13 +327,19 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   if (row.doWyplaty == null) return;
   if (!force && (row.ksiegNetto != null || row.gotowka != null)) return;
   const doplata = typeof row.extras.doplataEs === "number" ? (row.extras.doplataEs as number) : 0;
-  const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? ctx.profileLegal ?? null;
+  // Dopłata ES — завжди готівкова частина. У Любліні/Познані вона ВЖЕ входить
+  // у doWyplaty (заробив 5000 + 500 доплати = 5500, з них 500 готівкою) →
+  // конто не може її з'їсти і в готівку вдруге вона не додається. У Лодзі
+  // RAZEM її не містить — там доплата йде поверх, готівкою (формула таблиці).
+  const doplataInPayout = ctx.city !== "Лодзь";
+  const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? normalizeProfileLegal(ctx.profileLegal) ?? null;
   const capH = factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null);
   const { netto: ksiegNettoRate, brutto: ksiegBruttoRate } = ksiegRatesOf(row, ls);
   // На карту не можна переказати більше, ніж людині взагалі належить:
-  // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)].
+  // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)]
+  // мінус готівкова доплата (якщо вона всередині doWyplaty).
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
-  const cap = Math.max(row.doWyplaty, 0);
+  const cap = Math.max(row.doWyplaty - (doplataInPayout ? doplata : 0), 0);
   const finish = (targetKonto: number, declaredHours: number | null, studentBrutto = false) => {
     const konto = r2(Math.max(0, Math.min(targetKonto, cap)));
     const cut = konto !== r2(targetKonto);
@@ -216,21 +353,23 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
       : ksiegNettoRate != null && ksiegBruttoRate != null && ksiegNettoRate > 0
         ? r2(konto / ksiegNettoRate * ksiegBruttoRate)
         : row.hoursDeclared != null && ksiegBruttoRate != null ? r2(row.hoursDeclared * ksiegBruttoRate) : null;
-    row.gotowka = r2(row.doWyplaty! - konto + doplata);
+    row.gotowka = r2(row.doWyplaty! - konto + (doplataInPayout ? 0 : doplata));
   };
   const pref = ctx.payoutPref;
   if (pref && (pref.kind === "all_konto" || pref.value != null)) {
     // побажання працівника — понад статуси й oświadczenie (заробив менше → менша сума через cap)
     if (pref.kind === "all_konto") finish(row.doWyplaty, row.hours ?? null);
-    else if (pref.kind === "hours") finish((pref.value ?? 0) * (ksiegNettoRate ?? 0), r2(pref.value ?? 0));
+    else if (pref.kind === "hours") finish((pref.value ?? 0) * (ksiegNettoRate ?? 0), ksiegNettoRate ? r2(pref.value ?? 0) : null);
     else finish(pref.value ?? 0, ksiegNettoRate ? r2(Math.min(Math.max(pref.value ?? 0, 0), cap) / ksiegNettoRate) : null);
   } else if (row.isStudent && row.under26) {
     finish(row.doWyplaty, row.hours ?? null, true);
+  } else if (ls === "oczekuje" || (ls == null && force)) {
+    // не оформлений / без статусу — все готівкою (перед гілкою освядчення:
+    // вписані колись години дозволу без статусу конто не відкривають)
+    finish(0, 0);
   } else if (row.hoursNotified != null && row.hoursNotified > 0 && row.hours != null && ksiegNettoRate != null) {
     const declared = Math.min(row.hoursNotified, row.hours, capH ?? Infinity);
     finish(declared * ksiegNettoRate, r2(declared));
-  } else if (ls === "oczekuje" || (ls == null && force)) {
-    finish(0, 0); // не оформлений — все готівкою
   } else if (ls != null) {
     // оформлений без oświadczenia-годин: все на карту, але не вище фабричної
     // стелі годин. Бонусна ставка (платіжна нетто ВИЩА за księgową, напр.
@@ -245,20 +384,6 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
       finish(row.doWyplaty, row.hours ?? null);
     }
   }
-}
-
-// ── фабрико-специфічні формули księgowих годин (як в екселі) ─────────────────
-// Eurocash: Godzin Faktycznie = Do wypłaty / 30,5;
-// Sushi: Godzin Faktycznie = (Do wypłaty + Zaliczka) / 24,6; BRUTTO = godz × 30,5.
-export function computeKsiegHours(factoryLabel: string, row: Pick<SvodniParsedRow, "doWyplaty" | "zaliczka">): { ksiegHours: number; brutto?: number } | null {
-  const f = norm(factoryLabel);
-  if (row.doWyplaty == null) return null;
-  if (/^EUROCASH/.test(f)) return { ksiegHours: r2(row.doWyplaty / 30.5) };
-  if (/SUSHI/.test(f)) {
-    const h = r2((row.doWyplaty + (row.zaliczka ?? 0)) / 24.6);
-    return { ksiegHours: h, brutto: r2(h * 30.5) };
-  }
-  return null;
 }
 
 // ── Люблін / Познань: одна вкладка = одна фабрика ────────────────────────────
@@ -324,8 +449,9 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
     }
     const hasAnyNumber = [...colOf.keys()].some(i => num(rows[r]?.[i]) != null);
     const powiadMark = powiadCol >= 0 ? norm(cell(rows[r], powiadCol)) : "";
+    const powiadMarkIsText = !!powiadMark && num(rows[r]?.[powiadCol]) == null;
     const row = emptyRow(section, name);
-    (row as any).__hasNum = hasAnyNumber || powiadMark === "STUD";
+    (row as any).__hasNum = hasAnyNumber || powiadMarkIsText;
     let premiaSum: number | null = null;
     for (const [i, c] of colOf) {
       const v = rows[r]?.[i];
@@ -338,12 +464,19 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
     }
     row.premia = premiaSum != null ? r2(premiaSum) : null;
     for (const [i, k] of hrOf) { const v = dateCell(rows[r], i); if (v) row.hr[k] = v; }
-    // STUD-маркер у колонці «повідомлення» + ZUS-текст «do 26 / Wyżej 26 / student»
-    const powiadTxt = powiadCol >= 0 ? norm(cell(rows[r], powiadCol)) : "";
+    // Текст у колонці «повідомлення» — статусний маркер замість годин:
+    // STUD / STUD>26 / DYPLOM / KARTA POBYTU / NIE ZGŁOSZONY / polka…
+    // Якщо колонка Księgowość порожня — маркер стає джерелом форми легалізації.
+    const powiadTxt = powiadMarkIsText ? powiadMark : "";
+    if (powiadMarkIsText) {
+      row.hoursNotified = null;
+      if (!row.extras.zusStatus) row.extras.zusStatus = cell(rows[r], powiadCol);
+    }
     const zusTxt = norm(String(row.extras.zusStatus ?? ""));
-    row.isStudent = powiadTxt === "STUD" || /STUDENT/.test(zusTxt) ? true : zusTxt ? false : null;
-    row.under26 = /DO ?26/.test(zusTxt) ? true : /WYZEJ ?26/.test(zusTxt) ? false : null;
-    if (powiadTxt === "STUD") row.hoursNotified = null;
+    row.isStudent = /^STUD/.test(powiadTxt) || /STUDENT/.test(zusTxt) ? true : zusTxt ? false : null;
+    row.under26 = /(>|WYZEJ ?)26/.test(powiadTxt) ? false
+      : powiadTxt === "STUD" ? true // класичний STUD-маркер = студент до 26 (після 26 маркують явно)
+      : /DO ?26/.test(zusTxt) ? true : /WYZEJ ?26/.test(zusTxt) ? false : null;
     row.sheetRow = r;
     out.rows.push(row);
   }
@@ -778,7 +911,8 @@ export function overlayGotowka(tab: SvodniParsedTab, rows: GotowkaRow[]) {
 
 // ── перерахунок формул: do wypłaty з компонентів ─────────────────────────────
 // Люблін/Познань: hours×rateNetto (+нічні +доплати +премії) − всі відрахування.
-// Лодзь: hours×rateNetto + migawka + premia − zaliczka − potrącenia − hostel (+dojazd/odzież/dokumenty…).
+// Лодзь: hours×rateNetto + migawka (доплата) + premia − zaliczka − potrącenia
+// − hostel − odzież − dojazd − dokumenty (dojazd — теж відрахування).
 const TOL = 0.05; // заокруглення в таблицях
 
 // Чистий розрахунок «до виплати» з компонентів рядка (формула таблиці) —
@@ -787,26 +921,236 @@ const TOL = 0.05; // заокруглення в таблицях
 type PayoutLike = Pick<SvodniParsedRow,
   "hours" | "rateNetto" | "premia" | "zaliczka" | "zaliczkaBd" | "hostel" | "odziez"
   | "dojazd" | "kara" | "komornik" | "kaucja" | "potracenia" | "extras">;
-export function computePayout(row: PayoutLike, city: "Люблін" | "Познань" | "Лодзь"): number | null {
-  if (row.hours == null || row.rateNetto == null) return null;
+// baseOverride — база «год × ставка» для сегментованих рядків (Σ по сегментах
+// з різними ставками); без нього база рахується з hours × rateNetto рядка.
+export function computePayout(row: PayoutLike, city: "Люблін" | "Познань" | "Лодзь", baseOverride?: number | null): number | null {
+  const base = baseOverride ?? (row.hours != null && row.rateNetto != null ? row.hours * row.rateNetto : null);
+  if (base == null) return null;
   const ex = (k: string) => (typeof row.extras[k] === "number" ? (row.extras[k] as number) : 0);
   let ours: number;
   if (city === "Лодзь") {
-    ours = row.hours * row.rateNetto + ex("migawka") + (row.premia ?? 0) + (row.dojazd ?? 0)
-      - (row.zaliczka ?? 0) - (row.potracenia ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0) - ex("dokumenty");
+    // Dojazd у лодзьких вкладках — ДОПЛАТА за доїзд (перевірено по RAZEM:
+    // NOWOPAK 06.2026), на відміну від люблінського потрącення за транспорт
+    ours = base + ex("migawka") + (row.premia ?? 0) + (row.dojazd ?? 0)
+      - (row.zaliczka ?? 0) - (row.potracenia ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0)
+      - ex("dokumenty");
   } else {
-    // Premia ES — бонус за годину до БАЗОВОЇ нетто-ставки (AGRAM). Якщо ставка
-    // рядка вже містить бонус (вшита: netto ≥ 25,35 + бонус) — не додаємо вдруге.
-    const bonusPerH = row.rateNetto >= KSIEG_STD_NETTO + ex("premiaEs") - 0.01 ? 0 : ex("premiaEs");
-    ours = row.hours * row.rateNetto
+    // Premia ES — бонус за годину, ЗАВЖДИ додається до ставки нетто рядка.
+    // Конвенція: ставка нетто в рядку — базова (без бонусу); базові в людей
+    // різні, тож «вшитість» бонусу в ставку не детектиться — не вшивати.
+    ours = base
       + ex("nocneH") * ex("doplataNocna")
-      + bonusPerH * row.hours
+      + ex("premiaEs") * (row.hours ?? 0)
       + (row.premia ?? 0) + ex("oplataKierowcy") + ex("doplataEs") + ex("zwrotKosztow")
       - (row.zaliczka ?? 0) - (row.zaliczkaBd ?? 0) - (row.hostel ?? 0) - (row.odziez ?? 0)
       - (row.dojazd ?? 0) - (row.kara ?? 0) - (row.komornik ?? 0) - (row.kaucja ?? 0)
       - (row.potracenia ?? 0) - ex("badania") - ex("kartaPobytu") - ex("karaKlient") - ex("karaEs") - ex("zadluzenie");
   }
   return r2(ours);
+}
+
+// ── Сегменти всередині місяця ────────────────────────────────────────────────
+// Людина з різними умовами в різні періоди місяця: база = Σ(год × ставка
+// сегмента); księgowa пара декларується по НИЖЧІЙ зі ставок сегментів
+// (батьківський рядок тримає min-ставки), розклад konto/готівка — місячний.
+export type SegmentPart = { hours: number | null; rateNetto: number | null; rateBrutto?: number | null };
+export function segmentsBase(parts: SegmentPart[]): {
+  base: number | null; hours: number; minNetto: number | null; minBrutto: number | null; bruttoSum: number | null;
+} {
+  let base = 0, anyBase = false, hours = 0, bruttoSum = 0, anyBrutto = false;
+  let minNetto: number | null = null, minBrutto: number | null = null;
+  for (const p of parts) {
+    if (p.hours != null) hours = r2(hours + p.hours);
+    if (p.hours != null && p.rateNetto != null) { base = r2(base + p.hours * p.rateNetto); anyBase = true; }
+    if (p.rateNetto != null) minNetto = minNetto == null ? p.rateNetto : Math.min(minNetto, p.rateNetto);
+    if (p.rateBrutto != null) {
+      minBrutto = minBrutto == null ? p.rateBrutto : Math.min(minBrutto, p.rateBrutto);
+      if (p.hours != null) { bruttoSum = r2(bruttoSum + p.hours * p.rateBrutto); anyBrutto = true; }
+    }
+  }
+  return { base: anyBase ? base : null, hours, minNetto, minBrutto, bruttoSum: anyBrutto ? bruttoSum : null };
+}
+
+// Повний розрахунок сегментованого рядка: кожен сегмент — «міні-місяць» зі
+// своїми годинами/ставками/статусом → своя виплата і свій розклад konto/готівки
+// за правилами СВОГО статусу. Місячні суми батька (премія, аванси, хостел,
+// кари…) розкладаються пропорційно базі (год × ставка); години повідомлення
+// (місячний ліміт) діляться послідовно, сегменти студентів до 26 їх не
+// споживають. Батько = Σ сегментів; побажання по виплаті (payoutPref) —
+// місячне: перекриває розклад konto/готівки на рівні батька.
+export type SegmentCalcIn = {
+  hours: number | null; rateNetto: number | null; rateBrutto: number | null;
+  isStudent: boolean | null; under26: boolean | null; legal: string | null;
+};
+export type SegmentCalcOut = SegmentCalcIn & {
+  alloc: Record<string, number | null>;
+  extras: Record<string, number>;
+  hoursNotified: number | null;
+  doWyplaty: number | null; brutto: number | null;
+  hoursDeclared: number | null; ksiegBrutto: number | null; ksiegNetto: number | null;
+  konto: number | null; gotowka: number | null;
+};
+export const SEG_SHARE_COLS = ["premia", "zaliczka", "zaliczkaBd", "hostel", "odziez", "dojazd", "kara", "komornik", "kaucja", "potracenia"] as const;
+const SEG_RATE_EXTRAS = new Set(["premiaEs", "doplataNocna"]); // ставко-подібні — копіюються в кожен сегмент
+const SEG_HOUR_EXTRAS = new Set(["nocneH"]);                   // годино-подібні — по частці годин
+
+export function computeSegmented(
+  parent: {
+    city: string; factoryLabel: string;
+    hoursNotified: number | null;
+    premia: number | null; zaliczka: number | null; zaliczkaBd: number | null; hostel: number | null;
+    odziez: number | null; dojazd: number | null; kara: number | null; komornik: number | null;
+    kaucja: number | null; potracenia: number | null;
+    extras: Record<string, unknown>;
+  },
+  segs: SegmentCalcIn[],
+  payoutPref: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null,
+): {
+  segs: SegmentCalcOut[];
+  parent: {
+    hours: number | null; rateNetto: number | null; rateBrutto: number | null; brutto: number | null;
+    doWyplaty: number | null; hoursDeclared: number | null; ksiegBrutto: number | null;
+    ksiegNetto: number | null; konto: number | null; gotowka: number | null;
+  };
+} {
+  const bases = segs.map(s => (s.hours ?? 0) * (s.rateNetto ?? 0));
+  const hoursArr = segs.map(s => s.hours ?? 0);
+  const baseSum = bases.reduce((a, b) => a + b, 0);
+  const hoursSum = hoursArr.reduce((a, b) => a + b, 0);
+  // частка сегмента: по базі; без бази — по годинах; без годин — усе останньому
+  const weightArr = baseSum > 0 ? bases : hoursSum > 0 ? hoursArr : segs.map((_, i) => (i === segs.length - 1 ? 1 : 0));
+  const wSum = weightArr.reduce((a, b) => a + b, 0) || 1;
+  // залишок округлення — сегменту з НАЙБІЛЬШОЮ вагою (не порожньому останньому:
+  // інакше нульовий сегмент ловить фантомні ±0.01)
+  const remIdx = weightArr.reduce((best, x, i) => (x > weightArr[best]! ? i : best), 0);
+  const allocate = (total: number): number[] => {
+    const out = weightArr.map(x => r2(total * x / wSum));
+    const diff = r2(total - out.reduce((a, b) => a + b, 0));
+    out[remIdx] = r2(out[remIdx]! + diff);
+    return out;
+  };
+  const isMoney = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v !== 0;
+  // місячні колонки → частки
+  const colAlloc = new Map<string, number[]>();
+  for (const k of SEG_SHARE_COLS) {
+    const v = (parent as any)[k];
+    if (isMoney(v)) colAlloc.set(k, allocate(v));
+  }
+  // extras: ставко-подібні копіюються, годино-подібні — по годинах, грошові — по базі
+  const extrasAlloc: Record<string, number[]> = {};
+  for (const [k, v] of Object.entries(parent.extras)) {
+    if (!isMoney(v)) continue;
+    if (SEG_RATE_EXTRAS.has(k)) extrasAlloc[k] = segs.map(() => v);
+    else if (SEG_HOUR_EXTRAS.has(k)) {
+      const hw = hoursSum > 0 ? hoursArr : weightArr;
+      const hwSum = hw.reduce((a, b) => a + b, 0) || 1;
+      const hwRem = hw.reduce((best, x, i) => (x > hw[best]! ? i : best), 0);
+      const out = hw.map(x => r2(v * x / hwSum));
+      out[hwRem] = r2(out[hwRem]! + r2(v - out.reduce((a, b) => a + b, 0)));
+      extrasAlloc[k] = out;
+    } else extrasAlloc[k] = allocate(v);
+  }
+  // Години повідомлення — місячний ліміт. Споживають лише сегменти, чий статус
+  // реально відкриває konto через oświadczenie (студент до 26 — все на конто без
+  // ліміту; «не зголошений»/oczekuje/без статусу — все готівкою, ліміт не палять).
+  const notifyLimited = parent.hoursNotified != null && parent.hoursNotified > 0;
+  let notifyLeft = parent.hoursNotified;
+  const outSegs: SegmentCalcOut[] = segs.map((s, i) => {
+    const legalNorm = normalizeProfileLegal(s.legal) ?? null;
+    const stud26 = (s.isStudent === true || legalNorm === "student") && s.under26 === true;
+    const usesNotify = !stud26 && legalNorm != null && legalNorm !== "oczekuje";
+    let segNotify: number | null = null;
+    if (notifyLeft != null) {
+      segNotify = usesNotify ? r2(Math.min(s.hours ?? 0, Math.max(notifyLeft, 0))) : 0;
+      if (usesNotify) notifyLeft = r2(notifyLeft - segNotify);
+    }
+    const alloc: Record<string, number | null> = {};
+    for (const k of SEG_SHARE_COLS) alloc[k] = colAlloc.get(k)?.[i] ?? null;
+    const extras: Record<string, number> = {};
+    for (const [k, arr] of Object.entries(extrasAlloc)) extras[k] = arr[i]!;
+    const row: any = {
+      hours: s.hours, rateNetto: s.rateNetto, rateBrutto: s.rateBrutto,
+      isStudent: s.isStudent, under26: s.under26, hoursNotified: segNotify,
+      extras, hr: {}, sheetValues: {},
+      ...alloc,
+    };
+    row.doWyplaty = computePayout(row, parent.city as any);
+    row.brutto = s.hours != null && s.rateBrutto != null ? r2(s.hours * s.rateBrutto) : null;
+    applyLegalDefaults(row, true, { profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: null, city: parent.city });
+    // особа обмежена повідомленням, а сегменту ліміту не лишилось → konto 0
+    // (інакше applyLegalDefaults трактує «0 годин» як «без oświadczenia — все на карту»)
+    if (notifyLimited && usesNotify && (segNotify ?? 0) <= 0 && row.doWyplaty != null) {
+      // доплата поверх doWyplaty — лише в Лодзі; у Любліні/Познані вона вже всередині
+      const doplata = parent.city === "Лодзь" && typeof extras.doplataEs === "number" ? extras.doplataEs : 0;
+      row.konto = 0; row.ksiegNetto = 0; row.ksiegBrutto = 0; row.hoursDeclared = 0;
+      row.gotowka = r2(row.doWyplaty + doplata);
+    }
+    return {
+      ...s, alloc, extras, hoursNotified: segNotify,
+      doWyplaty: row.doWyplaty ?? null, brutto: row.brutto ?? null,
+      hoursDeclared: row.hoursDeclared ?? null, ksiegBrutto: row.ksiegBrutto ?? null,
+      ksiegNetto: row.ksiegNetto ?? null, konto: row.konto ?? null, gotowka: row.gotowka ?? null,
+    };
+  });
+  // побажання по виплаті — місячне: розклад konto/готівки живе ЛИШЕ на батькові,
+  // сегментні поля закритого шару обнуляються (інакше Σ сегментів ≠ батько)
+  const prefActive = !!(payoutPref && (payoutPref.kind === "all_konto" || payoutPref.value != null));
+  if (prefActive) {
+    for (const s of outSegs) {
+      s.hoursDeclared = null; s.ksiegBrutto = null; s.ksiegNetto = null; s.konto = null; s.gotowka = null;
+    }
+  }
+  const sum = (f: (s: SegmentCalcOut) => number | null): number | null => {
+    const vals = outSegs.map(f).filter((x): x is number => x != null);
+    return vals.length ? r2(vals.reduce((a, b) => a + b, 0)) : null;
+  };
+  const min = (f: (s: SegmentCalcOut) => number | null): number | null => {
+    const vals = outSegs.map(f).filter((x): x is number => x != null);
+    return vals.length ? Math.min(...vals) : null;
+  };
+  const parentOut = {
+    hours: sum(s => s.hours), rateNetto: min(s => s.rateNetto), rateBrutto: min(s => s.rateBrutto),
+    brutto: sum(s => s.brutto), doWyplaty: sum(s => s.doWyplaty),
+    hoursDeclared: sum(s => s.hoursDeclared), ksiegBrutto: sum(s => s.ksiegBrutto),
+    ksiegNetto: sum(s => s.ksiegNetto), konto: sum(s => s.konto), gotowka: sum(s => s.gotowka),
+  };
+  // побажання по виплаті — місячне: перерозкладає konto/готівку на рівні батька
+  if (payoutPref && (payoutPref.kind === "all_konto" || payoutPref.value != null) && parentOut.doWyplaty != null) {
+    const last = outSegs[outSegs.length - 1];
+    const prow: any = {
+      hours: parentOut.hours, rateNetto: parentOut.rateNetto, rateBrutto: parentOut.rateBrutto,
+      isStudent: last?.isStudent ?? null, under26: last?.under26 ?? null,
+      hoursNotified: parent.hoursNotified, doWyplaty: parentOut.doWyplaty,
+      extras: parent.extras, hr: {}, sheetValues: {},
+    };
+    applyLegalDefaults(prow, true, { profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref, city: parent.city });
+    parentOut.hoursDeclared = prow.hoursDeclared ?? null;
+    parentOut.ksiegBrutto = prow.ksiegBrutto ?? null;
+    parentOut.ksiegNetto = prow.ksiegNetto ?? null;
+    parentOut.konto = prow.konto ?? null;
+    parentOut.gotowka = prow.gotowka ?? null;
+  }
+  return { segs: outSegs, parent: parentOut };
+}
+
+// Розбивка місячної суми годин по вікнах між датами змін: пропорційно
+// фактичним годинам явок у вікнах; якщо явок нема — порівну по календарних
+// днях. Використовується для рапортних місяців (одне число без дат);
+// вікна з явками масштабуються так, щоб Σ = total.
+export function splitTotalByWindows(
+  total: number,
+  windows: { from: string; to: string; attHours: number }[],
+): number[] {
+  const attSum = windows.reduce((a, w) => a + w.attHours, 0);
+  const daysOf = (w: { from: string; to: string }) =>
+    Math.round((new Date(w.to + "T12:00:00").getTime() - new Date(w.from + "T12:00:00").getTime()) / 86400000) + 1;
+  const weights = attSum > 0 ? windows.map(w => w.attHours) : windows.map(daysOf);
+  const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+  const out = windows.map((_, i) => r2(total * weights[i]! / wSum));
+  // корекція округлення — останнє вікно добирає різницю до total
+  const diff = r2(total - out.reduce((a, b) => a + b, 0));
+  if (out.length) out[out.length - 1] = r2(out[out.length - 1]! + diff);
+  return out;
 }
 
 export function computeMismatch(row: SvodniParsedRow, city: "Люблін" | "Познань" | "Лодзь"): void {

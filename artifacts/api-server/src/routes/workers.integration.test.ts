@@ -17,13 +17,14 @@ beforeEach(async () => {
 });
 after(async () => { if (hasTestDb) await closeDb(); });
 
-test("editData (non-finance) admin cannot set hourlyRate on create — it keeps the default", opts, async () => {
+test("editData (non-finance) admin cannot set hourlyRate on create — it stays NULL (авто)", opts, async () => {
   const { cookie } = await seedAdmin({ role: "editor" });
   const res = await request(app).post("/api/workers").set("Cookie", cookie).set(H)
     .send({ fullName: "Jan Kowalski", hourlyRate: 999, isStudent: true, under26: true });
   assert.equal(res.status, 200);
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, res.body.id));
-  assert.equal(w!.hourlyRate, 31.5, "hourlyRate must stay at the schema default, not 999");
+  // ставка — профільний override: без viewFinance не пишеться, NULL = «авто» за правилами фабрики
+  assert.equal(w!.hourlyRate, null, "hourlyRate must stay NULL (auto), not 999");
   assert.equal(w!.isStudent, false);
   assert.equal(w!.under26, false);
 });

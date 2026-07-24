@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex
+  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex, index
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
@@ -41,6 +41,7 @@ export const factoryPositionsTable = pgTable("factory_positions", {
   factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
   positionId: integer("position_id").notNull().references(() => positionsTable.id),
   rate: real("rate"), // gross PLN/hour we pay a worker in this position here (null = use worker's own rate)
+  rateNetto: real("rate_netto"), // net PLN/hour pair (netto/brutto пари нестандартні — тримаємо обидві)
   invoiceRate: real("invoice_rate"), // net PLN/hour we bill the client for this position (null = factory default invoiceRate)
   sortOrder: integer("sort_order").notNull().default(0),
 });
@@ -62,8 +63,10 @@ export const workersTable = pgTable("workers", {
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
   birthDate: date("birth_date"), // з дати народження виводиться «до 26» (податкова пільга)
-  hourlyRate: real("hourly_rate").notNull().default(31.5), // gross PLN/hour
-  hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться
+  // Ставки — профільний override; NULL = «авто» за правилами фабрики
+  // (пара посади factory_positions → найдешевша посада → базова пара фабрики)
+  hourlyRate: real("hourly_rate"), // gross PLN/hour (null = авто з фабрики)
+  hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться; студенту до 26 нетто = брутто (виводиться)
   isStudent: boolean("is_student").notNull().default(false),
   under26: boolean("under_26").notNull().default(false),
   legalStatus: text("legal_status"), // форма легалізації: student | dyplom | do26 | zus | oczekuje | karta_pobytu | staly_pobyt | polak
@@ -71,6 +74,10 @@ export const workersTable = pgTable("workers", {
   note: text("note"), // примітка (видима лише з доступом svodniSensitive)
   payoutPrefKind: text("payout_pref_kind"), // побажання по виплаті: all_konto | hours | amount (найвищий пріоритет у розкладі konto/готівка)
   payoutPrefValue: real("payout_pref_value"), // N годин або сума — для kind hours|amount
+  employmentStartDate: date("employment_start_date"), // дата працевлаштування (усі працівники; в Agram від неї рахується стаж-бонус)
+  // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
+  agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
+  agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -114,6 +121,8 @@ export const factoriesTable = pgTable("factories", {
   // Pickup stops where drivers collect workers: name + time they must be there.
   stops: jsonb("stops").$type<{ name: string; time: string }[]>().notNull().default([]),
   shiftCount: integer("shift_count").notNull().default(3), // how many shifts are active (1–6)
+  clientNip: text("client_nip"),   // NIP юрособи-клієнта: ключ матчингу фактур KSeF → P&L (кілька фабрик одного клієнта ділять один NIP)
+  pnlLabel: text("pnl_label"),     // канонічний підпис клієнта в P&L (дохід і собівартість зливаються по ньому)
   usesAvailability: boolean("uses_availability").notNull().default(true), // kept in sync = (genMode === 'availability'); legacy reads
   // Schedule generation mode:
   //  • availability — workers self-report availability; generate by orders + availability
@@ -127,6 +136,10 @@ export const factoriesTable = pgTable("factories", {
   showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule
   clientEmail: text("client_email"), // where to send approved schedule
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
+  city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
+  rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
+  rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
+  nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -789,6 +802,13 @@ export const svodniRowsTable = pgTable("svodni_rows", {
   mismatch: jsonb("mismatch"),                   // null = наш перерахунок збігся з таблицею
   manual: boolean("manual").notNull().default(false), // рядок правлений на сайті → синк його не перезаписує
   rowColor: text("row_color"),                   // фон рядка з таблиці Google (ручні позначки)
+  // Сегменти всередині місяця (зміна умов з дати: посада/ставка/статус).
+  // segment_of = id батьківського рядка (NULL = звичайний/батьківський);
+  // сегмент несе свої години/ставки/base, місячний розклад konto/готівки — на батькові
+  segmentOf: integer("segment_of"),
+  segmentFrom: date("segment_from"),
+  segmentTo: date("segment_to"),
+  segmentLabel: text("segment_label"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -835,6 +855,23 @@ export const svodniLocksTable = pgTable("svodni_locks", {
   lockedAt: timestamp("locked_at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("svodni_locks_scope_uq").on(t.periodMonth, t.city, t.factoryLabel)]);
 
+// Журнал змін профілю працівника з датою набуття (effective_date): форма
+// легалізації, ставки, посада, бонуси Agram, дата народження/працевлаштування,
+// звільнення/поновлення. Історія станів людини — фундамент для пропагації змін
+// у сводні заднім числом і майбутніх сегментів усередині місяця.
+export const workerChangesTable = pgTable("worker_changes", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  field: text("field").notNull(),          // ключ поля профілю (legalStatus | hourlyRateNetto | positionId | fired | …)
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  effectiveDate: date("effective_date").notNull(), // від якої дати діє зміна
+  appliedRows: jsonb("applied_rows"),      // куди пропагували: [{month, city, factoryLabel}]
+  skippedLocked: jsonb("skipped_locked"),  // залочені місця, які зміна зачіпає, але не оновила
+  adminId: integer("admin_id").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("worker_changes_worker_idx").on(t.workerId, t.effectiveDate)]);
+
 // Метадані вкладки сводної: порядок колонок як у таблиці Google + інформаційні
 // блоки (напр. «STAWKA EUROCASH» — ставки за діапазонами годин).
 export const svodniTabMetaTable = pgTable("svodni_tab_meta", {
@@ -845,6 +882,24 @@ export const svodniTabMetaTable = pgTable("svodni_tab_meta", {
   factoryLabel: text("factory_label").notNull(),
   colOrder: jsonb("col_order").notNull().default([]), // ключі колонок у порядку таблиці
   info: jsonb("info").notNull().default({}),          // { stawkaEurocash: [[...]] }
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── Штрафи (kary) ───────────────────────────────────────────────────────────
+// Рахується наживо: години з обліку (рапорт → підтверджені явки), ставки з
+// налаштувань фабрик, аванси/штрафи/хостели зі своїх вкладок. У БД живе лише
+// ручний шар (правки безформульних колонок, додані вручну люди) і локи-заморозки.
+
+// Штрафи: зняття з ЗП за місяць (аналог hostel_deductions)
+export const penaltiesTable = pgTable("penalties", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  city: text("city"),
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  factoryLabel: text("factory_label"),
+  amount: real("amount").notNull(),
+  note: text("note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -938,6 +993,7 @@ export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
 export type CashEntry = typeof cashEntriesTable.$inferSelect;
 export type AdminSession = typeof adminSessionsTable.$inferSelect;
 export type LoginEvent = typeof loginEventsTable.$inferSelect;
+export type Penalty = typeof penaltiesTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

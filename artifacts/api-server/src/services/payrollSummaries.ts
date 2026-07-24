@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import {
   payrollSourcesTable, payrollFactoryMonthsTable, payrollCashRowsTable,
   payrollOfficeRowsTable, payrollFoldersTable, payrollNameMatchesTable, pnlEntriesTable,
+  factoriesTable,
 } from "@workspace/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
@@ -62,8 +63,10 @@ const FIRM_OVERRIDES: Record<string, string> = {
 // (exported: svodniSync uses the same aliases for the WYPŁATA GOTÓWKĄ overlay)
 export const TAB_ALIASES: Record<string, string[]> = {
   AGRAM: ["AGRAM", "AGRAMMOTYCZ"],
+  ALLMIZ: ["ALMIZ"],           // фабрика в базі — ALMIZ, вкладка Зарплат — Allmiz
   ANDROS: ["ANDROSKLINEX", "ANDROSEUROSUPORT", "ANDROSEUROSUPPORT"],
   BLC: ["SUPERDROB"],
+  DEZYNFEKCJA: ["SERWISPLUS"], // фабрику перейменовано: DEZYNFEKCJA → SERWIS PLUS
   EUROCASHBL: ["EUROCASHBIALYSTOK"],
   EUROCASHLB: ["EUROCASHLUBLIN"],
   PAKSERVICE: ["PAKSERWIS"],
@@ -981,12 +984,28 @@ export function factoryCost(f: {
 }
 
 // P&L client label per factory: cities/halls of one client merge into one line
-// so revenue (one KSeF invoice stream) meets its full cost
+// so revenue (one KSeF invoice stream) meets its full cost.
+// ГОЛОВНЕ джерело — довідник фабрик (factories.pnl_label, привʼязка по ID):
+// собівартість і дохід (KSeF по NIP) зливаються одним канонічним підписом.
+// Легасі-мапа лишається фолбеком для скорочень вкладок і клієнтів без фабрики.
 const PNL_LABEL_MERGE: Record<string, string> = {
   "EUROCASHBL": "Eurocash", "EUROCASHLB": "Eurocash", "EUROCASHKROSNO": "Eurocash",
   "INPOSTLDZ": "InPost", "INPOSTGD3": "InPost", "INPOSTKRAKOWALLIN": "InPost", "INPOSTPZS": "InPost",
 };
 const pnlLabelFor = (factory: string) => PNL_LABEL_MERGE[key(factory)] ?? factory;
+const PNL_FACTORY_ALIASES: Record<string, string> = { ALLMIZ: "ALMIZ" }; // одрукування вкладок
+async function pnlLabelResolver(): Promise<(factoryLabel: string) => string> {
+  const rows = await db.select({ name: factoriesTable.name, pnlLabel: factoriesTable.pnlLabel }).from(factoriesTable);
+  const entries = rows.filter(r => r.pnlLabel).map(r => ({ key: key(r.name), label: r.pnlLabel! }));
+  return (factoryLabel: string) => {
+    const k = PNL_FACTORY_ALIASES[key(factoryLabel)] ?? key(factoryLabel);
+    const exact = entries.find(e => e.key === k);
+    if (exact) return exact.label;
+    const pref = entries.find(e => e.key.startsWith(k) || k.startsWith(e.key));
+    if (pref) return pref.label;
+    return pnlLabelFor(factoryLabel);
+  };
+}
 
 // Rebuild ALL source='payroll' lines of the month from payroll_factory_months:
 // cogs per factory + a revenue line for hostel withholdings (workers pay for
@@ -994,6 +1013,7 @@ const pnlLabelFor = (factory: string) => PNL_LABEL_MERGE[key(factory)] ?? factor
 export async function feedPnlCogs(periodMonth: string) {
   const rows = await db.select().from(payrollFactoryMonthsTable)
     .where(eq(payrollFactoryMonthsTable.periodMonth, periodMonth));
+  const labelOf = await pnlLabelResolver();
   const fmt = (n: number) => n.toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   await db.transaction(async tx => {
     await tx.delete(pnlEntriesTable).where(and(
@@ -1006,7 +1026,7 @@ export async function feedPnlCogs(periodMonth: string) {
       if (cost.hostel) hostelByRegion.set(f.region, Math.round(((hostelByRegion.get(f.region) ?? 0) + cost.hostel) * 100) / 100);
       if (!cost.total) continue;
       await tx.insert(pnlEntriesTable).values({
-        periodMonth, section: "cogs", label: pnlLabelFor(f.factory), amount: cost.total, source: "payroll",
+        periodMonth, section: "cogs", label: labelOf(f.factory), amount: cost.total, source: "payroll",
         note: `[${f.region}${f.firm ? ` · ${f.firm}` : ""}] ${f.factory}: нетто ${fmt(cost.netto)}${cost.zaliczki ? ` + аванси ${fmt(cost.zaliczki)}` : ""}${cost.hostel ? ` + хостел ${fmt(cost.hostel)}` : ""} + PIT/ZUS ~${fmt(cost.workerTax + cost.employerZus)}`,
       });
     }

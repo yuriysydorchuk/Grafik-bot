@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRoute, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock
 } from "lucide-react";
+import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label } from "../components/ui";
@@ -23,6 +24,9 @@ interface WorkerProfile {
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
+  employmentStartDate?: string | null;
+  agramFactory?: boolean; agramStazBonus?: boolean; agramCashBonus?: boolean;
+  cashBonusFactory?: boolean; // не-Agram бонусна фабрика (LST): лише нал-бонус
   note?: string | null; payoutPrefKind?: string | null; payoutPrefValue?: number | null;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
   factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
@@ -55,6 +59,11 @@ export default function WorkerDetail() {
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const [editing, setEditing] = useState(false);
+  // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
+  // що зачепить» замість прямого PATCH (лише для користувачів з cap svodni)
+  const canSvodni = can(me, "svodni");
+  const [pendingChange, setPendingChange] = useState<{ changes: Record<string, unknown>; title: string; from?: string } | null>(null);
+  const requestChange = canSvodni ? (changes: Record<string, unknown>, title: string, from?: string) => setPendingChange({ changes, title, from }) : undefined;
 
   if (isLoading) return <Spinner />;
   if (isError || !w) return <Empty>{t("Працівника не знайдено")}</Empty>;
@@ -110,13 +119,20 @@ export default function WorkerDetail() {
           {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
-          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} />
-          <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} />
-          <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} />
-          {w.payoutPrefKind !== undefined && (
-            <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} />
+          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
+          <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
+          <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
+          <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
+          {(w.agramFactory || w.cashBonusFactory) && (
+            <AgramBonusRow workerId={w.id} staz={!!w.agramStazBonus} cash={!!w.agramCashBonus} startDate={w.employmentStartDate ?? null} cashOnly={!w.agramFactory} onRequest={requestChange} />
           )}
-          {w.hourlyRate != null && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
+          {w.payoutPrefKind !== undefined && (
+            <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} onRequest={requestChange} />
+          )}
+          {(w.hourlyRate != null || w.effectiveRate != null) && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.hourlyRate == null ? " · " + t("авто") : ""}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
+          {w.hourlyRate === null && w.effectiveRate == null && w.hourlyRateNetto == null && (
+            <Info icon={Clock} label={t("Ставка")} value={t("авто (за правилами фабрики)")} />
+          )}
         </div>
         {w.note !== undefined && <NoteBlock workerId={w.id} note={w.note ?? null} />}
       </Card>
@@ -186,10 +202,17 @@ export default function WorkerDetail() {
         )}
       </Card>
 
+      {/* Історія змін профілю (журнал з датами набуття) + видалення зміни */}
+      <ChangesTimeline workerId={w.id} canUndo={canSvodni} />
+
       {editing && (
         <WorkerModal worker={workerForEdit} factories={factories} companies={companies} isOwner={isOwner}
           onClose={() => setEditing(false)}
           onSaved={() => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); setEditing(false); }} />
+      )}
+      {pendingChange && (
+        <ProfileChangeModal workerId={w.id} changes={pendingChange.changes} title={pendingChange.title}
+          initialFrom={pendingChange.from} onClose={() => setPendingChange(null)} />
       )}
     </>
   );
@@ -197,10 +220,10 @@ export default function WorkerDetail() {
 
 function Info({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <Icon className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{label}:</span>
-      <span className="truncate font-medium text-slate-700">{value}</span>
+      <span className="shrink-0 text-slate-400">{label}:</span>
+      <span className="min-w-0 truncate font-medium text-slate-700" title={value}>{value}</span>
     </div>
   );
 }
@@ -355,27 +378,41 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
 const PAYOUT_PREF_LABEL: Record<string, string> = {
   all_konto: "Все на конто", hours: "N годин на конто", amount: "Сума на конто",
 };
-function PayoutPrefRow({ workerId, kind, value }: { workerId: number; kind: string | null; value: number | null }) {
+type RequestChange = ((changes: Record<string, unknown>, title: string, from?: string) => void) | undefined;
+
+function PayoutPrefRow({ workerId, kind, value, onRequest }: { workerId: number; kind: string | null; value: number | null; onRequest?: RequestChange }) {
   const t = useT();
   const qc = useQueryClient();
   const [draft, setDraft] = useState(value == null ? "" : String(value));
+  // ресинк із пропом: після скасування модалки/збереження інпут не має
+  // показувати незастосоване значення як «збережене»
+  useEffect(() => { setDraft(value == null ? "" : String(value)); }, [value]);
   const save = useMutation({
     mutationFn: (p: { payoutPrefKind?: string | null; payoutPrefValue?: number | null }) => patch(`/workers/${workerId}`, p),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["worker"] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
     onError: (e: any) => toast.error(e.message),
   });
+  const submit = (p: { payoutPrefKind?: string | null; payoutPrefValue?: number | null }) =>
+    onRequest ? onRequest(p, t("Побажання по виплаті")) : save.mutate(p);
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Wallet className="h-4 w-4 shrink-0 text-slate-400" />
       <span className="text-slate-400">{t("Побажання по виплаті")}:</span>
-      <select value={kind ?? ""} onChange={e => save.mutate({ payoutPrefKind: e.target.value || null })}
+      <select value={kind ?? ""} onChange={e => submit({ payoutPrefKind: e.target.value || null })}
         className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">{t("— за правилами —")}</option>
         {Object.entries(PAYOUT_PREF_LABEL).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
       </select>
       {(kind === "hours" || kind === "amount") && (
         <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
-          onBlur={() => { const v = draft === "" ? null : Number(draft); if (v !== value) save.mutate({ payoutPrefValue: v }); }}
+          onBlur={() => {
+            const v = draft === "" ? null : Number(draft);
+            if (v !== value) {
+              submit({ payoutPrefValue: v });
+              // модалковий шлях: інпут не має показувати незастосоване як збережене
+              if (onRequest) setDraft(value == null ? "" : String(value));
+            }
+          }}
           placeholder={kind === "hours" ? t("год") : "zł"}
           className="w-24 rounded border border-slate-300 px-1 py-0.5 text-sm" />
       )}
@@ -391,7 +428,7 @@ function NoteBlock({ workerId, note }: { workerId: number; note: string | null }
   const [draft, setDraft] = useState("");
   const save = useMutation({
     mutationFn: () => patch(`/workers/${workerId}`, { note: draft.trim() || null }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
   return (
@@ -419,20 +456,21 @@ function NoteBlock({ workerId, note }: { workerId: number; note: string | null }
 }
 
 // Форма легалізації: select із канонічних статусів (двосторонній синк зі сводними)
-function LegalStatusRow({ workerId, legalStatus }: { workerId: number; legalStatus: LegalStatus | null }) {
+function LegalStatusRow({ workerId, legalStatus, onRequest }: { workerId: number; legalStatus: LegalStatus | null; onRequest?: RequestChange }) {
   const t = useT();
   const qc = useQueryClient();
   const save = useMutation({
     mutationFn: (v: string) => patch(`/workers/${workerId}`, { legalStatus: v || null }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["worker"] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
     onError: (e: any) => toast.error(e.message),
   });
+  const submit = (v: string) => onRequest ? onRequest({ legalStatus: v || null }, t("Форма легалізації")) : save.mutate(v);
   const badge = legalStatus ? LEGAL_BADGE[legalStatus] : null;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
       <span className="text-slate-400">{t("Форма легалізації")}:</span>
-      <select value={legalStatus ?? ""} onChange={e => save.mutate(e.target.value)}
+      <select value={legalStatus ?? ""} onChange={e => submit(e.target.value)}
         className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">—</option>
         {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
@@ -443,25 +481,29 @@ function LegalStatusRow({ workerId, legalStatus }: { workerId: number; legalStat
 }
 
 // Години в повідомленні (powiadomienie — дозвіл на працю): показуються в сводній
-function NotifyHoursRow({ workerId, notifyHours }: { workerId: number; notifyHours: number | null }) {
+function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number; notifyHours: number | null; onRequest?: RequestChange }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const save = useMutation({
     mutationFn: () => patch(`/workers/${workerId}`, { notifyHours: draft === "" ? null : Number(draft) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
+  const submit = () => {
+    if (onRequest) { onRequest({ notifyHours: draft === "" ? null : Number(draft) }, t("Год. у повідомленні")); setEditing(false); }
+    else save.mutate();
+  };
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Clock className="h-4 w-4 shrink-0 text-slate-400" />
       <span className="text-slate-400">{t("Год. у повідомленні")}:</span>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
             className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : (
@@ -474,27 +516,31 @@ function NotifyHoursRow({ workerId, notifyHours }: { workerId: number; notifyHou
   );
 }
 
-function BirthDateRow({ workerId, birthDate, under26Fallback }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null }) {
+function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(birthDate ?? "");
   const save = useMutation({
     mutationFn: () => patch(`/workers/${workerId}`, { birthDate: draft || null }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
+  const submit = () => {
+    if (onRequest) { onRequest({ birthDate: draft || null }, t("Дата народження")); setEditing(false); }
+    else save.mutate();
+  };
   // вік — окрема властивість (не форма легалізації): з дати, без дати — з профілю
   const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : under26Fallback ?? null;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Cake className="h-4 w-4 shrink-0 text-slate-400" />
       <span className="text-slate-400">{t("Дата народження")}:</span>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="date" value={draft} onChange={e => setDraft(e.target.value)}
             className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : (
@@ -504,5 +550,374 @@ function BirthDateRow({ workerId, birthDate, under26Fallback }: { workerId: numb
         </button>
       )}
     </div>
+  );
+}
+
+// Дата працевлаштування (усі працівники); на фабриках Agram від неї
+// автоматично рахується стаж-бонус до ставки нетто
+// readOnly: без доступу до кшєнгових даних (svodniSensitive) дата видима, але не редагується
+function EmploymentDateRow({ workerId, date, readOnly, onRequest }: { workerId: number; date: string | null; readOnly?: boolean; onRequest?: RequestChange }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(date ?? "");
+  const save = useMutation({
+    mutationFn: () => patch(`/workers/${workerId}`, { employmentStartDate: draft || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const submit = () => {
+    if (onRequest) { onRequest({ employmentStartDate: draft || null }, t("Дата працевлаштування")); setEditing(false); }
+    else save.mutate();
+  };
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <Briefcase className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Дата працевлаштування")}:</span>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="date" value={draft} onChange={e => setDraft(e.target.value)}
+            className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : readOnly ? (
+        <span className="font-medium text-slate-700">
+          {date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : "—"}
+        </span>
+      ) : (
+        <button className="font-medium text-slate-700 hover:text-red-600" onClick={() => { setDraft(date ?? ""); setEditing(true); }}>
+          {date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Бонуси Agram (лише працівники фабрик Agram): галочки профілю. Сума стажу
+// рахується автоматично від дати працевлаштування (+1 від 1 міс, +1.5 від 6;
+// без дати — +1); нал — фіксований +1 зл/год до ставки нетто.
+function AgramBonusRow({ workerId, staz, cash, startDate, cashOnly, onRequest }: { workerId: number; staz: boolean; cash: boolean; startDate: string | null; cashOnly?: boolean; onRequest?: RequestChange }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (p: { agramStazBonus?: boolean; agramCashBonus?: boolean }) => patch(`/workers/${workerId}`, p),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const groupLabel = cashOnly ? t("Бонус фабрики") : t("Бонуси Agram");
+  const submit = (p: { agramStazBonus?: boolean; agramCashBonus?: boolean }) =>
+    onRequest ? onRequest(p, groupLabel) : save.mutate(p);
+  // поточний ярус стажу — на кінець поточного місяця (як рахує сводна)
+  const stazRate = (() => {
+    if (!startDate) return 1;
+    // дзеркало серверного правила: дні стажу на кінець поточного місяця
+    const now = new Date();
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 12);
+    const days = Math.round((end.getTime() - new Date(startDate + "T12:00:00").getTime()) / 86400000);
+    return days >= 60 ? 1.5 : days >= 30 ? 1 : 0;
+  })();
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:col-span-2">
+      <BadgePlus className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{groupLabel}:</span>
+      {!cashOnly && (
+        <label className="flex cursor-pointer items-center gap-1.5 font-medium text-slate-700">
+          <input type="checkbox" checked={staz} onChange={e => submit({ agramStazBonus: e.target.checked })} />
+          {t("Стаж")}
+          <span className="text-xs text-slate-400" title={t("Стаж авто від дати: +1 зл/год від 30 днів, +1.5 від 60 (лише при 160+ год у місяці); без дати — +1")}>
+            {staz ? `+${stazRate} zł/${t("год")}` : "+1…1.5"}{staz && !startDate ? ` · ${t("без дати")}` : ""}
+          </span>
+        </label>
+      )}
+      <label className="flex cursor-pointer items-center gap-1.5 font-medium text-slate-700">
+        <input type="checkbox" checked={cash} onChange={e => submit({ agramCashBonus: e.target.checked })} />
+        {t("Частина ЗП налом")}
+        <span className="text-xs text-slate-400">+1 zł/{t("год")}</span>
+      </label>
+    </div>
+  );
+}
+
+// ─── Зміни з датою набуття: модалка превʼю + журнал ──────────────────────────
+// Людські назви полів журналу/дифів (укр-рядок-як-ключ для t())
+const CHANGE_FIELD_LABEL: Record<string, string> = {
+  factoryId: "Фабрика", positionId: "Посада", legalStatus: "Форма легалізації",
+  birthDate: "Дата народження", notifyHours: "Год. у повідомленні",
+  employmentStartDate: "Дата працевлаштування", agramStazBonus: "Бонус Agram: стаж",
+  agramCashBonus: "Бонус Agram: нал", hourlyRate: "Ставка брутто", hourlyRateNetto: "Ставка нетто",
+  isStudent: "Студент", payoutPrefKind: "Побажання по виплаті", payoutPrefValue: "Значення побажання",
+  fired: "Звільнення", restored: "Поновлення",
+};
+const DIFF_KEY_LABEL: Record<string, string> = {
+  hoursNotified: "Год. повід.", rateBrutto: "Ставка брутто", rateNetto: "Ставка нетто",
+  isStudent: "Студент", under26: "До 26", section: "Секція", doWyplaty: "До виплати",
+  brutto: "Brutto", hoursDeclared: "Год. księg.", ksiegBrutto: "Księg. brutto",
+  ksiegNetto: "Księg. netto", konto: "Конто", gotowka: "Готівка",
+  zusStatus: "Księgowość (текст)", dataUrodzenia: "Дата народження",
+};
+// На що поле впливає в системі (місця-споживачі) — показується в превʼю зміни,
+// щоб було видно наслідки за межами конкретних рядків сводної
+const FIELD_IMPACTS: Record<string, string[]> = {
+  legalStatus: ["Розклад konto/готівка у сводних", "Księgowa ставка (нижча зі ставок)", "Фінанси: розрахунок ЗП"],
+  birthDate: ["Пільга «до 26» (податки)", "Розклад konto/готівка у сводних", "Фінанси: розрахунок ЗП"],
+  notifyHours: ["Ліміт декларованих годин → konto/готівка у сводних"],
+  hourlyRate: ["Ставка в сводних і нових місяцях", "Фінанси: розрахунок ЗП", "Excel-сводна"],
+  hourlyRateNetto: ["Ставка в сводних і нових місяцях", "Фінанси: розрахунок ЗП", "Excel-сводна"],
+  agramStazBonus: ["Ставка нетто Agram (бонус вшивається у ставку)"],
+  agramCashBonus: ["Ставка нетто Agram (бонус вшивається у ставку)"],
+  employmentStartDate: ["Ярус стаж-бонусу Agram (+1 від 1 міс, +1.5 від 6)"],
+  payoutPrefKind: ["Пріоритетний розклад konto/готівка (понад правила)"],
+  payoutPrefValue: ["Пріоритетний розклад konto/готівка (понад правила)"],
+  positionId: ["Секція в сводній", "Генерація графіка (вимоги посад)", "Excel-графік клієнту"],
+  isStudent: ["Розклад konto/готівка у сводних", "Фінанси: розрахунок ЗП"],
+};
+const MONEY_KEYS: { key: string; label: string }[] = [
+  { key: "doWyplaty", label: "До виплати" },
+  { key: "konto", label: "Конто" },
+  { key: "gotowka", label: "Готівка" },
+];
+const fmtVal = (v: unknown, t: (s: string) => string): string =>
+  v == null || v === "" ? "—"
+  : v === true || v === "true" ? "✓"
+  : v === false || v === "false" ? "✕"
+  : LEGAL_LABEL[v as LegalStatus] ? t(LEGAL_LABEL[v as LegalStatus])
+  : PAYOUT_PREF_LABEL[v as string] ? t(PAYOUT_PREF_LABEL[v as string]!)
+  : String(v);
+const todayStr = () => new Date().toLocaleDateString("sv-SE");
+
+type ImpactItem = {
+  rowId: number; month: string; city: string; factoryLabel: string; locked: boolean;
+  hours: number | null; merge?: boolean; diffs: { key: string; from: unknown; to: unknown }[];
+  // план порізки місяця на сегменти (зміна з середини місяця): кожен сегмент
+  // рахується за правилами свого статусу
+  split?: {
+    from: string; to: string; hours: number; rateNetto: number | null; label: string | null;
+    legal: string | null; doWyplaty: number | null; konto?: number | null; gotowka?: number | null;
+  }[];
+};
+const ddmm = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+// кольори сегментів у превʼю порізки — ті самі, що в таблиці сводної
+const SPLIT_TEXT = ["text-violet-700", "text-sky-700", "text-teal-700", "text-rose-700"];
+const SPLIT_DOT = ["bg-violet-400", "bg-sky-400", "bg-teal-400", "bg-rose-400"];
+
+// Модалка «зміна від дати»: питає дату набуття, показує що зачепить у сводних
+// (dry-run /svodni/profile-impact) і застосовує вибране (/svodni/profile-apply)
+function ProfileChangeModal({ workerId, changes, title, initialFrom, onClose }: {
+  workerId: number; changes: Record<string, unknown>; title: string; initialFrom?: string; onClose: () => void;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [from, setFrom] = useState(initialFrom ?? todayStr());
+  const [deselected, setDeselected] = useState<Set<number>>(new Set());
+  const { data, isFetching, isError, error } = useQuery<{ items: ImpactItem[]; checkedRows: number; workerMonths: string[] }>({
+    queryKey: ["profile-impact", workerId, JSON.stringify(changes), from],
+    queryFn: () => post("/svodni/profile-impact", { workerId, changes, from }),
+  });
+  const items = data?.items ?? [];
+  const selectable = items.filter(i => !i.locked);
+  const selectedIds = selectable.filter(i => !deselected.has(i.rowId)).map(i => i.rowId);
+  const apply = useMutation({
+    mutationFn: (rowIds: number[]) => post<{ applied: number }>("/svodni/profile-apply", { workerId, changes, from, rowIds }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["worker"] });
+      qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      toast.success(r.applied ? t("Застосовано: профіль + {n} рядків сводної", { n: r.applied }) : t("Збережено в профіль"));
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const changesSummary = Object.entries(changes)
+    .map(([k, v]) => `${t(CHANGE_FIELD_LABEL[k] ?? k)} → ${fmtVal(v, t)}`).join("; ");
+  // місця-споживачі поля + сумарний грошовий ефект по вибраних рядках
+  const consumers = [...new Set(Object.keys(changes).flatMap(k => FIELD_IMPACTS[k] ?? []))];
+  const selectedItems = items.filter(i => !i.locked && !deselected.has(i.rowId));
+  const totals = MONEY_KEYS.map(({ key, label }) => ({
+    label,
+    delta: Math.round(selectedItems.reduce((a, it) => {
+      const d = it.diffs.find(d => d.key === key);
+      return a + (d ? (Number(d.to) || 0) - (Number(d.from) || 0) : 0);
+    }, 0) * 100) / 100,
+  })).filter(x => x.delta !== 0);
+  return (
+    <Modal open title={t("Зміна: {what}", { what: title })} onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        <div className="rounded-lg bg-slate-50 px-3 py-2 font-medium text-slate-700">{changesSummary}</div>
+        {consumers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase tracking-wide text-slate-400">{t("Впливає на")}:</span>
+            {consumers.map(c => (
+              <span key={c} className="rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700">{t(c)}</span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-slate-500">{t("Діє з")}</span>
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
+        </div>
+        {isError ? (
+          <div className="rounded-lg bg-rose-50 px-3 py-2 text-rose-700">
+            {t("Не вдалося завантажити превʼю впливу")}: {(error as any)?.message ?? ""}
+          </div>
+        ) : isFetching ? <Spinner /> : !items.length ? (
+          <div className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-slate-500">
+            {(data?.checkedRows ?? 0) > 0 ? (
+              <div>{t("Перевірено рядків сводних: {n} — ця зміна їхніх цифр не міняє (значення й так збігаються). Оновиться профіль.", { n: data!.checkedRows })}</div>
+            ) : (
+              <>
+                <div>{t("Від {date} рядків сводної в цієї людини нема — оновиться лише профіль (нові місяці порахуються вже по-новому).", { date: from })}</div>
+                {(data?.workerMonths?.length ?? 0) > 0 && (
+                  <div className="text-xs">
+                    {t("Наявні сводні: {months}. Якщо зміна діє заднім числом — обери ранішу дату.", { months: data!.workerMonths.join(", ") })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="max-h-72 space-y-1.5 overflow-y-auto">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Зачепить у сводних")}</div>
+            {items.map(it => (
+              <label key={it.rowId} className={`flex items-start gap-2 rounded-lg border px-2.5 py-1.5 ${it.locked ? "border-slate-100 bg-slate-50 opacity-70" : "cursor-pointer border-slate-200 hover:bg-slate-50"}`}>
+                <input type="checkbox" className="mt-0.5" disabled={it.locked}
+                  checked={!it.locked && !deselected.has(it.rowId)}
+                  onChange={e => setDeselected(prev => {
+                    const n = new Set(prev);
+                    e.target.checked ? n.delete(it.rowId) : n.add(it.rowId);
+                    return n;
+                  })} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 font-medium text-slate-700">
+                    {it.month} · {t(it.city)} · {it.factoryLabel}
+                    {it.locked && <span className="flex items-center gap-0.5 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-700"><Lock className="h-3 w-3" /> {t("затверджено — не зміниться")}</span>}
+                  </span>
+                  {it.merge && (
+                    <span className="mt-0.5 block text-xs font-medium text-teal-700">
+                      🪡 {t("умови вирівнялись по всьому місяцю — сегменти зіллються в один рядок")}
+                    </span>
+                  )}
+                  {it.split && (
+                    <span className="mt-1 block space-y-0.5 text-xs">
+                      <span className="block font-semibold text-violet-700">🧩 {t("місяць поріжеться на сегменти")}:</span>
+                      {it.split.map((s, i) => (
+                        <span key={i} className="flex items-center gap-1.5 pl-4 text-slate-600">
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${SPLIT_DOT[i % SPLIT_DOT.length]}`} />
+                          <span>
+                            <span className={`font-semibold ${SPLIT_TEXT[i % SPLIT_TEXT.length]}`}>{ddmm(s.from)}–{ddmm(s.to)}</span>
+                            {": "}{s.hours} {t("год")}{s.rateNetto != null ? ` × ${s.rateNetto} zł` : ""}
+                            {s.doWyplaty != null ? ` → ${t("до виплати")} ${s.doWyplaty}` : ""}
+                            {s.konto != null ? ` (${t("конто")} ${s.konto} / ${t("готівка")} ${s.gotowka ?? 0})` : ""}
+                            {s.label ? ` · ${s.label}` : ""}
+                          </span>
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    {it.diffs.map(d => `${t(DIFF_KEY_LABEL[d.key] ?? d.key)}: ${fmtVal(d.from, t)} → ${fmtVal(d.to, t)}`).join(" · ")}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+        {totals.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-amber-50/70 px-3 py-2 text-xs">
+            <span className="font-semibold uppercase tracking-wide text-amber-700">{t("Сумарно по вибраних")}:</span>
+            {totals.map(x => (
+              <span key={x.label} className={`font-semibold ${x.delta > 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                {t(x.label)}: {x.delta > 0 ? "+" : ""}{x.delta} zł
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          {/* без превʼю не застосовуємо: помилка/фетч — наслідки невідомі */}
+          {!isError && !isFetching && (
+            <Button variant="secondary" loading={apply.isPending} onClick={() => apply.mutate([])}>{t("Лише профіль")}</Button>
+          )}
+          {selectedIds.length > 0 && (
+            <Button loading={apply.isPending} onClick={() => apply.mutate(selectedIds)}>
+              {t("Застосувати ({n})", { n: selectedIds.length })}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Історія змін профілю: журнал worker_changes (хто/що/коли, з якої дати діє)
+function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  // «видалити зміну»: сервер повертає попереднє значення, перераховує зачеплені
+  // сводні від дати набуття і зносить запис із журналу
+  const removeChange = useMutation({
+    mutationFn: (id: number) => del(`/svodni/profile-change/${id}`),
+    onSuccess: (r: any) => {
+      qc.invalidateQueries({ queryKey: ["worker"] });
+      qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      toast.success(r?.skippedLocked?.length
+        ? t("Зміну видалено; затверджені місяці не чіпались: {m}", { m: r.skippedLocked.map((x: any) => x.month).join(", ") })
+        : t("Зміну видалено, значення повернуто"));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const { data: changes = [] } = useQuery<{
+    id: number; field: string; oldValue: string | null; newValue: string | null;
+    effectiveDate: string; appliedRows: { month: string }[] | null;
+    skippedLocked: { month: string }[] | null; adminName: string | null; createdAt: string;
+  }[]>({ queryKey: ["worker-changes", workerId], queryFn: () => get(`/workers/${workerId}/changes`) });
+  // журнал зберігає id — для показу підтягуємо назви фабрик/посад
+  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
+  const showVal = (field: string, v: string | null): string => {
+    if (v == null || v === "") return "—";
+    if (field === "factoryId") return factories.find(f => String(f.id) === v)?.name ?? v;
+    if (field === "positionId") return positions.find(p => String(p.id) === v)?.name ?? v;
+    return fmtVal(v, t);
+  };
+  if (!changes.length) return null;
+  return (
+    <Card className="mt-5 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
+        <History className="h-4 w-4 text-slate-400" />
+        <h3 className="text-sm font-semibold text-slate-700">{t("Історія змін")}</h3>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {changes.map(c => (
+          <div key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-5 py-2 text-sm">
+            <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}:</span>
+            <span className="text-slate-500">{showVal(c.field, c.oldValue)} → <span className="font-medium text-slate-700">{showVal(c.field, c.newValue)}</span></span>
+            <span className="rounded bg-sky-50 px-1.5 text-xs font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>
+            {!!c.appliedRows?.length && <span className="rounded bg-emerald-50 px-1.5 text-xs text-emerald-700">{t("сводні: {n}", { n: c.appliedRows.length })}</span>}
+            {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
+            <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
+              {c.adminName ?? "—"} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
+              {canUndo && !["fired", "restored"].includes(c.field) && (
+                <button type="button"
+                  title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
+                  onClick={async () => {
+                    if (await confirm({
+                      title: t("Видалити зміну?"),
+                      message: `${t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}: ${showVal(c.field, c.newValue)} → ${showVal(c.field, c.oldValue)}. ${t("Профіль і зачеплені сводні повернуться до попереднього стану.")}`,
+                      confirmText: t("Видалити"),
+                    })) removeChange.mutate(c.id);
+                  }}
+                  className="rounded p-0.5 text-slate-300 transition hover:bg-rose-50 hover:text-rose-600">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

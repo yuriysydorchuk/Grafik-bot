@@ -11,7 +11,9 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
     throw new Error("unauthorized");
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  // проксі може віддати HTML (502/504) — не-JSON не має вибухати SyntaxError-ом
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (!res.ok) {
     // статус і тіло відповіді доступні обробникам (напр. 409 «схожий працівник»)
     const err: any = new Error(data?.error || `Помилка ${res.status}`);
@@ -37,7 +39,8 @@ export async function upload<T = any>(p: string, form: FormData): Promise<T> {
     throw new Error("unauthorized");
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (!res.ok) throw new Error(data?.error || `Помилка ${res.status}`);
   return data as T;
 }

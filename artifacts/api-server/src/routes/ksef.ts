@@ -99,8 +99,10 @@ router.post("/ksef/sync", async (_req, res) => {
 });
 
 router.post("/ksef/rematch", async (_req, res) => {
+  const { relabelKsefClients } = await import("../services/ksef");
+  const relabeled = await relabelKsefClients(); // NIP-привʼязка клієнтів з довідника фабрик
   const matched = await matchKsefPayments();
-  ok(res, { matched });
+  ok(res, { matched, relabeled });
 });
 
 export default router;

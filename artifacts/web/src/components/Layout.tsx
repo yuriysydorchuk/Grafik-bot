@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, type LucideIcon,
 } from "lucide-react";
 import { cn } from "./ui";
 import { post, type Me } from "../lib/api";
@@ -74,6 +74,7 @@ const NAV: NavGroup[] = [
       { href: "/payroll", label: "Зарплати", icon: Banknote },
       { href: "/svodni", label: "Сводні", icon: Banknote },
       { href: "/hostels", label: "Хостели", icon: Home },
+      { href: "/penalties", label: "Штрафи", icon: Gavel },
       { href: "/ksef", label: "KSeF", icon: FileText },
     ],
   },

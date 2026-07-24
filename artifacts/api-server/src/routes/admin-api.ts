@@ -11,9 +11,11 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { factoryCityMap } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
@@ -28,7 +30,7 @@ import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/pa
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
-import { LEGAL_STATUSES } from "../services/svodni";
+import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
 import { findLikelyDuplicate } from "../bot/workerMatch";
 
 const router: IRouter = Router();
@@ -40,6 +42,27 @@ router.use(authRequired);
 const RW = requireCap("editData");
 // Whether the requester's role may see/edit financial fields (rates, invoices).
 const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "viewFinance");
+const canSensitiveReq = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodniSensitive");
+
+// Ехо-відповіді create/PATCH/fire/restore працівника фільтруються тими самими
+// гейтами, що GET /workers/:id — інакше editData читав би ставки/нотатки з еха
+function stripWorkerEcho(w: Record<string, unknown> | undefined, req: any) {
+  if (!w) return w;
+  const out: Record<string, unknown> = { ...w };
+  if (!canFinance(req)) { delete out.hourlyRate; delete out.hourlyRateNetto; delete out.isStudent; delete out.under26; }
+  if (!canSensitiveReq(req)) {
+    delete out.note; delete out.payoutPrefKind; delete out.payoutPrefValue;
+    delete out.agramStazBonus; delete out.agramCashBonus;
+  }
+  return out;
+}
+
+// Те саме для фабрик: фінансові поля еха POST/PATCH — лише з viewFinance (дзеркало GET /factories)
+function stripFactoryEcho(f: Record<string, unknown> | undefined, req: any) {
+  if (!f || canFinance(req)) return f;
+  const { invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest } = f as any;
+  return rest;
+}
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, code: number, msg: string) => res.status(code).json({ error: msg });
@@ -262,7 +285,7 @@ router.get("/workers", RW, async (req, res) => {
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
-      selfTransport: workersTable.selfTransport,
+      selfTransport: workersTable.selfTransport, language: workersTable.language,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -326,17 +349,41 @@ router.post("/workers", RW, async (req, res) => {
   const [w] = await db.insert(workersTable).values(values).returning();
   // нова людина могла вже фігурувати в сводних — підвʼязуємо її історію за іменем
   import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
-  ok(res, w);
+  ok(res, stripWorkerEcho(w, req));
 });
 
 // Nullable text field from a JSON body: null/empty → SQL NULL. Plain String(x) here is
 // a trap — String(null) is the literal "null" (it once wiped workers' bot languages).
 const strOrNull = (v: unknown): string | null => (v == null ? null : String(v).trim() || null);
 
+// Поля профілю, зміни яких пишуться в журнал worker_changes (історія станів
+// людини; effective_date = сьогодні для звичайного PATCH, обрана дата — через
+// /svodni/profile-apply). Використовується сводними і майбутніми сегментами.
+const JOURNALED_FIELDS = [
+  "factoryId", "positionId", "legalStatus", "birthDate", "notifyHours", "employmentStartDate",
+  "agramStazBonus", "agramCashBonus", "hourlyRate", "hourlyRateNetto", "isStudent",
+  "payoutPrefKind", "payoutPrefValue",
+] as const;
+const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+async function journalWorkerChanges(workerId: number, before: Record<string, unknown>, patch: Record<string, unknown>, adminId: number | null, effectiveDate?: string) {
+  for (const f of JOURNALED_FIELDS) {
+    if (!(f in patch)) continue;
+    const oldV = before[f], newV = patch[f];
+    if (String(oldV ?? "") === String(newV ?? "")) continue;
+    await db.insert(workerChangesTable).values({
+      workerId, field: f,
+      oldValue: oldV == null ? null : String(oldV),
+      newValue: newV == null ? null : String(newV),
+      effectiveDate: effectiveDate ?? warsawToday(),
+      adminId,
+    }).catch(err => logger.error({ err }, "worker change journal failed"));
+  }
+}
+
 router.patch("/workers/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, language, hourlyRate, isStudent, under26, selfTransport } = req.body ?? {};
-  const [before] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, id));
+  const [before] = await db.select().from(workersTable).where(eq(workersTable.id, id));
   const patch: any = {};
   if (fullName !== undefined) patch.fullName = String(fullName).trim();
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
@@ -370,12 +417,26 @@ router.patch("/workers/:id", RW, async (req, res) => {
     const ls = strOrNull(legalStatus);
     if (ls && !LEGAL_STATUSES.includes(ls as any)) return fail(res, 400, "Невідома форма легалізації");
     patch.legalStatus = ls;
-    if (ls) patch.isStudent = ls === "student";
+    // статус керує прапорцем студента, включно з очищенням: «—» ≠ студент
+    patch.isStudent = ls === "student";
   }
   if (notifyHours !== undefined) {
     const nh = notifyHours == null || notifyHours === "" ? null : Number(notifyHours);
     if (nh != null && (!Number.isFinite(nh) || nh < 0)) return fail(res, 400, "Години в повідомленні — число");
     patch.notifyHours = nh;
+  }
+  // дата працевлаштування + галочки бонусів (Agram/LST) впливають на ЗП —
+  // редагування лише з доступом до кшєнгових даних (svodniSensitive)
+  const { employmentStartDate, agramStazBonus, agramCashBonus } = req.body ?? {};
+  if (employmentStartDate !== undefined || agramStazBonus !== undefined || agramCashBonus !== undefined) {
+    if (!hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")) return fail(res, 403, "forbidden");
+    if (employmentStartDate !== undefined) {
+      const d = strOrNull(employmentStartDate);
+      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Дата працевлаштування — формат YYYY-MM-DD");
+      patch.employmentStartDate = d;
+    }
+    if (agramStazBonus !== undefined) patch.agramStazBonus = !!agramStazBonus;
+    if (agramCashBonus !== undefined) patch.agramCashBonus = !!agramCashBonus;
   }
   // примітка і побажання по виплаті — лише з доступом до закритого шару сводних
   const { note, payoutPrefKind, payoutPrefValue } = req.body ?? {};
@@ -396,11 +457,16 @@ router.patch("/workers/:id", RW, async (req, res) => {
   }
   // payroll fields — owner only
   if (canFinance(req)) {
-    if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) patch.hourlyRate = r; }
+    // порожньо = «авто» за правилами фабрики (ставка-override знімається)
+    if (hourlyRate !== undefined) patch.hourlyRate = parseRate(hourlyRate);
     if (isStudent !== undefined) patch.isStudent = !!isStudent;
     if (under26 !== undefined) patch.under26 = !!under26;
   }
-  const [w] = await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning();
+  // порожній patch (усі поля відфільтровані гейтами) — не 500, а поточний рядок
+  const [w] = Object.keys(patch).length
+    ? await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning()
+    : await db.select().from(workersTable).where(eq(workersTable.id, id));
+  if (before) await journalWorkerChanges(id, before as any, patch, (req as AuthedRequest).admin?.adminId ?? null);
   // Mid-month factory change: offer a report for the OLD factory right away
   // (fire-and-forget; only sent if they actually worked there this month).
   if (before?.factoryId && patch.factoryId !== undefined && patch.factoryId !== before.factoryId && w?.telegramId) {
@@ -408,13 +474,17 @@ router.patch("/workers/:id", RW, async (req, res) => {
       .then(m => m.offerTransferReport(w.id, before.factoryId!))
       .catch(err => logger.error({ err }, "transfer report offer failed"));
   }
-  ok(res, w);
+  ok(res, stripWorkerEcho(w, req));
 });
 
 router.post("/workers/:id/fire", RW, async (req, res) => {
   const id = Number(req.params.id);
   const offerReport = !!(req.body ?? {}).offerReport;
   const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt: new Date() }).where(eq(workersTable.id, id)).returning();
+  await db.insert(workerChangesTable).values({
+    workerId: id, field: "fired", oldValue: "active", newValue: "fired",
+    effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
+  }).catch(err => logger.error({ err }, "worker change journal failed"));
   // Farewell report: on the scheduler's request the leaver gets inline month
   // buttons in the bot (entry stays valid 30 days after firing).
   let reportOffered = false;
@@ -424,13 +494,40 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
       reportOffered = await sendReportOffer(w.id, { months: await farewellReportMonths(w.id), textKey: "report.firedOffer" });
     } catch (e) { logger.error({ err: e }, "farewell report offer failed"); }
   }
-  ok(res, { ...w, reportOffered });
+  ok(res, { ...stripWorkerEcho(w, req), reportOffered });
 });
 
 router.post("/workers/:id/restore", RW, async (req, res) => {
   const id = Number(req.params.id);
   const [w] = await db.update(workersTable).set({ isActive: true, status: "active", firedAt: null }).where(eq(workersTable.id, id)).returning();
-  ok(res, w);
+  await db.insert(workerChangesTable).values({
+    workerId: id, field: "restored", oldValue: "fired", newValue: "active",
+    effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
+  }).catch(err => logger.error({ err }, "worker change journal failed"));
+  ok(res, stripWorkerEcho(w, req));
+});
+
+// Історія змін профілю (журнал worker_changes) — таймлайн у профілі
+router.get("/workers/:id/changes", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const rows = await db.select({ c: workerChangesTable, adminName: adminsTable.name })
+    .from(workerChangesTable)
+    .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
+    .where(eq(workerChangesTable.workerId, id))
+    .orderBy(desc(workerChangesTable.createdAt));
+  // фінансові поля історії — лише з viewFinance; побажання по виплаті —
+  // закритий шар (svodniSensitive), як і в GET /workers/:id
+  const fin = canFinance(req);
+  const sens = hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive");
+  ok(res, rows
+    .filter(({ c }) => (fin || !["hourlyRate", "hourlyRateNetto"].includes(c.field))
+      // дзеркало SENSITIVE_TRACKED (svodni.ts): бонусні галочки і дата працевлаштування — теж закритий шар
+      && (sens || !["payoutPrefKind", "payoutPrefValue", "agramStazBonus", "agramCashBonus", "employmentStartDate"].includes(c.field)))
+    .map(({ c, adminName }) => ({
+      id: c.id, field: c.field, oldValue: c.oldValue, newValue: c.newValue,
+      effectiveDate: c.effectiveDate, appliedRows: c.appliedRows, skippedLocked: c.skippedLocked,
+      adminName, createdAt: c.createdAt,
+    })));
 });
 
 // Hard delete — owner only. Firing keeps the record (status="fired"); this wipes it
@@ -450,11 +547,18 @@ router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
     await tx.delete(absenceRequestsTable).where(eq(absenceRequestsTable.workerId, id));
     await tx.delete(hoursDisputesTable).where(eq(hoursDisputesTable.workerId, id));
     await tx.delete(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id));
+    await tx.delete(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, id));
+    await tx.delete(monthlyReportsTable).where(eq(monthlyReportsTable.workerId, id));
+    await tx.delete(hostelDeductionsTable).where(eq(hostelDeductionsTable.workerId, id));
+    await tx.delete(penaltiesTable).where(eq(penaltiesTable.workerId, id));
     // Pointers owned by other entities → unlink, keep the other entity.
     await tx.update(absenceRequestsTable).set({ substituteWorkerId: null }).where(eq(absenceRequestsTable.substituteWorkerId, id));
     await tx.update(unplannedWorkersTable).set({ workerId: null }).where(eq(unplannedWorkersTable.workerId, id));
+    await tx.update(unplannedWorkersTable).set({ replacesWorkerId: null }).where(eq(unplannedWorkersTable.replacesWorkerId, id));
     await tx.update(candidatesTable).set({ workerId: null }).where(eq(candidatesTable.workerId, id));
     await tx.update(candidatesTable).set({ referrerWorkerId: null }).where(eq(candidatesTable.referrerWorkerId, id));
+    // Рядки сводних лишаються (фінансова історія місяця) — відвʼязуємо людину.
+    await tx.update(svodniRowsTable).set({ workerId: null, linkStatus: "unmatched" }).where(eq(svodniRowsTable.workerId, id));
     await tx.delete(workersTable).where(eq(workersTable.id, id));
   });
   for (const d of docs) deleteStoredFile(d.filePath);
@@ -538,7 +642,23 @@ router.get("/workers/:id", RW, async (req, res) => {
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
     birthDate: w.birthDate,
-    legalStatus: w.legalStatus, notifyHours: w.notifyHours,
+    // старі ключі статусів (oswiadczenie/student_do26/…) нормалізуються до
+    // канонічних — інакше select у профілі показує порожнє
+    legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
+    employmentStartDate: w.employmentStartDate,
+    // бонуси — лише для працівників бонусних фабрик (по id: Agram нал+стаж, LST нал)
+    // і лише з доступом до кшєнгових даних (галочки впливають на ЗП; редагування
+    // гейтиться дзеркально у PATCH)
+    ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
+      ? {
+        ...(w.factoryId != null && AGRAM_FACTORY_IDS.has(w.factoryId)
+          ? { agramFactory: true, agramStazBonus: w.agramStazBonus, agramCashBonus: w.agramCashBonus }
+          : {}),
+        ...(w.factoryId != null && CASH_BONUS_FACTORY_IDS.has(w.factoryId) && !AGRAM_FACTORY_IDS.has(w.factoryId)
+          ? { cashBonusFactory: true, agramCashBonus: w.agramCashBonus }
+          : {}),
+      }
+      : {}),
     ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
       ? { note: w.note, payoutPrefKind: w.payoutPrefKind, payoutPrefValue: w.payoutPrefValue }
       : {}),
@@ -1222,14 +1342,14 @@ router.get("/factories", async (req, res) => {
   const isOwner = canFinance(req);
   // per-factory positions (with the catalogue name/colour); rate is financial → owner only
   const fp = await db
-    .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, name: positionsTable.name, color: positionsTable.color })
+    .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, rateNetto: factoryPositionsTable.rateNetto, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, name: positionsTable.name, color: positionsTable.color })
     .from(factoryPositionsTable)
     .leftJoin(positionsTable, eq(factoryPositionsTable.positionId, positionsTable.id))
     .orderBy(factoryPositionsTable.sortOrder, factoryPositionsTable.id);
   const posByFactory = new Map<number, any[]>();
   for (const p of fp) {
     const entry: any = { positionId: p.positionId, name: p.name, color: p.color ?? "slate" };
-    if (isOwner) { entry.rate = p.rate; entry.invoiceRate = p.invoiceRate; }
+    if (isOwner) { entry.rate = p.rate; entry.rateNetto = p.rateNetto; entry.invoiceRate = p.invoiceRate; }
     (posByFactory.get(p.factoryId) ?? posByFactory.set(p.factoryId, []).get(p.factoryId)!).push(entry);
   }
   const withCo = rows.map(r => ({
@@ -1237,18 +1357,29 @@ router.get("/factories", async (req, res) => {
     companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
     positions: posByFactory.get(r.id) ?? [],
   }));
-  // invoiceRate is financial — only the owner sees it
-  if (!isOwner) return ok(res, withCo.map(({ invoiceRate, ...rest }) => rest));
+  // pay/invoice rates are financial — only the owner sees them
+  if (!isOwner) return ok(res, withCo.map(({ invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest }) => rest));
   ok(res, withCo);
 });
 
 // Replace a factory's position rows from a [{positionId, rate}] payload.
-async function setFactoryPositions(factoryId: number, positions: any) {
+// Ставки (rate/rateNetto/invoiceRate) — фінансові: без viewFinance вхідні
+// значення ігноруються, а наявні ставки позицій зберігаються (не-owner UI
+// шле позиції БЕЗ ставок — інакше збереження фабрики тихо стирало б їх).
+async function setFactoryPositions(factoryId: number, positions: any, financeAllowed: boolean) {
   if (!Array.isArray(positions)) return;
+  const prev = financeAllowed ? [] : await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
+  const prevById = new Map(prev.map(p => [p.positionId, p]));
   await db.delete(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
   const seen = new Set<number>();
   const rows = positions
-    .map((p: any, i: number) => ({ positionId: Number(p?.positionId), rate: parseRate(p?.rate), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i }))
+    .map((p: any, i: number) => {
+      const positionId = Number(p?.positionId);
+      const old = prevById.get(positionId);
+      return financeAllowed
+        ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i }
+        : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i };
+    })
     .filter(p => Number.isInteger(p.positionId) && p.positionId > 0 && !seen.has(p.positionId) && seen.add(p.positionId));
   if (rows.length) await db.insert(factoryPositionsTable).values(rows.map(r => ({ factoryId, ...r })));
 }
@@ -1297,10 +1428,22 @@ router.post("/factories", RW, async (req, res) => {
   if (usesTransport !== undefined) values.usesTransport = !!usesTransport;
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
-  if (canFinance(req) && invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
+  if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
+  if (canFinance(req)) {
+    if (invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
+    if (req.body?.clientNip !== undefined) {
+      const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
+      if (nip && nip.length !== 10) return fail(res, 400, "NIP — 10 цифр");
+      values.clientNip = nip || null;
+    }
+    if (req.body?.pnlLabel !== undefined) values.pnlLabel = String(req.body.pnlLabel ?? "").trim() || null;
+    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
+      if (req.body?.[k] !== undefined) values[k] = parseRate(req.body[k]);
+    }
+  }
   const [f] = await db.insert(factoriesTable).values(values).returning();
-  if (positions !== undefined) await setFactoryPositions(f!.id, positions);
-  ok(res, f);
+  if (positions !== undefined) await setFactoryPositions(f!.id, positions, canFinance(req));
+  ok(res, stripFactoryEcho(f, req));
 });
 
 router.patch("/factories/:id", RW, async (req, res) => {
@@ -1311,8 +1454,21 @@ router.patch("/factories/:id", RW, async (req, res) => {
     if (v !== undefined) patch[k] = v === "" ? null : v;
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
-  // invoiceRate is financial — owner only
-  if (canFinance(req) && invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
+  if (req.body?.city !== undefined) patch.city = String(req.body.city).trim() || null;
+  // pay/invoice rates are financial — owner only
+  if (canFinance(req)) {
+    if (invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
+    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
+      if (req.body?.[k] !== undefined) patch[k] = parseRate(req.body[k]);
+    }
+    // привʼязка клієнта для P&L: NIP (матчинг фактур KSeF) + канонічний підпис
+    if (req.body?.clientNip !== undefined) {
+      const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
+      if (nip && nip.length !== 10) return fail(res, 400, "NIP — 10 цифр");
+      patch.clientNip = nip || null;
+    }
+    if (req.body?.pnlLabel !== undefined) patch.pnlLabel = String(req.body.pnlLabel ?? "").trim() || null;
+  }
   const cs = cleanShifts(shifts);
   if (cs) {
     patch.shifts = cs;
@@ -1333,9 +1489,11 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (showCode !== undefined) patch.showCode = !!showCode;
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
-  const [f] = await db.update(factoriesTable).set(patch).where(eq(factoriesTable.id, id)).returning();
-  if (positions !== undefined) await setFactoryPositions(id, positions);
-  ok(res, f);
+  const [f] = Object.keys(patch).length
+    ? await db.update(factoriesTable).set(patch).where(eq(factoriesTable.id, id)).returning()
+    : await db.select().from(factoriesTable).where(eq(factoriesTable.id, id));
+  if (positions !== undefined) await setFactoryPositions(id, positions, canFinance(req));
+  ok(res, stripFactoryEcho(f, req));
 });
 
 // Shared self-signup link for a factory — anyone who opens it registers themselves
@@ -2243,18 +2401,15 @@ router.get("/hours", RW, async (req, res) => {
       });
     }
   }
-  // місто фабрики — з історії сводних (для групування і кнопок «→ до сводної»)
-  const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city })
-    .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
-  const cityByFactory = new Map<number, string>();
-  for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
+  // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
+  const cityByFactory = await factoryCityMap();
   const workers = [...byWorkerFactory.values()]
     .map(w => {
       const hours = round2(w.hours);
       const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
       const base: any = {
         ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
-        city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Люблін",
+        city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
       if (isOwner) {
         const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
@@ -2791,13 +2946,10 @@ router.get("/advances", RW, async (_req, res) => {
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .orderBy(desc(advanceRequestsTable.id));
-  // місто фабрики — з історії сводних (той самий фолбек, що у from-hours)
-  const cityRows = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, id: svodniRowsTable.id })
-    .from(svodniRowsTable).where(sql`${svodniRowsTable.factoryId} IS NOT NULL`).orderBy(desc(svodniRowsTable.id));
-  const cityByFactory = new Map<number, string>();
-  for (const c of cityRows) if (c.factoryId != null && !cityByFactory.has(c.factoryId)) cityByFactory.set(c.factoryId, c.city);
+  // місто фабрики — історія сводних + регіони «Зарплат» (той самий словник, що у from-hours)
+  const cityByFactory = await factoryCityMap();
   ok(res, rows.map(({ factoryId, ...r }) => ({
-    ...r, city: factoryId != null ? (cityByFactory.get(factoryId) ?? "Люблін") : "Люблін",
+    ...r, city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
   })));
 });
 

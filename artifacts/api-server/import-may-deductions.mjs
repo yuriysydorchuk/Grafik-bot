@@ -10,7 +10,7 @@ import { key, cleanName } from "./src/services/payrollSummaries.ts";
 
 const MONTH = "2026-05";
 const TAG = `зі сводної ${MONTH}`;
-const DIR = "/private/tmp/claude-501/-Users-yuriysydorchuk-PycharmProjects-Grafik-bot/19c4e53e-7655-416e-94d0-7cf02b1528ea/scratchpad/grids";
+const DIR = process.env.GRIDS_DIR ?? "/private/tmp/claude-501/-Users-yuriysydorchuk-PycharmProjects-Grafik-bot/19c4e53e-7655-416e-94d0-7cf02b1528ea/scratchpad/grids";
 const G = (n) => new Map(Object.entries(JSON.parse(readFileSync(`${DIR}/${n}.json`, "utf8"))));
 const SKIP = /GODZIN.*MIES|TOTAL.*MIES|MAILE|WORK ?LIST|NOTATKA|^OFFICE|^ОФИС/i;
 const r2 = (n) => Math.round(n * 100) / 100;

@@ -28,6 +28,8 @@ export default function Hours() {
   const me = useMe();
   const isOwner = me?.role === "owner";
   const [month, setMonth] = useState(months[0]!.value);
+  const [cityTab, setCityTab] = useState("");   // "" = всі міста
+  const [facTab, setFacTab] = useState("");     // ключ групи ("" = всі фабрики)
   const [sel, setSel] = useState<{ id: number; name: string } | null>(null);
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
   const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; totalHours: number; totalShifts: number; totalReportHours: number; totalNet?: number; totalReportNet?: number }>({
@@ -47,11 +49,12 @@ export default function Hours() {
   // «Години підтверджені → до сводної»: весь місяць, одне місто або одна фабрика
   const toSvodni = useMutation({
     mutationFn: (scope: { factoryId?: number; city?: string }) =>
-      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number }>("/svodni/from-hours", { month, ...scope }),
+      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[] }>("/svodni/from-hours", { month, ...scope }),
     onSuccess: (r) => toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
       description: [
         r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : null,
         r.skippedLocked ? t("Пропущено затверджених фабрик: {n}", { n: r.skippedLocked }) : null,
+        r.noCity?.length ? t("Місто фабрики невідоме (пропущено): {list} — фабрика ще не зустрічалась ні в сводних, ні в Зарплатах", { list: r.noCity.join(", ") }) : null,
       ].filter(Boolean).join(" · ") || undefined,
     }),
     onError: (e: any) => toast.error(e.message),
@@ -74,15 +77,30 @@ export default function Hours() {
   const cityGroups = useMemo(() => {
     const map = new Map<string, Group[]>();
     for (const g of groups) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    // «Без міста» — завжди в кінці, решта міст за алфавітом
+    const last = (c: string) => c === "Без міста" ? 1 : 0;
+    return [...map.entries()].sort((a, b) => last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]));
   }, [groups]);
+  // Вкладки: місто → фабрики в ньому; невалідний вибір (інший місяць) тихо падає на «всі»
+  const cities = cityGroups.map(([c]) => c);
+  const effCity = cities.includes(cityTab) ? cityTab : "";
+  const facTabs = useMemo(() => groups.filter(g => !effCity || g.city === effCity), [groups, effCity]);
+  const effFac = facTabs.some(g => g.key === facTab) ? facTab : "";
+  const shownCityGroups = useMemo(() => cityGroups
+    .filter(([c]) => !effCity || c === effCity)
+    .map(([c, gs]) => [c, gs.filter(g => !effFac || g.key === effFac)] as const)
+    .filter(([, gs]) => gs.length > 0), [cityGroups, effCity, effFac]);
 
   const round = (n: number) => Math.round(n * 100) / 100;
 
   return (
     <>
       <PageHeader title={t("Облік годин")} subtitle={t("Відпрацьовані зміни й фактичні години за місяць (із затвердженого графіку)")} />
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Controls + city/factory tabs pinned under the top bar while tables scroll
+          (md+ only) — same pattern as Schedule: top-[52px] = desktop top-bar height − 1px,
+          -mx-8/px-8 undo the main padding so the opaque strip spans full width. */}
+      <div className="mb-4 md:sticky md:top-[52px] md:z-20 md:-mx-8 md:bg-[#f6f7f9] md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
+      <div className="flex flex-wrap items-center gap-3">
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </Select>
@@ -109,6 +127,38 @@ export default function Hours() {
         )}
       </div>
 
+      {/* Вкладки міст + фабрик вибраного міста — фільтрують список нижче */}
+      {cities.length > 0 && (
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="flex rounded-xl bg-slate-100 p-1">
+              {[...cities, ""].map(c => (
+                <button key={c || "all"} onClick={() => { setCityTab(c); setFacTab(""); }}
+                  className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                  {c ? t(c) : t("Всі міста")}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
+            {[null, ...facTabs].map(g => {
+              const active = effFac === (g?.key ?? "");
+              return (
+                <button key={g?.key ?? "all"} onClick={() => setFacTab(g?.key ?? "")}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                    active ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                  {g ? g.name : t("Всі фабрики")}
+                  <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>
+                    {g ? g.rows.length : facTabs.reduce((s, x) => s + x.rows.length, 0)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+      </div>{/* /sticky header */}
+
       {openByWorker.size > 0 && (
         <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/50 px-4 py-2.5 text-sm text-amber-700">
           <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -118,7 +168,7 @@ export default function Hours() {
 
       {isFetching && !data ? <Spinner /> : !groups.length ? <Empty>{t("За цей місяць немає затверджених змін")}</Empty> : (
         <div className="space-y-8">
-          {cityGroups.map(([city, cityGs]) => (
+          {shownCityGroups.map(([city, cityGs]) => (
           <div key={city}>
             <div className="mb-3 flex items-center gap-2 border-b border-slate-200 pb-2">
               <h2 className="text-base font-bold tracking-tight text-slate-800">{t(city)}</h2>

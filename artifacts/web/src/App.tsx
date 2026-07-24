@@ -37,6 +37,7 @@ import Pnl from "./pages/Pnl";
 import Payroll from "./pages/Payroll";
 import Svodni from "./pages/Svodni";
 import Hostels from "./pages/Hostels";
+import Penalties from "./pages/Penalties";
 import Ksef from "./pages/Ksef";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
@@ -124,6 +125,7 @@ export default function App() {
         <Route path="/payroll">{() => guard("/payroll", <Payroll />)}</Route>
         <Route path="/svodni">{() => guard("/svodni", <Svodni />)}</Route>
         <Route path="/hostels">{() => guard("/hostels", <Hostels />)}</Route>
+        <Route path="/penalties">{() => guard("/penalties", <Penalties />)}</Route>
         <Route path="/ksef">{() => guard("/ksef", <Ksef />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>

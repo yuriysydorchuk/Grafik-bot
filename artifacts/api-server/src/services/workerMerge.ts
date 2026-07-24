@@ -29,6 +29,9 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
     if (!keep.birthDate && drop.birthDate) fill.birthDate = drop.birthDate;
     if (!keep.legalStatus && drop.legalStatus) fill.legalStatus = drop.legalStatus;
     if (keep.notifyHours == null && drop.notifyHours != null) fill.notifyHours = drop.notifyHours;
+    // ставки переливаються ПАРОЮ — інакше вийшов би профіль «netto без brutto»
+    // і резолюція зібрала б змішану пару (brutto з правила + чуже netto)
+    if (keep.hourlyRate == null && drop.hourlyRate != null) fill.hourlyRate = drop.hourlyRate;
     if (keep.hourlyRateNetto == null && drop.hourlyRateNetto != null) fill.hourlyRateNetto = drop.hourlyRateNetto;
     if (!keep.gender && drop.gender) fill.gender = drop.gender;
     if (keep.positionId == null && drop.positionId != null) fill.positionId = drop.positionId;

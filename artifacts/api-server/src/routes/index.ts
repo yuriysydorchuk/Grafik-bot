@@ -10,6 +10,7 @@ import invoicesRouter from "./invoices";
 import pnlRouter from "./pnl";
 import payrollRouter from "./payroll";
 import svodniRouter from "./svodni";
+import penaltiesRouter from "./penalties";
 import ksefRouter from "./ksef";
 import securityRouter from "./security";
 
@@ -21,6 +22,7 @@ router.use(adminApiRouter);
 // ВАЖЛИВО: до фінансових роутерів — ті вішають глобальні use-гейти (viewFinance/owner),
 // які в Express зачепили б і всі наступні роутери
 router.use(svodniRouter);
+router.use(penaltiesRouter);
 router.use(bankRouter);
 router.use(cashRouter);
 router.use(cashflowRouter);

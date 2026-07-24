@@ -3,13 +3,13 @@
 // Google його більше не перезаписує — сайт є джерелом). Відкритий шар: фактичні
 // години, ставки, відрахування, до виплати. Закритий (księgowość/готівка/конто)
 // приходить з API лише з capability svodniSensitive — показуємо, що прийшло.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
   Coins, CreditCard, Banknote, PiggyBank, HandCoins,
   Home, Gavel, IdCard, GraduationCap, Wallet, UserPlus, Trash2,
-  Search as SearchIcon, Lock, LockOpen, Download, ArrowUp, ArrowDown,
+  Search as SearchIcon, Lock, LockOpen, Download, ArrowUp, ArrowDown, Combine,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -39,16 +39,38 @@ type Row = {
   mismatch: Record<string, { ours: number; sheet: number }> | null;
   rowColor: string | null;
   legalStatus: string | null; // форма легалізації (з Księgowość або профілю)
+  // порізка місяця на сегменти (різні умови в різні періоди): батько — суми,
+  // сегмент — повноцінний рядок (свої до виплати/konto/готівка + частки відрахувань)
+  segments?: Seg[];
 };
+type Seg = Row & { from: string | null; to: string | null; label: string | null };
+// кольори сегментів по порядку (Tailwind бачить лише буквальні класи)
+const SEG_COLORS = [
+  // bgName — липка клітинка імені: фон МУСИТЬ бути суцільним (без /alpha),
+  // інакше при горизонтальному скролі крізь неї просвічує текст колонок
+  { border: "border-violet-400", bg: "bg-violet-50/40", bgHover: "hover:bg-violet-50/70", bgName: "bg-violet-50", chip: "bg-violet-100 text-violet-700" },
+  { border: "border-sky-400", bg: "bg-sky-50/40", bgHover: "hover:bg-sky-50/70", bgName: "bg-sky-50", chip: "bg-sky-100 text-sky-700" },
+  { border: "border-teal-400", bg: "bg-teal-50/40", bgHover: "hover:bg-teal-50/70", bgName: "bg-teal-50", chip: "bg-teal-100 text-teal-700" },
+  { border: "border-rose-400", bg: "bg-rose-50/40", bgHover: "hover:bg-rose-50/70", bgName: "bg-rose-50", chip: "bg-rose-100 text-rose-700" },
+];
+const segColor = (i: number) => SEG_COLORS[i % SEG_COLORS.length]!;
+// на порізаному батькові ці поля рахуються З сегментів — сервер відхиляє правку
+// (409), тож клітинки показуємо read-only, як при затвердженні
+const SEG_PARENT_RO = new Set(["hours", "rateNetto", "rateBrutto", "doWyplaty", "brutto", "hoursDeclared", "ksiegNetto", "ksiegBrutto", "konto", "gotowka"]);
+const cellIsSegLocked = (r: Row, key: string) => (r.segments?.length ?? 0) > 0 && SEG_PARENT_RO.has(key);
+const cellLockTitle = (r: Row, key: string, t: (s: string) => string) =>
+  cellIsSegLocked(r, key) ? t("Рядок порізаний на сегменти — це поле рахується з них (розкрий 🧩)") : undefined;
+// ключі поза каталогом (приїхали з даних імпорту) сервер не редагує — read-only
+const hrEditableKey = (key: string) => key === "extras.zusStatus" || HR_LABEL[key.slice(3)] !== undefined;
 type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
 type TabMeta = { city: string; factoryLabel: string; colOrder: string[]; info: { stawkaEurocash?: (string | number)[][] } };
 type Lock = { city: string; factoryLabel: string }; // factoryLabel "" = усе місто
-type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[] };
+type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[]; staleLocks?: Lock[]; ksiegMin?: { netto: number; brutto: number } };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
 // колонки відкритого шару: [поле, заголовок]
 const OPEN_COLS: [keyof Row & string, string][] = [
-  ["hoursNotified", "Год. повід."], ["hours", "Години"], ["shifts", "Зміни"],
+  ["hoursNotified", "Год. повід."], ["hours", "Години"],
   ["rateBrutto", "Ставка бр."], ["rateNetto", "Ставка нет."], ["premia", "Премія"],
   ["zaliczka", "Zaliczka"], ["zaliczkaBd", "Zaliczka BD"], ["hostel", "Hostel"],
   ["odziez", "Odzież"], ["dojazd", "Dojazd"], ["kara", "Kara"], ["komornik", "Komornik"],
@@ -85,7 +107,13 @@ const EXTRA_LABEL: Record<string, string> = {
   ksiegHours: "Godzin faktycznie", kontoH: "Конто [год]", gotowkaH: "Готівка [год]",
   godzFaktBlock: "Год. факт (księg.)", zaliczkaBlock: "Zaliczka (księg.)",
 };
-const EXTRA_ORDER = Object.keys(EXTRA_LABEL);
+// не в каталозі вводу: блокові/дзеркальні (ksiegHours, kontoH…) і мертві
+// (оплата водія, badania, nakładki…) — показуються ЛИШЕ коли приїхали з даними
+const CATALOG_HIDDEN = new Set([
+  "ksiegHours", "kontoH", "gotowkaH", "godzFaktBlock", "zaliczkaBlock", "workListHours",
+  "oplataKierowcy", "badania", "nakladki", "zadluzenie", "dokumenty", "zwrotKosztow",
+]);
+const EXTRA_ORDER = Object.keys(EXTRA_LABEL).filter(k => !CATALOG_HIDDEN.has(k));
 const extraLabel = (k: string) => EXTRA_LABEL[k] ?? k;
 const EXTRA_STUDENTS = "Додаткові студенти";
 const OFFICE_CITY = "Офіс"; // віртуальна вкладка поряд із містами
@@ -97,10 +125,11 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
 
 // Księgowa пара ставок (дзеркало бекенду): студентська неоподаткована — як є,
-// решта — нижча зі ставок (стандартна пара 31,40/25,35)
+// решта — нижча зі ставок (мінімальна пара року, з налаштувань — GET /svodni)
+let KSIEG_MIN = { netto: 25.35, brutto: 31.4 };
 const untaxedStud = (r: Row) => (r.isStudent || r.legalStatus === "student") && r.rateBrutto != null && r.rateNetto != null && r.rateBrutto <= r.rateNetto + 0.001;
-const ksiegRate = (r: Row) => untaxedStud(r) ? r.rateNetto! : Math.min(r.rateNetto ?? 25.35, 25.35);
-const ksiegRateBr = (r: Row) => untaxedStud(r) ? r.rateBrutto! : Math.min(r.rateBrutto ?? 31.4, 31.4);
+const ksiegRate = (r: Row) => untaxedStud(r) ? r.rateNetto! : Math.min(r.rateNetto ?? KSIEG_MIN.netto, KSIEG_MIN.netto);
+const ksiegRateBr = (r: Row) => untaxedStud(r) ? r.rateBrutto! : Math.min(r.rateBrutto ?? KSIEG_MIN.brutto, KSIEG_MIN.brutto);
 
 // Формула клітинки з реальними числами («як в екселі») — показується в тултіпі.
 // Дзеркалить перерахунок бекенду: computePayout / computeKsiegHours / applyLegalDefaults.
@@ -125,15 +154,15 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
     case "doWyplaty": {
       if (r.city === "Лодзь") return build([
         [`${t("Години")} ${f(r.hours)} × ${t("Ставка нет.")}`, (r.hours ?? 0) * (r.rateNetto ?? 0), 1],
-        ["Migawka", ex("migawka"), 1], [t("Премія"), r.premia, 1], ["Dojazd", r.dojazd, 1],
+        ["Migawka", ex("migawka"), 1], [t("Премія"), r.premia, 1],
+        [t("Dojazd (доплата)"), r.dojazd, 1], // у Лодзі доїзд ДОПЛАЧУЮТЬ
         ["Zaliczka", r.zaliczka, -1], ["Potrącenia", r.potracenia, -1], ["Hostel", r.hostel, -1],
         ["Odzież", r.odziez, -1], ["Dokumenty", ex("dokumenty"), -1],
       ], r.doWyplaty);
       return build([
         [`${t("Години")} ${f(r.hours)} × ${t("Ставка нет.")}`, (r.hours ?? 0) * (r.rateNetto ?? 0), 1],
         [`${t("Нічні [год]")} ${f(ex("nocneH"))} × ${t("Допл. нічні")}`, ex("nocneH") * ex("doplataNocna"), 1],
-        [`Premia ES ${f(ex("premiaEs"))}/${t("год")} × ${f(r.hours)}`,
-          (r.rateNetto ?? 0) >= 25.35 + ex("premiaEs") - 0.01 ? 0 : ex("premiaEs") * (r.hours ?? 0), 1], // вшита в ставку — не дублюємо
+        [`Premia ES ${f(ex("premiaEs"))}/${t("год")} × ${f(r.hours)}`, ex("premiaEs") * (r.hours ?? 0), 1],
         [t("Премія"), r.premia, 1], [t("Оплата водія"), ex("oplataKierowcy"), 1],
         ["Dopłata ES", ex("doplataEs"), 1], ["Zwrot kosztów", ex("zwrotKosztow"), 1],
         ["Zaliczka", r.zaliczka, -1], ["Zaliczka BD", r.zaliczkaBd, -1], ["Hostel", r.hostel, -1],
@@ -160,7 +189,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.hours != null && r.hoursDeclared != null)
         return `${t("Офіційно — години oświadczenia, але не більше відпрацьованих")}: min(${f(r.hoursNotified)}, ${f(r.hours)}) = ${f(r.hoursDeclared)}`;
       if (oczekuje || !r.legalStatus) return `${t("Не оформлений: офіційних годин немає")} = 0`;
-      return `${t("Оформлений без год. oświadczenia: усі години офіційні")} = ${f(r.hoursDeclared)}`;
+      return `${t(LEGAL_LABEL[r.legalStatus as LegalStatus] ?? "Оформлений")} ${t("без год. oświadczenia: усі години офіційні")} = ${f(r.hoursDeclared)}`;
     }
     case "ksiegNetto":
       if (prefText) return `${prefText} = ${f(r.ksiegNetto)}`;
@@ -168,7 +197,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       if (r.hoursDeclared != null && r.hoursNotified != null && r.hoursNotified > 0 && r.rateNetto != null && r.ksiegNetto != null)
         return `${t("Год. księg.")} ${f(r.hoursDeclared)} × ${t("Ставка нет.")} ${f(ksiegRate(r))} = ${f(r.ksiegNetto)}`;
       if (oczekuje || !r.legalStatus) return `${t("Не оформлений: все готівкою")} → 0`;
-      return `${t("Оформлений: усе «До виплати» на конто")} = ${f(r.ksiegNetto)}`;
+      return `${t(LEGAL_LABEL[r.legalStatus as LegalStatus] ?? "Оформлений")}: ${t("усе «До виплати» на конто")} = ${f(r.ksiegNetto)}`;
     case "ksiegBrutto": {
       if (studentDo26) return `${t("Студент: без податків (brutto = netto)")} = ${f(r.ksiegBrutto)}`;
       if (oczekuje || !r.legalStatus) return `${t("Не оформлений: все готівкою")} → 0`;
@@ -185,25 +214,25 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
         return `${t("До виплати")} ${f(r.doWyplaty)} − ${t("Księg. netto (конто)")} ${f(r.ksiegNetto)}${ex("doplataEs") ? ` + Dopłata ES ${f(ex("doplataEs"))}` : ""} = ${f(r.gotowka)}`;
       if (oczekuje || !r.legalStatus) return `${t("Не оформлений: усе «До виплати» готівкою")} = ${f(r.gotowka)}`;
-      return `${t("Оформлений: усе на конто, готівки немає")} = 0`;
-    case "extras.ksiegHours":
-      if (/^EUROCASH/i.test(r.factoryLabel) && r.doWyplaty != null)
-        return `${t("До виплати")} ${f(r.doWyplaty)} / 30,5 = ${f(ex("ksiegHours"))}`;
-      if (/SUSHI/i.test(r.factoryLabel) && r.doWyplaty != null)
-        return `(${t("До виплати")} ${f(r.doWyplaty)} + Zaliczka ${f(r.zaliczka)}) / 24,6 = ${f(ex("ksiegHours"))}`;
-      return null;
+      return `${t(LEGAL_LABEL[r.legalStatus as LegalStatus] ?? "Оформлений")}: ${t("усе на конто, готівки немає")} = 0`;
     default:
       return null;
   }
 }
 
+// остання позиція на сторінці (місяць/місто/фабрика) — переживає перехід у
+// профіль працівника і повернення «назад» (sessionStorage, у межах вкладки)
+const readNav = (): { m?: string; c?: string; f?: string } => {
+  try { return JSON.parse(sessionStorage.getItem("svodni.nav") ?? "{}"); } catch { return {}; }
+};
+
 export default function Svodni() {
   const t = useT();
   const me = useMe();
   const qc = useQueryClient();
-  const [month, setMonth] = useState<string>("");
-  const [city, setCity] = useState<string>("");
-  const [factory, setFactory] = useState<string>("");
+  const [month, setMonth] = useState<string>(() => readNav().m ?? "");
+  const [city, setCity] = useState<string>(() => readNav().c ?? "");
+  const [factory, setFactory] = useState<string>(() => readNav().f ?? "");
   const [showLinks, setShowLinks] = useState(false);
   const [showCols, setShowCols] = useState(false);
   const [search, setSearch] = useState("");
@@ -216,7 +245,7 @@ export default function Svodni() {
   const toggleKsieg = () => setHideKsieg(v => { localStorage.setItem("svodni.hideKsieg", v ? "0" : "1"); return !v; });
   // видимість колонок: свій набір на кожну (місяць, місто, фабрика) і лише в
   // цьому браузері (localStorage) — інші користувачі мають власні налаштування
-  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [colsVer, setColsVer] = useState(0); // інкремент після кожного запису — useMemo перечитує
 
   const { data: monthsData } = useQuery<{ months: string[] }>({ queryKey: ["svodni-months"], queryFn: () => get("/svodni/months") });
   const months = monthsData?.months ?? [];
@@ -226,6 +255,8 @@ export default function Svodni() {
     queryKey: ["svodni", effMonth], enabled: !!effMonth,
     queryFn: () => get(`/svodni?month=${effMonth}`),
   });
+  // мінімальна пара року для формул-тултіпів (з налаштувань, приходить з API)
+  useEffect(() => { if (data?.ksiegMin) KSIEG_MIN = data.ksiegMin; }, [data?.ksiegMin]);
   const cityTabs = useMemo(() => [
     ...(data?.cities ?? []).filter(c => c !== OFFICE_CITY),
     ...(data?.sensitive ? [OFFICE_CITY] : []),
@@ -255,15 +286,22 @@ export default function Svodni() {
   }, [cityRows, data, effCity]);
   const effFactory = factories.includes(factory) ? factory : factories[0] ?? "";
   useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
+  // запам'ятати позицію (для повернення зі сторінки профілю)
+  useEffect(() => {
+    try { sessionStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
+  }, [effMonth, effCity, effFactory]);
   // ключ набору прихованих колонок: конкретна фабрика конкретного місяця
   const colsScopeKey = `svodni.hiddenCols.${effMonth}.${effCity}.${effFactory}`;
-  useEffect(() => {
-    try { setHiddenCols(new Set(JSON.parse(localStorage.getItem(colsScopeKey) ?? "[]"))); }
-    catch { setHiddenCols(new Set()); }
-  }, [colsScopeKey]);
+  // синхронно з localStorage: useEffect-варіант давав кадр зі списком
+  // прихованих колонок ПОПЕРЕДНЬОЇ фабрики після перемикання вкладки
+  const hiddenCols = useMemo<Set<string>>(() => {
+    void colsVer;
+    try { return new Set(JSON.parse(localStorage.getItem(colsScopeKey) ?? "[]")); }
+    catch { return new Set(); }
+  }, [colsScopeKey, colsVer]);
   const setHidden = (n: Set<string>) => {
-    setHiddenCols(n);
     try { localStorage.setItem(colsScopeKey, JSON.stringify([...n])); } catch { /* ignore */ }
+    setColsVer(v => v + 1);
   };
   const toggleCol = (k: string) => {
     const n = new Set(hiddenCols);
@@ -326,10 +364,28 @@ export default function Svodni() {
     if (hideKsieg) for (const [k] of SENS_COLS) v.delete(k);
     return v;
   }, [allColumns, hiddenCols, hideKsieg]);
+  // колонки, приховані не вручну, а тумблерами («Без порожніх колонок» /
+  // «Księgowe: сховано») — чіпси в панелі показують їх окремим станом,
+  // інакше чіп виглядає активним, а колонки в таблиці нема
+  // порожність рахуємо по ВСІХ рядках фабрики (без пошуку/фільтрів) — інакше
+  // колонки «стрибають» під час набору в пошуку
+  const factoryAllRows = useMemo(() => cityRows.filter(r => r.factoryLabel === effFactory), [cityRows, effFactory]);
+  const colHasVal = (k: string) => factoryAllRows.some(r =>
+    k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
+    k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
+    (r as any)[k] != null);
+  const emptyHiddenCol = (k: string) => hideEmptyCols && factoryAllRows.length > 0 && !colHasVal(k);
+  const ksiegHiddenCol = (k: string) => hideKsieg && SENS_COLS.some(([s]) => s === k);
+  const autoHiddenCount = allColumns.filter(([k]) => !hiddenCols.has(k) && (emptyHiddenCol(k) || ksiegHiddenCol(k))).length;
+  const showAllCols = () => {
+    setHidden(new Set());
+    if (hideEmptyCols) toggleEmptyCols();
+    if (hideKsieg) toggleKsieg();
+  };
 
   const sync = useMutation({
     mutationFn: (onlyCity?: string) => post("/svodni/sync", { months: [effMonth], ...(onlyCity ? { city: onlyCity } : {}) }),
-    onSuccess: (_r, onlyCity) => { qc.invalidateQueries({ queryKey: ["svodni"] }); toast.success(onlyCity ? t("Синхронізовано з Google: {city}", { city: t(onlyCity) }) : t("Синхронізовано з Google")); },
+    onSuccess: (_r, onlyCity) => { qc.invalidateQueries({ queryKey: ["svodni"] }); qc.invalidateQueries({ queryKey: ["svodni-unmatched"] }); toast.success(onlyCity ? t("Синхронізовано з Google: {city}", { city: t(onlyCity) }) : t("Синхронізовано з Google")); },
     onError: (e: any) => toast.error(e.message),
   });
   const rematch = useMutation({
@@ -440,15 +496,28 @@ export default function Svodni() {
           <div className="mt-3 border-t border-slate-100 pt-3">
             <div className="mb-2 flex items-center gap-3 text-[11px]">
               <span className="font-semibold uppercase tracking-wide text-slate-400">{t("Видимі колонки")}</span>
-              <button className="text-red-600 hover:underline" onClick={() => setHidden(new Set())}>{t("показати всі")}</button>
+              <button className="text-red-600 hover:underline" onClick={showAllCols} title={t("Показати всі колонки — включно з порожніми та księgowe")}>{t("показати всі")}</button>
+              {autoHiddenCount > 0 && <span className="text-slate-400">{t("сховано тумблерами: {n}", { n: autoHiddenCount })}</span>}
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {allColumns.map(([k, h]) => {
-                const on = !hiddenCols.has(k);
+              {allColumns.map(([k, hRaw]) => {
+                const h = k === "dojazd" && effCity === "Лодзь" ? "Dojazd (доплата)" : hRaw;
+                const manualOff = hiddenCols.has(k);
+                const autoOff = !manualOff && (emptyHiddenCol(k) || ksiegHiddenCol(k));
                 return (
-                  <button key={k} onClick={() => toggleCol(k)}
-                    className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${on ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "bg-slate-50 text-slate-400 ring-1 ring-slate-200 line-through"}`}>
-                    {t(h)}
+                  <button key={k}
+                    title={!autoOff ? undefined : emptyHiddenCol(k)
+                      ? t("Порожня — схована тумблером «Без порожніх колонок»; клік вимкне тумблер")
+                      : t("Схована тумблером «Księgowe: сховано»; клік поверне księgowe")}
+                    onClick={() => {
+                      if (!autoOff) return toggleCol(k);
+                      if (emptyHiddenCol(k)) toggleEmptyCols(); else toggleKsieg();
+                    }}
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+                      autoOff ? "bg-amber-50 text-amber-600 ring-1 ring-amber-200"
+                      : !manualOff ? "bg-red-50 text-red-700 ring-1 ring-red-200"
+                      : "bg-slate-50 text-slate-400 ring-1 ring-slate-200 line-through"}`}>
+                    {t(h)}{autoOff && emptyHiddenCol(k) ? ` · ${t("порожня")}` : ""}
                   </button>
                 );
               })}
@@ -472,6 +541,9 @@ export default function Svodni() {
                   : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
                 {isFactoryLocked(effCity, f) ? "🔒 " : ""}{f === EXTRA_STUDENTS ? "🎓 " : OFFICE_RE.test(f) ? "🏢 " : ""}{f}
                 <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>{fl.count}</span>
+                {(data?.staleLocks ?? []).some(l => l.city === effCity && (l.factoryLabel === "" || l.factoryLabel === f)) && (
+                  <span title={t("Профілі людей змінились після затвердження — переглянь лок")}>❗</span>
+                )}
                 {fl.mismatch && <span title={t("є розбіжності формул")}>⚠</span>}
                 {fl.manual && <PencilLine className={`h-3 w-3 ${active ? "text-red-100" : "text-sky-500"}`} />}
               </button>
@@ -483,9 +555,11 @@ export default function Svodni() {
       {showLinks && <UnmatchedPanel />}
 
       {isFetching && !data ? <Spinner /> : effCity === TOTAL_CITY ? (
+        // «Підсумок» — лише фабрики: офісні вкладки і «Додаткові студенти»
+        // мають власний підсумок на вкладці «Офіс» і в загальний не входять
         <div className="space-y-4">
-          <SummaryBlock rows={data?.rows ?? []} sensitive={!!data?.sensitive} />
-          <TotalBreakdown rows={data?.rows ?? []} sensitive={!!data?.sensitive} />
+          <SummaryBlock rows={(data?.rows ?? []).filter(r => !isSpecial(r.factoryLabel))} sensitive={!!data?.sensitive} />
+          <TotalBreakdown rows={(data?.rows ?? []).filter(r => !isSpecial(r.factoryLabel))} sensitive={!!data?.sensitive} />
         </div>
       ) : !factories.length ? (
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
@@ -512,17 +586,18 @@ function Th({ label, onHide, left, amber, strong, onSort, sortDir }: {
   label: string; onHide: () => void; left?: boolean; amber?: boolean; strong?: boolean;
   onSort?: () => void; sortDir?: "asc" | "desc" | null;
 }) {
+  const t = useT();
   return (
     <th className={`group/th px-1.5 py-2.5 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide ${
       left ? "text-left" : "text-right"} ${amber ? "bg-amber-50 text-amber-700/70" : strong ? "bg-red-50/70 text-red-700/80" : "text-slate-400"}`}>
       <span className="inline-flex items-center gap-0.5">
         {onSort ? (
-          <button type="button" onClick={onSort} title="Сортувати" className="inline-flex items-center gap-0.5 uppercase hover:text-slate-600">
+          <button type="button" onClick={onSort} title={t("Сортувати")} className="inline-flex items-center gap-0.5 uppercase hover:text-slate-600">
             {label}
             {sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : sortDir === "desc" ? <ArrowDown className="h-3 w-3" /> : null}
           </button>
         ) : label}
-        <button type="button" onClick={onHide} title="Сховати колонку"
+        <button type="button" onClick={onHide} title={t("Сховати колонку")}
           className="invisible rounded px-0.5 text-slate-300 hover:bg-slate-200 hover:text-slate-600 group-hover/th:visible">×</button>
       </span>
     </th>
@@ -550,6 +625,8 @@ function hideFormulaTip() { if (tipEl) tipEl.style.display = "none"; }
 
 // Редагована клітинка: клік → інпут (для кадрових — випадаючий список значень
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
+if (typeof window !== "undefined") window.addEventListener("scroll", () => hideFormulaTip(), true);
+
 function EditableCell({ row, field, value, month, text, strong, options, formula, locked }: {
   row: Row; field: string; value: unknown; month: string; text?: boolean; strong?: boolean; options?: string[]; formula?: string | null; locked?: boolean;
 }) {
@@ -625,11 +702,40 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   // сортування кліком по заголовку: none → desc → asc; дефолт — секції+алфавіт
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(null);
   const cycleSort = (key: string) => setSort(s => s?.key !== key ? { key, dir: "desc" } : s.dir === "desc" ? { key, dir: "asc" } : null);
+  // скрол-позиція: зберігається при переході в профіль, відновлюється «назад»
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const saveScroll = () => {
+    try { sessionStorage.setItem("svodni.scroll", JSON.stringify({ f: label, win: window.scrollY, top: scrollRef.current?.scrollTop ?? 0 })); } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (!rows.length) return;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("svodni.scroll") ?? "null");
+      if (saved && saved.f === label) {
+        sessionStorage.removeItem("svodni.scroll");
+        requestAnimationFrame(() => {
+          window.scrollTo(0, saved.win ?? 0);
+          if (scrollRef.current) scrollRef.current.scrollTop = saved.top ?? 0;
+        });
+      }
+    } catch { /* ignore */ }
+  }, [rows.length, label]);
   const removeRow = useMutation({
     mutationFn: (id: number) => del(`/svodni/rows/${id}`),
     onSuccess: (_r, id) => qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: old.rows.filter(r => r.id !== id) } : old),
     onError: (e: any) => toast.error(e.message),
   });
+  // порізка місяця: розкриття сегмент-рядків + обʼєднання назад
+  const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
+  const toggleSegs = (id: number) => setOpenSegs(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const unsplit = useMutation({
+    mutationFn: (id: number) => post(`/svodni/rows/${id}/unsplit`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["svodni"] }); toast.success(t("Сегменти обʼєднано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const segRange = (s: Seg) => (s.from && s.to ? `${s.from.slice(8, 10)}.${s.from.slice(5, 7)}–${s.to.slice(8, 10)}.${s.to.slice(5, 7)}` : "—");
   const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
   // порядок рядків: явне сортування користувача > секції-становіска (алфавіт
   // всередині, pl) > порядок таблиці (sortIdx)
@@ -661,13 +767,15 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
     }
     return list;
   }, [rows, sort, collator]);
-  // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху)
-  const hasVal = (k: string) => rows.some(r =>
+  // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху);
+  // рахуємо по ВСІХ рядках фабрики — інакше колонки стрибають під час пошуку
+  const allFactoryRows = useMemo(() => cityRows.filter(r => r.factoryLabel === label), [cityRows, label]);
+  const hasVal = (k: string) => allFactoryRows.some(r =>
     k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
     k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
     (r as any)[k] != null);
   // у порожній фабриці колонки показуються всі (інакше не було б чого бачити)
-  const show = (k: string) => visible.has(k) && (!hideEmptyCols || rows.length === 0 || hasVal(k));
+  const show = (k: string) => visible.has(k) && (!hideEmptyCols || allFactoryRows.length === 0 || hasVal(k));
   // єдиний список колонок у порядку таблиці Google (colOrder вкладки);
   // колонки поза colOrder — у каталожному порядку в кінці, закритий шар — окремо
   const cols = useMemo(() => {
@@ -745,7 +853,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
           </div>
         </div>
       )}
-      <div className="max-h-[70vh] overflow-auto">
+      <div ref={scrollRef} className="max-h-[70vh] overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-20 bg-white shadow-sm">
             <tr>
@@ -755,7 +863,9 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                   {sort?.key === "name" && (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
                 </button>
               </th>
-              {shownCols.map(d => <Th key={d.key} label={t(d.label)} strong={d.key === "doWyplaty"} left={d.kind === "hr"} onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
+              {shownCols.map(d => <Th key={d.key}
+                label={d.key === "dojazd" && city === "Лодзь" ? t("Dojazd (доплата)") : t(d.label)}
+                strong={d.key === "doWyplaty"} left={d.kind === "hr"} onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
               {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} onSort={() => cycleSort(k)} sortDir={sort?.key === k ? sort.dir : null} />)}
             </tr>
           </thead>
@@ -777,7 +887,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     <span className="flex w-56 items-center gap-1.5">
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
                       {r.workerId
-                        ? <Link href={`/workers/${r.workerId}`} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
+                        ? <Link href={`/workers/${r.workerId}`} onClick={saveScroll} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
                         : <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></span>}
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {(r.isStudent || r.legalStatus === "student") && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700" title={t(LEGAL_LABEL.student)}>STUD</span>}
@@ -788,11 +898,25 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                           {LEGAL_BADGE[r.legalStatus as LegalStatus]!.short}
                         </span>
                       )}
+                      {!r.legalStatus && !r.isStudent && (
+                        <span className="shrink-0 rounded bg-rose-100 px-1 text-[10px] font-semibold text-rose-700"
+                          title={t("Немає форми легалізації — розклад конто/готівки не рахується. Впиши статус у колонку Księgowość або в профіль.")}>
+                          ?
+                        </span>
+                      )}
                       {r.mismatch && (
                         <span className="cursor-help text-[11px] font-medium text-rose-600"
-                          title={Object.entries(r.mismatch).map(([k, v]) => `${k}: ${t("наш розрахунок")} ${v.ours} ≠ ${t("у таблиці")} ${v.sheet}`).join("\n")}>
+                          title={`${t("Підсвічено, бо цифри не збігаються: наш перерахунок ≠ значенню в Google-таблиці. Перевір вкладку або виправ клітинку тут.")}\n`
+                            + Object.entries(r.mismatch).map(([k, v]) => `${k === "doWyplaty" ? t("До виплати") : k}: ${t("наш розрахунок")} ${v.ours} ≠ ${t("у таблиці")} ${v.sheet}`).join("\n")}>
                           ⚠
                         </span>
+                      )}
+                      {(r.segments?.length ?? 0) > 0 && (
+                        <button type="button" onClick={() => toggleSegs(r.id)}
+                          className="shrink-0 rounded bg-violet-50 px-1 text-[10px] font-semibold text-violet-700 hover:bg-violet-100"
+                          title={t("Місяць порізаний на сегменти (різні умови в різні періоди) — клік розкриє розбивку")}>
+                          🧩{r.segments!.length}{openSegs.has(r.id) ? " ▾" : " ▸"}
+                        </button>
                       )}
                       {!locked && (
                         <button type="button" title={t("Видалити рядок")}
@@ -805,19 +929,79 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                   </td>
                   {shownCols.map(d => d.kind === "hr" ? (
                     <td key={d.key} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
-                      <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)} locked={locked} />
+                      <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)}
+                        locked={locked || !hrEditableKey(d.key)} />
                     </td>
                   ) : (
-                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}>
-                      <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} formula={cellFormula(r, d.key, t)} locked={locked} />
+                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}
+                      title={cellLockTitle(r, d.key, t)}>
+                      <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} formula={cellFormula(r, d.key, t)}
+                        locked={locked || cellIsSegLocked(r, d.key) || (d.kind === "extra" && !EXTRA_LABEL[d.key.slice(7)])} />
                     </td>
                   ))}
                   {sensCols.map(([k]) => (
-                    <td key={k} className="bg-amber-50/50 px-1 py-0.5 text-right text-slate-700">
-                      <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)} locked={locked} />
+                    <td key={k} className="bg-amber-50/50 px-1 py-0.5 text-right text-slate-700" title={cellLockTitle(r, k, t)}>
+                      <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)}
+                        locked={locked || cellIsSegLocked(r, k)} />
                     </td>
                   ))}
                 </tr>,
+                // сегменти порізаного місяця: повноцінні рядки — кожен зі своїм
+                // «до виплати», konto/готівкою (за правилами свого статусу) і
+                // частками місячних відрахувань; редагуються години і ставки
+                ...(openSegs.has(r.id) && r.segments ? r.segments.map((s, si) => (
+                  <tr key={`seg-${s.id}`} className={`${segColor(si).bg} ${segColor(si).bgHover} text-[13px]`}>
+                    <td className={`sticky left-0 z-10 border-l-2 ${segColor(si).border} ${segColor(si).bgName} px-3 py-0.5`}>
+                      <span className="flex w-56 items-center gap-1.5 pl-2">
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${segColor(si).chip}`}>{segRange(s)}</span>
+                        {(s.label ?? s.section) && <span className="min-w-0 truncate text-xs font-medium text-slate-600">{s.label ?? s.section}</span>}
+                        {(s.isStudent || s.legalStatus === "student") && <span className="shrink-0 rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700">STUD</span>}
+                        {s.under26 && <span className="shrink-0 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
+                        {s.legalStatus && s.legalStatus !== "student" && LEGAL_BADGE[s.legalStatus as LegalStatus] && (
+                          <span className={`shrink-0 rounded px-1 text-[10px] font-medium ${LEGAL_BADGE[s.legalStatus as LegalStatus]!.cls}`}
+                            title={`${t("Форма легалізації")}: ${t(LEGAL_LABEL[s.legalStatus as LegalStatus])}`}>
+                            {LEGAL_BADGE[s.legalStatus as LegalStatus]!.short}
+                          </span>
+                        )}
+                        {!locked && si === 0 && (
+                          <button type="button" title={t("Обʼєднати сегменти назад в один рядок")}
+                            onClick={async () => {
+                              if (await confirm({ title: t("Обʼєднати сегменти?"), message: t("Рядок повернеться до одного набору умов, сумарні години збережуться"), confirmText: t("Обʼєднати") })) unsplit.mutate(r.id);
+                            }}
+                            className="ml-auto shrink-0 rounded p-0.5 text-violet-300 transition hover:bg-violet-100 hover:text-violet-600">
+                            <Combine className="h-3 w-3" />
+                          </button>
+                        )}
+                      </span>
+                    </td>
+                    {shownCols.map(d => {
+                      const editable = ["hours", "rateBrutto", "rateNetto"].includes(d.key);
+                      const v = d.kind === "hr" ? hrVal(s, d.key)
+                        : d.kind === "extra" ? s.extras[d.key.slice(7)]
+                        : s[d.key as keyof Row & string];
+                      if (d.kind === "hr") return <td key={d.key} className="max-w-48 px-1 py-0.5 text-left text-slate-400">{String(v ?? "") || "—"}</td>;
+                      const manualH = d.key === "hours" && !!(s.extras as any)?.manualHours;
+                      return (
+                        <td key={d.key} className={`px-1 py-0.5 text-right text-slate-600 ${d.key === "doWyplaty" ? "bg-red-50/40 font-medium" : ""}`}
+                          title={manualH ? t("Години вписані вручну — перебудови сегментів їх не перетирають") : undefined}>
+                          <span className="flex items-center justify-end gap-0.5">
+                            {manualH && <PencilLine className="h-2.5 w-2.5 shrink-0 text-sky-500" />}
+                            <span className="min-w-0 flex-1">
+                              {editable
+                                ? <EditableCell row={s} field={d.key} value={v} month={month} locked={locked} />
+                                : <span className="block px-1 py-1 tabular-nums">{fmt(v) || <span className="text-slate-300">—</span>}</span>}
+                            </span>
+                          </span>
+                        </td>
+                      );
+                    })}
+                    {sensCols.map(([k]) => (
+                      <td key={k} className="bg-amber-50/40 px-1 py-0.5 text-right text-slate-700">
+                        <span className="block px-1 py-1 tabular-nums">{fmt(s[k]) || <span className="text-slate-300">—</span>}</span>
+                      </td>
+                    ))}
+                  </tr>
+                )) : []),
               ];
             })}
           </tbody>
@@ -858,10 +1042,17 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
   const taxableBrutto = sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto + 0.01) ? r.ksiegBrutto : 0);
   const employerZus = r2(taxableBrutto * 0.2048);
   const gotowka = sum(r => r.gotowka);
+  // до видачі — лише додатна готівка: мінусова (борг людини) касу не зменшує
+  const gotowkaPay = sum(r => Math.max(0, r.gotowka ?? 0));
   // не розписано: сума «до виплати» рядків без розкладу konto/готівка (офіс +
   // фабрики, де бухгалтерія ще не заповнила блок); doplataEs — легальний надлишок
   const doplataEsSum = sum(r => ex(r, "doplataEs"));
   const nierozp = r2(total - (konto + gotowka - doplataEsSum));
+  // хто саме не розписаний — для тултіпа (рядки, де розклад не покриває виплату)
+  const nierozpPeople = rows
+    .filter(r => r.doWyplaty != null && Math.abs(((r.konto ?? r.ksiegNetto ?? 0) + (r.gotowka ?? 0) - ex(r, "doplataEs")) - r.doWyplaty) > 0.5)
+    .map(r => `${r.workerName ?? r.rawName} (${fmt(r2(r.doWyplaty! - ((r.konto ?? r.ksiegNetto ?? 0) + (r.gotowka ?? 0) - ex(r, "doplataEs"))))} zł)`);
+  const nierozpList = nierozpPeople.slice(0, 15).join(", ") + (nierozpPeople.length > 15 ? ` … ${t("і ще")} ${nierozpPeople.length - 15}` : "");
   // економія: якби готівкова частина йшла офіційно — брутто-еквівалент + ZUS
   // роботодавця мінус сама готівка; студенти без податків → економії немає
   const savedParts = rows.reduce((acc, r) => {
@@ -894,7 +1085,7 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
         <div className="truncate text-[11px] text-slate-400">{label}</div>
         <div className="text-sm font-bold tabular-nums text-slate-800">{textValue ?? z(value!)}</div>
       </div>
-      <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-max max-w-md rounded-lg bg-slate-800 px-3 py-2 text-[11px] leading-relaxed text-white shadow-xl group-hover:block">
+      <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-max max-w-md whitespace-pre-line rounded-lg bg-slate-800 px-3 py-2 text-[11px] leading-relaxed text-white shadow-xl group-hover:block">
         {formula}
       </div>
     </div>
@@ -908,10 +1099,10 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
           : `${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(total)}`} />
       {sensitive && <Item label={t("ЗП на карту")} value={konto} icon={CreditCard} tone="bg-sky-50 text-sky-600"
         formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(konto)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
-      {sensitive && <Item label={t("ЗП готівкою")} value={gotowka} icon={Banknote} tone="bg-amber-50 text-amber-600"
-        formula={`${t("Σ колонки «Готівка»")} = ${z(gotowka)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
+      {sensitive && <Item label={t("ЗП готівкою")} value={gotowkaPay} icon={Banknote} tone="bg-amber-50 text-amber-600"
+        formula={`${t("Σ колонки «Готівка» (лише додатні; мінусова готівка — борг, до видачі не входить)")} = ${z(gotowkaPay)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
       {sensitive && nierozp > 0.5 && <Item label={t("Не розписано (конто/готівка)")} value={nierozp} icon={CircleAlert} tone="bg-slate-100 text-slate-500"
-        formula={`${t("Загальна ЗП − (На карту + Готівка − Dopłata ES) — офіс і фабрики, де бухгалтерія ще не розписала офіційну частину")}: ${z(total)} − (${z(konto)} + ${z(gotowka)} − ${z(doplataEsSum)}) = ${z(nierozp)}`} />}
+        formula={`${t("Загальна ЗП − (На карту + Готівка − Dopłata ES) — офіс і фабрики, де бухгалтерія ще не розписала офіційну частину")}: ${z(total)} − (${z(konto)} + ${z(gotowka)} − ${z(doplataEsSum)}) = ${z(nierozp)}${nierozpPeople.length ? `\n${t("Люди")}: ${nierozpList}` : ""}`} />}
       {sensitive && <Item label={t("Зекономлено на готівці (оцінка)")} value={saved} icon={PiggyBank} tone="bg-emerald-50 text-emerald-600"
         formula={`${t("Якби готівку платили офіційно: (брутто-еквівалент − готівка) + брутто-еквівалент × 20,48% ZUS. Студенти не рахуються — у них податків немає.")} (${z(savedParts.bruttoEq)} − ${z(savedParts.got)}) + ${z(savedParts.bruttoEq)} × 0,2048 = ${z(saved)}`} />}
       {sensitive && <Item label={t("Податки разом (я плачу)")} value={r2(workerTax + employerZus)} icon={Wallet} tone="bg-rose-600 text-white"
@@ -936,14 +1127,22 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
 function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) {
   const t = useT();
   const ex = (r: Row, k: string) => (typeof r.extras[k] === "number" ? (r.extras[k] as number) : 0);
-  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; doplata: number; zaliczki: number; hostel: number; kary: number; students: number };
-  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, doplata: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
+  // розгорнуті фабрики: клік по рядку → знизу список людей із цифрами
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpand = (k: string) => setExpanded(prev => {
+    const n = new Set(prev);
+    n.has(k) ? n.delete(k) : n.add(k);
+    return n;
+  });
+  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; gotowkaPay: number; doplata: number; zaliczki: number; hostel: number; kary: number; students: number };
+  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, gotowkaPay: 0, doplata: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
   const add = (a: Agg, r: Row) => {
     a.count += 1;
     a.hours += r.hours ?? 0;
     a.pay += r.doWyplaty ?? 0;
     a.konto += r.konto ?? r.ksiegNetto ?? 0;
     a.gotowka += r.gotowka ?? 0;
+    a.gotowkaPay += Math.max(0, r.gotowka ?? 0);
     a.doplata += ex(r, "doplataEs");
     a.zaliczki += (r.zaliczka ?? 0) + (r.zaliczkaBd ?? 0);
     a.hostel += r.hostel ?? 0;
@@ -970,7 +1169,7 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
         const factories = [...m.entries()].sort((a, b) => b[1].pay - a[1].pay || a[0].localeCompare(b[0]));
         for (const [, a] of factories) {
           total.count += a.count; total.hours += a.hours; total.pay += a.pay; total.konto += a.konto;
-          total.gotowka += a.gotowka; total.doplata += a.doplata; total.zaliczki += a.zaliczki;
+          total.gotowka += a.gotowka; total.gotowkaPay += a.gotowkaPay; total.doplata += a.doplata; total.zaliczki += a.zaliczki;
           total.hostel += a.hostel; total.kary += a.kary; total.students += a.students;
         }
         return { city: c, factories, total };
@@ -978,15 +1177,28 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
     return { cities, grand };
   }, [rows]);
 
+  // не розписані люди групи — для тултіпа на сумі «Не розп.»
+  const rowNierozp = (r: Row) => r.doWyplaty != null
+    && Math.abs(((r.konto ?? r.ksiegNetto ?? 0) + (r.gotowka ?? 0) - ex(r, "doplataEs")) - r.doWyplaty) > 0.5;
+  const nierozpNames = (list: Row[]) => {
+    const ppl = list.filter(rowNierozp).map(r => r.workerName ?? r.rawName);
+    if (!ppl.length) return undefined;
+    return `${t("Не розписані")}: ${ppl.slice(0, 20).join(", ")}${ppl.length > 20 ? ` … ${t("і ще")} ${ppl.length - 20}` : ""}`;
+  };
   const num = (v: number) => <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(v))}</td>;
-  const cells = (a: Agg, payCls = "") => (
+  const cells = (a: Agg, payCls = "", nierozpTitle?: string) => (
     <>
       <td className="px-2 py-1.5 text-right tabular-nums">{a.count}</td>
       <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.hours))}</td>
       <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
       {sensitive && num(a.konto)}
-      {sensitive && num(a.gotowka)}
-      {sensitive && <td className="px-2 py-1.5 text-right tabular-nums text-slate-400">{nierozpOf(a) > 0.5 ? fmt(nierozpOf(a)) : ""}</td>}
+      {sensitive && num(a.gotowkaPay)}
+      {sensitive && (
+        <td className={`px-2 py-1.5 text-right tabular-nums ${nierozpTitle ? "cursor-help text-amber-600 underline decoration-dotted underline-offset-2" : "text-slate-400"}`}
+          title={nierozpTitle}>
+          {nierozpOf(a) > 0.5 ? fmt(nierozpOf(a)) : ""}
+        </td>
+      )}
       {num(a.zaliczki)}
       {num(a.hostel)}
       {num(a.kary)}
@@ -1022,20 +1234,65 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
                 <td className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                   {city === OFFICE_CITY ? "🏢 " : ""}{t(city)}
                 </td>
-                {cells(total)}
+                {cells(total, "", nierozpNames(rows.filter(r => (isSpecial(r.factoryLabel) ? OFFICE_CITY : r.city) === city)))}
               </tr>,
-              ...factories.map(([f, a]) => (
-                <tr key={`${city}-${f}`} className="hover:bg-red-50/30">
-                  <td className="whitespace-nowrap px-3 py-1.5 pl-6 text-slate-600">{f === EXTRA_STUDENTS ? "🎓 " : ""}{f === EXTRA_STUDENTS ? t(f) : f}</td>
-                  {cells(a)}
-                </tr>
-              )),
+              ...factories.flatMap(([f, a]) => {
+                const k = `${city}|${f}`;
+                const people = rows
+                  .filter(r => r.factoryLabel === f && (isSpecial(r.factoryLabel) ? OFFICE_CITY : r.city) === city)
+                  .sort((x, y) => (x.workerName ?? x.rawName).localeCompare(y.workerName ?? y.rawName, "pl"));
+                const open = expanded.has(k);
+                const out = [
+                  <tr key={k} onClick={() => toggleExpand(k)}
+                    className={`cursor-pointer ${open ? "bg-red-50/50" : "hover:bg-red-50/30"}`}
+                    title={t("Клікни, щоб розгорнути список людей")}>
+                    <td className="whitespace-nowrap px-3 py-1.5 pl-6 text-slate-600">
+                      <span className="mr-1 inline-block w-3 text-slate-400">{open ? "▾" : "▸"}</span>
+                      {f === EXTRA_STUDENTS ? "🎓 " : ""}{f === EXTRA_STUDENTS ? t(f) : f}
+                    </td>
+                    {cells(a, "", nierozpNames(people))}
+                  </tr>,
+                ];
+                if (open) out.push(
+                  <tr key={`${k}-detail`}>
+                    <td colSpan={sensitive ? 11 : 8} className="bg-slate-50/60 px-3 pb-2 pt-1">
+                      <table className="w-full text-[11px]">
+                        <tbody className="divide-y divide-slate-100">
+                          {people.map(r => (
+                            <tr key={r.id} className={rowNierozp(r) ? "text-amber-700" : "text-slate-600"}>
+                              <td className="py-1 pl-9">
+                                {r.workerId
+                                  ? <Link href={`/workers/${r.workerId}`} className="hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
+                                  : (r.workerName ?? r.rawName)}
+                                {rowNierozp(r) && <span className="ml-1" title={t("не розписано конто/готівку")}>⚠</span>}
+                              </td>
+                              <td className="w-16 py-1 text-right tabular-nums" />
+                              <td className="w-20 py-1 text-right tabular-nums">{fmt(r2(r.hours ?? 0))}</td>
+                              <td className="w-24 py-1 text-right font-semibold tabular-nums">{fmt(r2(r.doWyplaty ?? 0))}</td>
+                              {sensitive && <td className="w-24 py-1 text-right tabular-nums">{fmt(r2(r.konto ?? r.ksiegNetto ?? 0))}</td>}
+                              {sensitive && <td className="w-24 py-1 text-right tabular-nums">{fmt(r2(r.gotowka ?? 0))}</td>}
+                              {sensitive && <td className="w-20 py-1 text-right tabular-nums text-amber-600">
+                                {rowNierozp(r) ? fmt(r2((r.doWyplaty ?? 0) - ((r.konto ?? r.ksiegNetto ?? 0) + (r.gotowka ?? 0) - ex(r, "doplataEs")))) : ""}
+                              </td>}
+                              <td className="w-20 py-1 text-right tabular-nums">{fmt(r2((r.zaliczka ?? 0) + (r.zaliczkaBd ?? 0)))}</td>
+                              <td className="w-20 py-1 text-right tabular-nums">{fmt(r2(r.hostel ?? 0))}</td>
+                              <td className="w-20 py-1 text-right tabular-nums">{fmt(r2((r.kara ?? 0) + ex(r, "karaKlient") + ex(r, "karaEs")))}</td>
+                              <td className="w-14 py-1 text-right">{r.isStudent ? "🎓" : ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>,
+                );
+                return out;
+              }),
             ])}
           </tbody>
           <tfoot>
             <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
               <td className="px-3 py-2.5">{t("Разом")}</td>
-              {cells(grand, "text-red-700")}
+              {cells(grand, "text-red-700", nierozpNames(rows))}
             </tr>
           </tfoot>
         </table>
@@ -1166,7 +1423,6 @@ const XLS_COL_DEFS: { key: string; label: string; sensitive?: boolean }[] = [
   { key: "section", label: "Stanowisko" },
   { key: "hoursNotified", label: "Год. повід." },
   { key: "hours", label: "Години" },
-  { key: "shifts", label: "Зміни" },
   { key: "rateBrutto", label: "Ставка бр." },
   { key: "rateNetto", label: "Ставка нет." },
   { key: "premia", label: "Премія" },
@@ -1246,10 +1502,18 @@ function ExcelModal({ month, city, factory, sensitive, onClose }: {
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <a href={`/api/svodni/excel?${params.toString()}`} onClick={onClose}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">
-            <Download className="h-4 w-4" /> {t("Скачати")}
-          </a>
+          {/* порожній список сервер трактує як «усі» — без вибору не качаємо */}
+          {cols.size > 0 ? (
+            <a href={`/api/svodni/excel?${params.toString()}`} onClick={onClose}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">
+              <Download className="h-4 w-4" /> {t("Скачати")}
+            </a>
+          ) : (
+            <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400"
+              title={t("Вибери хоча б один стовпчик")}>
+              <Download className="h-4 w-4" /> {t("Скачати")}
+            </span>
+          )}
         </div>
       </div>
     </Modal>

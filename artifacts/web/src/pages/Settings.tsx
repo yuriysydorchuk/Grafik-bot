@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me } from "../lib/api";
+import { get, put, post, patch, del, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
 import { Card, Spinner, Input, Label, Button, Select, Badge, Empty } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -48,7 +48,7 @@ export default function Settings() {
         ))}
       </div>
 
-      {active === "general" && <FinanceRates />}
+      {active === "general" && <div className="space-y-4"><FinanceRates /><SvodniMinRates /></div>}
       {active === "companies" && <CompaniesSettings />}
       {active === "factories" && <Factories />}
       {active === "positions" && <PositionsSettings />}
@@ -128,6 +128,51 @@ function FinanceRates() {
     </Card>
   );
 }
+
+// ─── Сводні: мінімальна ставка року (księgowa пара) ──────────────────────────
+function SvodniMinRates() {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ minNetto: number; minBrutto: number }>({
+    queryKey: ["svodni-settings"], queryFn: () => get("/svodni/settings"),
+  });
+  const [v, setV] = useState<{ minNetto?: string; minBrutto?: string }>({});
+  const dirty = Object.keys(v).length > 0;
+  const save = useMutation({
+    mutationFn: () => put("/svodni/settings", {
+      minNetto: v.minNetto ?? data?.minNetto, minBrutto: v.minBrutto ?? data?.minBrutto,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["svodni-settings"] });
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      setV({});
+      toast.success(t("Мінімальні ставки збережено"));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Card className="p-5">
+      <div className="mb-1 text-sm font-semibold text-slate-700">{t("Сводні: мінімальна ставка року")}</div>
+      <p className="mb-4 text-xs text-slate-400">{t("Księgowa пара: конто декларується по цій ставці нетто (зараз 25,35/31,40). Зміна одразу впливає на розклад конто/готівки у сводних.")}</p>
+      {isLoading ? <Spinner /> : (
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <Label>{t("Мін. ставка нетто (zł/год)")}</Label>
+            <Input className="w-36" inputMode="decimal" value={v.minNetto ?? String(data?.minNetto ?? "")}
+              onChange={e => setV(p => ({ ...p, minNetto: e.target.value }))} />
+          </div>
+          <div>
+            <Label>{t("Мін. ставка брутто (zł/год)")}</Label>
+            <Input className="w-36" inputMode="decimal" value={v.minBrutto ?? String(data?.minBrutto ?? "")}
+              onChange={e => setV(p => ({ ...p, minBrutto: e.target.value }))} />
+          </div>
+          <Button loading={save.isPending} disabled={!dirty} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 
 // ─── Recruitment funnels ──────────────────────────────────────────────────────
 

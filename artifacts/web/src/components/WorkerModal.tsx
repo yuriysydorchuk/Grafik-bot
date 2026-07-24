@@ -28,11 +28,15 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const [telegramId, setTelegramId] = useState(worker?.telegramId ?? "");
   const [workerCode, setWorkerCode] = useState(worker?.workerCode ?? "");
   const [language, setLanguage] = useState(worker?.language ?? "");
-  const [hourlyRate, setHourlyRate] = useState(worker?.hourlyRate != null ? String(worker.hourlyRate) : "31.5");
+  const [hourlyRate, setHourlyRate] = useState(worker?.hourlyRate != null ? String(worker.hourlyRate) : "");
   const [isStudent, setIsStudent] = useState(!!worker?.isStudent);
   const [under26, setUnder26] = useState(!!worker?.under26);
   const [selfTransport, setSelfTransport] = useState(!!worker?.selfTransport);
-  const finance = isOwner ? { hourlyRate: hourlyRate.trim() === "" ? 31.5 : Number(hourlyRate.replace(",", ".")), isStudent, under26 } : {};
+  // порожня ставка = NULL («авто» за правилами фабрики: пара посади → базова
+  // пара фабрики); явне очищення поля знімає профільний override
+  const finance = isOwner
+    ? { hourlyRate: hourlyRate.trim() === "" ? null : Number(hourlyRate.replace(",", ".")), isStudent, under26 }
+    : {};
   const selFactory = factories.find(f => String(f.id) === factoryId);
   const shiftCount = selFactory?.shiftCount ?? 3;
   // position / gender fields only for factories that use them
@@ -110,7 +114,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
         {isOwner && (
           <div className="rounded-xl border border-slate-200 p-3">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фінанси (umowa zlecenie)")}</div>
-            <div><Label>{t("Ставка брутто (zł/год)")}</Label><Input value={hourlyRate} onChange={e => setHourlyRate(e.target.value)} inputMode="decimal" placeholder="31.5" /></div>
+            <div><Label>{t("Ставка брутто (zł/год)")}</Label><Input value={hourlyRate} onChange={e => setHourlyRate(e.target.value)} inputMode="decimal" placeholder={t("авто")} /></div>
             <div className="mt-2 flex gap-4">
               <label className="flex items-center gap-1.5 text-sm text-slate-600"><input type="checkbox" checked={isStudent} onChange={e => setIsStudent(e.target.checked)} /> {t("Студент")}</label>
               <label className="flex items-center gap-1.5 text-sm text-slate-600"><input type="checkbox" checked={under26} onChange={e => setUnder26(e.target.checked)} /> {t("До 26 років")}</label>

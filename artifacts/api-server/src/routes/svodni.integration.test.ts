@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, payrollSourcesTable, payrollFactoryMonthsTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -21,6 +21,17 @@ async function seedRow(over: Record<string, unknown> = {}) {
     hoursDeclared: 100, ksiegBrutto: 3140, ksiegNetto: 2535, gotowka: 1521, konto: 2535,
     extras: {}, hr: {}, sheetValues: {},
     ...over,
+  } as any);
+}
+
+// Місто фабрики from-hours бере з історії сводних або з регіону «Зарплат» —
+// сідимо мінімальний рядок payroll_factory_months (реєстр + зведення вкладки)
+async function seedPayrollRegion(factory: string, region: string) {
+  const [src] = await db.insert(payrollSourcesTable).values({
+    periodMonth: "2026-05", region, spreadsheetId: `test-${factory}-${region}`,
+  } as any).returning();
+  await db.insert(payrollFactoryMonthsTable).values({
+    sourceId: src!.id, periodMonth: "2026-05", region, factory,
   } as any);
 }
 
@@ -227,7 +238,10 @@ test("«Години підтверджені → до сводної»: ряд�
     fullName: "Kowalski Jan", workerCode: "00001", hourlyRate: 31.4, hourlyRateNetto: 31.4,
     isStudent: true, under26: true, legalStatus: "student", notifyHours: 40, birthDate: "2004-05-05",
   }).returning();
-  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: null, hoursReported: 100 });
+  // місто фабрики відоме із «Зарплат» (регіон вкладки) — сводних ще нема
+  const [fac] = await db.insert(factoriesTable).values({ name: "ZAKLAD T" } as any).returning();
+  await seedPayrollRegion("ZAKLAD T", "Люблін");
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 100 });
 
   const r1 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
   assert.equal(r1.status, 200);
@@ -256,7 +270,8 @@ test("«Години підтверджені → до сводної»: ряд�
 });
 
 test("правка «Год. повід.» розписує конто/готівку правилом oświadczenia", opts, async () => {
-  await seedRow({ hoursDeclared: null, ksiegBrutto: null, ksiegNetto: null, gotowka: null, konto: null, isStudent: false, under26: false });
+  // зі статусом Powiadomienie: notify-години йдуть на конто, решта готівкою
+  await seedRow({ hoursDeclared: null, ksiegBrutto: null, ksiegNetto: null, gotowka: null, konto: null, isStudent: false, under26: false, extras: { zusStatus: "Zgłoszony, Powiadomienie, Wyżej 26" } });
   const owner = (await seedAdmin({ role: "owner" })).cookie;
   const [row] = await db.select().from(svodniRowsTable);
   // 160 год факту, ставка 25.35, до виплати 4056; oświadczenie 100 год
@@ -267,6 +282,20 @@ test("правка «Год. повід.» розписує конто/готі�
   assert.equal(r.body.ksiegNetto, 2535, "конто = 100 × 25.35");
   assert.equal(r.body.konto, 2535);
   assert.equal(r.body.gotowka, 1521, "решта готівкою: 4056 − 2535");
+});
+
+test("«Год. повід.» БЕЗ статусу легалізації конто не відкривають — усе готівкою", opts, async () => {
+  // правило з червневої звірки: не оформлений/без статусу → все готівкою,
+  // навіть якщо колись вписані notify-години
+  await seedRow({ hoursDeclared: null, ksiegBrutto: null, ksiegNetto: null, gotowka: null, konto: null, isStudent: false, under26: false });
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [row] = await db.select().from(svodniRowsTable);
+  const r = await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hoursNotified", value: 100 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.konto, 0, "без статусу конто не відкривається");
+  assert.equal(r.body.hoursDeclared, 0);
+  assert.equal(r.body.gotowka, 4056, "усе готівкою");
 });
 
 test("затвердження (лок): фабрика і місто блокують правки, toggle знімає", opts, async () => {
@@ -316,6 +345,7 @@ test("from-hours пропускає залочену фабрику і раху�
   const facRes = await request(app).post("/api/factories").set("Cookie", owner).set(H)
     .send({ name: "ZAKLAD X" });
   const facId = facRes.body.id ?? (facRes.body.factory?.id);
+  await seedPayrollRegion("ZAKLAD X", "Люблін"); // місто — з регіону «Зарплат»
   await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-06", factoryId: facId, hoursReported: 100 } as any);
 
   // без лока — рядок створюється
@@ -330,4 +360,35 @@ test("from-hours пропускає залочену фабрику і раху�
   r = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
     .send({ month: "2026-06", factoryId: facId });
   assert.equal(r.status, 400, "усе вибране залочено → 400 з поясненням");
+});
+
+test("from-hours: фабрика без міста (нема ні в сводних, ні в Зарплатах) — пропуск і чесний звіт, не Люблін", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Nowak Piotr", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false,
+  } as any).returning();
+  const [known] = await db.insert(factoriesTable).values({ name: "ZNANA" } as any).returning();
+  const [unknown] = await db.insert(factoriesTable).values({ name: "TAJEMNICZA" } as any).returning();
+  await seedPayrollRegion("ZNANA", "Познань");
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-06", factoryId: known!.id, hoursReported: 50 } as any);
+
+  // лише невідома фабрика → 400 зі списком, рядки не створюються
+  const [w2] = await db.insert(workersTable).values({
+    fullName: "Wisniewski Adam", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false,
+  } as any).returning();
+  await db.insert(monthlyReportsTable).values({ workerId: w2!.id, month: "2026-06", factoryId: unknown!.id, hoursReported: 60 } as any);
+  const solo = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", factoryId: unknown!.id });
+  assert.equal(solo.status, 400);
+  assert.match(solo.body.error, /TAJEMNICZA/, "помилка називає фабрику без міста");
+
+  // весь місяць: відома створюється з містом із Зарплат, невідома — у noCity
+  const r = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
+    .send({ month: "2026-06" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.created, 1);
+  assert.deepEqual(r.body.noCity, ["TAJEMNICZA"]);
+  const rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.city, "Познань", "місто взято з регіону «Зарплат», не фолбек-Люблін");
 });

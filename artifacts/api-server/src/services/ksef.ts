@@ -8,7 +8,7 @@
 // transfer title of the same firm; plus manual override from the UI.
 import crypto from "node:crypto";
 import { db } from "@workspace/db";
-import { ksefInvoicesTable, companiesTable, pnlEntriesTable } from "@workspace/db";
+import { ksefInvoicesTable, companiesTable, pnlEntriesTable, factoriesTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
@@ -37,6 +37,7 @@ const BUYER_ALIASES: [RegExp, string][] = [
   [/RABEN/, "Raben"],
   [/MAKARUK/, "Makaruk"],
   [/DATA ?MODUL/, "Data Modul"],
+  [/PRINT ?EXTRA/, "Print Extra"],
 ];
 
 const normBuyer = (s: string) =>
@@ -48,6 +49,36 @@ const normBuyer = (s: string) =>
 export function segmentForBuyer(buyerName: string | null): string {
   const n = normBuyer(buyerName ?? "");
   return /WSPOLNOT|GALEY|GALEJ/.test(n) ? "cleaning" : "main";
+}
+
+// Привʼязка по ID фабрики: NIP покупця → канонічний підпис клієнта з довідника
+// фабрик (factories.client_nip / pnl_label). Це ПЕРШЕ джерело матчингу —
+// регекспи назв нижче лишаються фолбеком для клієнтів без фабрики в системі.
+export async function clientLabelByNip(): Promise<Map<string, string>> {
+  const rows = await db.select({ nip: factoriesTable.clientNip, label: factoriesTable.pnlLabel }).from(factoriesTable);
+  const map = new Map<string, string>();
+  for (const r of rows) if (r.nip && r.label) map.set(r.nip.replace(/\D/g, ""), r.label);
+  return map;
+}
+
+// Перемапити client_label наявних фактур продажу по NIP (нові NIP-и в довіднику
+// фабрик підхоплюються без пересинку з KSeF) і перезібрати зачеплені P&L-місяці
+export async function relabelKsefClients(): Promise<number> {
+  const nipMap = await clientLabelByNip();
+  const sales = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.kind, "sale"));
+  const months = new Set<string>();
+  let changed = 0;
+  for (const inv of sales) {
+    const byNip = inv.buyerNip ? nipMap.get(String(inv.buyerNip).replace(/\D/g, "")) : undefined;
+    const label = byNip ?? mapBuyerToClient(inv.buyerName ?? null);
+    if (label && label !== inv.clientLabel) {
+      await db.update(ksefInvoicesTable).set({ clientLabel: label }).where(eq(ksefInvoicesTable.id, inv.id));
+      months.add(inv.revenueMonth);
+      changed++;
+    }
+  }
+  for (const m of months) await feedPnlRevenue(m);
+  return changed;
 }
 
 export function mapBuyerToClient(buyerName: string | null): string | null {
@@ -151,6 +182,7 @@ async function authenticate(nip: string, token: string): Promise<string> {
 export interface KsefSyncResult { companies: number; fetched: number; inserted: number; paidMatched: number; errors: string[] }
 
 export async function syncKsef(): Promise<KsefSyncResult> {
+  const nipLabels = await clientLabelByNip(); // привʼязка клієнтів по NIP (довідник фабрик)
   const tokens = companyTokens();
   const result: KsefSyncResult = { companies: 0, fetched: 0, inserted: 0, paidMatched: 0, errors: [] };
   if (!tokens.size) { result.errors.push("немає KSEF_TOKEN_* у середовищі"); return result; }
@@ -199,7 +231,9 @@ export async function syncKsef(): Promise<KsefSyncResult> {
                 net: Number(m.netAmount ?? 0), vat: Number(m.vatAmount ?? 0), gross: Number(m.grossAmount ?? 0),
                 currency: m.currency ?? "PLN", invoiceType: m.invoiceType ?? null,
                 revenueMonth,
-                clientLabel: kind === "sale" ? mapBuyerToClient(m.buyer?.name ?? null) : null,
+                clientLabel: kind === "sale"
+                  ? (nipLabels.get(String(m.buyer?.identifier?.value ?? "").replace(/\D/g, "")) ?? mapBuyerToClient(m.buyer?.name ?? null))
+                  : null,
                 segment: kind === "sale" ? segmentForBuyer(m.buyer?.name ?? null) : "main",
                 invoiceHash: m.invoiceHash ?? null, correctedHash: m.hashOfCorrectedInvoice ?? null,
               }).onConflictDoUpdate({

@@ -7,7 +7,7 @@ import {
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
-  expenseCategoriesTable, counterpartyRulesTable,
+  expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -23,7 +23,7 @@ export {
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
-  expenseCategoriesTable, counterpartyRulesTable,
+  expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -45,7 +45,8 @@ export async function resetDb(): Promise<void> {
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +
-    "expense_categories, counterparty_rules RESTART IDENTITY CASCADE",
+    "expense_categories, counterparty_rules, " +
+    "payroll_sources, payroll_factory_months RESTART IDENTITY CASCADE",
   ));
   // classification queries need the category rows — restore the default seed
   await db.insert(expenseCategoriesTable).values(

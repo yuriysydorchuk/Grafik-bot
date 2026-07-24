@@ -5,24 +5,26 @@
 import { db } from "@workspace/db";
 import {
   svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, factoriesTable, workersTable,
-  payrollSourcesTable, companiesTable,
+  payrollSourcesTable, payrollFactoryMonthsTable, companiesTable,
 } from "@workspace/db";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, isNotNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { matchWorker, nameScore, normalizeName } from "../bot/workerMatch";
 import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
-  parseOfficeTab, computeMismatch, computePayout, legalStatusOf, applyLegalDefaults, ksiegRatesOf, type SvodniParsedTab, type GotowkaRow,
+  parseOfficeTab, computeMismatch, computePayout, legalStatusOf, applyLegalDefaults, ksiegRatesOf,
+  KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, agramBonusPerHour, factoryBonusPerHour,
+  type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 // ЗУС-нетто зі ставки брутто (umowa zlecenie, без PIT): мінус соцвнески
 // zleceniobiorcy 11,26% (emerytalne 9,76% + rentowe 1,5%), мінус здоровотна 9%
-// від решти. Канонічна пара 31,40 → 25,35 — тримаємо точною.
+// від решти. Канонічна мінімальна пара року (з налаштувань) — тримаємо точною.
 export function nettoOfBrutto(brutto: number): number {
-  if (Math.abs(brutto - 31.4) < 0.001) return 25.35;
+  if (Math.abs(brutto - KSIEG_STD_BRUTTO()) < 0.001) return KSIEG_STD_NETTO();
   return r2(brutto * (1 - 0.1126) * (1 - 0.09));
 }
 const CHECK_TOL = 0.06;
@@ -217,7 +219,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
           if (row.hoursNotified == null && w.notifyHours != null && w.notifyHours > 0) row.hoursNotified = w.notifyHours;
         }
         applyLegalDefaults(row, false, {
-          factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any,
+          factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any, city,
           payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
         });
         // нормалізація księgowego конто зі «зменшеними годинами»: konto завжди
@@ -456,9 +458,16 @@ export async function ensureSvodniFactories(): Promise<{ created: string[] }> {
 // зматчених працівників (перевага рядку зі ставкою; оновлюються лише зміни).
 export interface RatesApplyResult { updated: number; skipped: number }
 export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesApplyResult> {
-  const rows = await db.select().from(svodniRowsTable).where(and(
-    eq(svodniRowsTable.periodMonth, periodMonth),
-  ));
+  // порізані на сегменти рядки пропускаємо ЦІЛКОМ: батько тримає min-ставки
+  // місяця (декларування), а не актуальні умови — запис у профіль відкотив би
+  // підвищення ставки заднім числом
+  const segParentIds = new Set((await db.selectDistinct({ p: svodniRowsTable.segmentOf })
+    .from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, periodMonth), isNotNull(svodniRowsTable.segmentOf))))
+    .map(x => x.p).filter((x): x is number => x != null));
+  const rows = (await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, periodMonth), isNull(svodniRowsTable.segmentOf),
+  ))).filter(r => !segParentIds.has(r.id));
   const perWorker = new Map<number, typeof rows[number]>();
   for (const r of rows) {
     if (r.workerId == null) continue;
@@ -472,7 +481,15 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
     const s = perWorker.get(w.id)!;
     const set: Partial<typeof workersTable.$inferInsert> = {};
     if (s.rateBrutto != null && s.rateBrutto !== w.hourlyRate) set.hourlyRate = s.rateBrutto;
-    if (s.rateNetto != null && s.rateNetto !== w.hourlyRateNetto) set.hourlyRateNetto = s.rateNetto;
+    if (s.rateNetto != null) {
+      // бонусні фабрики (Agram/LST): у рядку сводної ставка з бонусами — у профіль
+      // пишемо базу. Студенту до 26 бонус не нараховувався — не віднімаємо
+      const stud26Row = s.isStudent === true && s.under26 === true;
+      const netto = !stud26Row && s.factoryId != null && CASH_BONUS_FACTORY_IDS.has(s.factoryId)
+        ? r2(Math.max(0, s.rateNetto - factoryBonusPerHour(w, s.factoryId, periodMonth, s.hours)))
+        : s.rateNetto;
+      if (netto > 0 && netto !== w.hourlyRateNetto) set.hourlyRateNetto = netto;
+    }
     if (s.isStudent != null && s.isStudent !== w.isStudent) set.isStudent = s.isStudent;
     // дата народження зі сводної (dd.mm.yyyy) → профіль; «до 26» виводиться з неї
     const bd = parseSheetDate((s.hr as Record<string, string> | null)?.dataUrodzenia);
@@ -522,6 +539,42 @@ export function cityOfRegion(region: string): City | null {
   if (/ПОЗНА|POZNA/.test(n)) return "Познань";
   if (/ЛОДЗ|LODZ/.test(n)) return "Лодзь";
   return null;
+}
+
+// Місто кожної фабрики (factoryId → місто) з наявних даних, без окремого поля:
+// 1) історія сводних (найсвіжіший рядок фабрики виграє);
+// 2) регіон із «Зарплат» (payroll_factory_months) — матч назви фабрики до назви
+//    вкладки за key() + TAB_ALIASES у обидва боки (та сама механіка, що вкладки).
+// Фабрика, якої нема ніде, лишається без міста — виклику вирішувати (from-hours
+// такі пропускає і звітує, а не вгадує).
+export async function factoryCityMap(): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  const hist = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city })
+    .from(svodniRowsTable).where(isNotNull(svodniRowsTable.factoryId)).orderBy(desc(svodniRowsTable.id));
+  for (const h of hist) if (h.factoryId != null && !map.has(h.factoryId)) map.set(h.factoryId, h.city);
+
+  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  if (facs.some(f => !map.has(f.id))) {
+    const pfm = await db.select({ factory: payrollFactoryMonthsTable.factory, region: payrollFactoryMonthsTable.region })
+      .from(payrollFactoryMonthsTable).orderBy(desc(payrollFactoryMonthsTable.id));
+    const regionByKey = new Map<string, string>();
+    for (const p of pfm) { const k = key(p.factory); if (k && !regionByKey.has(k)) regionByKey.set(k, p.region); }
+    for (const f of facs) {
+      if (map.has(f.id)) continue;
+      const fk = key(f.name);
+      if (!fk) continue;
+      let region = regionByKey.get(fk) ?? null;
+      if (!region) {
+        for (const [pk, reg] of regionByKey) {
+          if (pk.startsWith(fk) || fk.startsWith(pk)
+            || (TAB_ALIASES[pk] ?? []).includes(fk) || (TAB_ALIASES[fk] ?? []).includes(pk)) { region = reg; break; }
+        }
+      }
+      const city = region ? cityOfRegion(region) : null;
+      if (city) map.set(f.id, city);
+    }
+  }
+  return map;
 }
 
 // Повний цикл із Google: читає всі книги місяця з реєстру payroll_sources.
