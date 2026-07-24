@@ -283,7 +283,8 @@ export async function showHdSlots(ctx: Context, tid: string, data: any, lang: La
     .select({ factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name, shift: scheduleEntriesTable.shift })
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, data.weekId), eq(scheduleEntriesTable.dayOfWeek, day)));
+    // factories without agency transport take no drivers — not assignable
+    .where(and(eq(scheduleEntriesTable.weekId, data.weekId), eq(scheduleEntriesTable.dayOfWeek, day), eq(factoriesTable.usesTransport, true)));
   if (entries.length === 0) {
     clearState(tid);
     return ctx.reply(tb(lang, "📭 На {day} немає змін у графіку.", { day: DAY_NAMES_UK[day] }), headDriverMenu(lang));
@@ -326,7 +327,8 @@ export async function showFullWeekSchedule(ctx: Context, weekId: number, weekSta
     .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name })
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .where(eq(scheduleEntriesTable.weekId, weekId));
+    // the head driver plans transport — factories the agency doesn't drive to are noise here
+    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(factoriesTable.usesTransport, true)));
   if (entries.length === 0) return ctx.reply(tb(lang, "Графік порожній."));
   const assigns = await db
     .select({ day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId, driverName: driversTable.name })

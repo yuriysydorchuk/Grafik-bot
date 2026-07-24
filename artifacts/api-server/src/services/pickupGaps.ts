@@ -31,7 +31,8 @@ const DAY_ORDER: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h! * 60 + m!; };
 
 export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<PickupGap[]> {
-  const factories = await db.select().from(factoriesTable);
+  // No agency transport → nobody to pick anyone up, a "gap" there is noise.
+  const factories = await db.select().from(factoriesTable).where(eq(factoriesTable.usesTransport, true));
   const drivers = await db.select({ id: driversTable.id, seats: driversTable.seats })
     .from(driversTable).where(eq(driversTable.isActive, true));
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));

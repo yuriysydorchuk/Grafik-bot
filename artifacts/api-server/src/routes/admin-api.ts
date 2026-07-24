@@ -3485,7 +3485,8 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   const weekStart = String(req.query.weekStart);
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
   const week = await findWeekRow(weekStart);
-  const factories = await db.select().from(factoriesTable).orderBy(factoriesTable.name);
+  // Factories without agency transport never get drivers assigned — keep them off the board.
+  const factories = await db.select().from(factoriesTable).where(eq(factoriesTable.usesTransport, true)).orderBy(factoriesTable.name);
   const drivers = await db.select({ id: driversTable.id, name: driversTable.name, seats: driversTable.seats, isHeadDriver: driversTable.isHeadDriver, telegramId: driversTable.telegramId })
     .from(driversTable).where(eq(driversTable.isActive, true)).orderBy(desc(driversTable.isHeadDriver), driversTable.name);
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
