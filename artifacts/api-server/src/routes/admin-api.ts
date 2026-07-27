@@ -24,6 +24,7 @@ import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
+import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
@@ -3423,9 +3424,7 @@ router.get("/live", async (_req, res) => {
 router.put("/schedule/driver-assignments", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, factoryId, slots } = req.body ?? {};
   if (!weekStart || !factoryId || typeof slots !== "object") return fail(res, 400, "Невірні дані");
-  const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  let week = candidates.find(w => w.status === "approved") ?? candidates[0];
-  if (!week) { [week] = await db.insert(scheduleWeeksTable).values({ weekStart, status: "draft" }).returning(); } // allow assigning ahead
+  const week = await ensureWeekRow(String(weekStart)); // allow assigning ahead
   // A pickup-unaware client (Schedule page) sends only "day-shift" keys — then
   // replace ONLY delivery rows and keep the pickups saved via DriverShifts.
   const hasPickupKeys = Object.keys(slots as object).some(k => k.split("-")[2] === "p");
@@ -3475,10 +3474,7 @@ router.post("/schedule/notify-workers", requireCap("assignDrivers"), async (req,
 });
 
 // ─── Driver board: all factories' shifts for a week + per-driver assignment ──────
-const findWeekRow = async (weekStart: string) => {
-  const c = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  return c.find(w => w.status === "approved") ?? c[0];
-};
+const findWeekRow = resolveWeekRow;
 
 // Compact overview of every factory's running shifts (with hours + headcount + assigned drivers).
 // Each cell also carries pickup («Забрати зі зміни») assignments and a `pickupGap`
@@ -3565,8 +3561,7 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
 router.put("/schedule/driver-assignments/by-driver", requireCap("assignDrivers"), async (req, res) => {
   const { weekStart, driverId, slots } = req.body ?? {};
   if (!weekStart || !driverId || typeof slots !== "object") return fail(res, 400, "Невірні дані");
-  let week = await findWeekRow(String(weekStart));
-  if (!week) { [week] = await db.insert(scheduleWeeksTable).values({ weekStart: String(weekStart), status: "draft" }).returning(); }
+  const week = await ensureWeekRow(String(weekStart));
   await db.delete(driverShiftAssignmentsTable).where(and(
     eq(driverShiftAssignmentsTable.weekId, week!.id), eq(driverShiftAssignmentsTable.driverId, Number(driverId)),
   ));
@@ -3606,8 +3601,7 @@ router.post("/schedule/driver-assignments/copy-week", requireCap("assignDrivers"
   if (!from) return fail(res, 400, "У попередньому тижні немає графіку");
   const src = await db.select().from(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, from.id));
   if (!src.length) return fail(res, 400, "У попередньому тижні немає призначень водіїв");
-  let to = await findWeekRow(String(toWeekStart));
-  if (!to) { [to] = await db.insert(scheduleWeeksTable).values({ weekStart: String(toWeekStart), status: "draft" }).returning(); }
+  const to = await ensureWeekRow(String(toWeekStart));
   await db.delete(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, to!.id));
   await db.insert(driverShiftAssignmentsTable).values(src.map(r => ({
     weekId: to!.id, factoryId: r.factoryId, dayOfWeek: r.dayOfWeek, shift: r.shift, driverId: r.driverId, kind: r.kind,

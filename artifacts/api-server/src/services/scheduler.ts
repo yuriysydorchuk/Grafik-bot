@@ -12,6 +12,7 @@ import { sendAlert } from "../lib/alerts";
 import { bot } from "../bot";
 import { getWorkersWhoHaventSubmitted } from "./sheets";
 import { getNextMonday, getCurrentMonday, formatWeekStart } from "./scheduleGenerator";
+import { resolveWeekRow, type WeekRow } from "./weeks";
 import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr, minutesUntilShift, pickupAssignmentSlot } from "../bot/time";
 import { t, asLang, tb, oLang } from "../bot/i18n";
 
@@ -214,11 +215,11 @@ async function checkPreShiftNotifications() {
     const dayName = DAY_OF_WEEK_JS[nowWarsaw.getDay()]!;
     const week = getCurrentMonday();
 
-    const weeks = await db.select().from(scheduleWeeksTable)
-      .where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved")))
-      .orderBy(desc(scheduleWeeksTable.id));
-    if (weeks.length === 0) return;
-    const weekId = weeks[0]!.id;
+    // No status filter: the real process runs on draft weeks too (the week may
+    // be approved days later than workers/drivers are already scheduled on it).
+    const weekRow = await resolveWeekRow(week);
+    if (!weekRow) return;
+    const weekId = weekRow.id;
 
     const factories = await db.select().from(factoriesTable);
 
@@ -385,9 +386,7 @@ async function sendPickupReminder(
   shiftEnd: string,
 ) {
   const { day: assignDay, weekStart } = pickupAssignmentSlot(todayName, getCurrentMonday(), shiftStart, shiftEnd);
-  const weeks = await db.select().from(scheduleWeeksTable)
-    .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")))
-    .orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(weekStart)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return;
   if (await isCellCancelled(weeks[0]!.id, factoryId, assignDay, shift)) return;
 
@@ -438,9 +437,7 @@ export async function notifyHeadDriverPickupGaps() {
     const day = DAY_OF_WEEK_JS[tomorrow.getDay()]!;
     // The week that contains tomorrow: next week's Monday when today is Sunday
     const weekStart = day === "mon" ? getNextMonday() : getCurrentMonday();
-    const weeks = await db.select().from(scheduleWeeksTable)
-      .where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved")))
-      .orderBy(desc(scheduleWeeksTable.id));
+    const weeks = [await resolveWeekRow(weekStart)].filter((w): w is WeekRow => w != null);
     if (weeks.length === 0) return;
 
     const { detectPickupGaps } = await import("./pickupGaps");

@@ -22,6 +22,7 @@ import {
 } from "../services/drive";
 import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
+import { resolveWeekRow, ensureWeekRow, type WeekRow } from "../services/weeks";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
@@ -1727,21 +1728,24 @@ bot.hears(bhears("📋 Призначити водіїв"), async (ctx) => {
   const driver = await getDriver(String(ctx.from.id));
   if (!driver?.isHeadDriver) return;
   const dl = olang(driver);
-  const weeks = await db.select().from(scheduleWeeksTable)
-    .where(eq(scheduleWeeksTable.status, "approved")).orderBy(desc(scheduleWeeksTable.weekStart));
-  if (weeks.length === 0) return ctx.reply(tb(dl, "Немає затверджених графіків."));
-  setState(String(ctx.from.id), "hd:select_week", { weeks: weeks.map(w => ({ id: w.id, start: w.weekStart })) });
-  return ctx.reply(tb(dl, "Оберіть тиждень:"), Markup.keyboard([...weeks.map(w => [`${w.weekStart} (${formatWeekStart(w.weekStart)})`]), [tb(dl, "⬅️ Назад")]]).resize());
+  // Mirror the web panel: current and next week are always offered (the row is
+  // created on demand at selection) — the head driver must be able to assign
+  // even before the schedule is generated or approved. Older weeks: whatever
+  // exists in the DB, deduped by weekStart, no status filter.
+  const rows = await db.select().from(scheduleWeeksTable).orderBy(desc(scheduleWeeksTable.weekStart));
+  const starts = new Set<string>([getNextMonday(), getCurrentMonday(), ...rows.map(w => w.weekStart)]);
+  const list = [...starts].sort().reverse().slice(0, 8);
+  setState(String(ctx.from.id), "hd:select_week", {});
+  return ctx.reply(tb(dl, "Оберіть тиждень:"), Markup.keyboard([...list.map(s => [`${s} (${formatWeekStart(s)})`]), [tb(dl, "⬅️ Назад")]]).resize());
 });
 
 bot.hears(bhears("📅 Графік тижня"), async (ctx) => {
   const driver = await getDriver(String(ctx.from.id));
   if (!driver?.isHeadDriver) return ctx.reply(tb(olang(driver), "❌ Немає доступу."));
   const dl = olang(driver);
-  const weeks = await db.select().from(scheduleWeeksTable)
-    .where(eq(scheduleWeeksTable.status, "approved")).orderBy(desc(scheduleWeeksTable.weekStart));
-  if (weeks.length === 0) return ctx.reply(tb(dl, "Немає затверджених графіків."));
-  const week = weeks[0]!;
+  // Current week first (draft counts — the web works with drafts), else next.
+  const week = await resolveWeekRow(getCurrentMonday()) ?? await resolveWeekRow(getNextMonday());
+  if (!week) return ctx.reply(tb(dl, "Немає графіків."));
   return showFullWeekSchedule(ctx, week.id, week.weekStart, dl);
 });
 
@@ -1778,10 +1782,9 @@ bot.hears(bhears("📅 Мій графік"), async (ctx) => {
   const driver = await getDriver(String(ctx.from.id));
   if (!driver) return ctx.reply(tb(olang(driver), "❌ Ви не зареєстровані як водій."));
   const dl = olang(driver);
-  const weeks = await db.select().from(scheduleWeeksTable)
-    .where(eq(scheduleWeeksTable.status, "approved")).orderBy(desc(scheduleWeeksTable.weekStart));
-  if (weeks.length === 0) return ctx.reply(tb(dl, "Немає графіків."), driverMenu(dl));
-  const week = weeks[0]!;
+  // Current week first (draft counts — the web works with drafts), else next.
+  const week = await resolveWeekRow(getCurrentMonday()) ?? await resolveWeekRow(getNextMonday());
+  if (!week) return ctx.reply(tb(dl, "Немає графіків."), driverMenu(dl));
   return showDriverWeek(ctx, driver.id, week.id, week.weekStart, dl);
 });
 
@@ -1814,7 +1817,7 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
   const dl = olang(driver);
   const dayName = warsawDayName();
   const week = getCurrentMonday();
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(week)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
   // Trip tracking covers DELIVERY runs only (pickups have no boarding/lateness flow)
   const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
@@ -1894,7 +1897,7 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
   const dl = olang(driver);
   const dayName = warsawDayName();
   const week = getCurrentMonday();
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(week)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
   const trips = await db.select().from(driverTripsTable)
     .where(and(eq(driverTripsTable.driverId, driver.id), eq(driverTripsTable.weekId, weeks[0]!.id), eq(driverTripsTable.dayOfWeek, dayName)));
@@ -2085,7 +2088,7 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
   const dl = olang(driver);
   const dayName = warsawDayName();
   const week = getCurrentMonday();
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(week)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
   // Attendance is a boarding concept — pickups («Забрати зі зміни») don't mark it
   const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
@@ -2136,7 +2139,7 @@ bot.hears(bhears("➕ Позаплановий працівник"), async (ctx)
   const dl = olang(driver);
   const dayName = warsawDayName();
   const week = getCurrentMonday();
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(week)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), driverMenu(dl));
   const assignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
     .from(driverShiftAssignmentsTable)
@@ -2499,14 +2502,14 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   type Candidate = { weekId: number; dayName: DayOfWeek; boardDate: string };
   const candidates: Candidate[] = [];
   const week = getCurrentMonday();
-  const [curWeek] = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, week), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const curWeek = await resolveWeekRow(week);
   if (curWeek) candidates.push({ weekId: curWeek.id, dayName: warsawDayName(), boardDate: warsawDateStr() });
   const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
   const yDayName = DAYS[(DAYS.indexOf(warsawDayName()) + 6) % 7]!;
   if (yDayName === "sun") {
     // Yesterday belongs to the previous schedule week (today is Monday).
     const prevMon = new Date(week + "T00:00:00"); prevMon.setDate(prevMon.getDate() - 7);
-    const [pw] = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, ymdOf(prevMon)), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+    const pw = await resolveWeekRow(ymdOf(prevMon));
     if (pw) candidates.push({ weekId: pw.id, dayName: yDayName, boardDate: ymdOf(yesterday) });
   } else if (curWeek) {
     candidates.push({ weekId: curWeek.id, dayName: yDayName, boardDate: ymdOf(yesterday) });
@@ -4056,9 +4059,13 @@ bot.on("text", async (ctx) => {
     const match = text.match(/(\d{4}-\d{2}-\d{2})/);
     if (!match) return;
     const weekStart = match[1]!;
-    const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
-    if (weeks.length === 0) return ctx.reply(tb(dl, "Графік не знайдено."));
-    setState(tid, "hd:select_day", { weekId: weeks[0]!.id, weekStart });
+    // Only a Monday can start a week — a free-typed arbitrary date must not
+    // create a bogus week row.
+    if (new Date(weekStart + "T00:00:00").getDay() !== 1) return ctx.reply(tb(dl, "Оберіть тиждень зі списку."));
+    // Create-on-demand mirrors PUT /schedule/driver-assignments: assigning
+    // ahead of schedule generation/approval is a supported flow.
+    const week = await ensureWeekRow(weekStart);
+    setState(tid, "hd:select_day", { weekId: week.id, weekStart });
     return ctx.reply(tb(dl, "Оберіть день:"), Markup.keyboard([...DAYS.map(d => [DAY_NAMES_UK[d]]), [tb(dl, "⬅️ Назад")]]).resize());
   }
 

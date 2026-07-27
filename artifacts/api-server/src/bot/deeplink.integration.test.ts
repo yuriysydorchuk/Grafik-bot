@@ -1,6 +1,6 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { hasTestDb, resetDb, closeDb, db, sendStart, sendText, resetSent, sentText } from "../test/botHarness.ts";
+import { hasTestDb, resetDb, closeDb, db, sendStart, sendText, pressButton, resetSent, sentText } from "../test/botHarness.ts";
 import { workersTable, driversTable, adminsTable, factoriesTable } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 
@@ -58,8 +58,9 @@ test("adm: binds an admin and burns the invite code", opts, async () => {
 
 test("fac: self-signup with a Latin name creates a worker; Cyrillic is rejected", opts, async () => {
   const [f] = await db.insert(factoriesTable).values({ name: "Fabryka A" }).returning({ id: factoriesTable.id });
-  // Start the signup dialog, then send a name.
+  // Start the signup dialog: language comes first (18e89aa), then the name.
   await sendStart("500700", `fac${f!.id}`);
+  await pressButton("500700", "setlang:uk");
   resetSent();
   await sendText("500700", "Іван Петров"); // Cyrillic — must be refused, no worker created
   assert.equal((await db.select().from(workersTable).where(eq(workersTable.telegramId, "500700"))).length, 0);

@@ -11,6 +11,7 @@ import { DAY_UK, SHIFT_SHORT } from "./display";
 import { t, tb, dayShort, type Lang } from "./i18n";
 import { DAYS, DAY_NAMES_UK } from "../services/sheets";
 import { formatWeekStart } from "../services/scheduleGenerator";
+import { resolveWeekRow, type WeekRow } from "../services/weeks";
 import { sendLongMessage } from "./notify";
 import { setState, clearState } from "./state";
 import { nowWarsaw, shiftAnchor, factoryShiftStart, factoryShifts } from "./time";
@@ -389,7 +390,7 @@ export async function showFactoryWeekSchedule(ctx: Context, weekId: number, week
 }
 
 export async function showDriverShift(ctx: Context, driverId: number, weekStart: string, day: DayOfWeek, lang: Lang = "uk") {
-  const weeks = await db.select().from(scheduleWeeksTable).where(and(eq(scheduleWeeksTable.weekStart, weekStart), eq(scheduleWeeksTable.status, "approved"))).orderBy(desc(scheduleWeeksTable.id));
+  const weeks = [await resolveWeekRow(weekStart)].filter((w): w is WeekRow => w != null);
   if (weeks.length === 0) return ctx.reply(tb(lang, "Немає активного графіку."), driverMenu(lang));
   const driver = (await db.select().from(driversTable).where(eq(driversTable.id, driverId)))[0];
   const menu = driver?.isHeadDriver ? headDriverMenu(lang) : driverMenu(lang);

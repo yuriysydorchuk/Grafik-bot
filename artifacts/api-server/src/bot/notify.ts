@@ -19,6 +19,7 @@ const DAY_KEY: Record<DayOfWeek, string> = { mon: "mon", tue: "tue", wed: "wed",
 const lDay = (lang: Lang, d: DayOfWeek) => dayShort(lang, DAY_KEY[d]);
 const lShift = (lang: Lang, s: Shift) => t(lang, "hr.shiftN", { n: s });
 import { formatWeekStart } from "../services/scheduleGenerator";
+import { resolveWeekRow } from "../services/weeks";
 import { updateHoursTracking, updateDriverTripsExcel } from "../services/drive";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -151,8 +152,7 @@ export async function notifyRoles(
 
 // Message each driver assigned to this week+factory with their shift list.
 export async function notifyDriversOfWeek(weekStart: string, factoryId: number): Promise<{ notified: number; skipped: number }> {
-  const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  const week = candidates.find(w => w.status === "approved") ?? candidates[0];
+  const week = await resolveWeekRow(weekStart);
   if (!week) return { notified: 0, skipped: 0 };
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   const rows = await db
@@ -252,8 +252,7 @@ export async function notifyWorkerAdvance(workerId: number, status: string, amou
 // Notify each worker scheduled at a factory/week with their personal schedule and the
 // assigned driver next to each shift (clickable @username link, else phone).
 export async function notifyWorkersScheduleWithDrivers(weekStart: string, factoryId: number): Promise<{ notified: number; skipped: number }> {
-  const cands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  const week = cands.find(w => w.status === "approved") ?? cands[0];
+  const week = await resolveWeekRow(weekStart);
   if (!week) return { notified: 0, skipped: 0 };
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
 
@@ -307,8 +306,7 @@ export async function notifyWorkersScheduleWithDrivers(weekStart: string, factor
 
 // Notify ONE driver of all their shifts (across every factory) for a week.
 export async function notifyDriverOfWeek(weekStart: string, driverId: number): Promise<{ notified: number; skipped: number }> {
-  const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  const week = candidates.find(w => w.status === "approved") ?? candidates[0];
+  const week = await resolveWeekRow(weekStart);
   if (!week) return { notified: 0, skipped: 0 };
   const driver = (await db.select().from(driversTable).where(eq(driversTable.id, driverId)))[0];
   if (!driver) return { notified: 0, skipped: 0 };
