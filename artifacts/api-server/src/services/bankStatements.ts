@@ -88,6 +88,10 @@ export async function syncBankTransactions(filter?: (monthFolder: string) => boo
             });
           }
         }
+        // Витяг — джерело правди: оперативні API-рядки (Enable Banking) за покритий
+        // період заміщаються звітними без построкового матчингу.
+        await supersedeApiRows(statements);
+
         if (!rows.length) continue;
         const inserted = await db.insert(bankTransactionsTable).values(rows).onConflictDoNothing().returning({ id: bankTransactionsTable.id });
         result.imported += inserted.length;
@@ -113,8 +117,32 @@ export async function syncBankTransactions(filter?: (monthFolder: string) => boo
   // counterparty rules cover future imports too — apply to freshly arrived rows
   await applyCounterpartyRules({ onlyUncategorized: true });
 
+  // резолюція нових рядків у довідник контрагентів + ЗП/аванси по IBAN працівника
+  try { const { resolveBankCounterparties } = await import("./counterparties"); await resolveBankCounterparties(); }
+  catch (e: any) { logger.warn({ err: e?.message }, "counterparty resolve after statement import failed"); }
+
   logger.info({ files: result.files, imported: result.imported, skipped: result.skipped }, "bank statements sync done");
   return result;
+}
+
+// Delete operational (source='api') rows covered by a freshly imported statement:
+// per statement account, everything up to its closing date. Account identity is the
+// 26-digit Polish NRB core — :25: and API IBANs format it differently.
+async function supersedeApiRows(statements: Statement[]): Promise<number> {
+  let removed = 0;
+  for (const st of statements) {
+    const key = (st.account ?? "").replace(/\D/g, "").match(/\d{26}/)?.[0];
+    const cutoff = st.closingDate ?? st.txns.reduce((mx, t) => (t.valueDate > mx ? t.valueDate : mx), "");
+    if (!key || !cutoff) continue;
+    const res: any = await db.execute(sqlRaw`
+      DELETE FROM bank_transactions
+      WHERE source = 'api'
+        AND regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ${"%" + key + "%"}
+        AND value_date <= ${cutoff}`);
+    removed += Number(res?.rowCount ?? 0);
+  }
+  if (removed) logger.info({ removed }, "api rows superseded by statement import");
+  return removed;
 }
 
 // ── Counterparty → category rules ──────────────────────────────────────────────

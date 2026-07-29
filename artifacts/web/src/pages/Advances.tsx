@@ -156,7 +156,7 @@ export default function Advances() {
                         <td className="px-4 py-2 text-slate-500">
                           {fmtDate(r.createdAt)}
                           {r.status === "paid" && r.paidAt && r.paidAt.slice(0, 10) !== r.createdAt.slice(0, 10) && (
-                            <div className="text-xs text-emerald-600">💸 {fmtDate(r.paidAt)}</div>
+                            <div className="text-xs text-emerald-600">💸 {fmtDate(r.paidAt)}{r.paidTxnId != null && <span title={t("позначено автоматично за банківським переказом")}> · {t("авто")}</span>}</div>
                           )}
                         </td>
                         <td className="px-4 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>

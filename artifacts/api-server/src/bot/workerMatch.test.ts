@@ -2,6 +2,27 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeName, nameScore, matchWorker } from "./workerMatch.ts";
 
+test("зайві токени запиту (друге ім'я з експорту фабрики) штрафуються м'яко", () => {
+  const ws = [{ id: 1, fullName: "Garira Munashe", workerCode: null }, { id: 2, fullName: "Nowak Piotr", workerCode: null }];
+  // «Munashe Gariva Joel»: 2 токени сідають (1.0 + 0.8), joel — зайвий → впевнений матч
+  assert.equal(matchWorker("Munashe Gariva Joel", ws).confident?.id, 1);
+  // коротший запит, ніж ім'я — поведінка без змін
+  assert.equal(nameScore("Munashe", "Garira Munashe"), 1);
+});
+
+test("opts.minCandidate розширює список кандидатів для превʼю імпорту", () => {
+  const ws = [
+    { id: 1, fullName: "Khvorostenko Maksym", workerCode: null, isActive: true },
+    { id: 2, fullName: "Podoba Maksym", workerCode: null, isActive: false },
+  ];
+  // спотворене прізвище: збігається лише ім'я (скор 0.5) — дефолтний поріг ховає всіх
+  assert.equal(matchWorker("Maksym Khdvarenko", ws).candidates.length, 0);
+  const m = matchWorker("Maksym Khdvarenko", ws, { minCandidate: 0.5 });
+  assert.equal(m.confident, null);
+  assert.equal(m.candidates.length, 2);
+  assert.equal(m.candidates[0]!.id, 1); // при рівному скорі активний вище
+});
+
 const W = (id: number, fullName: string, workerCode: string | null = null) => ({ id, fullName, workerCode });
 
 test("normalizeName folds Polish diacritics, Cyrillic and letter variants", () => {

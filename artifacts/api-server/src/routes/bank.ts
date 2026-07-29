@@ -3,7 +3,7 @@
 // used both by the summary metrics and the drill-down lists so they always agree.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { bankTransactionsTable, cashEntriesTable, companiesTable, counterpartyRulesTable, expenseCategoriesTable } from "@workspace/db";
+import { bankTransactionsTable, cashEntriesTable, companiesTable, counterpartyRulesTable, expenseCategoriesTable, bankApiConsentsTable, bankApiAccountsTable, counterpartiesTable, counterpartyAliasesTable, counterpartyAccountsTable } from "@workspace/db";
 import { and, eq, gte, lte, lt, or, ilike, asc, desc, count, sql, inArray } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { logger } from "../lib/logger";
@@ -14,6 +14,8 @@ import {
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
 import { syncCashRegister, type CashSyncResult } from "../services/cashRegister";
+import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, syncBankApi } from "../services/bankApi";
+import { syncCounterparties, resolveBankCounterparties, normAlias, normIban } from "../services/counterparties";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -28,12 +30,17 @@ const rowsOf = (r: any): any[] => r?.rows ?? r ?? [];
 // Per account: latest statement closing ≤ date PLUS transactions booked after that
 // closing up to the date. The supplement matters because some banks close statements
 // mid-month (e.g. the 29th) — without it, month-boundary days would be missed.
-export async function balanceAt(dateStr: string, companyId: number | null): Promise<number> {
+export async function balanceAt(dateStr: string, companyId: number | null, excludeAccountKeys: string[] = []): Promise<number> {
   const co = companyId ? sql`AND company_id = ${companyId}` : sql``;
+  // рахунки, покриті живими API-балансами, можна виключити (26-цифрові ядра NRB) —
+  // їх суму дає банк напряму (balanceAtLive), інакше було б подвійне врахування
+  const excl = excludeAccountKeys.length
+    ? sql`AND NOT (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ANY(ARRAY[${sql.join(excludeAccountKeys.map(k => sql`${"%" + k + "%"}`), sql`, `)}]))`
+    : sql``;
   const r = await db.execute<{ bal: number }>(sql`
     WITH last_close AS (
       SELECT DISTINCT ON (account) account, closing_date, closing_balance FROM bank_statements
-      WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)} ${co}
+      WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)} ${co} ${excl}
       -- a file may hold several statement sections closing on the SAME day
       -- (e.g. 2026/001/2 and /3 both close 27.01) — the later section must win,
       -- otherwise the tie is broken arbitrarily and balances drift by the gap
@@ -47,6 +54,73 @@ export async function balanceAt(dateStr: string, companyId: number | null): Prom
       ), 0)
     ), 0) AS bal FROM last_close lc`);
   return Number(rowsOf(r)[0]?.bal ?? 0);
+}
+
+// «Живий» варіант для знімків «на зараз» (дата ≥ сьогодні): рахунки, покриті
+// свіжими балансами Enable Banking (< 48 год), беруть цифру банку (ITBD — вона
+// авторитетніша за розрахунок: включає комісії/відсотки без окремих рядків),
+// решта — звичайний розрахунок closings+транзакції. Минулі дати — як було.
+export async function balanceAtLive(dateStr: string, companyId: number | null): Promise<{ total: number; liveCount: number; liveAt: string | null }> {
+  const today = new Date().toISOString().slice(0, 10);
+  if (dateStr < today) return { total: await balanceAt(dateStr, companyId), liveCount: 0, liveAt: null };
+  const co = companyId ? sql`AND a.company_id = ${companyId}` : sql``;
+  const liveRows = rowsOf(await db.execute(sql`
+    SELECT a.iban, a.last_booked_balance AS bal, a.balance_at AS at
+    FROM bank_api_accounts a JOIN bank_api_consents c ON c.id = a.consent_id
+    WHERE c.revoked_at IS NULL AND a.iban IS NOT NULL AND a.last_booked_balance IS NOT NULL
+      AND a.balance_at > now() - interval '48 hours' ${co}`));
+  const keys = liveRows.map(r => String(r.iban).replace(/\D/g, "").match(/\d{26}/)?.[0]).filter((k): k is string => !!k);
+  const computed = await balanceAt(dateStr, companyId, keys);
+  const liveSum = liveRows.reduce((s, r) => s + Number(r.bal ?? 0), 0);
+  const liveAt = liveRows.reduce<string | null>((mx, r) => {
+    const at = r.at instanceof Date ? r.at.toISOString() : String(r.at ?? "");
+    return !mx || at > mx ? at : mx;
+  }, null);
+  return { total: Math.round((computed + liveSum) * 100) / 100, liveCount: liveRows.length, liveAt };
+}
+
+// Розбивка «Гроші → банк» по рахунках для сторінки Балансу: живі API-рахунки
+// (з продуктом і банком) + розрахункові з витягів (виключаючи покриті живими).
+export type BalanceAccount = { iban: string; bank: string | null; product: string | null; amount: number; live: boolean };
+
+export async function balanceAccountsAt(dateStr: string, companyId: number): Promise<BalanceAccount[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const useLive = dateStr >= today;
+  const out: BalanceAccount[] = [];
+  const liveKeys: string[] = [];
+  if (useLive) {
+    const liveRows = rowsOf(await db.execute(sql`
+      SELECT a.iban, a.product, a.last_booked_balance AS bal, c.aspsp_name AS bank
+      FROM bank_api_accounts a JOIN bank_api_consents c ON c.id = a.consent_id
+      WHERE c.revoked_at IS NULL AND a.iban IS NOT NULL AND a.last_booked_balance IS NOT NULL
+        AND a.balance_at > now() - interval '48 hours' AND a.company_id = ${companyId}`));
+    for (const r of liveRows) {
+      out.push({ iban: String(r.iban), bank: r.bank ?? null, product: r.product ?? null, amount: Math.round(Number(r.bal) * 100) / 100, live: true });
+      const k = String(r.iban).replace(/\D/g, "").match(/\d{26}/)?.[0];
+      if (k) liveKeys.push(k);
+    }
+  }
+  const excl = liveKeys.length
+    ? sql`AND NOT (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ANY(ARRAY[${sql.join(liveKeys.map(k => sql`${"%" + k + "%"}`), sql`, `)}]))`
+    : sql``;
+  const computed = rowsOf(await db.execute(sql`
+    WITH last_close AS (
+      SELECT DISTINCT ON (account) account, closing_date, closing_balance FROM bank_statements
+      WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)}
+        AND company_id = ${companyId} ${excl}
+      ORDER BY account, closing_date DESC, opening_date DESC, statement_no DESC
+    )
+    SELECT lc.account,
+      lc.closing_balance + coalesce((
+        SELECT sum(CASE WHEN t.direction='in' THEN t.amount ELSE -t.amount END)
+        FROM bank_transactions t
+        WHERE t.account = lc.account AND t.value_date > lc.closing_date AND t.value_date <= ${dateStr}
+      ), 0) AS bal
+    FROM last_close lc ORDER BY bal DESC`));
+  for (const r of computed) {
+    out.push({ iban: String(r.account), bank: null, product: null, amount: Math.round(Number(r.bal) * 100) / 100, live: false });
+  }
+  return out.sort((a, b) => b.amount - a.amount);
 }
 
 // ── Period summary (metrics) ──────────────────────────────────────────────────
@@ -207,6 +281,8 @@ router.get("/bank/transactions", async (req, res) => {
       sql`replace(${bankTransactionsTable.account}, ' ', '') ILIKE ${likeNs}`,
     ));
   }
+  if (q.source === "api" || q.source === "mt940") conds.push(eq(bankTransactionsTable.source, String(q.source)));
+  if (q.counterpartyId) conds.push(eq(bankTransactionsTable.counterpartyId, Number(q.counterpartyId)));
   const minA = Number(String(q.minAmount ?? "").replace(",", ".")), maxA = Number(String(q.maxAmount ?? "").replace(",", "."));
   if (q.minAmount && Number.isFinite(minA)) conds.push(gte(bankTransactionsTable.amount, minA));
   if (q.maxAmount && Number.isFinite(maxA)) conds.push(lte(bankTransactionsTable.amount, maxA));
@@ -483,6 +559,235 @@ router.get("/bank/cash/entries", async (req, res) => {
   const rows = await db.select().from(cashEntriesTable).where(and(...conds))
     .orderBy(desc(cashEntriesTable.periodMonth), desc(cashEntriesTable.sortIdx)).limit(500);
   ok(res, { rows });
+});
+
+// ── Open banking (Enable Banking) — оперативний шар ────────────────────────────
+// Згоди PSD2, живі баланси, старт/фінал авторизації в банку. Все за тим самим
+// гейтом viewFinance, що й решта сторінки.
+
+router.get("/bank/api-consents", async (_req, res) => {
+  const consents = await db.select().from(bankApiConsentsTable).orderBy(desc(bankApiConsentsTable.createdAt));
+  const accounts = await db.select().from(bankApiAccountsTable);
+  const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
+  const coName = new Map(companies.map(c => [c.id, c.name]));
+  ok(res, {
+    configured: ebConfigured(),
+    consents: consents.map(c => ({
+      ...c,
+      companyName: c.companyId ? coName.get(c.companyId) ?? null : null,
+      daysLeft: Math.ceil((c.validUntil.getTime() - Date.now()) / 86_400_000),
+      accounts: accounts.filter(a => a.consentId === c.id).map(a => ({
+        ...a, companyName: a.companyId ? coName.get(a.companyId) ?? null : null,
+      })),
+    })),
+  });
+});
+
+// Банки, доступні для підключення (кешуємо: список майже статичний)
+let aspspCache: { at: number; country: string; list: { name: string; country: string }[] } | null = null;
+router.get("/bank/api-aspsps", async (req, res) => {
+  const country = /^[A-Z]{2}$/.test(String(req.query.country)) ? String(req.query.country) : "PL";
+  try {
+    if (!aspspCache || aspspCache.country !== country || Date.now() - aspspCache.at > 3600_000) {
+      aspspCache = { at: Date.now(), country, list: await listAspsps(country) };
+    }
+    ok(res, { aspsps: aspspCache.list });
+  } catch (e: any) { fail(res, 502, e?.message || "aspsps failed"); }
+});
+
+// Старт авторизації: віддає URL банку, куди веб-панель редіректить власника
+router.post("/bank/api-consents/start", async (req, res) => {
+  const name = String(req.body?.aspspName ?? "").trim();
+  const country = /^[A-Z]{2}$/.test(String(req.body?.aspspCountry)) ? String(req.body?.aspspCountry) : "PL";
+  if (!name) return fail(res, 400, "aspspName required");
+  try { ok(res, await startAuth(name, country)); }
+  catch (e: any) { fail(res, 502, e?.message || "auth start failed"); }
+});
+
+// Redirect з банку (адреса зареєстрована в Enable Banking CP). GET — CSRF-гард не
+// зачіпає; сесія панелі в цьому ж браузері, бо флоу стартує зі сторінки /bank.
+router.get("/bank/psd2-callback", async (req, res) => {
+  const code = typeof req.query.code === "string" ? req.query.code : null;
+  const error = typeof req.query.error === "string" ? req.query.error : null;
+  if (!code) return res.redirect(`/bank?api=${encodeURIComponent(error || "no_code")}`);
+  try {
+    const r = await completeAuth(code);
+    // 0 рахунків = логін не прив'язаний (whitelisted) в Enable Banking CP — згода
+    // порожня і марна, прибираємо одразу й пояснюємо тостом
+    if (r.accounts === 0) {
+      await revokeConsent(r.consentId).catch(() => {});
+      return res.redirect("/bank?api=no_accounts");
+    }
+    return res.redirect("/bank?api=linked");
+  } catch (e: any) {
+    logger.warn({ err: e?.message }, "psd2 callback failed");
+    return res.redirect(`/bank?api=exchange_failed`);
+  }
+});
+
+// Імпорт уже створеної сесії за id (сід сесій, авторизованих poza панеллю)
+router.post("/bank/api-consents/import", async (req, res) => {
+  const sessionId = String(req.body?.sessionId ?? "").trim();
+  if (!sessionId) return fail(res, 400, "sessionId required");
+  try { ok(res, await importSession(sessionId)); }
+  catch (e: any) { fail(res, 502, e?.message || "import failed"); }
+});
+
+router.delete("/bank/api-consents/:id", async (req, res) => {
+  try { await revokeConsent(Number(req.params.id)); ok(res, { ok: true }); }
+  catch (e: any) { fail(res, 400, e?.message || "revoke failed"); }
+});
+
+// Ручний синк (кнопка на /bank); крон робить те саме за розкладом
+router.post("/bank/api-sync", async (_req, res) => {
+  try {
+    const r = await syncBankApi();
+    ok(res, r);
+  } catch (e: any) { logger.error({ err: e?.message }, "bank api sync failed"); fail(res, 500, e?.message || "sync failed"); }
+});
+
+// Виправлення мапи рахунок→юрособа (якщо авто-матч не впорався) + пропагація
+// на вже синкнуті API-рядки цього рахунку
+router.patch("/bank/api-accounts/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const companyId = req.body?.companyId == null ? null : Number(req.body.companyId);
+  const [row] = await db.select().from(bankApiAccountsTable).where(eq(bankApiAccountsTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  await db.update(bankApiAccountsTable).set({ companyId }).where(eq(bankApiAccountsTable.id, id));
+  if (row.iban) {
+    const key = row.iban.replace(/[^0-9]/g, "");
+    if (key.length >= 10) await db.execute(sql`
+      UPDATE bank_transactions SET company_id = ${companyId}
+      WHERE source = 'api' AND regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ${"%" + key + "%"}`);
+  }
+  ok(res, { ok: true });
+});
+
+// ── Довідник контрагентів ──────────────────────────────────────────────────────
+// Єдина ідентичність клієнтів/постачальників (назва + NIP + аліаси + IBAN-и);
+// транзакції резолвляться в довідник (counterparty_id) — сервіс counterparties.ts.
+
+router.get("/bank/counterparties", async (req, res) => {
+  const conds: any[] = [];
+  if (req.query.kind && ["client", "supplier", "both", "other"].includes(String(req.query.kind))) {
+    conds.push(eq(counterpartiesTable.kind, String(req.query.kind)));
+  }
+  if (req.query.q) {
+    const like = `%${String(req.query.q)}%`;
+    conds.push(or(
+      ilike(counterpartiesTable.name, like),
+      ilike(counterpartiesTable.nip, like),
+      sql`EXISTS (SELECT 1 FROM counterparty_aliases a WHERE a.counterparty_id = ${counterpartiesTable.id} AND a.alias ILIKE ${like})`,
+    ));
+  }
+  const cps = await db.select().from(counterpartiesTable).where(conds.length ? and(...conds) : undefined).orderBy(asc(counterpartiesTable.name)).limit(500);
+  const ids = cps.map(c => c.id);
+  const [aliases, accounts, stats] = await Promise.all([
+    ids.length ? db.select().from(counterpartyAliasesTable).where(inArray(counterpartyAliasesTable.counterpartyId, ids)) : ([] as (typeof counterpartyAliasesTable.$inferSelect)[]),
+    ids.length ? db.select().from(counterpartyAccountsTable).where(inArray(counterpartyAccountsTable.counterpartyId, ids)) : ([] as (typeof counterpartyAccountsTable.$inferSelect)[]),
+    ids.length ? db.select({
+      counterpartyId: bankTransactionsTable.counterpartyId,
+      n: count(),
+      sumIn: sql<number>`coalesce(sum(amount) FILTER (WHERE direction='in'), 0)`,
+      sumOut: sql<number>`coalesce(sum(amount) FILTER (WHERE direction='out'), 0)`,
+    }).from(bankTransactionsTable).where(inArray(bankTransactionsTable.counterpartyId, ids)).groupBy(bankTransactionsTable.counterpartyId) : [],
+  ]);
+  const statBy = new Map(stats.map(s => [s.counterpartyId, s]));
+  ok(res, {
+    rows: cps.map(c => ({
+      ...c,
+      aliases: aliases.filter(a => a.counterpartyId === c.id),
+      accounts: accounts.filter(a => a.counterpartyId === c.id),
+      txns: statBy.get(c.id)?.n ?? 0,
+      sumIn: Math.round(Number(statBy.get(c.id)?.sumIn ?? 0) * 100) / 100,
+      sumOut: Math.round(Number(statBy.get(c.id)?.sumOut ?? 0) * 100) / 100,
+    })),
+  });
+});
+
+router.post("/bank/counterparties", async (req, res) => {
+  const name = String(req.body?.name ?? "").replace(/\s+/g, " ").trim();
+  if (!name) return fail(res, 400, "name required");
+  const kind = ["client", "supplier", "both", "other"].includes(String(req.body?.kind)) ? String(req.body.kind) : "other";
+  const nip = String(req.body?.nip ?? "").replace(/\D/g, "") || null;
+  if (nip && nip.length !== 10) return fail(res, 400, "NIP — 10 цифр");
+  try {
+    const [row] = await db.insert(counterpartiesTable).values({ name, kind, nip }).returning();
+    await db.insert(counterpartyAliasesTable).values({ counterpartyId: row!.id, alias: normAlias(name) }).onConflictDoNothing();
+    ok(res, row);
+  } catch (e: any) { fail(res, 400, e?.message?.includes("unique") ? "Контрагент із цим NIP уже є" : e?.message); }
+});
+
+router.patch("/bank/counterparties/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const patch: any = {};
+  if (req.body?.name != null) { const n = String(req.body.name).replace(/\s+/g, " ").trim(); if (!n) return fail(res, 400, "name"); patch.name = n; }
+  if (req.body?.kind != null && ["client", "supplier", "both", "other"].includes(String(req.body.kind))) patch.kind = String(req.body.kind);
+  if (req.body?.nip !== undefined) { const nip = String(req.body.nip ?? "").replace(/\D/g, ""); if (nip && nip.length !== 10) return fail(res, 400, "NIP — 10 цифр"); patch.nip = nip || null; }
+  if (req.body?.note !== undefined) patch.note = String(req.body.note ?? "").trim() || null;
+  if (!Object.keys(patch).length) return fail(res, 400, "empty");
+  const [row] = await db.update(counterpartiesTable).set(patch).where(eq(counterpartiesTable.id, id)).returning();
+  if (!row) return fail(res, 404, "not found");
+  ok(res, row);
+});
+
+router.delete("/bank/counterparties/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  await db.update(bankTransactionsTable).set({ counterpartyId: null }).where(eq(bankTransactionsTable.counterpartyId, id));
+  await db.delete(counterpartiesTable).where(eq(counterpartiesTable.id, id)); // aliases/accounts — cascade
+  ok(res, { ok: true });
+});
+
+// Злиття дублів: аліаси/рахунки/транзакції — до цілі; NIP цілі виграє
+router.post("/bank/counterparties/merge", async (req, res) => {
+  const fromId = Number(req.body?.fromId), toId = Number(req.body?.toId);
+  if (!fromId || !toId || fromId === toId) return fail(res, 400, "fromId/toId");
+  const [from] = await db.select().from(counterpartiesTable).where(eq(counterpartiesTable.id, fromId));
+  const [to] = await db.select().from(counterpartiesTable).where(eq(counterpartiesTable.id, toId));
+  if (!from || !to) return fail(res, 404, "not found");
+  await db.execute(sql`UPDATE counterparty_aliases SET counterparty_id = ${toId} WHERE counterparty_id = ${fromId} AND alias NOT IN (SELECT alias FROM counterparty_aliases WHERE counterparty_id = ${toId})`);
+  await db.execute(sql`UPDATE counterparty_accounts SET counterparty_id = ${toId} WHERE counterparty_id = ${fromId} AND iban NOT IN (SELECT iban FROM counterparty_accounts WHERE counterparty_id = ${toId})`);
+  await db.update(bankTransactionsTable).set({ counterpartyId: toId }).where(eq(bankTransactionsTable.counterpartyId, fromId));
+  await db.insert(counterpartyAliasesTable).values({ counterpartyId: toId, alias: normAlias(from.name) }).onConflictDoNothing();
+  if (from.nip && !to.nip) await db.update(counterpartiesTable).set({ nip: null }).where(eq(counterpartiesTable.id, fromId)); // звільнити NIP…
+  await db.delete(counterpartiesTable).where(eq(counterpartiesTable.id, fromId));
+  if (from.nip && !to.nip) await db.update(counterpartiesTable).set({ nip: from.nip }).where(eq(counterpartiesTable.id, toId)); // …і перенести цілі
+  ok(res, { ok: true });
+});
+
+router.post("/bank/counterparties/:id/alias", async (req, res) => {
+  const alias = normAlias(String(req.body?.alias ?? ""));
+  if (!alias) return fail(res, 400, "alias required");
+  try {
+    const [row] = await db.insert(counterpartyAliasesTable).values({ counterpartyId: Number(req.params.id), alias }).returning();
+    void resolveBankCounterparties().catch(() => {});
+    ok(res, row);
+  } catch { fail(res, 400, "Такий аліас уже привʼязаний"); }
+});
+router.delete("/bank/counterparties/alias/:aliasId", async (req, res) => {
+  await db.delete(counterpartyAliasesTable).where(eq(counterpartyAliasesTable.id, Number(req.params.aliasId)));
+  ok(res, { ok: true });
+});
+
+router.post("/bank/counterparties/:id/account", async (req, res) => {
+  const iban = normIban(String(req.body?.iban ?? ""));
+  if (iban.length < 15) return fail(res, 400, "IBAN закороткий");
+  try {
+    const [row] = await db.insert(counterpartyAccountsTable).values({ counterpartyId: Number(req.params.id), iban }).returning();
+    void resolveBankCounterparties().catch(() => {});
+    ok(res, row);
+  } catch { fail(res, 400, "Цей IBAN уже привʼязаний"); }
+});
+router.delete("/bank/counterparties/account/:accId", async (req, res) => {
+  await db.delete(counterpartyAccountsTable).where(eq(counterpartyAccountsTable.id, Number(req.params.accId)));
+  ok(res, { ok: true });
+});
+
+// Повний сідинг (KSeF + фабрики + витяги) + резолюція — кнопка на /bank; крон
+// робить те саме щодня після KSeF-синку
+router.post("/bank/counterparties/sync", async (_req, res) => {
+  try { ok(res, await syncCounterparties()); }
+  catch (e: any) { logger.error({ err: e?.message }, "counterparties sync failed"); fail(res, 500, e?.message || "sync failed"); }
 });
 
 export default router;

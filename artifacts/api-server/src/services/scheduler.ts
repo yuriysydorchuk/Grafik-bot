@@ -69,7 +69,25 @@ let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
 let pickupGapTask: ScheduledTask | null = null;
 let bankImportTask: ScheduledTask | null = null;
+let bankApiTask: ScheduledTask | null = null;
+let cfoTask: ScheduledTask | null = null;
 let reminderHour = 18;
+
+// Фінансові алерти йдуть головному адміну (не в ALERT_TELEGRAM_CHAT_ID — то канал
+// системних помилок). Best-effort: помилка відправки не має валити крон.
+async function sendFinanceAlerts(lines: string[]): Promise<void> {
+  if (!lines.length) return;
+  const shown = lines.slice(0, 10);
+  if (lines.length > shown.length) shown.push(`…і ще ${lines.length - shown.length} подій — деталі на сторінці Витяги`);
+  try {
+    const admins = await db.select().from(adminsTable).where(eq(adminsTable.isMain, true));
+    for (const a of admins) {
+      if (!a.telegramId) continue;
+      try { await bot.telegram.sendMessage(a.telegramId, shown.join("\n\n")); }
+      catch (e: any) { logger.warn({ err: e?.message }, "finance alert send failed"); }
+    }
+  } catch (e: any) { logger.warn({ err: e?.message }, "finance alerts failed"); }
+}
 
 export function getReminderHour(): number { return reminderHour; }
 
@@ -150,6 +168,65 @@ export function startScheduler() {
         const k = await syncKsef();
         logger.info({ companies: k.companies, inserted: k.inserted, paidMatched: k.paidMatched, errors: k.errors.length }, "Daily KSeF sync");
       } catch (e: any) { logger.warn({ err: e?.message }, "Daily KSeF sync failed"); }
+      try {
+        const { consentExpiryWarnings } = await import("./bankApi");
+        await sendFinanceAlerts(await consentExpiryWarnings());
+      } catch (e: any) { logger.warn({ err: e?.message }, "Consent expiry check failed"); }
+      try {
+        const { syncCounterparties } = await import("./counterparties");
+        const c = await syncCounterparties();
+        logger.info(c, "Daily counterparties sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily counterparties sync failed"); }
+      try {
+        // аванси проти свіжого MT940-імпорту (API-шлях ловить свої в bankApiTask)
+        const { autoMarkPaidAdvances } = await import("./advances");
+        await sendFinanceAlerts(await autoMarkPaidAdvances());
+      } catch (e: any) { logger.warn({ err: e?.message }, "Advance auto-paid (daily) failed"); }
+    },
+    { timezone: TZ },
+  );
+
+  // Оперативний банківський шар (Enable Banking): транзакції+баланси кожні 3 год
+  // удень. Алерти (надходження, komornik, низький баланс) — головному адміну.
+  // Свіжі рядки одразу конвертуються в статуси: KSeF «оплачено» (строгий матчинг
+  // за номером у призначенні) і аванси «виплачено» (services/advances.ts).
+  // 4 рази/день — PSD2-ліміт фонових звернень без участі клієнта (429 при частіших)
+  bankApiTask = cron.schedule(
+    "10 7,11,15,19 * * *",
+    async () => {
+      try {
+        const { syncBankApi } = await import("./bankApi");
+        const r = await syncBankApi();
+        if (r.inserted || r.errors.length) logger.info({ inserted: r.inserted, accounts: r.accounts, errors: r.errors.length }, "Bank API sync");
+        const alerts = [...r.alerts];
+        if (r.inserted) {
+          try {
+            const { matchKsefPayments, recentlyPaidByApi } = await import("./ksef");
+            if (await matchKsefPayments()) {
+              for (const p of await recentlyPaidByApi(30)) {
+                alerts.push(`✅ Фактура ${p.invoiceNumber} (${p.buyerName ?? "?"}) закрита переказом — ${p.gross.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł`);
+              }
+            }
+          } catch (e: any) { logger.warn({ err: e?.message }, "KSeF same-day match failed"); }
+          try {
+            const { autoMarkPaidAdvances } = await import("./advances");
+            alerts.push(...await autoMarkPaidAdvances());
+          } catch (e: any) { logger.warn({ err: e?.message }, "Advance auto-paid failed"); }
+        }
+        await sendFinanceAlerts(alerts);
+      } catch (e: any) { logger.warn({ err: e?.message }, "Bank API sync failed"); }
+    },
+    { timezone: TZ },
+  );
+
+  // CFO-звірка за попередній місяць — 1-го числа о 09:00 Warsaw вибраним адресатам
+  cfoTask = cron.schedule(
+    "0 9 1 * *",
+    async () => {
+      try {
+        const { sendMonthlyCfoReport } = await import("./cfo");
+        await sendMonthlyCfoReport();
+      } catch (e: any) { logger.warn({ err: e?.message }, "Monthly CFO report failed"); }
     },
     { timezone: TZ },
   );
@@ -184,6 +261,8 @@ export function stopScheduler() {
   prunePruneTask?.stop();     prunePruneTask = null;
   pickupGapTask?.stop();      pickupGapTask = null;
   bankImportTask?.stop();     bankImportTask = null;
+  bankApiTask?.stop();        bankApiTask = null;
+  cfoTask?.stop();            cfoTask = null;
 }
 
 export function setReminderHour(hour: number) {

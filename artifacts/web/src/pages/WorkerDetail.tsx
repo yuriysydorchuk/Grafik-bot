@@ -179,6 +179,8 @@ export default function WorkerDetail() {
       {/* Documents */}
       <WorkerDocuments workerId={w.id} />
 
+      <WorkerBankAccounts workerId={w.id} />
+
       {/* Recent shifts */}
       <Card className="mt-5 overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-3"><h3 className="text-sm font-semibold text-slate-700">{t("Останні зміни")}</h3></div>
@@ -300,6 +302,56 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
       {(addFor !== null || editing) && (
         <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types}
           onClose={() => { setAddFor(null); setEditing(null); }} onSaved={() => { inv(); setAddFor(null); setEditing(null); }} />
+      )}
+    </Card>
+  );
+}
+
+// Банківські рахунки працівника: перекази на ці IBAN-и класифікуються у витягах
+// як ЗП/аванси навіть без ключових слів у призначенні. Більшість підтягується
+// автоматично з зарплатних переказів; тут — перегляд і ручні правки.
+function WorkerBankAccounts({ workerId }: { workerId: number }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [iban, setIban] = useState("");
+  const { data: rows = [], isLoading } = useQuery<{ id: number; iban: string; source: string }[]>({
+    queryKey: ["worker-bank-accounts", workerId], queryFn: () => get(`/workers/${workerId}/bank-accounts`),
+  });
+  const inv = () => qc.invalidateQueries({ queryKey: ["worker-bank-accounts", workerId] });
+  const add = useMutation({
+    mutationFn: () => post(`/workers/${workerId}/bank-accounts`, { iban }),
+    onSuccess: () => { inv(); setIban(""); toast.success(t("Рахунок додано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({ mutationFn: (id: number) => del(`/worker-bank-accounts/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const fmtIban = (s: string) => s.replace(/(.{4})/g, "$1 ").trim();
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-slate-100 px-5 py-3">
+        <h3 className="text-sm font-semibold text-slate-700">{t("Банківські рахунки (для ЗП/авансів)")}</h3>
+      </div>
+      {isLoading ? <Spinner /> : (
+        <div>
+          {rows.map(r => (
+            <div key={r.id} className="flex items-center gap-2 border-b border-slate-50 px-4 py-2 text-sm last:border-0">
+              <span className="tabular-nums text-slate-700">{fmtIban(r.iban)}</span>
+              <span className="text-[10px] uppercase text-slate-400">{r.source === "auto" ? t("авто") : t("ручна")}</span>
+              <button className="ml-auto rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                onClick={async () => { if (await confirm({ title: t("Видалити рахунок?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          {!rows.length && <Empty>{t("Рахунків ще немає — підтягнуться з зарплатних переказів або додай вручну.")}</Empty>}
+          <div className="flex items-center gap-2 px-4 py-3">
+            <Input value={iban} onChange={e => setIban(e.target.value)} placeholder="PL00 0000…" className="w-72" />
+            <Button variant="secondary" disabled={iban.replace(/\W/g, "").length < 15 || add.isPending} onClick={() => add.mutate()}>
+              <Plus className="h-4 w-4" /> {t("Додати")}
+            </Button>
+          </div>
+        </div>
       )}
     </Card>
   );

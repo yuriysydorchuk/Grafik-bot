@@ -61,6 +61,16 @@ app.use("/api", (req, res, next) => {
 
 app.use("/api", router);
 
+// ─── Static legal pages ────────────────────────────────────────────────────────
+// Referenced by the Enable Banking (open banking) application registration; the
+// panel itself is an internal tool, so these are deliberately minimal.
+const legalPage = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — Euro Support</title><style>body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem;line-height:1.6;color:#1e293b}h1{font-size:1.4rem}</style></head><body><h1>${title}</h1>${body}<p>Contact: <a href="mailto:yuriisydorchuk96@gmail.com">yuriisydorchuk96@gmail.com</a></p></body></html>`;
+app.get("/privacy", (_req, res) => res.type("html").send(legalPage("Privacy Policy",
+  `<p>This is an internal staff-scheduling and finance dashboard of Euro Support (Klinex Sp. z o.o., Eurosupport Group Sp. z o.o., Eurosupport Outsourcing Sp. z o.o.). It is not offered to the public.</p>
+   <p>Bank account data (transactions and balances of our own corporate accounts) is retrieved through the Enable Banking API with the account holder's explicit PSD2 consent, stored on our own server and used solely for internal bookkeeping. No data is sold or shared with third parties. Consents can be revoked at any time from the dashboard or at the bank.</p>`)));
+app.get("/terms", (_req, res) => res.type("html").send(legalPage("Terms of Service",
+  `<p>This dashboard is an internal tool of Euro Support, used exclusively by authorized employees of our companies. Access requires an account issued by the administrator. By using it you agree to use the data only for the companies' internal operations.</p>`)));
+
 // ─── Serve the built web panel (artifacts/web/dist) ────────────────────────────
 const webDist = process.env.WEB_DIST
   ? path.resolve(process.env.WEB_DIST)

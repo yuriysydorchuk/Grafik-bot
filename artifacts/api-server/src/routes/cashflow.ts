@@ -10,7 +10,7 @@ import { and, eq, gte, lte, isNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { BUCKET, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, catCondition, catCaseExpr, getExpenseCats, periodRange } from "../services/bankClassify";
-import { balanceAt } from "./bank";
+import { balanceAt, balanceAtLive, balanceAccountsAt } from "./bank";
 import { cashPosition, cashBoxesAt, cashCategory } from "./cash";
 import { openObligations, openObligationRows } from "./obligations";
 import { unpaidInvoicesAt } from "./invoices";
@@ -27,6 +27,12 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 router.get("/cashflow", async (req, res) => {
   const year = /^\d{4}$/.test(String(req.query.year)) ? String(req.query.year) : String(new Date().getFullYear());
   const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
+  ok(res, await computeCashflow(year, month));
+});
+
+// Повний розрахунок кешфлоу періоду (потоки + рівняння звірки). Використовується
+// і роутом вище, і CFO-модулем (services/cfo.ts) для місячної звірки.
+export async function computeCashflow(year: string, month?: string) {
   const [from, to] = periodRange(year, month);
   const fromM = from.slice(0, 7), toM = to.slice(0, 7);
   const prevEnd = new Date(new Date(from + "T00:00:00Z").getTime() - 86400000).toISOString().slice(0, 10);
@@ -107,7 +113,7 @@ router.get("/cashflow", async (req, res) => {
   const closing = round2(bankClose + cashPos.closing);
   const computedClosing = round2(opening + income + vatRefund - expensesTotal - ownersTotal + cashGap + depositGap + vatMovesNet + internalNet);
 
-  ok(res, {
+  return {
     year, month: month ?? null, from, to,
     opening: { banks: round2(bankOpen), cash: round2(cashPos.opening), total: opening },
     closing: { banks: round2(bankClose), cash: round2(cashPos.closing), total: closing },
@@ -126,8 +132,8 @@ router.get("/cashflow", async (req, res) => {
     obligations: { receivable: obligations.receivable, payable: round2(obligations.payable + unpaidInvoices), unpaidInvoices },
     netPosition: round2(closing + obligations.receivable - obligations.payable - unpaidInvoices),
     reconcile: { computedClosing, residual: round2(closing - computedClosing) },
-  });
-});
+  };
+}
 
 // ── Drill-down list («Кешфлоу» → клік по категорії/пошук) ────────────────────
 // Merged movements for the period: bank transactions (same single-source SQL
@@ -229,10 +235,14 @@ router.get("/balance", async (req, res) => {
 
   const companies = (await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.isActive, true)))
     .filter(c => ["ES", "ESO", "Klinex"].includes(c.name));
-  const [bankTotal, cashBoxes, obRows, unpaidInv, ksefRecv, ...perFirm] = await Promise.all([
-    balanceAt(to, null), cashBoxesAt(toM), openObligationRows(to), unpaidInvoicesAt(to), ksefReceivablesAt(to),
-    ...companies.map(c => balanceAt(to, c.id)),
+  // для поточного місяця банки беруться з живих API-балансів (реальний стан «на
+  // зараз»), непокриті рахунки — розрахунком; минулі місяці — чистий розрахунок
+  const [bankLive, cashBoxes, obRows, unpaidInv, ksefRecv, ...perFirm] = await Promise.all([
+    balanceAtLive(to, null), cashBoxesAt(toM), openObligationRows(to), unpaidInvoicesAt(to), ksefReceivablesAt(to),
+    ...companies.map(c => balanceAtLive(to, c.id)),
   ]);
+  const bankTotal = bankLive.total;
+  const perFirmAccounts = await Promise.all(companies.map(c => balanceAccountsAt(to, c.id)));
 
   const receivables = obRows.filter(r => r.direction === "receivable");
   const payables = obRows.filter(r => r.direction === "payable");
@@ -251,7 +261,14 @@ router.get("/balance", async (req, res) => {
     year, month: month ?? null, asOf: to,
     money: {
       total: moneyTotal,
-      banks: { total: round2(bankTotal), perFirm: companies.map((c, i) => ({ companyId: c.id, name: c.name, amount: round2(perFirm[i] ?? 0) })) },
+      banks: {
+        total: round2(bankTotal),
+        perFirm: companies.map((c, i) => ({
+          companyId: c.id, name: c.name, amount: round2(perFirm[i]?.total ?? 0),
+          liveCount: perFirm[i]?.liveCount ?? 0, accounts: perFirmAccounts[i] ?? [],
+        })),
+        live: { count: bankLive.liveCount, at: bankLive.liveAt },
+      },
       cash: { total: cashBoxes.total, perBox: cashBoxes.perBox },
     },
     receivables: { total: receivableTotal, ksef: ksefRecv, rows: receivables.map(pick) },

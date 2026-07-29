@@ -79,6 +79,22 @@ function getTransporter(): nodemailer.Transporter | null {
   return transporter;
 }
 
+// Довільний лист із вкладеннями (лист клієнту про розбіжності годин тощо).
+// Кидає помилку, якщо SMTP не налаштовано — викликач показує її адміну.
+export async function sendEmailWithAttachments(
+  to: string,
+  subject: string,
+  text: string,
+  attachments: { filename: string; content: Buffer }[],
+): Promise<void> {
+  const tx = getTransporter();
+  if (!tx) throw new Error("SMTP не налаштовано (лист не надіслано)");
+  await tx.sendMail({
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    to, subject, text, attachments,
+  });
+}
+
 // Send schedule for one factory to its client email — whole week, or a single day when `day` is given.
 // Returns a human-readable status string.
 export async function sendScheduleEmail(factoryId: number, weekStart: string, day?: DayOfWeek | null): Promise<string> {

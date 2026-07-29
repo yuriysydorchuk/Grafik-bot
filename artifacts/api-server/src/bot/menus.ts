@@ -8,7 +8,7 @@ export const adminMenu = (lang: Lang = "uk") => Markup.keyboard([
   [tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")],
   [tb(lang, "✅ Перегляд графіків")],
   [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
-  [tb(lang, "📢 Розсилки")],
+  [tb(lang, "📢 Розсилки"), tb(lang, "📄 Фактура")],
   [tb(lang, "🌐 Мова / Language")],
 ]).resize();
 

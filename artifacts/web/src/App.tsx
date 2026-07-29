@@ -33,6 +33,8 @@ import Cashflow from "./pages/Cashflow";
 import Balance from "./pages/Balance";
 import Obligations from "./pages/Obligations";
 import Invoices from "./pages/Invoices";
+import CostInvoices from "./pages/CostInvoices";
+import Cfo from "./pages/Cfo";
 import Pnl from "./pages/Pnl";
 import Payroll from "./pages/Payroll";
 import Svodni from "./pages/Svodni";
@@ -121,6 +123,8 @@ export default function App() {
         <Route path="/balance">{() => guard("/balance", <Balance />)}</Route>
         <Route path="/obligations">{() => guard("/obligations", <Obligations />)}</Route>
         <Route path="/invoices">{() => guard("/invoices", <Invoices />)}</Route>
+        <Route path="/cost-invoices">{() => guard("/cost-invoices", <CostInvoices />)}</Route>
+        <Route path="/cfo">{() => guard("/cfo", <Cfo />)}</Route>
         <Route path="/pnl">{() => guard("/pnl", <Pnl />)}</Route>
         <Route path="/payroll">{() => guard("/payroll", <Payroll />)}</Route>
         <Route path="/svodni">{() => guard("/svodni", <Svodni />)}</Route>

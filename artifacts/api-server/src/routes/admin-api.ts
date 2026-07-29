@@ -8,8 +8,8 @@ import {
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
   driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
-  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, funnelsTable, candidateActivityTable, companiesTable,
-  documentTypesTable, workerDocumentsTable, positionsTable, factoryPositionsTable, rolesTable,
+  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, funnelsTable, candidateActivityTable, companiesTable,
+  documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
@@ -32,7 +32,7 @@ import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffD
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
 import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
-import { findLikelyDuplicate } from "../bot/workerMatch";
+import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 
 const router: IRouter = Router();
 
@@ -773,6 +773,29 @@ router.delete("/worker-documents/:id", RW, async (req, res) => {
   const [doc] = await db.select({ filePath: workerDocumentsTable.filePath }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   await db.delete(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   deleteStoredFile(doc?.filePath);
+  ok(res, { ok: true });
+});
+
+// ─── Банківські рахунки працівника ─────────────────────────────────────────────
+// IBAN-и, на які людині платять ЗП/аванси: перекази на них класифікуються як
+// salary/zaliczki навіть без ключових слів у призначенні (services/counterparties.ts).
+router.get("/workers/:id/bank-accounts", async (req, res) => {
+  const rows = await db.select().from(workerBankAccountsTable)
+    .where(eq(workerBankAccountsTable.workerId, Number(req.params.id)))
+    .orderBy(desc(workerBankAccountsTable.id));
+  ok(res, rows);
+});
+router.post("/workers/:id/bank-accounts", RW, async (req, res) => {
+  const iban = String(req.body?.iban ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (iban.length < 15) return fail(res, 400, "IBAN закороткий");
+  try {
+    const [row] = await db.insert(workerBankAccountsTable).values({ workerId: Number(req.params.id), iban, source: "manual" }).returning();
+    import("../services/counterparties").then(m => m.resolveBankCounterparties()).catch(() => {});
+    ok(res, row);
+  } catch { fail(res, 400, "Цей IBAN уже привʼязаний (можливо, до іншого працівника)"); }
+});
+router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
+  await db.delete(workerBankAccountsTable).where(eq(workerBankAccountsTable.id, Number(req.params.id)));
   ok(res, { ok: true });
 });
 
@@ -2318,7 +2341,14 @@ router.get("/hours", RW, async (req, res) => {
   const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
   const isOwner = canFinance(req);
   const rates = await getFinanceRates();
-  const posRates = await getPositionRates();
+  // Ставка — тим самим ланцюжком, що сводна (resolveBaseRates): профіль →
+  // пара посади фабрики → найдешевша посада → базова пара фабрики; дефолт
+  // з налаштувань фінансів лише коли ставки нема ніде.
+  const { loadRateRules } = await import("../services/rateRules");
+  const { resolveBaseRates } = await import("../services/svodni");
+  const ruleOf = await loadRateRules();
+  const svodniRate = (profileRate: number | null | undefined, factoryId: number | null, positionId: number | null): number =>
+    resolveBaseRates({ hourlyRate: profileRate ?? null, hourlyRateNetto: null }, ruleOf(factoryId, positionId), false).brutto ?? rates.defaultRate;
   const rows = await db
     .select({
       workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
@@ -2345,7 +2375,7 @@ router.get("/hours", RW, async (req, res) => {
     if (!byWorkerFactory.has(key)) byWorkerFactory.set(key, {
       workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: effRate(posRates, r.factoryId, r.positionId, r.rate ?? rates.defaultRate), isStudent: !!r.isStudent, under26: !!r.under26,
+      rate: svodniRate(r.rate, r.factoryId, r.positionId), isStudent: !!r.isStudent, under26: !!r.under26,
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
     const w = byWorkerFactory.get(key);
@@ -2365,7 +2395,7 @@ router.get("/hours", RW, async (req, res) => {
     byWorkerFactory.set(rowKey(aw.id, aw.factoryId), {
       workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: effRate(posRates, aw.factoryId, aw.positionId, aw.rate ?? rates.defaultRate), isStudent: !!aw.isStudent, under26: !!aw.under26,
+      rate: svodniRate(aw.rate, aw.factoryId, aw.positionId), isStudent: !!aw.isStudent, under26: !!aw.under26,
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
   }
@@ -2399,7 +2429,31 @@ router.get("/hours", RW, async (req, res) => {
       byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
         workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
         factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-        rate: effRate(posRates, r.factoryId, w.positionId, w.rate ?? rates.defaultRate), isStudent: !!w.isStudent, under26: !!w.under26,
+        rate: svodniRate(w.rate, r.factoryId, w.positionId), isStudent: !!w.isStudent, under26: !!w.under26,
+        byShift: {} as Record<string, number>, shifts: 0, hours: 0,
+      });
+    }
+  }
+  // Години з фабрики (імпорт/ручний ввід) — колонка звірки поруч із рапортом.
+  const facHoursRows = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
+  const fhByKey = new Map(facHoursRows.map(r => [rowKey(r.workerId, r.factoryId), r]));
+  // Пара з годинами фабрики, але без явок/рапорту — теж показуємо рядком з 0 змін.
+  const orphanFh = facHoursRows.filter(r => !byWorkerFactory.has(rowKey(r.workerId, r.factoryId)));
+  if (orphanFh.length) {
+    const ids = [...new Set(orphanFh.map(r => r.workerId))];
+    const infos = await db.select({
+      id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
+      rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+    }).from(workersTable).where(inArray(workersTable.id, ids));
+    const infoById = new Map(infos.map(w => [w.id, w]));
+    for (const r of orphanFh) {
+      const w = infoById.get(r.workerId);
+      if (!w) continue;
+      const fac = facById.get(r.factoryId);
+      byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
+        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
+        factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
+        rate: svodniRate(w.rate, r.factoryId, w.positionId), isStudent: !!w.isStudent, under26: !!w.under26,
         byShift: {} as Record<string, number>, shifts: 0, hours: 0,
       });
     }
@@ -2412,6 +2466,9 @@ router.get("/hours", RW, async (req, res) => {
       const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
       const base: any = {
         ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
+        factoryHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.hours ?? null,
+        factoryDays: fhByKey.get(rowKey(w.workerId, w.factoryId))?.days ?? null,
+        clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
       if (isOwner) {
@@ -2433,6 +2490,7 @@ router.get("/hours", RW, async (req, res) => {
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
     totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),
+    totalFactoryHours: round2(workers.reduce((s, w) => s + (w.factoryHours ?? 0), 0)),
     ...(isOwner ? {
       totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)),
       totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)),
@@ -2501,6 +2559,204 @@ router.post("/hours/report", RW, async (req, res) => {
     else await db.insert(monthlyReportsTable).values({ workerId, month, factoryId: null, hoursReported: h, photoLink: null });
   }
   ok(res, { ok: true, hours: h });
+});
+
+// ─── Години з фабрики (звірка з рапортами) ───────────────────────────────────
+const upsertFactoryHours = async (workerId: number, month: string, factoryId: number, hours: number, source: string, days: Record<string, number> | null = null) => {
+  await db.insert(factoryHoursTable)
+    .values({ workerId, month, factoryId, hours, source, days })
+    .onConflictDoUpdate({
+      target: [factoryHoursTable.workerId, factoryHoursTable.month, factoryHoursTable.factoryId],
+      set: { hours, source, days, updatedAt: new Date() },
+    });
+};
+
+// Ручне редагування однієї клітинки «Години з фабрики» (порожнє значення — очистити).
+router.post("/hours/factory", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId);
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  if (!workerId || !factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId, factoryId та month обовʼязкові");
+  const raw = req.body?.hours;
+  if (raw === null || raw === undefined || raw === "") {
+    await db.delete(factoryHoursTable).where(and(
+      eq(factoryHoursTable.workerId, workerId), eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId)));
+    return ok(res, { ok: true, cleared: true });
+  }
+  const hours = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(hours) || hours < 0 || hours > 500) return fail(res, 400, "Години: число від 0 до 500");
+  const h = Math.round(hours * 100) / 100;
+  await upsertFactoryHours(workerId, month, factoryId, h, "manual");
+  ok(res, { ok: true, hours: h });
+});
+
+// Розбір файла фабрики (Excel, 2 формати) або вставленого списку «ім'я + години»
+// → превʼю з матчингом імен по базі (bot/workerMatch). Нічого не зберігає.
+const uploadHoursFile = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (req, res) => {
+  const month = String(req.body?.month || "");
+  if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
+  const { parseFactoryHoursWorkbook, parseFactoryHoursText } = await import("../services/factoryHours");
+  let parsed: { name: string; hours: number; days?: Record<number, number> }[] = [];
+  let monthDetected: string | null = null;
+  let format: string = "text";
+  try {
+    if (req.file?.buffer) {
+      const f = parseFactoryHoursWorkbook(req.file.buffer);
+      parsed = f.rows; monthDetected = f.monthDetected; format = f.format;
+    } else if (typeof req.body?.text === "string" && req.body.text.trim()) {
+      parsed = parseFactoryHoursText(req.body.text);
+    } else return fail(res, 400, "Потрібен файл або текст");
+  } catch (e: any) { return fail(res, 400, e?.message ?? "Не вдалося розібрати файл"); }
+  if (!parsed.length) return fail(res, 400, "У файлі/тексті не знайдено жодного рядка з годинами");
+  // Матчинг по всій базі (звільнений теж міг відпрацювати місяць); активні
+  // виграють при рівних кандидатах — matchWorker сам ранжує за схожістю.
+  const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
+    .from(workersTable);
+  const rows = parsed.map(p => {
+    // нижчий поріг кандидатів, ніж у водійському флоу: сильно спотворені
+    // прізвища ("Khdvarenko") мають хоч показати людей зі спільним іменем
+    const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8 });
+    return {
+      name: p.name, hours: p.hours, days: p.days ?? null,
+      workerId: m.confident?.id ?? null,
+      matchName: m.confident?.fullName ?? null,
+      candidates: m.confident ? [] : m.candidates.map(c => ({ id: c.id, name: c.fullName, active: !!c.isActive })),
+    };
+  });
+  ok(res, { month, monthDetected, format, rows });
+});
+
+// Застосувати підтверджене превʼю: масовий upsert годин фабрики.
+router.post("/hours/factory-apply", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const source = ["excel", "paste"].includes(req.body?.source) ? String(req.body.source) : "excel";
+  const rows: { workerId?: unknown; hours?: unknown; days?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!rows.length) return fail(res, 400, "Порожній список рядків");
+  const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  let saved = 0;
+  for (const r of rows) {
+    const workerId = Number(r.workerId);
+    const hours = Number(r.hours);
+    if (!workerId || !Number.isFinite(hours) || hours < 0 || hours > 500) continue;
+    // розбивка по днях (день місяця → год) → ключі-дати "YYYY-MM-DD"
+    let days: Record<string, number> | null = null;
+    if (r.days && typeof r.days === "object") {
+      days = {};
+      for (const [d, h] of Object.entries(r.days as Record<string, unknown>)) {
+        const dayN = Number(d), hN = Number(h);
+        if (Number.isInteger(dayN) && dayN >= 1 && dayN <= 31 && Number.isFinite(hN) && hN > 0 && hN <= 24) {
+          days[`${month}-${String(dayN).padStart(2, "0")}`] = Math.round(hN * 100) / 100;
+        }
+      }
+      if (!Object.keys(days).length) days = null;
+    }
+    await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days);
+    saved++;
+  }
+  ok(res, { saved, skipped: rows.length - saved });
+});
+
+// Позмінна звірка для листа: коли рапорт ≠ фабрика, але рапорт = нашим
+// підтвердженим явкам (водій/графікова), і файл фабрики має розбивку по днях —
+// віддаємо конкретні дні, де наші явки розходяться з таблицею фабрики.
+router.get("/hours/day-compare", RW, async (req, res) => {
+  const month = String(req.query.month || "");
+  const factoryId = Number(req.query.factoryId);
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+  const fh = await db.select().from(factoryHoursTable)
+    .where(and(eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId)));
+  const withDays = fh.filter(r => r.days && Object.keys(r.days).length);
+  if (!withDays.length) return ok(res, { workers: [] });
+  const workerIds = withDays.map(r => r.workerId);
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, hours: monthlyReportsTable.hoursReported })
+    .from(monthlyReportsTable)
+    .where(and(eq(monthlyReportsTable.month, month), eq(monthlyReportsTable.factoryId, factoryId), inArray(monthlyReportsTable.workerId, workerIds)));
+  const repBy = new Map(reports.map(r => [r.workerId, r.hours]));
+  const [facFull] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  // наші підтверджені явки (approved-тижні, present) по днях
+  const att = await db.select({
+    workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift,
+    hoursOverride: scheduleEntriesTable.hoursOverride, day: scheduleEntriesTable.dayOfWeek,
+    weekStart: scheduleWeeksTable.weekStart,
+  }).from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(
+      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      eq(scheduleEntriesTable.factoryId, factoryId), inArray(scheduleEntriesTable.workerId, workerIds),
+      gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
+    ));
+  const ourBy = new Map<number, Map<string, { hours: number; shifts: string[] }>>();
+  for (const e of att) {
+    if (!e.workerId) continue;
+    const date = entryDateStr(String(e.weekStart), e.day);
+    if (date < monthStart || date >= monthEnd) continue;
+    const byDate = ourBy.get(e.workerId) ?? ourBy.set(e.workerId, new Map()).get(e.workerId)!;
+    const cur = byDate.get(date) ?? byDate.set(date, { hours: 0, shifts: [] }).get(date)!;
+    cur.hours += e.hoursOverride ?? factoryShiftHours(facFull, e.shift as any);
+    cur.shifts.push(String(e.shift));
+  }
+  const workers: { workerId: number; days: { date: string; our: number; ourShifts: string[]; factory: number }[] }[] = [];
+  for (const r of withDays) {
+    const rep = repBy.get(r.workerId);
+    if (rep == null || Math.abs(rep - r.hours) <= 0.01) continue; // тотали сходяться / рапорту нема
+    const our = ourBy.get(r.workerId) ?? new Map<string, { hours: number; shifts: string[] }>();
+    const ourTotal = round2([...our.values()].reduce((s, d) => s + d.hours, 0));
+    if (Math.abs(rep - ourTotal) > 0.01) continue; // явки не підтверджують рапорт — днями не аргументуємо
+    const dates = [...new Set([...our.keys(), ...Object.keys(r.days!)])].sort();
+    const days = dates
+      .map(d => ({ date: d, our: round2(our.get(d)?.hours ?? 0), ourShifts: our.get(d)?.shifts ?? [], factory: r.days![d] ?? 0 }))
+      .filter(x => Math.abs(x.our - x.factory) > 0.01);
+    if (days.length) workers.push({ workerId: r.workerId, days });
+  }
+  ok(res, { workers });
+});
+
+// Лист клієнту про розбіжності годин: тіло генерує веб (живий драфт), сервер
+// прикріплює PDF-рапорти працівників з Drive як докази і шле через SMTP.
+router.post("/hours/discrepancy-email", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const subject = String(req.body?.subject || "").trim();
+  const body = String(req.body?.body || "").trim();
+  const to = String(req.body?.to || "").trim();
+  const attachWorkerIds: number[] = Array.isArray(req.body?.attachWorkerIds) ? req.body.attachWorkerIds.map(Number).filter(Boolean) : [];
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return fail(res, 400, "Некоректний email отримувача");
+  // PDF-рапорти вибраних працівників по цій фабриці (докази розбіжностей)
+  const attachments: { filename: string; content: Buffer }[] = [];
+  const missing: string[] = [];
+  if (attachWorkerIds.length) {
+    const reps = await db.select({ workerId: monthlyReportsTable.workerId, link: monthlyReportsTable.photoLink })
+      .from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.month, month), eq(monthlyReportsTable.factoryId, factoryId), inArray(monthlyReportsTable.workerId, attachWorkerIds)));
+    const linkByWorker = new Map(reps.map(r => [r.workerId, r.link]));
+    const names = await db.select({ id: workersTable.id, fullName: workersTable.fullName })
+      .from(workersTable).where(inArray(workersTable.id, attachWorkerIds));
+    const { downloadDriveFileByLink } = await import("../services/drive");
+    for (const w of names) {
+      const link = linkByWorker.get(w.id);
+      if (!link) { missing.push(w.fullName); continue; }
+      const file = await downloadDriveFileByLink(link);
+      if (!file) { missing.push(w.fullName); continue; }
+      attachments.push({ filename: file.name, content: file.buffer });
+    }
+  }
+  try {
+    const { sendEmailWithAttachments } = await import("../services/email");
+    await sendEmailWithAttachments(to, subject, body, attachments);
+  } catch (e: any) {
+    logger.error({ err: e }, "discrepancy email failed");
+    return fail(res, 500, e?.message ?? "Помилка надсилання email");
+  }
+  ok(res, { sent: true, to, attached: attachments.length, missingReports: missing });
 });
 
 // Download an Excel of worker-reported monthly hours.
@@ -2943,6 +3199,7 @@ router.get("/advances", RW, async (_req, res) => {
       amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
       status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
       decidedAt: advanceRequestsTable.decidedAt, paidAt: advanceRequestsTable.paidAt,
+      paidTxnId: advanceRequestsTable.paidTxnId,
       createdAt: advanceRequestsTable.createdAt,
     })
     .from(advanceRequestsTable)

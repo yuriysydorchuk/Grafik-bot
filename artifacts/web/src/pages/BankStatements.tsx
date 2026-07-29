@@ -13,8 +13,18 @@ interface Txn {
   direction: "in" | "out"; amount: number; currency: string;
   counterparty: string | null; counterpartyAccount: string | null; title: string | null; txType: string | null;
   statementNo: string | null; bankRef: string | null; fileName: string | null; entityFolder: string | null;
-  manualCategory: string | null;
+  manualCategory: string | null; source: string;
 }
+interface ApiAccount {
+  id: number; iban: string | null; holderName: string | null; product: string | null; currency: string | null;
+  companyId: number | null; companyName: string | null;
+  lastBookedBalance: number | null; lastAvailableBalance: number | null; balanceAt: string | null; lastSyncAt: string | null;
+}
+interface ApiConsent {
+  id: number; aspspName: string; aspspCountry: string; companyName: string | null;
+  validUntil: string; revokedAt: string | null; daysLeft: number; accounts: ApiAccount[];
+}
+interface ConsentsResp { configured: boolean; consents: ApiConsent[] }
 interface Meta { companies: { id: number; name: string }[]; years: string[] }
 interface Summary {
   year: string; month: string | null; opening: number; closing: number;
@@ -90,6 +100,7 @@ export default function BankStatements() {
   const [syncing, setSyncing] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [showCats, setShowCats] = useState(false);
+  const [showCps, setShowCps] = useState(false);
   const { label: catLabel } = useCats();
 
   const meta = useQuery<Meta>({ queryKey: ["bank-meta"], queryFn: () => get("/bank/meta") });
@@ -138,14 +149,18 @@ export default function BankStatements() {
         }}><RefreshCw className="mr-1 h-4 w-4" />{t("Синхронізувати")}</Button>
         <Button variant="ghost" onClick={() => setShowCats(true)}>{t("Категорії")}</Button>
         <Button variant="ghost" onClick={() => setShowRules(true)}>{t("Правила контрагентів")}</Button>
+        <Button variant="ghost" onClick={() => setShowCps(true)}>{t("Контрагенти")}</Button>
       </div>
       {showCats && <CategoriesModal onClose={() => setShowCats(false)} />}
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
+      {showCps && <CounterpartiesModal onClose={() => setShowCps(false)} />}
 
       {globalQ.trim().length >= 2 && (
         <DetailPanel bucket="all" year={year} monthNum={monthNum} companyId={companyId}
           companies={meta.data?.companies ?? []} query={globalQ} onClose={() => setGlobalQ("")} />
       )}
+
+      <ApiConsentsBox />
 
       {summary.isFetching && !s ? <Spinner /> : !s ? <Empty>{t("Немає даних")}</Empty> : (
         <>
@@ -219,6 +234,297 @@ function Metric({ icon, label, value, tone, count, sub, active, onClick }: { ico
 }
 
 // Per-firm opening/closing balances (opens from the balance cards).
+// ── Довідник контрагентів ──────────────────────────────────────────────────────
+// Клієнти/постачальники: канонічна назва + NIP + варіації назв + IBAN-и. Наповнюється
+// автоматично (KSeF, фабрики, витяги), тут — перегляд, правки, злиття дублів.
+interface Cp {
+  id: number; name: string; kind: string; nip: string | null; note: string | null;
+  aliases: { id: number; alias: string }[]; accounts: { id: number; iban: string }[];
+  txns: number; sumIn: number; sumOut: number;
+}
+const KIND_LABEL: Record<string, string> = { client: "клієнт", supplier: "постачальник", both: "клієнт+постачальник", other: "інше" };
+const KIND_COLOR: Record<string, string> = { client: "bg-emerald-100 text-emerald-700", supplier: "bg-sky-100 text-sky-700", both: "bg-violet-100 text-violet-700", other: "bg-slate-100 text-slate-600" };
+
+function CounterpartiesModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const [kind, setKind] = useState("");
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const list = useQuery<{ rows: Cp[] }>({
+    queryKey: ["bank-cps", q, kind],
+    queryFn: () => get(`/bank/counterparties?${new URLSearchParams({ ...(q.trim() ? { q: q.trim() } : {}), ...(kind ? { kind } : {}) })}`),
+  });
+  const inv = () => qc.invalidateQueries({ queryKey: ["bank-cps"] });
+  const rows = list.data?.rows ?? [];
+
+  return (
+    <Modal open title={t("Контрагенти")} onClose={onClose} size="xl">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Input value={q} onChange={e => setQ(e.target.value)} placeholder={t("назва, NIP, аліас…")} className="w-64" />
+        <Select value={kind} onChange={e => setKind(e.target.value)} className="w-44">
+          <option value="">{t("Всі типи")}</option>
+          <option value="client">{t("клієнт")}</option>
+          <option value="supplier">{t("постачальник")}</option>
+          <option value="both">{t("клієнт+постачальник")}</option>
+          <option value="other">{t("інше")}</option>
+        </Select>
+        <Button variant="secondary" disabled={syncing} className="ml-auto" onClick={async () => {
+          setSyncing(true);
+          try { const r = await post("/bank/counterparties/sync"); toast.success(t("Оновлено: +{a} контрагентів, +{b} рахунків, {c} транзакцій розпізнано", { a: r.created, b: r.accounts, c: r.resolved })); inv(); }
+          catch (e: any) { toast.error(e?.message || "error"); } finally { setSyncing(false); }
+        }}><RefreshCw className={`mr-1 h-4 w-4 ${syncing ? "animate-spin" : ""}`} />{t("Синк із KSeF і витягів")}</Button>
+      </div>
+      {list.isLoading ? <Spinner /> : !rows.length ? <Empty>{t("Нікого не знайдено")}</Empty> : (
+        <div className="max-h-[60vh] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-white"><tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
+              <th className="py-2 pr-3">{t("Назва")}</th><th className="py-2 pr-3">{t("Тип")}</th><th className="py-2 pr-3">NIP</th>
+              <th className="py-2 pr-3 text-right">{t("Операцій")}</th><th className="py-2 pr-3 text-right">{t("Прихід")}</th><th className="py-2 text-right">{t("Розхід")}</th>
+            </tr></thead>
+            <tbody>
+              {rows.map(c => (
+                <>
+                  <tr key={c.id} className="cursor-pointer border-b border-slate-100 hover:bg-slate-50/60" onClick={() => setOpenId(openId === c.id ? null : c.id)}>
+                    <td className="max-w-[280px] truncate py-2 pr-3 font-medium text-slate-700">{c.name}</td>
+                    <td className="py-2 pr-3"><span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${KIND_COLOR[c.kind]}`}>{t(KIND_LABEL[c.kind] ?? c.kind)}</span></td>
+                    <td className="py-2 pr-3 tabular-nums text-slate-500">{c.nip ?? "—"}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums text-slate-500">{c.txns}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums text-emerald-600">{c.sumIn ? `+${zl(c.sumIn)}` : "—"}</td>
+                    <td className="py-2 text-right tabular-nums text-slate-700">{c.sumOut ? `−${zl(c.sumOut)}` : "—"}</td>
+                  </tr>
+                  {openId === c.id && <tr key={`d${c.id}`}><td colSpan={6} className="bg-slate-50/60 px-3 py-3"><CpDetail cp={c} all={rows} onChanged={inv} /></td></tr>}
+                </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function CpDetail({ cp, all, onChanged }: { cp: Cp; all: Cp[]; onChanged: () => void }) {
+  const t = useT();
+  const confirm = useConfirmCp();
+  const [name, setName] = useState(cp.name);
+  const [kind, setKind] = useState(cp.kind);
+  const [nip, setNip] = useState(cp.nip ?? "");
+  const [alias, setAlias] = useState("");
+  const [iban, setIban] = useState("");
+  const [mergeTo, setMergeTo] = useState("");
+  const act = async (fn: () => Promise<any>, okMsg?: string) => {
+    try { await fn(); if (okMsg) toast.success(okMsg); onChanged(); }
+    catch (e: any) { toast.error(e?.message || "error"); }
+  };
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Назва")}</span><Input value={name} onChange={e => setName(e.target.value)} className="w-64" /></label>
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Тип")}</span>
+          <Select value={kind} onChange={e => setKind(e.target.value)} className="w-44">
+            {Object.entries(KIND_LABEL).map(([k, v]) => <option key={k} value={k}>{t(v)}</option>)}
+          </Select></label>
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">NIP</span><Input value={nip} onChange={e => setNip(e.target.value)} className="w-36" /></label>
+        <Button variant="secondary" onClick={() => act(() => patch(`/bank/counterparties/${cp.id}`, { name, kind, nip }), t("Збережено"))}>{t("Зберегти")}</Button>
+        <Button variant="ghost" onClick={async () => {
+          if (await confirm(t("Видалити контрагента «{name}»? Транзакції залишаться, але відв'яжуться.", { name: cp.name }))) {
+            act(() => del(`/bank/counterparties/${cp.id}`), t("Видалено"));
+          }
+        }}><X className="h-4 w-4 text-rose-500" /></Button>
+      </div>
+      <div>
+        <div className="mb-1 text-xs text-slate-500">{t("Варіації назв (як пишуть банки)")}</div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {cp.aliases.map(a => (
+            <span key={a.id} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-xs text-slate-600 ring-1 ring-slate-200">
+              {a.alias}
+              <button className="text-slate-400 hover:text-rose-500" onClick={() => act(() => del(`/bank/counterparties/alias/${a.id}`))}>×</button>
+            </span>
+          ))}
+          <Input value={alias} onChange={e => setAlias(e.target.value)} placeholder={t("+ аліас")} className="h-7 w-40 text-xs" />
+          <Button variant="ghost" disabled={!alias.trim()} onClick={() => act(() => post(`/bank/counterparties/${cp.id}/alias`, { alias }).then(() => setAlias("")))}>{t("Додати")}</Button>
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 text-xs text-slate-500">{t("Рахунки (IBAN)")}</div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {cp.accounts.map(a => (
+            <span key={a.id} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-xs tabular-nums text-slate-600 ring-1 ring-slate-200">
+              {shortIban(a.iban)}
+              <button className="text-slate-400 hover:text-rose-500" onClick={() => act(() => del(`/bank/counterparties/account/${a.id}`))}>×</button>
+            </span>
+          ))}
+          <Input value={iban} onChange={e => setIban(e.target.value)} placeholder="PL00…" className="h-7 w-56 text-xs" />
+          <Button variant="ghost" disabled={iban.replace(/\W/g, "").length < 15} onClick={() => act(() => post(`/bank/counterparties/${cp.id}/account`, { iban }).then(() => setIban("")))}>{t("Додати")}</Button>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 border-t border-slate-200 pt-2">
+        <span className="text-xs text-slate-500">{t("Злити цього контрагента в:")}</span>
+        <Select value={mergeTo} onChange={e => setMergeTo(e.target.value)} className="w-64">
+          <option value="">—</option>
+          {all.filter(x => x.id !== cp.id).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </Select>
+        <Button variant="secondary" disabled={!mergeTo} onClick={async () => {
+          if (await confirm(t("Злити «{a}» в «{b}»? Аліаси, рахунки і транзакції перейдуть.", { a: cp.name, b: all.find(x => String(x.id) === mergeTo)?.name ?? "" }))) {
+            act(() => post("/bank/counterparties/merge", { fromId: cp.id, toId: Number(mergeTo) }), t("Злито"));
+          }
+        }}>{t("Злити")}</Button>
+      </div>
+    </div>
+  );
+}
+
+// confirm-хелпер: у цьому файлі нема useConfirm-хука — простий window.confirm
+function useConfirmCp() {
+  return (msg: string) => Promise.resolve(window.confirm(msg));
+}
+
+// ── Оперативний банківський шар (Enable Banking) ───────────────────────────────
+// Живі баланси підключених рахунків + керування PSD2-згодами. Свіжі транзакції
+// зливаються в ту саму таблицю з бейджем «оперативна», поки їх не замінить витяг.
+const shortIban = (s: string | null) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
+const timeShort = (s: string | null) => (s ? new Date(s).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+
+function ApiConsentsBox() {
+  const t = useT();
+  const qc = useQueryClient();
+  const [manage, setManage] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const q = useQuery<ConsentsResp>({ queryKey: ["bank-api-consents"], queryFn: () => get("/bank/api-consents") });
+
+  // повернення з банку: /bank?api=linked|<помилка> (redirect з psd2-callback)
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const api = p.get("api");
+    if (!api) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    if (api === "linked") {
+      toast.success(t("Банк підключено — тягну дані…"));
+      void post("/bank/api-sync").then(() => {
+        qc.invalidateQueries({ queryKey: ["bank-api-consents"] });
+        qc.invalidateQueries({ queryKey: ["bank-txns"] });
+      });
+    } else if (api === "no_accounts") {
+      toast.error(t("Банк не показав жодного рахунку: спочатку прив'яжи цей логін у кабінеті Enable Banking (Link accounts), потім повтори підключення тут."), { duration: 12000 });
+    } else toast.error(`${t("Не вдалося підключити банк")}: ${api}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const d = q.data;
+  const active = (d?.consents ?? []).filter(c => !c.revokedAt);
+  if (!d || (!d.configured && !active.length)) return null;
+  const accounts = active.flatMap(c => c.accounts);
+  const expiring = active.filter(c => c.daysLeft <= 14);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const r = await post("/bank/api-sync");
+      toast.success(t("Оновлено: {n} нових транзакцій", { n: r.inserted ?? 0 }));
+      qc.invalidateQueries({ queryKey: ["bank-api-consents"] });
+      qc.invalidateQueries({ queryKey: ["bank-txns"] });
+      qc.invalidateQueries({ queryKey: ["bank-summary"] });
+    } catch (e: any) { toast.error(e?.message || t("Не вдалося оновити")); }
+    finally { setSyncing(false); }
+  };
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="text-sm font-semibold text-slate-700">{t("Банк наживо")}</div>
+        {accounts.length === 0 && <span className="text-sm text-slate-400">{t("Рахунки ще не підключені")}</span>}
+        <div className="flex flex-wrap gap-2">
+          {accounts.map(a => (
+            <span key={a.id} className={`rounded-lg px-2.5 py-1 text-sm ${/VAT/i.test(a.product ?? "") ? "bg-slate-100 text-slate-500" : "bg-emerald-50 text-emerald-800"}`}
+              title={`${a.holderName ?? ""} · ${a.iban ?? ""} · ${t("оновлено")} ${timeShort(a.balanceAt)}`}>
+              <span className="font-medium">{a.companyName ?? a.holderName ?? "?"}</span>
+              {/VAT/i.test(a.product ?? "") && <span className="ml-1 text-[10px] uppercase">VAT</span>}
+              <span className="ml-1.5 tabular-nums">{a.lastBookedBalance != null ? zl2(a.lastBookedBalance) : "—"}</span>
+            </span>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          {expiring.length > 0 && (
+            <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+              {t("Згода спливає: {b}", { b: expiring.map(c => c.aspspName).join(", ") })}
+            </span>
+          )}
+          <Button variant="secondary" disabled={syncing} onClick={syncNow}>
+            <RefreshCw className={`mr-1 h-4 w-4 ${syncing ? "animate-spin" : ""}`} />{t("Оновити зараз")}
+          </Button>
+          <Button variant="ghost" onClick={() => setManage(true)}>{t("Згоди")}</Button>
+        </div>
+      </div>
+      {manage && <ConsentsModal consents={d.consents} onClose={() => setManage(false)} />}
+    </Card>
+  );
+}
+
+function ConsentsModal({ consents, onClose }: { consents: ApiConsent[]; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [aspsp, setAspsp] = useState("");
+  const aspsps = useQuery<{ aspsps: { name: string; country: string }[] }>({
+    queryKey: ["bank-api-aspsps"], queryFn: () => get("/bank/api-aspsps?country=PL"),
+  });
+
+  const connect = async (name: string, country: string) => {
+    try {
+      const r = await post("/bank/api-consents/start", { aspspName: name, aspspCountry: country });
+      window.location.href = r.url; // SCA у банку; повернемось на /bank?api=…
+    } catch (e: any) { toast.error(e?.message || t("Не вдалося підключити банк")); }
+  };
+  const revoke = async (id: number) => {
+    if (!confirm(t("Відкликати згоду? Оперативні дані цього банку перестануть оновлюватись."))) return;
+    try { await del(`/bank/api-consents/${id}`); qc.invalidateQueries({ queryKey: ["bank-api-consents"] }); }
+    catch (e: any) { toast.error(e?.message || "error"); }
+  };
+
+  return (
+    <Modal open title={t("Згоди PSD2 (Enable Banking)")} onClose={onClose} size="xl">
+      <p className="mb-3 text-sm text-slate-500">
+        {t("Згода банку діє ~180 днів, далі поновлюється двома кліками. Дані — лише власні рахунки, прив'язані в Enable Banking.")}
+      </p>
+      <table className="w-full text-sm">
+        <thead><tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
+          <th className="py-2 pr-3">{t("Банк")}</th><th className="py-2 pr-3">{t("Фірма")}</th>
+          <th className="py-2 pr-3">{t("Рахунки")}</th><th className="py-2 pr-3">{t("Діє до")}</th><th className="py-2" />
+        </tr></thead>
+        <tbody>
+          {consents.map(c => (
+            <tr key={c.id} className={`border-b border-slate-100 ${c.revokedAt ? "opacity-50" : ""}`}>
+              <td className="py-2 pr-3 font-medium">{c.aspspName}</td>
+              <td className="py-2 pr-3">{c.companyName ?? "—"}</td>
+              <td className="py-2 pr-3 text-xs text-slate-500">{c.accounts.map(a => shortIban(a.iban)).join(", ") || "—"}</td>
+              <td className="py-2 pr-3 whitespace-nowrap">
+                {c.revokedAt ? <span className="text-slate-400">{t("відкликана")}</span>
+                  : c.daysLeft <= 0 ? <span className="font-medium text-rose-600">{t("прострочена")}</span>
+                  : <span className={c.daysLeft <= 14 ? "font-medium text-amber-600" : ""}>{c.validUntil.slice(0, 10)} · {t("{n} дн.", { n: c.daysLeft })}</span>}
+              </td>
+              <td className="py-2 text-right whitespace-nowrap">
+                {!c.revokedAt && <>
+                  <Button variant="ghost" onClick={() => connect(c.aspspName, c.aspspCountry)}>{t("Поновити")}</Button>
+                  <Button variant="ghost" onClick={() => revoke(c.id)}><X className="h-4 w-4 text-rose-500" /></Button>
+                </>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mt-4 flex items-center gap-2">
+        <Select value={aspsp} onChange={e => setAspsp(e.target.value)} className="w-64">
+          <option value="">{t("Підключити ще банк…")}</option>
+          {(aspsps.data?.aspsps ?? []).map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
+        </Select>
+        <Button disabled={!aspsp} onClick={() => connect(aspsp, "PL")}>{t("Підключити")}</Button>
+      </div>
+      <p className="mt-2 text-xs text-slate-400">{t("Перед підключенням нового рахунку його треба прив'язати до застосунку в Enable Banking (Link accounts).")}</p>
+    </Modal>
+  );
+}
+
 function BalancesPanel({ year, monthNum, onClose }: { year: string; monthNum: string; onClose: () => void }) {
   const t = useT();
   const params = new URLSearchParams({ year });
@@ -634,7 +940,10 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
                       )}
                     </td>
                   )}
-                  <td className="whitespace-nowrap px-3 py-2 text-slate-500">{r.valueDate}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-slate-500">
+                    {r.valueDate}
+                    {r.source === "api" && <span className="ml-1.5 rounded bg-sky-100 px-1 py-0.5 text-[10px] font-semibold text-sky-700" title={t("оперативна (з банківського API, ще без витягу)")}>API</span>}
+                  </td>
                   {!companyId && <td className="px-3 py-2 text-slate-600">{coName(r.companyId)}</td>}
                   <td className="px-3 py-2 text-slate-700">
                     {unmatchedBank.has(r.id) && <div className="text-[11px] font-medium text-amber-600">{t("не знайдено в касі")}</div>}

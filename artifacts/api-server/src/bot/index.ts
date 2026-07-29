@@ -95,6 +95,8 @@ export { bot };
 import { installChatTracking, recordBotMessage } from "./chat";
 installChatTracking();
 
+import { registerInvoiceScan } from "./handlers/invoiceScan";
+
 bot.use(async (ctx, next) => {
   try {
     // record the user's own incoming private message so a "clear chat" can remove it too
@@ -111,6 +113,10 @@ bot.use(async (ctx, next) => {
   } catch { /* never block on bookkeeping */ }
   return next();
 });
+
+// ── Скан фактур (📄 Фактура) — реєструється ДО загальних photo/document/text
+// хендлерів (вони не кличуть next); чужі стани пропускає далі через next() ────
+registerInvoiceScan(bot as any);
 
 // Time/view helpers live in ./time and ./views.
 

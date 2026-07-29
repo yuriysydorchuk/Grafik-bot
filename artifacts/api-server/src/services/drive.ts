@@ -12,6 +12,7 @@ import { logger } from "../lib/logger";
 import { factoryShifts } from "../bot/time";
 import { DAYS } from "./sheets";
 import { formatWeekStart } from "./scheduleGenerator";
+import { imageToPdf } from "./imagePdf";
 import type { DayOfWeek as _DayOfWeek } from "@workspace/db";
 
 // Polish localization for Excel files
@@ -85,6 +86,29 @@ async function setSetting(key: string, value: string): Promise<void> {
 }
 
 // ─── Folder helpers ───────────────────────────────────────────────────────────
+
+// Скачати файл із Drive за збереженим посиланням (photo_link рапорту:
+// https://drive.google.com/file/d/{id}/view). Повертає вміст + імʼя файла —
+// для вкладень у листи клієнту (докази-рапорти). null = лінк без id / помилка.
+export async function downloadDriveFileByLink(link: string): Promise<{ buffer: Buffer; name: string; mimeType: string } | null> {
+  const m = /\/file\/d\/([\w-]+)/.exec(link) ?? /[?&]id=([\w-]+)/.exec(link);
+  if (!m) return null;
+  const fileId = m[1]!;
+  try {
+    const auth = getDriveAuth();
+    const drive = google.drive({ version: "v3", auth });
+    const meta = await drive.files.get({ fileId, fields: "name,mimeType" });
+    const data = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
+    return {
+      buffer: Buffer.from(data.data as ArrayBuffer),
+      name: meta.data.name ?? `${fileId}.pdf`,
+      mimeType: meta.data.mimeType ?? "application/pdf",
+    };
+  } catch (e) {
+    logger.error({ err: e, fileId }, "Drive file download failed");
+    return null;
+  }
+}
 
 export async function getOrCreateFolder(name: string, parentId?: string): Promise<string> {
   const auth = getDriveAuth();
@@ -441,28 +465,6 @@ export async function exportScheduleToDrive(weekId: number, weekStart: string, o
 }
 
 // ─── Report photo upload (converted to PDF) ───────────────────────────────────
-
-async function imageToPdf(imageBuffer: Buffer, mimeType: string): Promise<Buffer> {
-  const { PDFDocument } = await import("pdf-lib");
-  const pdfDoc = await PDFDocument.create();
-
-  const image = mimeType === "image/png"
-    ? await pdfDoc.embedPng(imageBuffer)
-    : await pdfDoc.embedJpg(imageBuffer);
-
-  // A4 portrait: 595 × 842 pts; scale image to fit with 20pt margin
-  const margin = 20;
-  const maxW = 595 - margin * 2;
-  const maxH = 842 - margin * 2;
-  const scale = Math.min(maxW / image.width, maxH / image.height, 1);
-  const w = image.width * scale;
-  const h = image.height * scale;
-
-  const page = pdfDoc.addPage([595, 842]);
-  page.drawImage(image, { x: (595 - w) / 2, y: (842 - h) / 2, width: w, height: h });
-
-  return Buffer.from(await pdfDoc.save());
-}
 
 export async function uploadReportPhoto(
   factoryName: string,

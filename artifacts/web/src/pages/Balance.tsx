@@ -9,11 +9,16 @@ import { useT } from "../lib/i18n";
 import { ObligationModal, type Obligation } from "../components/ObligationModal";
 
 interface Meta { companies: { id: number; name: string }[] }
+interface BankAccount { iban: string; bank: string | null; product: string | null; amount: number; live: boolean }
 interface Data {
   year: string; month: string | null; asOf: string;
   money: {
     total: number;
-    banks: { total: number; perFirm: { companyId: number; name: string; amount: number }[] };
+    banks: {
+      total: number;
+      perFirm: { companyId: number; name: string; amount: number; liveCount?: number; accounts?: BankAccount[] }[];
+      live?: { count: number; at: string | null };
+    };
     cash: { total: number; perBox: { box: string; closing: number }[] };
   };
   receivables: { total: number; ksef: { total: number; count: number; byClient: { client: string; count: number; gross: number }[] }; rows: Obligation[] };
@@ -24,6 +29,40 @@ interface Data {
 const zl = (n: number) => `${(n ?? 0).toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
 const MONTHS_UK = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const BOX_LABELS: Record<string, string> = { office: "Каса офісу", yuriy: "Сейф Юрія", tetiana: "Сейф Тетяни" };
+
+// Рядок фірми в блоці «Гроші»: клік розкриває розбивку по рахунках (включно з
+// VAT-рахунками) — живі з API або розрахункові з витягів для минулих місяців.
+function FirmBankRows({ firm }: { firm: { companyId: number; name: string; amount: number; accounts?: BankAccount[] } }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const accounts = firm.accounts ?? [];
+  const fmtIban = (s: string) => (s.length > 10 ? `${s.slice(0, 4)} ${s.slice(4, 8)}…${s.slice(-4)}` : s);
+  return (
+    <>
+      <tr className={`border-b border-slate-100 ${accounts.length ? "cursor-pointer hover:bg-slate-50/60" : ""}`}
+        onClick={() => accounts.length && setOpen(!open)}>
+        <td className="px-4 py-2 text-slate-600">
+          {t("Банк")} · {firm.name}
+          {accounts.length > 0 && <span className="ml-1.5 text-xs text-slate-400">{open ? "▾" : "▸"} {t("{n} рах.", { n: accounts.length })}</span>}
+        </td>
+        <td className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums">{zl(firm.amount)}</td>
+      </tr>
+      {open && accounts.map(a => (
+        <tr key={a.iban} className="border-b border-slate-50 bg-slate-50/40 text-xs">
+          <td className="py-1.5 pl-8 pr-4 text-slate-500">
+            <span className="tabular-nums">{fmtIban(a.iban)}</span>
+            {a.bank && <span className="ml-1.5">{a.bank}</span>}
+            {/VAT/i.test(a.product ?? "") && <span className="ml-1.5 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-semibold text-slate-600">VAT</span>}
+            {a.live
+              ? <span className="ml-1.5 rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700">{t("наживо")}</span>
+              : <span className="ml-1.5 text-[10px] text-slate-400">{t("з витягів")}</span>}
+          </td>
+          <td className="whitespace-nowrap px-4 py-1.5 text-right tabular-nums text-slate-600">{zl(a.amount)}</td>
+        </tr>
+      ))}
+    </>
+  );
+}
 
 export default function Balance() {
   const t = useT();
@@ -89,7 +128,17 @@ export default function Balance() {
             {MONTHS_UK.map((m, i) => <option key={i} value={String(i + 1).padStart(2, "0")}>{m}</option>)}
           </Select>
         </div>
-        {d && <div className="pb-2 text-sm text-slate-400">{t("станом на {d}", { d: d.asOf })}</div>}
+        {d && (
+          <div className="pb-2 text-sm text-slate-400">
+            {t("станом на {d}", { d: d.asOf })}
+            {(d.money.banks.live?.count ?? 0) > 0 && (
+              <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700"
+                title={t("банківські залишки з API, оновлено {t}", { t: d.money.banks.live!.at ? new Date(d.money.banks.live!.at!).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—" })}>
+                {t("банки наживо")}
+              </span>
+            )}
+          </div>
+        )}
         <Link href="/obligations" className="ml-auto pb-2 text-sm text-slate-400 underline decoration-slate-300 underline-offset-2 hover:text-slate-600">{t("усі записи й історія →")}</Link>
       </div>
 
@@ -112,10 +161,7 @@ export default function Balance() {
               <table className="w-full text-sm">
                 <tbody>
                   {d.money.banks.perFirm.map(f => (
-                    <tr key={f.companyId} className="border-b border-slate-100">
-                      <td className="px-4 py-2 text-slate-600">{t("Банк")} · {f.name}</td>
-                      <td className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums">{zl(f.amount)}</td>
-                    </tr>
+                    <FirmBankRows key={f.companyId} firm={f} />
                   ))}
                   {d.money.cash.perBox.map(b => (
                     <tr key={b.box} className="border-b border-slate-100 last:border-0">

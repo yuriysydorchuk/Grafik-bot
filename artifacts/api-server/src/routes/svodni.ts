@@ -14,6 +14,7 @@ import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, SEG_SHARE_COLS, type RateRules, type SegmentCalcIn } from "../services/svodni";
+import { loadRateRules } from "../services/rateRules";
 import { addDaysStr } from "../lib/dates";
 
 const router: IRouter = Router();
@@ -774,36 +775,6 @@ function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typ
 // Приведення рядка сводної до профілю w з урахуванням того, ЩО саме змінилось
 // (changed): мапінг полів профілю → поля рядка + перерахунок похідних тим самим
 // шляхом, що правка клітинки (computePayout → applyLegalDefaults). Повертає
-// Правила фабричних ставок для резолюції (пара посади людини → найдешевша
-// посада фабрики → базова пара фабрики). Повертає lookup-функцію.
-async function loadRateRules(): Promise<(factoryId: number | null, positionId: number | null) => RateRules> {
-  const [facs, fps] = await Promise.all([
-    db.select().from(factoriesTable),
-    db.select().from(factoryPositionsTable),
-  ]);
-  const facById = new Map(facs.map(f => [f.id, f]));
-  const pair = (b: number | null | undefined, n: number | null | undefined) =>
-    b != null ? { brutto: b, netto: n ?? null } : null;
-  const posPair = new Map<string, { brutto: number; netto: number | null }>();
-  const cheapest = new Map<number, { brutto: number; netto: number | null }>();
-  for (const fp of fps) {
-    const p = pair(fp.rate, fp.rateNetto);
-    if (!p) continue;
-    posPair.set(`${fp.factoryId}|${fp.positionId}`, p as any);
-    const cur = cheapest.get(fp.factoryId);
-    if (!cur || p.brutto! < cur.brutto) cheapest.set(fp.factoryId, p as any);
-  }
-  return (factoryId, positionId) => {
-    if (factoryId == null) return {};
-    const fac = facById.get(factoryId);
-    return {
-      position: positionId != null ? posPair.get(`${factoryId}|${positionId}`) ?? null : null,
-      cheapestPosition: cheapest.get(factoryId) ?? null,
-      factory: fac ? pair(fac.rateBrutto, fac.rateNetto) : null,
-    };
-  };
-}
-
 // set для UPDATE і людський дифф для превʼю.
 type RowDiff = { key: string; from: unknown; to: unknown };
 function rowSetFromProfile(

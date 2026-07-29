@@ -62,6 +62,10 @@ function tokenScore(a: string, b: string): number {
 }
 
 // Word-order-independent: each query token greedily takes its best name token.
+// Коли токенів у запиті БІЛЬШЕ, ніж в імені (зайве друге ім'я, приписка в
+// експорті фабрики — «Munashe Gariva Joel» vs «Garira Munashe»), зайві токени
+// штрафуються м'яко (0.25 замість повної ваги): вони не можуть нікуди сісти
+// фізично, і повний штраф ховав очевидні збіги.
 export function nameScore(query: string, fullName: string): number {
   const qt = tokens(query), nt = tokens(fullName);
   if (qt.length === 0 || nt.length === 0) return 0;
@@ -76,21 +80,30 @@ export function nameScore(query: string, fullName: string): number {
     if (bestI >= 0) free.splice(bestI, 1);
     sum += best;
   }
-  return sum / qt.length;
+  const denom = qt.length <= nt.length ? qt.length : nt.length + (qt.length - nt.length) * 0.25;
+  return sum / denom;
 }
 
 const MIN_CANDIDATE = 0.55;
 
-export function matchWorker<T extends WorkerLike>(input: string, workers: T[]): MatchResult<T> {
+export interface MatchOpts {
+  /** нижній поріг для списку кандидатів (превʼю імпорту дозволяє слабші збіги — людина підтверджує) */
+  minCandidate?: number;
+  /** розмір списку кандидатів (типово 4; превʼю імпорту показує більше — рівних по скору може бути багато) */
+  maxCandidates?: number;
+}
+
+export function matchWorker<T extends WorkerLike & { isActive?: boolean | null }>(input: string, workers: T[], opts: MatchOpts = {}): MatchResult<T> {
   const text = input.trim();
   const byCode = workers.find(w => w.workerCode != null && w.workerCode === text);
   if (byCode) return { confident: byCode, candidates: [byCode] };
 
   const scored = workers
     .map(w => ({ w, score: nameScore(text, w.fullName) }))
-    .filter(x => x.score >= MIN_CANDIDATE)
-    .sort((a, b) => b.score - a.score);
-  const candidates = scored.slice(0, 4).map(x => x.w);
+    .filter(x => x.score >= (opts.minCandidate ?? MIN_CANDIDATE))
+    // при рівному скорі активний профіль вище звільненого
+    .sort((a, b) => b.score - a.score || Number(!!b.w.isActive) - Number(!!a.w.isActive));
+  const candidates = scored.slice(0, opts.maxCandidates ?? 4).map(x => x.w);
   if (scored.length === 0) return { confident: null, candidates: [] };
 
   const best = scored[0]!, second = scored[1];

@@ -54,7 +54,7 @@ export interface RoleDef { id: number; key: string; label: string; isSystem: boo
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
   city: string; amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
-  adminNote: string | null; decidedAt: string | null; paidAt: string | null; createdAt: string;
+  adminNote: string | null; decidedAt: string | null; paidAt: string | null; paidTxnId: number | null; createdAt: string;
 }
 export interface Company { id: number; name: string; workerCount?: number }
 export type Gender = "male" | "female";

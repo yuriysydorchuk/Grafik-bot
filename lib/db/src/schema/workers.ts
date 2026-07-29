@@ -449,6 +449,9 @@ export const advanceRequestsTable = pgTable("advance_requests", {
   decidedBy: integer("decided_by").references(() => adminsTable.id),
   decidedAt: timestamp("decided_at"),
   paidAt: timestamp("paid_at"),
+  // авто-помітка «виплачено» по банківському переказу (services/advances.ts);
+  // set null — MT940-імпорт заміщає api-рядки, статус авансу при цьому лишається
+  paidTxnId: integer("paid_txn_id").references(() => bankTransactionsTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -468,6 +471,23 @@ export const monthlyReportsTable = pgTable("monthly_reports", {
   uniqueIndex("monthly_reports_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
   // Legacy/manual rows without a factory: still at most one per worker+month.
   uniqueIndex("monthly_reports_worker_month_nofactory_uniq").on(t.workerId, t.month).where(sql`${t.factoryId} IS NULL`),
+]);
+
+// Client-side hours for the month (factory's own attendance export) — the reconciliation
+// counterpart of monthly_reports: report vs factory hours are compared on the Hours page.
+// Filled by Excel import, pasted list, or manual cell edit. One record per worker+month+factory.
+export const factoryHoursTable = pgTable("factory_hours", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  month: text("month").notNull(),                          // "YYYY-MM"
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  hours: real("hours").notNull(),                          // factory-reported monthly total
+  source: text("source").notNull().default("manual"),      // excel | paste | manual
+  days: jsonb("days").$type<Record<string, number>>(),     // "YYYY-MM-DD" → год (з файлів з розбивкою по днях)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("factory_hours_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
 ]);
 
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent
@@ -508,6 +528,8 @@ export const bankTransactionsTable = pgTable("bank_transactions", {
   txType: text("tx_type"),               // ^00 description + transaction code
   bankRef: text("bank_ref"),             // reference after //
   manualCategory: text("manual_category"), // owner's override: expense-category key or owner_roman/tetiana/yuriy (null = auto)
+  source: text("source").notNull().default("mt940"), // mt940 (звітне, джерело правди) | api (оперативне, Enable Banking; заміщається витягом)
+  counterpartyId: integer("counterparty_id").references(() => counterpartiesTable.id), // резолюція в довідник контрагентів (IBAN → NIP → аліас)
   dedupHash: text("dedup_hash").notNull(),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 }, (t) => [
@@ -534,6 +556,52 @@ export const bankStatementsTable = pgTable("bank_statements", {
   uniqueIndex("bank_statements_dedup_uniq").on(t.dedupHash),
 ]);
 
+// ─── Open banking (Enable Banking PSD2 API) ────────────────────────────────────
+// Consents: one row per authorized bank session (банк × логін юрособи). The consent
+// lives ~180 days (PSD2 SCA); renewal creates a NEW session row and revokes the old
+// one. Transactions synced through a consent land in bank_transactions with
+// source='api' and are superseded by the MT940 import for the covered period.
+export const bankApiConsentsTable = pgTable("bank_api_consents", {
+  id: serial("id").primaryKey(),
+  sessionId: text("session_id").notNull().unique(), // Enable Banking session id
+  aspspName: text("aspsp_name").notNull(),          // connector name, e.g. "BNP Paribas"
+  aspspCountry: text("aspsp_country").notNull().default("PL"),
+  companyId: integer("company_id").references(() => companiesTable.id), // юрособа логіна (null = не змапилась)
+  validUntil: timestamp("valid_until").notNull(),
+  revokedAt: timestamp("revoked_at"),
+  expiryWarnedAt: timestamp("expiry_warned_at"),    // останнє бот-попередження «згода добігає кінця»
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Accounts visible through a consent. uid is session-scoped (changes on renewal);
+// iban is the stable identity used to join with bank_transactions.account.
+export const bankApiAccountsTable = pgTable("bank_api_accounts", {
+  id: serial("id").primaryKey(),
+  consentId: integer("consent_id").notNull().references(() => bankApiConsentsTable.id, { onDelete: "cascade" }),
+  uid: text("uid").notNull(),
+  iban: text("iban"),
+  holderName: text("holder_name"),                  // назва власника з банку (KLINEX SP. Z O.O. …)
+  product: text("product"),
+  currency: text("currency"),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  lastBookedBalance: real("last_booked_balance"),   // останній знятий booked-баланс (живий стан на /bank)
+  lastAvailableBalance: real("last_available_balance"),
+  balanceAt: timestamp("balance_at"),
+  lastSyncAt: timestamp("last_sync_at"),
+  lastTxDate: date("last_tx_date"),                 // найсвіжіша value_date серед синкнутих транзакцій
+});
+
+// ─── CFO-модуль ────────────────────────────────────────────────────────────────
+// Збережені АІ-висновки фінансового директора (місячний аналіз через Claude API).
+export const cfoReportsTable = pgTable("cfo_reports", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(),  // "YYYY-MM" — проаналізований місяць
+  content: text("content").notNull(),           // текст висновку (markdown)
+  model: text("model"),                         // якою моделлю згенеровано
+  auto: boolean("auto").notNull().default(false), // true = крон 1-го числа, false = кнопка
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Office cash box (сейф) ledger, synced from the "STAN KASY" Google Sheet the office
 // maintains (one tab per month+entity). kind: opening (stan na początek) | in (знято
 // з карти в касу) | out (витрачено готівкою). Re-synced per tab (wipe & insert).
@@ -552,6 +620,44 @@ export const cashEntriesTable = pgTable("cash_entries", {
   transferGroup: text("transfer_group"),       // links the two legs of a box↔box transfer (internal move, cancels out in totals)
   manualCategory: text("manual_category"),     // override for the auto text-based category of an outflow
   importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+// ─── Довідник контрагентів ─────────────────────────────────────────────────────
+// Єдина ідентичність клієнтів/постачальників поверх трьох джерел: KSeF (NIP+назви),
+// прив'язка клієнтів фабрик (factories.client_nip) і витяги (IBAN-и). Банки пишуть
+// назви по-різному — резолюція йде IBAN → NIP у призначенні → аліас назви.
+export const counterpartiesTable = pgTable("counterparties", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),                 // канонічна назва
+  kind: text("kind").notNull().default("other"), // client | supplier | both | other
+  nip: text("nip").unique(),                    // 10 цифр, без префікса країни
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Варіації написання назви (нормалізовані: upper + сквошнуті пробіли). Unique по
+// аліасу — резолюція має бути детермінованою.
+export const counterpartyAliasesTable = pgTable("counterparty_aliases", {
+  id: serial("id").primaryKey(),
+  counterpartyId: integer("counterparty_id").notNull().references(() => counterpartiesTable.id, { onDelete: "cascade" }),
+  alias: text("alias").notNull().unique(),
+});
+
+// Відомі IBAN-и контрагента (з переказів, зматчених із фактурами, або вручну).
+export const counterpartyAccountsTable = pgTable("counterparty_accounts", {
+  id: serial("id").primaryKey(),
+  counterpartyId: integer("counterparty_id").notNull().references(() => counterpartiesTable.id, { onDelete: "cascade" }),
+  iban: text("iban").notNull().unique(),        // нормалізований (без пробілів, upper)
+});
+
+// IBAN-и працівників: перекази на ці рахунки — це ЗП/аванси незалежно від тексту
+// призначення (щоб виплати без слова WYNAGRODZENIE не падали в «Інше»).
+export const workerBankAccountsTable = pgTable("worker_bank_accounts", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  iban: text("iban").notNull().unique(),
+  source: text("source").notNull().default("manual"), // manual | auto (сідинг із ЗП-переказів)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // Counterparty → category rules: re-categorize all (past and future) transactions
@@ -619,6 +725,12 @@ export const invoicesTable = pgTable("invoices", {
   manualCategory: text("manual_category"),
   tabName: text("tab_name").notNull(),         // "{company}:{MM.YYYY}" for sheet rows, "manual" for panel rows
   sortIdx: integer("sort_idx").notNull().default(0),
+  // модуль «Фактури коштові» (/cost-invoices): ручне внесення і скан з бота
+  source: text("source").notNull().default("sheet"), // sheet (синк з таблиці) | manual (сайт) | scan (бот-сканер)
+  sellerNip: text("seller_nip"),               // NIP постачальника (для матчингу зі словником/KSeF)
+  note: text("note"),
+  filePath: text("file_path"),                 // скан/фото фактури на диску (uploads/invoices/)
+  createdBy: integer("created_by").references(() => adminsTable.id), // хто вніс (site/бот)
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 });
 
@@ -991,6 +1103,10 @@ export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
+export type BankApiConsent = typeof bankApiConsentsTable.$inferSelect;
+export type BankApiAccount = typeof bankApiAccountsTable.$inferSelect;
+export type Counterparty = typeof counterpartiesTable.$inferSelect;
+export type WorkerBankAccount = typeof workerBankAccountsTable.$inferSelect;
 export type CashEntry = typeof cashEntriesTable.$inferSelect;
 export type AdminSession = typeof adminSessionsTable.$inferSelect;
 export type LoginEvent = typeof loginEventsTable.$inferSelect;

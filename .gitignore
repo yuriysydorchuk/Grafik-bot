@@ -17,3 +17,6 @@ docs/archive/HANDOFF-vps-deploy.md
 
 # KSeF certificate/keys — never commit
 KSEF/
+
+# Enable Banking (open banking API) RSA key + cert — never commit
+secrets/

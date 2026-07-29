@@ -325,6 +325,27 @@ export async function matchKsefPayments(): Promise<number> {
       AND t.company_id = i.company_id
       AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND abs(t.amount - i.gross) <= 0.02`);
+  // purchases: transfer to a KNOWN supplier IBAN from the counterparty dictionary
+  // + exact gross. Identity comes from the IBAN (not the amount alone — the owner's
+  // no-amount-matching rule), and only unambiguous pairs both ways are taken:
+  // several open invoices with the same gross to one supplier stay manual.
+  await run(sql`
+    WITH cand AS (
+      SELECT i.id AS inv_id, t.id AS txn_id, t.value_date,
+             count(*) OVER (PARTITION BY i.id) AS n_txn,
+             count(*) OVER (PARTITION BY t.id) AS n_inv
+      FROM ksef_invoices i
+      JOIN counterparties c ON c.nip = i.seller_nip
+      JOIN counterparty_accounts ca ON ca.counterparty_id = c.id
+      JOIN bank_transactions t ON t.direction = 'out'
+        AND upper(replace(coalesce(t.counterparty_account, ''), ' ', '')) = ca.iban
+        AND t.value_date >= i.issue_date
+        AND abs(t.amount - i.gross) <= 0.02
+        AND NOT EXISTS (SELECT 1 FROM ksef_invoices x WHERE x.paid_txn_id = t.id)
+      WHERE i.kind = 'purchase' AND i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
+    )
+    UPDATE ksef_invoices i SET paid_date = c.value_date, paid_txn_id = c.txn_id, paid_via = 'bank'
+    FROM cand c WHERE i.id = c.inv_id AND c.n_txn = 1 AND c.n_inv = 1`);
   // purchases the office register (Faktury Kosztowe) marks paid but the bank
   // can't see: «Gotówka» (cash) and transfers without the number in the title.
   // Anchor = exact invoice number + amount (not amount alone); paid_txn_id stays
@@ -379,6 +400,18 @@ export async function matchKsefPayments(): Promise<number> {
     UPDATE ksef_invoices x SET paid_date = c.issue_date, paid_via = 'korekta'
     FROM cand c WHERE (x.id = c.inv_id OR x.id = c.kor_id) AND c.n_inv = 1 AND c.n_kor = 1`);
   return total;
+}
+
+// Фактури, щойно закриті оперативними (source='api') переказами — для алертів
+// «✅ закриває фактуру» після кожного API-синку (matchKsefPayments уже відпрацював).
+export async function recentlyPaidByApi(minutes = 30): Promise<{ invoiceNumber: string; buyerName: string | null; gross: number; paidDate: string }[]> {
+  const r: any = await db.execute(sql`
+    SELECT i.invoice_number AS "invoiceNumber", i.buyer_name AS "buyerName", i.gross, i.paid_date AS "paidDate"
+    FROM ksef_invoices i JOIN bank_transactions t ON t.id = i.paid_txn_id
+    WHERE i.kind = 'sale' AND i.paid_via = 'bank' AND t.source = 'api'
+      AND t.imported_at > now() - make_interval(mins => ${minutes})
+    ORDER BY i.gross DESC`);
+  return (r?.rows ?? r ?? []) as any[];
 }
 
 // Receivables («нам винні») at a date: invoices issued on or before asOf that
