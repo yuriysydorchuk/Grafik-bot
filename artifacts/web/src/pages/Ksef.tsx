@@ -52,8 +52,19 @@ export default function Ksef() {
   const shown = (d?.invoices ?? []).filter(i =>
     (!firm || i.firm === firm) &&
     (!s || i.invoiceNumber.toUpperCase().includes(s) || (i.buyerName ?? "").toUpperCase().includes(s) || (i.clientLabel ?? "").toUpperCase().includes(s) || (i.sellerName ?? "").toUpperCase().includes(s)));
-  const partyInvoices = party ? (d?.invoices ?? []).filter(i => partyOf(i) === party) : [];
+  const partyInvoices = party ? shown.filter(i => partyOf(i) === party) : [];
   const sum = (f: (i: Inv) => number) => Math.round(shown.reduce((a, i) => a + f(i), 0) * 100) / 100;
+  // metrics and the by-client table follow the firm/search filter, so they are
+  // recomputed here from the filtered rows instead of the server-wide d.totals
+  const totals: Data["totals"] = {
+    count: shown.length, net: sum(i => i.net), vat: sum(i => i.vat), gross: sum(i => i.gross),
+    paidGross: sum(i => (i.paid ? i.gross : 0)), unpaidGross: sum(i => (i.paid ? 0 : i.gross)),
+  };
+  const byClient: Data["byClient"] = [...shown.reduce((m, i) => {
+    const g = m.get(partyOf(i)) ?? { client: partyOf(i), count: 0, net: 0, gross: 0, unpaidGross: 0 };
+    g.count++; g.net += i.net; g.gross += i.gross; if (!i.paid) g.unpaidGross += i.gross;
+    return m.set(g.client, g);
+  }, new Map<string, Data["byClient"][number]>()).values()].sort((a, b) => b.net - a.net);
 
   return (
     <>
@@ -97,11 +108,11 @@ export default function Ksef() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-            <Metric label={t("Фактур")} value={String(d.totals.count)} icon={<FileText className="h-5 w-5 text-slate-400" />} />
-            <Metric label={isPurchase ? t("Витрати netto") : t("Дохід netto")} value={zl(d.totals.net)} icon={<TrendingUp className={`h-5 w-5 ${isPurchase ? "text-rose-500" : "text-emerald-500"}`} />} />
-            <Metric label="VAT" value={zl(d.totals.vat)} icon={<FileText className="h-5 w-5 text-slate-400" />} />
-            <Metric label={t("Оплачено (brutto)")} value={zl(d.totals.paidGross)} icon={<CheckCircle2 className="h-5 w-5 text-emerald-500" />} />
-            <Metric label={t("Не оплачено (brutto)")} value={zl(d.totals.unpaidGross)} icon={<AlertCircle className="h-5 w-5 text-amber-500" />} />
+            <Metric label={t("Фактур")} value={String(totals.count)} icon={<FileText className="h-5 w-5 text-slate-400" />} />
+            <Metric label={isPurchase ? t("Витрати netto") : t("Дохід netto")} value={zl(totals.net)} icon={<TrendingUp className={`h-5 w-5 ${isPurchase ? "text-rose-500" : "text-emerald-500"}`} />} />
+            <Metric label="VAT" value={zl(totals.vat)} icon={<FileText className="h-5 w-5 text-slate-400" />} />
+            <Metric label={t("Оплачено (brutto)")} value={zl(totals.paidGross)} icon={<CheckCircle2 className="h-5 w-5 text-emerald-500" />} />
+            <Metric label={t("Не оплачено (brutto)")} value={zl(totals.unpaidGross)} icon={<AlertCircle className="h-5 w-5 text-amber-500" />} />
           </div>
 
           {/* per-counterparty totals */}
@@ -119,7 +130,7 @@ export default function Ksef() {
                 <th className="px-4 py-2 text-right">{t("З них не оплачено")}</th>
               </tr></thead>
               <tbody>
-                {d.byClient.map(c => (
+                {byClient.map(c => (
                   <tr key={c.client} onClick={() => setParty(c.client)}
                     className="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50">
                     <td className="px-4 py-1.5 font-medium text-slate-700">{c.client}</td>
@@ -132,10 +143,10 @@ export default function Ksef() {
               </tbody>
               <tfoot className="bg-slate-50"><tr className="border-t border-slate-300 font-semibold text-slate-800">
                 <td className="px-4 py-2">{t("Разом")}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{d.totals.count}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{zl(d.totals.net)}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{zl(d.totals.gross)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{zl(d.totals.unpaidGross)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{totals.count}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{zl(totals.net)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{zl(totals.gross)}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{zl(totals.unpaidGross)}</td>
               </tr></tfoot>
             </table>
             <div className="border-t border-slate-100 px-4 py-2 text-xs text-slate-400">
