@@ -549,11 +549,14 @@ export function cityOfRegion(region: string): City | null {
 // такі пропускає і звітує, а не вгадує).
 export async function factoryCityMap(): Promise<Map<number, string>> {
   const map = new Map<number, string>();
+  // 1) явне місто з профілю фабрики — нова фабрика групується одразу,
+  // ще до першої сводної (значення канонічні: Люблін/Лодзь/Познань)
+  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name, city: factoriesTable.city }).from(factoriesTable);
+  for (const f of facs) { const c = (f.city ?? "").trim(); if (c) map.set(f.id, c); }
+  // 2) історія сводних (фабрики без міста в профілі)
   const hist = await db.select({ factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city })
     .from(svodniRowsTable).where(isNotNull(svodniRowsTable.factoryId)).orderBy(desc(svodniRowsTable.id));
   for (const h of hist) if (h.factoryId != null && !map.has(h.factoryId)) map.set(h.factoryId, h.city);
-
-  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
   if (facs.some(f => !map.has(f.id))) {
     const pfm = await db.select({ factory: payrollFactoryMonthsTable.factory, region: payrollFactoryMonthsTable.region })
       .from(payrollFactoryMonthsTable).orderBy(desc(payrollFactoryMonthsTable.id));
