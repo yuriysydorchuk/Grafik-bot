@@ -135,6 +135,29 @@ test("day-compare: збіг тоталів (рапорт = фабрика) → �
   assert.equal(cmp.body.workers.length, 0);
 });
 
+test("студент до 26 на /hours: вік з дати народження і legalStatus, а не застарілі прапорці", opts, async () => {
+  const [f] = await db.insert(factoriesTable).values({ name: "StudFab" }).returning({ id: factoriesTable.id });
+  const y = new Date().getFullYear();
+  // 23-річний з legalStatus=student, але з НЕвиставленими чекбоксами → пільга діє (нетто = брутто)
+  const [young] = await db.insert(workersTable).values({
+    fullName: "Young Student", factoryId: f!.id, hourlyRate: 30,
+    isStudent: false, under26: false, legalStatus: "student", birthDate: `${y - 23}-01-15`,
+  }).returning({ id: workersTable.id });
+  // 27-річний із застарілими прапорцями «студент до 26» → пільги вже НЕМАЄ
+  const [old] = await db.insert(workersTable).values({
+    fullName: "Old Student", factoryId: f!.id, hourlyRate: 30,
+    isStudent: true, under26: true, legalStatus: "student", birthDate: `${y - 27}-01-15`,
+  }).returning({ id: workersTable.id });
+  for (const workerId of [young!.id, old!.id]) {
+    await db.insert(monthlyReportsTable).values({ workerId, month: MONTH, factoryId: f!.id, hoursReported: 100 });
+  }
+  const res = await request(app).get(`/api/hours?month=${MONTH}`).set("Cookie", owner);
+  const rowYoung = res.body.workers.find((w: any) => w.workerId === young!.id);
+  const rowOld = res.body.workers.find((w: any) => w.workerId === old!.id);
+  assert.equal(rowYoung.reportNet, rowYoung.reportGross); // звільнений від внесків
+  assert.ok(rowOld.reportNet < rowOld.reportGross, "після 26 внески мають зніматись попри прапорці");
+});
+
 test("discrepancy-email: валідація адреси і полів (до SMTP не доходить)", opts, async () => {
   const { factoryId } = await seedFactoryWorker();
   const bad = await request(app).post("/api/hours/discrepancy-email").set("Cookie", owner).set(H)

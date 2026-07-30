@@ -2349,12 +2349,21 @@ router.get("/hours", RW, async (req, res) => {
   const ruleOf = await loadRateRules();
   const svodniRate = (profileRate: number | null | undefined, factoryId: number | null, positionId: number | null): number =>
     resolveBaseRates({ hourlyRate: profileRate ?? null, hourlyRateNetto: null }, ruleOf(factoryId, positionId), false).brutto ?? rates.defaultRate;
+  // Студент до 26 — тими самими правилами, що сводна: студент = чекбокс АБО
+  // legalStatus="student"; «до 26» — з дати народження (прапорець лише як фолбек,
+  // коли дати нема) — інакше застарілий чекбокс лишає пільгу після 26-річчя.
+  const { isUnder26 } = await import("../services/svodniSync");
+  const stud26Of = (w: { isStudent: boolean | null; legalStatus: string | null; birthDate: string | null; under26: boolean | null }) => ({
+    isStudent: !!(w.isStudent || w.legalStatus === "student"),
+    under26: w.birthDate ? isUnder26(String(w.birthDate)) : !!w.under26,
+  });
   const rows = await db
     .select({
       workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
       factoryId: scheduleEntriesTable.factoryId, factory: factoriesTable.name, shift: scheduleEntriesTable.shift,
       hoursOverride: scheduleEntriesTable.hoursOverride, positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
       day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
@@ -2375,7 +2384,7 @@ router.get("/hours", RW, async (req, res) => {
     if (!byWorkerFactory.has(key)) byWorkerFactory.set(key, {
       workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: svodniRate(r.rate, r.factoryId, r.positionId), isStudent: !!r.isStudent, under26: !!r.under26,
+      rate: svodniRate(r.rate, r.factoryId, r.positionId), ...stud26Of(r),
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
     const w = byWorkerFactory.get(key);
@@ -2387,6 +2396,7 @@ router.get("/hours", RW, async (req, res) => {
   const activeWorkers = await db.select({
     id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
     factoryId: workersTable.factoryId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+    legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
   }).from(workersTable).where(eq(workersTable.isActive, true));
   const workersWithRows = new Set<number>([...byWorkerFactory.values()].map(w => w.workerId));
   for (const aw of activeWorkers) {
@@ -2395,7 +2405,7 @@ router.get("/hours", RW, async (req, res) => {
     byWorkerFactory.set(rowKey(aw.id, aw.factoryId), {
       workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null,
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: svodniRate(aw.rate, aw.factoryId, aw.positionId), isStudent: !!aw.isStudent, under26: !!aw.under26,
+      rate: svodniRate(aw.rate, aw.factoryId, aw.positionId), ...stud26Of(aw),
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
     });
   }
@@ -2420,6 +2430,7 @@ router.get("/hours", RW, async (req, res) => {
     const infos = await db.select({
       id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
     }).from(workersTable).where(inArray(workersTable.id, ids));
     const infoById = new Map(infos.map(w => [w.id, w]));
     for (const r of orphanReports) {
@@ -2429,7 +2440,7 @@ router.get("/hours", RW, async (req, res) => {
       byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
         workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
         factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-        rate: svodniRate(w.rate, r.factoryId, w.positionId), isStudent: !!w.isStudent, under26: !!w.under26,
+        rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
         byShift: {} as Record<string, number>, shifts: 0, hours: 0,
       });
     }
@@ -2444,6 +2455,7 @@ router.get("/hours", RW, async (req, res) => {
     const infos = await db.select({
       id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
     }).from(workersTable).where(inArray(workersTable.id, ids));
     const infoById = new Map(infos.map(w => [w.id, w]));
     for (const r of orphanFh) {
@@ -2453,7 +2465,7 @@ router.get("/hours", RW, async (req, res) => {
       byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
         workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
         factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-        rate: svodniRate(w.rate, r.factoryId, w.positionId), isStudent: !!w.isStudent, under26: !!w.under26,
+        rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
         byShift: {} as Record<string, number>, shifts: 0, hours: 0,
       });
     }
