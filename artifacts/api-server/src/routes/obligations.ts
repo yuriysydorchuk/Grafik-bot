@@ -17,10 +17,16 @@ const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m }
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const validDate = (d: any) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
 
-// items open as of a date — arisen by that date and not settled yet (or settled later)
+// Rows counted into the asOf month's position. Manual entries are month-end
+// SNAPSHOTS (owner types VAT/ZUS/CIT etc. per month), so a row only counts in
+// the month of its arisen_date — an unpaid debt is re-entered next month by the
+// owner, not carried over. Settled rows drop out from their settlement date on.
 export async function openObligationRows(asOf: string) {
+  const month = asOf.slice(0, 7);
   const rows = await db.select().from(obligationsTable).where(lte(obligationsTable.arisenDate, asOf));
-  return rows.filter(r => !(r.status === "settled" && r.settledAt != null && r.settledAt <= asOf));
+  return rows
+    .filter(r => (r.arisenDate ?? "").slice(0, 7) === month)
+    .filter(r => !(r.status === "settled" && r.settledAt != null && r.settledAt <= asOf));
 }
 
 // totals as of a date — used by /cashflow and /balance for the month-end net position

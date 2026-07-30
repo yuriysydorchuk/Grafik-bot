@@ -59,7 +59,7 @@ export function ObligationModal({ companies, ob, defaults, onClose, onSaved }: {
           <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Термін (до якої дати)")}</div>
             <Input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} /></label>
         </div>
-        <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Виникло (з якої дати це борг — впливає на стан на кінець місяця)")}</div>
+        <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Дата (запис — знімок: діє лише в балансі свого місяця)")}</div>
           <Input type="date" value={arisenDate} onChange={e => setArisenDate(e.target.value)} /></label>
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Нотатка")}</div>
           <Input value={note} onChange={e => setNote(e.target.value)} /></label>
