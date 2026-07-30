@@ -25,7 +25,7 @@ interface MissingWorker { id: number; fullName: string; telegramId: string | nul
 interface Attention {
   pendingAbsences: number; hoursDisputes: number; pendingAdvances: number;
   unlinkedUnplanned: number; unmarkedAttendance: number; driverGaps: number;
-  availabilityMissing: number;
+  availabilityMissing: number; dataDrift: number;
 }
 
 interface Overview {
@@ -286,6 +286,7 @@ function AttentionPanel({ a }: { a: Attention }) {
     { count: a.pendingAdvances, label: t("запити на аванс очікують"), href: "/advances", icon: HandCoins, tone: "amber" },
     { count: a.unlinkedUnplanned, label: t("позапланові без привʼязки"), href: "/schedule", icon: Link2Off, tone: "amber" },
     { count: a.availabilityMissing, label: t("не заповнили диспозиційність (наст. тиждень)"), href: "/availability", icon: CalendarX2, tone: "amber" },
+    { count: a.dataDrift, label: t("розсинхрон даних профілів (вік/студент/місто фабрики)"), href: "/workers", icon: Link2Off, tone: "amber" },
   ];
   const items = all.filter(i => i.count > 0);
 

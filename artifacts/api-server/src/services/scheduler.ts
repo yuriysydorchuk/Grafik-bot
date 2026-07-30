@@ -120,11 +120,20 @@ export function startScheduler() {
   );
 
   // Daily housekeeping at 04:00 Warsaw: prune chat-tracking rows + old notifications
+  // + звірка «полів-двійників» (вік/студент/місто фабрики) — дрейф алертиться в бот.
   prunePruneTask = cron.schedule(
     "0 4 * * *",
     async () => {
       try { const { pruneOldMessageRows } = await import("../bot/chat"); await pruneOldMessageRows(); } catch { /* ignore */ }
       await pruneNotifications();
+      try {
+        const { findDataDrift, driftSummary } = await import("./dataDrift");
+        const summary = driftSummary(await findDataDrift());
+        if (summary) {
+          const { sendAlert } = await import("../lib/alerts");
+          await sendAlert({ service: "cron", kind: "data-drift", source: "dataDriftCheck", message: `Розсинхрон даних: ${summary}` });
+        }
+      } catch (e) { logger.error({ err: e }, "data drift check failed"); }
     },
     { timezone: TZ },
   );

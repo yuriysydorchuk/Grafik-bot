@@ -15,7 +15,7 @@ import {
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
-import { factoryCityMap } from "../services/svodniSync";
+import { factoryCityMap, isUnder26 } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
@@ -41,6 +41,14 @@ router.use(authRequired);
 
 // Read/write capability for owner + scheduler (driver is read-only / live-only)
 const RW = requireCap("editData");
+
+// КАНОН статусу «студент до 26» (як у сводній): студент = чекбокс АБО
+// legalStatus="student"; вік — з дати народження, прапорець under26 — лише
+// фолбек, коли дати нема. Всі розрахунки ЗП мають іти через цей хелпер.
+const stud26Of = (w: { isStudent: boolean | null; legalStatus?: string | null; birthDate?: string | Date | null; under26: boolean | null }) => ({
+  isStudent: !!(w.isStudent || w.legalStatus === "student"),
+  under26: w.birthDate ? isUnder26(String(w.birthDate)) : !!w.under26,
+});
 // Whether the requester's role may see/edit financial fields (rates, invoices).
 const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "viewFinance");
 const canSensitiveReq = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodniSensitive");
@@ -268,9 +276,13 @@ router.get("/attention", async (_req, res) => {
 
   const availabilityMissing = (await missingAvailabilityWorkers(nextWeek)).length;
 
+  // розсинхрон полів-двійників (вік/студент/місто фабрики) — канон описаний у services/dataDrift.ts
+  const { findDataDrift, driftTotal } = await import("../services/dataDrift");
+  const dataDrift = driftTotal(await findDataDrift());
+
   ok(res, {
     pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned,
-    unmarkedAttendance, driverGaps, availabilityMissing,
+    unmarkedAttendance, driverGaps, availabilityMissing, dataDrift,
   });
 });
 
@@ -2349,14 +2361,6 @@ router.get("/hours", RW, async (req, res) => {
   const ruleOf = await loadRateRules();
   const svodniRate = (profileRate: number | null | undefined, factoryId: number | null, positionId: number | null): number =>
     resolveBaseRates({ hourlyRate: profileRate ?? null, hourlyRateNetto: null }, ruleOf(factoryId, positionId), false).brutto ?? rates.defaultRate;
-  // Студент до 26 — тими самими правилами, що сводна: студент = чекбокс АБО
-  // legalStatus="student"; «до 26» — з дати народження (прапорець лише як фолбек,
-  // коли дати нема) — інакше застарілий чекбокс лишає пільгу після 26-річчя.
-  const { isUnder26 } = await import("../services/svodniSync");
-  const stud26Of = (w: { isStudent: boolean | null; legalStatus: string | null; birthDate: string | null; under26: boolean | null }) => ({
-    isStudent: !!(w.isStudent || w.legalStatus === "student"),
-    under26: w.birthDate ? isUnder26(String(w.birthDate)) : !!w.under26,
-  });
   const rows = await db
     .select({
       workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
@@ -2839,6 +2843,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
       day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
       positionId: workersTable.positionId,
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
@@ -2860,7 +2865,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
       factoryId: r.factoryId, workerId: r.workerId, positionId: r.positionId ?? null, month,
       rate: effRate(posRates, r.factoryId, r.positionId, r.rate ?? rates.defaultRate),
       invoiceRate: effRate(posInvoice, r.factoryId, r.positionId, fac?.invoiceRate ?? 0),
-      isStudent: !!r.isStudent, under26: !!r.under26, hours: 0,
+      ...stud26Of(r), hours: 0,
     });
     wf.get(key)!.hours += r.hoursOverride ?? factoryShiftHours(fac, r.shift as any);
   }
@@ -2881,6 +2886,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
       const repWorkers = await db.select({
         id: workersTable.id, factoryId: workersTable.factoryId, positionId: workersTable.positionId,
         rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+        legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
       }).from(workersTable).where(inArray(workersTable.id, [...new Set(reports.map(r => r.workerId))]));
       const wById = new Map(repWorkers.map(w => [w.id, w]));
       for (const rep of reports) {
@@ -2905,7 +2911,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
             factoryId: facId, workerId: rep.workerId, positionId: w.positionId ?? null, month: rep.month,
             rate: effRate(posRates, facId, w.positionId, w.rate ?? rates.defaultRate),
             invoiceRate: effRate(posInvoice, facId, w.positionId, fac?.invoiceRate ?? 0),
-            isStudent: !!w.isStudent, under26: !!w.under26, hours: rep.hours,
+            ...stud26Of(w), hours: rep.hours,
           });
         }
       }

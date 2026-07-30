@@ -944,6 +944,7 @@ const EN: Record<string, string> = {
   "Показати розбивку по днях від фабрики": "Show the factory's per-day breakdown",
   "дні від фабрики": "days from the factory",
   "дн.": "days",
+  "розсинхрон даних профілів (вік/студент/місто фабрики)": "profile data drift (age/student/factory city)",
   "ЗП нетто:": "Net pay:",
   "працівник має скаргу": "worker has a complaint",
   "працівників мають скарги": "workers have complaints",
