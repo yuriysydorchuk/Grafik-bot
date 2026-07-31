@@ -62,6 +62,8 @@ export default function Hours() {
   // так лист/превʼю живо перераховуються після правок годин)
   const [importKey, setImportKey] = useState<string | null>(null);
   const [emailKey, setEmailKey] = useState<string | null>(null);
+  // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
+  const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string } | null>(null);
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
   const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
@@ -154,7 +156,7 @@ export default function Hours() {
               </Button>
             )}
             <Button variant="secondary" loading={remind.isPending} onClick={() => remind.mutate()}><BellRing className="h-4 w-4" /> {t("Нагадати про рапорт")}</Button>
-            <a href={`/api/hours/report-excel?month=${month}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> {t("Excel рапорту")}</a>
+            <button onClick={() => setExportTo({ factoryId: null, name: t("всі фабрики") })} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> {t("Excel рапорту")}</button>
           </div>
         )}
       </div>
@@ -247,7 +249,7 @@ export default function Hours() {
                     </button>
                   )}
                   {canEdit && g.factoryId != null && (
-                    <a href={`/api/hours/report-excel?month=${month}&factoryId=${g.factoryId}`} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {t("Excel рапорту")}</a>
+                    <button onClick={() => setExportTo({ factoryId: g.factoryId!, name: g.name })} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {t("Excel рапорту")}</button>
                   )}
                   </span>
                 </div>
@@ -301,6 +303,7 @@ export default function Hours() {
         </div>
       )}
       {sel && <WorkerDaysModal workerId={sel.id} name={sel.name} month={month} monthLabel={monthLabel} onClose={() => setSel(null)} />}
+      {exportTo && <ExportExcelModal month={month} monthLabel={monthLabel} target={exportTo} onClose={() => setExportTo(null)} />}
       {(() => {
         // групи беруться свіжими з query — правки годин живо оновлюють модалки
         const ig = importKey ? groups.find(g => g.key === importKey) : null;
@@ -313,6 +316,62 @@ export default function Hours() {
         );
       })()}
     </>
+  );
+}
+
+// Excel-експорт обліку годин: вибір стовпчиків + перемикач «лише рядки з помилками»
+// (розбіжність рапорт ↔ фабрика, як підсвітка в таблиці). Формує URL /hours/report-excel.
+function ExportExcelModal({ month, monthLabel, target, onClose }: {
+  month: string; monthLabel: string; target: { factoryId: number | null; name: string }; onClose: () => void;
+}) {
+  const t = useT();
+  const COLS: { key: string; label: string }[] = [
+    { key: "code", label: t("Код") },
+    { key: "name", label: t("Працівник") },
+    { key: "factory", label: t("Фабрика") },
+    { key: "report", label: t("Години з рапорту") },
+    { key: "factoryHours", label: t("Години з фабрики") },
+    { key: "diff", label: t("Різниця") },
+    { key: "status", label: t("Статус рапорту") },
+  ];
+  const [checked, setChecked] = useState<Set<string>>(new Set(COLS.map(c => c.key)));
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const toggle = (k: string) => setChecked(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const download = () => {
+    const p = new URLSearchParams({ month, cols: COLS.map(c => c.key).filter(k => checked.has(k)).join(",") });
+    if (target.factoryId != null) p.set("factoryId", String(target.factoryId));
+    if (errorsOnly) p.set("errorsOnly", "1");
+    window.location.href = `/api/hours/report-excel?${p.toString()}`;
+    onClose();
+  };
+  return (
+    <Modal open onClose={onClose} title={`${t("Excel обліку годин")} — ${target.name} · ${monthLabel}`}>
+      <div className="space-y-4">
+        <div>
+          <Label>{t("Стовпчики")}</Label>
+          <div className="mt-1 grid grid-cols-2 gap-1.5">
+            {COLS.map(c => (
+              <label key={c.key} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm">
+                <input type="checkbox" checked={checked.has(c.key)} onChange={() => toggle(c.key)} />
+                <span className="text-slate-700">{c.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <label className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50/40 p-3 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={errorsOnly} onChange={e => setErrorsOnly(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Лише рядки з помилками")}</span>
+            <span className="block text-xs text-slate-500">{t("Тільки пари, де години з рапорту й від фабрики розходяться або одного з джерел бракує.")}</span>
+          </span>
+        </label>
+        <p className="text-xs text-slate-400">{t("Файл формується польською (заголовки колонок).")}</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button disabled={checked.size === 0} onClick={download}><Download className="h-4 w-4" /> {t("Скачати")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

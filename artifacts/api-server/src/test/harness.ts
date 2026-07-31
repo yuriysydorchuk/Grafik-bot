@@ -8,7 +8,7 @@ import {
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
-  factoryHoursTable,
+  factoryHoursTable, factoryShiftOverridesTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -25,7 +25,7 @@ export {
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
-  factoryHoursTable,
+  factoryHoursTable, factoryShiftOverridesTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -43,7 +43,7 @@ export async function resetDb(): Promise<void> {
   await db.execute(sql.raw(
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
-    "schedule_weeks, schedule_entries, bank_transactions, pnl_entries, " +
+    "schedule_weeks, schedule_entries, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, factory_hours, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +

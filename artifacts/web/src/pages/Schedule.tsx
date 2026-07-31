@@ -11,7 +11,7 @@ import { useConfirm } from "../components/confirm";
 import { usePersisted, useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { WeekSelect } from "../components/WeekSelect";
-import { Button, Select, Card, Badge, Empty, Modal } from "../components/ui";
+import { Button, Select, Card, Badge, Empty, Modal, Input, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { dotClass, badgeClass, genderIcon, genderClass } from "../lib/colors";
 import { useT } from "../lib/i18n";
@@ -24,7 +24,7 @@ type SchedResp = {
   reserve: Record<string, ReserveItem[]>;
   available: Record<string, ReserveItem[]>;
   approved: boolean;
-  factory: { shiftCount: number; usesAvailability: boolean; genMode?: string; usesPositions?: boolean; usesGender?: boolean } | null;
+  factory: { shiftCount: number; usesAvailability: boolean; genMode?: string; usesPositions?: boolean; usesGender?: boolean; shiftTimes?: { start: string; end: string }[] } | null;
   assignments: Record<string, { driverId: number; driverName: string | null }[]>;
   drivers: { id: number; name: string }[];
   orders: Record<string, number>;
@@ -34,6 +34,7 @@ type SchedResp = {
   absenceByWorker: Record<string, { status: string; reason: string | null }>;
   substituteFor: Record<string, string>;
   cancelledCells: string[];
+  shiftOverrides: Record<string, { start: string; end: string }>; // "day-shift" → разовий час зміни на цю дату
 };
 type DragData =
   | { kind: "entry"; id: number; day: DayCode; shift: ShiftCode }
@@ -67,6 +68,8 @@ export default function Schedule() {
   const [linkTo, setLinkTo] = useState<{ id: number; name: string; day: DayCode; shift: ShiftCode } | null>(null); // link a free-text unplanned extra to a real worker
   const [linkQuery, setLinkQuery] = useState("");
   const [cancelTo, setCancelTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // cancel a whole day+shift cell
+  const [extraTo, setExtraTo] = useState<{ day: DayCode; shift?: ShiftCode } | null>(null); // one-off shift for a single day
+  const [genOpen, setGenOpen] = useState(false); // generate options (replace vs augment)
 
   useEffect(() => { if (!factoryId && factories.length) setFactoryId(String(factories[0]!.id)); }, [factories]);
 
@@ -103,12 +106,13 @@ export default function Schedule() {
   const absenceByWorker = data?.absenceByWorker ?? {};
   const substituteFor = data?.substituteFor ?? {};
   const cancelledCells = new Set(data?.cancelledCells ?? []);
+  const shiftOverrides = data?.shiftOverrides ?? {};
   // A shift "has happened" once its start time has passed → show actuals, lock editing.
-  const factoryShiftsArr = factory?.shifts ?? [];
+  const factoryShiftsArr = data?.factory?.shiftTimes ?? factory?.shifts ?? [];
   // Compare in Warsaw wall-clock (independent of the viewer's timezone)
   const warsawNowMs = () => new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Warsaw" })).getTime();
   const shiftStarted = (dayIndex: number, shift: ShiftCode) => {
-    const t = factoryShiftsArr[Number(shift) - 1]?.start;
+    const t = shiftOverrides[`${DAYS[dayIndex]}-${shift}`]?.start ?? factoryShiftsArr[Number(shift) - 1]?.start;
     if (!t) return false;
     const d = new Date(weekStart + "T00:00:00");
     d.setDate(d.getDate() + dayIndex);
@@ -146,12 +150,39 @@ export default function Schedule() {
       key: String(g), label, color: "slate", items: items.filter(e => (e.gender ?? null) === g).sort(byName),
     })).filter(g => g.items.length > 0);
   };
-  const shifts = SHIFT_CODES.slice(0, shiftCount);
+  // Колонки змін дня: налаштовані фабрикою ∪ зміни, де реально є записи цього дня,
+  // ∪ разові зміни (override часу на дату). Зайва колонка НІКОЛИ не ховає наявний
+  // графік — зміна кількості змін фабрики не «губить» записи.
+  const dayShiftCodes = (day: DayCode): ShiftCode[] => {
+    const set = new Set<ShiftCode>(SHIFT_CODES.slice(0, shiftCount));
+    for (const e of entries) if (e.day === day) set.add(e.shift as ShiftCode);
+    for (const k of Object.keys(shiftOverrides)) {
+      const i = k.lastIndexOf("-");
+      if (k.slice(0, i) === day) set.add(k.slice(i + 1) as ShiftCode);
+    }
+    return SHIFT_CODES.filter(s => set.has(s));
+  };
+  // ISO-дата дня тижня (для API разових змін)
+  const isoDay = (di: number) => {
+    const d = new Date(weekStart + "T00:00:00");
+    d.setDate(d.getDate() + di);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
   const hasContent = entries.length > 0 || Object.keys(reserve).length > 0 || Object.values(available).some(a => a.length > 0);
 
-  const generate = useMutation({ mutationFn: () => post("/schedule/generate", { weekStart, factoryId: Number(factoryId) }),
-    onSuccess: (r: any) => { reload(); toast.success(t("Згенеровано: {n} призначень", { n: r.totalAssigned }), { description: (r.shortages ?? []).length ? t("Є нестачі ({n})", { n: r.shortages.length }) : t("Усі замовлення виконані") }); },
+  const generate = useMutation({ mutationFn: (augment: boolean) => post("/schedule/generate", { weekStart, factoryId: Number(factoryId), augment }),
+    onSuccess: (r: any) => { reload(); setGenOpen(false); toast.success(t("Згенеровано: {n} призначень", { n: r.totalAssigned }), { description: (r.shortages ?? []).length ? t("Є нестачі ({n})", { n: r.shortages.length }) : t("Усі замовлення виконані") }); },
     onError: (e: any) => toast.error(e.message) });
+  const saveOverride = useMutation({
+    mutationFn: (v: { date: string; shift: ShiftCode; start: string; end: string }) => post("/schedule/shift-override", { factoryId: Number(factoryId), ...v }),
+    onSuccess: () => { reload(); setExtraTo(null); toast.success(t("Разову зміну збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const deleteOverride = useMutation({
+    mutationFn: (v: { date: string; shift: ShiftCode }) => del(`/schedule/shift-override?factoryId=${factoryId}&date=${v.date}&shift=${v.shift}`),
+    onSuccess: () => { reload(); setExtraTo(null); toast.success(t("Разову зміну прибрано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const approve = useMutation({ mutationFn: (sendEmail: boolean) => post("/schedule/approve", { weekStart, factoryId: Number(factoryId), sendEmail }),
     onSuccess: (r: any) => { reload(); setApproveOpen(false); toast.success(t("Затверджено"), { description: (r.messages ?? []).join(" · ") }); }, onError: (e: any) => toast.error(e.message) });
   const emailSend = useMutation({ mutationFn: (day: DayCode | null) => post("/schedule/email", { weekStart, factoryId: Number(factoryId), day }),
@@ -238,7 +269,7 @@ export default function Schedule() {
         <div className="flex-1" />
         {editable && <>
           <Button variant="secondary" loading={generate.isPending}
-            onClick={async () => { if (entries.length && !(await confirm({ title: t("Перегенерувати?"), message: t("Майбутні зміни буде перескладено. Уже відпрацьовані (минулі) зміни залишаться без змін."), danger: true, confirmText: t("Перегенерувати") }))) return; generate.mutate(); }}>
+            onClick={() => { entries.length ? setGenOpen(true) : generate.mutate(false); }}>
             {entries.length ? <RefreshCw className="h-4 w-4" /> : <Zap className="h-4 w-4" />} {entries.length ? t("Перегенерувати") : t("Згенерувати")}
           </Button>
           <a href={`/api/schedule/excel?weekStart=${weekStart}&factoryId=${factoryId}`}
@@ -270,13 +301,22 @@ export default function Schedule() {
         <div className="space-y-4">
           {DAYS.map((day, di) => {
             const dayAvail = available[day] ?? [];
+            const shifts = dayShiftCodes(day);
             return (
               <Card key={day} className="overflow-hidden">
                 <div className="flex items-baseline gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2">
                   <span className="text-sm font-semibold text-slate-700">{DAY_FULL[day]}</span>
                   <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, di)}</span>
-                  {entries.some(e => e.day === day) && (
-                    <div className="ml-auto flex items-center gap-1">
+                  <div className="ml-auto flex items-center gap-1">
+                    {editable && (
+                      <button
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-violet-600 hover:bg-violet-50"
+                        title={t("Разова зміна на цей день: додати зміну поза стандартним набором або змінити час наявної")}
+                        onClick={() => setExtraTo({ day })}>
+                        ➕ {t("Зміна")}
+                      </button>
+                    )}
+                    {entries.some(e => e.day === day) && (<>
                       <a
                         href={`/api/schedule/excel?weekStart=${weekStart}&factoryId=${factoryId}&day=${day}`}
                         className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
@@ -292,10 +332,10 @@ export default function Schedule() {
                           <CheckCircle2 className="h-3 w-3" /> {t("Затвердити")}
                         </button>
                       )}
-                    </div>
-                  )}
+                    </>)}
+                  </div>
                 </div>
-                <div className={`grid grid-cols-1 divide-y divide-slate-100 ${gridColsClass(shiftCount)} md:divide-x md:divide-y-0`}>
+                <div className={`grid grid-cols-1 divide-y divide-slate-100 ${gridColsClass(shifts.length)} md:divide-x md:divide-y-0`}>
                   {shifts.map(shift => {
                     const list = byDayShift(day, shift);
                     const res = reserve[`${day}-${shift}`] ?? [];
@@ -325,6 +365,18 @@ export default function Schedule() {
                           <div className="flex items-center gap-2">
                             <span className={`h-2.5 w-2.5 rounded-full ${shiftDot[shift]}`} />
                             <span className="text-xs font-medium text-slate-600">{SHIFT_UK[shift]}</span>
+                            {(() => {
+                              const ovr = shiftOverrides[`${day}-${shift}`];
+                              const isExtra = Number(shift) > shiftCount;
+                              if (!ovr && !isExtra) return null;
+                              return (
+                                <button disabled={!editable} onClick={() => setExtraTo({ day, shift })}
+                                  title={ovr ? t("Разовий час на цей день: {a}–{b}. Натисніть, щоб змінити.", { a: ovr.start, b: ovr.end }) : t("Зміна поза налаштуванням фабрики — задайте їй час на цей день")}
+                                  className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 hover:bg-violet-100 disabled:pointer-events-none">
+                                  🕐 {ovr ? `${ovr.start}–${ovr.end}` : t("разова")}
+                                </button>
+                              );
+                            })()}
                             {isPast && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("відбулась")}</span>}
                             {editable && !cancelled && (list.length > 0 || extras.length > 0) && (
                               <button title={t("Скасувати зміну")} onClick={() => setCancelTo({ day, shift })}
@@ -534,6 +586,24 @@ export default function Schedule() {
         </div>
       )}
 
+      {genOpen && <GenerateModal loading={generate.isPending} onClose={() => setGenOpen(false)} onGenerate={(augment) => generate.mutate(augment)} />}
+
+      {extraTo && (
+        <ExtraShiftModal
+          dayLabel={`${DAY_FULL[extraTo.day]} · ${dayDate(weekStart, DAYS.indexOf(extraTo.day))}`}
+          day={extraTo.day}
+          initialShift={extraTo.shift}
+          shiftCount={shiftCount}
+          shiftTimes={factoryShiftsArr}
+          overrides={shiftOverrides}
+          saving={saveOverride.isPending}
+          deleting={deleteOverride.isPending}
+          onClose={() => setExtraTo(null)}
+          onSave={(v) => saveOverride.mutate({ date: isoDay(DAYS.indexOf(extraTo.day)), ...v })}
+          onDelete={(shift) => deleteOverride.mutate({ date: isoDay(DAYS.indexOf(extraTo.day)), shift })}
+        />
+      )}
+
       {approveOpen && <ApproveModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} loading={approve.isPending} onClose={() => setApproveOpen(false)} onApprove={(sendEmail) => approve.mutate(sendEmail)} />}
 
       {emailOpen && <EmailModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} weekStart={weekStart} loading={emailSend.isPending} onClose={() => setEmailOpen(false)} onSend={(day) => emailSend.mutate(day)} />}
@@ -609,6 +679,96 @@ export default function Schedule() {
         );
       })()}
     </>
+  );
+}
+
+// Вибір режиму генерації: доповнити (наявні призначення недоторкані) чи перескласти.
+function GenerateModal({ loading, onClose, onGenerate }: {
+  loading: boolean; onClose: () => void; onGenerate: (augment: boolean) => void;
+}) {
+  const t = useT();
+  const [mode, setMode] = useState<"augment" | "replace">("augment");
+  return (
+    <Modal open onClose={onClose} title={t("Генерація графіку")}>
+      <div className="space-y-4">
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+          <input type="radio" name="gen-mode" className="mt-0.5" checked={mode === "augment"} onChange={() => setMode("augment")} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Доповнити наявний графік")}</span>
+            <span className="block text-xs text-slate-500">{t("Наявні призначення не чіпаються — заповняться лише зміни/клітинки, де ще нікого немає (напр. щойно додана зміна).")}</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+          <input type="radio" name="gen-mode" className="mt-0.5" checked={mode === "replace"} onChange={() => setMode("replace")} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Перегенерувати все")}</span>
+            <span className="block text-xs text-slate-500">{t("Майбутні зміни буде перескладено. Уже відпрацьовані (минулі) зміни залишаться без змін.")}</span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant={mode === "replace" ? "danger" : "primary"} loading={loading} onClick={() => onGenerate(mode === "augment")}>
+            {mode === "augment" ? t("Доповнити") : t("Перегенерувати")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Разова зміна на один день: номер + час (start/end). Діє лише на цю дату.
+function ExtraShiftModal({ dayLabel, day, initialShift, shiftCount, shiftTimes, overrides, saving, deleting, onClose, onSave, onDelete }: {
+  dayLabel: string; day: DayCode; initialShift?: ShiftCode; shiftCount: number;
+  shiftTimes: { start: string; end: string }[];
+  overrides: Record<string, { start: string; end: string }>;
+  saving: boolean; deleting: boolean;
+  onClose: () => void;
+  onSave: (v: { shift: ShiftCode; start: string; end: string }) => void;
+  onDelete: (shift: ShiftCode) => void;
+}) {
+  const t = useT();
+  const prefill = (s: ShiftCode) => overrides[`${day}-${s}`] ?? shiftTimes[Number(s) - 1] ?? { start: "", end: "" };
+  const defShift = initialShift ?? (SHIFT_CODES[Math.min(5, shiftCount)] as ShiftCode); // перша зміна поза налаштуванням
+  const [shift, setShift] = useState<ShiftCode>(defShift);
+  const [start, setStart] = useState(prefill(defShift).start);
+  const [end, setEnd] = useState(prefill(defShift).end);
+  const pick = (s: ShiftCode) => { setShift(s); const p = prefill(s); setStart(p.start); setEnd(p.end); };
+  const hasOverride = !!overrides[`${day}-${shift}`];
+  const valid = /^\d{1,2}:\d{2}$/.test(start) && /^\d{1,2}:\d{2}$/.test(end);
+  return (
+    <Modal open onClose={onClose} title={`${t("Разова зміна")} — ${dayLabel}`}>
+      <div className="space-y-4">
+        <p className="text-xs text-slate-500">
+          {t("Зміна лише на цей день: задайте номер і час — вона з'явиться в графіку, у водіїв, у пушах і в Excel. На інші дні тижня це не впливає.")}
+        </p>
+        <div>
+          <Label>{t("Зміна")}</Label>
+          <Select value={shift} onChange={e => pick(e.target.value as ShiftCode)}>
+            {SHIFT_CODES.map(s => (
+              <option key={s} value={s}>
+                {SHIFT_UK[s]}{Number(s) > shiftCount ? ` — ${t("поза налаштуванням")}` : ""}{overrides[`${day}-${s}`] ? " · 🕐" : ""}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex gap-3">
+          <div className="flex-1"><Label>{t("Початок")}</Label><Input type="time" value={start} onChange={e => setStart(e.target.value)} /></div>
+          <div className="flex-1"><Label>{t("Кінець")}</Label><Input type="time" value={end} onChange={e => setEnd(e.target.value)} /></div>
+        </div>
+        {Number(shift) <= shiftCount && (
+          <p className="text-xs text-amber-600">{t("Це стандартна зміна фабрики — збереження задасть їй інший час лише на цей день.")}</p>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          {hasOverride
+            ? <Button variant="secondary" loading={deleting} onClick={() => onDelete(shift)}>{t("Прибрати разову зміну")}</Button>
+            : <span />}
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+            <Button loading={saving} disabled={!valid} onClick={() => onSave({ shift, start, end })}>{t("Зберегти")}</Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

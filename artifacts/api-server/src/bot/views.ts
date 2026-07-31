@@ -15,6 +15,7 @@ import { resolveWeekRow, type WeekRow } from "../services/weeks";
 import { sendLongMessage } from "./notify";
 import { setState, clearState } from "./state";
 import { nowWarsaw, shiftAnchor, factoryShiftStart, factoryShifts } from "./time";
+import { loadWeekShiftOverrides, overrideFor } from "../services/shiftOverrides";
 
 export async function getMenuDriverFactory(factoryId: number) {
   return (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
@@ -399,6 +400,8 @@ export async function showDriverShift(ctx: Context, driverId: number, weekStart:
     .leftJoin(factoriesTable, eq(driverShiftAssignmentsTable.factoryId, factoriesTable.id))
     .where(and(eq(driverShiftAssignmentsTable.weekId, weeks[0]!.id), eq(driverShiftAssignmentsTable.dayOfWeek, day), eq(driverShiftAssignmentsTable.driverId, driverId)));
   if (assignments.length === 0) return ctx.reply(tb(lang, "📭 На {day} немає призначень.", { day: DAY_NAMES_UK[day] }), menu);
+  // One-off per-day shift times (extra shift / changed hours for this date)
+  const ov = await loadWeekShiftOverrides(weekStart);
   let msg = `📍 *${DAY_NAMES_UK[day]}* — ${tb(lang, "Ваші зміни:")}\n\n`;
   for (const a of assignments) {
     const factory = await getMenuDriverFactory(a.factoryId);
@@ -409,11 +412,13 @@ export async function showDriverShift(ctx: Context, driverId: number, weekStart:
       .where(and(eq(scheduleEntriesTable.weekId, weeks[0]!.id), eq(scheduleEntriesTable.dayOfWeek, day), eq(scheduleEntriesTable.shift, a.shift), eq(scheduleEntriesTable.factoryId, a.factoryId)));
     if (a.kind === "pickup") {
       // «Забрати зі зміни» — be at the factory when the shift ENDS; no boarding marks
-      const end = factoryShifts(factory)[Number(a.shift) - 1]?.end;
+      const end = overrideFor(ov, a.factoryId, weekStart, day, a.shift)?.end
+        ?? factoryShifts(factory)[Number(a.shift) - 1]?.end;
       msg += `🏭 *${a.factoryName ?? "—"}* · 🔙 ${tb(lang, "Забрати зі зміни")} ${SHIFT_SHORT[a.shift as Shift]}\n🕒 ${tb(lang, "Бути на фабриці на:")} ${end ?? "—"} · 👷 ${workers.length}\n`;
       workers.forEach((w, i) => { msg += `  ${i + 1}. ${w.name}\n`; });
     } else {
-      const start = factoryShiftStart(factory, a.shift as Shift);
+      const start = overrideFor(ov, a.factoryId, weekStart, day, a.shift)?.start
+        ?? factoryShiftStart(factory, a.shift as Shift);
       msg += `🏭 *${a.factoryName ?? "—"}* · ${SHIFT_SHORT[a.shift as Shift]}\n🚌 ${tb(lang, "Збір:")} ${shiftAnchor(nowWarsaw(), start, 60).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })} · 🏭 ${tb(lang, "на фабриці до:")} ${shiftAnchor(nowWarsaw(), start, 15).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" })}\n`;
       workers.forEach((w, i) => {
         const icon = w.status === "present" ? "✅" : w.status === "absent" ? "❌" : "⏳";

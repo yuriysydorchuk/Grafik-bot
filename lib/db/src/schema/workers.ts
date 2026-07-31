@@ -196,6 +196,11 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   shift: shiftEnum("shift").notNull(),
   status: entryStatusEnum("status").notNull().default("scheduled"),
   absenceReason: text("absence_reason"),
+  // «Виправдана» відсутність: адмін визнав пропуск поважним — не рахується
+  // у кількість пропусків працівника і не тягне штраф.
+  absenceExcused: boolean("absence_excused").notNull().default(false),
+  // Штраф за пропуск, zł: NULL = стандартний (300), число = override (0 = анульовано).
+  absencePenalty: real("absence_penalty"),
   pickedUpBy: integer("picked_up_by").references(() => driversTable.id), // driver who boarded this worker
   hoursOverride: real("hours_override"), // manual hours for this shift (overrides computed shift duration)
   sentAt: timestamp("sent_at"), // when this entry was sent to the worker — they only see sent entries
@@ -235,6 +240,20 @@ export const shiftCancellationsTable = pgTable("shift_cancellations", {
   cancelledBy: text("cancelled_by"), // admin name (informational)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// A one-off shift for a specific factory DATE (e.g. an extra 3rd shift for a single
+// action day). Carries its own start/end so time resolution works for a shift index
+// outside the factory's regular `shifts` config; all shift surfaces (pushes, driver
+// board, Excel, live) must consult these before falling back to factory shift times.
+export const factoryShiftOverridesTable = pgTable("factory_shift_overrides", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  date: date("date").notNull(),      // the calendar day the shift starts (YYYY-MM-DD)
+  shift: shiftEnum("shift").notNull(),
+  start: text("start").notNull(),    // "HH:MM"
+  end: text("end").notNull(),        // "HH:MM" (may cross midnight)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("factory_shift_overrides_uniq").on(t.factoryId, t.date, t.shift)]);
 
 export const adminsTable = pgTable("admins", {
   id: serial("id").primaryKey(),
@@ -1098,6 +1117,7 @@ export type Admin = typeof adminsTable.$inferSelect;
 export type DriverWorkday = typeof driverWorkdaysTable.$inferSelect;
 export type Vehicle = typeof vehiclesTable.$inferSelect;
 export type ShiftCancellation = typeof shiftCancellationsTable.$inferSelect;
+export type FactoryShiftOverride = typeof factoryShiftOverridesTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;

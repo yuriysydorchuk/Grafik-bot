@@ -28,6 +28,7 @@ import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
+import { loadDateShiftOverrides, loadDatesShiftOverrides, loadWeekShiftOverrides, overrideFor, shiftOverrideKey, type ShiftOverrideMap } from "../services/shiftOverrides";
 import {
   getMenuDriverFactory, sendAvailabilityKeyboard,
   getAssignedWorkerIds, getAssignedEntries, getReserveForShift, renderShiftEditor, showReserveSummary,
@@ -1271,16 +1272,19 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
   const rows = weeks.length === 0 ? [] : await db
     .select({
       id: scheduleEntriesTable.id, weekId: scheduleEntriesTable.weekId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
+      factoryId: scheduleEntriesTable.factoryId,
       factoryName: factoriesTable.name, fshifts: factoriesTable.shifts, s1: factoriesTable.shift1Start, s2: factoriesTable.shift2Start, s3: factoriesTable.shift3Start,
     })
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(and(eq(scheduleEntriesTable.workerId, worker.id), eq(scheduleEntriesTable.status, "scheduled"), inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id))));
 
+  const absOv = new Map([...(await loadWeekShiftOverrides(curMon)), ...(await loadWeekShiftOverrides(nextMon))]);
   const items = rows.map(r => {
     const wk = weekById.get(r.weekId)!;
     const d = absDateOf(String(wk.weekStart), r.day);
-    const start = factoryShiftStart({ shifts: r.fshifts, shift1Start: r.s1, shift2Start: r.s2, shift3Start: r.s3 }, r.shift as Shift);
+    const start = absOv.get(shiftOverrideKey(r.factoryId, absYmd(d), r.shift))?.start
+      ?? factoryShiftStart({ shifts: r.fshifts, shift1Start: r.s1, shift2Start: r.s2, shift3Start: r.s3 }, r.shift as Shift);
     const [hh, mm] = start.split(":").map(Number);
     const startDt = new Date(d); startDt.setHours(hh || 6, mm || 0, 0, 0);
     return {
@@ -1609,10 +1613,52 @@ bot.action(/^avail_([a-z]+)_(1|2|3|off)$/, async (ctx) => {
   await sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery.message?.message_id, shiftCount ?? 3, lang);
 });
 
-// Availability confirm callback
+// Availability confirm callback. Days without a single picked shift are saved as
+// days off — before committing, the worker gets an explicit "are you sure about
+// day-off on Mon, Wed…" step with a chance to go back and fix the selection.
 bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
-  await ctx.answerCbQuery("Зберігаю...");
   const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "avail:filling") { await ctx.answerCbQuery(); return; }
+  const lang = asLang(state.data.lang);
+  const responses = state.data.responses as Record<string, Shift[] | null>;
+  const offDays = DAYS.filter(d => { const s = responses[d]; return !Array.isArray(s) || s.length === 0; });
+  if (offDays.length > 0) {
+    await ctx.answerCbQuery();
+    const days = offDays.map(d => dayShort(lang, d)).join(", ");
+    try {
+      await ctx.editMessageText(t(lang, "av.confirmOff", { days }), {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[
+          { text: t(lang, "av.confirmYes"), callback_data: `avail_save_${state.data.weekStart}` },
+          { text: t(lang, "av.confirmEdit"), callback_data: "avail_edit" },
+        ]] },
+      });
+    } catch { /* ignore */ }
+    return;
+  }
+  await ctx.answerCbQuery("Зберігаю...");
+  return saveAvailability(ctx, tid);
+});
+
+// «Так, зберегти» на екрані підтвердження вихідних
+bot.action(/^avail_save_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  await ctx.answerCbQuery("Зберігаю...");
+  return saveAvailability(ctx, String(ctx.from.id));
+});
+
+// «Виправити» — повертає клавіатуру вибору в тому ж повідомленні
+bot.action("avail_edit", async (ctx) => {
+  await ctx.answerCbQuery();
+  const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "avail:filling") return;
+  const { weekStart, responses, shiftCount } = state.data;
+  const lang = asLang(state.data.lang);
+  return sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery?.message?.message_id, shiftCount ?? 3, lang);
+});
+
+async function saveAvailability(ctx: Context, tid: string) {
   const state = getState(tid);
   if (state?.action !== "avail:filling") return;
   const worker = await getWorker(tid);
@@ -1656,7 +1702,7 @@ bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
       { parse_mode: "Markdown" },
     );
   } catch { /* ignore */ }
-});
+}
 
 bot.action("avail_cancel", async (ctx) => {
   await ctx.answerCbQuery();
@@ -1804,13 +1850,15 @@ async function pickupOnlyNote(dl: Lang, weekId: number, dayName: DayOfWeek, driv
   if (pickups.length === 0) return null;
   const facRows = await db.select().from(factoriesTable);
   const facById = new Map(facRows.map(f => [f.id, f]));
+  const puOv = await loadDateShiftOverrides(warsawDateStr());
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const p of pickups) {
     const key = `${p.factoryId}-${p.shift}`;
     if (seen.has(key)) continue; seen.add(key);
     const f = facById.get(p.factoryId);
-    const end = factoryShifts(f)[Number(p.shift) - 1]?.end;
+    const end = puOv.get(shiftOverrideKey(p.factoryId, warsawDateStr(), p.shift))?.end
+      ?? factoryShifts(f)[Number(p.shift) - 1]?.end;
     lines.push(`🏭 ${f?.name ?? "—"} · ${SHIFT_SHORT[p.shift as Shift]}${end ? ` — ${tb(dl, "Бути на фабриці на:")} ${end}` : ""}`);
   }
   return tb(dl, "ℹ️ Сьогодні у вас лише 🔙 «Забрати зі зміни»:\n{list}\n\nЗавіз людей НА зміну вам не призначений, тому поїздки/посадки немає. Якщо ви маєте везти людей на зміну — перевірте призначення (слот завозу, а не «забрати»).", { list: lines.join("\n") });
@@ -1842,18 +1890,20 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
   const tripFacRows = await db.select().from(factoriesTable);
   const tripFacById = new Map(tripFacRows.map(f => [f.id, f]));
   const tripToday = warsawDateStr();
+  const tripOv = await loadDateShiftOverrides(tripToday);
   const uniqMap = new Map<string, typeof assignments[number]>();
   for (const a of assignments) uniqMap.set(`${a.factoryId}-${a.shift}`, a);
   const uniq = [...uniqMap.values()];
   const distToNow = (a: typeof assignments[number]) =>
-    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(a.factoryId), a.shift).getTime());
+    Math.abs(now.getTime() - shiftStartOn(tripToday, tripFacById.get(a.factoryId), a.shift, tripOv).getTime());
   const near = uniq.filter(a => distToNow(a) <= BOARD_WINDOW_MS);
   const targets = near.length > 0 ? near : [[...uniq].sort((a, b) => distToNow(a) - distToNow(b))[0]!];
 
   const lines: string[] = [];
   for (const trip of targets) {
     const factory = tripFacById.get(trip.factoryId);
-    const shiftStart = factoryShiftStart(factory, trip.shift as Shift);
+    const shiftStart = tripOv.get(shiftOverrideKey(trip.factoryId, tripToday, trip.shift))?.start
+      ?? factoryShiftStart(factory, trip.shift as Shift);
     const expectedPickup = shiftAnchor(now, shiftStart, 60); // pickup 1h before shift
     const lateToPickup = now > expectedPickup;
     const existingTrip = await db.select({ id: driverTripsTable.id }).from(driverTripsTable)
@@ -1883,7 +1933,9 @@ bot.hears(bhears("🚌 Почати поїздку"), async (ctx) => {
 async function markFactoryArrival(ctx: Context, driver: Driver, dl: Lang, t: { id: number; factoryId: number; shift: string; pickupStartedAt: Date | string | null }) {
   const now = nowWarsaw();
   const factory = await getMenuDriverFactory(t.factoryId);
-  const shiftStart = factoryShiftStart(factory, t.shift as Shift);
+  const arrOv = await loadDateShiftOverrides(warsawDateStr());
+  const shiftStart = arrOv.get(shiftOverrideKey(t.factoryId, warsawDateStr(), t.shift))?.start
+    ?? factoryShiftStart(factory, t.shift as Shift);
   const expectedFactory = shiftAnchor(now, shiftStart, 15); // be at factory 15 min before shift
   const lateToFactory = now > expectedFactory;
   await db.update(driverTripsTable).set({ arrivedFactoryAt: now, lateToFactory }).where(eq(driverTripsTable.id, t.id));
@@ -1926,9 +1978,10 @@ bot.hears(bhears("🏭 Прибув на фабрику"), async (ctx) => {
     const arrFacRows = await db.select().from(factoriesTable);
     const arrFacById = new Map(arrFacRows.map(f => [f.id, f]));
     const arrToday = warsawDateStr();
+    const arrOv = await loadDateShiftOverrides(arrToday);
     t = [...trips].sort((a, b) =>
-      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(a.factoryId), a.shift).getTime()) -
-      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(b.factoryId), b.shift).getTime()))[0]!;
+      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(a.factoryId), a.shift, arrOv).getTime()) -
+      Math.abs(now.getTime() - shiftStartOn(arrToday, arrFacById.get(b.factoryId), b.shift, arrOv).getTime()))[0]!;
   }
   return markFactoryArrival(ctx, driver, dl, t);
 });
@@ -2110,11 +2163,12 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
   const attFacRows = await db.select().from(factoriesTable);
   const attFacById = new Map(attFacRows.map(f => [f.id, f]));
   const attToday = warsawDateStr();
+  const attOv = await loadDateShiftOverrides(attToday);
   const attNow = nowWarsaw();
   const attCancelled = await cancelledCellKeys(weeks[0]!.id, dayName);
   const nearAssignments = myAssignments.filter(a =>
     !attCancelled.has(`${a.factoryId}-${a.shift}`) &&
-    Math.abs(attNow.getTime() - shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift).getTime()) <= BOARD_WINDOW_MS);
+    Math.abs(attNow.getTime() - shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift, attOv).getTime()) <= BOARD_WINDOW_MS);
   if (nearAssignments.length === 0) {
     return ctx.reply(tb(dl, "🕒 Зараз немає рейсу для посадки — до найближчої вашої зміни ще далеко. Відмічайте явку ближче до початку зміни (за ~3 години)."), driverMenu(dl));
   }
@@ -2323,10 +2377,12 @@ type BoardData = {
 // auto-mark the 14:00/22:00 runs as no-shows (real incident: 2026-07-04, 03:03).
 const BOARD_WINDOW_MS = 3 * 3600_000;
 const BOARD_GUARD_MS = 2 * 3600_000;
-type FactoryLike = { shifts: unknown; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null };
+type FactoryLike = { id?: number; shifts: unknown; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null };
 // Warsaw-wall-clock Date of the shift start on the given YYYY-MM-DD day.
-function shiftStartOn(dateStr: string, factory: FactoryLike | undefined, shift: string): Date {
-  const [hh, mm] = factoryShiftStart(factory as any, shift as Shift).split(":").map(Number);
+// `ov` — разові зміни дат (factory_shift_overrides): час override має пріоритет.
+function shiftStartOn(dateStr: string, factory: FactoryLike | undefined, shift: string, ov?: ShiftOverrideMap): Date {
+  const ovStart = ov && factory?.id != null ? ov.get(shiftOverrideKey(factory.id, dateStr, shift))?.start : undefined;
+  const [hh, mm] = (ovStart ?? factoryShiftStart(factory as any, shift as Shift)).split(":").map(Number);
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(y!, (m ?? 1) - 1, d ?? 1, hh ?? 6, mm ?? 0, 0, 0);
 }
@@ -2521,6 +2577,7 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
     candidates.push({ weekId: curWeek.id, dayName: yDayName, boardDate: ymdOf(yesterday) });
   }
   if (candidates.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), menu());
+  const boardOv = await loadDatesShiftOverrides(candidates.map(c => c.boardDate));
 
   // Pick the first candidate day that has delivery runs within ±3h of now.
   // Boarding covers delivery runs only — pickups don't mark attendance.
@@ -2537,7 +2594,7 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
     for (const a of myAssignments) {
       const k = `${a.factoryId}-${a.shift}`;
       if (secKeys.has(k) || cancelled.has(k)) continue; secKeys.add(k);
-      const start = shiftStartOn(c.boardDate, facById.get(a.factoryId), a.shift);
+      const start = shiftStartOn(c.boardDate, facById.get(a.factoryId), a.shift, boardOv);
       if (Math.abs(now.getTime() - start.getTime()) > BOARD_WINDOW_MS) continue;
       sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) });
     }
@@ -2694,8 +2751,9 @@ bot.action("brd:ok", async (ctx) => {
   let leftForOthers = 0;
   let skippedEarly = 0;
   const nowW = nowWarsaw();
+  const secOv = await loadDateShiftOverrides(todayStr);
   for (const sec of data.sections) {
-    const secStart = shiftStartOn(todayStr, facByIdOk.get(sec.factoryId), sec.shift);
+    const secStart = shiftStartOn(todayStr, facByIdOk.get(sec.factoryId), sec.shift, secOv);
     if (nowW.getTime() < secStart.getTime() - BOARD_GUARD_MS) { skippedEarly++; continue; }
     await recordPickupTrip(driver.id, weekId, dayName, sec.factoryId, sec.shift, now, todayStr);
     const assigned = await db.select({ driverId: driverShiftAssignmentsTable.driverId })
@@ -4609,7 +4667,9 @@ bot.action(/^pka:(\d{4}-\d{2}-\d{2}):(\w+):(\d+):(\d):(\d+)$/, async (ctx) => {
   }
   const [drv] = await db.select().from(driversTable).where(eq(driversTable.id, Number(driverId)));
   const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, Number(factoryId)));
-  const facShiftEnd = factoryShifts(await getMenuDriverFactory(Number(factoryId)))[Number(shift) - 1]?.end ?? "—";
+  const pkOv = await loadWeekShiftOverrides(weekStart!);
+  const facShiftEnd = overrideFor(pkOv, Number(factoryId), weekStart!, day!, shift!)?.end
+    ?? factoryShifts(await getMenuDriverFactory(Number(factoryId)))[Number(shift) - 1]?.end ?? "—";
   await ctx.answerCbQuery("Призначено ✅");
   try { await ctx.editMessageText(`✅ *${mdSafe(drv?.name ?? "—")}* забере зі зміни ${SHIFT_SHORT[shift as Shift]} (${DAY_UK[day as DayOfWeek]}) — ${mdSafe(fac?.name ?? "—")}.`, { parse_mode: "Markdown" }); } catch { /* ignore */ }
   if (drv?.telegramId) {

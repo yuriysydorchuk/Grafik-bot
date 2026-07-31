@@ -14,6 +14,7 @@ import { getWorkersWhoHaventSubmitted } from "./sheets";
 import { getNextMonday, getCurrentMonday, formatWeekStart } from "./scheduleGenerator";
 import { resolveWeekRow, type WeekRow } from "./weeks";
 import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr, minutesUntilShift, pickupAssignmentSlot } from "../bot/time";
+import { loadDateShiftOverrides, shiftOverrideKey } from "./shiftOverrides";
 import { t, asLang, tb, oLang } from "../bot/i18n";
 
 // All cron times in Europe/Warsaw timezone
@@ -311,12 +312,28 @@ async function checkPreShiftNotifications() {
 
     const factories = await db.select().from(factoriesTable);
 
+    // Shifts that actually have people today may sit OUTSIDE the factory's configured
+    // shiftCount (one-off extra shifts, or entries kept after lowering the count) —
+    // remind for those too. One-off shifts carry their own start/end (overrides).
+    const dayOverrides = await loadDateShiftOverrides(todayStr);
+    const entryShiftRows = await db.selectDistinct({ factoryId: scheduleEntriesTable.factoryId, shift: scheduleEntriesTable.shift })
+      .from(scheduleEntriesTable)
+      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName)));
+
     for (const factory of factories) {
       // Use the jsonb `shifts` (falls back to legacy columns) so web-created factories
       // and shifts 4–6 are covered, not just legacy shift1/2/3Start.
-      const shiftTimes: Array<{ shift: Shift; start: string | null; end: string | null }> = factoryShifts(factory)
-        .slice(0, Math.min(6, Math.max(1, factory.shiftCount ?? 3)))
-        .map((st, i) => ({ shift: String(i + 1) as Shift, start: st.start, end: st.end }));
+      const fShifts = factoryShifts(factory);
+      const shiftSet = new Set<Shift>();
+      for (let i = 1; i <= Math.min(6, Math.max(1, factory.shiftCount ?? 3)); i++) shiftSet.add(String(i) as Shift);
+      for (const r of entryShiftRows) if (r.factoryId === factory.id) shiftSet.add(r.shift as Shift);
+      for (let i = 1; i <= 6; i++) if (dayOverrides.has(shiftOverrideKey(factory.id, todayStr, i))) shiftSet.add(String(i) as Shift);
+      const shiftTimes: Array<{ shift: Shift; start: string | null; end: string | null }> = [...shiftSet]
+        .sort((a, b) => Number(a) - Number(b))
+        .map(shift => {
+          const st = dayOverrides.get(shiftOverrideKey(factory.id, todayStr, shift)) ?? fShifts[Number(shift) - 1];
+          return { shift, start: st?.start ?? null, end: st?.end ?? null };
+        });
 
       for (const { shift, start, end } of shiftTimes) {
         if (!start) continue; // no time configured for this shift at this factory
@@ -438,11 +455,14 @@ async function checkForgottenArrivals() {
     if (open.length === 0) return;
     const facs = await db.select().from(factoriesTable);
     const facById = new Map(facs.map(f => [f.id, f]));
+    const dayOv = await loadDateShiftOverrides(today);
     for (const trip of open) {
       const key = `arrfrgt_${trip.id}`;
       if (sentToday.has(key)) continue;
       const fac = facById.get(trip.factoryId);
-      const [hh, mm] = factoryShiftStart(fac, trip.shift as Shift).split(":").map(Number);
+      const startStr = dayOv.get(shiftOverrideKey(trip.factoryId, today, trip.shift))?.start
+        ?? factoryShiftStart(fac, trip.shift as Shift);
+      const [hh, mm] = startStr.split(":").map(Number);
       const [y, m, d] = today.split("-").map(Number);
       const start = new Date(y!, m! - 1, d!, hh ?? 6, mm ?? 0, 0, 0);
       const minsSinceStart = (now.getTime() - start.getTime()) / 60000;

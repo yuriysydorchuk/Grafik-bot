@@ -4,12 +4,13 @@ import { db } from "@workspace/db";
 import {
   settingsTable, scheduleEntriesTable, workersTable, factoriesTable,
   driverTripsTable, driversTable, absenceRequestsTable, scheduleWeeksTable,
-  positionsTable, factoryPositionsTable, monthlyReportsTable,
+  positionsTable, factoryPositionsTable, monthlyReportsTable, factoryHoursTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, gte, lt, ne } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { factoryShifts } from "../bot/time";
+import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
 import { DAYS } from "./sheets";
 import { formatWeekStart } from "./scheduleGenerator";
 import { imageToPdf } from "./imagePdf";
@@ -262,7 +263,7 @@ function shiftHours(st?: { start: string; end: string }): number | null {
   return Math.round(mins / 60);
 }
 
-function buildFactoryWorkbook(
+async function buildFactoryWorkbook(
   factoryName: string, factoryId: number, fEntries: SchedRow[], weekStart: string,
   allFactories: { id: number; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; shifts?: { start: string; end: string }[] | null; shiftCount?: number | null }[],
   seg: SegConfig = { usesPositions: false, usesGender: false, showCode: true, posOrder: [] },
@@ -270,7 +271,8 @@ function buildFactoryWorkbook(
   const weekPL = weekLabelPL(weekStart);
   const fac = allFactories.find(x => x.id === factoryId);
   const fShifts = factoryShifts(fac);
-  const nShifts = Math.min(6, Math.max(1, fac?.shiftCount ?? (fShifts.length || 3)));
+  // One-off per-day shift times (extra shift / changed hours for a single date)
+  const ov: ShiftOverrideMap = await loadWeekShiftOverrides(weekStart, factoryId);
   const thin = (argb: string) => ({
     top: { style: "thin", color: { argb } }, left: { style: "thin", color: { argb } },
     bottom: { style: "thin", color: { argb } }, right: { style: "thin", color: { argb } },
@@ -301,10 +303,12 @@ function buildFactoryWorkbook(
     ws.columns = widths.map(w => ({ width: w }));
     const date = dayDate(weekStart, day);
     let r = 1;
-    for (const shift of (["1", "2", "3", "4", "5", "6"] as Shift[]).slice(0, nShifts)) {
+    // ALL shifts, entries-driven: a shift outside the configured shiftCount (one-off
+    // extra shift, or entries kept after lowering the count) still goes to the client.
+    for (const shift of (["1", "2", "3", "4", "5", "6"] as Shift[])) {
       const people = dayEntries.filter(e => e.shift === shift);
       if (people.length === 0) continue;
-      const st = fShifts[Number(shift) - 1];
+      const st = overrideFor(ov, factoryId, weekStart, day, shift) ?? fShifts[Number(shift) - 1];
       const hrs = shiftHours(st);
       // Teal shift-header band: "1 zmiana <Factory> DD.MM.YYYY (8H) (07:00-15:00)"
       ws.mergeCells(r, 1, r, bandCols);
@@ -498,56 +502,94 @@ export async function uploadReportPhoto(
   }
 }
 
-// Downloadable Excel (in Polish) of worker-reported monthly hours:
-// Kod · Imię i nazwisko · Fabryka · Godziny · Status. Includes ALL active workers
-// (so admins see who hasn't submitted). Optionally filtered to a single factory.
-// Returns the buffer plus the factory name (when filtered) for the download filename.
-export async function buildReportHoursExcel(month: string, factoryId?: number): Promise<{ buffer: Buffer; facName: string | null }> {
+// Каталог колонок Excel-звіту обліку годин (заголовки польською, як усі документи).
+// diff/factoryHours — розбіжності «рапорт працівника ↔ години фабрики» (та сама
+// логіка, що підсвітка на сторінці /hours: mismatch = обидва є й різняться >0.01,
+// partial = є лише одне з двох).
+export const HOURS_XLSX_COLS = [
+  { key: "code", header: "Kod", width: 12 },
+  { key: "name", header: "Imię i nazwisko", width: 34 },
+  { key: "factory", header: "Fabryka", width: 26 },
+  { key: "report", header: "Godziny (raport)", width: 16 },
+  { key: "factoryHours", header: "Godziny (fabryka)", width: 17 },
+  { key: "diff", header: "Różnica", width: 12 },
+  { key: "status", header: "Status raportu", width: 15 },
+] as const;
+export type HoursXlsxColKey = typeof HOURS_XLSX_COLS[number]["key"];
+const DEFAULT_HOURS_COLS: HoursXlsxColKey[] = ["code", "name", "factory", "report", "status"];
+
+// Downloadable Excel (in Polish) of monthly hours per (worker, factory): reported
+// hours, factory-supplied hours and their difference. Includes ALL active workers
+// (so admins see who hasn't submitted). Optionally filtered to a single factory,
+// to selected columns, and to error rows only (mismatch/partial).
+export async function buildReportHoursExcel(
+  month: string, factoryId?: number,
+  opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean } = {},
+): Promise<{ buffer: Buffer; facName: string | null }> {
+  const colKeys = (opts.cols?.length ? opts.cols : DEFAULT_HOURS_COLS).filter(k => HOURS_XLSX_COLS.some(c => c.key === k));
+  const cols = HOURS_XLSX_COLS.filter(c => colKeys.includes(c.key));
+  const errorsOnly = !!opts.errorsOnly;
+
   const workers = await db.select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, factoryId: workersTable.factoryId })
     .from(workersTable).where(eq(workersTable.isActive, true));
+  const workerById = new Map(workers.map(w => [w.id, w]));
   const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
   const facById = new Map(facs.map(f => [f.id, f.name]));
   const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const repsByWorker = new Map<number, { factoryId: number | null; hours: number }[]>();
-  for (const r of reports) {
-    if (!repsByWorker.has(r.workerId)) repsByWorker.set(r.workerId, []);
-    repsByWorker.get(r.workerId)!.push(r);
-  }
+  const factoryHours = await db.select({ workerId: factoryHoursTable.workerId, factoryId: factoryHoursTable.factoryId, hours: factoryHoursTable.hours })
+    .from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
 
   const selectedFac = factoryId != null ? (facById.get(factoryId) ?? null) : null;
-  // One row per (worker, factory): a mid-month transfer yields a row per factory reported;
-  // a worker with no report shows once under their current factory.
-  const raw: { facId: number | null; code: string; name: string; hours: number | null }[] = [];
+  // One row per (worker, factory) — merged from both sources; a worker with neither
+  // shows once under their current factory (so admins see who hasn't submitted).
+  type Row = { facId: number | null; code: string; name: string; report: number | null; factoryHours: number | null };
+  const byKey = new Map<string, Row>();
+  const rowFor = (workerId: number, facId: number | null): Row | null => {
+    const w = workerById.get(workerId);
+    if (!w) return null;
+    const key = `${workerId}|${facId ?? "x"}`;
+    let row = byKey.get(key);
+    if (!row) { row = { facId, code: w.code ?? "", name: w.name, report: null, factoryHours: null }; byKey.set(key, row); }
+    return row;
+  };
+  for (const r of reports) { const row = rowFor(r.workerId, r.factoryId ?? workerById.get(r.workerId)?.factoryId ?? null); if (row) row.report = r.hours; }
+  for (const fh of factoryHours) { const row = rowFor(fh.workerId, fh.factoryId); if (row) row.factoryHours = fh.hours; }
   for (const w of workers) {
-    const reps = repsByWorker.get(w.id) ?? [];
-    if (reps.length === 0) raw.push({ facId: w.factoryId, code: w.code ?? "", name: w.name, hours: null });
-    else for (const r of reps) raw.push({ facId: r.factoryId ?? w.factoryId, code: w.code ?? "", name: w.name, hours: r.hours });
+    const hasAny = [...byKey.keys()].some(k => k.startsWith(`${w.id}|`));
+    if (!hasAny) rowFor(w.id, w.factoryId);
   }
-  const rows = raw
+
+  // Той самий diffState, що на сторінці /hours (Hours.tsx)
+  const diffState = (r: Row): "match" | "mismatch" | "partial" | "none" => {
+    if (r.report == null && r.factoryHours == null) return "none";
+    if (r.report == null || r.factoryHours == null) return "partial";
+    return Math.abs(r.report - r.factoryHours) <= 0.01 ? "match" : "mismatch";
+  };
+
+  const rows = [...byKey.values()]
     .filter(x => factoryId == null || x.facId === factoryId)
-    .map(x => ({
-      factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki",
-      code: x.code, name: x.name, hours: x.hours,
-    }))
+    .filter(x => !errorsOnly || diffState(x) === "mismatch" || diffState(x) === "partial")
+    .map(x => ({ ...x, factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki" }))
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 
   const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
-  const totalHours = rows.reduce((s, x) => s + (x.hours ?? 0), 0);
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Raport-godziny", { views: [{ showGridLines: false }] });
-  ws.columns = [{ width: 12 }, { width: 34 }, { width: 26 }, { width: 12 }, { width: 14 }];
+  ws.columns = cols.map(c => ({ width: c.width }));
   const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
+  const nCols = cols.length;
+  const numericCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff";
 
-  ws.mergeCells(1, 1, 1, 5);
+  ws.mergeCells(1, 1, 1, Math.max(2, nCols));
   const title = ws.getCell(1, 1);
-  title.value = selectedFac ? `Godziny z raportu — ${selectedFac} — ${monthLabel}` : `Godziny z raportu — ${monthLabel}`;
+  title.value = `Godziny — ${selectedFac ? `${selectedFac} — ` : ""}${monthLabel}${errorsOnly ? " — tylko rozbieżności" : ""}`;
   title.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
   title.alignment = { vertical: "middle", horizontal: "left" };
   ws.getRow(1).height = 26;
 
   const hdr = ws.getRow(2);
-  hdr.values = ["Kod", "Imię i nazwisko", "Fabryka", "Godziny", "Status"];
+  hdr.values = cols.map(c => c.header);
   hdr.eachCell((c) => {
     c.font = { bold: true, color: { argb: "FF374151" } };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E7EB" } } as any;
@@ -556,26 +598,49 @@ export async function buildReportHoursExcel(month: string, factoryId?: number): 
   });
   ws.getRow(2).height = 18;
 
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const cellValue = (row: typeof rows[number], key: HoursXlsxColKey): string | number => {
+    switch (key) {
+      case "code": return row.code;
+      case "name": return row.name;
+      case "factory": return row.factory;
+      case "report": return row.report ?? "";
+      case "factoryHours": return row.factoryHours ?? "";
+      case "diff": return row.report != null && row.factoryHours != null ? round2(row.report - row.factoryHours) : "";
+      case "status": return row.report != null ? "wysłano" : "brak";
+    }
+  };
+
   let r = 3;
   for (const row of rows) {
+    const st = diffState(row);
     const xl = ws.getRow(r);
-    xl.values = [row.code, row.name, row.factory, row.hours ?? "", row.hours != null ? "wysłano" : "brak"];
+    xl.values = cols.map(c => cellValue(row, c.key));
     xl.eachCell({ includeEmpty: true }, (c, col) => {
+      const key = cols[col - 1]!.key;
       c.border = thin as any;
-      c.alignment = { vertical: "middle", horizontal: col === 4 ? "right" : "left", indent: col === 4 ? 0 : 1 };
-      if (col === 5 && row.hours == null) c.font = { color: { argb: "FFB45309" } };
+      c.alignment = { vertical: "middle", horizontal: numericCol(key) ? "right" : "left", indent: numericCol(key) ? 0 : 1 };
+      if (key === "status" && row.report == null) c.font = { color: { argb: "FFB45309" } };
+      // Підсвітка розбіжностей — як на сторінці: червоне mismatch, жовте partial
+      if (numericCol(key) && st === "mismatch") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } } as any;
+      else if (numericCol(key) && st === "partial") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } } as any;
     });
     r++;
   }
 
-  // Total row (Razem): sum of reported hours.
+  // Total row (Razem): sums of the numeric columns present.
   const totalRow = ws.getRow(r);
-  totalRow.values = ["", "Razem", "", Math.round(totalHours * 100) / 100, ""];
+  totalRow.values = cols.map((c, i) => {
+    if (c.key === "report") return round2(rows.reduce((s, x) => s + (x.report ?? 0), 0));
+    if (c.key === "factoryHours") return round2(rows.reduce((s, x) => s + (x.factoryHours ?? 0), 0));
+    return i === (cols[0]?.key === "code" ? 1 : 0) ? "Razem" : "";
+  });
   totalRow.eachCell({ includeEmpty: true }, (c, col) => {
+    const key = cols[col - 1]!.key;
     c.font = { bold: true, color: { argb: "FF1F2937" } };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } } as any;
     c.border = thin as any;
-    c.alignment = { vertical: "middle", horizontal: col === 4 ? "right" : "left", indent: col === 4 ? 0 : 1 };
+    c.alignment = { vertical: "middle", horizontal: numericCol(key) ? "right" : "left", indent: numericCol(key) ? 0 : 1 };
   });
 
   const buffer = await wb.xlsx.writeBuffer().then(b => Buffer.from(b));

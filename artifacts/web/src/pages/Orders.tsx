@@ -13,7 +13,7 @@ import { useT } from "../lib/i18n";
 
 type OrderMap = Record<string, number[]>;
 type ReqMap = Record<string, OrderRequirement[]>; // key: "day-shift" (shift 1-based)
-type OrdersResp = { totals: OrderMap; req: ReqMap };
+type OrdersResp = { totals: OrderMap; req: ReqMap; shiftCount?: number };
 
 const sumReq = (lines: OrderRequirement[]) => lines.reduce((s, l) => s + (Number(l.count) || 0), 0);
 
@@ -39,7 +39,13 @@ export default function Orders() {
   useEffect(() => { if (loaded) { setGrid(loaded.totals ?? {}); setReq(loaded.req ?? {}); } }, [loaded]);
 
   const selFactory = factories.find(f => String(f.id) === factoryId);
-  const shiftCount = selFactory?.shiftCount ?? 3;
+  // Ширина сітки: налаштовані зміни фабрики ∪ зміни, де вже є замовлення (зменшення
+  // shiftCount не ховає наявні числа) + локально відкриті додаткові колонки.
+  const cfgShiftCount = selFactory?.shiftCount ?? 3;
+  const [extraCols, setExtraCols] = useState(0);
+  useEffect(() => { setExtraCols(0); }, [factoryId, weekStart]);
+  const loadedWidth = Math.max(0, ...Object.values(loaded?.totals ?? {}).map(r => r.length));
+  const shiftCount = Math.min(6, Math.max(cfgShiftCount, loadedWidth) + extraCols);
   const facPositions: FactoryPositionConf[] = selFactory?.usesPositions ? (selFactory.positions ?? []) : [];
   const usesGender = !!selFactory?.usesGender;
   // breakdown (position/gender split) is only offered for factories that need it
@@ -91,6 +97,10 @@ export default function Orders() {
           {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </Select>
         <Button variant="secondary" onClick={copyMon}><Copy className="h-4 w-4" /> {t("Понеділок → усім")}</Button>
+        <Button variant="secondary" disabled={shiftCount >= 6} onClick={() => setExtraCols(n => n + 1)}
+          title={t("Відкрити колонку додаткової зміни (замовлення на зміну поза стандартним набором фабрики)")}>
+          <Plus className="h-4 w-4" /> {t("Зміна")}
+        </Button>
       </div>
 
       {!factories.length ? <Empty>{t("Спочатку додайте фабрику")}</Empty> : (
@@ -98,7 +108,12 @@ export default function Orders() {
           {isFetching && <div className="h-0.5 animate-pulse bg-red-400" />}
           <table className="w-full min-w-130 text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2.5 text-left">{t("День")}</th>{shiftIdx.map(s => <th key={s} className="px-4 py-2.5">{s + 1} {t("зміна")}</th>)}</tr>
+              <tr><th className="px-4 py-2.5 text-left">{t("День")}</th>{shiftIdx.map(s => (
+                <th key={s} className="px-4 py-2.5">
+                  {s + 1} {t("зміна")}
+                  {s + 1 > cfgShiftCount && <span title={t("Поза налаштуванням фабрики — час задайте разовою зміною в графіку")} className="ml-1 rounded bg-violet-50 px-1 py-0.5 text-[9px] font-semibold normal-case text-violet-600">{t("разова")}</span>}
+                </th>
+              ))}</tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {DAYS.map(d => (

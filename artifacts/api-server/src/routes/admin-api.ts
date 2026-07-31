@@ -11,10 +11,10 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
 import { factoryCityMap, isUnder26 } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
@@ -26,6 +26,7 @@ import {
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
+import { loadWeekShiftOverrides, loadDateShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
@@ -1550,9 +1551,13 @@ router.get("/orders", RW, async (req, res) => {
   const weekStart = String(req.query.weekStart);
   if (!factoryId || !weekStart) return fail(res, 400, "factoryId та weekStart обовʼязкові");
   const [fac] = await db.select({ shiftCount: factoriesTable.shiftCount }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
-  const n = Math.min(6, Math.max(1, fac?.shiftCount ?? 3));
+  const nCfg = Math.min(6, Math.max(1, fac?.shiftCount ?? 3));
   const rows = await db.select().from(factoryOrdersTable)
     .where(and(eq(factoryOrdersTable.factoryId, factoryId), eq(factoryOrdersTable.weekStart, weekStart)));
+  // Grid width = configured shifts PLUS any higher shift that already has an order —
+  // lowering the factory's shiftCount must not hide existing ordered headcount.
+  const maxOrdered = rows.reduce((m, r) => Math.max(m, Number(r.shift)), 0);
+  const n = Math.min(6, Math.max(nCfg, maxOrdered));
   // `totals` = headcount per day×shift (legacy grid). `req` = optional position/gender breakdown keyed "day-shift".
   const totals: Record<string, number[]> = {};
   for (const d of DAYS) totals[d] = Array(n).fill(0);
@@ -1562,7 +1567,7 @@ router.get("/orders", RW, async (req, res) => {
     if (totals[r.dayOfWeek] && i < n) totals[r.dayOfWeek]![i] = r.workersNeeded;
     if ((r.requirements ?? []).length) reqs[`${r.dayOfWeek}-${r.shift}`] = r.requirements;
   }
-  ok(res, { totals, req: reqs });
+  ok(res, { totals, req: reqs, shiftCount: nCfg });
 });
 
 // Sum requirement line counts → the slot's total headcount.
@@ -1684,7 +1689,7 @@ router.get("/schedule", async (req, res) => {
   // Reserve pool: workers who filled availability for a day+shift but aren't assigned that day
   const reserve: Record<string, { workerId: number; name: string; code: string | null; positionId: number | null; gender: string | null }[]> = {};
   const available: Record<string, { workerId: number; name: string; code: string | null; positionId: number | null; gender: string | null }[]> = {};
-  let factoryInfo: { shiftCount: number; usesAvailability: boolean; genMode: string; usesPositions: boolean; usesGender: boolean } | null = null;
+  let factoryInfo: { shiftCount: number; usesAvailability: boolean; genMode: string; usesPositions: boolean; usesGender: boolean; shiftTimes: { start: string; end: string }[] } | null = null;
   if (factoryId != null) {
     // who is assigned each day (any shift)
     const assignedThatDay = new Map<string, Set<number>>(); // day -> workerIds
@@ -1712,9 +1717,9 @@ router.get("/schedule", async (req, res) => {
       reserveThatDay.get(a.day)!.add(a.workerId);
     }
 
-    // factory settings
-    const [f] = await db.select({ shiftCount: factoriesTable.shiftCount, usesAvailability: factoriesTable.usesAvailability, genMode: factoriesTable.genMode, usesPositions: factoriesTable.usesPositions, usesGender: factoriesTable.usesGender }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
-    if (f) factoryInfo = { shiftCount: f.shiftCount, usesAvailability: f.usesAvailability, genMode: f.genMode, usesPositions: f.usesPositions, usesGender: f.usesGender };
+    // factory settings (+ resolved shift times so the grid can label/prefill columns)
+    const [f] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+    if (f) factoryInfo = { shiftCount: f.shiftCount, usesAvailability: f.usesAvailability, genMode: f.genMode, usesPositions: f.usesPositions, usesGender: f.usesGender, shiftTimes: factoryShifts(f) };
 
     // "available" pool: active workers of this factory who are NOT assigned and NOT in reserve that day
     const activeWorkers = await db
@@ -1777,6 +1782,22 @@ router.get("/schedule", async (req, res) => {
     for (const u of ur) (unplanned[`${u.day}-${u.shift}`] ??= []).push({ id: u.id, name: u.name, workerId: u.workerId, replacesName: u.replacesName });
   }
 
+  // One-off per-day shift times ("day-shift" → {start,end}): extra shifts for a single
+  // date or changed hours of an existing shift that day.
+  const shiftOverrides: Record<string, { start: string; end: string }> = {};
+  if (factoryId != null) {
+    const ovRows = await db.select().from(factoryShiftOverridesTable).where(and(
+      eq(factoryShiftOverridesTable.factoryId, factoryId),
+      gte(factoryShiftOverridesTable.date, weekStart),
+      lte(factoryShiftOverridesTable.date, addDaysStr(weekStart, 6)),
+    ));
+    for (const r of ovRows) {
+      const idx = Math.round((new Date(String(r.date) + "T00:00:00").getTime() - new Date(weekStart + "T00:00:00").getTime()) / 86400000);
+      const day = DAYS[idx];
+      if (day) shiftOverrides[`${day}-${r.shift}`] = { start: r.start, end: r.end };
+    }
+  }
+
   // Cells cancelled by the scheduler ("day-shift" keys) — rendered as a banner,
   // excluded from reliability by keeping entries scheduled.
   let cancelledCells: string[] = [];
@@ -1816,7 +1837,7 @@ router.get("/schedule", async (req, res) => {
     }
   }
 
-  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells });
+  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells, shiftOverrides });
 });
 
 // Link a driver-typed unplanned worker to a real worker from the base.
@@ -1961,10 +1982,10 @@ router.post("/schedule/shift-restore", RW, async (req, res) => {
 });
 
 router.post("/schedule/generate", RW, async (req, res) => {
-  const { weekStart, factoryId } = req.body ?? {};
+  const { weekStart, factoryId, augment } = req.body ?? {};
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
   try {
-    const result = await generateSchedule(weekStart, factoryId ?? undefined);
+    const result = await generateSchedule(weekStart, factoryId ?? undefined, { augment: !!augment });
     ok(res, result);
   } catch (e) {
     logger.error({ err: e }, "web generate failed");
@@ -2023,7 +2044,17 @@ router.post("/schedule/entry", RW, async (req, res) => {
   const existing = await db.select().from(scheduleEntriesTable)
     .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.dayOfWeek, day)));
   if (existing.length) return fail(res, 400, "Працівник уже має зміну цього дня");
-  const [e] = await db.insert(scheduleEntriesTable).values({ weekId: week.id, workerId, factoryId, dayOfWeek: day, shift, status: "scheduled" }).returning();
+  // Клітинка з разовим override часу → фіксуємо його тривалість у hoursOverride,
+  // щоб облік годин не взяв дефолтні 8 для зміни поза конфігом фабрики.
+  const [cellOv] = await db.select().from(factoryShiftOverridesTable).where(and(
+    eq(factoryShiftOverridesTable.factoryId, factoryId),
+    eq(factoryShiftOverridesTable.date, entryDateStr(String(weekStart), String(day))),
+    eq(factoryShiftOverridesTable.shift, shift),
+  ));
+  const [e] = await db.insert(scheduleEntriesTable).values({
+    weekId: week.id, workerId, factoryId, dayOfWeek: day, shift, status: "scheduled",
+    hoursOverride: cellOv ? shiftDurationHours(cellOv.start, cellOv.end) : null,
+  }).returning();
   ok(res, e);
 });
 
@@ -2031,6 +2062,88 @@ router.delete("/schedule/entry/:id", RW, async (req, res) => {
   await db.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, Number(req.params.id)));
   ok(res, { ok: true });
 });
+
+// Разова зміна на конкретний день фабрики: додати зміну поза стандартним набором
+// або змінити час наявної зміни лише на цю дату. Люди в зміну додаються звичайним
+// POST /schedule/entry — запис у factory_shift_overrides дає їй час скрізь
+// (пуші, водійський борд, Excel, лайв).
+router.post("/schedule/shift-override", RW, async (req, res) => {
+  const { factoryId, date, shift, start, end } = req.body ?? {};
+  const isTime = (v: unknown) => typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v);
+  if (!Number.isInteger(factoryId) || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))
+    || !["1", "2", "3", "4", "5", "6"].includes(String(shift)) || !isTime(start) || !isTime(end)) {
+    return fail(res, 400, "Невірні дані");
+  }
+  const cellWhere = and(
+    eq(factoryShiftOverridesTable.factoryId, factoryId),
+    eq(factoryShiftOverridesTable.date, String(date)),
+    eq(factoryShiftOverridesTable.shift, String(shift) as Shift),
+  );
+  const [prev] = await db.select().from(factoryShiftOverridesTable).where(cellWhere);
+  const [row] = await db.insert(factoryShiftOverridesTable)
+    .values({ factoryId, date: String(date), shift: String(shift) as Shift, start, end })
+    .onConflictDoUpdate({
+      target: [factoryShiftOverridesTable.factoryId, factoryShiftOverridesTable.date, factoryShiftOverridesTable.shift],
+      set: { start, end },
+    })
+    .returning();
+  // Години обліку/фінансів рахуються з hoursOverride ?? конфіг фабрики — для зміни
+  // поза конфігом це дефолтні 8. Проставляємо фактичну тривалість override-а явкам
+  // клітинки (не чіпаючи ручні корекції: лише NULL або значення попереднього override).
+  const dur = shiftDurationHours(start, end);
+  const cell = await entryCellForDate(factoryId, String(date), String(shift) as Shift);
+  if (cell) {
+    const prevDur = prev ? shiftDurationHours(prev.start, prev.end) : null;
+    await db.update(scheduleEntriesTable).set({ hoursOverride: dur }).where(and(
+      cell,
+      prevDur == null
+        ? isNull(scheduleEntriesTable.hoursOverride)
+        : sql`(${scheduleEntriesTable.hoursOverride} IS NULL OR ${scheduleEntriesTable.hoursOverride} = ${prevDur})`,
+    ));
+  }
+  ok(res, row);
+});
+
+router.delete("/schedule/shift-override", RW, async (req, res) => {
+  const factoryId = Number(req.query.factoryId);
+  const date = String(req.query.date);
+  const shift = String(req.query.shift);
+  if (!Number.isInteger(factoryId) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !["1", "2", "3", "4", "5", "6"].includes(shift)) {
+    return fail(res, 400, "Невірні дані");
+  }
+  const [prev] = await db.select().from(factoryShiftOverridesTable).where(and(
+    eq(factoryShiftOverridesTable.factoryId, factoryId),
+    eq(factoryShiftOverridesTable.date, date),
+    eq(factoryShiftOverridesTable.shift, shift as Shift),
+  ));
+  if (prev) {
+    await db.delete(factoryShiftOverridesTable).where(eq(factoryShiftOverridesTable.id, prev.id));
+    // Прибираємо проставлену override-ом тривалість (ручні корекції не чіпаємо)
+    const cell = await entryCellForDate(factoryId, date, shift as Shift);
+    if (cell) {
+      await db.update(scheduleEntriesTable).set({ hoursOverride: null })
+        .where(and(cell, eq(scheduleEntriesTable.hoursOverride, shiftDurationHours(prev.start, prev.end))));
+    }
+  }
+  ok(res, { ok: true });
+});
+
+// Умова «явки клітинки дата+зміна фабрики» (усі week-рядки цього понеділка).
+async function entryCellForDate(factoryId: number, date: string, shift: Shift) {
+  const d = new Date(date + "T00:00:00");
+  const dayIdx = (d.getDay() + 6) % 7;
+  const monday = addDaysStr(date, -dayIdx);
+  const dayName = DAYS[dayIdx]!;
+  const weekRows = await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
+    .where(eq(scheduleWeeksTable.weekStart, monday));
+  if (!weekRows.length) return null;
+  return and(
+    inArray(scheduleEntriesTable.weekId, weekRows.map(w => w.id)),
+    eq(scheduleEntriesTable.factoryId, factoryId),
+    eq(scheduleEntriesTable.dayOfWeek, dayName),
+    eq(scheduleEntriesTable.shift, shift),
+  );
+}
 
 // Download the Excel for one factory's week
 router.get("/schedule/excel", RW, async (req, res) => {
@@ -2775,15 +2888,22 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   ok(res, { sent: true, to, attached: attachments.length, missingReports: missing });
 });
 
-// Download an Excel of worker-reported monthly hours.
+// Download an Excel of monthly hours. Optional query params:
+//   cols=code,name,factory,report,factoryHours,diff,status — which columns to include
+//   errorsOnly=1 — only rows where report ↔ factory hours disagree (mismatch/partial)
 router.get("/hours/report-excel", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : undefined;
-  const { buildReportHoursExcel } = await import("../services/drive");
-  const { buffer, facName } = await buildReportHoursExcel(month, factoryId);
+  const { buildReportHoursExcel, HOURS_XLSX_COLS } = await import("../services/drive");
+  const validKeys = new Set<string>(HOURS_XLSX_COLS.map(c => c.key));
+  const cols = String(req.query.cols ?? "").split(",").map(s => s.trim()).filter(s => validKeys.has(s)) as
+    import("../services/drive").HoursXlsxColKey[];
+  const errorsOnly = req.query.errorsOnly === "1" || req.query.errorsOnly === "true";
+  const { buffer, facName } = await buildReportHoursExcel(month, factoryId, { cols, errorsOnly });
   const namePart = facName ? `${facName} ` : "";
+  const suffix = errorsOnly ? " rozbieżności" : "";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Godziny raport ${namePart}${month}.xlsx`)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Godziny${suffix} ${namePart}${month}.xlsx`)}"`);
   res.send(buffer);
 });
 
@@ -3037,6 +3157,12 @@ router.get("/finance/compare", requireCap("viewFinance"), async (req, res) => {
 });
 
 // ─── Absences with reasons for a month (from approved schedule) ──────────────────
+// Стандартний штраф за пропуск, zł (override per-пропуск — schedule_entries.absence_penalty)
+const DEFAULT_ABSENCE_PENALTY = 300;
+// Ефективний штраф пропуску: виправданий = 0, інакше override ?? стандарт.
+const absencePenaltyOf = (e: { absenceExcused: boolean | null; absencePenalty: number | null }) =>
+  e.absenceExcused ? 0 : (e.absencePenalty ?? DEFAULT_ABSENCE_PENALTY);
+
 router.get("/absences", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const [y, m] = month.split("-").map(Number);
@@ -3044,8 +3170,10 @@ router.get("/absences", RW, async (req, res) => {
   const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
   const rows = await db
     .select({
+      entryId: scheduleEntriesTable.id, workerId: scheduleEntriesTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, reason: scheduleEntriesTable.absenceReason,
+      excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
@@ -3054,11 +3182,52 @@ router.get("/absences", RW, async (req, res) => {
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent")));
   const absences = rows
-    .map(r => ({ name: r.name, code: r.code, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason, excused: !!r.reason }))
+    .map(r => ({
+      entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory,
+      date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason,
+      excused: !!r.reason,
+      justified: !!r.excusedFlag, // «виправдано» адміном: не рахується в кількість/штраф
+      penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
+      penaltyOverride: r.penaltyOverride, // NULL = стандарт (для UI-редактора)
+    }))
     .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
-  const noShow = absences.filter(a => !a.excused).length;
-  ok(res, { month, absences, total: absences.length, excused: absences.length - noShow, noShow });
+  // Кількісні підсумки рахуються БЕЗ виправданих (justified) пропусків
+  const counted = absences.filter(a => !a.justified);
+  const noShow = counted.filter(a => !a.excused).length;
+  const penaltyTotal = Math.round(absences.reduce((s, a) => s + a.penalty, 0) * 100) / 100;
+  ok(res, {
+    month, absences, total: counted.length, excused: counted.length - noShow, noShow,
+    justified: absences.length - counted.length, penaltyTotal, defaultPenalty: DEFAULT_ABSENCE_PENALTY,
+  });
+});
+
+// Виправдання пропуску / коригування штрафу. body: { justified?: boolean; penalty?: number|null }
+// penalty: null = повернути стандарт, 0 = анулювати, число = свій розмір (zł).
+router.patch("/absences/:entryId", RW, async (req, res) => {
+  const id = Number(req.params.entryId);
+  if (!Number.isInteger(id)) return fail(res, 400, "Невірний id");
+  const [entry] = await db.select({ id: scheduleEntriesTable.id, status: scheduleEntriesTable.status })
+    .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, id));
+  if (!entry) return fail(res, 404, "Запис не знайдено");
+  if (entry.status !== "absent") return fail(res, 400, "Запис не є пропуском");
+  const body = req.body ?? {};
+  const patch: Partial<{ absenceExcused: boolean; absencePenalty: number | null }> = {};
+  if (typeof body.justified === "boolean") patch.absenceExcused = body.justified;
+  if ("penalty" in body) {
+    if (body.penalty === null) patch.absencePenalty = null;
+    else {
+      const p = Number(body.penalty);
+      if (!Number.isFinite(p) || p < 0 || p > 100000) return fail(res, 400, "Невірний штраф");
+      patch.absencePenalty = p;
+    }
+  }
+  if (!Object.keys(patch).length) return fail(res, 400, "Нема що змінювати");
+  const [e] = await db.update(scheduleEntriesTable).set(patch).where(eq(scheduleEntriesTable.id, id)).returning();
+  ok(res, {
+    entryId: e!.id, justified: e!.absenceExcused, penaltyOverride: e!.absencePenalty,
+    penalty: absencePenaltyOf({ absenceExcused: e!.absenceExcused, absencePenalty: e!.absencePenalty }),
+  });
 });
 
 // ─── Absence requests (worker self-reported) — approve / reject on the site ──────
@@ -3660,16 +3829,19 @@ router.get("/live", async (_req, res) => {
       .leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(and(eq(driverShiftAssignmentsTable.weekId, week.id), eq(driverShiftAssignmentsTable.dayOfWeek, today), eq(driverShiftAssignmentsTable.kind, "delivery")));
 
+    // One-off shift-time overrides for today (extra shifts / changed hours for a date)
+    const todayOv = await loadDateShiftOverrides(warsawDateStr());
     for (const f of factories) {
       const fShifts = factoryShifts(f);
       const fEntries = entries.filter(e => e.factoryId === f.id);
       if (!fEntries.length && !fShifts.length) continue;
-      const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
-      for (let s = 1; s <= n; s++) {
+      // Iterate ALL shifts that have entries — a shift outside the configured
+      // shiftCount (one-off / count lowered later) must still show on the live board.
+      for (let s = 1; s <= 6; s++) {
         const sc = String(s) as Shift;
         const list = fEntries.filter(e => e.shift === sc);
         if (!list.length) continue;
-        const st = fShifts[s - 1];
+        const st = todayOv.get(shiftOverrideKey(f.id, warsawDateStr(), sc)) ?? fShifts[s - 1];
         const enRoute = trips.some(t => t.factoryId === f.id && t.shift === sc && t.pickup && !t.arrived);
         shiftsOut.push({
           factoryId: f.id, factory: f.name, shift: s, usesTransport: f.usesTransport,
@@ -3784,9 +3956,12 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   }
 
   const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h! * 60 + m!; };
+  // One-off per-day shift times (extra shifts / changed hours for a single date)
+  const boardOv: ShiftOverrideMap = week ? await loadWeekShiftOverrides(weekStart) : new Map();
   const out = factories.map(f => {
     const fShifts = factoryShifts(f);
     const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
+    const effTime = (day: string, s: number) => overrideFor(boardOv, f.id, weekStart, day, s) ?? fShifts[s - 1];
     const headcountOf = (day: string, sc: string) => entries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
     const cellAssigns = (day: string, sc: string, kind: string) =>
       assigns.filter(a => a.factoryId === f.id && a.day === day && a.shift === sc && a.kind === kind).map(a => ({ id: a.driverId, name: a.driverName }));
@@ -3798,16 +3973,17 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
     // tracked (vehicles rotate), the fleet is 9- and 20-seat buses, so an unknown
     // vehicle counts as 20 seats and we only flag what is certainly impossible.
     const pickupGapFor = (day: string, idx: number): { reason: string; people: number; seats: number | null } | null => {
-      const st = fShifts[idx];
+      const st = effTime(day, idx + 1);
       const people = headcountOf(day, String(idx + 1));
       if (!st || people === 0) return null;
       if (cancelledSet.has(`${f.id}-${day}-${idx + 1}`)) return null; // cancelled cell — no run at all
       if (cellAssigns(day, String(idx + 1), "pickup").length > 0) return null; // explicitly covered
       const crossesMidnight = toMin(st.end) <= toMin(st.start);
       const coverDay = crossesMidnight ? DAYS[(DAYS.indexOf(day as any) + 1) % 7]! : day;
-      const coverIdx = fShifts.findIndex(x => x.start === st.end);
-      const covering = coverIdx >= 0 && headcountOf(coverDay, String(coverIdx + 1)) > 0
-        ? cellAssigns(coverDay, String(coverIdx + 1), "delivery") : [];
+      let coverShift = 0;
+      for (let s2 = 1; s2 <= 6; s2++) { if (effTime(coverDay, s2)?.start === st.end) { coverShift = s2; break; } }
+      const covering = coverShift > 0 && headcountOf(coverDay, String(coverShift)) > 0
+        ? cellAssigns(coverDay, String(coverShift), "delivery") : [];
       if (covering.length === 0) return { reason: "none", people, seats: null };
       const seats = covering.reduce<number>((a, d) => a + (seatsOf.get(d.id) ?? 20), 0);
       return seats < people ? { reason: "capacity", people, seats } : null;
@@ -3815,13 +3991,15 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
 
     const cells: any[] = [];
     for (const day of DAYS) {
-      for (let s = 1; s <= n; s++) {
+      // ALL shifts, not just 1..shiftCount: cells with people/drivers outside the
+      // configured count (one-off shifts) must stay visible to drivers.
+      for (let s = 1; s <= 6; s++) {
         const sc = String(s);
         const headcount = headcountOf(day, sc);
         const cellDrivers = cellAssigns(day, sc, "delivery");
         const pickupDrivers = cellAssigns(day, sc, "pickup");
         if (headcount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
-        const st = fShifts[s - 1];
+        const st = effTime(day, s);
         const cancelled = cancelledSet.has(`${f.id}-${day}-${sc}`);
         cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
       }

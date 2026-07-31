@@ -8,6 +8,7 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import { DAYS } from "./sheets";
 import { matchWorker } from "../bot/workerMatch";
 import { factoryShifts, nowWarsaw } from "../bot/time";
+import { loadWeekShiftOverrides, overrideFor, shiftDurationHours } from "./shiftOverrides";
 
 export interface ShortageInfo {
   factoryName: string;
@@ -25,42 +26,60 @@ export interface ScheduleGenerationResult {
   warnings: string[];
 }
 
-export async function generateSchedule(weekStart: string, factoryId?: number): Promise<ScheduleGenerationResult> {
+export async function generateSchedule(
+  weekStart: string, factoryId?: number, opts: { augment?: boolean } = {},
+): Promise<ScheduleGenerationResult> {
+  // augment («доповнити»): existing entries are NEVER deleted — they all count as
+  // locked, and order-driven generation skips cells that already have people. Used
+  // e.g. after adding a 3rd shift: fill the new shift without touching shifts 1–2.
+  const augment = !!opts.augment;
   // If generating for a specific factory, don't delete/recreate the whole week draft
   // A (day,shift) slot is "locked" once its shift start time has passed — already-worked
   // shifts must NOT be wiped/regenerated. Default (full regen of a fresh week): nothing locked.
   let slotLocked: (day: DayOfWeek, shift: Shift) => boolean = () => false;
   let lockedEntries: { workerId: number; dayOfWeek: DayOfWeek; shift: Shift }[] = [];
+  // Cells that already have people (`${factoryId}-${day}-${shift}`) — augment skips them.
+  const existingCells = new Set<string>();
   // All writes are deferred: the plan is computed in memory first, then applied in ONE
   // transaction at the end — a crash mid-generation must not leave a half-wiped week.
-  let existingWeek: { id: number } | undefined; // week row to reuse (per-factory mode)
+  let existingWeek: { id: number } | undefined; // week row to reuse (per-factory/augment mode)
   let draftToReuse: number | null = null;       // draft week id whose entries are wiped (full regen)
   let entryIdsToDelete: number[] = [];
-  if (factoryId) {
+  if (factoryId || augment) {
     // Use the SAME week row the panel displays (approved preferred, else latest) so a
     // per-factory regeneration shows up immediately — never spawn a parallel draft.
     const candidates = await db.select().from(scheduleWeeksTable)
       .where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
     existingWeek = candidates.find(w => w.status === "approved") ?? candidates[0];
-    // Build the lock predicate from this factory's shift times
-    const fac = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
-    const fShifts = factoryShifts(fac);
-    const now = nowWarsaw().getTime();
-    slotLocked = (day, shift) => {
-      const idx = Math.max(0, DAYS.indexOf(day));
-      const d = new Date(weekStart + "T00:00:00"); d.setDate(d.getDate() + idx);
-      const start = fShifts[Number(shift) - 1]?.start ?? "06:00";
-      const [hh, mm] = start.split(":").map(Number);
-      d.setHours(hh || 6, mm || 0, 0, 0);
-      return d.getTime() <= now;
-    };
+    if (factoryId) {
+      // Build the lock predicate from this factory's shift times
+      const fac = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
+      const fShifts = factoryShifts(fac);
+      const now = nowWarsaw().getTime();
+      slotLocked = (day, shift) => {
+        const idx = Math.max(0, DAYS.indexOf(day));
+        const d = new Date(weekStart + "T00:00:00"); d.setDate(d.getDate() + idx);
+        const start = fShifts[Number(shift) - 1]?.start ?? "06:00";
+        const [hh, mm] = start.split(":").map(Number);
+        d.setHours(hh || 6, mm || 0, 0, 0);
+        return d.getTime() <= now;
+      };
+    }
     if (existingWeek) {
-      // Keep already-worked entries; delete only the future (unlocked) ones.
       const existing = await db.select().from(scheduleEntriesTable)
-        .where(and(eq(scheduleEntriesTable.weekId, existingWeek.id), eq(scheduleEntriesTable.factoryId, factoryId)));
-      lockedEntries = existing.filter(e => slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift))
-        .map(e => ({ workerId: e.workerId, dayOfWeek: e.dayOfWeek as DayOfWeek, shift: e.shift as Shift }));
-      entryIdsToDelete = existing.filter(e => !slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift)).map(e => e.id);
+        .where(factoryId
+          ? and(eq(scheduleEntriesTable.weekId, existingWeek.id), eq(scheduleEntriesTable.factoryId, factoryId))
+          : eq(scheduleEntriesTable.weekId, existingWeek.id));
+      if (augment) {
+        // Nothing is deleted: every existing entry constrains the plan, its cell is off-limits.
+        lockedEntries = existing.map(e => ({ workerId: e.workerId, dayOfWeek: e.dayOfWeek as DayOfWeek, shift: e.shift as Shift }));
+        for (const e of existing) existingCells.add(`${e.factoryId}-${e.dayOfWeek}-${e.shift}`);
+      } else {
+        // Keep already-worked entries; delete only the future (unlocked) ones.
+        lockedEntries = existing.filter(e => slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift))
+          .map(e => ({ workerId: e.workerId, dayOfWeek: e.dayOfWeek as DayOfWeek, shift: e.shift as Shift }));
+        entryIdsToDelete = existing.filter(e => !slotLocked(e.dayOfWeek as DayOfWeek, e.shift as Shift)).map(e => e.id);
+      }
     }
   } else {
     // Full regeneration — the existing draft's ENTRIES are replaced inside the final
@@ -198,6 +217,8 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
 
       for (const order of dayOrders) {
         if (order.needed === 0) continue;
+        // augment: a cell that already has people is left exactly as it is
+        if (augment && existingCells.has(`${order.factoryId}-${day}-${shift}`)) continue;
 
         // Split the order into requirement lines. No breakdown → one generic line for the
         // whole headcount. Process most-specific lines first (position, then gender) so
@@ -319,11 +340,15 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     }
   }
 
+  // Разові зміни тижня: запис у клітинку з override часу отримує hoursOverride =
+  // фактична тривалість (інакше облік годин візьме конфіг фабрики / дефолтні 8).
+  const ovMap = await loadWeekShiftOverrides(weekStart, factoryId);
+
   // Apply the plan atomically: reuse/create the week row, wipe replaced entries,
   // batch-insert the new ones. Nothing is written if any step fails.
   const weekId = await db.transaction(async (tx) => {
     let wid: number;
-    if (factoryId) {
+    if (factoryId || augment) {
       if (existingWeek) {
         wid = existingWeek.id;
       } else {
@@ -344,7 +369,10 @@ export async function generateSchedule(weekStart: string, factoryId?: number): P
     }
     if (pending.length) {
       await tx.insert(scheduleEntriesTable).values(
-        pending.map(p => ({ ...p, weekId: wid, status: "scheduled" as const })),
+        pending.map(p => {
+          const ov = overrideFor(ovMap, p.factoryId, weekStart, p.dayOfWeek, p.shift);
+          return { ...p, weekId: wid, status: "scheduled" as const, hoursOverride: ov ? shiftDurationHours(ov.start, ov.end) : null };
+        }),
       );
     }
     return wid;

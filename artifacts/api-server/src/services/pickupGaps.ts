@@ -10,11 +10,12 @@
 import { db } from "@workspace/db";
 import {
   driversTable, factoriesTable, scheduleEntriesTable, driverShiftAssignmentsTable, workersTable,
-  shiftCancellationsTable,
+  shiftCancellationsTable, scheduleWeeksTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
 import { factoryShifts } from "../bot/time";
+import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
 
 export type PickupGap = {
   factoryId: number;
@@ -33,6 +34,11 @@ const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h
 export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<PickupGap[]> {
   // No agency transport → nobody to pick anyone up, a "gap" there is noise.
   const factories = await db.select().from(factoriesTable).where(eq(factoriesTable.usesTransport, true));
+  // One-off per-day shift times (extra shifts / changed hours for a single date)
+  const [weekRow] = await db.select({ weekStart: scheduleWeeksTable.weekStart })
+    .from(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, weekId));
+  const weekStart = weekRow ? String(weekRow.weekStart) : null;
+  const ov: ShiftOverrideMap = weekStart ? await loadWeekShiftOverrides(weekStart) : new Map();
   const drivers = await db.select({ id: driversTable.id, seats: driversTable.seats })
     .from(driversTable).where(eq(driversTable.isActive, true));
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
@@ -59,9 +65,18 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
     const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
     const headcount = (d: string, sc: string) => entries.filter(e => e.factoryId === f.id && e.day === d && e.shift === sc).length;
     const assignsAt = (d: string, sc: string, kind: string) => assigns.filter(a => a.factoryId === f.id && a.day === d && a.shift === sc && a.kind === kind);
+    // Effective time of a shift on a given day: one-off override first, then factory config.
+    const effTime = (d: string, s: number) =>
+      (weekStart ? overrideFor(ov, f.id, weekStart, d, s) : undefined) ?? fShifts[s - 1];
 
-    for (let s = 1; s <= n; s++) {
-      const st = fShifts[s - 1];
+    // Shifts to check: the configured ones PLUS any shift that actually has entries
+    // today (one-off shifts / entries outside the current shiftCount).
+    const shiftNums = new Set<number>();
+    for (let s = 1; s <= n; s++) shiftNums.add(s);
+    for (const e of entries) if (e.factoryId === f.id && e.day === day) shiftNums.add(Number(e.shift));
+
+    for (const s of [...shiftNums].sort((a, b) => a - b)) {
+      const st = effTime(day, s);
       const sc = String(s) as Shift;
       const people = headcount(day, sc);
       if (!st || people === 0) continue;
@@ -69,9 +84,10 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
       if (assignsAt(day, sc, "pickup").length > 0) continue; // explicitly covered
       const crossesMidnight = toMin(st.end) <= toMin(st.start);
       const coverDay = crossesMidnight ? nextDay : day;
-      const coverIdx = fShifts.findIndex(x => x.start === st.end);
-      const covering = coverIdx >= 0 && headcount(coverDay, String(coverIdx + 1)) > 0
-        ? assignsAt(coverDay, String(coverIdx + 1), "delivery") : [];
+      let coverShift = 0;
+      for (let s2 = 1; s2 <= 6; s2++) { if (effTime(coverDay, s2)?.start === st.end) { coverShift = s2; break; } }
+      const covering = coverShift > 0 && headcount(coverDay, String(coverShift)) > 0
+        ? assignsAt(coverDay, String(coverShift), "delivery") : [];
       if (covering.length === 0) {
         gaps.push({ factoryId: f.id, factoryName: f.name, day, shift: sc, end: st.end ?? null, people, seats: null, reason: "none" });
         continue;
