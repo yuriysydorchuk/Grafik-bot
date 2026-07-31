@@ -92,7 +92,11 @@ export default function Availability() {
   return (
     <>
       <PageHeader title={t("Доступність")} subtitle={t("Хто на які зміни заявився — по фабриках")} />
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Кнопки тижнів + «Нагадати всім»: липнуть під топбаром, як на «Графіках»
+          (md+ only). top-[52px] = висота топбара − 1px; -mx-8/px-8 розтягують
+          непрозору смугу на всю колонку контенту. z-40 — вище за шапки фабрик
+          нижче, щоб вони ховалися під бар, а не просвічували. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-40 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
         <WeekSelect value={weekStart} onChange={setWeekStart} />
         {canRemind && (
           <div className="flex items-center gap-2">
@@ -114,10 +118,11 @@ export default function Availability() {
         <div className="space-y-6">
           {groups.map(g => (
             <div key={g.key}>
-              {/* Шапка фабрики (md+): липне під топбаром, поки скролиться її секція;
-                  фіксована висота h-10 — під неї підігнаний top шапки таблиці нижче.
-                  Наступна фабрика природно виштовхує попередню (sticky в межах секції). */}
-              <div className="mb-2 flex items-center gap-2 md:sticky md:top-[52px] md:z-30 md:-mx-2 md:h-10 md:bg-page md:px-2">
+              {/* Шапка фабрики (md+): липне під закріпленим баром тижнів (52px топбар
+                  + ~92px бар), поки скролиться її секція; фіксована висота h-10 — під
+                  неї підігнаний top шапки таблиці нижче. Наступна фабрика природно
+                  виштовхує попередню (sticky в межах секції). */}
+              <div className="mb-2 flex items-center gap-2 md:sticky md:top-[144px] md:z-30 md:-mx-2 md:h-10 md:bg-page md:px-2">
                 <FactoryIcon className="h-4 w-4 text-slate-400" />
                 <h2 className="text-sm font-semibold text-slate-700">{g.name}</h2>
                 <Badge color={g.key === "none" ? "amber" : "slate"}>{g.rows.length} {t("осіб")}</Badge>
@@ -161,15 +166,15 @@ export default function Availability() {
                 </Card>
               )}
               {/* md+: таблиця скролиться разом зі сторінкою, а рядок днів липне одразу
-                  під шапкою фабрики (top = 52px топбар + 40px шапка фабрики = 92px).
-                  На мобільному sticky вимкнено — там лишається горизонтальний скрол. */}
+                  під шапкою фабрики (top = 52px топбар + ~92px бар тижнів + 40px шапка
+                  фабрики = 184px). На мобільному sticky вимкнено — горизонтальний скрол. */}
               <Card className="overflow-x-auto md:overflow-visible">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-xs uppercase text-slate-400">
                     <tr>
-                      <th className="bg-slate-50 px-4 py-2.5 text-left md:sticky md:top-[92px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Працівник")}</th>
-                      {DAYS.map(d => <th key={d} className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[92px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{DAY_UK[d]}</th>)}
-                      <th className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[92px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Джерело")}</th>
+                      <th className="bg-slate-50 px-4 py-2.5 text-left md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Працівник")}</th>
+                      {DAYS.map(d => <th key={d} className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{DAY_UK[d]}</th>)}
+                      <th className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Джерело")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">

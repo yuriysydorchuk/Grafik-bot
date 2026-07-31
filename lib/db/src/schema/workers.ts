@@ -199,7 +199,7 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   // «Виправдана» відсутність: адмін визнав пропуск поважним — не рахується
   // у кількість пропусків працівника і не тягне штраф.
   absenceExcused: boolean("absence_excused").notNull().default(false),
-  // Штраф за пропуск, zł: NULL = стандартний (300), число = override (0 = анульовано).
+  // Штраф за пропуск, zł: NULL = стандартний (200), число = override (0 = анульовано).
   absencePenalty: real("absence_penalty"),
   pickedUpBy: integer("picked_up_by").references(() => driversTable.id), // driver who boarded this worker
   hoursOverride: real("hours_override"), // manual hours for this shift (overrides computed shift duration)
@@ -308,6 +308,7 @@ export const absenceRequestsTable = pgTable("absence_requests", {
   shift: shiftEnum("shift"),                            // NULL = whole day off
   reason: text("reason"),
   status: text("status").notNull().default("pending"), // pending | substituted | rejected | accepted
+  rejectReason: text("reject_reason"),                  // чому відхилено (опційно; йде у сповіщення працівнику)
   substituteWorkerId: integer("substitute_worker_id").references(() => workersTable.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

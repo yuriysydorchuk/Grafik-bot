@@ -65,9 +65,13 @@ export default function Absences() {
   });
   const { data: requests = [] } = useQuery<AbsenceRequest[]>({ queryKey: ["absence-requests"], queryFn: () => get("/absence-requests") });
   const pending = requests.filter(r => r.status === "pending");
+  // Відхилення — з опційною причиною: клік по «Відхилити» відкриває поле в картці
+  const [rejecting, setRejecting] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const decide = useMutation({
-    mutationFn: (v: { id: number; action: "approve" | "reject" }) => post(`/absence-requests/${v.id}/${v.action}`),
-    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ["absence-requests"] }); qc.invalidateQueries({ queryKey: ["absences", month] }); toast.success(v.action === "approve" ? t("Прийнято") : t("Відхилено")); },
+    mutationFn: (v: { id: number; action: "approve" | "reject"; reason?: string }) =>
+      post(`/absence-requests/${v.id}/${v.action}`, v.reason ? { reason: v.reason } : {}),
+    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ["absence-requests"] }); qc.invalidateQueries({ queryKey: ["absences", month] }); toast.success(v.action === "approve" ? t("Прийнято") : t("Відхилено")); setRejecting(null); setRejectReason(""); },
     onError: (e: any) => toast.error(e.message),
   });
   const substitute = useMutation({
@@ -166,10 +170,22 @@ export default function Absences() {
                     </div>
                   ) : <div className="mt-1 text-xs text-slate-400">{t("Доступних замін не знайдено")}</div>}
                 </div>
-                <div className="flex shrink-0 gap-1">
-                  <button onClick={() => decide.mutate({ id: r.id, action: "approve" })} disabled={decide.isPending} className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Check className="h-4 w-4" /> {t("Прийняти")}</button>
-                  <button onClick={() => decide.mutate({ id: r.id, action: "reject" })} disabled={decide.isPending} className="flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /> {t("Відхилити")}</button>
-                </div>
+                {rejecting === r.id ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <input autoFocus value={rejectReason} onChange={e => setRejectReason(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") decide.mutate({ id: r.id, action: "reject", reason: rejectReason.trim() || undefined }); if (e.key === "Escape") { setRejecting(null); setRejectReason(""); } }}
+                      placeholder={t("Причина відхилення (необов'язково)")}
+                      className="w-56 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs focus:border-rose-400 focus:outline-none" />
+                    <button onClick={() => decide.mutate({ id: r.id, action: "reject", reason: rejectReason.trim() || undefined })} disabled={decide.isPending}
+                      className="flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /> {t("Відхилити")}</button>
+                    <button onClick={() => { setRejecting(null); setRejectReason(""); }} className="rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-100">{t("Скасувати")}</button>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 gap-1">
+                    <button onClick={() => decide.mutate({ id: r.id, action: "approve" })} disabled={decide.isPending} className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Check className="h-4 w-4" /> {t("Прийняти")}</button>
+                    <button onClick={() => { setRejecting(r.id); setRejectReason(""); }} disabled={decide.isPending} className="flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /> {t("Відхилити")}</button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -198,7 +214,7 @@ export default function Absences() {
             <tbody className="divide-y divide-slate-100">
               {byWorker.map(w => (
                 <WorkerRows key={w.key} w={w} open={openWorker === w.key} canEdit={canEdit}
-                  defaultPenalty={data?.defaultPenalty ?? 300}
+                  defaultPenalty={data?.defaultPenalty ?? 200}
                   onToggle={() => setOpenWorker(k => (k === w.key ? null : w.key))}
                   onPatch={(v) => patchAbs.mutate(v)} patching={patchAbs.isPending} />
               ))}

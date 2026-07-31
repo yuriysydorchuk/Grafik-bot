@@ -4246,6 +4246,35 @@ bot.on("text", async (ctx) => {
     return ctx.reply(`❌ ${tb(al, "Аванс відхилено")} (*${r.amount} zł*)${note ? `\n📝 ${mdSafe(note)}` : ""}`, { parse_mode: "Markdown", ...managementMenu(al) });
   }
 
+  // Admin entered the optional reason after tapping "❌ Відхилити" on an absence request.
+  if (state?.action === "absence:reject_reason") {
+    const { data } = state;
+    clearState(tid);
+    const admin = await getAdmin(tid);
+    if (!admin) return;
+    const al = olang(admin);
+    const reason = text.trim() === "/skip" ? null : text.trim() || null;
+    const r = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, data.requestId)))[0];
+    if (!r) return ctx.reply(tb(al, "Запит не знайдено."), adminMenu(al));
+    await db.update(absenceRequestsTable).set({ status: "rejected", rejectReason: reason }).where(eq(absenceRequestsTable.id, r.id));
+    const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
+    if (workerRecord[0]?.telegramId) {
+      const wl = asLang(workerRecord[0].language);
+      let dmText = r.shift == null
+        ? t(wl, "notif.absRejectedDay", { day: dayShort(wl, r.dayOfWeek) })
+        : t(wl, "notif.absRejected", { day: dayShort(wl, r.dayOfWeek), shift: t(wl, "hr.shiftN", { n: r.shift }) });
+      if (reason) dmText += `\n${t(wl, "notif.absRejectReason", { reason: mdSafe(reason) })}`;
+      try { await bot.telegram.sendMessage(workerRecord[0].telegramId, dmText, { parse_mode: "Markdown" }); }
+      catch { /* ignore */ }
+    }
+    const summary = `❌ Відхилено\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${r.shift == null ? "цілий день" : SHIFT_SHORT[r.shift]}${reason ? `\n📝 ${reason}` : ""}`;
+    // stamp the original notification message (removes its buttons)
+    if (data.chatId && data.messageId) {
+      try { await bot.telegram.editMessageText(data.chatId, data.messageId, undefined, summary); } catch { /* ignore */ }
+    }
+    return ctx.reply(summary, adminMenu(al));
+  }
+
   if (state?.action === "absence:enter_reason") {
     const { data } = state;
     clearState(tid);
@@ -4803,21 +4832,14 @@ bot.action(/^absence_invite_decline_(\d+)_(\d+)$/, async (ctx) => {
   return ctx.editMessageText("❌ Зрозуміло, дякуємо що відповіли.");
 });
 
+// Rejection goes through a short prompt (same idiom as advances): the admin may
+// type an optional reason (or /skip) that is appended to the worker's notification.
 bot.action(/^absence_reject_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const requestId = parseInt(ctx.match[1]!, 10);
   const req = await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId));
   if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
-  const r = req[0];
-  await db.update(absenceRequestsTable).set({ status: "rejected" }).where(eq(absenceRequestsTable.id, requestId));
-  const workerRecord = await db.select().from(workersTable).where(eq(workersTable.id, r.workerId));
-  if (workerRecord[0]?.telegramId) {
-    const wl = asLang(workerRecord[0].language);
-    const dmText = r.shift == null
-      ? t(wl, "notif.absRejectedDay", { day: dayShort(wl, r.dayOfWeek) })
-      : t(wl, "notif.absRejected", { day: dayShort(wl, r.dayOfWeek), shift: t(wl, "hr.shiftN", { n: r.shift }) });
-    try { await bot.telegram.sendMessage(workerRecord[0].telegramId, dmText, { parse_mode: "Markdown" }); }
-    catch { /* ignore */ }
-  }
-  return ctx.editMessageText(`❌ Відхилено\n👷 ${workerRecord[0]?.fullName ?? "—"}\n📅 ${DAY_UK[r.dayOfWeek]} ${r.shift == null ? "цілий день" : SHIFT_SHORT[r.shift]}`);
+  const msg = ctx.callbackQuery.message;
+  setState(String(ctx.from.id), "absence:reject_reason", { requestId, chatId: msg?.chat.id, messageId: msg?.message_id });
+  return ctx.reply("✍️ Введіть причину відхилення (або /skip):", Markup.removeKeyboard());
 });

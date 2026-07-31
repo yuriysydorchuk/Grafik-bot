@@ -3158,7 +3158,7 @@ router.get("/finance/compare", requireCap("viewFinance"), async (req, res) => {
 
 // ─── Absences with reasons for a month (from approved schedule) ──────────────────
 // Стандартний штраф за пропуск, zł (override per-пропуск — schedule_entries.absence_penalty)
-const DEFAULT_ABSENCE_PENALTY = 300;
+const DEFAULT_ABSENCE_PENALTY = 200;
 // Ефективний штраф пропуску: виправданий = 0, інакше override ?? стандарт.
 const absencePenaltyOf = (e: { absenceExcused: boolean | null; absencePenalty: number | null }) =>
   e.absenceExcused ? 0 : (e.absencePenalty ?? DEFAULT_ABSENCE_PENALTY);
@@ -3277,12 +3277,13 @@ router.get("/absence-requests", RW, async (_req, res) => {
   ok(res, out);
 });
 
-async function notifyAbsenceDecision(workerId: number, day: DayOfWeek, shift: Shift | null, accepted: boolean) {
+async function notifyAbsenceDecision(workerId: number, day: DayOfWeek, shift: Shift | null, accepted: boolean, rejectReason?: string | null) {
   const w = (await db.select({ tid: workersTable.telegramId, language: workersTable.language }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
   if (!w?.tid) return;
   try {
     const { bot } = await import("../bot");
     const { t, asLang, dayShort } = await import("../bot/i18n");
+    const { mdSafe } = await import("../bot/display");
     const lang = asLang(w.language);
     let txt: string;
     if (shift == null) {
@@ -3296,6 +3297,7 @@ async function notifyAbsenceDecision(workerId: number, day: DayOfWeek, shift: Sh
         ? t(lang, "notif.absAccepted", params)
         : t(lang, "notif.absRejected", params);
     }
+    if (!accepted && rejectReason) txt += `\n${t(lang, "notif.absRejectReason", { reason: mdSafe(rejectReason) })}`;
     await bot.telegram.sendMessage(w.tid, txt, { parse_mode: "Markdown" });
   } catch (e) { logger.error({ err: e }, "notify absence decision failed"); }
 }
@@ -3326,10 +3328,11 @@ router.post("/absence-requests/:id/approve", RW, async (req, res) => {
 
 router.post("/absence-requests/:id/reject", RW, async (req, res) => {
   const id = Number(req.params.id);
+  const reason = String(req.body?.reason ?? "").trim() || null;
   const r = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
-  await db.update(absenceRequestsTable).set({ status: "rejected" }).where(eq(absenceRequestsTable.id, id));
-  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift | null, false).catch(() => {});
+  await db.update(absenceRequestsTable).set({ status: "rejected", rejectReason: reason }).where(eq(absenceRequestsTable.id, id));
+  notifyAbsenceDecision(r.workerId, r.dayOfWeek as DayOfWeek, r.shift as Shift | null, false, reason).catch(() => {});
   ok(res, { ok: true });
 });
 
