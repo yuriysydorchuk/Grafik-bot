@@ -563,6 +563,8 @@ router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
     await tx.delete(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id));
     await tx.delete(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, id));
     await tx.delete(monthlyReportsTable).where(eq(monthlyReportsTable.workerId, id));
+    await tx.delete(factoryHoursTable).where(eq(factoryHoursTable.workerId, id));
+    await tx.delete(workerChangesTable).where(eq(workerChangesTable.workerId, id));
     await tx.delete(hostelDeductionsTable).where(eq(hostelDeductionsTable.workerId, id));
     await tx.delete(penaltiesTable).where(eq(penaltiesTable.workerId, id));
     // Pointers owned by other entities → unlink, keep the other entity.
@@ -2598,9 +2600,12 @@ router.get("/hours", RW, async (req, res) => {
   // позначених фабрик — клієнту не треба дублювати це правило.
   const multiFirmFacs = new Set(facRows.filter(f => f.multiFirm).map(f => f.id));
   const rowWorkerIds = [...new Set([...byWorkerFactory.values()].map(w => w.workerId as number))];
-  const workerCos = rowWorkerIds.length && multiFirmFacs.size ? await db.select({ id: workersTable.id, companyId: workersTable.companyId })
+  const workerCos = rowWorkerIds.length ? await db.select({ id: workersTable.id, companyId: workersTable.companyId, createdSource: workersTable.createdSource })
     .from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
   const workerFirmById = new Map(workerCos.map(w => [w.id, w.companyId != null ? companyName.get(w.companyId) ?? null : null]));
+  // профілі, створені імпортом годин (/hours «створити профіль») — лише їх
+  // можна швидко видалити 🗑 просто зі списку обліку (випадковий клік)
+  const importCreated = new Set(workerCos.filter(w => w.createdSource === "hours_import").map(w => w.id));
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
   const workers = [...byWorkerFactory.values()]
@@ -2613,6 +2618,8 @@ router.get("/hours", RW, async (req, res) => {
         reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
         factoryHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.hours ?? null,
         factoryDays: fhByKey.get(rowKey(w.workerId, w.factoryId))?.days ?? null,
+        factoryConfirmed: fhByKey.get(rowKey(w.workerId, w.factoryId))?.confirmed ?? false,
+        createdViaImport: importCreated.has(w.workerId),
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
@@ -2754,14 +2761,34 @@ router.post("/hours/report", RW, async (req, res) => {
 });
 
 // ─── Години з фабрики (звірка з рапортами) ───────────────────────────────────
-const upsertFactoryHours = async (workerId: number, month: string, factoryId: number, hours: number, source: string, days: Record<string, number> | null = null) => {
+type FactoryDayValue = number | Record<string, number>; // разом за день АБО { "№зміни": год }
+const upsertFactoryHours = async (workerId: number, month: string, factoryId: number, hours: number, source: string, days: Record<string, FactoryDayValue> | null = null) => {
   await db.insert(factoryHoursTable)
     .values({ workerId, month, factoryId, hours, source, days })
     .onConflictDoUpdate({
       target: [factoryHoursTable.workerId, factoryHoursTable.month, factoryHoursTable.factoryId],
-      set: { hours, source, days, updatedAt: new Date() },
+      // години змінилися → ручне «все ок» більше не діє
+      set: { hours, source, days, confirmed: false, updatedAt: new Date() },
     });
 };
+// Валідація значення дня розбивки: число (0..24) або { зміна 1..6: год 0..24 }.
+const normFactoryDayValue = (v: unknown): FactoryDayValue | null => {
+  if (typeof v === "number" || typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 && n <= 24 ? Math.round(n * 100) / 100 : null;
+  }
+  if (v && typeof v === "object") {
+    const out: Record<string, number> = {};
+    for (const [s, h] of Object.entries(v as Record<string, unknown>)) {
+      const sN = Number(s), hN = Number(h);
+      if (Number.isInteger(sN) && sN >= 1 && sN <= 6 && Number.isFinite(hN) && hN > 0 && hN <= 24) out[String(sN)] = Math.round(hN * 100) / 100;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  return null;
+};
+const factoryDayTotal = (v: FactoryDayValue): number =>
+  typeof v === "number" ? v : Object.values(v).reduce((s, h) => s + h, 0);
 
 // Ручне редагування однієї клітинки «Години з фабрики» (порожнє значення — очистити).
 router.post("/hours/factory", RW, async (req, res) => {
@@ -2769,6 +2796,22 @@ router.post("/hours/factory", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   if (!workerId || !factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId, factoryId та month обовʼязкові");
+  // Редагування розбивки по днях/змінах (модалка «дні від фабрики»): повна
+  // заміна days; підсумок місяця перераховується з розбивки.
+  if (req.body?.days && typeof req.body.days === "object") {
+    const days: Record<string, FactoryDayValue> = {};
+    for (const [k, v] of Object.entries(req.body.days as Record<string, unknown>)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || !k.startsWith(`${month}-`)) continue;
+      const norm = normFactoryDayValue(v);
+      if (norm != null) days[k] = norm;
+    }
+    if (!Object.keys(days).length) return fail(res, 400, "Порожня розбивка по днях");
+    let sum = 0;
+    for (const v of Object.values(days)) sum += factoryDayTotal(v);
+    const total = Math.round(sum * 100) / 100;
+    await upsertFactoryHours(workerId, month, factoryId, total, "manual", days);
+    return ok(res, { ok: true, hours: total });
+  }
   const raw = req.body?.hours;
   if (raw === null || raw === undefined || raw === "") {
     await db.delete(factoryHoursTable).where(and(
@@ -2782,6 +2825,39 @@ router.post("/hours/factory", RW, async (req, res) => {
   ok(res, { ok: true, hours: h });
 });
 
+// Очистити колонку «Години з фабрики» вкладки перед завантаженням нового
+// файла: зносить рядки factory_hours місяця для перелічених працівників
+// (клієнт шле людей СВОЄЇ вкладки — на мульти-контрактній фабриці сусідня
+// фірма не зачіпається). Рапорти працівників не чіпаються.
+router.post("/hours/factory-clear", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Number.isInteger) : [];
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!workerIds.length) return fail(res, 400, "Порожній список працівників");
+  const gone = await db.delete(factoryHoursTable).where(and(
+    eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId),
+    inArray(factoryHoursTable.workerId, workerIds),
+  )).returning({ id: factoryHoursTable.id });
+  ok(res, { cleared: gone.length });
+});
+
+// Підтвердити розбіжність «рапорт ↔ фабрика»: адмін перевірив числа й каже
+// «все ок» — рядок на /hours світиться зеленим, Excel «лише помилки» його
+// не включає. Повторний виклик з confirmed=false знімає позначку.
+router.post("/hours/factory-confirm", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId);
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const confirmed = req.body?.confirmed === true;
+  if (!workerId || !factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId, factoryId та month обовʼязкові");
+  const [row] = await db.update(factoryHoursTable).set({ confirmed, updatedAt: new Date() })
+    .where(and(eq(factoryHoursTable.workerId, workerId), eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId)))
+    .returning({ id: factoryHoursTable.id });
+  if (!row) return fail(res, 404, "Годин фабрики для цієї пари немає");
+  ok(res, { ok: true, confirmed });
+});
+
 // Розбір файла фабрики (Excel, 3 формати) або вставленого списку «ім'я + години»
 // → превʼю з матчингом імен по базі (bot/workerMatch). Нічого не зберігає.
 const uploadHoursFile = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -2790,7 +2866,7 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
   const parseFactoryId = req.body?.factoryId != null && Number(req.body.factoryId) > 0 ? Number(req.body.factoryId) : null;
   const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
-  let parsed: { name: string; hours: number; days?: Record<number, number> }[] = [];
+  let parsed: { name: string; hours: number; days?: Record<number, number | Record<string, number>> }[] = [];
   let monthDetected: string | null = null;
   let format: string = "text";
   try {
@@ -2876,6 +2952,7 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     if (likely) { (r as any).workerId = likely.id; continue; }
     const [w] = await db.insert(workersTable).values({
       fullName: name, factoryId, companyId: createCompanyId, workerCode: await nextWorkerCode(),
+      createdSource: "hours_import", // маркер походження → 🗑 у списку обліку годин
     }).returning();
     allWorkers.push(w!);
     (r as any).workerId = w!.id;
@@ -2887,15 +2964,15 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     const workerId = Number(r.workerId);
     const hours = Number(r.hours);
     if (!workerId || !Number.isFinite(hours) || hours < 0 || hours > 500) continue;
-    // розбивка по днях (день місяця → год) → ключі-дати "YYYY-MM-DD"
-    let days: Record<string, number> | null = null;
+    // розбивка по днях (день місяця → год АБО { зміна: год }) → ключі-дати "YYYY-MM-DD"
+    let days: Record<string, FactoryDayValue> | null = null;
     if (r.days && typeof r.days === "object") {
       days = {};
-      for (const [d, h] of Object.entries(r.days as Record<string, unknown>)) {
-        const dayN = Number(d), hN = Number(h);
-        if (Number.isInteger(dayN) && dayN >= 1 && dayN <= 31 && Number.isFinite(hN) && hN > 0 && hN <= 24) {
-          days[`${month}-${String(dayN).padStart(2, "0")}`] = Math.round(hN * 100) / 100;
-        }
+      for (const [d, v] of Object.entries(r.days as Record<string, unknown>)) {
+        const dayN = Number(d);
+        if (!Number.isInteger(dayN) || dayN < 1 || dayN > 31) continue;
+        const norm = normFactoryDayValue(v);
+        if (norm != null) days[`${month}-${String(dayN).padStart(2, "0")}`] = norm;
       }
       if (!Object.keys(days).length) days = null;
     }
@@ -2956,7 +3033,7 @@ router.get("/hours/day-compare", RW, async (req, res) => {
     if (Math.abs(rep - ourTotal) > 0.01) continue; // явки не підтверджують рапорт — днями не аргументуємо
     const dates = [...new Set([...our.keys(), ...Object.keys(r.days!)])].sort();
     const days = dates
-      .map(d => ({ date: d, our: round2(our.get(d)?.hours ?? 0), ourShifts: our.get(d)?.shifts ?? [], factory: r.days![d] ?? 0 }))
+      .map(d => ({ date: d, our: round2(our.get(d)?.hours ?? 0), ourShifts: our.get(d)?.shifts ?? [], factory: round2(r.days![d] != null ? factoryDayTotal(r.days![d]!) : 0) }))
       .filter(x => Math.abs(x.our - x.factory) > 0.01);
     if (days.length) workers.push({ workerId: r.workerId, days });
   }

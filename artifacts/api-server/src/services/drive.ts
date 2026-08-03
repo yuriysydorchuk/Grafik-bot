@@ -537,24 +537,24 @@ export async function buildReportHoursExcel(
   const facById = new Map(facs.map(f => [f.id, f.name]));
   const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported })
     .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const factoryHours = await db.select({ workerId: factoryHoursTable.workerId, factoryId: factoryHoursTable.factoryId, hours: factoryHoursTable.hours })
+  const factoryHours = await db.select({ workerId: factoryHoursTable.workerId, factoryId: factoryHoursTable.factoryId, hours: factoryHoursTable.hours, confirmed: factoryHoursTable.confirmed })
     .from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
 
   const selectedFac = factoryId != null ? (facById.get(factoryId) ?? null) : null;
   // One row per (worker, factory) — merged from both sources; a worker with neither
   // shows once under their current factory (so admins see who hasn't submitted).
-  type Row = { facId: number | null; code: string; name: string; report: number | null; factoryHours: number | null };
+  type Row = { facId: number | null; code: string; name: string; report: number | null; factoryHours: number | null; confirmed: boolean };
   const byKey = new Map<string, Row>();
   const rowFor = (workerId: number, facId: number | null): Row | null => {
     const w = workerById.get(workerId);
     if (!w) return null;
     const key = `${workerId}|${facId ?? "x"}`;
     let row = byKey.get(key);
-    if (!row) { row = { facId, code: w.code ?? "", name: w.name, report: null, factoryHours: null }; byKey.set(key, row); }
+    if (!row) { row = { facId, code: w.code ?? "", name: w.name, report: null, factoryHours: null, confirmed: false }; byKey.set(key, row); }
     return row;
   };
   for (const r of reports) { const row = rowFor(r.workerId, r.factoryId ?? workerById.get(r.workerId)?.factoryId ?? null); if (row) row.report = r.hours; }
-  for (const fh of factoryHours) { const row = rowFor(fh.workerId, fh.factoryId); if (row) row.factoryHours = fh.hours; }
+  for (const fh of factoryHours) { const row = rowFor(fh.workerId, fh.factoryId); if (row) { row.factoryHours = fh.hours; row.confirmed = fh.confirmed; } }
   for (const w of workers) {
     const hasAny = [...byKey.keys()].some(k => k.startsWith(`${w.id}|`));
     if (!hasAny) rowFor(w.id, w.factoryId);
@@ -569,7 +569,8 @@ export async function buildReportHoursExcel(
 
   const rows = [...byKey.values()]
     .filter(x => factoryId == null || x.facId === factoryId)
-    .filter(x => !errorsOnly || diffState(x) === "mismatch" || diffState(x) === "partial")
+    // підтверджена вручну розбіжність («все ок» на /hours) — не помилка
+    .filter(x => !errorsOnly || (diffState(x) === "mismatch" && !x.confirmed) || diffState(x) === "partial")
     .map(x => ({ ...x, factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki" }))
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 

@@ -121,9 +121,10 @@ test("ewidencja: SUMA + зміни I/II/III, аркуші зливаються, 
   assert.equal(f.format, "ewidencja");
   assert.equal(f.monthDetected, null); // дати в аркуші немає — місяць з імені файла
   assert.deepEqual(f.rows, [
-    { name: "ARISTOVA MARIIA", hours: 16, days: { 1: 8, 2: 8 } }, // premia не в годинах; UMOWY не день
-    { name: "BIBET TOMIRIS", hours: 8, days: { 1: 8 } },          // зміни II+III одного дня сумуються
-    { name: "BATSAN SERHII", hours: 12, days: { 1: 8, 2: 4 } },   // з другого аркуша, «- WÓZ» зрізано
+    // дні — ПО ЗМІНАХ (№ зміни з римської I/II/III); premia не в годинах; UMOWY не день
+    { name: "ARISTOVA MARIIA", hours: 16, days: { 1: { "1": 8 }, 2: { "3": 8 } } },
+    { name: "BIBET TOMIRIS", hours: 8, days: { 1: { "2": 4, "3": 4 } } }, // зміни дня — окремо
+    { name: "BATSAN SERHII", hours: 12, days: { 1: { "1": 8 }, 2: { "1": 4 } } }, // «- WÓZ» зрізано
   ]);
 });
 

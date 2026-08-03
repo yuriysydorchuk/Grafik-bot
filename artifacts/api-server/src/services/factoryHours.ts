@@ -17,8 +17,10 @@ import * as XLSX from "xlsx";
 export interface ParsedHoursRow {
   name: string;
   hours: number;
-  /** розбивка по днях місяця (день 1..31 → години), якщо файл її містить */
-  days?: Record<number, number>;
+  /** розбивка по днях місяця (день 1..31), якщо файл її містить: число =
+   *  разом за день (матриця/lista); обʼєкт = по змінах, ключ — № зміни
+   *  ("1".."6" → години; ewidencja I/II/III) */
+  days?: Record<number, number | Record<string, number>>;
 }
 export interface ParsedHoursFile {
   rows: ParsedHoursRow[];
@@ -204,11 +206,19 @@ function parseEwidencja(rows: string[][]): ParsedHoursFile | null {
     if (!name || /razem|suma/i.test(name)) continue;
     const hours = parseHoursValue(row[sumaCol] ?? "");
     if (hours == null) continue;
-    const days: Record<number, number> = {};
+    // розбивка дня ПО ЗМІНАХ: № зміни — з римської цифри підзаголовка
+    // (I/II/III), фолбек — позиція підколонки в групі дня
+    const days: Record<number, Record<string, number>> = {};
     for (const [day, cols] of dayCols) {
-      let sum = 0;
-      for (const c of cols) { const h = parseHoursValue(row[c] ?? ""); if (h != null) sum += h; }
-      if (sum > 0) days[day] = r2(sum);
+      const byShift: Record<string, number> = {};
+      cols.forEach((c, idx) => {
+        const h = parseHoursValue(row[c] ?? "");
+        if (h == null || h <= 0) return;
+        const roman = (sub[c] ?? "").trim().toUpperCase();
+        const shift = roman === "I" ? 1 : roman === "II" ? 2 : roman === "III" ? 3 : idx + 1;
+        byShift[String(shift)] = r2((byShift[String(shift)] ?? 0) + h);
+      });
+      if (Object.keys(byShift).length) days[day] = byShift;
     }
     out.push({ name, hours, days });
   }

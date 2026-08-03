@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, Download, Check, X, Pencil, Upload as UploadIcon, Mail, RotateCcw } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Download, Check, X, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, upload } from "../lib/api";
+import { get, post, del, upload } from "../lib/api";
 import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge, Button, Input, Modal, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
@@ -15,25 +15,32 @@ import { FIRM_TAB } from "../lib/colors";
 
 interface Dispute { workerId: number; status: string }
 
+// Значення дня «годин з фабрики»: разом за день або { "№зміни": год } (ewidencja I/II/III)
+type FacDayVal = number | Record<string, number>;
+const facDayTotal = (v: FacDayVal) => typeof v === "number" ? v : Object.values(v).reduce((s, h) => s + h, 0);
+
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   firm?: string | null; // наша юрособа фабрики (ES/ESO/Klinex) — колір вкладки
   workerFirm?: string | null; // юрособа ПРАЦІВНИКА — бекенд шле лише рядкам мульти-контрактних фабрик (ANDROS) → поділ вкладки
   city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
-  factoryHours?: number | null; factoryDays?: Record<string, number> | null; clientEmail?: string | null;
+  factoryHours?: number | null; factoryDays?: Record<string, FacDayVal> | null; factoryConfirmed?: boolean; clientEmail?: string | null;
+  createdViaImport?: boolean; // профіль створений «створити профіль» в імпорті годин → можна 🗑 зі списку
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
 
 // Звірка «рапорт працівника vs години фабрики» для підсвітки рядка:
 // match — обидва є і збігаються (±0.01), mismatch — розходяться, partial — є лише одне.
+// Розбіжність, підтверджену вручну («все ок», factoryConfirmed) — світимо зеленим.
 type DiffState = "match" | "mismatch" | "partial" | "none";
 function diffState(w: HourRow): DiffState {
   const rep = w.reportHours ?? null, fac = w.factoryHours ?? null;
   if (rep == null && fac == null) return "none";
   if (rep == null || fac == null) return "partial";
-  return Math.abs(rep - fac) <= 0.01 ? "match" : "mismatch";
+  if (Math.abs(rep - fac) <= 0.01) return "match";
+  return w.factoryConfirmed ? "match" : "mismatch";
 }
 const DIFF_CELL: Record<DiffState, string> = {
   match: "bg-emerald-50", mismatch: "bg-red-50", partial: "bg-amber-50/60", none: "",
@@ -75,6 +82,32 @@ export default function Hours() {
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
   const openByWorker = useMemo(() => new Set(disputes.filter(d => d.status === "new").map(d => d.workerId)), [disputes]);
   const canEdit = can(me, "editData");
+  // Видалення випадково створеного дубля прямо зі списку (лише рядки без
+  // жодної зміни місяця — профілі з реальними явками так не приберуться)
+  const canDelete = can(me, "deleteWorkers");
+  const qc = useQueryClient();
+  const delWorker = useMutation({
+    mutationFn: (id: number) => del(`/workers/${id}`),
+    onSuccess: () => {
+      toast.success(t("Профіль видалено"));
+      qc.invalidateQueries({ queryKey: ["hours", month] });
+      qc.invalidateQueries({ queryKey: ["workers"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // Очистити колонку «Години з фабрики» вкладки — перед завантаженням нового файла
+  const clearFactoryHours = useMutation({
+    mutationFn: (g: Group) => post<{ cleared: number }>("/hours/factory-clear", {
+      month, factoryId: g.factoryId,
+      workerIds: g.rows.filter(w => w.factoryHours != null).map(w => w.workerId),
+    }),
+    onSuccess: (r) => {
+      toast.success(t("Очищено годин фабрики: {n}", { n: r.cleared }));
+      qc.invalidateQueries({ queryKey: ["hours", month] });
+      qc.invalidateQueries({ queryKey: ["hours-day-compare"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   const remind = useMutation({
     // Server picks the report month by the collection window (first days of a month → prev month)
     mutationFn: () => post<{ notified: number; total: number; month: string }>("/hours/report-remind", {}),
@@ -269,6 +302,16 @@ export default function Hours() {
                       <UploadIcon className="h-3.5 w-3.5" /> {t("Імпорт годин фабрики")}
                     </button>
                   )}
+                  {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
+                    <button onClick={() => {
+                        const n = g.rows.filter(w => w.factoryHours != null).length;
+                        if (window.confirm(t("Очистити години фабрики для «{name}»? Приберуться значення {n} людей разом з розбивками й підтвердженнями. Рапорти працівників не чіпаються.", { name: g.name, n }))) clearFactoryHours.mutate(g);
+                      }} disabled={clearFactoryHours.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
+                      title={t("Очистити колонку «Години з фабрики», щоб завантажити новий файл")}>
+                      <RotateCcw className="h-3.5 w-3.5" /> {t("Очистити години фабрики")}
+                    </button>
+                  )}
                   {canEdit && g.factoryId != null && g.rows.some(w => diffState(w) === "mismatch") && (
                     <button onClick={() => setEmailKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100"
@@ -300,6 +343,15 @@ export default function Hours() {
                           <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
                             {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
                             {w.name}
+                            {canDelete && w.createdViaImport && w.shifts === 0 && (
+                              <button onClick={e => {
+                                  e.stopPropagation();
+                                  if (window.confirm(t("Видалити профіль «{name}» повністю? Це прибере його рапорти, години фабрики й документи. Дія незворотна.", { name: w.name }))) delWorker.mutate(w.workerId);
+                                }} disabled={delWorker.isPending} title={t("Видалити профіль (випадковий дубль)")}
+                                className="ml-1.5 rounded p-0.5 align-middle text-slate-300 hover:text-rose-600 disabled:opacity-50">
+                                <Trash2 className="inline h-3.5 w-3.5" />
+                              </button>
+                            )}
                           </td>
                           <td className="px-4 py-2.5 text-slate-400">{w.code ?? "—"}</td>
                           {cols.map(c => <td key={c} className="px-3 py-2.5 text-center text-slate-600">{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
@@ -420,6 +472,13 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
   });
   const st = diffState(w);
   const diff = w.reportHours != null && w.factoryHours != null ? Math.round((w.factoryHours - w.reportHours) * 100) / 100 : null;
+  // «сира» розбіжність (без урахування ручного підтвердження) — для галочки «все ок»
+  const rawMismatch = diff != null && Math.abs(diff) > 0.01;
+  const confirmMut = useMutation({
+    mutationFn: (confirmed: boolean) => post("/hours/factory-confirm", { workerId: w.workerId, month, factoryId: w.factoryId, confirmed }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["hours", month] }),
+    onError: (e: any) => toast.error(e.message),
+  });
   const dayEntries = useMemo(
     () => Object.entries(w.factoryDays ?? {}).sort((a, b) => a[0].localeCompare(b[0])),
     [w.factoryDays],
@@ -428,6 +487,7 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
     <>
       {w.factoryHours} {t("год")}
       {st === "mismatch" && diff != null && <span className="ml-1 text-xs font-medium text-red-500">({diff > 0 ? "+" : ""}{diff})</span>}
+      {rawMismatch && w.factoryConfirmed && <span className="ml-1 text-xs font-medium text-emerald-600">({diff! > 0 ? "+" : ""}{diff})</span>}
       {st === "match" && <Check className="ml-1 inline h-3.5 w-3.5 text-emerald-500" />}
     </>
   );
@@ -439,30 +499,110 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
           className={`font-semibold underline decoration-dotted underline-offset-2 hover:opacity-75 ${color}`}>{inner}</button>
       : <span className={`font-semibold ${color}`}>{inner}</span>)
     : <span className="text-slate-300">—</span>;
+  // Модалка «дні від фабрики» — той самий патерн, що у першій колонці «Години»
+  // (WorkerDaysModal): рядок = день+зміна, число завжди в інлайн-полі (✓
+  // з'являється при зміні), 🗑 прибирає запис, знизу «Додати зміну». Кожна
+  // правка шле повну розбивку — сервер перераховує підсумок місяця з неї.
+  const nShifts = useMemo(() => {
+    let n = Math.max(1, w.factoryShiftCount || 1);
+    for (const [, v] of dayEntries) if (typeof v === "object") for (const k of Object.keys(v)) n = Math.max(n, Number(k) || 0);
+    return Math.min(6, n);
+  }, [dayEntries, w.factoryShiftCount]);
+  // плоский список записів: день-обʼєкт (ewidencja) → рядок на кожну зміну;
+  // день-число (матриця/lista) → один рядок без № зміни
+  const facEntries = useMemo(() => {
+    const out: { date: string; shift: string | null; hours: number }[] = [];
+    for (const [date, v] of dayEntries) {
+      if (typeof v === "number") out.push({ date, shift: null, hours: v });
+      else for (const [s, h] of Object.entries(v).sort((a, b) => Number(a[0]) - Number(b[0]))) out.push({ date, shift: s, hours: h });
+    }
+    return out; // dayEntries уже відсортовані за датою
+  }, [dayEntries]);
+  const saveDays = useMutation({
+    mutationFn: (days: Record<string, FacDayVal>) => post("/hours/factory", { workerId: w.workerId, month, factoryId: w.factoryId, days }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["hours", month] }); qc.invalidateQueries({ queryKey: ["hours-day-compare"] }); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // повна копія розбивки + точкова правка; дні, що лишились без змін, — геть
+  const rebuildDays = (mut: (days: Record<string, FacDayVal>) => void): Record<string, FacDayVal> => {
+    const days: Record<string, FacDayVal> = JSON.parse(JSON.stringify(w.factoryDays ?? {}));
+    mut(days);
+    for (const [d, v] of Object.entries(days)) if (typeof v === "object" && !Object.keys(v).length) delete days[d];
+    return days;
+  };
+  const setEntryHours = (e: { date: string; shift: string | null }, hours: number) => saveDays.mutate(rebuildDays(days => {
+    if (e.shift == null) days[e.date] = hours;
+    else {
+      const day = typeof days[e.date] === "object" ? days[e.date] as Record<string, number> : {};
+      day[e.shift] = hours;
+      days[e.date] = day;
+    }
+  }));
+  const removeEntry = (e: { date: string; shift: string | null }) => {
+    if (facEntries.length <= 1) { toast.error(t("Останній запис — щоб прибрати години фабрики повністю, очисти число олівцем у таблиці")); return; }
+    saveDays.mutate(rebuildDays(days => {
+      if (e.shift == null) delete days[e.date];
+      else { const day = days[e.date]; if (typeof day === "object") delete day[e.shift]; }
+    }));
+  };
+  const totalShown = Math.round(facEntries.reduce((s, e) => s + e.hours, 0) * 100) / 100;
   const daysModal = showDays && (
-    <Modal open onClose={() => setShowDays(false)} title={`${w.name} — ${t("дні від фабрики")}`}>
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs uppercase text-slate-400">
-          <tr><th className="px-2 py-1.5">{t("Дата")}</th><th className="px-2 py-1.5 text-right">{t("Години")}</th></tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {dayEntries.map(([date, h]) => (
-            <tr key={date}>
-              <td className="px-2 py-1.5 text-slate-700">
-                {date.slice(8, 10)}.{date.slice(5, 7)}
-                <span className="ml-1.5 text-xs text-slate-400">{new Date(`${date}T00:00:00`).toLocaleDateString(lang === "en" ? "en-US" : "uk-UA", { weekday: "short" })}</span>
-              </td>
-              <td className="px-2 py-1.5 text-right font-medium text-slate-700">{h}</td>
+    <Modal open onClose={() => setShowDays(false)} title={`${w.name} — ${t("дні від фабрики")}`} size="lg">
+      <div className="mb-3 flex flex-wrap gap-2">
+        <Badge color="green">{t("Години:")} {totalShown}</Badge>
+        <Badge color="slate">{dayEntries.length} {t("дн.")}</Badge>
+      </div>
+      {canEdit && <p className="mb-1 text-xs text-slate-400">{t("Натисни на число годин, щоб змінити (з'явиться ✓). 🗑 — прибрати день/зміну.")}</p>}
+      <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+            <tr>
+              <th className="px-3 py-2">{t("Дата")}</th>
+              <th className="px-3 py-2">{t("Зміна")}</th>
+              <th className="px-3 py-2 text-right">{t("Години")}</th>
+              {canEdit && <th className="px-2 py-2" />}
             </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr className="font-semibold text-slate-700">
-            <td className="px-2 py-1.5">{t("Разом")} · {dayEntries.length} {t("дн.")}</td>
-            <td className="px-2 py-1.5 text-right">{Math.round(dayEntries.reduce((s, [, h]) => s + h, 0) * 100) / 100}</td>
-          </tr>
-        </tfoot>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {facEntries.map(e => (
+              <tr key={`${e.date}|${e.shift ?? "-"}`} className="hover:bg-slate-50">
+                <td className="px-3 py-2 font-medium text-slate-700">
+                  {e.date.slice(8, 10)}.{e.date.slice(5, 7)}
+                  <span className="ml-1.5 text-xs font-normal text-slate-400">{new Date(`${e.date}T00:00:00`).toLocaleDateString(lang === "en" ? "en-US" : "uk-UA", { weekday: "short" })}</span>
+                </td>
+                <td className="px-3 py-2 text-slate-500">{e.shift != null ? `${e.shift} ${t("зм")}` : "—"}</td>
+                <td className="px-2 py-2 text-right">
+                  {canEdit
+                    ? <FacHoursInput key={`${e.date}|${e.shift ?? "-"}|${e.hours}`} value={e.hours} onSave={h => setEntryHours(e, h)} />
+                    : <span className="font-medium text-slate-700">{e.hours}</span>}
+                </td>
+                {canEdit && (
+                  <td className="px-2 py-2 text-right">
+                    <button onClick={() => removeEntry(e)} disabled={saveDays.isPending} title={t("Прибрати день/зміну")}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="font-semibold text-slate-700">
+              <td className="px-3 py-2" colSpan={2}>{t("Разом")} · {dayEntries.length} {t("дн.")}</td>
+              <td className="px-2 py-2 text-right">{totalShown}</td>
+              {canEdit && <td />}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {canEdit && <AddFactoryDayRow nShifts={nShifts} month={month} pending={saveDays.isPending}
+        onAdd={(date, shift, hours) => saveDays.mutate(rebuildDays(days => {
+          if (shift == null) days[date] = hours;
+          else {
+            const day = typeof days[date] === "object" ? days[date] as Record<string, number> : {};
+            day[shift] = hours;
+            days[date] = day;
+          }
+        }))} />}
     </Modal>
   );
   if (!canEdit) return <>{shown}{daysModal}</>;
@@ -480,13 +620,68 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
   return (
     <span className="inline-flex items-center justify-end gap-1.5">
       {shown}
+      {rawMismatch && (
+        <button onClick={() => confirmMut.mutate(!w.factoryConfirmed)} disabled={confirmMut.isPending}
+          title={w.factoryConfirmed ? t("Зняти підтвердження розбіжності") : t("Підтвердити: розбіжність перевірено, все ок")}
+          className={`rounded-md p-0.5 ${w.factoryConfirmed ? "text-emerald-600 hover:text-slate-400" : "text-slate-300 hover:text-emerald-600"}`}>
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        </button>
+      )}
       <button onClick={() => { setVal(w.factoryHours != null ? String(w.factoryHours) : ""); setEditing(true); }} className="rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати години фабрики")}><Pencil className="h-3.5 w-3.5" /></button>
       {daysModal}
     </span>
   );
 }
 
-interface ParsedRow { name: string; hours: number; days: Record<number, number> | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
+// Інлайн-поле годин запису дня/зміни — дзеркало HoursCell з WorkerDaysModal:
+// ✓ з'являється, коли значення змінене
+function FacHoursInput({ value, onSave }: { value: number; onSave: (h: number) => void }) {
+  const t = useT();
+  const [v, setV] = useState(String(value));
+  const n = Number(v.replace(",", ".").trim());
+  const valid = Number.isFinite(n) && n > 0 && n <= 24;
+  const dirty = v.trim() !== String(value);
+  const submit = () => { if (valid && dirty) onSave(Math.round(n * 100) / 100); };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input value={v} onChange={e => setV(e.target.value)} inputMode="decimal"
+        onKeyDown={e => { if (e.key === "Enter") submit(); }}
+        className={`w-14 rounded-md border px-1.5 py-1 text-right text-sm ${dirty && !valid ? "border-rose-300 bg-rose-50/40" : "border-slate-200"}`} />
+      {dirty && valid && <button onClick={submit} className="rounded-md bg-emerald-500 p-1 text-white hover:bg-emerald-600" title={t("Зберегти")}><Check className="h-3 w-3" /></button>}
+    </span>
+  );
+}
+
+// «Додати зміну» в розбивку днів фабрики — дзеркало AddShiftRow з WorkerDaysModal
+function AddFactoryDayRow({ nShifts, month, onAdd, pending }: { nShifts: number; month: string; onAdd: (date: string, shift: string | null, hours: number) => void; pending: boolean }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState("");
+  const [shift, setShift] = useState("1");
+  const [hours, setHours] = useState("8");
+  if (!open) return (
+    <button onClick={() => setOpen(true)} className="mt-3 flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"><Plus className="h-4 w-4" /> {t("Додати зміну")}</button>
+  );
+  const n = Number(hours.replace(",", ".").trim());
+  const valid = date.startsWith(`${month}-`) && Number.isFinite(n) && n > 0 && n <= 24;
+  return (
+    <div className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 p-3">
+      <div><label className="mb-0.5 block text-xs text-slate-500">{t("Дата")}</label>
+        <Input type="date" value={date} min={`${month}-01`} max={`${month}-31`} onChange={e => setDate(e.target.value)} className="w-40" /></div>
+      <div><label className="mb-0.5 block text-xs text-slate-500">{t("Зміна")}</label>
+        <Select value={shift} onChange={e => setShift(e.target.value)} className="w-28">
+          {Array.from({ length: nShifts }, (_, i) => String(i + 1)).map(s => <option key={s} value={s}>{s} {t("зм")}</option>)}
+          <option value="">{t("без № зміни")}</option>
+        </Select></div>
+      <div><label className="mb-0.5 block text-xs text-slate-500">{t("Години")}</label>
+        <Input value={hours} onChange={e => setHours(e.target.value)} inputMode="decimal" className="w-20 text-right" /></div>
+      <Button disabled={!valid || pending} onClick={() => { onAdd(date, shift || null, Math.round(n * 100) / 100); setOpen(false); setDate(""); }}>{t("Додати")}</Button>
+      <button onClick={() => setOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
+    </div>
+  );
+}
+
+interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
 
 // Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
 // з матчингом імен (bot/workerMatch) → масове збереження.

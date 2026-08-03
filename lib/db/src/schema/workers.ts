@@ -60,6 +60,7 @@ export const workersTable = pgTable("workers", {
   status: text("status").notNull().default("active"), // active | fired
   isActive: boolean("is_active").notNull().default(true),
   selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler
+  createdSource: text("created_source"), // походження профілю: null = звичайне створення, "hours_import" = створений з імпорту годин фабрики (/hours) — таких можна швидко видалити зі списку обліку
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
   birthDate: date("birth_date"), // з дати народження виводиться «до 26» (податкова пільга)
@@ -507,7 +508,8 @@ export const factoryHoursTable = pgTable("factory_hours", {
   factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
   hours: real("hours").notNull(),                          // factory-reported monthly total
   source: text("source").notNull().default("manual"),      // excel | paste | manual
-  days: jsonb("days").$type<Record<string, number>>(),     // "YYYY-MM-DD" → год (з файлів з розбивкою по днях)
+  days: jsonb("days").$type<Record<string, number | Record<string, number>>>(), // "YYYY-MM-DD" → год АБО { "№зміни": год } (позмінна розбивка ewidencja I/II/III)
+  confirmed: boolean("confirmed").notNull().default(false), // розбіжність рапорт↔фабрика перевірена вручну («все ок») — рядок зелений; скидається при зміні годин
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
