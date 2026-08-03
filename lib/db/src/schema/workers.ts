@@ -138,6 +138,7 @@ export const factoriesTable = pgTable("factories", {
   clientEmail: text("client_email"), // where to send approved schedule
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
+  multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (ANDROS: Klinex + ES) — Облік годин ділить вкладку по фірмі працівника
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
   nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)

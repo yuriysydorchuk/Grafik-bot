@@ -2515,7 +2515,7 @@ router.get("/hours", RW, async (req, res) => {
   // Include ALL active workers, even those with 0 worked shifts this month.
   const activeWorkers = await db.select({
     id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
-    factoryId: workersTable.factoryId, companyId: workersTable.companyId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+    factoryId: workersTable.factoryId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
   }).from(workersTable).where(eq(workersTable.isActive, true));
   const workersWithRows = new Set<number>([...byWorkerFactory.values()].map(w => w.workerId));
@@ -2592,16 +2592,11 @@ router.get("/hours", RW, async (req, res) => {
   }
   // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support) — веб ділить
   // вкладку по фірмі ПРАЦІВНИКА (workers.company_id), дзеркально сводній.
-  // Мульти-контрактність визначаємо за ПОТОЧНИМИ призначеннями активних
-  // працівників, не за записами місяця: разова підміна людиною іншої фірми
-  // (ALMIZ, липень 2026) вкладку ділити не повинна. workerFirm віддаємо лише
-  // рядкам таких фабрик — клієнту не треба дублювати це правило.
-  const facFirmSet = new Map<number, Set<number>>();
-  for (const aw of activeWorkers) {
-    if (aw.factoryId != null && aw.companyId != null)
-      (facFirmSet.get(aw.factoryId) ?? facFirmSet.set(aw.factoryId, new Set()).get(aw.factoryId)!).add(aw.companyId);
-  }
-  const multiFirmFacs = new Set([...facFirmSet].filter(([, s]) => s.size > 1).map(([id]) => id));
+  // Мульти-контрактність — ЯВНИЙ прапорець factories.multi_firm, не вивід з
+  // даних: разова підміна людиною іншої фірми чи помилка профілю (ALMIZ,
+  // 08.2026) вкладку ділити не повинні. workerFirm віддаємо лише рядкам
+  // позначених фабрик — клієнту не треба дублювати це правило.
+  const multiFirmFacs = new Set(facRows.filter(f => f.multiFirm).map(f => f.id));
   const rowWorkerIds = [...new Set([...byWorkerFactory.values()].map(w => w.workerId as number))];
   const workerCos = rowWorkerIds.length && multiFirmFacs.size ? await db.select({ id: workersTable.id, companyId: workersTable.companyId })
     .from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
