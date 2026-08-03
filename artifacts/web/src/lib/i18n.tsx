@@ -816,6 +816,7 @@ const EN: Record<string, string> = {
   "Наявні сводні: {months}. Якщо зміна діє заднім числом — обери ранішу дату.": "Existing summaries: {months}. If the change is retroactive, pick an earlier date.",
   "Впливає на": "Affects",
   "Сховати колонку": "Hide column",
+  "Замітки": "Notes",
   "NIP клієнта (для P&L)": "Client NIP (for P&L)",
   "Підпис клієнта в P&L": "Client label in P&L",
   "напр. Eurocash": "e.g. Eurocash",

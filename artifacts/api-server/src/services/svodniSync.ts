@@ -365,6 +365,11 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       eq(svodniRowsTable.periodMonth, periodMonth), eq(svodniRowsTable.city, city),
       ...(firm ? [eq(svodniRowsTable.firm, firm)] : []),
     );
+    // «Замітки» — ручні нотатки: переживають ресинк (delete+insert)
+    // через carry-over по ключу вкладка+імʼя
+    const noted = await tx.select({ factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName, note: svodniRowsTable.note })
+      .from(svodniRowsTable).where(and(scope, isNotNull(svodniRowsTable.note), isNull(svodniRowsTable.segmentOf)));
+    const noteByKey = new Map(noted.map(n => [`${key(n.factoryLabel)}::${key(cleanName(n.rawName))}`, n.note]));
     // правлені на сайті рядки — джерело правди: лишаються, а парсовані
     // дублікати тих самих людей (фабрика+імʼя) не вставляються
     const manualRows = await tx.select({ factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName })
@@ -401,7 +406,12 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         ...(firm ? [eq(svodniTabMetaTable.firm, firm)] : []),
       ));
     }
-    const fresh = rowsToInsert.filter(r => !manualKeys.has(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`));
+    const fresh = rowsToInsert
+      .filter(r => !manualKeys.has(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`))
+      .map(r => {
+        const note = noteByKey.get(`${key(r.factoryLabel)}::${key(cleanName(r.rawName))}`);
+        return note ? { ...r, note } : r;
+      });
     if (fresh.length) await tx.insert(svodniRowsTable).values(fresh);
     if (checksToInsert.length) await tx.insert(svodniTabChecksTable).values(checksToInsert);
     if (metaToInsert.length) await tx.insert(svodniTabMetaTable).values(metaToInsert);

@@ -42,7 +42,7 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     isStudent: r.isStudent, under26: r.under26,
     extras: sensitive ? r.extras : Object.fromEntries(Object.entries(r.extras as Record<string, unknown>).filter(([k]) => !SENSITIVE_EXTRAS.has(k))),
     hr: sensitive ? r.hr : Object.fromEntries(Object.entries(r.hr as Record<string, unknown>).filter(([k]) => !SENSITIVE_HR.has(k))),
-    mismatch: r.mismatch, rowColor: r.rowColor,
+    mismatch: r.mismatch, rowColor: r.rowColor, note: r.note,
     // форма легалізації: з тексту Księgowość рядка, fallback — профіль працівника
     // (профільні значення нормалізуються: у БД живуть і старі ключі на кшталт
     // oswiadczenie/student_do26 — без нормалізації веб-бейдж їх не знає)
@@ -1155,11 +1155,25 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
     || (isHr && hrKey === "kontoNr");
   if (sensitiveField && !canSensitive(req)) return fail(res, 403, "forbidden");
   if (!OPEN_NUM_FIELDS.has(field) && !sensitiveField && !TEXT_FIELDS.has(field) && !BOOL_FIELDS.has(field)
+    && field !== "note"
     && !(isExtra && extraKey && (EXTRA_FIELDS.has(extraKey) || isZusStatus))
     && !(isHr && hrKey && HR_TEXT_FIELDS.has(hrKey))) return fail(res, 400, "поле не редагується");
 
   const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, id));
   if (!row) return fail(res, 404, "not found");
+  // «Замітки» — робоча нотатка, не фінансове поле: правиться і на затверджених
+  // вкладках, не робить рядок manual (щоб не «заморожувати» його від синку)
+  if (field === "note") {
+    const v = String(rawValue ?? "").trim();
+    await db.update(svodniRowsTable).set({ note: v || null }).where(eq(svodniRowsTable.id, id));
+    const [u] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue })
+      .from(svodniRowsTable)
+      .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
+      .where(eq(svodniRowsTable.id, id));
+    return ok(res, await withSegments(
+      serializeRow(u!.r, u!.workerName, canSensitive(req), u!.workerLegal, u!.prefKind ? { kind: u!.prefKind, value: u!.prefValue ?? null } : null),
+      id, canSensitive(req), u!.workerLegal));
+  }
   if (isLocked(await monthLocks(row.periodMonth), row.city, row.factoryLabel))
     return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
   // сегментний рядок: правляться лише години і ставки, решта — на батькові;

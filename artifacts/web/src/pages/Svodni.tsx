@@ -38,6 +38,7 @@ type Row = {
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
   rowColor: string | null;
+  note: string | null; // ручна замітка «для себе» — редагується завжди, навіть при затвердженні
   legalStatus: string | null; // форма легалізації (з Księgowość або профілю)
   // порізка місяця на сегменти (різні умови в різні періоди): батько — суми,
   // сегмент — повноцінний рядок (свої до виплати/konto/готівка + частки відрахувань)
@@ -791,7 +792,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   }, [cityExtraKeys, cityHrCols, meta]);
   const shownCols = cols.filter(d => show(d.key));
   const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
-  const colCount = 1 + shownCols.length + sensCols.length;
+  const colCount = 2 + shownCols.length + sensCols.length; // +імʼя +замітки
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -863,6 +864,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                   {sort?.key === "name" && (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
                 </button>
               </th>
+              <th className="whitespace-nowrap px-1.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Замітки")}</th>
               {shownCols.map(d => <Th key={d.key}
                 label={d.key === "dojazd" && city === "Лодзь" ? t("Dojazd (доплата)") : t(d.label)}
                 strong={d.key === "doWyplaty"} left={d.kind === "hr"} onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
@@ -927,6 +929,9 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       )}
                     </span>
                   </td>
+                  <td className="max-w-48 px-1 py-0.5 text-left text-slate-500">
+                    <EditableCell row={r} field="note" value={r.note} month={month} text />
+                  </td>
                   {shownCols.map(d => d.kind === "hr" ? (
                     <td key={d.key} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
                       <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)}
@@ -974,6 +979,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                         )}
                       </span>
                     </td>
+                    <td />
                     {shownCols.map(d => {
                       const editable = ["hours", "rateBrutto", "rateNetto"].includes(d.key);
                       const v = d.kind === "hr" ? hrVal(s, d.key)
@@ -1008,6 +1014,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
           <tfoot className="sticky bottom-0 z-20">
             <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
               <td className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5">{t("Разом")}</td>
+              <td />
               {shownCols.map(d => d.kind === "hr" || ["rateBrutto", "rateNetto"].includes(d.key) ? <td key={d.key} /> : (
                 <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "text-red-700" : ""}`}>
                   {fmt(sum(r => d.kind === "extra"

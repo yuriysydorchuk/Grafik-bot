@@ -935,6 +935,7 @@ export const svodniRowsTable = pgTable("svodni_rows", {
   mismatch: jsonb("mismatch"),                   // null = наш перерахунок збігся з таблицею
   manual: boolean("manual").notNull().default(false), // рядок правлений на сайті → синк його не перезаписує
   rowColor: text("row_color"),                   // фон рядка з таблиці Google (ручні позначки)
+  note: text("note"),                            // ручна замітка «для себе»; не фінансове поле, переживає синк (carry-over), не робить рядок manual
   // Сегменти всередині місяця (зміна умов з дати: посада/ставка/статус).
   // segment_of = id батьківського рядка (NULL = звичайний/батьківський);
   // сегмент несе свої години/ставки/base, місячний розклад konto/готівки — на батькові
