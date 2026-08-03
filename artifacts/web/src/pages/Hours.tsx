@@ -38,7 +38,8 @@ type DiffState = "match" | "mismatch" | "partial" | "none";
 function diffState(w: HourRow): DiffState {
   const rep = w.reportHours ?? null, fac = w.factoryHours ?? null;
   if (rep == null && fac == null) return "none";
-  if (rep == null || fac == null) return "partial";
+  // фабричні години є, а свого рапорту ще нема — ручне «все ок» теж зеленить
+  if (rep == null || fac == null) return fac != null && w.factoryConfirmed ? "match" : "partial";
   if (Math.abs(rep - fac) <= 0.01) return "match";
   return w.factoryConfirmed ? "match" : "mismatch";
 }
@@ -492,12 +493,11 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
     </>
   );
   const color = st === "mismatch" ? "text-red-700" : st === "match" ? "text-emerald-700" : "text-slate-700";
+  // число завжди клікабельне (і після підтвердження теж) — модалка деталей
+  // відкривається навіть без розбивки: там її можна набрати вручну
   const shown = w.factoryHours != null
-    ? (dayEntries.length
-      // є розбивка по днях → значення клікабельне, відкриває деталізацію
-      ? <button onClick={() => setShowDays(true)} title={t("Показати розбивку по днях від фабрики")}
-          className={`font-semibold underline decoration-dotted underline-offset-2 hover:opacity-75 ${color}`}>{inner}</button>
-      : <span className={`font-semibold ${color}`}>{inner}</span>)
+    ? <button onClick={() => setShowDays(true)} title={t("Показати розбивку по днях від фабрики")}
+        className={`font-semibold underline decoration-dotted underline-offset-2 hover:opacity-75 ${color}`}>{inner}</button>
     : <span className="text-slate-300">—</span>;
   // Модалка «дні від фабрики» — той самий патерн, що у першій колонці «Години»
   // (WorkerDaysModal): рядок = день+зміна, число завжди в інлайн-полі (✓
@@ -545,15 +545,22 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
       else { const day = days[e.date]; if (typeof day === "object") delete day[e.shift]; }
     }));
   };
-  const totalShown = Math.round(facEntries.reduce((s, e) => s + e.hours, 0) * 100) / 100;
+  const totalShown = facEntries.length
+    ? Math.round(facEntries.reduce((s, e) => s + e.hours, 0) * 100) / 100
+    : w.factoryHours ?? 0; // без розбивки — показуємо загальне число рядка
   const daysModal = showDays && (
     <Modal open onClose={() => setShowDays(false)} title={`${w.name} — ${t("дні від фабрики")}`} size="lg">
       <div className="mb-3 flex flex-wrap gap-2">
         <Badge color="green">{t("Години:")} {totalShown}</Badge>
         <Badge color="slate">{dayEntries.length} {t("дн.")}</Badge>
       </div>
-      {canEdit && <p className="mb-1 text-xs text-slate-400">{t("Натисни на число годин, щоб змінити (з'явиться ✓). 🗑 — прибрати день/зміну.")}</p>}
-      <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
+      {canEdit && facEntries.length > 0 && <p className="mb-1 text-xs text-slate-400">{t("Натисни на число годин, щоб змінити (з'явиться ✓). 🗑 — прибрати день/зміну.")}</p>}
+      {!facEntries.length && (
+        <p className="rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-4 text-center text-sm text-slate-400">
+          {t("Файл фабрики не мав розбивки по днях — години внесені одним числом. Додані нижче дні створять розбивку (підсумок місяця стане сумою днів).")}
+        </p>
+      )}
+      {facEntries.length > 0 && <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
             <tr>
@@ -593,7 +600,7 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
             </tr>
           </tfoot>
         </table>
-      </div>
+      </div>}
       {canEdit && <AddFactoryDayRow nShifts={nShifts} month={month} pending={saveDays.isPending}
         onAdd={(date, shift, hours) => saveDays.mutate(rebuildDays(days => {
           if (shift == null) days[date] = hours;
@@ -620,9 +627,11 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
   return (
     <span className="inline-flex items-center justify-end gap-1.5">
       {shown}
-      {rawMismatch && (
+      {w.factoryHours != null && (rawMismatch || w.reportHours == null) && (
         <button onClick={() => confirmMut.mutate(!w.factoryConfirmed)} disabled={confirmMut.isPending}
-          title={w.factoryConfirmed ? t("Зняти підтвердження розбіжності") : t("Підтвердити: розбіжність перевірено, все ок")}
+          title={w.factoryConfirmed ? t("Зняти підтвердження розбіжності")
+            : w.reportHours == null ? t("Підтвердити години фабрики без рапорту працівника — все ок")
+            : t("Підтвердити: розбіжність перевірено, все ок")}
           className={`rounded-md p-0.5 ${w.factoryConfirmed ? "text-emerald-600 hover:text-slate-400" : "text-slate-300 hover:text-emerald-600"}`}>
           <CheckCircle2 className="h-3.5 w-3.5" />
         </button>

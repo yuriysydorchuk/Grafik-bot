@@ -569,8 +569,15 @@ export async function buildReportHoursExcel(
 
   const rows = [...byKey.values()]
     .filter(x => factoryId == null || x.facId === factoryId)
-    // підтверджена вручну розбіжність («все ок» на /hours) — не помилка
-    .filter(x => !errorsOnly || (diffState(x) === "mismatch" && !x.confirmed) || diffState(x) === "partial")
+    // підтверджене вручну («все ок» на /hours) — не помилка: і розбіжність,
+    // і години фабрики без рапорту працівника
+    .filter(x => {
+      if (!errorsOnly) return true;
+      const st = diffState(x);
+      if (st === "mismatch") return !x.confirmed;
+      if (st === "partial") return !(x.confirmed && x.factoryHours != null && x.report == null);
+      return false;
+    })
     .map(x => ({ ...x, factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki" }))
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 

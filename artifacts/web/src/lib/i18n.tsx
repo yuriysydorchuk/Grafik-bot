@@ -951,6 +951,8 @@ const EN: Record<string, string> = {
   "Останній запис — щоб прибрати години фабрики повністю, очисти число олівцем у таблиці": "Last record — to remove factory hours entirely, clear the number with the pencil in the table",
   "без № зміни": "no shift #",
   "Підтвердити: розбіжність перевірено, все ок": "Confirm: discrepancy checked, all good",
+  "Підтвердити години фабрики без рапорту працівника — все ок": "Confirm factory hours without a worker report — all good",
+  "Файл фабрики не мав розбивки по днях — години внесені одним числом. Додані нижче дні створять розбивку (підсумок місяця стане сумою днів).": "The factory file had no per-day breakdown — hours were entered as a single number. Days added below will create one (the monthly total becomes the sum of days).",
   "Зняти підтвердження розбіжності": "Remove the discrepancy confirmation",
   "Видалити профіль «{name}» повністю? Це прибере його рапорти, години фабрики й документи. Дія незворотна.": "Delete the profile «{name}» entirely? This removes their reports, factory hours and documents. This cannot be undone.",
   "Видалити профіль (випадковий дубль)": "Delete profile (accidental duplicate)",
