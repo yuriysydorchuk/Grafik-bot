@@ -497,6 +497,18 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
   const [rows, setRows] = useState<ParsedRow[] | null>(null);
   const [picked, setPicked] = useState<Record<number, number | null>>({});  // index → workerId
   const [checked, setChecked] = useState<Record<number, boolean>>({});
+  // Рядки файла без збігу і без кандидатів: «створити профіль» — нова людина
+  // з евіденції створюється активною на фабриці й одразу отримує години
+  const [createSel, setCreateSel] = useState<Record<number, boolean>>({});
+  const [createCompanyId, setCreateCompanyId] = useState<number | "">("");
+  const { data: companies = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
+  const companyDefaulted = useRef(false);
+  useEffect(() => {
+    // дефолт фірми нових профілів — фірма вкладки (мульти-контрактні: Klinex/ES)
+    if (companyDefaulted.current || !companies.length || !group.firm) return;
+    const co = companies.find(c => c.name === group.firm);
+    if (co) { setCreateCompanyId(co.id); companyDefaulted.current = true; }
+  }, [companies, group.firm]);
   const [monthDetected, setMonthDetected] = useState<string | null>(null);
   const [srcKind, setSrcKind] = useState<"excel" | "paste">("paste");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -504,7 +516,7 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
     setRows(r); setMonthDetected(detected);
     const p: Record<number, number | null> = {}, c: Record<number, boolean> = {};
     r.forEach((row, i) => { p[i] = row.workerId; c[i] = row.workerId != null && row.hours > 0; });
-    setPicked(p); setChecked(c);
+    setPicked(p); setChecked(c); setCreateSel({});
   };
   const parse = useMutation({
     mutationFn: async (file: File | null) => {
@@ -513,31 +525,40 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
         const form = new FormData();
         form.append("file", file);
         form.append("month", month);
+        if (group.factoryId != null) form.append("factoryId", String(group.factoryId)); // дубль-профілі: перевага тим, хто вже в обліку годин фабрики
         return upload<{ rows: ParsedRow[]; monthDetected: string | null }>("/hours/factory-parse", form);
       }
-      return post<{ rows: ParsedRow[]; monthDetected: string | null }>("/hours/factory-parse", { month, text });
+      return post<{ rows: ParsedRow[]; monthDetected: string | null }>("/hours/factory-parse", { month, text, factoryId: group.factoryId });
     },
     onSuccess: (r) => initPreview(r.rows, r.monthDetected),
     onError: (e: any) => toast.error(e.message),
   });
   const apply = useMutation({
     mutationFn: () => {
-      const out = (rows ?? []).map((r, i) => ({ workerId: picked[i], hours: r.hours, days: r.days, on: checked[i] }))
-        .filter(r => r.on && r.workerId != null)
-        .map(r => ({ workerId: r.workerId!, hours: r.hours, days: r.days }));
-      return post<{ saved: number; skipped: number }>("/hours/factory-apply", {
+      const out = (rows ?? [])
+        .map((r, i) => ({ r, i }))
+        .filter(({ i }) => checked[i] && (picked[i] != null || createSel[i]))
+        .map(({ r, i }) => picked[i] != null
+          ? { workerId: picked[i]!, hours: r.hours, days: r.days }
+          : { create: true, name: r.name, hours: r.hours, days: r.days });
+      return post<{ saved: number; skipped: number; created: number }>("/hours/factory-apply", {
         month, factoryId: group.factoryId, source: srcKind, rows: out,
+        ...(createCompanyId !== "" ? { createCompanyId } : {}),
       });
     },
     onSuccess: (r) => {
-      toast.success(t("Збережено годин фабрики: {n}", { n: r.saved }));
+      toast.success(t("Збережено годин фабрики: {n}", { n: r.saved }), {
+        description: r.created ? t("Створено профілів: {n}", { n: r.created }) : undefined,
+      });
       qc.invalidateQueries({ queryKey: ["hours", month] });
       qc.invalidateQueries({ queryKey: ["hours-day-compare"] });
+      if (r.created) qc.invalidateQueries({ queryKey: ["workers"] });
       onClose();
     },
     onError: (e: any) => toast.error(e.message),
   });
-  const nSelected = rows ? rows.filter((_, i) => checked[i] && picked[i] != null).length : 0;
+  const nSelected = rows ? rows.filter((_, i) => checked[i] && (picked[i] != null || createSel[i])).length : 0;
+  const nCreate = rows ? rows.filter((_, i) => checked[i] && picked[i] == null && createSel[i]).length : 0;
   // «Чи це та сама людина?»: лише ті з обліку фабрики, у кого Є години з рапорту,
   // але ще НЕМАЄ збігу з таблицею фабрики — пропонуються в випадайці для
   // незматчених рядків файла (крім уже вибраних деінде)
@@ -601,17 +622,27 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
                         // «Чи це та сама людина?»: пропонуються ЛИШЕ люди з рапортом
                         // без збігу з фабрикою, найближчі за годинами — вгорі.
                         // Вибраний у ЦЬОМУ рядку лишається, вибрані в інших — ховаються.
+                        // Плюс завжди доступна опція «створити профіль» — нова
+                        // людина з файла фабрики, якої ще немає в базі.
                         const opts = missingWorkers
                           .filter(w => !pickedIds.has(w.id) || picked[i] === w.id)
                           .sort((a, b) => Math.abs(a.reportHours - r.hours) - Math.abs(b.reportHours - r.hours));
-                        if (!opts.length) return <span className="text-slate-400">{t("не знайдено в базі")}</span>;
                         return (
-                          <Select value={picked[i] ?? ""} onChange={e => {
-                            const v = e.target.value ? Number(e.target.value) : null;
-                            setPicked(p => ({ ...p, [i]: v }));
-                            setChecked(c => ({ ...c, [i]: v != null })); // вибрав людину → одразу в список
-                          }} className="w-full">
-                            <option value="">{t("— вибери, якщо це та сама людина —")}</option>
+                          <Select value={createSel[i] ? "__create__" : picked[i] ?? ""} onChange={e => {
+                            const v = e.target.value;
+                            if (v === "__create__") {
+                              setCreateSel(s => ({ ...s, [i]: true }));
+                              setPicked(p => ({ ...p, [i]: null }));
+                              setChecked(c => ({ ...c, [i]: true })); // створюємо → одразу в список
+                            } else {
+                              const id = v ? Number(v) : null;
+                              setCreateSel(s => ({ ...s, [i]: false }));
+                              setPicked(p => ({ ...p, [i]: id }));
+                              setChecked(c => ({ ...c, [i]: id != null })); // вибрав людину → одразу в список
+                            }
+                          }} className={`w-full ${createSel[i] ? "border-red-300 text-red-700" : ""}`}>
+                            <option value="">{opts.length ? t("— вибери, якщо це та сама людина —") : t("не знайдено в базі")}</option>
+                            <option value="__create__">{t("➕ Створити профіль «{name}»", { name: r.name })}</option>
                             {opts.map(w => <option key={w.id} value={w.id}>{w.name} — {w.reportHours} {t("год")} ({t("рапорт")})</option>)}
                           </Select>
                         );
@@ -622,6 +653,16 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
               </tbody>
             </table>
           </div>
+          {nCreate > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2 text-sm text-red-700">
+              <span className="font-medium">{t("Нові профілі ({n}) — фірма:", { n: nCreate })}</span>
+              <Select value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value ? Number(e.target.value) : "")} className="w-44">
+                <option value="">{t("— без фірми —")}</option>
+                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+              <span className="text-xs text-red-600">{t("Створяться активними на цій фабриці й одразу отримають години з файла.")}</span>
+            </div>
+          )}
           {unmatchedMissing.length > 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
               <span className="font-medium">{t("Є в обліку, але без годин фабрики ({n}):", { n: unmatchedMissing.length })}</span>{" "}

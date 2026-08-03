@@ -2788,6 +2788,7 @@ const uploadHoursFile = multer({ storage: multer.memoryStorage(), limits: { file
 router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (req, res) => {
   const month = String(req.body?.month || "");
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
+  const parseFactoryId = req.body?.factoryId != null && Number(req.body.factoryId) > 0 ? Number(req.body.factoryId) : null;
   const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
   let parsed: { name: string; hours: number; days?: Record<number, number> }[] = [];
   let monthDetected: string | null = null;
@@ -2807,10 +2808,36 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   // виграють при рівних кандидатах — matchWorker сам ранжує за схожістю.
   const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
     .from(workersTable);
+  // Профілі-дублі (однакове ім'я двічі в базі): перевага тому, хто ВЖЕ в
+  // обліку годин цього місяця на цій фабриці (явки/рапорт/години фабрики) —
+  // саме його рядок звіряється з файлом.
+  const inHours = new Set<number>();
+  if (parseFactoryId) {
+    const [y, m] = month.split("-").map(Number);
+    const monthStart = `${month}-01`;
+    const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+    const ents = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
+      .from(scheduleEntriesTable)
+      .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+      .where(and(
+        eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+        eq(scheduleEntriesTable.factoryId, parseFactoryId),
+        gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
+      ));
+    for (const e of ents) {
+      if (!e.workerId) continue;
+      const d = entryDateStr(String(e.weekStart), e.day);
+      if (d >= monthStart && d < monthEnd) inHours.add(e.workerId);
+    }
+    for (const r of await db.select({ workerId: monthlyReportsTable.workerId }).from(monthlyReportsTable)
+      .where(and(eq(monthlyReportsTable.month, month), eq(monthlyReportsTable.factoryId, parseFactoryId)))) inHours.add(r.workerId);
+    for (const r of await db.select({ workerId: factoryHoursTable.workerId }).from(factoryHoursTable)
+      .where(and(eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, parseFactoryId)))) inHours.add(r.workerId);
+  }
   const rows = parsed.map(p => {
     // нижчий поріг кандидатів, ніж у водійському флоу: сильно спотворені
     // прізвища ("Khdvarenko") мають хоч показати людей зі спільним іменем
-    const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8 });
+    const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8, prefer: w => inHours.has(w.id) ? 1 : 0 });
     return {
       name: p.name, hours: p.hours, days: p.days ?? null,
       workerId: m.confident?.id ?? null,
@@ -2826,11 +2853,35 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   const source = ["excel", "paste"].includes(req.body?.source) ? String(req.body.source) : "excel";
-  const rows: { workerId?: unknown; hours?: unknown; days?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const rows: { workerId?: unknown; hours?: unknown; days?: unknown; create?: unknown; name?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  // фірма для СТВОРЮВАНИХ профілів (вкладка мульти-контрактної фабрики знає свою)
+  const createCompanyId = req.body?.createCompanyId != null ? Number(req.body.createCompanyId) : null;
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
   if (!rows.length) return fail(res, 400, "Порожній список рядків");
   const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
   if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  // Рядки без збігу в базі: адмін позначив «створити профіль» — людина з файла
+  // фабрики, якої ще нема (нове ім'я в евіденції). Створюємо активний профіль
+  // на цій фабриці і кладемо години; імена файлів UPPERCASE → Title Case.
+  const titleCaseName = (s: string) => s.toLowerCase().replace(/(^|[\s'-])\p{L}/gu, m => m.toUpperCase());
+  let created = 0;
+  const allWorkers = rows.some(r => r.create === true) ? await db.select().from(workersTable) : [];
+  for (const r of rows) {
+    if (r.create !== true || r.workerId != null) continue;
+    const name = titleCaseName(String(r.name ?? "").replace(/\s+/g, " ").trim());
+    if (!name) continue;
+    // між превʼю і застосуванням людину могли створити (повторний імпорт) —
+    // тоді підвʼязуємось до наявного профілю, а не плодимо дубль
+    const likely = findLikelyDuplicate(name, allWorkers);
+    if (likely) { (r as any).workerId = likely.id; continue; }
+    const [w] = await db.insert(workersTable).values({
+      fullName: name, factoryId, companyId: createCompanyId, workerCode: await nextWorkerCode(),
+    }).returning();
+    allWorkers.push(w!);
+    (r as any).workerId = w!.id;
+    created++;
+  }
+  if (created) import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
   let saved = 0;
   for (const r of rows) {
     const workerId = Number(r.workerId);
@@ -2851,7 +2902,7 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days);
     saved++;
   }
-  ok(res, { saved, skipped: rows.length - saved });
+  ok(res, { saved, skipped: rows.length - saved, created });
 });
 
 // Позмінна звірка для листа: коли рапорт ≠ фабрика, але рапорт = нашим

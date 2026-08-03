@@ -59,6 +59,31 @@ test("matchWorker: unique surname alone is enough", () => {
   assert.equal(matchWorker("Kowalczuk", ws).confident?.id, 1);
 });
 
+test("matchWorker: дубль профілю (активний + звільнений двійник) не ламає впевнений матч", () => {
+  // прод-кейс: Lobas Olha двічі в базі (звільнена + активна) → раніше «не знайдено в базі»
+  const ws = [
+    { id: 126, fullName: "Lobas Olha", workerCode: "00126", isActive: false },
+    { id: 142, fullName: "Lobas Olha", workerCode: "00142", isActive: true },
+    { id: 3, fullName: "Nowak Piotr", workerCode: null, isActive: true },
+  ];
+  const m = matchWorker("LOBAS OLHA", ws);
+  assert.equal(m.confident?.id, 142); // активний профіль, а не null
+  // а СПРАВЖНЯ неоднозначність (різні люди зі схожим збігом) — як і була
+  const m2 = matchWorker("Iwan", [W(1, "Kowalczuk Iwan"), W(2, "Melnyk Iwan")]);
+  assert.equal(m2.confident, null);
+});
+
+test("matchWorker: opts.prefer сильніший за isActive — дубль, що ВЖЕ в обліку годин, виграє", () => {
+  // місяць відпрацьований на старому (звільненому) профілі, новий активний порожній
+  const ws = [
+    { id: 126, fullName: "Lobas Olha", workerCode: "00126", isActive: false },
+    { id: 142, fullName: "Lobas Olha", workerCode: "00142", isActive: true },
+  ];
+  const inHours = new Set([126]);
+  const m = matchWorker("LOBAS OLHA", ws, { prefer: w => inHours.has(w.id) ? 1 : 0 });
+  assert.equal(m.confident?.id, 126); // той, у кого години місяця, а не просто активний
+});
+
 test("matchWorker: unrelated text matches nothing", () => {
   const ws = [W(1, "Kowalczuk Iwan"), W(2, "Nowak Piotr")];
   const m = matchWorker("Abdurrahman Öztürk", ws);

@@ -91,6 +91,9 @@ export interface MatchOpts {
   minCandidate?: number;
   /** розмір списку кандидатів (типово 4; превʼю імпорту показує більше — рівних по скору може бути багато) */
   maxCandidates?: number;
+  /** тай-брейк при рівному скорі (більше = вище): напр., «уже в обліку годин
+   *  місяця» при виборі між профілями-дублями. Сильніший за isActive. */
+  prefer?: (w: WorkerLike) => number;
 }
 
 export function matchWorker<T extends WorkerLike & { isActive?: boolean | null }>(input: string, workers: T[], opts: MatchOpts = {}): MatchResult<T> {
@@ -101,12 +104,20 @@ export function matchWorker<T extends WorkerLike & { isActive?: boolean | null }
   const scored = workers
     .map(w => ({ w, score: nameScore(text, w.fullName) }))
     .filter(x => x.score >= (opts.minCandidate ?? MIN_CANDIDATE))
-    // при рівному скорі активний профіль вище звільненого
-    .sort((a, b) => b.score - a.score || Number(!!b.w.isActive) - Number(!!a.w.isActive));
+    // при рівному скорі: спершу prefer (напр., «уже в обліку годин місяця»),
+    // потім активний профіль вище звільненого
+    .sort((a, b) => b.score - a.score
+      || (opts.prefer ? opts.prefer(b.w) - opts.prefer(a.w) : 0)
+      || Number(!!b.w.isActive) - Number(!!a.w.isActive));
   const candidates = scored.slice(0, opts.maxCandidates ?? 4).map(x => x.w);
   if (scored.length === 0) return { confident: null, candidates: [] };
 
-  const best = scored[0]!, second = scored[1];
+  // Дублікати профілів (те саме нормалізоване ім'я: активний + звільнений
+  // двійник) — одна людина, вони не роблять матч «неоднозначним»: суперник —
+  // перший кандидат з ІНШИМ іменем; при рівному скорі активний уже вище.
+  const nameKey = (s: string) => normalizeName(s).split(" ").sort().join(" ");
+  const best = scored[0]!, bestKey = nameKey(best.w.fullName);
+  const second = scored.find(x => nameKey(x.w.fullName) !== bestKey);
   const clearWinner = !second || best.score - second.score >= 0.2;
   // Single-word queries ("Kowalski") must match near-exactly to auto-link.
   const threshold = tokens(text).length >= 2 ? 0.75 : 0.85;
