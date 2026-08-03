@@ -158,15 +158,15 @@ test("GET /hours/report-excel: cols обмежує колонки, errorsOnly л
 
 // ─── Відсутності: виправдання і штрафи ────────────────────────────────────────
 
-test("GET /absences рахує штрафи (стандарт 300); PATCH правки штрафу і виправдання виключають з підсумків", opts, async () => {
+test("GET /absences рахує штрафи (стандарт 200); PATCH правки штрафу і виправдання виключають з підсумків", opts, async () => {
   const f = await mkFactory(), w = await mkWorker(f), wk = await mkApprovedWeek();
   const e = await mkEntry(wk, w, f, "1", "absent");
 
   let res = await request(app).get(`/api/absences?month=${MONTH}`).set("Cookie", cookie);
   assert.equal(res.status, 200);
   assert.equal(res.body.total, 1);
-  assert.equal(res.body.absences[0].penalty, 300);
-  assert.equal(res.body.penaltyTotal, 300);
+  assert.equal(res.body.absences[0].penalty, 200);
+  assert.equal(res.body.penaltyTotal, 200);
 
   // Свій розмір штрафу
   const p = await request(app).patch(`/api/absences/${e}`).set("Cookie", cookie).set(H).send({ penalty: 150 });

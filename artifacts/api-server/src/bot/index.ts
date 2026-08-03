@@ -1402,20 +1402,9 @@ async function askReportHours(ctx: Context, tid: string, data: any) {
 
 type ReportWorker = { id: number; fullName: string; factoryId: number | null };
 
-// Advance the report dialog for a concrete month: preset factory → straight to
-// hours; otherwise factories from the worker's approved shifts of that month
-// (a mid-month transfer yields two) + their current factory as a fallback.
-async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, reportMonth: string, lang: Lang, presetFactoryId?: number) {
-  const monthLabel = reportMonthLabel(lang, reportMonth);
-
-  if (presetFactoryId) {
-    const [pf] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
-      .from(factoriesTable).where(eq(factoriesTable.id, presetFactoryId));
-    if (pf?.name) {
-      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, lang });
-    }
-  }
-
+// Фабрики місяця для рапорту: з approved-змін працівника цього місяця
+// (переведення/разова підміна дає 2-3) + його поточна фабрика як фолбек.
+async function reportMonthFactories(worker: ReportWorker, reportMonth: string): Promise<{ id: number; name: string | null }[]> {
   // Тиждень, що містить 1-ше число, може починатися ще в попередньому місяці —
   // беремо тижні з запасом у 6 днів і фільтруємо кожну зміну за фактичною датою.
   const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1451,6 +1440,24 @@ async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, 
       .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
     if (own) { seen.add(own.id); uniqueFactories.push(own); }
   }
+  return uniqueFactories;
+}
+
+// Advance the report dialog for a concrete month: preset factory → straight to
+// hours; otherwise factories from the worker's approved shifts of that month
+// (a mid-month transfer yields two) + their current factory as a fallback.
+async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, reportMonth: string, lang: Lang, presetFactoryId?: number) {
+  const monthLabel = reportMonthLabel(lang, reportMonth);
+
+  if (presetFactoryId) {
+    const [pf] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
+      .from(factoriesTable).where(eq(factoriesTable.id, presetFactoryId));
+    if (pf?.name) {
+      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, lang });
+    }
+  }
+
+  const uniqueFactories = await reportMonthFactories(worker, reportMonth);
 
   if (uniqueFactories.length === 0) {
     return ctx.reply(t(lang, "report.noFactory"), { parse_mode: "Markdown" });
@@ -1464,14 +1471,21 @@ async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, 
     });
   }
 
-  // Кілька фабрик — запитуємо яку
+  // Кілька фабрик — запитуємо яку; вже здані цього місяця позначаємо ✅
+  const submitted = new Set((await db.select({ factoryId: monthlyReportsTable.factoryId })
+    .from(monthlyReportsTable)
+    .where(and(eq(monthlyReportsTable.workerId, worker.id), eq(monthlyReportsTable.month, reportMonth))))
+    .map(r => r.factoryId).filter((id): id is number => id != null));
   setState(tid, "report:select_factory", {
     workerId: worker.id, workerName: worker.fullName,
     month: reportMonth, factories: uniqueFactories.map(f => f.name), lang,
   });
   return ctx.reply(
     t(lang, "report.pickFactoryHdr", { month: monthLabel }),
-    { parse_mode: "Markdown", ...Markup.keyboard([...uniqueFactories.map(f => [f.name!]), [t(lang, "menu.back")]]).resize() },
+    { parse_mode: "Markdown", ...Markup.keyboard([
+      ...uniqueFactories.map(f => [submitted.has(f.id) ? `✅ ${f.name}` : f.name!]),
+      [t(lang, "menu.back")],
+    ]).resize() },
   );
 }
 
@@ -3096,7 +3110,27 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
         });
       }
     }
-    return ctx.reply(t(lang, "report.saved", { hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
+    await ctx.reply(t(lang, "report.saved", { hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
+    // Мульти-фабричний місяць (переведення/разова підміна): одразу запропонувати
+    // рапорти, яких ще бракує — інакше людина вважає, що здала все.
+    try {
+      const [wRow] = worker ? [worker] : await db.select().from(workersTable).where(eq(workersTable.id, data.workerId));
+      if (wRow) {
+        const all = await reportMonthFactories(wRow, data.month);
+        const done = new Set((await db.select({ factoryId: monthlyReportsTable.factoryId })
+          .from(monthlyReportsTable)
+          .where(and(eq(monthlyReportsTable.workerId, data.workerId), eq(monthlyReportsTable.month, data.month))))
+          .map(r => r.factoryId));
+        const missing = all.filter(f => f.name && !done.has(f.id));
+        if (missing.length) {
+          await ctx.reply(
+            t(lang, "report.nextFactories", { month: reportMonthLabel(lang, data.month), factories: missing.map(f => f.name).join(", ") }),
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: missing.map(f => [{ text: `📄 ${f.name}`, callback_data: `repi:${data.month}:${f.id}` }]) } },
+          );
+        }
+      }
+    } catch (e) { logger.warn({ err: e }, "report next-factory offer failed"); }
+    return;
   } catch (e) {
     logger.error({ err: e }, "Report upload error");
     return ctx.reply(t(lang, "report.uploadErr"), menu);
@@ -4426,7 +4460,8 @@ bot.on("text", async (ctx) => {
   if (state?.action === "report:select_factory") {
     const { data } = state;
     const factories: string[] = data.factories;
-    const match = factories.find(f => f === text);
+    // кнопка вже зданої фабрики має префікс «✅ » — повторна здача легальна (перезапис)
+    const match = factories.find(f => f === text || `✅ ${f}` === text);
     if (!match) return ctx.reply(t(asLang(data.lang), "report.pickFromList"));
     return askReportHours(ctx, tid, { ...data, factory: match });
   }

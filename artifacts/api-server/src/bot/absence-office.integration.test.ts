@@ -1,6 +1,6 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { hasTestDb, resetDb, closeDb, db, pressButton, resetSent } from "../test/botHarness.ts";
+import { hasTestDb, resetDb, closeDb, db, pressButton, sendText, resetSent } from "../test/botHarness.ts";
 import { workersTable, scheduleWeeksTable, scheduleEntriesTable, absenceRequestsTable } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 
@@ -36,7 +36,13 @@ test("absence_approve (whole day): every scheduled shift that day goes absent", 
 
 test("absence_reject: request rejected, entry left scheduled", opts, async () => {
   const { entryId, requestId } = await seed("1");
+  // Відхилення двокрокове: кнопка → бот питає причину (текст або /skip) — і лише
+  // тоді ставить rejected. Другий крок гейтиться getAdmin, тож tid має бути адміном.
+  const { adminsTable } = await import("@workspace/db");
+  await db.insert(adminsTable).values({ name: "Office", role: "owner", telegramId: "810300" });
   await pressButton("810300", `absence_reject_${requestId}`);
+  assert.equal((await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId)))[0]!.status, "pending");
+  await sendText("810300", "/skip");
   assert.equal((await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.id, requestId)))[0]!.status, "rejected");
   assert.equal((await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, entryId)))[0]!.status, "scheduled");
 });

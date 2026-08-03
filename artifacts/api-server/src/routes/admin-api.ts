@@ -2629,15 +2629,58 @@ router.get("/hours", RW, async (req, res) => {
 });
 
 // Remind active workers who haven't submitted their monthly report yet.
+// «Не здав» рахується ПО ПАРАХ (працівник, фабрика): людина, що працювала в
+// місяці на 2-3 фабриках (переведення/разова підміна), здає окремий рапорт на
+// кожну — один рапорт не означає «здав усе». Хто не має жодної явки місяця —
+// нагадування не отримує.
 router.post("/hours/report-remind", RW, async (_req, res) => {
   // The report month follows the collection window (first 7 days of a month → previous
   // month), not the calendar month or the page selector — otherwise on the 1st we'd nag
   // people for a month that hasn't ended. Server-authoritative so it can't drift.
   const month = reportMonthFor();
-  const active = await db.select({ id: workersTable.id, tid: workersTable.telegramId, lang: workersTable.language })
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+  const att = await db.select({
+    workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId,
+    day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
+  }).from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(
+      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
+    ));
+  const pairs = new Map<number, Set<number>>(); // workerId → фабрики з явками місяця
+  for (const r of att) {
+    if (!r.workerId || r.factoryId == null) continue;
+    const date = entryDateStr(String(r.weekStart), r.day);
+    if (date < monthStart || date >= monthEnd) continue;
+    (pairs.get(r.workerId) ?? pairs.set(r.workerId, new Set<number>()).get(r.workerId)!).add(r.factoryId);
+  }
+  const active = await db.select({ id: workersTable.id, tid: workersTable.telegramId, lang: workersTable.language, factoryId: workersTable.factoryId })
     .from(workersTable).where(eq(workersTable.isActive, true));
-  const submitted = new Set((await db.select({ workerId: monthlyReportsTable.workerId }).from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month))).map(r => r.workerId));
-  const missing = active.filter(w => !submitted.has(w.id));
+  const activeById = new Map(active.map(w => [w.id, w]));
+  const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId })
+    .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
+  const covered = new Set<string>();
+  for (const r of reports) if (r.factoryId != null) covered.add(`${r.workerId}|${r.factoryId}`);
+  // legacy/ручний рапорт без фабрики покриває одну пару: поточну фабрику, інакше першу
+  for (const r of reports) {
+    if (r.factoryId != null) continue;
+    const facs = pairs.get(r.workerId);
+    if (!facs?.size) continue;
+    const cur = activeById.get(r.workerId)?.factoryId;
+    covered.add(`${r.workerId}|${cur != null && facs.has(cur) ? cur : [...facs][0]!}`);
+  }
+  const facRows = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facName = new Map(facRows.map(f => [f.id, f.name]));
+  const missing: { id: number; tid: string | null; lang: string | null; factories: string[] }[] = [];
+  for (const [workerId, facs] of pairs) {
+    const w = activeById.get(workerId);
+    if (!w) continue; // звільнених веде farewell-флоу зі своїм вікном
+    const miss = [...facs].filter(f => !covered.has(`${workerId}|${f}`)).map(f => facName.get(f) ?? String(f));
+    if (miss.length) missing.push({ id: w.id, tid: w.tid, lang: w.lang, factories: miss });
+  }
   const targets = missing.filter(w => w.tid);
   if (targets.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length, month });
   let notified = 0, skipped = 0;
@@ -2647,8 +2690,12 @@ router.post("/hours/report-remind", RW, async (_req, res) => {
     const label = new Date(`${month}-01`).toLocaleDateString("uk-UA", { month: "long", year: "numeric" });
     for (const w of targets) {
       const lang = asLang(w.lang);
-      try { await bot.telegram.sendMessage(w.tid!, t(lang, "notif.reportRemind", { month: label, btn: t(lang, "menu.report") }), { parse_mode: "Markdown" }); notified++; }
-      catch { skipped++; }
+      try {
+        await bot.telegram.sendMessage(w.tid!, t(lang, "notif.reportRemindFactories", {
+          month: label, factories: w.factories.join(", "), btn: t(lang, "menu.report"),
+        }), { parse_mode: "Markdown" });
+        notified++;
+      } catch { skipped++; }
       await new Promise(r => setTimeout(r, 50));
     }
   } catch (e) { logger.error({ err: e }, "report remind failed"); return fail(res, 500, "Помилка розсилки"); }
