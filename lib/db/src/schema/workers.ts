@@ -510,6 +510,12 @@ export const factoryHoursTable = pgTable("factory_hours", {
   source: text("source").notNull().default("manual"),      // excel | paste | manual
   days: jsonb("days").$type<Record<string, number | Record<string, number>>>(), // "YYYY-MM-DD" → год АБО { "№зміни": год } (позмінна розбивка ewidencja I/II/III)
   confirmed: boolean("confirmed").notNull().default(false), // розбіжність рапорт↔фабрика перевірена вручну («все ок») — рядок зелений; скидається при зміні годин
+  // запит підтвердження годин працівнику в бот і його відповідь
+  askSentAt: timestamp("ask_sent_at"),        // коли надіслано запит у бот
+  askHours: real("ask_hours"),                // які саме години надсилались (для звірки, якщо потім змінились)
+  workerResponse: text("worker_response"),    // confirmed | dispute | null (ще не відповів)
+  workerResponseAt: timestamp("worker_response_at"),
+  workerNote: text("worker_note"),            // пояснення помилки від працівника
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [

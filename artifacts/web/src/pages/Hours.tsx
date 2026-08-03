@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Download, Check, X, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, upload } from "../lib/api";
 import { monthOptions } from "../lib/dates";
@@ -27,6 +27,9 @@ interface HourRow {
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   factoryHours?: number | null; factoryDays?: Record<string, FacDayVal> | null; factoryConfirmed?: boolean; clientEmail?: string | null;
   createdViaImport?: boolean; // профіль створений «створити профіль» в імпорті годин → можна 🗑 зі списку
+  // запит «підтверди свої години» в бот і відповідь працівника
+  askSentAt?: string | null; askHours?: number | null;
+  workerResponse?: "confirmed" | "dispute" | null; workerResponseAt?: string | null; workerNote?: string | null;
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
@@ -74,6 +77,7 @@ export default function Hours() {
   // так лист/превʼю живо перераховуються після правок годин)
   const [importKey, setImportKey] = useState<string | null>(null);
   const [emailKey, setEmailKey] = useState<string | null>(null);
+  const [notifyKey, setNotifyKey] = useState<string | null>(null); // розсилка «підтверди свої години» у бот
   // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
   const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string } | null>(null);
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
@@ -304,6 +308,13 @@ export default function Hours() {
                     </button>
                   )}
                   {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
+                    <button onClick={() => setNotifyKey(g.key)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
+                      title={t("Розіслати людям їх години фабрики на підтвердження в бот")}>
+                      <Send className="h-3.5 w-3.5" /> {t("На підтвердження людям")}
+                    </button>
+                  )}
+                  {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
                     <button onClick={() => {
                         const n = g.rows.filter(w => w.factoryHours != null).length;
                         if (window.confirm(t("Очистити години фабрики для «{name}»? Приберуться значення {n} людей разом з розбивками й підтвердженнями. Рапорти працівників не чіпаються.", { name: g.name, n }))) clearFactoryHours.mutate(g);
@@ -335,6 +346,7 @@ export default function Hours() {
                         <th className="px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="px-4 py-2.5 text-right">{t("Години")}</th>
                         <th className="px-4 py-2.5 text-right">{t("Години з рапорту")}</th>
                         <th className="px-4 py-2.5 text-right">{t("Години з фабрики")}</th>
+                        <th className="px-3 py-2.5 text-center" title={t("Відповідь працівника на запит підтвердження годин у боті")}>{t("Підтв. працівника")}</th>
                         {isOwner && <><th className="px-3 py-2.5 text-right">{t("Ставка")}</th><th className="px-4 py-2.5 text-right">{t("ЗП нетто")}</th><th className="px-4 py-2.5 text-right">{t("ЗП по рапорту")}</th></>}
                       </tr>
                     </thead>
@@ -360,6 +372,7 @@ export default function Hours() {
                           <td className="px-4 py-2.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
                           <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
                           <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
+                          <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
                           {isOwner && <><td className="px-3 py-2.5 text-right text-slate-400">{w.rate ?? "—"}</td><td className="px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="px-4 py-2.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
                         </tr>
                       ))}
@@ -371,6 +384,9 @@ export default function Hours() {
                         <td className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>
                         <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>
                         <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.factoryHours ?? 0), 0))} {t("год")}</td>
+                        <td className="px-3 py-2.5 text-center text-xs text-slate-500">
+                          {g.rows.some(w => w.askSentAt) && `${g.rows.filter(w => w.workerResponse === "confirmed").length}/${g.rows.filter(w => w.askSentAt).length}`}
+                        </td>
                         {isOwner && <><td /><td className="px-4 py-2.5 text-right text-emerald-700">{round(g.net)} zł</td><td className="px-4 py-2.5 text-right text-blue-700">{round(g.rows.reduce((s, w) => s + (w.reportNet ?? 0), 0))} zł</td></>}
                       </tr>
                     </tfoot>
@@ -386,6 +402,10 @@ export default function Hours() {
       )}
       {sel && <WorkerDaysModal workerId={sel.id} name={sel.name} month={month} monthLabel={monthLabel} onClose={() => setSel(null)} />}
       {exportTo && <ExportExcelModal month={month} monthLabel={monthLabel} target={exportTo} onClose={() => setExportTo(null)} />}
+      {(() => {
+        const ng = notifyKey ? groups.find(g => g.key === notifyKey) : null;
+        return ng?.factoryId != null ? <NotifyAskModal group={ng} month={month} onClose={() => setNotifyKey(null)} /> : null;
+      })()}
       {(() => {
         // групи беруться свіжими з query — правки годин живо оновлюють модалки
         const ig = importKey ? groups.find(g => g.key === importKey) : null;
@@ -639,6 +659,96 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
       <button onClick={() => { setVal(w.factoryHours != null ? String(w.factoryHours) : ""); setEditing(true); }} className="rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати години фабрики")}><Pencil className="h-3.5 w-3.5" /></button>
       {daysModal}
     </span>
+  );
+}
+
+// Колонка «Підтв. працівника»: відповідь людини на запит «підтверди свої
+// години» в боті. Галочка/хрестик/годинник, пояснення — у тултіпі.
+function WorkerAckCell({ w }: { w: HourRow }) {
+  const t = useT();
+  const fmtD = (s?: string | null) => s ? new Date(s).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) : "";
+  if (w.workerResponse === "confirmed") {
+    // людина підтверджувала askHours; якщо колонку потім змінили — жовтимо
+    const stale = w.askHours != null && w.factoryHours != null && Math.abs(w.askHours - w.factoryHours) > 0.01;
+    return (
+      <span title={`${t("Підтвердив(ла) {date} · {hours} год", { date: fmtD(w.workerResponseAt), hours: w.askHours ?? w.factoryHours ?? "" })}${stale ? ` · ${t("увага: зараз у колонці {h} год", { h: w.factoryHours! })}` : ""}`}>
+        <CheckCircle2 className={`inline h-4 w-4 ${stale ? "text-amber-500" : "text-emerald-500"}`} />
+      </span>
+    );
+  }
+  if (w.workerResponse === "dispute") {
+    return (
+      <span title={t("Зголосив(ла) помилку {date}: {note}", { date: fmtD(w.workerResponseAt), note: w.workerNote || t("без пояснення") })}>
+        <XCircle className="inline h-4 w-4 text-red-500" />
+      </span>
+    );
+  }
+  if (w.askSentAt) {
+    return (
+      <span title={t("Запит надіслано {date}, чекаємо відповіді", { date: fmtD(w.askSentAt) })}>
+        <Clock className="inline h-4 w-4 text-slate-300" />
+      </span>
+    );
+  }
+  return <span className="text-slate-200">—</span>;
+}
+
+// Розсилка «підтверди свої години» в бот: чекбокс-список людей вкладки з
+// годинами фабрики → POST /hours/factory-notify.
+function NotifyAskModal({ group, month, onClose }: { group: Group; month: string; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const rows = useMemo(() => group.rows.filter(w => w.factoryHours != null), [group]);
+  const [checked, setChecked] = useState<Record<number, boolean>>(() => Object.fromEntries(rows.map(w => [w.workerId, true])));
+  const n = rows.filter(w => checked[w.workerId]).length;
+  const allOn = n === rows.length;
+  const send = useMutation({
+    mutationFn: () => post<{ sent: number; skipped: number }>("/hours/factory-notify", {
+      month, factoryId: group.factoryId, workerIds: rows.filter(w => checked[w.workerId]).map(w => w.workerId),
+    }),
+    onSuccess: (r) => {
+      toast.success(t("Надіслано запитів: {sent}", { sent: r.sent }), {
+        description: r.skipped ? t("Пропущено (без Telegram або без годин): {n}", { n: r.skipped }) : undefined,
+      });
+      qc.invalidateQueries({ queryKey: ["hours", month] });
+      onClose();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={`${t("Години на підтвердження людям")} — ${group.name} · ${month}`} size="lg">
+      <p className="mb-2 text-sm text-slate-500">{t("Кожен вибраний отримає в бот свої години з колонки «Години з фабрики» з кнопками «✅ Все вірно» / «❌ Є помилка». Повторна розсилка скидає попередню відповідь.")}</p>
+      <div className="max-h-[50vh] overflow-auto rounded-xl border border-slate-200">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+            <tr>
+              <th className="px-3 py-2"><input type="checkbox" checked={allOn} className="h-4 w-4 accent-red-600"
+                onChange={e => setChecked(Object.fromEntries(rows.map(w => [w.workerId, e.target.checked])))} /></th>
+              <th className="px-3 py-2">{t("Працівник")}</th>
+              <th className="px-3 py-2 text-right">{t("Години з фабрики")}</th>
+              <th className="px-3 py-2 text-center">{t("Підтв. працівника")}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map(w => (
+              <tr key={w.workerId} className="hover:bg-slate-50">
+                <td className="px-3 py-2"><input type="checkbox" checked={!!checked[w.workerId]} className="h-4 w-4 accent-red-600"
+                  onChange={e => setChecked(c => ({ ...c, [w.workerId]: e.target.checked }))} /></td>
+                <td className="px-3 py-2 font-medium text-slate-700">{w.name}</td>
+                <td className="px-3 py-2 text-right font-semibold text-slate-700">{w.factoryHours} {t("год")}</td>
+                <td className="px-3 py-2 text-center"><WorkerAckCell w={w} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+        <Button onClick={() => send.mutate()} loading={send.isPending} disabled={!n}>
+          <Send className="h-4 w-4" /> {t("Надіслати {n}", { n })}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 

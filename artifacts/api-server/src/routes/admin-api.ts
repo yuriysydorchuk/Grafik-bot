@@ -2620,6 +2620,12 @@ router.get("/hours", RW, async (req, res) => {
         factoryDays: fhByKey.get(rowKey(w.workerId, w.factoryId))?.days ?? null,
         factoryConfirmed: fhByKey.get(rowKey(w.workerId, w.factoryId))?.confirmed ?? false,
         createdViaImport: importCreated.has(w.workerId),
+        // запит підтвердження годин у бот і відповідь працівника
+        askSentAt: fhByKey.get(rowKey(w.workerId, w.factoryId))?.askSentAt ?? null,
+        askHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.askHours ?? null,
+        workerResponse: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerResponse ?? null,
+        workerResponseAt: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerResponseAt ?? null,
+        workerNote: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerNote ?? null,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
@@ -2840,6 +2846,51 @@ router.post("/hours/factory-clear", RW, async (req, res) => {
     inArray(factoryHoursTable.workerId, workerIds),
   )).returning({ id: factoryHoursTable.id });
   ok(res, { cleared: gone.length });
+});
+
+// Розсилка працівникам «підтверди свої години фабрики»: шле в бот години з
+// колонки «Години з фабрики» з кнопками ✅/❌ (мовою працівника). Відповідь
+// пишеться в factory_hours (worker_response/worker_note) і показується
+// колонкою «Підтв. працівника». Повторна розсилка скидає попередню відповідь.
+router.post("/hours/factory-notify", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Number.isInteger) : [];
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!workerIds.length) return fail(res, 400, "Порожній список працівників");
+  const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  const fhRows = await db.select().from(factoryHoursTable).where(and(
+    eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId),
+    inArray(factoryHoursTable.workerId, workerIds),
+  ));
+  const people = await db.select({ id: workersTable.id, fullName: workersTable.fullName, telegramId: workersTable.telegramId, language: workersTable.language })
+    .from(workersTable).where(inArray(workersTable.id, fhRows.map(r => r.workerId)));
+  const byId = new Map(people.map(p => [p.id, p]));
+  const { bot } = await import("../bot");
+  const { t, asLang, DATE_LOCALE } = await import("../bot/i18n");
+  let sent = 0, skipped = 0;
+  for (const row of fhRows) {
+    const w = byId.get(row.workerId);
+    if (!w?.telegramId) { skipped++; continue; }
+    const lang = asLang(w.language);
+    const monthLabel = new Date(`${month}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
+    try {
+      await bot.telegram.sendMessage(w.telegramId, t(lang, "fh.ask", { factory: fac.name, month: monthLabel, hours: row.hours }), {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[
+          { text: t(lang, "fh.btnOk"), callback_data: `fh:ok:${row.id}` },
+          { text: t(lang, "fh.btnNo"), callback_data: `fh:no:${row.id}` },
+        ]] },
+      });
+      await db.update(factoryHoursTable)
+        .set({ askSentAt: new Date(), askHours: row.hours, workerResponse: null, workerResponseAt: null, workerNote: null })
+        .where(eq(factoryHoursTable.id, row.id));
+      sent++;
+    } catch { skipped++; }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  ok(res, { sent, skipped: skipped + (workerIds.length - fhRows.length) });
 });
 
 // Підтвердити розбіжність «рапорт ↔ фабрика»: адмін перевірив числа й каже

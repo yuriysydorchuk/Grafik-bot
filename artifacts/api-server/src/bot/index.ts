@@ -5,7 +5,7 @@ import {
   scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
   absenceRequestsTable, driverTripsTable, driverWorkdaysTable, unplannedWorkersTable, availabilityTable,
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
-  vehiclesTable, shiftCancellationsTable,
+  vehiclesTable, shiftCancellationsTable, factoryHoursTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
 import { eq, and, desc, inArray, ne, isNull, gte, lt, sql } from "drizzle-orm";
@@ -938,6 +938,40 @@ bot.action("adv:new", async (ctx) => {
   if (Number(cnt?.month ?? 0) >= 3) return ctx.reply(t(lang, "adv.limitMonth"));
   setState(tid, "advance:enter_amount", { workerId: worker.id, lang });
   return ctx.reply(t(lang, "adv.askAmount"), cancelKb(lang));
+});
+
+// Відповідь працівника на запит «підтверди свої години фабрики» (розсилка з
+// /hours): ✅ — фіксуємо підтвердження; ❌ — фіксуємо помилку і просимо описати.
+bot.action(/^fh:(ok|no):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const kind = (ctx as any).match[1] as "ok" | "no";
+  const fhId = Number((ctx as any).match[2]);
+  const worker = await getWorker(tid);
+  const lang = wlang(worker);
+  const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, fhId));
+  // рядок міг зникнути (очистка колонки/переімпорт) або належати не цій людині
+  if (!row || !worker || row.workerId !== worker.id) {
+    await ctx.answerCbQuery(t(lang, "fh.gone"));
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    return;
+  }
+  const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
+  const monthLabel = new Date(`${row.month}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
+  if (kind === "ok") {
+    await db.update(factoryHoursTable)
+      .set({ workerResponse: "confirmed", workerResponseAt: new Date(), workerNote: null })
+      .where(eq(factoryHoursTable.id, fhId));
+    await ctx.answerCbQuery("✅");
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    return ctx.reply(t(lang, "fh.confirmed", { hours: row.hours, factory: fac?.name ?? "—", month: monthLabel }), { parse_mode: "Markdown" });
+  }
+  await db.update(factoryHoursTable)
+    .set({ workerResponse: "dispute", workerResponseAt: new Date() })
+    .where(eq(factoryHoursTable.id, fhId));
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  setState(tid, "fh:dispute_note", { fhId, lang });
+  return ctx.reply(t(lang, "fh.askNote"), cancelKb(lang));
 });
 
 // Обʼєднання дубліката профілю — лише після ручного затвердження адміном
@@ -4230,6 +4264,25 @@ bot.on("text", async (ctx) => {
       return ctx.reply(tb(bl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "brdpk", bl) });
     }
     return boardAddPerson(ctx, tid, data, m.confident, text.trim());
+  }
+
+  // Пояснення помилки в годинах фабрики (після ❌ у запиті підтвердження)
+  if (state?.action === "fh:dispute_note") {
+    const lang = asLang(state.data.lang);
+    clearState(tid);
+    const note = text.trim().slice(0, 500);
+    const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, Number(state.data.fhId)));
+    const worker = await getWorker(tid);
+    if (row && worker && row.workerId === worker.id) {
+      await db.update(factoryHoursTable).set({ workerNote: note }).where(eq(factoryHoursTable.id, row.id));
+      const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
+      await notifyAdmins(
+        `⚠️ *Помилка в годинах фабрики*\n\n👷 *${mdSafe(worker.fullName)}*\n🏭 ${mdSafe(fac?.name ?? "—")} · ${row.month}\n🕒 Наші години: *${row.hours}*\n📝 ${mdSafe(note)}`,
+        { parse_mode: "Markdown" },
+      );
+      await notifyRoles("scheduler", { type: "hours_correction", title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${row.month} · наші ${row.hours} год · ${note}` });
+    }
+    return ctx.reply(t(lang, "fh.noteSaved"), await workerMenuFor(worker, lang));
   }
 
   if (state?.action === "advance:enter_amount") {
