@@ -21,6 +21,8 @@ import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
 import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
+import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
+import { FIRM_TAB } from "../lib/colors";
 
 type Row = {
   id: number; city: string; firm: string | null; factoryLabel: string; factoryId: number | null;
@@ -121,6 +123,11 @@ const OFFICE_CITY = "Офіс"; // віртуальна вкладка поря�
 const TOTAL_CITY = "Підсумок"; // віртуальна вкладка: підсумок по всьому місяцю
 const OFFICE_RE = /^OFFICE|^ОФИС|^ОФІС|^OFIS/i;
 const isSpecial = (label: string) => OFFICE_RE.test(label) || label === EXTRA_STUDENTS;
+// Фірма з назви вкладки — для міток, що самі несуть фірму (мульти-контрактні
+// «ANDROS KLINEX»/«ANDROS EURO SUPORT», офісні «OFFICE ES OUTSOURCING»);
+// «OUTS» перевіряємо першим, бо в назві поруч стоїть і «ES»
+const labelFirm = (label: string): string | null =>
+  /OUTS/i.test(label) ? "ESO" : /KLINEX/i.test(label) ? "Klinex" : /EURO ?SUP|(^|\s)ES(\s|$)/i.test(label) ? "ES" : null;
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : "";
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
@@ -258,11 +265,16 @@ export default function Svodni() {
   });
   // мінімальна пара року для формул-тултіпів (з налаштувань, приходить з API)
   useEffect(() => { if (data?.ksiegMin) KSIEG_MIN = data.ksiegMin; }, [data?.ksiegMin]);
+  // Персональний порядок міст (drag-and-drop, admins.web_prefs); «Офіс» і
+  // «Підсумок» — приколоті в кінці, не перетягуються
+  const [cityOrder, saveCityOrder] = useOrderPref("order.svodni.cities");
+  const regularCities = useMemo(() => orderBy((data?.cities ?? []).filter(c => c !== OFFICE_CITY), c => c, cityOrder), [data, cityOrder]);
+  const cityDrag = useDragOrder(regularCities, saveCityOrder);
   const cityTabs = useMemo(() => [
-    ...(data?.cities ?? []).filter(c => c !== OFFICE_CITY),
+    ...regularCities,
     ...(data?.sensitive ? [OFFICE_CITY] : []),
     ...((data?.rows.length ?? 0) > 0 ? [TOTAL_CITY] : []),
-  ], [data]);
+  ], [regularCities, data]);
   const effCity = cityTabs.includes(city) ? city : cityTabs[0] ?? "";
   // «Офіс» збирає офісні вкладки всіх міст + додаткових студентів;
   // з міських вкладок вони відповідно прибрані
@@ -285,8 +297,12 @@ export default function Svodni() {
     const rank = (f: string) => f === EXTRA_STUDENTS ? 2 : cityRows.some(r => r.factoryLabel === f) ? 0 : 1;
     return [...set].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   }, [cityRows, data, effCity]);
-  const effFactory = factories.includes(factory) ? factory : factories[0] ?? "";
-  useEffect(() => { if (factory && !factories.includes(factory) && factories.length) setFactory(factories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Персональний порядок фабрик — окремий на кожне місто
+  const [facOrder, saveFacOrder] = useOrderPref(`order.svodni.factories.${effCity}`);
+  const orderedFactories = useMemo(() => orderBy(factories, f => f, facOrder), [factories, facOrder]);
+  const facDrag = useDragOrder(orderedFactories, saveFacOrder);
+  const effFactory = factories.includes(factory) ? factory : orderedFactories[0] ?? "";
+  useEffect(() => { if (factory && !factories.includes(factory) && orderedFactories.length) setFactory(orderedFactories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
   // запам'ятати позицію (для повернення зі сторінки профілю)
   useEffect(() => {
     try { sessionStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
@@ -403,11 +419,11 @@ export default function Svodni() {
   // маркери на вкладки фабрик: розбіжності/ручні правки; при активному фільтрі
   // лічильник показує кількість збігів
   const factoryFlags = useMemo(() => {
-    const m = new Map<string, { count: number; mismatch: boolean; manual: boolean }>();
+    const m = new Map<string, { count: number; mismatch: boolean; manual: boolean; firm: string | null }>();
     for (const f of factories) {
       const fr = cityRows.filter(r => r.factoryLabel === f);
       const cnt = filterActive ? fr.filter(matchesFilters).length : fr.length;
-      m.set(f, { count: cnt, mismatch: fr.some(r => r.mismatch), manual: fr.some(r => r.manual) });
+      m.set(f, { count: cnt, mismatch: fr.some(r => r.mismatch), manual: fr.some(r => r.manual), firm: labelFirm(f) ?? fr.find(r => r.firm)?.firm ?? null });
     }
     return m;
   }, [factories, cityRows, filterActive, matchesFilters]);
@@ -425,6 +441,7 @@ export default function Svodni() {
           <div className="flex rounded-xl bg-slate-100 p-1">
             {cityTabs.map(c => (
               <button key={c} onClick={() => { setCity(c); setFactory(""); }}
+                {...(c !== OFFICE_CITY && c !== TOTAL_CITY ? { ...cityDrag(c), title: t("Перетягни, щоб змінити порядок") } : {})}
                 className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
                 {c === OFFICE_CITY ? "🏢 " : c === TOTAL_CITY ? "📊 " : ""}{t(c)}
               </button>
@@ -530,16 +547,20 @@ export default function Svodni() {
       {/* вкладки фабрик міста */}
       {factories.length > 0 && (
         <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
-          {factories.map(f => {
+          {orderedFactories.map(f => {
             const fl = factoryFlags.get(f)!;
             const active = effFactory === f;
             const special = f === EXTRA_STUDENTS;
+            const fc = fl.firm ? FIRM_TAB[fl.firm] : undefined;
             return (
               <button key={f} onClick={() => setFactory(f)}
+                {...facDrag(f)} title={t("Перетягни, щоб змінити порядок")}
                 className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
                   active ? "border-red-600 bg-red-600 text-white shadow-sm"
                   : special ? "border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-400"
+                  : fc ? fc.idle
                   : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                {fc && <span className={`h-2 w-2 shrink-0 rounded-full ${fc.dot} ${active ? "ring-1 ring-white/80" : ""}`} />}
                 {isFactoryLocked(effCity, f) ? "🔒 " : ""}{f === EXTRA_STUDENTS ? "🎓 " : OFFICE_RE.test(f) ? "🏢 " : ""}{f}
                 <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>{fl.count}</span>
                 {(data?.staleLocks ?? []).some(l => l.city === effCity && (l.factoryLabel === "" || l.factoryLabel === f)) && (

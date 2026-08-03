@@ -49,7 +49,7 @@ export async function upload<T = any>(p: string, form: FormData): Promise<T> {
 export type DayCode = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ShiftCode = "1" | "2" | "3" | "4" | "5" | "6";
 
-export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null }
+export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null; prefs?: Record<string, unknown> }
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;

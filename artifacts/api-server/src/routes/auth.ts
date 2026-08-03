@@ -159,6 +159,23 @@ router.post("/auth/web-lang", authRequired, async (req: AuthedRequest, res) => {
   return res.json({ ok: true });
 });
 
+// Персональні UI-налаштування панелі (порядок вкладок міст/фабрик тощо): key→value
+// в admins.web_prefs. Сервер-сайд, щоб порядок їхав за користувачем між браузерами.
+// value=null видаляє ключ. Ліміти захищають jsonb від сміття, не від користувача.
+router.post("/auth/web-prefs", authRequired, async (req: AuthedRequest, res) => {
+  const key = String(req.body?.key ?? "");
+  const value = req.body?.value ?? null;
+  // Юнікодні літери дозволені: ключі порядку фабрик скоуплені містом («…factories.Лодзь»)
+  if (!/^[\p{L}\p{N} ._-]{1,80}$/u.test(key)) return res.status(400).json({ error: "invalid key" });
+  if (value !== null && JSON.stringify(value).length > 8_000) return res.status(400).json({ error: "value too large" });
+  const [admin] = await db.select({ webPrefs: adminsTable.webPrefs }).from(adminsTable).where(eq(adminsTable.id, req.admin!.adminId));
+  if (!admin) return res.status(401).json({ error: "unauthorized" });
+  const prefs: Record<string, unknown> = { ...(admin.webPrefs ?? {}) };
+  if (value === null) delete prefs[key]; else prefs[key] = value;
+  await db.update(adminsTable).set({ webPrefs: prefs }).where(eq(adminsTable.id, req.admin!.adminId));
+  return res.json({ ok: true });
+});
+
 router.post("/auth/logout", async (req, res) => {
   // Revoke just this device's session (not "everywhere" — that's an explicit action on the
   // Security page). Succeeds regardless of token validity.
@@ -181,6 +198,7 @@ router.get("/auth/me", authRequired, async (req: AuthedRequest, res) => {
     role: roleKey, roleLabel: role?.label ?? roleKey,
     caps: req.admin!.caps, pages: req.admin!.pages,
     lang: await webLangOf(admin),
+    prefs: admin.webPrefs ?? {},
   });
 });
 

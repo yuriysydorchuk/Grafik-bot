@@ -230,6 +230,13 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       return base;
     });
 
+  // Фірма рядка: явна (книги Лодзі / заголовок вкладки при синку) → з фабрики
+  // рядка (factories.company_id). svodni_rows.firm у більшості міст порожня,
+  // а веб фарбує вкладки фабрик за фірмою саме з цього поля.
+  const facFirm = new Map((await db.select({ id: factoriesTable.id, name: companiesTable.name })
+    .from(factoriesTable).innerJoin(companiesTable, eq(factoriesTable.companyId, companiesTable.id))).map(x => [x.id, x.name]));
+  for (const r of rows) if (!r.firm && r.factoryId != null) r.firm = facFirm.get(r.factoryId as number) ?? null;
+
   const checks = (await db.select().from(svodniTabChecksTable).where(
     city
       ? and(eq(svodniTabChecksTable.periodMonth, month), eq(svodniTabChecksTable.city, city))

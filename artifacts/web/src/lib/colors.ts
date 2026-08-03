@@ -33,6 +33,16 @@ export const dotClass = (c: string) => DOT[c] ?? "bg-slate-300";
 export const topClass = (c: string) => TOP[c] ?? "border-t-slate-300";
 export const badgeClass = (c: string) => BADGE[c] ?? "bg-slate-100 text-slate-700";
 
+// Фірмові кольори наших юросіб на вкладках фабрик (Облік годин, Сводні):
+// ES — червоний, ESO — фіолетовий, Klinex — зелений. `idle` — неактивна кнопка
+// (тонований фон/рамка), `dot` — кольорова крапка (видима і на активній).
+// Класи виписані буквально для Tailwind-сканера.
+export const FIRM_TAB: Record<string, { idle: string; dot: string }> = {
+  ES: { idle: "border-red-200 bg-red-50 text-red-800 hover:border-red-400", dot: "bg-red-500" },
+  ESO: { idle: "border-violet-200 bg-violet-50 text-violet-800 hover:border-violet-400", dot: "bg-violet-500" },
+  Klinex: { idle: "border-emerald-200 bg-emerald-50 text-emerald-800 hover:border-emerald-400", dot: "bg-emerald-500" },
+};
+
 // Gender display helpers — labelled K (kobieta) / M (mężczyzna), per Polish convention.
 export const genderIcon = (g?: string | null) => (g === "male" ? "M" : g === "female" ? "K" : "");
 export const genderClass = (g?: string | null) => (g === "male" ? "text-sky-600" : g === "female" ? "text-pink-600" : "text-slate-400");

@@ -10,17 +10,20 @@ import { WorkerDaysModal } from "../components/DetailModals";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
+import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
+import { FIRM_TAB } from "../lib/colors";
 
 interface Dispute { workerId: number; status: string }
 
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
+  firm?: string | null; // наша юрособа фабрики (ES/ESO/Klinex) — колір вкладки
   city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   factoryHours?: number | null; factoryDays?: Record<string, number> | null; clientEmail?: string | null;
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
-interface Group { key: string; name: string; factoryId: number | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
+interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
 
 // Звірка «рапорт працівника vs години фабрики» для підсвітки рядка:
 // match — обидва є і збігаються (±0.01), mismatch — розходяться, partial — є лише одне.
@@ -100,24 +103,32 @@ export default function Hours() {
     const map = new Map<string, Group>();
     for (const r of data?.workers ?? []) {
       const key = r.factoryId != null ? `f${r.factoryId}` : "none";
-      if (!map.has(key)) map.set(key, { key, name: r.factory ?? t("Без фабрики"), factoryId: r.factoryId, city: r.city, n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0 });
+      if (!map.has(key)) map.set(key, { key, name: r.factory ?? t("Без фабрики"), factoryId: r.factoryId, firm: r.firm ?? null, city: r.city, n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0 });
       const g = map.get(key)!;
       g.rows.push(r); g.shifts += r.shifts; g.hours += r.hours; g.net += r.net ?? 0;
     }
     return [...map.values()];
   }, [data]);
+  // Персональний порядок вкладок (drag-and-drop, живе в admins.web_prefs)
+  const [cityOrder, saveCityOrder] = useOrderPref("order.hours.cities");
+  const [facOrder, saveFacOrder] = useOrderPref("order.hours.factories");
   // місто → його фабрики (для заголовків і кнопки «місто → до сводної»)
   const cityGroups = useMemo(() => {
     const map = new Map<string, Group[]>();
-    for (const g of groups) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
-    // «Без міста» — завжди в кінці, решта міст за алфавітом
+    for (const g of orderBy(groups, x => x.key, facOrder)) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
+    // «Без міста» — завжди в кінці, решта міст за алфавітом; далі — порядок користувача
     const last = (c: string) => c === "Без міста" ? 1 : 0;
-    return [...map.entries()].sort((a, b) => last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]));
-  }, [groups]);
+    const sorted = [...map.entries()].sort((a, b) => last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]));
+    return orderBy(sorted, ([c]) => c, cityOrder);
+  }, [groups, cityOrder, facOrder]);
   // Вкладки: місто → фабрики в ньому; невалідний вибір (інший місяць) тихо падає на «всі»
   const cities = cityGroups.map(([c]) => c);
   const effCity = cities.includes(cityTab) ? cityTab : "";
-  const facTabs = useMemo(() => groups.filter(g => !effCity || g.city === effCity), [groups, effCity]);
+  const orderedGroups = useMemo(() => cityGroups.flatMap(([, gs]) => gs), [cityGroups]);
+  const facTabs = useMemo(() => orderedGroups.filter(g => !effCity || g.city === effCity), [orderedGroups, effCity]);
+  // Drag по повному списку (не лише видимому місту) — порядок інших міст не губиться
+  const cityDrag = useDragOrder(cities, saveCityOrder);
+  const facDrag = useDragOrder(orderedGroups.map(g => g.key), saveFacOrder);
   const effFac = facTabs.some(g => g.key === facTab) ? facTab : "";
   const shownCityGroups = useMemo(() => cityGroups
     .filter(([c]) => !effCity || c === effCity)
@@ -168,6 +179,7 @@ export default function Hours() {
             <div className="flex rounded-xl bg-slate-100 p-1">
               {[...cities, ""].map(c => (
                 <button key={c || "all"} onClick={() => { setCityTab(c); setFacTab(""); }}
+                  {...(c ? { ...cityDrag(c), title: t("Перетягни, щоб змінити порядок") } : {})}
                   className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${effCity === c ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
                   {c ? t(c) : t("Всі міста")}
                 </button>
@@ -177,10 +189,15 @@ export default function Hours() {
           <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
             {[null, ...facTabs].map(g => {
               const active = effFac === (g?.key ?? "");
+              const fc = g?.firm ? FIRM_TAB[g.firm] : undefined;
               return (
                 <button key={g?.key ?? "all"} onClick={() => setFacTab(g?.key ?? "")}
+                  {...(g ? { ...facDrag(g.key), title: t("Перетягни, щоб змінити порядок") } : {})}
                   className={`flex shrink-0 items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
-                    active ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                    active ? "border-red-600 bg-red-600 text-white shadow-sm"
+                    : fc ? fc.idle
+                    : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
+                  {fc && <span className={`h-2 w-2 shrink-0 rounded-full ${fc.dot} ${active ? "ring-1 ring-white/80" : ""}`} />}
                   {g ? g.name : t("Всі фабрики")}
                   <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>
                     {g ? g.rows.length : facTabs.reduce((s, x) => s + x.rows.length, 0)}

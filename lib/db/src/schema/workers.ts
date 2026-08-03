@@ -269,6 +269,9 @@ export const adminsTable = pgTable("admins", {
   // Web-panel language (uk | en | ru), persisted server-side: the Telegram Mini App webview
   // loses localStorage between openings, so a client-side choice alone keeps resetting.
   webLang: text("web_lang"),
+  // Per-account UI preferences of the web panel (tab order for cities/factories, …),
+  // key→value; server-side so they follow the user across browsers/devices.
+  webPrefs: jsonb("web_prefs").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

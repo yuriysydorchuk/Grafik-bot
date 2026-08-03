@@ -724,6 +724,7 @@ const EN: Record<string, string> = {
   "затверджено — редагування вимкнено": "approved — editing disabled",
   "Розблокувати": "Unlock",
   "Сортувати": "Sort",
+  "Перетягни, щоб змінити порядок": "Drag to reorder",
   "Скачати Excel": "Download Excel",
   "Скачати Excel сводної": "Download payroll sheet Excel",
   "Що скачати": "What to download",

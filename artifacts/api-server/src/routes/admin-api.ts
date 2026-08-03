@@ -2464,6 +2464,9 @@ router.get("/hours", RW, async (req, res) => {
   // factory shift definitions (for actual per-shift durations + column counts)
   const facRows = await db.select().from(factoriesTable);
   const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
+  const companyRows = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
+  const companyName = new Map<number, string>(companyRows.map(c => [c.id, c.name]));
+  const firmOf = (fac: typeof facRows[number] | undefined) => fac?.companyId != null ? companyName.get(fac.companyId) ?? null : null;
   const isOwner = canFinance(req);
   const rates = await getFinanceRates();
   // Ставка — тим самим ланцюжком, що сводна (resolveBaseRates): профіль →
@@ -2499,7 +2502,7 @@ router.get("/hours", RW, async (req, res) => {
     const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
     const key = rowKey(r.workerId, r.factoryId);
     if (!byWorkerFactory.has(key)) byWorkerFactory.set(key, {
-      workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory,
+      workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory, firm: firmOf(fac),
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
       rate: svodniRate(r.rate, r.factoryId, r.positionId), ...stud26Of(r),
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
@@ -2520,7 +2523,7 @@ router.get("/hours", RW, async (req, res) => {
     if (workersWithRows.has(aw.id)) continue;
     const fac = aw.factoryId != null ? facById.get(aw.factoryId) : undefined;
     byWorkerFactory.set(rowKey(aw.id, aw.factoryId), {
-      workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null,
+      workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
       rate: svodniRate(aw.rate, aw.factoryId, aw.positionId), ...stud26Of(aw),
       byShift: {} as Record<string, number>, shifts: 0, hours: 0,
@@ -2555,7 +2558,7 @@ router.get("/hours", RW, async (req, res) => {
       if (!w) continue;
       const fac = facById.get(r.factoryId!);
       byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
-        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
+        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
         factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
         rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
         byShift: {} as Record<string, number>, shifts: 0, hours: 0,
@@ -2580,7 +2583,7 @@ router.get("/hours", RW, async (req, res) => {
       if (!w) continue;
       const fac = facById.get(r.factoryId);
       byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
-        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null,
+        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
         factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
         rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
         byShift: {} as Record<string, number>, shifts: 0, hours: 0,
