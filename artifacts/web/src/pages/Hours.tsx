@@ -18,6 +18,7 @@ interface Dispute { workerId: number; status: string }
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   firm?: string | null; // наша юрособа фабрики (ES/ESO/Klinex) — колір вкладки
+  workerFirm?: string | null; // юрособа ПРАЦІВНИКА — бекенд шле лише рядкам мульти-контрактних фабрик (ANDROS) → поділ вкладки
   city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   factoryHours?: number | null; factoryDays?: Record<string, number> | null; clientEmail?: string | null;
@@ -100,10 +101,21 @@ export default function Hours() {
   };
 
   const groups = useMemo<Group[]>(() => {
+    // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support): вкладка
+    // ділиться по фірмі працівника, дзеркально сводній. Правило «чи ділити» —
+    // на бекенді (workerFirm приходить лише рядкам мульти-контрактних фабрик);
+    // суфікс — як вкладки таблиці: ES → EURO SUPORT
+    const firmSuffix = (firm: string) => firm === "ES" ? "EURO SUPORT" : firm.toUpperCase();
     const map = new Map<string, Group>();
     for (const r of data?.workers ?? []) {
-      const key = r.factoryId != null ? `f${r.factoryId}` : "none";
-      if (!map.has(key)) map.set(key, { key, name: r.factory ?? t("Без фабрики"), factoryId: r.factoryId, firm: r.firm ?? null, city: r.city, n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0 });
+      const split = r.factoryId != null ? r.workerFirm ?? null : null;
+      const key = r.factoryId != null ? (split ? `f${r.factoryId}:${split}` : `f${r.factoryId}`) : "none";
+      if (!map.has(key)) map.set(key, {
+        key,
+        name: r.factoryId != null && split ? `${r.factory} ${firmSuffix(split)}` : r.factory ?? t("Без фабрики"),
+        factoryId: r.factoryId, firm: split ?? r.firm ?? null, city: r.city,
+        n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0,
+      });
       const g = map.get(key)!;
       g.rows.push(r); g.shifts += r.shifts; g.hours += r.hours; g.net += r.net ?? 0;
     }
@@ -476,7 +488,7 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
 
 interface ParsedRow { name: string; hours: number; days: Record<number, number> | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
 
-// Імпорт годин фабрики: Excel-файл (2 формати) або вставлений список → превʼю
+// Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
 // з матчингом імен (bot/workerMatch) → масове збереження.
 function ImportHoursModal({ group, month, onClose }: { group: Group; month: string; onClose: () => void }) {
   const t = useT();
@@ -541,7 +553,7 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
       {!rows ? (
         <div className="space-y-4">
           <div>
-            <Label>{t("Excel-файл від фабрики (обидва формати: зведена таблиця або lista dni szczegółowo)")}</Label>
+            <Label>{t("Excel-файл від фабрики (зведена таблиця, lista dni szczegółowo або ewidencja I/II/III)")}</Label>
             <input ref={fileRef} type="file" accept=".xls,.xlsx" className="mt-1 block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-red-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-red-700 hover:file:bg-red-100"
               onChange={e => { const f = e.target.files?.[0]; if (f) parse.mutate(f); }} />
           </div>

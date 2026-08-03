@@ -2515,7 +2515,7 @@ router.get("/hours", RW, async (req, res) => {
   // Include ALL active workers, even those with 0 worked shifts this month.
   const activeWorkers = await db.select({
     id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
-    factoryId: workersTable.factoryId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+    factoryId: workersTable.factoryId, companyId: workersTable.companyId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
   }).from(workersTable).where(eq(workersTable.isActive, true));
   const workersWithRows = new Set<number>([...byWorkerFactory.values()].map(w => w.workerId));
@@ -2590,6 +2590,22 @@ router.get("/hours", RW, async (req, res) => {
       });
     }
   }
+  // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support) — веб ділить
+  // вкладку по фірмі ПРАЦІВНИКА (workers.company_id), дзеркально сводній.
+  // Мульти-контрактність визначаємо за ПОТОЧНИМИ призначеннями активних
+  // працівників, не за записами місяця: разова підміна людиною іншої фірми
+  // (ALMIZ, липень 2026) вкладку ділити не повинна. workerFirm віддаємо лише
+  // рядкам таких фабрик — клієнту не треба дублювати це правило.
+  const facFirmSet = new Map<number, Set<number>>();
+  for (const aw of activeWorkers) {
+    if (aw.factoryId != null && aw.companyId != null)
+      (facFirmSet.get(aw.factoryId) ?? facFirmSet.set(aw.factoryId, new Set()).get(aw.factoryId)!).add(aw.companyId);
+  }
+  const multiFirmFacs = new Set([...facFirmSet].filter(([, s]) => s.size > 1).map(([id]) => id));
+  const rowWorkerIds = [...new Set([...byWorkerFactory.values()].map(w => w.workerId as number))];
+  const workerCos = rowWorkerIds.length && multiFirmFacs.size ? await db.select({ id: workersTable.id, companyId: workersTable.companyId })
+    .from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
+  const workerFirmById = new Map(workerCos.map(w => [w.id, w.companyId != null ? companyName.get(w.companyId) ?? null : null]));
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
   const workers = [...byWorkerFactory.values()]
@@ -2597,7 +2613,9 @@ router.get("/hours", RW, async (req, res) => {
       const hours = round2(w.hours);
       const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
       const base: any = {
-        ...w, hours, reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
+        ...w, hours,
+        workerFirm: w.factoryId != null && multiFirmFacs.has(w.factoryId) ? workerFirmById.get(w.workerId) ?? null : null,
+        reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
         factoryHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.hours ?? null,
         factoryDays: fhByKey.get(rowKey(w.workerId, w.factoryId))?.days ?? null,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
@@ -2769,20 +2787,22 @@ router.post("/hours/factory", RW, async (req, res) => {
   ok(res, { ok: true, hours: h });
 });
 
-// Розбір файла фабрики (Excel, 2 формати) або вставленого списку «ім'я + години»
+// Розбір файла фабрики (Excel, 3 формати) або вставленого списку «ім'я + години»
 // → превʼю з матчингом імен по базі (bot/workerMatch). Нічого не зберігає.
 const uploadHoursFile = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (req, res) => {
   const month = String(req.body?.month || "");
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
-  const { parseFactoryHoursWorkbook, parseFactoryHoursText } = await import("../services/factoryHours");
+  const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
   let parsed: { name: string; hours: number; days?: Record<number, number> }[] = [];
   let monthDetected: string | null = null;
   let format: string = "text";
   try {
     if (req.file?.buffer) {
       const f = parseFactoryHoursWorkbook(req.file.buffer);
-      parsed = f.rows; monthDetected = f.monthDetected; format = f.format;
+      parsed = f.rows; format = f.format;
+      // евіденція дати в аркуші не має — місяць добираємо з імені файла
+      monthDetected = f.monthDetected ?? monthFromPolishFilename(req.file.originalname ?? "");
     } else if (typeof req.body?.text === "string" && req.body.text.trim()) {
       parsed = parseFactoryHoursText(req.body.text);
     } else return fail(res, 400, "Потрібен файл або текст");

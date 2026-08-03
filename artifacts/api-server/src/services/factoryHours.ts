@@ -7,6 +7,11 @@
 //      `Ім'я [id] Czas i obecności - lista dni szczegółowo (від - до)`,
 //      у кожній підсумок «Godzin zaliczonych» у форматі HH:MM.
 //   C. Вставлений текст: рядки «Ім'я Прізвище 123,5» / «Ім'я — 123:30».
+//   D. «Ewidencja» (ANDROS, файли EWIDENCJA KLINEX/ES): заголовок
+//      `SUMA | premia | Imię Nazwisko | 1..31 | UMOWY`, під ним підзаголовок
+//      змін I/II/III (день = 3 підколонки, номер дня — merge над першою);
+//      аркуші KOBIETY + MĘŻCZYZNI зливаються. SUMA = Σ денних клітинок
+//      (перевірено на файлі), premia — окремо, у години не входить.
 import * as XLSX from "xlsx";
 
 export interface ParsedHoursRow {
@@ -19,7 +24,7 @@ export interface ParsedHoursFile {
   rows: ParsedHoursRow[];
   /** "YYYY-MM", якщо місяць вдалося визначити з файлу */
   monthDetected: string | null;
-  format: "matrix" | "lista";
+  format: "matrix" | "lista" | "ewidencja";
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -155,18 +160,92 @@ function parseLista(rows: string[][]): ParsedHoursFile | null {
   return found ? { rows: out, monthDetected, format: "lista" } : null;
 }
 
-/** Розбір Excel-файла фабрики (обидва формати, авто-детекція). */
+// ── Формат D: ewidencja зі змінами I/II/III (ANDROS) ─────────────────────────
+// Ім'я інколи має суфікс посади («BATSAN SERHII - WÓZ», «… - pom.mech») —
+// зрізаємо по « - » (дефіс із пробілами; подвійні прізвища через дефіс без
+// пробілів не зачіпаються).
+const stripPositionSuffix = (name: string) => collapse(name).split(/\s+[-–]\s+/)[0]!;
+
+function parseEwidencja(rows: string[][]): ParsedHoursFile | null {
+  let headerIdx = -1, nameCol = -1, sumaCol = -1;
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = rows[i]!;
+    const n = row.findIndex(c => /imi[eę]\s+(i\s+)?nazwisko/i.test(c));
+    if (n < 0) continue;
+    const s = row.findIndex(c => /^suma$/i.test(c.trim()));
+    if (s < 0) continue;
+    headerIdx = i; nameCol = n; sumaCol = s;
+    break;
+  }
+  if (headerIdx < 0) return null;
+  // визначальна риса формату — підзаголовок змін I/II/III під шапкою
+  const sub = rows[headerIdx + 1] ?? [];
+  if (!sub.some(c => /^i{1,3}$/i.test(c.trim()))) return null;
+  // групи колонок дня: заголовок-число 1..31 відкриває день, merge-порожнечі
+  // праворуч належать йому; інший непорожній заголовок (UMOWY) закриває групу
+  const header = rows[headerIdx]!;
+  const dayCols = new Map<number, number[]>();
+  let curDay: number | null = null;
+  for (let c = nameCol + 1; c < Math.max(header.length, sub.length); c++) {
+    const h = (header[c] ?? "").trim();
+    if (h) {
+      const d = Number(h);
+      curDay = Number.isInteger(d) && d >= 1 && d <= 31 ? d : null;
+      if (curDay != null) dayCols.set(curDay, [c]);
+      continue;
+    }
+    if (curDay != null) dayCols.get(curDay)!.push(c);
+  }
+  if (!dayCols.size) return null;
+  const out: ParsedHoursRow[] = [];
+  for (let i = headerIdx + 2; i < rows.length; i++) {
+    const row = rows[i]!;
+    const name = stripPositionSuffix(dedupeDoubledName(row[nameCol] ?? ""));
+    if (!name || /razem|suma/i.test(name)) continue;
+    const hours = parseHoursValue(row[sumaCol] ?? "");
+    if (hours == null) continue;
+    const days: Record<number, number> = {};
+    for (const [day, cols] of dayCols) {
+      let sum = 0;
+      for (const c of cols) { const h = parseHoursValue(row[c] ?? ""); if (h != null) sum += h; }
+      if (sum > 0) days[day] = r2(sum);
+    }
+    out.push({ name, hours, days });
+  }
+  return { rows: out, monthDetected: null, format: "ewidencja" };
+}
+
+/** Розбір Excel-файла фабрики (усі формати, авто-детекція). Аркуші формату
+ *  ewidencja (KOBIETY/MĘŻCZYZNI) зливаються в один список. */
 export function parseFactoryHoursWorkbook(buf: Buffer): ParsedHoursFile {
   const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
+  const ew: ParsedHoursFile = { rows: [], monthDetected: null, format: "ewidencja" };
+  let ewFound = false;
   for (const name of wb.SheetNames) {
     const rows = sheetRows(wb.Sheets[name]!);
     if (!rows.length) continue;
+    const e = parseEwidencja(rows);
+    if (e) { ewFound = true; ew.rows.push(...e.rows); continue; }
+    if (ewFound) continue; // режим евіденції — сторонні аркуші не пробуємо
     const lista = parseLista(rows);
     if (lista) return lista;
     const matrix = parseMatrix(rows);
     if (matrix) return matrix;
   }
-  throw new Error("Невідомий формат файла: не знайдено ні «Imię i nazwisko … Razem», ні «lista dni szczegółowo»");
+  if (ewFound) return ew;
+  throw new Error("Невідомий формат файла: не знайдено ні «Imię i nazwisko … Razem», ні «lista dni szczegółowo», ні евіденції «SUMA … I/II/III»");
+}
+
+// Місяць з імені файла евіденції («EWIDENCJA KLINEX 2026 LIPIEC.xlsx») —
+// фолбек, коли в самому аркуші дати немає.
+const PL_MONTHS = ["STYCZEN", "LUTY", "MARZEC", "KWIECIEN", "MAJ", "CZERWIEC", "LIPIEC", "SIERPIEN", "WRZESIEN", "PAZDZIERNIK", "LISTOPAD", "GRUDZIEN"];
+export function monthFromPolishFilename(filename: string): string | null {
+  const flat = filename.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  const year = /(?:^|\D)(20\d{2})(?:\D|$)/.exec(flat)?.[1];
+  if (!year) return null;
+  const mi = PL_MONTHS.findIndex(m => flat.includes(m));
+  if (mi < 0) return null;
+  return `${year}-${String(mi + 1).padStart(2, "0")}`;
 }
 
 // ── Формат C: вставлений текст ───────────────────────────────────────────────

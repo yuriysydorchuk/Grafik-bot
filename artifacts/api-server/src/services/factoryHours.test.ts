@@ -1,11 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { hhmmToHours, parseHoursValue, parseFactoryHoursWorkbook, parseFactoryHoursText, dedupeDoubledName } from "./factoryHours.ts";
+import { hhmmToHours, parseHoursValue, parseFactoryHoursWorkbook, parseFactoryHoursText, dedupeDoubledName, monthFromPolishFilename } from "./factoryHours.ts";
 
 const wbBuf = (aoa: unknown[][], sheetName = "Sheet"): Buffer => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
+  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+};
+
+const wbBufMulti = (sheets: [string, unknown[][]][]): Buffer => {
+  const wb = XLSX.utils.book_new();
+  for (const [name, aoa] of sheets) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), name);
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
 };
 
@@ -89,6 +95,44 @@ test("lista: секції по людині, сума «Godzin zaliczonych», д
 
 test("невідомий формат → помилка", () => {
   assert.throws(() => parseFactoryHoursWorkbook(wbBuf([["Random"], ["stuff", "42"]])));
+});
+
+// ── формат D: ewidencja зі змінами I/II/III (ANDROS) ─────────────────────────
+// День = 3 підколонки (merge номера дня над першою), підсумок — SUMA,
+// premia окремо (в години не входить), останнім — UMOWY (дата договору).
+
+const EW_HEADER = [
+  ["SUMA", "premia", "Imię Nazwisko", "1", null, null, "2", null, null, "UMOWY"],
+  [null, null, null, "I", "II", "III", "I", "II", "III", null],
+];
+const EW_KOBIETY = [
+  ...EW_HEADER,
+  ["16.00", "8.00", "ARISTOVA MARIIA", "8.00", null, null, null, null, "8.00", "21.07"],
+  ["8.00", null, "BIBET TOMIRIS - KJ", null, "4.00", "4.00", null, null, null, "10.06"],
+  ["", null, "BEZ SUMY", null, null, null, "8.00", null, null, null], // без підсумку → пропуск
+];
+const EW_MEZCZYZNI = [
+  ...EW_HEADER,
+  ["12.00", null, "BATSAN SERHII - WÓZ", "8.00", null, null, "4.00", null, null, "3.06"],
+];
+
+test("ewidencja: SUMA + зміни I/II/III, аркуші зливаються, суфікс посади зрізається", () => {
+  const f = parseFactoryHoursWorkbook(wbBufMulti([["KOBIETY", EW_KOBIETY], ["MĘŻCZYZNI", EW_MEZCZYZNI]]));
+  assert.equal(f.format, "ewidencja");
+  assert.equal(f.monthDetected, null); // дати в аркуші немає — місяць з імені файла
+  assert.deepEqual(f.rows, [
+    { name: "ARISTOVA MARIIA", hours: 16, days: { 1: 8, 2: 8 } }, // premia не в годинах; UMOWY не день
+    { name: "BIBET TOMIRIS", hours: 8, days: { 1: 8 } },          // зміни II+III одного дня сумуються
+    { name: "BATSAN SERHII", hours: 12, days: { 1: 8, 2: 4 } },   // з другого аркуша, «- WÓZ» зрізано
+  ]);
+});
+
+test("monthFromPolishFilename: польський місяць + рік з імені файла", () => {
+  assert.equal(monthFromPolishFilename("EWIDENCJA KLINEX 2026 LIPIEC.xlsx"), "2026-07");
+  assert.equal(monthFromPolishFilename("ewidencja ES styczeń 2027.xlsx"), "2027-01");
+  assert.equal(monthFromPolishFilename("PAŹDZIERNIK 2026.xlsx"), "2026-10");
+  assert.equal(monthFromPolishFilename("EWIDENCJA KLINEX LIPIEC.xlsx"), null); // без року
+  assert.equal(monthFromPolishFilename("raport 2026-07.xlsx"), null);          // без назви місяця
 });
 
 // ── формат C: вставлений текст ───────────────────────────────────────────────

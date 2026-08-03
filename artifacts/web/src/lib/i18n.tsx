@@ -944,7 +944,7 @@ const EN: Record<string, string> = {
   "Лист про розбіжності": "Discrepancy letter",
   "Згенерувати лист клієнту про розбіжності годин": "Generate a client letter about hour discrepancies",
   "Збережено годин фабрики: {n}": "Factory hours saved: {n}",
-  "Excel-файл від фабрики (обидва формати: зведена таблиця або lista dni szczegółowo)": "Excel file from the factory (both formats: summary table or lista dni szczegółowo)",
+  "Excel-файл від фабрики (зведена таблиця, lista dni szczegółowo або ewidencja I/II/III)": "Excel file from the factory (summary table, lista dni szczegółowo or ewidencja I/II/III)",
   "або": "or",
   "Вставити список «ім'я — години» (по рядку на людину)": "Paste a “name — hours” list (one line per person)",
   "Розібрати": "Parse",
