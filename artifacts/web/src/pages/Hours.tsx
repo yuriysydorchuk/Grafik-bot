@@ -30,6 +30,7 @@ interface HourRow {
   // запит «підтверди свої години» в бот і відповідь працівника
   askSentAt?: string | null; askHours?: number | null;
   workerResponse?: "confirmed" | "dispute" | null; workerResponseAt?: string | null; workerNote?: string | null;
+  note?: string | null; // ручна замітка графіка/офісу (hours_notes)
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
@@ -352,6 +353,7 @@ export default function Hours() {
                         <th className="px-4 py-2.5 text-right">{t("Години з рапорту")}</th>
                         <th className="px-4 py-2.5 text-right">{t("Години з фабрики")}</th>
                         <th className="px-3 py-2.5 text-center" title={t("Відповідь працівника на запит підтвердження годин у боті")}>{t("Підтв. працівника")}</th>
+                        <th className="px-3 py-2.5">{t("Замітки")}</th>
                         {isOwner && <><th className="px-3 py-2.5 text-right">{t("Ставка")}</th><th className="px-4 py-2.5 text-right">{t("ЗП нетто")}</th><th className="px-4 py-2.5 text-right">{t("ЗП по рапорту")}</th></>}
                       </tr>
                     </thead>
@@ -379,6 +381,7 @@ export default function Hours() {
                           <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
                           <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
                           <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
+                          <td className="max-w-[16rem] px-3 py-2.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
                           {isOwner && <><td className="px-3 py-2.5 text-right text-slate-400">{w.rate ?? "—"}</td><td className="px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="px-4 py-2.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
                         </tr>
                       ))}
@@ -444,6 +447,7 @@ function ExportExcelModal({ month, monthLabel, target, onClose }: {
     { key: "diff", label: t("Різниця") },
     { key: "status", label: t("Статус рапорту") },
     { key: "workerConfirm", label: t("Підтв. працівника") },
+    { key: "note", label: t("Замітки") },
   ];
   const [checked, setChecked] = useState<Set<string>>(new Set(COLS.map(c => c.key)));
   const [errorsOnly, setErrorsOnly] = useState(false);
@@ -1110,6 +1114,44 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Ручна замітка рядка (hours_notes): вільний текст графіка/офісу — «підмінявся»,
+// «перевірити з фабрикою» тощо. Порожнє значення при збереженні видаляє замітку.
+function NoteCell({ w, month, canEdit }: { w: HourRow; month: string; canEdit: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+  const save = useMutation({
+    mutationFn: (note: string) => post("/hours/note", { workerId: w.workerId, month, note, factoryId: w.factoryId }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["hours", month] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  if (editing) {
+    const submit = () => save.mutate(val.trim());
+    return (
+      <span className="flex items-center gap-1">
+        <Input value={val} onChange={e => setVal(e.target.value)} maxLength={500} placeholder={t("Замітка…")} className="w-44" autoFocus
+          onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setEditing(false); }} />
+        <button onClick={submit} disabled={save.isPending} className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50"><Check className="h-4 w-4" /></button>
+        <button onClick={() => setEditing(false)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5">
+      {w.note
+        ? <span className="truncate text-slate-600" title={w.note}>{w.note}</span>
+        : <span className="text-slate-300">—</span>}
+      {canEdit && (
+        <button onClick={() => { setVal(w.note ?? ""); setEditing(true); }}
+          className="shrink-0 rounded-md p-0.5 text-slate-300 hover:text-red-600" title={t("Вписати замітку")}>
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </span>
   );
 }
 

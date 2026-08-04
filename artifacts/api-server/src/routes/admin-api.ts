@@ -8,7 +8,7 @@ import {
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
   driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
-  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, funnelsTable, candidateActivityTable, companiesTable,
+  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable,
@@ -2492,6 +2492,7 @@ router.get("/hours", RW, async (req, res) => {
         // запит підтвердження годин у бот і відповідь працівника
         askSentAt: w.askSentAt, askHours: w.askHours,
         workerResponse: w.workerResponse, workerResponseAt: w.workerResponseAt, workerNote: w.workerNote,
+        note: w.note,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
@@ -2632,6 +2633,32 @@ router.post("/hours/report", RW, async (req, res) => {
     else await db.insert(monthlyReportsTable).values({ workerId, month, factoryId: null, hoursReported: h, photoLink: null });
   }
   ok(res, { ok: true, hours: h });
+});
+
+// Ручна замітка рядка обліку годин — вільний текст графіка/офісу до пари
+// (працівник, місяць, фабрика). Порожнє значення — видалити.
+router.post("/hours/note", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId);
+  const month = String(req.body?.month || "");
+  const factoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : null;
+  if (!workerId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "workerId та month обовʼязкові");
+  const facCond = factoryId != null ? eq(hoursNotesTable.factoryId, factoryId) : isNull(hoursNotesTable.factoryId);
+  const note = String(req.body?.note ?? "").trim().slice(0, 500);
+  if (!note) {
+    await db.delete(hoursNotesTable).where(and(eq(hoursNotesTable.workerId, workerId), eq(hoursNotesTable.month, month), facCond));
+    return ok(res, { ok: true, cleared: true });
+  }
+  if (factoryId != null) {
+    await db.insert(hoursNotesTable).values({ workerId, month, factoryId, note })
+      .onConflictDoUpdate({ target: [hoursNotesTable.workerId, hoursNotesTable.month, hoursNotesTable.factoryId], set: { note, updatedAt: new Date() } });
+  } else {
+    // Partial unique index (factory IS NULL) can't be an onConflict target — upsert manually.
+    const [existing] = await db.select({ id: hoursNotesTable.id }).from(hoursNotesTable)
+      .where(and(eq(hoursNotesTable.workerId, workerId), eq(hoursNotesTable.month, month), facCond));
+    if (existing) await db.update(hoursNotesTable).set({ note, updatedAt: new Date() }).where(eq(hoursNotesTable.id, existing.id));
+    else await db.insert(hoursNotesTable).values({ workerId, month, factoryId: null, note });
+  }
+  ok(res, { ok: true, note });
 });
 
 // ─── Години з фабрики (звірка з рапортами) ───────────────────────────────────

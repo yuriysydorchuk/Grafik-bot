@@ -522,6 +522,22 @@ export const factoryHoursTable = pgTable("factory_hours", {
   uniqueIndex("factory_hours_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
 ]);
 
+// Ручні замітки Обліку годин: вільний текст графіка/офісу до пари
+// (працівник, місяць, фабрика) — робоча нотатка, не фінансове поле.
+// Дзеркало патерну monthly_reports: unique по парі + окремий unique для
+// legacy-рядків без фабрики.
+export const hoursNotesTable = pgTable("hours_notes", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  month: text("month").notNull(),                          // "YYYY-MM"
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  note: text("note").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("hours_notes_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
+  uniqueIndex("hours_notes_worker_month_nofactory_uniq").on(t.workerId, t.month).where(sql`${t.factoryId} IS NULL`),
+]);
+
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent
 // ones (Telegram only allows deleting messages < 48h old). Pruned on clear.
 export const botMessagesTable = pgTable("bot_messages", {

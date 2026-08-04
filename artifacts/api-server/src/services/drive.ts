@@ -543,6 +543,7 @@ export const HOURS_XLSX_COLS = [
   { key: "diff", header: "Różnica", width: 12 },
   { key: "status", header: "Status raportu", width: 15 },
   { key: "workerConfirm", header: "Potwierdzenie pracownika", width: 22 },
+  { key: "note", header: "Notatki", width: 30 },
 ] as const;
 export type HoursXlsxColKey = typeof HOURS_XLSX_COLS[number]["key"];
 const DEFAULT_HOURS_COLS: HoursXlsxColKey[] = ["code", "name", "factory", "report", "status"];
@@ -569,7 +570,7 @@ export async function buildReportHoursExcel(
   type Row = {
     facId: number | null; code: string; name: string; factory: string;
     shifts: number; hours: number; report: number | null; factoryHours: number | null;
-    confirmed: boolean; workerResponse: string | null; asked: boolean;
+    confirmed: boolean; workerResponse: string | null; asked: boolean; note: string | null;
   };
   // Той самий diffState, що на сторінці /hours (Hours.tsx)
   const diffState = (r: Row): "match" | "mismatch" | "partial" | "none" => {
@@ -586,6 +587,7 @@ export async function buildReportHoursExcel(
       shifts: x.shifts, hours: Math.round(x.hours * 100) / 100,
       report: x.reportHours, factoryHours: x.factoryHours,
       confirmed: x.factoryConfirmed, workerResponse: x.workerResponse, asked: x.askSentAt != null,
+      note: x.note,
     }))
     // підтверджене вручну («все ок» на /hours) — не помилка: і розбіжність,
     // і години фабрики без рапорту працівника
@@ -638,6 +640,7 @@ export async function buildReportHoursExcel(
       case "workerConfirm": return row.workerResponse === "confirmed" ? "OK"
         : row.workerResponse === "dispute" ? "zgłosił błąd"
         : row.asked ? "zapytano" : "";
+      case "note": return row.note ?? "";
     }
   };
   // Підсвітка розбіжностей стосується лише пари «рапорт ↔ фабрика» (+ різниця) —

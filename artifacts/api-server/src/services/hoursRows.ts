@@ -9,7 +9,7 @@
 // нульовим рядком під своєю поточною фабрикою.
 import { db } from "@workspace/db";
 import {
-  companiesTable, factoriesTable, factoryHoursTable, monthlyReportsTable,
+  companiesTable, factoriesTable, factoryHoursTable, hoursNotesTable, monthlyReportsTable,
   scheduleEntriesTable, scheduleWeeksTable, workersTable,
 } from "@workspace/db";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
@@ -48,6 +48,7 @@ export type HoursMergedRow = {
   workerResponse: string | null;
   workerResponseAt: Date | null;
   workerNote: string | null;
+  note: string | null;                 // ручна замітка графіка/офісу (hours_notes)
   createdViaImport: boolean;
 };
 
@@ -91,6 +92,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
       reportHours: null, reportSubmitted: false, reportLink: null,
       factoryHours: null, factoryDays: null, factoryConfirmed: false,
       askSentAt: null, askHours: null, workerResponse: null, workerResponseAt: null, workerNote: null,
+      note: null,
       createdViaImport: false,
     };
   };
@@ -188,6 +190,12 @@ export async function buildHoursMergedRows(month: string): Promise<{
   }
   const fhByKey = new Map(facHoursRows.map(r => [rowKey(r.workerId, r.factoryId), r]));
 
+  // Ручні замітки (hours_notes) — по тій самій парі; замітка без рядка даних
+  // рядок не створює (нема до чого чіпляти).
+  const noteRows = await db.select({ workerId: hoursNotesTable.workerId, factoryId: hoursNotesTable.factoryId, note: hoursNotesTable.note })
+    .from(hoursNotesTable).where(eq(hoursNotesTable.month, month));
+  const noteByKey = new Map(noteRows.map(r => [rowKey(r.workerId, r.factoryId), r.note]));
+
   // Мульти-контрактні фабрики (ANDROS): вкладка ділиться по фірмі ПРАЦІВНИКА —
   // workerFirm віддаємо лише рядкам явно позначених фабрик (factories.multi_firm).
   const multiFirmFacs = new Set(facRows.filter(f => f.multiFirm).map(f => f.id));
@@ -212,6 +220,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
     row.workerResponse = fh?.workerResponse ?? null;
     row.workerResponseAt = fh?.workerResponseAt ?? null;
     row.workerNote = fh?.workerNote ?? null;
+    row.note = noteByKey.get(rowKey(row.workerId, row.factoryId)) ?? null;
     row.workerFirm = row.factoryId != null && multiFirmFacs.has(row.factoryId) ? workerFirmById.get(row.workerId) ?? null : null;
     row.createdViaImport = importCreated.has(row.workerId);
   }

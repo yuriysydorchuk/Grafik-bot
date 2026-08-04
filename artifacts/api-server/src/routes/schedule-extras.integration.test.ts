@@ -190,6 +190,39 @@ test("GET /hours/report-excel: звільнені з рапортом і пер�
   assert.equal(razem[2], 120, "Razem рахує і рапорт звільненого");
 });
 
+// Замітки обліку годин: upsert/очистка + віддача в GET /hours і в Excel.
+test("POST /hours/note: створює/оновлює/чистить замітку пари; видно в /hours і в експорті", opts, async () => {
+  const f = await mkFactory();
+  const w = await mkWorker(f, "Noted Person");
+  const put = await request(app).post("/api/hours/note").set("Cookie", cookie).set(H)
+    .send({ workerId: w, month: MONTH, factoryId: f, note: "підмінявся 12-го" });
+  assert.equal(put.status, 200);
+  // upsert тієї ж пари — значення замінюється, рядок один
+  await request(app).post("/api/hours/note").set("Cookie", cookie).set(H)
+    .send({ workerId: w, month: MONTH, factoryId: f, note: "перевірити з фабрикою" });
+  const hours = await request(app).get(`/api/hours?month=${MONTH}`).set("Cookie", cookie);
+  const row = hours.body.workers.find((x: any) => x.workerId === w && x.factoryId === f);
+  assert.equal(row.note, "перевірити з фабрикою");
+
+  const res = await request(app)
+    .get(`/api/hours/report-excel?month=${MONTH}&factoryId=${f}&cols=name,note`)
+    .set("Cookie", cookie).buffer(true).parse((r, cb) => {
+      const chunks: Buffer[] = [];
+      r.on("data", (c: Buffer) => chunks.push(c));
+      r.on("end", () => cb(null, Buffer.concat(chunks)));
+    });
+  const { header, dataRows: noteRows } = await excelHeaderAndRows(res.body as Buffer);
+  assert.deepEqual(header, ["Imię i nazwisko", "Notatki"]);
+  assert.equal(noteRows.find(r => r[0] === "Noted Person")![1], "перевірити з фабрикою");
+
+  // порожнє значення — замітка видаляється
+  const clr = await request(app).post("/api/hours/note").set("Cookie", cookie).set(H)
+    .send({ workerId: w, month: MONTH, factoryId: f, note: "" });
+  assert.equal(clr.body.cleared, true);
+  const after = await request(app).get(`/api/hours?month=${MONTH}`).set("Cookie", cookie);
+  assert.equal(after.body.workers.find((x: any) => x.workerId === w && x.factoryId === f).note, null);
+});
+
 // ─── Відсутності: виправдання і штрафи ────────────────────────────────────────
 
 test("GET /absences рахує штрафи (стандарт 200); PATCH правки штрафу і виправдання виключають з підсумків", opts, async () => {
