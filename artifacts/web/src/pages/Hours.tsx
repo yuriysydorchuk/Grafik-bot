@@ -186,6 +186,8 @@ export default function Hours() {
     .filter(([, gs]) => gs.length > 0), [cityGroups, effCity, effFac]);
 
   const round = (n: number) => Math.round(n * 100) / 100;
+  // Унікальні люди місяця (рядки — пари працівник+фабрика, переведені мають 2+)
+  const totalPeople = useMemo(() => new Set((data?.workers ?? []).map(w => w.workerId)).size, [data]);
 
   return (
     <>
@@ -200,6 +202,7 @@ export default function Hours() {
         </Select>
         {data && (
           <div className="flex gap-2">
+            <Badge color="slate">{t("Людей:")} {totalPeople}</Badge>
             <Badge color="slate">{t("Усього змін:")} {data.totalShifts}</Badge>
             <Badge color="green">{t("Усього годин:")} {round(data.totalHours)}</Badge>
             {isOwner && data.totalNet != null && <Badge color="green">{t("ЗП нетто:")} {round(data.totalNet)} zł</Badge>}
@@ -274,6 +277,7 @@ export default function Hours() {
             <div className="mb-3 flex items-center gap-2 border-b border-slate-200 pb-2">
               <h2 className="text-base font-bold tracking-tight text-slate-800">{t(city)}</h2>
               <Badge color="slate">{cityGs.length} {t("фабрик")}</Badge>
+              <Badge color="slate">{new Set(cityGs.flatMap(g => g.rows.map(w => w.workerId))).size} {t("людей")}</Badge>
               <Badge color="green">{round(cityGs.reduce((s, g) => s + g.hours, 0))} {t("год")}</Badge>
               {can(me, "svodni") && canEdit && (
                 <button onClick={() => confirmToSvodni(city, { city })} disabled={toSvodni.isPending}
@@ -290,6 +294,7 @@ export default function Hours() {
                 <div className="mb-2 flex items-center gap-2">
                   <FactoryIcon className="h-4 w-4 text-slate-400" />
                   <h2 className="text-sm font-semibold text-slate-700">{g.name}</h2>
+                  <Badge color="slate">{g.rows.length} {t("людей")}</Badge>
                   <Badge color="slate">{g.shifts} {t("змін")}</Badge>
                   <Badge color="green">{round(g.hours)} {t("год")}</Badge>
                   {isOwner && <Badge color="green">{round(g.net)} {t("zł нетто")}</Badge>}
@@ -351,8 +356,9 @@ export default function Hours() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
+                      {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
                       {g.rows.map(w => (
-                        <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => setSel({ id: w.workerId, name: w.name })} className="cursor-pointer hover:bg-red-50/40">
+                        <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }} className="cursor-pointer hover:bg-red-50/40">
                           <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
                             {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
                             {w.name}
@@ -1130,7 +1136,7 @@ function ReportHoursCell({ w, month, canEdit }: { w: HourRow; month: string; can
     const submit = () => save.mutate(val.replace(",", ".").trim() || null);
     return (
       <span className="inline-flex items-center justify-end gap-1">
-        <Input value={val} onChange={e => setVal(e.target.value)} inputMode="decimal" placeholder="1–400" className="w-20 text-right" autoFocus
+        <Input value={val} onChange={e => setVal(e.target.value)} inputMode="decimal" placeholder="0–400" className="w-20 text-right" autoFocus
           onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setEditing(false); }} />
         <button onClick={submit} disabled={save.isPending} className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50"><Check className="h-4 w-4" /></button>
         <button onClick={() => setEditing(false)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>

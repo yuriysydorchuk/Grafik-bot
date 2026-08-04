@@ -2616,7 +2616,9 @@ router.post("/hours/report", RW, async (req, res) => {
     return ok(res, { ok: true, cleared: true });
   }
   const hours = Number(raw);
-  if (!Number.isFinite(hours) || hours < 1 || hours > 400) return fail(res, 400, "Години: число від 1 до 400");
+  // Адмінам дозволений 0 («не працював, рапорт нульовий») — бот для працівників
+  // тримає власний ліміт 1–400; порожнє значення, як і раніше, видаляє рапорт.
+  if (!Number.isFinite(hours) || hours < 0 || hours > 400) return fail(res, 400, "Години: число від 0 до 400");
   const h = Math.round(hours * 100) / 100;
   if (factoryId != null) {
     await db.insert(monthlyReportsTable)

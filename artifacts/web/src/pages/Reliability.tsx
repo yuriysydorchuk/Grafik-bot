@@ -29,7 +29,10 @@ export default function Reliability() {
   return (
     <>
       <PageHeader title={t("Надійність")} subtitle={t("Явка та пропуски працівників за місяць")} />
-      <div className="mb-4"><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
+      <div className="mb-4 flex items-center gap-3">
+        <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select>
+        {data && data.workers.length > 0 && <Badge color="slate">{data.workers.length} {t("людей")}</Badge>}
+      </div>
       {isFetching && !data ? <Spinner /> : !data?.workers.length ? <Empty>{t("За цей місяць немає затверджених змін")}</Empty> : (
         <Card className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -42,8 +45,9 @@ export default function Reliability() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
+              {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
               {data.workers.map(w => (
-                <tr key={w.workerId} onClick={() => setSel({ id: w.workerId, name: w.name })} className="cursor-pointer hover:bg-red-50/40">
+                <tr key={w.workerId} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }} className="cursor-pointer hover:bg-red-50/40">
                   <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">{w.name}</td>
                   <td className="px-4 py-2.5 text-slate-500">{w.factory ?? "—"}</td>
                   <td className="px-4 py-2.5 text-center text-slate-600">{w.present}</td>

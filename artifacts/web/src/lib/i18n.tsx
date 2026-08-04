@@ -467,6 +467,8 @@ const EN: Record<string, string> = {
   "Зміни": "Shifts",
   "Години": "Hours",
   "Години (графік)": "Hours (schedule)",
+  "людей": "people",
+  "Людей:": "People:",
   "Пропуски": "Absences",
   "Скасовано": "Cancelled",
 

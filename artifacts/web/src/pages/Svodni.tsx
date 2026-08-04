@@ -1271,7 +1271,7 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
                   .sort((x, y) => (x.workerName ?? x.rawName).localeCompare(y.workerName ?? y.rawName, "pl"));
                 const open = expanded.has(k);
                 const out = [
-                  <tr key={k} onClick={() => toggleExpand(k)}
+                  <tr key={k} onClick={() => { if (window.getSelection()?.toString()) return; toggleExpand(k); }}
                     className={`cursor-pointer ${open ? "bg-red-50/50" : "hover:bg-red-50/30"}`}
                     title={t("Клікни, щоб розгорнути список людей")}>
                     <td className="whitespace-nowrap px-3 py-1.5 pl-6 text-slate-600">
