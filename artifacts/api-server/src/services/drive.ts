@@ -503,25 +503,33 @@ export async function uploadReportPhoto(
 }
 
 // Каталог колонок Excel-звіту обліку годин (заголовки польською, як усі документи).
+// shifts/hours — затверджені явки з графіку (підтверджує водій/графікова);
 // diff/factoryHours — розбіжності «рапорт працівника ↔ години фабрики» (та сама
 // логіка, що підсвітка на сторінці /hours: mismatch = обидва є й різняться >0.01,
-// partial = є лише одне з двох).
+// partial = є лише одне з двох); workerConfirm — відповідь працівника на запит
+// підтвердження годин у боті.
 export const HOURS_XLSX_COLS = [
   { key: "code", header: "Kod", width: 12 },
   { key: "name", header: "Imię i nazwisko", width: 34 },
   { key: "factory", header: "Fabryka", width: 26 },
+  { key: "shifts", header: "Zmiany", width: 10 },
+  { key: "hours", header: "Godziny (grafik)", width: 16 },
   { key: "report", header: "Godziny (raport)", width: 16 },
   { key: "factoryHours", header: "Godziny (fabryka)", width: 17 },
   { key: "diff", header: "Różnica", width: 12 },
   { key: "status", header: "Status raportu", width: 15 },
+  { key: "workerConfirm", header: "Potwierdzenie pracownika", width: 22 },
 ] as const;
 export type HoursXlsxColKey = typeof HOURS_XLSX_COLS[number]["key"];
 const DEFAULT_HOURS_COLS: HoursXlsxColKey[] = ["code", "name", "factory", "report", "status"];
 
-// Downloadable Excel (in Polish) of monthly hours per (worker, factory): reported
-// hours, factory-supplied hours and their difference. Includes ALL active workers
-// (so admins see who hasn't submitted). Optionally filtered to a single factory,
-// to selected columns, and to error rows only (mismatch/partial).
+// Downloadable Excel (in Polish) of monthly hours per (worker, factory): schedule
+// hours, reported hours, factory-supplied hours and their difference. Rows come
+// from the SAME builder as the /hours page (services/hoursRows.ts) — fired or
+// transferred workers with month data must never disappear from the file
+// (04.08.2026 incident: the export only looked at active workers and lost rows).
+// Optionally filtered to a single factory, to selected columns, and to error
+// rows only (mismatch/partial).
 export async function buildReportHoursExcel(
   month: string, factoryId?: number,
   opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean } = {},
@@ -530,36 +538,15 @@ export async function buildReportHoursExcel(
   const cols = HOURS_XLSX_COLS.filter(c => colKeys.includes(c.key));
   const errorsOnly = !!opts.errorsOnly;
 
-  const workers = await db.select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, factoryId: workersTable.factoryId })
-    .from(workersTable).where(eq(workersTable.isActive, true));
-  const workerById = new Map(workers.map(w => [w.id, w]));
-  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
-  const facById = new Map(facs.map(f => [f.id, f.name]));
-  const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported })
-    .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const factoryHours = await db.select({ workerId: factoryHoursTable.workerId, factoryId: factoryHoursTable.factoryId, hours: factoryHoursTable.hours, confirmed: factoryHoursTable.confirmed })
-    .from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
+  const { buildHoursMergedRows } = await import("./hoursRows");
+  const { rows: merged, facById } = await buildHoursMergedRows(month);
+  const selectedFac = factoryId != null ? (facById.get(factoryId)?.name ?? null) : null;
 
-  const selectedFac = factoryId != null ? (facById.get(factoryId) ?? null) : null;
-  // One row per (worker, factory) — merged from both sources; a worker with neither
-  // shows once under their current factory (so admins see who hasn't submitted).
-  type Row = { facId: number | null; code: string; name: string; report: number | null; factoryHours: number | null; confirmed: boolean };
-  const byKey = new Map<string, Row>();
-  const rowFor = (workerId: number, facId: number | null): Row | null => {
-    const w = workerById.get(workerId);
-    if (!w) return null;
-    const key = `${workerId}|${facId ?? "x"}`;
-    let row = byKey.get(key);
-    if (!row) { row = { facId, code: w.code ?? "", name: w.name, report: null, factoryHours: null, confirmed: false }; byKey.set(key, row); }
-    return row;
+  type Row = {
+    facId: number | null; code: string; name: string; factory: string;
+    shifts: number; hours: number; report: number | null; factoryHours: number | null;
+    confirmed: boolean; workerResponse: string | null; asked: boolean;
   };
-  for (const r of reports) { const row = rowFor(r.workerId, r.factoryId ?? workerById.get(r.workerId)?.factoryId ?? null); if (row) row.report = r.hours; }
-  for (const fh of factoryHours) { const row = rowFor(fh.workerId, fh.factoryId); if (row) { row.factoryHours = fh.hours; row.confirmed = fh.confirmed; } }
-  for (const w of workers) {
-    const hasAny = [...byKey.keys()].some(k => k.startsWith(`${w.id}|`));
-    if (!hasAny) rowFor(w.id, w.factoryId);
-  }
-
   // Той самий diffState, що на сторінці /hours (Hours.tsx)
   const diffState = (r: Row): "match" | "mismatch" | "partial" | "none" => {
     if (r.report == null && r.factoryHours == null) return "none";
@@ -567,8 +554,15 @@ export async function buildReportHoursExcel(
     return Math.abs(r.report - r.factoryHours) <= 0.01 ? "match" : "mismatch";
   };
 
-  const rows = [...byKey.values()]
-    .filter(x => factoryId == null || x.facId === factoryId)
+  const rows: Row[] = merged
+    .filter(x => factoryId == null || x.factoryId === factoryId)
+    .map(x => ({
+      facId: x.factoryId, code: x.code ?? "", name: x.name,
+      factory: x.factory ?? "Bez fabryki",
+      shifts: x.shifts, hours: Math.round(x.hours * 100) / 100,
+      report: x.reportHours, factoryHours: x.factoryHours,
+      confirmed: x.factoryConfirmed, workerResponse: x.workerResponse, asked: x.askSentAt != null,
+    }))
     // підтверджене вручну («все ок» на /hours) — не помилка: і розбіжність,
     // і години фабрики без рапорту працівника
     .filter(x => {
@@ -578,7 +572,6 @@ export async function buildReportHoursExcel(
       if (st === "partial") return !(x.confirmed && x.factoryHours != null && x.report == null);
       return false;
     })
-    .map(x => ({ ...x, factory: x.facId != null ? (facById.get(x.facId) ?? "—") : "Bez fabryki" }))
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 
   const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
@@ -587,7 +580,7 @@ export async function buildReportHoursExcel(
   ws.columns = cols.map(c => ({ width: c.width }));
   const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
   const nCols = cols.length;
-  const numericCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff";
+  const numericCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff" || key === "shifts" || key === "hours";
 
   ws.mergeCells(1, 1, 1, Math.max(2, nCols));
   const title = ws.getCell(1, 1);
@@ -612,12 +605,20 @@ export async function buildReportHoursExcel(
       case "code": return row.code;
       case "name": return row.name;
       case "factory": return row.factory;
+      case "shifts": return row.shifts;
+      case "hours": return row.hours;
       case "report": return row.report ?? "";
       case "factoryHours": return row.factoryHours ?? "";
       case "diff": return row.report != null && row.factoryHours != null ? round2(row.report - row.factoryHours) : "";
       case "status": return row.report != null ? "wysłano" : "brak";
+      case "workerConfirm": return row.workerResponse === "confirmed" ? "OK"
+        : row.workerResponse === "dispute" ? "zgłosił błąd"
+        : row.asked ? "zapytano" : "";
     }
   };
+  // Підсвітка розбіжностей стосується лише пари «рапорт ↔ фабрика» (+ різниця) —
+  // колонки графіка (зміни/години) не фарбуємо.
+  const diffCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff";
 
   let r = 3;
   for (const row of rows) {
@@ -630,8 +631,8 @@ export async function buildReportHoursExcel(
       c.alignment = { vertical: "middle", horizontal: numericCol(key) ? "right" : "left", indent: numericCol(key) ? 0 : 1 };
       if (key === "status" && row.report == null) c.font = { color: { argb: "FFB45309" } };
       // Підсвітка розбіжностей — як на сторінці: червоне mismatch, жовте partial
-      if (numericCol(key) && st === "mismatch") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } } as any;
-      else if (numericCol(key) && st === "partial") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } } as any;
+      if (diffCol(key) && st === "mismatch") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEE2E2" } } as any;
+      else if (diffCol(key) && st === "partial") c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } } as any;
     });
     r++;
   }
@@ -639,6 +640,8 @@ export async function buildReportHoursExcel(
   // Total row (Razem): sums of the numeric columns present.
   const totalRow = ws.getRow(r);
   totalRow.values = cols.map((c, i) => {
+    if (c.key === "shifts") return rows.reduce((s, x) => s + x.shifts, 0);
+    if (c.key === "hours") return round2(rows.reduce((s, x) => s + x.hours, 0));
     if (c.key === "report") return round2(rows.reduce((s, x) => s + (x.report ?? 0), 0));
     if (c.key === "factoryHours") return round2(rows.reduce((s, x) => s + (x.factoryHours ?? 0), 0));
     return i === (cols[0]?.key === "code" ? 1 : 0) ? "Razem" : "";

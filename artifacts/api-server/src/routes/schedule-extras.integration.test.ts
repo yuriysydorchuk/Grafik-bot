@@ -156,6 +156,40 @@ test("GET /hours/report-excel: cols обмежує колонки, errorsOnly л
   assert.equal(err.dataRows[0]![0], "Mismatch Person");
 });
 
+// Регресія 04.08.2026: експорт ішов лише по активних працівниках — рапорти
+// звільнених і явки переведених зникали з файлу (у файлі було менше людей і
+// годин, ніж на сторінці /hours). Рядки файлу мусять збігатися зі сторінкою.
+test("GET /hours/report-excel: звільнені з рапортом і переведені з явками не губляться; колонка годин графіку", opts, async () => {
+  const f = await mkFactory();
+  const fired = await mkWorker(f, "Fired Person");
+  const moved = await mkWorker(f, "Moved Person");
+  const wk = await mkApprovedWeek();
+  await mkEntry(wk, moved, f, "1", "present"); // затверджена явка: зміна 06–14 → 8 год
+  await db.insert(monthlyReportsTable).values([{ workerId: fired, month: MONTH, factoryId: f, hoursReported: 120 }]);
+  await db.update(workersTable).set({ isActive: false }).where(eq(workersTable.id, fired));
+  const f2 = await mkFactory(); // «переведений»: поточна фабрика вже інша, явки місяця — на f
+  await db.update(workersTable).set({ factoryId: f2 }).where(eq(workersTable.id, moved));
+
+  const res = await request(app)
+    .get(`/api/hours/report-excel?month=${MONTH}&factoryId=${f}&cols=name,hours,report`)
+    .set("Cookie", cookie).buffer(true).parse((r, cb) => {
+      const chunks: Buffer[] = [];
+      r.on("data", (c: Buffer) => chunks.push(c));
+      r.on("end", () => cb(null, Buffer.concat(chunks)));
+    });
+  assert.equal(res.status, 200);
+  const { header, dataRows } = await excelHeaderAndRows(res.body as Buffer);
+  assert.deepEqual(header, ["Imię i nazwisko", "Godziny (grafik)", "Godziny (raport)"]);
+  const names = dataRows.map(r => r[0]);
+  assert.ok(names.includes("Fired Person"), "звільнений з рапортом присутній у файлі");
+  assert.ok(names.includes("Moved Person"), "переведений з явками присутній у файлі");
+  assert.equal(dataRows.find(r => r[0] === "Fired Person")![2], 120);
+  assert.equal(dataRows.find(r => r[0] === "Moved Person")![1], 8, "8 год із затвердженої явки");
+  const razem = dataRows[dataRows.length - 1]!;
+  assert.equal(razem[0], "Razem");
+  assert.equal(razem[2], 120, "Razem рахує і рапорт звільненого");
+});
+
 // ─── Відсутності: виправдання і штрафи ────────────────────────────────────────
 
 test("GET /absences рахує штрафи (стандарт 200); PATCH правки штрафу і виправдання виключають з підсумків", opts, async () => {

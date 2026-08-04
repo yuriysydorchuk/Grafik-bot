@@ -1423,7 +1423,7 @@ bot.action(/^absreq:(\d+)$/, async (ctx) => {
 });
 
 // After the factory is known, ask the worker to type their total monthly hours.
-// `data` carries { workerId, workerName, month, factory, lang }.
+// `data` carries { workerId, workerName, month, factory, factoryId?, lang }.
 const reportMonthLabel = (lang: Lang, m: string) => new Date(`${m}-01`).toLocaleDateString(DATE_LOCALE[lang], { month: "long", year: "numeric" });
 async function askReportHours(ctx: Context, tid: string, data: any) {
   setState(tid, "report:awaiting_hours", data);
@@ -1487,7 +1487,7 @@ async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, 
     const [pf] = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
       .from(factoriesTable).where(eq(factoriesTable.id, presetFactoryId));
     if (pf?.name) {
-      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, lang });
+      return askReportHours(ctx, tid, { workerId: worker.id, workerName: worker.fullName, month: reportMonth, factory: pf.name, factoryId: pf.id, lang });
     }
   }
 
@@ -1501,7 +1501,7 @@ async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, 
     // Одна фабрика — питаємо години, далі фото
     return askReportHours(ctx, tid, {
       workerId: worker.id, workerName: worker.fullName,
-      month: reportMonth, factory: uniqueFactories[0]!.name, lang,
+      month: reportMonth, factory: uniqueFactories[0]!.name, factoryId: uniqueFactories[0]!.id, lang,
     });
   }
 
@@ -1512,7 +1512,9 @@ async function startReportFlow(ctx: Context, tid: string, worker: ReportWorker, 
     .map(r => r.factoryId).filter((id): id is number => id != null));
   setState(tid, "report:select_factory", {
     workerId: worker.id, workerName: worker.fullName,
-    month: reportMonth, factories: uniqueFactories.map(f => f.name), lang,
+    month: reportMonth, factories: uniqueFactories.map(f => f.name),
+    factoryIds: Object.fromEntries(uniqueFactories.filter(f => f.name).map(f => [f.name!, f.id])),
+    lang,
   });
   return ctx.reply(
     t(lang, "report.pickFactoryHdr", { month: monthLabel }),
@@ -1538,10 +1540,14 @@ bot.hears(trAll("menu.report"), async (ctx) => {
   const prevMonth = monthStr(new Date(now.getFullYear(), now.getMonth() - 1, 1));
   const otherMonth = defaultMonth === curMonth ? prevMonth : curMonth;
 
-  await ctx.reply(t(lang, "report.otherMonthHint"), {
-    reply_markup: { inline_keyboard: [[{ text: `📄 ${reportMonthLabel(lang, otherMonth)}`, callback_data: `repi:${otherMonth}:0` }]] },
-  });
-  return startReportFlow(ctx, String(ctx.from.id), worker, defaultMonth, lang);
+  // Кнопка «інший місяць» іде ПІСЛЯ промпта і з явним «це рапорт за X»: коли
+  // вона йшла першою, працівники тапали її рефлекторно і рапорт тихо їхав у
+  // сусідній місяць (04.08.2026: липневі рапорти опинялись у серпні/червні).
+  await startReportFlow(ctx, String(ctx.from.id), worker, defaultMonth, lang);
+  return ctx.reply(
+    t(lang, "report.otherMonthHint", { month: reportMonthLabel(lang, defaultMonth), other: reportMonthLabel(lang, otherMonth) }),
+    { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: `📄 ${reportMonthLabel(lang, otherMonth)}`, callback_data: `repi:${otherMonth}:0` }]] } },
+  );
 });
 
 // Report entry via a personal inline button (the small "other month" button, a
@@ -3117,11 +3123,14 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
     if (!link) return ctx.reply(t(lang, "report.photoFail"), menu);
     // Persist the monthly report (hours + photo). One record per worker+month+factory:
     // re-submit for the same factory overwrites; a second factory (mid-month transfer)
-    // gets its own record.
-    const [fac] = data.factory
-      ? await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.name, data.factory))
-      : [];
-    const factoryId = fac?.id ?? worker?.factoryId ?? null;
+    // gets its own record. Фабрика — насамперед id зі стану діалогу (однойменні
+    // фабрики/перейменування не зіб'ють), пошук по імені — фолбек для старих станів.
+    let factoryId: number | null = Number.isInteger(data.factoryId) && data.factoryId > 0 ? Number(data.factoryId) : null;
+    if (factoryId == null && data.factory) {
+      const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.name, data.factory));
+      factoryId = fac?.id ?? null;
+    }
+    if (factoryId == null) factoryId = worker?.factoryId ?? null;
     if (factoryId != null) {
       await db.insert(monthlyReportsTable).values({
         workerId: data.workerId, month: data.month, factoryId, hoursReported: data.reportHours, photoLink: link,
@@ -3144,7 +3153,7 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
         });
       }
     }
-    await ctx.reply(t(lang, "report.saved", { hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
+    await ctx.reply(t(lang, "report.saved", { month: reportMonthLabel(lang, data.month), hours: data.reportHours }), { parse_mode: "Markdown", ...menu });
     // Мульти-фабричний місяць (переведення/разова підміна): одразу запропонувати
     // рапорти, яких ще бракує — інакше людина вважає, що здала все.
     try {
@@ -4516,7 +4525,7 @@ bot.on("text", async (ctx) => {
     // кнопка вже зданої фабрики має префікс «✅ » — повторна здача легальна (перезапис)
     const match = factories.find(f => f === text || `✅ ${f}` === text);
     if (!match) return ctx.reply(t(asLang(data.lang), "report.pickFromList"));
-    return askReportHours(ctx, tid, { ...data, factory: match });
+    return askReportHours(ctx, tid, { ...data, factory: match, factoryId: data.factoryIds?.[match] ?? null });
   }
 
   if (state?.action === "report:awaiting_hours") {
@@ -4526,9 +4535,21 @@ bot.on("text", async (ctx) => {
     if (!isFinite(hours) || hours < 1 || hours > 400) {
       return ctx.reply(t(rlang, "report.badHours"));
     }
+    // Рапорт за щойно початий ПОТОЧНИЙ місяць з годинами більше, ніж у ньому
+    // фізично могло минути (~16 год/день), — майже напевно промах кнопкою
+    // «інший місяць» (04.08.2026: 96 год «за серпень» 1 серпня). Не зберігаємо —
+    // пропонуємо перемкнутись на попередній місяць одним тапом.
+    const nowG = nowWarsaw();
+    if (data.month === monthStr(nowG) && hours > nowG.getDate() * 16) {
+      const prevG = monthStr(new Date(nowG.getFullYear(), nowG.getMonth() - 1, 1));
+      return ctx.reply(
+        t(rlang, "report.tooManyForMonth", { month: reportMonthLabel(rlang, data.month), hours: Math.round(hours * 100) / 100, prev: reportMonthLabel(rlang, prevG) }),
+        { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: `📄 ${reportMonthLabel(rlang, prevG)}`, callback_data: `repi:${prevG}:${Number(data.factoryId) || 0}` }]] } },
+      );
+    }
     setState(tid, "report:awaiting_photo", { ...data, reportHours: Math.round(hours * 100) / 100 });
     return ctx.reply(
-      t(rlang, "report.askPhoto", { hours: Math.round(hours * 100) / 100 }),
+      t(rlang, "report.askPhoto", { month: reportMonthLabel(rlang, data.month), hours: Math.round(hours * 100) / 100 }),
       { parse_mode: "Markdown", ...cancelKb(rlang) },
     );
   }

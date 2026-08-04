@@ -466,6 +466,7 @@ const EN: Record<string, string> = {
   "За цей місяць немає затверджених змін": "No approved shifts for this month",
   "Зміни": "Shifts",
   "Години": "Hours",
+  "Години (графік)": "Hours (schedule)",
   "Пропуски": "Absences",
   "Скасовано": "Cancelled",
 

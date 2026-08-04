@@ -2460,15 +2460,6 @@ router.get("/hours-reports/:id/photo", RW, async (req, res) => {
 
 router.get("/hours", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
-  const [y, m] = month.split("-").map(Number);
-  const monthStart = `${month}-01`;
-  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`; // first day of next month (tz-safe)
-  // factory shift definitions (for actual per-shift durations + column counts)
-  const facRows = await db.select().from(factoriesTable);
-  const facById = new Map<number, typeof facRows[number]>(facRows.map(f => [f.id, f]));
-  const companyRows = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
-  const companyName = new Map<number, string>(companyRows.map(c => [c.id, c.name]));
-  const firmOf = (fac: typeof facRows[number] | undefined) => fac?.companyId != null ? companyName.get(fac.companyId) ?? null : null;
   const isOwner = canFinance(req);
   const rates = await getFinanceRates();
   // Ставка — тим самим ланцюжком, що сводна (resolveBaseRates): профіль →
@@ -2479,162 +2470,37 @@ router.get("/hours", RW, async (req, res) => {
   const ruleOf = await loadRateRules();
   const svodniRate = (profileRate: number | null | undefined, factoryId: number | null, positionId: number | null): number =>
     resolveBaseRates({ hourlyRate: profileRate ?? null, hourlyRateNetto: null }, ruleOf(factoryId, positionId), false).brutto ?? rates.defaultRate;
-  const rows = await db
-    .select({
-      workerId: scheduleEntriesTable.workerId, name: workersTable.fullName, code: workersTable.workerCode,
-      factoryId: scheduleEntriesTable.factoryId, factory: factoriesTable.name, shift: scheduleEntriesTable.shift,
-      hoursOverride: scheduleEntriesTable.hoursOverride, positionId: workersTable.positionId,
-      rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
-      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
-      day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
-    })
-    .from(scheduleEntriesTable)
-    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "present")));
-  // Rows are keyed by (worker, factory): a worker transferred mid-month shows up
-  // under BOTH factories, each row carrying only the hours worked there.
-  const rowKey = (workerId: number, factoryId: number | null) => `${workerId}|${factoryId ?? 0}`;
-  const byWorkerFactory = new Map<string, any>();
-  for (const r of rows) {
-    if (!r.workerId) continue;
-    const date = entryDateStr(String(r.weekStart), r.day);
-    if (date < monthStart || date >= monthEnd) continue; // day falls outside the queried month
-    const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
-    const key = rowKey(r.workerId, r.factoryId);
-    if (!byWorkerFactory.has(key)) byWorkerFactory.set(key, {
-      workerId: r.workerId, name: r.name, code: r.code, factoryId: r.factoryId, factory: r.factory, firm: firmOf(fac),
-      factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: svodniRate(r.rate, r.factoryId, r.positionId), ...stud26Of(r),
-      byShift: {} as Record<string, number>, shifts: 0, hours: 0,
-    });
-    const w = byWorkerFactory.get(key);
-    w.shifts++;
-    w.hours += r.hoursOverride ?? factoryShiftHours(fac, r.shift as any);
-    w.byShift[r.shift] = (w.byShift[r.shift] ?? 0) + 1;
-  }
-  // Include ALL active workers, even those with 0 worked shifts this month.
-  const activeWorkers = await db.select({
-    id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
-    factoryId: workersTable.factoryId, rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
-    legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
-  }).from(workersTable).where(eq(workersTable.isActive, true));
-  const workersWithRows = new Set<number>([...byWorkerFactory.values()].map(w => w.workerId));
-  for (const aw of activeWorkers) {
-    if (workersWithRows.has(aw.id)) continue;
-    const fac = aw.factoryId != null ? facById.get(aw.factoryId) : undefined;
-    byWorkerFactory.set(rowKey(aw.id, aw.factoryId), {
-      workerId: aw.id, name: aw.fullName, code: aw.code, factoryId: aw.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
-      factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      rate: svodniRate(aw.rate, aw.factoryId, aw.positionId), ...stud26Of(aw),
-      byShift: {} as Record<string, number>, shifts: 0, hours: 0,
-    });
-  }
-  // worker-reported monthly hours (from the bot report) for this month, per factory
-  const reports = await db.select({ workerId: monthlyReportsTable.workerId, factoryId: monthlyReportsTable.factoryId, hours: monthlyReportsTable.hoursReported, link: monthlyReportsTable.photoLink })
-    .from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  const repByKey = new Map<string, typeof reports[number]>();
-  for (const r of reports) if (r.factoryId != null) repByKey.set(rowKey(r.workerId, r.factoryId), r);
-  // Legacy/manual reports without a factory → attach to the worker's current-factory row, else their first row.
-  const curFacByWorker = new Map(activeWorkers.map(a => [a.id, a.factoryId]));
-  for (const r of reports) {
-    if (r.factoryId != null) continue;
-    const wRows = [...byWorkerFactory.values()].filter(w => w.workerId === r.workerId);
-    const target = wRows.find(w => w.factoryId === curFacByWorker.get(r.workerId)) ?? wRows[0];
-    if (target && !repByKey.has(rowKey(r.workerId, target.factoryId))) repByKey.set(rowKey(r.workerId, target.factoryId), r);
-  }
-  // Рапорт по парі (працівник, фабрика) без жодної явки (переведення всередині
-  // місяця, місяці імпортовані зі сводних) — показуємо рядком з 0 змін, а не губимо.
-  const orphanReports = reports.filter(r => r.factoryId != null && !byWorkerFactory.has(rowKey(r.workerId, r.factoryId)));
-  if (orphanReports.length) {
-    const ids = [...new Set(orphanReports.map(r => r.workerId))];
-    const infos = await db.select({
-      id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
-      rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
-      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
-    }).from(workersTable).where(inArray(workersTable.id, ids));
-    const infoById = new Map(infos.map(w => [w.id, w]));
-    for (const r of orphanReports) {
-      const w = infoById.get(r.workerId);
-      if (!w) continue;
-      const fac = facById.get(r.factoryId!);
-      byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
-        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
-        factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-        rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
-        byShift: {} as Record<string, number>, shifts: 0, hours: 0,
-      });
-    }
-  }
-  // Години з фабрики (імпорт/ручний ввід) — колонка звірки поруч із рапортом.
-  const facHoursRows = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
-  const fhByKey = new Map(facHoursRows.map(r => [rowKey(r.workerId, r.factoryId), r]));
-  // Пара з годинами фабрики, але без явок/рапорту — теж показуємо рядком з 0 змін.
-  const orphanFh = facHoursRows.filter(r => !byWorkerFactory.has(rowKey(r.workerId, r.factoryId)));
-  if (orphanFh.length) {
-    const ids = [...new Set(orphanFh.map(r => r.workerId))];
-    const infos = await db.select({
-      id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId,
-      rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
-      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
-    }).from(workersTable).where(inArray(workersTable.id, ids));
-    const infoById = new Map(infos.map(w => [w.id, w]));
-    for (const r of orphanFh) {
-      const w = infoById.get(r.workerId);
-      if (!w) continue;
-      const fac = facById.get(r.factoryId);
-      byWorkerFactory.set(rowKey(r.workerId, r.factoryId), {
-        workerId: w.id, name: w.fullName, code: w.code, factoryId: r.factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
-        factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-        rate: svodniRate(w.rate, r.factoryId, w.positionId), ...stud26Of(w),
-        byShift: {} as Record<string, number>, shifts: 0, hours: 0,
-      });
-    }
-  }
-  // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support) — веб ділить
-  // вкладку по фірмі ПРАЦІВНИКА (workers.company_id), дзеркально сводній.
-  // Мульти-контрактність — ЯВНИЙ прапорець factories.multi_firm, не вивід з
-  // даних: разова підміна людиною іншої фірми чи помилка профілю (ALMIZ,
-  // 08.2026) вкладку ділити не повинні. workerFirm віддаємо лише рядкам
-  // позначених фабрик — клієнту не треба дублювати це правило.
-  const multiFirmFacs = new Set(facRows.filter(f => f.multiFirm).map(f => f.id));
-  const rowWorkerIds = [...new Set([...byWorkerFactory.values()].map(w => w.workerId as number))];
-  const workerCos = rowWorkerIds.length ? await db.select({ id: workersTable.id, companyId: workersTable.companyId, createdSource: workersTable.createdSource })
-    .from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
-  const workerFirmById = new Map(workerCos.map(w => [w.id, w.companyId != null ? companyName.get(w.companyId) ?? null : null]));
-  // профілі, створені імпортом годин (/hours «створити профіль») — лише їх
-  // можна швидко видалити 🗑 просто зі списку обліку (випадковий клік)
-  const importCreated = new Set(workerCos.filter(w => w.createdSource === "hours_import").map(w => w.id));
+  // Рядки (явки затверджених тижнів + рапорти + години фабрики) — спільний
+  // збирач з Excel-експортом (services/hoursRows.ts), щоб файл ніколи не
+  // розходився зі сторінкою.
+  const { buildHoursMergedRows } = await import("../services/hoursRows");
+  const { rows: merged, facById } = await buildHoursMergedRows(month);
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
-  const workers = [...byWorkerFactory.values()]
+  const workers = merged
     .map(w => {
       const hours = round2(w.hours);
-      const rep = repByKey.get(rowKey(w.workerId, w.factoryId));
       const base: any = {
-        ...w, hours,
-        workerFirm: w.factoryId != null && multiFirmFacs.has(w.factoryId) ? workerFirmById.get(w.workerId) ?? null : null,
-        reportHours: rep?.hours ?? null, reportSubmitted: !!rep, reportLink: rep?.link ?? null,
-        factoryHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.hours ?? null,
-        factoryDays: fhByKey.get(rowKey(w.workerId, w.factoryId))?.days ?? null,
-        factoryConfirmed: fhByKey.get(rowKey(w.workerId, w.factoryId))?.confirmed ?? false,
-        createdViaImport: importCreated.has(w.workerId),
+        workerId: w.workerId, name: w.name, code: w.code, factoryId: w.factoryId, factory: w.factory, firm: w.firm,
+        factoryShiftCount: w.factoryShiftCount,
+        rate: svodniRate(w.profileRate, w.factoryId, w.positionId), ...stud26Of(w),
+        byShift: w.byShift, shifts: w.shifts, hours,
+        workerFirm: w.workerFirm,
+        reportHours: w.reportHours, reportSubmitted: w.reportSubmitted, reportLink: w.reportLink,
+        factoryHours: w.factoryHours, factoryDays: w.factoryDays, factoryConfirmed: w.factoryConfirmed,
+        createdViaImport: w.createdViaImport,
         // запит підтвердження годин у бот і відповідь працівника
-        askSentAt: fhByKey.get(rowKey(w.workerId, w.factoryId))?.askSentAt ?? null,
-        askHours: fhByKey.get(rowKey(w.workerId, w.factoryId))?.askHours ?? null,
-        workerResponse: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerResponse ?? null,
-        workerResponseAt: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerResponseAt ?? null,
-        workerNote: fhByKey.get(rowKey(w.workerId, w.factoryId))?.workerNote ?? null,
+        askSentAt: w.askSentAt, askHours: w.askHours,
+        workerResponse: w.workerResponse, workerResponseAt: w.workerResponseAt, workerNote: w.workerNote,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
       };
       if (isOwner) {
-        const p = calcPayroll(hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
+        const p = calcPayroll(hours * (base.rate ?? rates.defaultRate), base.isStudent, base.under26, rates);
         base.gross = round2(p.gross); base.net = round2(p.net); base.laborCost = round2(p.laborCost);
         // Payroll based on the hours the worker reported themselves (not the schedule).
-        if (rep?.hours != null) {
-          const rp = calcPayroll(rep.hours * (w.rate ?? rates.defaultRate), w.isStudent, w.under26, rates);
+        if (w.reportHours != null) {
+          const rp = calcPayroll(w.reportHours * (base.rate ?? rates.defaultRate), base.isStudent, base.under26, rates);
           base.reportGross = round2(rp.gross); base.reportNet = round2(rp.net);
         } else { base.reportGross = null; base.reportNet = null; }
       } else {

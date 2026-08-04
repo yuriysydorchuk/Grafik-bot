@@ -431,10 +431,13 @@ function ExportExcelModal({ month, monthLabel, target, onClose }: {
     { key: "code", label: t("Код") },
     { key: "name", label: t("Працівник") },
     { key: "factory", label: t("Фабрика") },
+    { key: "shifts", label: t("Зміни") },
+    { key: "hours", label: t("Години (графік)") },
     { key: "report", label: t("Години з рапорту") },
     { key: "factoryHours", label: t("Години з фабрики") },
     { key: "diff", label: t("Різниця") },
     { key: "status", label: t("Статус рапорту") },
+    { key: "workerConfirm", label: t("Підтв. працівника") },
   ];
   const [checked, setChecked] = useState<Set<string>>(new Set(COLS.map(c => c.key)));
   const [errorsOnly, setErrorsOnly] = useState(false);
