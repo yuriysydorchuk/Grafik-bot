@@ -13,7 +13,7 @@ import { factoryShifts } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
 import { DAYS } from "./sheets";
 import { formatWeekStart } from "./scheduleGenerator";
-import { imageToPdf } from "./imagePdf";
+import { appendImageToPdf, imageToPdf } from "./imagePdf";
 import type { DayOfWeek as _DayOfWeek } from "@workspace/db";
 
 // Polish localization for Excel files
@@ -476,7 +476,31 @@ export async function uploadReportPhoto(
   month: string,
   photoBuffer: Buffer,
   mimeType: string,
+  // Лінк попередньої здачі цієї ж пари (працівник+місяць+фабрика): нове фото
+  // дописується сторінкою в ТОЙ САМИЙ PDF на Drive (лінк не змінюється), щоб
+  // повторні рапорти не губились — раніше кожна здача створювала новий файл,
+  // а рядок рапорту тримав лише останній лінк.
+  existingLink?: string | null,
 ): Promise<string | null> {
+  if (existingLink) {
+    try {
+      const m = /\/file\/d\/([\w-]+)/.exec(existingLink) ?? /[?&]id=([\w-]+)/.exec(existingLink);
+      const prev = m ? await downloadDriveFileByLink(existingLink) : null;
+      // дозаписуємо лише справжній PDF; чужий/битий вміст → фолбек на новий файл
+      if (m && prev && prev.buffer.subarray(0, 4).toString("ascii") === "%PDF") {
+        const mergedPdf = await appendImageToPdf(prev.buffer, photoBuffer, mimeType);
+        const auth = getDriveAuth();
+        const drive = google.drive({ version: "v3", auth });
+        await drive.files.update({
+          fileId: m[1]!,
+          media: { mimeType: "application/pdf", body: Readable.from(mergedPdf) },
+        });
+        return existingLink;
+      }
+    } catch (e) {
+      logger.warn({ err: e, existingLink }, "Report PDF append failed — falling back to a new file");
+    }
+  }
   try {
     const { reportsId } = await ensureFolderStructure();
     const auth = getDriveAuth();

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PDFDocument } from "pdf-lib";
-import { parseJpegOrientation, imageToPdf } from "./imagePdf.ts";
+import { parseJpegOrientation, imageToPdf, appendImageToPdf } from "./imagePdf.ts";
 
 // Мінімальний валідний JPEG 1×1 (біле), без EXIF.
 const TINY_JPEG = Buffer.from(
@@ -54,4 +54,16 @@ test("imageToPdf: EXIF-повернуте фото не падає і дає в�
     const doc = await PDFDocument.load(pdf);
     assert.equal(doc.getPageCount(), 1);
   }
+});
+
+// Повторні здачі рапорту: кожне нове фото — окрема сторінка того самого PDF.
+test("appendImageToPdf: дописує сторінки, попередні лишаються; сміття → помилка (фолбек колера)", async () => {
+  const first = await imageToPdf(TINY_JPEG, "image/jpeg");
+  const second = await appendImageToPdf(first, jpegWithOrientation(6), "image/jpeg");
+  const third = await appendImageToPdf(second, TINY_JPEG, "image/jpeg");
+  const doc = await PDFDocument.load(third);
+  assert.equal(doc.getPageCount(), 3);
+  const p0 = doc.getPage(0).getSize();
+  assert.equal(p0.width, 1); // перша сторінка не зіпсована дозаписами
+  await assert.rejects(() => appendImageToPdf(Buffer.from("not a pdf"), TINY_JPEG, "image/jpeg"));
 });

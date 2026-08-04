@@ -3118,19 +3118,27 @@ async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId:
     const fileLink = await ctx.telegram.getFileLink(fileId);
     const resp = await fetch(fileLink.href);
     const buf = Buffer.from(await resp.arrayBuffer());
-    const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, mime);
-    // No photo saved → don't accept the hours; ask to retry.
-    if (!link) return ctx.reply(t(lang, "report.photoFail"), menu);
-    // Persist the monthly report (hours + photo). One record per worker+month+factory:
-    // re-submit for the same factory overwrites; a second factory (mid-month transfer)
-    // gets its own record. Фабрика — насамперед id зі стану діалогу (однойменні
-    // фабрики/перейменування не зіб'ють), пошук по імені — фолбек для старих станів.
+    // Фабрика — насамперед id зі стану діалогу (однойменні фабрики/перейменування
+    // не зіб'ють), пошук по імені — фолбек для старих станів.
     let factoryId: number | null = Number.isInteger(data.factoryId) && data.factoryId > 0 ? Number(data.factoryId) : null;
     if (factoryId == null && data.factory) {
       const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.name, data.factory));
       factoryId = fac?.id ?? null;
     }
     if (factoryId == null) factoryId = worker?.factoryId ?? null;
+    // Повторна здача тієї ж пари (працівник+місяць+фабрика): нове фото
+    // дописується сторінкою в наявний PDF — усі здачі видно разом.
+    const [prevRow] = await db.select({ link: monthlyReportsTable.photoLink }).from(monthlyReportsTable)
+      .where(and(
+        eq(monthlyReportsTable.workerId, data.workerId), eq(monthlyReportsTable.month, data.month),
+        factoryId != null ? eq(monthlyReportsTable.factoryId, factoryId) : isNull(monthlyReportsTable.factoryId),
+      ));
+    const link = await uploadReportPhoto(data.factory, data.workerName, data.month, buf, mime, prevRow?.link ?? null);
+    // No photo saved → don't accept the hours; ask to retry.
+    if (!link) return ctx.reply(t(lang, "report.photoFail"), menu);
+    // Persist the monthly report (hours + photo). One record per worker+month+factory:
+    // re-submit for the same factory overwrites hours; a second factory (mid-month
+    // transfer) gets its own record.
     if (factoryId != null) {
       await db.insert(monthlyReportsTable).values({
         workerId: data.workerId, month: data.month, factoryId, hoursReported: data.reportHours, photoLink: link,

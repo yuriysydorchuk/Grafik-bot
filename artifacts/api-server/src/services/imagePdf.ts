@@ -38,8 +38,9 @@ export function parseJpegOrientation(buf: Buffer): number {
   return 1;
 }
 
-export async function imageToPdf(imageBuffer: Buffer, mimeType: string): Promise<Buffer> {
-  const pdfDoc = await PDFDocument.create();
+// Додає фото окремою сторінкою в кінець документа (спільне для першої
+// сторінки і для дозаписів повторних рапортів).
+async function addImagePage(pdfDoc: PDFDocument, imageBuffer: Buffer, mimeType: string): Promise<void> {
   // копія без byteOffset: pdf-lib читає DataView від початку ArrayBuffer,
   // а Buffer'и Node часто сидять у спільному пулі зі зсувом → «SOI not found»
   const bytes = new Uint8Array(imageBuffer);
@@ -65,5 +66,20 @@ export async function imageToPdf(imageBuffer: Buffer, mimeType: string): Promise
     const page = pdfDoc.addPage([w, h]);
     page.drawImage(image, { x: 0, y: 0, width: w, height: h });
   }
+}
+
+export async function imageToPdf(imageBuffer: Buffer, mimeType: string): Promise<Buffer> {
+  const pdfDoc = await PDFDocument.create();
+  await addImagePage(pdfDoc, imageBuffer, mimeType);
+  return Buffer.from(await pdfDoc.save());
+}
+
+// Повторна здача рапорту: нове фото дописується ОКРЕМОЮ сторінкою в наявний
+// PDF (файл на Drive оновлюється на місці — лінк не змінюється, всі здачі
+// видно разом). Кинута помилка = «не PDF/битий файл» — колер робить фолбек
+// на новий одно-сторінковий файл.
+export async function appendImageToPdf(existingPdf: Buffer, imageBuffer: Buffer, mimeType: string): Promise<Buffer> {
+  const pdfDoc = await PDFDocument.load(new Uint8Array(existingPdf));
+  await addImagePage(pdfDoc, imageBuffer, mimeType);
   return Buffer.from(await pdfDoc.save());
 }
