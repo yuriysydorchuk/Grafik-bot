@@ -1409,21 +1409,16 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
   const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
   const wById = new Map(workers.map(w => [w.id, w]));
-  // фабрики з контрактами КІЛЬКОХ наших фірм (ANDROS: Klinex + Euro Support):
-  // вкладка сводної ділиться по фірмі працівника — дзеркально вкладкам таблиці
+  // Мульти-контрактні фабрики — ЛИШЕ явний прапорець factories.multi_firm
+  // (Sushi&Food: Klinex + аутсорсинг). Вивід з фірм працівників був багом:
+  // разова підміна/помилка профілю ділила вкладки одноконтрактних клієнтів
+  // (BIMIZ, PREMIUM FRUITS — 08.2026). Вкладка ділиться по фірмі працівника,
+  // дзеркально вкладкам таблиці.
   const companiesAll = await db.select().from(companiesTable);
   const coNameById = new Map(companiesAll.map(c => [c.id, c.name]));
-  const facCompanySet = new Map<number, Set<number>>();
-  for (const pair of hoursByPair.values()) {
-    const w0 = wById.get(pair.workerId);
-    if (pair.factoryId != null && w0?.companyId != null) {
-      (facCompanySet.get(pair.factoryId) ?? facCompanySet.set(pair.factoryId, new Set()).get(pair.factoryId)!).add(w0.companyId);
-    }
-  }
   const tabLabelFor = (fac: typeof facRows[number] | undefined, w0: typeof workers[number]): string => {
     if (!fac) return "Без фабрики";
-    const set = facCompanySet.get(fac.id);
-    if (!set || set.size <= 1) return fac.name;
+    if (!fac.multiFirm) return fac.name;
     const cn = coNameById.get(w0.companyId ?? -1) ?? "";
     const suffix = cn === "ES" ? "EURO SUPORT" : cn.toUpperCase(); // як вкладки таблиці
     return suffix ? `${fac.name} ${suffix}` : fac.name;
