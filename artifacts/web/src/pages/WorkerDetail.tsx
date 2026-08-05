@@ -119,7 +119,7 @@ export default function WorkerDetail() {
           {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
-          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
+          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} />
           <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
           <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
           <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
@@ -568,7 +568,7 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
   );
 }
 
-function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange }) {
+function BirthDateRow({ workerId, birthDate, under26Fallback }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -578,10 +578,9 @@ function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { wor
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
-  const submit = () => {
-    if (onRequest) { onRequest({ birthDate: draft || null }, t("Дата народження")); setEditing(false); }
-    else save.mutate();
-  };
+  // Дата народження — факт, а не зміна умов «з дати»: модалку «Діє з» не
+  // відкриваємо, зберігаємо одразу (журнал змін на бекенді лишається).
+  const submit = () => save.mutate();
   // вік — окрема властивість (не форма легалізації): з дати, без дати — з профілю
   const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : under26Fallback ?? null;
   return (
