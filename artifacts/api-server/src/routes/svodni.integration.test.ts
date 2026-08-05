@@ -392,3 +392,52 @@ test("from-hours: фабрика без міста (нема ні в сводн�
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.city, "Познань", "місто взято з регіону «Зарплат», не фолбек-Люблін");
 });
+
+test("from-hours: вибір джерела годин (reports/factory) і самозвірка verified", opts, async () => {
+  const { factoryHoursTable } = await import("../test/harness.ts");
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Nowak Piotr", workerCode: "00002", hourlyRate: 30, hourlyRateNetto: 25,
+  }).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "ZAKLAD Z" } as any).returning();
+  await seedPayrollRegion("ZAKLAD Z", "Люблін");
+  // рапорт працівника: 100 год; години з фабрики (евіденція): 90 год
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 100 });
+  await db.insert(factoryHoursTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hours: 90, source: "excel" });
+
+  // джерело «години з фабрики» → у сводній РІВНО 90, самозвірка чиста
+  const rf = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
+    .send({ month: "2026-05", source: "factory" });
+  assert.equal(rf.status, 200);
+  assert.equal(rf.body.created, 1);
+  assert.equal(rf.body.verified, 1, "самозвірка перевірила записаний рядок");
+  assert.deepEqual(rf.body.verifyMismatches, [], "передані години = години в сводній");
+  let rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.hours, 90, "узято години фабрики, не рапорт");
+
+  // рапорт із НУЛЕМ: джерело авторитетне — у сводну їде РІВНО 0 год
+  // (кейс Samushonga 06.2026; модалка попереджає про такі рядки до перенесення)
+  const [wz] = await db.insert(workersTable).values({ fullName: "Zerowy Raport", workerCode: "00003" }).returning();
+  await db.insert(monthlyReportsTable).values({ workerId: wz!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 0 });
+
+  // джерело «рапорти працівників» (дефолт) → оновлення тим самим рядком на 100
+  const rr = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
+    .send({ month: "2026-05", source: "reports" });
+  assert.equal(rr.body.updated, 1);
+  assert.deepEqual(rr.body.verifyMismatches, []);
+  rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 2, "0-рапорт теж переноситься — окремим рядком");
+  const main = rows.find(r => r.workerId === w!.id)!;
+  assert.equal(main.hours, 100, "узято рапорт працівника");
+  assert.equal(main.doWyplaty, 2500, "виплата перерахована: 100 × 25 нетто");
+  const zero = rows.find(r => r.workerId === wz!.id)!;
+  assert.equal(zero.hours, 0, "джерело авторитетне: 0 з рапорту = 0 у сводній");
+  assert.deepEqual(rr.body.verifyMismatches, [], "самозвірка бачить і 0-рядок");
+
+  // workerIds звужує скоуп до людей видимої вкладки (фірмові вкладки, сміттєві
+  // пари поза списком) — переноситься лише хто в списку
+  const rw = await request(app).post("/api/svodni/from-hours").set("Cookie", owner).set(H)
+    .send({ month: "2026-05", source: "reports", workerIds: [w!.id] });
+  assert.equal(rw.body.workers, 1, "лише людина зі списку workerIds");
+});

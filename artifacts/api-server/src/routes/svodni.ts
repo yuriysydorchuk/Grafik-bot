@@ -1340,9 +1340,14 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
 router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
-  // опційні фільтри: одна фабрика або ціле місто (без них — весь місяць)
+  // опційні фільтри: одна фабрика або ціле місто (без них — весь місяць);
+  // workerIds — точний список людей видимого скоупу (вкладка обліку годин:
+  // фірмова вкладка мульти-контрактної фабрики шле лише СВОЇХ людей, і сміттєві
+  // пари поза списком вкладки скоуп не роздувають)
   const onlyFactoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : null;
   const onlyCity = String(req.body?.city ?? "").trim() || null;
+  const onlyWorkerIds = Array.isArray(req.body?.workerIds) && req.body.workerIds.length
+    ? new Set<number>(req.body.workerIds.map(Number).filter(Number.isInteger)) : null;
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
   const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
@@ -1373,13 +1378,30 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       ?? hoursByPair.set(key2(r.workerId, r.factoryId), { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(key2(r.workerId, r.factoryId))!;
     cur.hours += r.hoursOverride ?? factoryShiftHours(r.factoryId != null ? facById.get(r.factoryId) : undefined, r.shift as any);
   }
-  // 2) рапорти місяця — пріоритет над явками (та сама політика, що у фінансах)
-  const { monthlyReportsTable } = await import("@workspace/db");
-  const reports = await db.select().from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
-  for (const r of reports) {
-    const k = key2(r.workerId, r.factoryId);
-    const cur = hoursByPair.get(k) ?? hoursByPair.set(k, { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(k)!;
-    cur.hours = r.hoursReported;
+  // 2) джерело годин — вибір адміна: `source` = reports (дефолт: рапорти
+  // працівників, як завжди) | factory (колонка «Години з фабрики») |
+  // attendance (чисті явки затвердженого графіку). reports/factory накладаються
+  // ПОВЕРХ явок — пара без рапорту/запису лишається з явками (фолбек).
+  const source = ["reports", "factory", "attendance"].includes(String(req.body?.source)) ? String(req.body.source) : "reports";
+  // Джерело авторитетне: наявний запис переноситься ЯК Є, включно з 0 (у
+  // сводній буде 0 год) — модалка перед перенесенням попереджає про такі
+  // рядки окремим блоком. Фолбек на явки — лише коли запису в джерелі НЕМАЄ.
+  if (source === "reports") {
+    const { monthlyReportsTable } = await import("@workspace/db");
+    const reports = await db.select().from(monthlyReportsTable).where(eq(monthlyReportsTable.month, month));
+    for (const r of reports) {
+      const k = key2(r.workerId, r.factoryId);
+      const cur = hoursByPair.get(k) ?? hoursByPair.set(k, { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(k)!;
+      cur.hours = r.hoursReported;
+    }
+  } else if (source === "factory") {
+    const { factoryHoursTable } = await import("@workspace/db");
+    const fh = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.month, month));
+    for (const r of fh) {
+      const k = key2(r.workerId, r.factoryId);
+      const cur = hoursByPair.get(k) ?? hoursByPair.set(k, { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(k)!;
+      cur.hours = r.hours;
+    }
   }
 
   // 3) профілі та місто фабрики: НЕ вгадуємо. Історія сводних → регіони
@@ -1394,6 +1416,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   const noCity = new Set<string>();
   for (const [k, pair] of [...hoursByPair]) {
     if (onlyFactoryId != null && pair.factoryId !== onlyFactoryId) { hoursByPair.delete(k); continue; }
+    if (onlyWorkerIds && !onlyWorkerIds.has(pair.workerId)) { hoursByPair.delete(k); continue; }
     const label = pair.factoryId != null ? facById.get(pair.factoryId)?.name ?? "Без фабрики" : "Без фабрики";
     const city = cityOf(pair.factoryId);
     if (!city) { hoursByPair.delete(k); noCity.add(label); continue; }
@@ -1459,12 +1482,15 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   const existByKey = new Map(existing.map(r => [`${r.workerId ?? 0}|${r.factoryLabel}`, r]));
   const r2 = (n: number) => Math.round(n * 100) / 100;
   let created = 0, updated = 0, skippedNoRate = 0;
+  // самозвірка після запису: що передали ↔ що реально лежить у сводній
+  const expectedRows: { workerId: number; label: string; hours: number; name: string }[] = [];
   for (const pair of hoursByPair.values()) {
     const w = wById.get(pair.workerId);
     if (!w) continue;
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = tabLabelFor(fac, w);
     const city = cityOf(pair.factoryId)!; // пари без міста відфільтровані вище
+    expectedRows.push({ workerId: pair.workerId, label: factoryLabel, hours: r2(pair.hours), name: w.fullName });
     // становіско (секція): позиція з профілю — для фабрик, що ведуть посади
     const section = fac?.usesPositions && w.positionId != null ? posById.get(w.positionId) ?? null : null;
     // вік «до 26» — на момент розрахунку (наближення дати виплати, яка в M+1);
@@ -1570,7 +1596,26 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     await db.insert(svodniRowsTable).values(row);
     created++;
   }
-  ok(res, { month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate, skippedLocked, noCity: [...noCity] });
+  // Самозвірка: перечитуємо сводну і порівнюємо години кожної пари з тим, що
+  // реально записалось (батьківські рядки, сегменти вже перераховані в суму).
+  const verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[] = [];
+  if (expectedRows.length) {
+    const fresh = await db.select({ workerId: svodniRowsTable.workerId, factoryLabel: svodniRowsTable.factoryLabel, hours: svodniRowsTable.hours })
+      .from(svodniRowsTable)
+      .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
+        inArray(svodniRowsTable.workerId, expectedRows.map(e => e.workerId))));
+    const freshByKey = new Map(fresh.map(f => [`${f.workerId}|${f.factoryLabel}`, f.hours]));
+    for (const e of expectedRows) {
+      const actual = freshByKey.get(`${e.workerId}|${e.label}`);
+      if (actual == null || Math.abs(actual - e.hours) > 0.01) {
+        verifyMismatches.push({ name: e.name, label: e.label, expected: e.hours, actual: actual ?? null });
+      }
+    }
+  }
+  ok(res, {
+    month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate, skippedLocked, noCity: [...noCity],
+    verified: expectedRows.length, verifyMismatches,
+  });
 });
 
 // ── Хостели: зняття з ЗП за місяць (джерело колонки Hostel у сводній) ────────

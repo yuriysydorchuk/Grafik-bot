@@ -122,22 +122,35 @@ export default function Hours() {
     }),
     onError: (e: any) => toast.error(e.message),
   });
-  // «Години підтверджені → до сводної»: весь місяць, одне місто або одна фабрика
+  // «Години підтверджені → до сводної»: весь місяць, одне місто або одна фабрика.
+  // Джерело годин вибирається в модалці: рапорти працівників / години з
+  // фабрики / чисті явки.
+  const [svodniAsk, setSvodniAsk] = useState<{ label: string; scope: { factoryId?: number; city?: string } } | null>(null);
+  const [svodniSource, setSvodniSource] = useState<"reports" | "factory" | "attendance">("reports");
   const toSvodni = useMutation({
-    mutationFn: (scope: { factoryId?: number; city?: string }) =>
-      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[] }>("/svodni/from-hours", { month, ...scope }),
-    onSuccess: (r) => toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
-      description: [
-        r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : null,
-        r.skippedLocked ? t("Пропущено затверджених фабрик: {n}", { n: r.skippedLocked }) : null,
-        r.noCity?.length ? t("Місто фабрики невідоме (пропущено): {list} — фабрика ще не зустрічалась ні в сводних, ні в Зарплатах", { list: r.noCity.join(", ") }) : null,
-      ].filter(Boolean).join(" · ") || undefined,
-    }),
+    mutationFn: (v: { factoryId?: number; city?: string; source: string; workerIds?: number[] }) =>
+      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[]; verified: number; verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[] }>("/svodni/from-hours", { month, ...v }),
+    onSuccess: (r) => {
+      // самозвірка бекенду: передані години ↔ що реально видно в сводній
+      if (r.verifyMismatches?.length) {
+        toast.error(t("⚠️ Після запису розійшлись години ({n}): {list}", {
+          n: r.verifyMismatches.length,
+          list: r.verifyMismatches.slice(0, 5).map(m => `${m.name} ${m.expected}→${m.actual ?? "—"}`).join(", "),
+        }));
+      }
+      toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
+        description: [
+          r.verified && !r.verifyMismatches?.length ? t("Перевірка: {n} рядків — години в сводній збігаються", { n: r.verified }) : null,
+          r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : null,
+          r.skippedLocked ? t("Пропущено затверджених фабрик: {n}", { n: r.skippedLocked }) : null,
+          r.noCity?.length ? t("Місто фабрики невідоме (пропущено): {list} — фабрика ще не зустрічалась ні в сводних, ні в Зарплатах", { list: r.noCity.join(", ") }) : null,
+        ].filter(Boolean).join(" · ") || undefined,
+      });
+      setSvodniAsk(null);
+    },
     onError: (e: any) => toast.error(e.message),
   });
-  const confirmToSvodni = (label: string, scope: { factoryId?: number; city?: string }) => {
-    if (window.confirm(t("Перенести підтверджені години до сводної: {what}? Рядки створяться/оновляться з даними з профілів.", { what: label }))) toSvodni.mutate(scope);
-  };
+  const confirmToSvodni = (label: string, scope: { factoryId?: number; city?: string }) => setSvodniAsk({ label, scope });
 
   const groups = useMemo<Group[]>(() => {
     // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support): вкладка
@@ -280,7 +293,10 @@ export default function Hours() {
               <Badge color="slate">{cityGs.length} {t("фабрик")}</Badge>
               <Badge color="slate">{new Set(cityGs.flatMap(g => g.rows.map(w => w.workerId))).size} {t("людей")}</Badge>
               <Badge color="green">{round(cityGs.reduce((s, g) => s + g.hours, 0))} {t("год")}</Badge>
-              {can(me, "svodni") && canEdit && (
+              {/* при відкритій вкладці ОДНІЄЇ фабрики міську кнопку ховаємо —
+                  вона висить прямо над таблицею і її плутали з фабричною
+                  (переносила все місто замість 3 рядків вкладки) */}
+              {can(me, "svodni") && canEdit && !effFac && (
                 <button onClick={() => confirmToSvodni(city, { city })} disabled={toSvodni.isPending}
                   className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
                   <Check className="h-3.5 w-3.5" /> {t("Місто → до сводної")}
@@ -409,6 +425,76 @@ export default function Hours() {
           ))}
         </div>
       )}
+      {svodniAsk && (() => {
+        // Попередження перед перенесенням. Джерело авторитетне: запис (навіть 0)
+        // переноситься як є; фолбек на явки — лише коли запису НЕМАЄ.
+        const scopeRows = groups
+          .filter(g => svodniAsk.scope.factoryId != null ? g.factoryId === svodniAsk.scope.factoryId
+            : svodniAsk.scope.city ? g.city === svodniAsk.scope.city : true)
+          .flatMap(g => g.rows);
+        const pos = (n: number | null | undefined) => (n != null && n > 0 ? n : null);
+        // сирі значення джерела: number (вкл. 0 = запис із нулем) або null (запису нема)
+        const srcRaw = (w: HourRow): number | null => svodniSource === "reports" ? w.reportHours ?? null
+          : svodniSource === "factory" ? w.factoryHours ?? null
+          : pos(w.hours);
+        const otherHas = (w: HourRow) => (svodniSource !== "reports" && pos(w.reportHours) != null)
+          || (svodniSource !== "factory" && pos(w.factoryHours) != null)
+          || (svodniSource !== "attendance" && w.hours > 0);
+        const zeroes = scopeRows.filter(w => srcRaw(w) === 0 && otherHas(w));            // перенесеться 0
+        const fallback = scopeRows.filter(w => srcRaw(w) == null && w.hours > 0 && svodniSource !== "attendance"); // підуть явки
+        const dropped = scopeRows.filter(w => srcRaw(w) == null && !(w.hours > 0) && otherHas(w)); // не потраплять
+        // скільки людей реально поїде цим перенесенням (для кнопки)
+        const nTransfer = scopeRows.filter(w => srcRaw(w) != null || w.hours > 0).length;
+        return (
+        <Modal open onClose={() => setSvodniAsk(null)} title={`${t("Години підтверджені → до сводної")} — ${svodniAsk.label}`} size="lg">
+          <p className="mb-3 text-sm text-slate-500">{t("Перенести підтверджені години до сводної: {what}? Рядки створяться/оновляться з даними з профілів.", { what: svodniAsk.label })}</p>
+          <div className="space-y-2">
+            {([
+              ["reports", t("Рапорти працівників"), t("що людина здала в бот; пара без рапорту — наші явки (як завжди)")],
+              ["factory", t("Години з фабрики"), t("колонка «Години з фабрики» (евіденція/імпорт); без запису — наші явки")],
+              ["attendance", t("Наші явки"), t("лише затверджений графік — явки, підтверджені водієм/графіковою")],
+            ] as const).map(([v, label, hint]) => (
+              <label key={v} className={`flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition ${svodniSource === v ? "border-red-300 bg-red-50/50" : "border-slate-200 hover:border-slate-300"}`}>
+                <input type="radio" name="svodni-source" checked={svodniSource === v} onChange={() => setSvodniSource(v)} className="mt-0.5 accent-red-600" />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-slate-700">{label}</span>
+                  <span className="block text-xs text-slate-400">{hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {zeroes.length > 0 && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50/60 px-3 py-2 text-sm text-red-700">
+              <span className="font-medium">{t("У джерелі стоїть 0 — у сводну піде 0 год, хоча в інших стовпчиках години є ({n}):", { n: zeroes.length })}</span>{" "}
+              {zeroes.slice(0, 12).map(w => `${w.name} (${t("явки")}: ${round(w.hours)}${w.factoryHours != null && svodniSource !== "factory" ? `, ${t("фабрика")}: ${w.factoryHours}` : ""}${w.reportHours != null && svodniSource !== "reports" ? `, ${t("рапорт")}: ${w.reportHours}` : ""})`).join(", ")}{zeroes.length > 12 ? "…" : ""}
+            </div>
+          )}
+          {fallback.length > 0 && (
+            <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
+              <span className="font-medium">{t("Запису в джерелі немає — підуть наші явки ({n}):", { n: fallback.length })}</span>{" "}
+              {fallback.slice(0, 12).map(w => `${w.name} (${round(w.hours)} ${t("год")})`).join(", ")}{fallback.length > 12 ? "…" : ""}
+            </div>
+          )}
+          {dropped.length > 0 && (
+            <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+              <span className="font-medium">{t("Немає ні запису в джерелі, ні явок — не потраплять у сводну ({n}):", { n: dropped.length })}</span>{" "}
+              {dropped.slice(0, 12).map(w => w.name).join(", ")}{dropped.length > 12 ? "…" : ""}
+            </div>
+          )}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setSvodniAsk(null)}>{t("Скасувати")}</Button>
+            <Button onClick={() => toSvodni.mutate({
+                ...svodniAsk.scope, source: svodniSource,
+                // точний список людей видимого скоупу: фірмова вкладка шле лише
+                // своїх, сміттєві пари поза вкладкою скоуп не роздують
+                workerIds: [...new Set(scopeRows.map(w => w.workerId))],
+              })} loading={toSvodni.isPending}>
+              <Check className="h-4 w-4" /> {t("Перенести ({n} людей)", { n: nTransfer })}
+            </Button>
+          </div>
+        </Modal>
+        );
+      })()}
       {sel && <WorkerDaysModal workerId={sel.id} name={sel.name} month={month} monthLabel={monthLabel} onClose={() => setSel(null)} />}
       {exportTo && <ExportExcelModal month={month} monthLabel={monthLabel} target={exportTo} onClose={() => setExportTo(null)} />}
       {(() => {
