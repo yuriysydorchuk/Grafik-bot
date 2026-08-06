@@ -398,9 +398,14 @@ function CashAlertsBlock({ year, monthNum }: { year: string; monthNum: string })
 
   const s = summary.data, r = rec.data, p = payroll.data;
   if (!s || !r) return null;
-  // сводна ще без готівкових сум = «ще не заповнена», а не «не сходиться»
+  // сводна ще без готівкових сум = «ще не заповнена», а не «не сходиться»;
+  // поки місяць виплат триває, розбіжність — лише перевидача понад сводну
   const svodniReady = (p?.svodniTotal ?? 0) > 0 || (p?.groups ?? []).some(g => (g.svodni ?? 0) > 0 || g.unsplit > 0);
-  const payrollIssues = svodniReady ? (p?.groups ?? []).filter(g => g.diff != null && Math.abs(g.diff) > 1 && !g.ack) : [];
+  const now = new Date();
+  const payoutsOngoing = !monthNum || `${year}-${monthNum}` >= `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const payrollIssues = svodniReady
+    ? (p?.groups ?? []).filter(g => g.diff != null && !g.ack && (g.diff > 1 || (!payoutsOngoing && g.diff < -1)))
+    : [];
   const ackedCount = s.ackedDiscrepancies.length + r.ackedBank.length + r.ackedCash.length + (p?.groups ?? []).filter(g => g.ack).length;
   const hasIssues = s.discrepancies.length > 0 || r.unmatchedBank.length > 0 || r.unmatchedCash.length > 0 || payrollIssues.length > 0;
 

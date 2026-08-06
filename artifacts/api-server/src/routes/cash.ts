@@ -569,10 +569,13 @@ router.delete("/cash/recon-ack/:id", async (req, res) => {
 // ── Звірка готівкових ЗП зі сводною ───────────────────────────────────────────
 // Сводна за M виплачується готівкою в M+1 (акруал «місяць мінус 1») → каса
 // місяця K звіряється зі сводною K−1. Каса: видатки зарплатних категорій
-// (payroll≠null) за категорією. Сводна: Σ gotowka рядків міста (фабричні ↔
-// firm≠Klinex по місту, Клінекс ↔ firm=Klinex, офіс ↔ вкладки «Офис …» по
-// місту). Агрегати по містах — свідомо видимі кадровій (вона ці суми й видає);
-// перс. даних тут немає. «Без розбивки» (legacy) віддається довідково.
+// (payroll≠null) за категорією. Сводна: Σ gotowka рядків міста — фабричні
+// вкладки ВСІХ фірм (вкл. Klinex-оформлені AUNDE/ANDROS KLINEX — фірма це
+// юрособа, не сегмент), офіс ↔ вкладки «Офис …» по місту. «Клінекс
+// (прибирання)» платиться готівкою, але сводної не має (рішення 06.08.2026) —
+// віддається довідково без порівняння, як і legacy «без розбивки». Агрегати
+// по містах — свідомо видимі кадровій (вона ці суми й видає); перс. даних
+// тут немає.
 router.get("/cash/payroll-reconcile", async (req, res) => {
   const kasaMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : null;
   if (!kasaMonth) return fail(res, 400, "month=YYYY-MM required");
@@ -602,10 +605,9 @@ router.get("/cash/payroll-reconcile", async (req, res) => {
   };
   const isOffice = (r: (typeof sv)[number]) => OFFICE_TAB_RE.test(r.factoryLabel);
   const svFor = (cat: { payroll: string | null; city: string | null }) => {
-    if (cat.payroll === "factory") return svGroup(r => !isOffice(r) && r.firm !== "Klinex" && r.city === cat.city);
+    if (cat.payroll === "factory") return svGroup(r => !isOffice(r) && r.city === cat.city);
     if (cat.payroll === "office") return svGroup(r => isOffice(r) && r.city === cat.city);
-    if (cat.payroll === "cleaning") return svGroup(r => !isOffice(r) && r.firm === "Klinex");
-    return null; // legacy «без розбивки» — немає своєї групи у сводній
+    return null; // cleaning і legacy — готівка без сводної, лише довідково
   };
 
   const salaryCats = (await getCashCats()).filter(c => c.flow === "out" && c.payroll);

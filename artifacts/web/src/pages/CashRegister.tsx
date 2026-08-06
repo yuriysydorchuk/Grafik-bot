@@ -89,6 +89,11 @@ export default function CashRegister() {
   const payrollGroups = (payrollRec.data?.groups ?? []).filter(g => g.kasa !== 0 || (g.svodni ?? 0) !== 0 || g.unsplit !== 0);
   // сводна попереднього місяця ще без готівкових сум → різниць немає ЩЕ, а не «не сходиться»
   const svodniReady = (payrollRec.data?.svodniTotal ?? 0) > 0 || (payrollRec.data?.groups ?? []).some(g => (g.svodni ?? 0) > 0 || g.unsplit > 0);
+  // місяць виплат ще триває → недоплата не є розбіжністю (зарплати видаються поступово);
+  // жовте посеред місяця — лише перевидача понад сводну
+  const kasaMonthStr = `${year}-${monthNum}`;
+  const nowMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const payoutsOngoing = kasaMonthStr >= nowMonthStr;
 
   return (
     <>
@@ -226,19 +231,22 @@ export default function CashRegister() {
       {monthNum && payrollRec.data && payrollGroups.length > 0 && svodniReady && (
         <Card className="mt-3 p-0">
           <div className="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">
-            {t("Зарплати готівкою: каса {a} ↔ сводна {b}", { a: `${year}-${monthNum}`, b: payrollRec.data.svodniMonth })}
+            {t("Зарплати готівкою за {b} — видаються в {a}", { a: kasaMonthStr, b: payrollRec.data.svodniMonth })}
           </div>
           <table className="w-full text-sm">
             <thead><tr className="border-b border-slate-200 text-xs uppercase text-slate-400">
               <th className="px-4 py-2 text-left">{t("Категорія")}</th>
-              <th className="px-3 py-2 text-right">{t("Каса")}</th>
-              <th className="px-3 py-2 text-right">{t("Сводна (готівка)")}</th>
-              <th className="px-3 py-2 text-right">{t("Різниця")}</th>
+              <th className="px-3 py-2 text-right">{t("Видано")}</th>
+              <th className="px-3 py-2 text-right">{t("За сводною (готівка)")}</th>
+              <th className="px-3 py-2 text-right">{t("Залишилось видати")}</th>
               <th className="px-2 py-2"></th>
             </tr></thead>
             <tbody>
               {payrollGroups.map(g => {
-                const bad = g.diff != null && Math.abs(g.diff) > 1 && !g.ack;
+                const remaining = g.svodni != null ? Math.round((g.svodni - g.kasa) * 100) / 100 : null;
+                const overpaid = remaining != null && remaining < -1;
+                // недоплата — розбіжність лише після завершення місяця виплат
+                const bad = !g.ack && remaining != null && (overpaid || (!payoutsOngoing && remaining > 1));
                 return (
                   <tr key={g.key} className={`border-b border-slate-100 ${bad ? "bg-amber-50" : ""}`}>
                     <td className="px-4 py-1.5 text-slate-700">
@@ -248,8 +256,8 @@ export default function CashRegister() {
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{zl(g.kasa)}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{g.svodni != null ? zl(g.svodni) : "—"}</td>
-                    <td className={`px-3 py-1.5 text-right font-medium tabular-nums ${g.diff == null ? "text-slate-400" : Math.abs(g.diff) > 1 ? "text-amber-700" : "text-emerald-600"}`}>
-                      {g.diff != null ? zl(g.diff) : "—"}
+                    <td className={`px-3 py-1.5 text-right font-medium tabular-nums ${remaining == null ? "text-slate-400" : overpaid ? "text-amber-700" : bad ? "text-amber-700" : Math.abs(remaining) <= 1 ? "text-emerald-600" : "text-slate-500"}`}>
+                      {remaining == null ? "—" : overpaid ? t("перевидано на {v}", { v: zl(-remaining) }) : zl(remaining)}
                     </td>
                     <td className="px-2 py-1.5 text-right">
                       {bad && <button className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100" onClick={() => ackIt("payroll", g.ref)}>{t("Зафіксувати")}</button>}
@@ -257,15 +265,26 @@ export default function CashRegister() {
                   </tr>
                 );
               })}
-              <tr className="text-sm font-semibold text-slate-700">
-                <td className="px-4 py-2">{t("Разом")}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{zl(payrollRec.data.kasaTotal)}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{zl(payrollRec.data.svodniTotal)}</td>
-                <td className={`px-3 py-2 text-right tabular-nums ${Math.abs(payrollRec.data.diffTotal) > 1 ? "text-amber-700" : "text-emerald-600"}`}>{zl(payrollRec.data.diffTotal)}</td>
-                <td></td>
-              </tr>
+              {(() => {
+                const withSv = payrollGroups.filter(g => g.svodni != null);
+                const remTotal = Math.round(withSv.reduce((s, g) => s + (g.svodni! - g.kasa), 0) * 100) / 100;
+                return (
+                  <tr className="text-sm font-semibold text-slate-700">
+                    <td className="px-4 py-2">{t("Разом")}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{zl(payrollRec.data.kasaTotal)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{zl(payrollRec.data.svodniTotal)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">{zl(remTotal)}</td>
+                    <td></td>
+                  </tr>
+                );
+              })()}
             </tbody>
           </table>
+          {payoutsOngoing && (
+            <div className="border-t border-slate-100 px-4 py-2 text-xs text-slate-400">
+              {t("Виплати тривають — жовтим підсвічуються лише перевидачі понад сводну; недоплата стане розбіжністю після завершення {a}.", { a: kasaMonthStr })}
+            </div>
+          )}
         </Card>
       )}
 
