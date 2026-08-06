@@ -78,9 +78,11 @@ const webDist = process.env.WEB_DIST
 
 if (fs.existsSync(path.join(webDist, "index.html"))) {
   app.use(express.static(webDist));
-  // SPA fallback: any non-API GET serves index.html
+  // SPA fallback: any non-API GET serves index.html. root обовʼязковий: без нього
+  // send перевіряє на dot-сегменти весь абсолютний шлях і 404-ить, коли збірка
+  // лежить під крапковою текою (напр. запуск з git-worktree у .claude/worktrees).
   app.get(/^\/(?!api\/).*/, (_req, res) => {
-    res.sendFile(path.join(webDist, "index.html"));
+    res.sendFile("index.html", { root: webDist });
   });
   logger.info({ webDist }, "Serving web panel");
 } else {
