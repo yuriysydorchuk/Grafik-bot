@@ -1517,7 +1517,6 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = tabLabelFor(fac, w);
     const city = cityOf(pair.factoryId)!; // пари без міста відфільтровані вище
-    expectedRows.push({ workerId: pair.workerId, label: factoryLabel, hours: r2(pair.hours), name: w.fullName });
     // становіско (секція): позиція з профілю — для фабрик, що ведуть посади
     const section = fac?.usesPositions && w.positionId != null ? posById.get(w.positionId) ?? null : null;
     // вік «до 26» — на момент розрахунку (наближення дати виплати, яка в M+1);
@@ -1562,10 +1561,17 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         }
       }
     }
+    // Eurocash без порога (нема extras файлу / блоку ставок / бракет не
+    // знайшовся) — пару НЕ переносимо: фолбек на стандартну пару тут виглядав
+    // би як порахована ставка (інцидент 06.08.2026 — трьом новим упала
+    // мінімалка 25,35). Відсутній рядок помітніший за тихо неправильний;
+    // причина — в eurocashUnmatched відповіді.
+    if (isEurocash && !ec) continue;
     // побажання по виплаті: профіль → Eurocash-дефолт «все на конто»
     const payoutPref = w.payoutPrefKind
       ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null }
       : isEurocash ? { kind: "all_konto" as const, value: null } : null;
+    expectedRows.push({ workerId: pair.workerId, label: factoryLabel, hours: r2(pair.hours), name: w.fullName });
     const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
     if (prev) {
       // порізаний на сегменти рядок: нові сумарні години розкладаються по тих
