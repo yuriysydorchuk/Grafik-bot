@@ -13,7 +13,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { T_SALARY } from "../services/bankClassify";
 import { authRequired, requireCap } from "../lib/auth";
 import { syncPayrollSummaries, feedPnlCogs, factoryCost, parseWorkbookTitle, reconcilePeople, nameMatchKeys, EMPLOYER_ZUS_RATE } from "../services/payrollSummaries";
-import { cashCategory } from "./cash";
+import { cashCategory, getCashCats } from "../services/cashCategories";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -238,7 +238,9 @@ router.get("/payroll", async (req, res) => {
   const kasa = { month: nextMonth, salaryOut: 0 };
   const cash = await db.select().from(cashEntriesTable)
     .where(and(eq(cashEntriesTable.periodMonth, nextMonth), eq(cashEntriesTable.kind, "out")));
-  for (const e of cash) if (cashCategory(e) === "salary") kasa.salaryOut = r2(kasa.salaryOut + e.amount);
+  // salary family = категорії з payroll-міткою (розбивки по містах + legacy «без розбивки»)
+  const salaryKeys = new Set((await getCashCats()).filter(c => c.flow === "out" && c.payroll).map(c => c.key));
+  for (const e of cash) { const k = cashCategory(e); if (k && salaryKeys.has(k)) kasa.salaryOut = r2(kasa.salaryOut + e.amount); }
 
   // worker-level cash rows for drill-down
   const cashWhere = region

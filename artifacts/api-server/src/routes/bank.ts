@@ -13,7 +13,6 @@ import {
   getExpenseCats, invalidateExpenseCats, periodRange,
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
-import { syncCashRegister, type CashSyncResult } from "../services/cashRegister";
 import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, syncBankApi } from "../services/bankApi";
 import { syncCounterparties, resolveBankCounterparties, normAlias, normIban } from "../services/counterparties";
 
@@ -315,13 +314,11 @@ router.get("/bank/meta", async (_req, res) => {
   ok(res, { companies, years: years.map(y => y.year) });
 });
 
-// Manual re-sync from Drive (statements) + the cash-register sheet
+// Manual re-sync from Drive (statements). The STAN KASY sheet is retired
+// (08.2026) — kasa entries live on /cash; syncCashRegister stays for one-off scripts.
 router.post("/bank/sync", async (_req, res) => {
   try {
-    const bank = await syncBankTransactions();
-    let cash: CashSyncResult | { error: string };
-    try { cash = await syncCashRegister(); } catch (e: any) { cash = { error: e?.message ?? "cash sync failed" }; }
-    ok(res, { ...bank, cash });
+    ok(res, await syncBankTransactions());
   } catch (e: any) { logger.error({ err: e?.message }, "bank sync failed"); fail(res, 500, e?.message || "sync failed"); }
 });
 

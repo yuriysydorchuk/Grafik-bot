@@ -1,18 +1,27 @@
 // Office cash box («Каса», /cash) — the office employee records safe movements here
-// (instead of the legacy STAN KASY sheet). Gated by PAGE access, not viewFinance,
-// so a non-finance role can fill it. Historical sheet rows are read-only (the sheet
-// sync owns them); rows created here have tabName='manual' and are editable.
+// (the legacy STAN KASY sheet is retired; its rows remain read-only history).
+// Gated by PAGE access, not viewFinance, so a non-finance role can fill it.
+// Rows created here have tabName='manual' and are editable.
+//
+// Categories live in cash_categories (CRUD below): expenses (flow=out, salary
+// family carries city/payroll for the payroll reconciliation) and incomes
+// (flow=in; 'card' = знято з карти — the only kind reconciled against the bank).
 //
 // Reconciliation against bank statements: withdrawals arrive in the bank as many
 // small operations (e.g. 10×16 000) but the safe records one aggregated deposit
 // (160 000) or a few (32k+64k+64k) — so matching is subset-sum in a date window,
-// in BOTH directions, after exact 1:1 pairs are taken.
+// in BOTH directions, after exact 1:1 pairs are taken. Reviewed mismatches are
+// acknowledged in cash_recon_acks («зафіксовано, причина відома»).
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { cashEntriesTable, bankTransactionsTable, companiesTable } from "@workspace/db";
+import { cashEntriesTable, bankTransactionsTable, companiesTable, cashCategoriesTable, cashReconAcksTable, svodniRowsTable } from "@workspace/db";
 import { and, eq, gte, lte, asc, desc, inArray, isNull, sql } from "drizzle-orm";
-import { authRequired, requirePage } from "../lib/auth";
-import { BUCKET, periodRange, getExpenseCats, OWNER_KEYS } from "../services/bankClassify";
+import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
+import { BUCKET, periodRange } from "../services/bankClassify";
+import { getCashCats, invalidateCashCats, cashCategory, cashInCategory, cashCategoryOf, PROTECTED_CASH_KEYS } from "../services/cashCategories";
+
+// офісні вкладки сводної («Офис …») — тримати синхронно з OFFICE_TAB_RE у routes/pnl.ts
+const OFFICE_TAB_RE = /офис|офіс|office/i;
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -26,42 +35,83 @@ const MANUAL = "manual";
 
 // Physical cash boxes: the office safe (sheet-synced, per firm) and the owners'
 // reserve safes (company cash too, but not firm-specific → company_id NULL).
-export const BOXES = ["office", "yuriy", "tetiana"] as const;
+export const BOXES = ["office", "yuriy", "tetiana", "hostel"] as const; // hostel = каса головного водія (хостели/авто, Люблін)
 type Box = (typeof BOXES)[number];
 const parseBox = (v: any): Box | undefined => (BOXES as readonly string[]).includes(String(v)) ? (String(v) as Box) : undefined;
 
-// ── Outflow categories ─────────────────────────────────────────────────────────
-// Same key set as the bank expense categories so a future cashflow can merge
-// bank + cash per category; plus cash-only keys: deposit (put on the account,
-// internal) and transfer (box↔box leg, internal). Auto-classified from the
-// description text; manual_category wins when set. First match wins.
-const CASH_AUTO: [key: string, re: RegExp][] = [
-  ["deposit",      /ВПЛАЧЕНО НА РАХУНОК|WPLAC\w* NA RACHUNEK/i],
-  ["marketing",    /DUBAI|REKRUT|TARGET|РЕКРУТ/i],
-  ["salary",       /ЗАРПЛАТ|ZARPLAT|WYPLATA|ДЛЯ ПРАЦІВНИКІВ/i],
-  ["zaliczki",     /ZALICZK|ЗАЛІЧК|АВАНС/i],
-  ["permits",      /ДОВІДК|DOWIDK|MED DOK|DOKI|OSWIADCZEN|OŚWIADCZEN|STUD/i],
-  ["services",     /ПОШТА|ЛИСТИ|POCZTA|DO.ADO.*TEL|ІНТЕРНЕТ/i],
-  ["housing",      /HOSTEL|КВАРТИР|MIESZKAN|ЖИТЛО/i],
-  ["travel",       /HOTEL|BILET|КВИТК|ПОЇЗДК/i],
-  ["office_rent",  /PGE|СВІТЛО|PRAD|PRĄD|ОРЕНДА ОФІС/i],
-  ["household",    /ZAKUPY|WYDATKI|BIUR|KANCELARI|OFFICE|ПРІНТЕР|PRINTER|ОФІСН/i],
-  ["owner_roman",  /SHEF VZIAV|ROMA SHEF|ДЛЯ РОМАНА|DLA ROMANA/i],
-  ["owner_yuriy",  /DLA YURY|ДЛЯ ЮРІЯ|DLA JURIJA/i],
-  ["owner_tetiana",/DLA TANI|ДЛЯ ТЕТЯНИ|DLA TANIA/i],
-];
-export function cashCategory(e: { kind: string; description: string | null; transferGroup: string | null; manualCategory: string | null }): string | null {
-  if (e.kind !== "out") return null;
-  if (e.transferGroup) return "transfer";
-  if (e.manualCategory) return e.manualCategory;
-  const d = e.description ?? "";
-  for (const [key, re] of CASH_AUTO) if (re.test(d)) return key;
-  return "other";
+// ── Categories: helpers + CRUD (cash_categories, службові ключі — в сервісі) ──
+async function catByKey(key: string) { return (await getCashCats()).find(c => c.key === key); }
+async function catKeysFor(flow: "in" | "out"): Promise<Set<string>> {
+  return new Set((await getCashCats()).filter(c => c.flow === flow).map(c => c.key));
 }
-// категорії каси = банківські (з БД) + owner_* + службові cash-only ключі
-async function cashCatKeys(): Promise<Set<string>> {
-  return new Set<string>([...(await getExpenseCats()).map(c => c.key), ...OWNER_KEYS, "other", "deposit"]);
-}
+
+router.get("/cash/categories", async (_req, res) => {
+  const cats = await getCashCats();
+  // per-key usage counts (manual assignments only) — the delete-confirm UX shows them
+  const used = await db.select({ key: cashEntriesTable.manualCategory, n: sql<number>`count(*)` })
+    .from(cashEntriesTable).where(sql`manual_category IS NOT NULL`).groupBy(cashEntriesTable.manualCategory);
+  const usedBy = new Map(used.map(u => [u.key, Number(u.n)]));
+  ok(res, { categories: cats.map(c => ({ ...c, usedCount: usedBy.get(c.key) ?? 0 })) });
+});
+
+// key: транслітерований slug від назви; стабільний, у dropdown не показується
+const slugify = (label: string) => label.toLowerCase()
+  .replace(/[łŁ]/g, "l").normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+
+const CITIES = ["Люблін", "Лодзь", "Познань"];
+const PAYROLLS = ["factory", "office", "cleaning"];
+
+router.post("/cash/categories", async (req, res) => {
+  const { flow, label, city, payroll, requiresDesc } = req.body ?? {};
+  if (flow !== "in" && flow !== "out") return fail(res, 400, "flow must be in|out");
+  const lbl = String(label ?? "").trim();
+  if (!lbl) return fail(res, 400, "label required");
+  if (city != null && city !== "" && !CITIES.includes(city)) return fail(res, 400, "unknown city");
+  if (payroll != null && payroll !== "" && !PAYROLLS.includes(payroll)) return fail(res, 400, "bad payroll kind");
+  const cats = await getCashCats();
+  let key = slugify(lbl) || "cat";
+  if (cats.some(c => c.key === key)) key = `${key}_${Date.now() % 100000}`;
+  const maxSort = Math.max(0, ...cats.filter(c => c.flow === flow && c.sortOrder < 99).map(c => c.sortOrder));
+  const [row] = await db.insert(cashCategoriesTable).values({
+    flow, key, label: lbl, city: city || null, payroll: payroll || null,
+    requiresDesc: !!requiresDesc, sortOrder: maxSort + 1,
+  }).returning();
+  invalidateCashCats();
+  ok(res, row);
+});
+
+router.patch("/cash/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [row] = await db.select().from(cashCategoriesTable).where(eq(cashCategoriesTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  const b = req.body ?? {};
+  const patch: Record<string, unknown> = {};
+  if (b.label !== undefined) { const l = String(b.label).trim(); if (!l) return fail(res, 400, "label required"); patch.label = l; }
+  if (b.city !== undefined) { if (b.city && !CITIES.includes(b.city)) return fail(res, 400, "unknown city"); patch.city = b.city || null; }
+  if (b.payroll !== undefined) { if (b.payroll && !PAYROLLS.includes(b.payroll)) return fail(res, 400, "bad payroll kind"); patch.payroll = b.payroll || null; }
+  if (b.requiresDesc !== undefined) patch.requiresDesc = !!b.requiresDesc;
+  if (b.sortOrder !== undefined) { const s = Number(b.sortOrder); if (!Number.isFinite(s)) return fail(res, 400, "bad sortOrder"); patch.sortOrder = s; }
+  if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
+  const [updated] = await db.update(cashCategoriesTable).set(patch).where(eq(cashCategoriesTable.id, id)).returning();
+  invalidateCashCats();
+  ok(res, updated);
+});
+
+router.delete("/cash/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [row] = await db.select().from(cashCategoriesTable).where(eq(cashCategoriesTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  if (PROTECTED_CASH_KEYS.has(row.key)) return fail(res, 400, "системну категорію не можна видалити");
+  // ручні записи категорії переїжджають у фолбек свого напрямку
+  await db.update(cashEntriesTable).set({ manualCategory: row.flow === "in" ? "other_income" : "other" })
+    .where(eq(cashEntriesTable.manualCategory, row.key));
+  await db.delete(cashCategoriesTable).where(eq(cashCategoriesTable.id, id));
+  invalidateCashCats();
+  ok(res, { ok: true });
+});
 
 // ── Ledger walk ────────────────────────────────────────────────────────────────
 // Months ascending per firm: balance carries over; an explicit sheet opening row
@@ -173,11 +223,16 @@ router.get("/cash/summary", async (req, res) => {
   // internal moves, not real cash in/out, so the totals exclude them
   const consolidated = !box && !companyId;
   if (consolidated) { inflow -= trIn; outflow -= trOut; }
+  // «зафіксовані» межі місяців (причина розбіжності записана) — окремим списком
+  const monthRef = (d: (typeof discrepancies)[number]) => `${d.box}|${d.companyId ?? ""}|${d.month}`;
+  const monthAcks = await acksFor("month", discrepancies.map(monthRef));
+  const withAck = discrepancies.map(d => ({ ...d, ref: monthRef(d), ack: monthAcks.get(monthRef(d)) ?? null }));
   ok(res, {
     year, month: month ?? null, companyId, box: box ?? null,
     opening: round2(opening), inflow: round2(inflow), outflow: round2(outflow), closing: round2(closing),
     boxTotals,
-    discrepancies,
+    discrepancies: withAck.filter(d => !d.ack),
+    ackedDiscrepancies: withAck.filter(d => d.ack),
   });
 });
 
@@ -192,7 +247,7 @@ router.get("/cash/entries", async (req, res) => {
   if (box) conds.push(eq(cashEntriesTable.box, box));
   const rows = await db.select().from(cashEntriesTable).where(and(...conds))
     .orderBy(desc(cashEntriesTable.periodMonth), desc(cashEntriesTable.entryDate), desc(cashEntriesTable.sortIdx), desc(cashEntriesTable.id)).limit(1000);
-  ok(res, { rows: rows.map(r => ({ ...r, editable: r.tabName === MANUAL, category: cashCategory(r) })) });
+  ok(res, { rows: rows.map(r => ({ ...r, editable: r.tabName === MANUAL, category: cashCategoryOf(r) })) });
 });
 
 // category is OUR metadata, so it is settable on sheet rows too (unlike content)
@@ -201,22 +256,44 @@ router.patch("/cash/entries/:id/category", async (req, res) => {
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [row] = await db.select().from(cashEntriesTable).where(eq(cashEntriesTable.id, id));
   if (!row) return fail(res, 404, "not found");
-  if (row.kind !== "out") return fail(res, 400, "категорія лише для видатків");
+  if (row.kind !== "in" && row.kind !== "out") return fail(res, 400, "категорія лише для приходів/видатків");
   if (row.transferGroup) return fail(res, 400, "переміщення не категоризується");
   const category = req.body?.category ?? null; // null → reset to auto
-  if (category != null && !(await cashCatKeys()).has(String(category))) return fail(res, 400, "unknown category");
+  if (category != null && !(await catKeysFor(row.kind as "in" | "out")).has(String(category))) return fail(res, 400, "unknown category");
   const [updated] = await db.update(cashEntriesTable).set({ manualCategory: category }).where(eq(cashEntriesTable.id, id)).returning();
-  ok(res, { ...updated, category: cashCategory(updated!) });
+  ok(res, { ...updated, category: cashCategoryOf(updated!) });
 });
 
+// Validate the category choice for a manual row: expenses always need one,
+// incomes default to 'card' (знято з карти); requires_desc cats need a description.
+async function resolveCategory(kind: string, category: unknown, description: unknown): Promise<{ error?: string; value?: string | null }> {
+  if (kind === "opening") return { value: null };
+  const key = category == null || category === "" ? null : String(category);
+  if (kind === "out") {
+    if (!key) return { error: "оберіть категорію видатку" };
+    const cat = await catByKey(key);
+    if (!cat || cat.flow !== "out") return { error: "unknown category" };
+    if (cat.requiresDesc && !String(description ?? "").trim()) return { error: `категорія «${cat.label}» вимагає опис (за що)` };
+    return { value: key };
+  }
+  // kind === "in"
+  if (!key || key === "card") return { value: "card" };
+  const cat = await catByKey(key);
+  if (!cat || cat.flow !== "in") return { error: "unknown category" };
+  if (cat.requiresDesc && !String(description ?? "").trim()) return { error: `категорія «${cat.label}» вимагає опис` };
+  return { value: key };
+}
+
+// The sheet is retired → every box (incl. office, per firm) accepts an explicit
+// opening row: кадрова's monthly recount. Chain mismatches are reported by summary.
+const KINDS = ["in", "out", "opening"];
+
 router.post("/cash/entries", async (req, res) => {
-  const { companyId, entryDate, kind, amount, description, note } = req.body ?? {};
+  const { companyId, entryDate, kind, amount, description, note, category } = req.body ?? {};
   const box = parseBox(req.body?.box) ?? "office";
-  // office entries belong to a firm; owner safes hold company cash without a firm.
-  // Owner safes have no sheet history, so an explicit opening (inventory count) is allowed.
+  // office entries belong to a firm; owner safes hold company cash without a firm
   if (box === "office" && !companyId) return fail(res, 400, "companyId required");
-  const kinds = box === "office" ? ["in", "out"] : ["in", "out", "opening"];
-  if (!kinds.includes(kind)) return fail(res, 400, `kind must be ${kinds.join("|")}`);
+  if (!KINDS.includes(kind)) return fail(res, 400, `kind must be ${KINDS.join("|")}`);
   if (!validDate(entryDate)) return fail(res, 400, "entryDate must be YYYY-MM-DD");
   const amt = Number(String(amount ?? "").replace(",", "."));
   if (!Number.isFinite(amt) || amt < 0 || (kind !== "opening" && amt <= 0)) return fail(res, 400, "amount must be > 0");
@@ -224,13 +301,15 @@ router.post("/cash/entries", async (req, res) => {
     const [co] = await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, Number(companyId)));
     if (!co) return fail(res, 400, "unknown company");
   }
+  const cat = await resolveCategory(kind, category, description);
+  if (cat.error) return fail(res, 400, cat.error);
   const [row] = await db.insert(cashEntriesTable).values({
     box, companyId: box === "office" ? Number(companyId) : null,
     periodMonth: String(entryDate).slice(0, 7), entryDate: String(entryDate),
     kind, amount: amt, description: description ? String(description).trim() : null, note: note ? String(note).trim() : null,
-    tabName: MANUAL, sortIdx: Math.floor(Date.now() / 1000),
+    manualCategory: cat.value, tabName: MANUAL, sortIdx: Math.floor(Date.now() / 1000),
   }).returning();
-  ok(res, row);
+  ok(res, { ...row, category: cashCategoryOf(row!) });
 });
 
 router.patch("/cash/entries/:id", async (req, res) => {
@@ -238,7 +317,7 @@ router.patch("/cash/entries/:id", async (req, res) => {
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [row] = await db.select().from(cashEntriesTable).where(eq(cashEntriesTable.id, id));
   if (!row) return fail(res, 404, "not found");
-  if (row.tabName !== MANUAL) return fail(res, 400, "записи з таблиці — лише для читання (редагуйте в Google Sheet)");
+  if (row.tabName !== MANUAL) return fail(res, 400, "записи з таблиці — лише для читання");
   if (row.transferGroup) return fail(res, 400, "переміщення не редагується — видаліть його і створіть заново");
   const b = req.body ?? {};
   const patch: Record<string, unknown> = {};
@@ -246,8 +325,7 @@ router.patch("/cash/entries/:id", async (req, res) => {
     if (!validDate(b.entryDate)) return fail(res, 400, "entryDate must be YYYY-MM-DD");
     patch.entryDate = String(b.entryDate); patch.periodMonth = String(b.entryDate).slice(0, 7);
   }
-  const kinds = row.box === "office" ? ["in", "out"] : ["in", "out", "opening"];
-  if (b.kind !== undefined) { if (!kinds.includes(b.kind)) return fail(res, 400, `kind must be ${kinds.join("|")}`); patch.kind = b.kind; }
+  if (b.kind !== undefined) { if (!KINDS.includes(b.kind)) return fail(res, 400, `kind must be ${KINDS.join("|")}`); patch.kind = b.kind; }
   if (b.amount !== undefined) {
     const amt = Number(String(b.amount).replace(",", "."));
     const kind = (patch.kind as string) ?? row.kind;
@@ -256,9 +334,17 @@ router.patch("/cash/entries/:id", async (req, res) => {
   }
   if (b.description !== undefined) patch.description = b.description ? String(b.description).trim() : null;
   if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
+  // re-validate the category whenever it (or kind/description) changes
+  if (b.category !== undefined || b.kind !== undefined) {
+    const kind = (patch.kind as string) ?? row.kind;
+    const desc = b.description !== undefined ? patch.description : row.description;
+    const cat = await resolveCategory(kind, b.category !== undefined ? b.category : row.manualCategory, desc);
+    if (cat.error) return fail(res, 400, cat.error);
+    patch.manualCategory = cat.value;
+  }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(cashEntriesTable).set(patch).where(eq(cashEntriesTable.id, id)).returning();
-  ok(res, updated);
+  ok(res, { ...updated, category: cashCategoryOf(updated!) });
 });
 
 router.delete("/cash/entries/:id", async (req, res) => {
@@ -274,7 +360,7 @@ router.delete("/cash/entries/:id", async (req, res) => {
 });
 
 // ── Transfers: box ↔ box (paired internal legs) or box ↔ bank (single leg) ────
-const BOX_UA: Record<string, string> = { office: "Каса офісу", yuriy: "Сейф Юрія", tetiana: "Сейф Тетяни", bank: "Рахунок" };
+const BOX_UA: Record<string, string> = { office: "Каса офісу", yuriy: "Сейф Юрія", tetiana: "Сейф Тетяни", hostel: "Каса хостелів", bank: "Рахунок" };
 router.post("/cash/transfer", async (req, res) => {
   const { from, to, companyId, entryDate, amount, note } = req.body ?? {};
   const sides = [...BOXES, "bank"];
@@ -346,10 +432,13 @@ export async function reconcileCash(year: string, month: string | undefined, com
     SELECT id, company_id, value_date::text AS d, amount FROM bank_transactions
     WHERE ${sql.raw(BUCKET.cash!)} AND value_date >= ${margin(from, -WINDOW)} AND value_date <= ${margin(to, WINDOW)} ${coCond}`);
   // only the office safe reconciles against bank withdrawals (owner safes are fed from
-  // the kasa); box↔box transfer legs have no bank counterpart by definition
+  // the kasa); box↔box transfer legs have no bank counterpart by definition;
+  // additional incomes (hostel payments, karta pobytu, …) have no bank withdrawal
+  // either — only 'card' incomes participate
   const cashConds = [eq(cashEntriesTable.box, "office"), isNull(cashEntriesTable.transferGroup), gte(cashEntriesTable.periodMonth, margin(from, -WINDOW).slice(0, 7)), lte(cashEntriesTable.periodMonth, margin(to, WINDOW).slice(0, 7)), eq(cashEntriesTable.kind, "in")];
   if (companyId) cashConds.push(eq(cashEntriesTable.companyId, companyId));
-  const cashRows = await db.select().from(cashEntriesTable).where(and(...cashConds));
+  const cashRows = (await db.select().from(cashEntriesTable).where(and(...cashConds)))
+    .filter(e => cashInCategory(e) === "card");
 
   const matchedBank = new Set<number>();
   const matchedCash = new Set<number>();
@@ -411,8 +500,10 @@ export async function reconcileCash(year: string, month: string | undefined, com
     if (!matchedCash.has(k.id)) unmatchedCash.push(k);
   }
   return {
+    unmatchedBank: unmatchedBank.sort((a, b) => a.date.localeCompare(b.date)),
     unmatchedBankIds: unmatchedBank.map(b => b.id),
     unmatchedBankTotal: round2(unmatchedBank.reduce((s, b) => s + b.amount, 0)),
+    unmatchedCash: unmatchedCash.sort((a, b) => a.date.localeCompare(b.date)),
     unmatchedCashIds: unmatchedCash.map(k => k.id),
     unmatchedCashTotal: round2(unmatchedCash.reduce((s, k) => s + k.amount, 0)),
     bankTotal: round2(bankTotal),
@@ -420,11 +511,120 @@ export async function reconcileCash(year: string, month: string | undefined, com
   };
 }
 
+// Attach «зафіксовано» info to unmatched items; acked ones are moved out of the
+// alert totals (they were reviewed — the reason is recorded in the ack note).
+async function acksFor(side: string, refs: string[]): Promise<Map<string, { id: number; note: string | null }>> {
+  if (!refs.length) return new Map();
+  const rows = await db.select().from(cashReconAcksTable)
+    .where(and(eq(cashReconAcksTable.side, side), inArray(cashReconAcksTable.ref, refs)));
+  return new Map(rows.map(r => [r.ref, { id: r.id, note: r.note }]));
+}
+type AckedItem = Item & { ack: { id: number; note: string | null } | null };
+async function splitAcked(side: "bank" | "cash", items: Item[]): Promise<{ open: AckedItem[]; acked: AckedItem[] }> {
+  const acks = await acksFor(side, items.map(i => String(i.id)));
+  const all: AckedItem[] = items.map(i => ({ ...i, ack: acks.get(String(i.id)) ?? null }));
+  return { open: all.filter(i => !i.ack), acked: all.filter(i => i.ack) };
+}
+
 router.get("/cash/reconcile", async (req, res) => {
   const year = /^\d{4}$/.test(String(req.query.year)) ? String(req.query.year) : String(new Date().getFullYear());
   const month = /^(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : undefined;
   const companyId = req.query.companyId ? Number(req.query.companyId) : null;
-  ok(res, { year, month: month ?? null, companyId, ...(await reconcileCash(year, month, companyId)) });
+  const r = await reconcileCash(year, month, companyId);
+  const bank = await splitAcked("bank", r.unmatchedBank);
+  const cash = await splitAcked("cash", r.unmatchedCash);
+  ok(res, {
+    year, month: month ?? null, companyId,
+    bankTotal: r.bankTotal, cashTotal: r.cashTotal,
+    unmatchedBank: bank.open, ackedBank: bank.acked,
+    unmatchedBankIds: bank.open.map(i => i.id),
+    unmatchedBankTotal: round2(bank.open.reduce((s, i) => s + i.amount, 0)),
+    unmatchedCash: cash.open, ackedCash: cash.acked,
+    unmatchedCashIds: cash.open.map(i => i.id),
+    unmatchedCashTotal: round2(cash.open.reduce((s, i) => s + i.amount, 0)),
+  });
+});
+
+// ── Фіксація розбіжності («передивилися, причина відома») ─────────────────────
+const ACK_SIDES = ["bank", "cash", "month", "payroll"];
+router.post("/cash/recon-ack", async (req, res) => {
+  const { side, ref, note } = req.body ?? {};
+  if (!ACK_SIDES.includes(side)) return fail(res, 400, `side must be ${ACK_SIDES.join("|")}`);
+  const r = String(ref ?? "").trim();
+  if (!r) return fail(res, 400, "ref required");
+  const [row] = await db.insert(cashReconAcksTable)
+    .values({ side, ref: r, note: note ? String(note).trim() : null, createdBy: (req as AuthedRequest).admin?.adminId ?? null })
+    .onConflictDoUpdate({ target: [cashReconAcksTable.side, cashReconAcksTable.ref], set: { note: note ? String(note).trim() : null } })
+    .returning();
+  ok(res, row);
+});
+
+router.delete("/cash/recon-ack/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  await db.delete(cashReconAcksTable).where(eq(cashReconAcksTable.id, id));
+  ok(res, { ok: true });
+});
+
+// ── Звірка готівкових ЗП зі сводною ───────────────────────────────────────────
+// Сводна за M виплачується готівкою в M+1 (акруал «місяць мінус 1») → каса
+// місяця K звіряється зі сводною K−1. Каса: видатки зарплатних категорій
+// (payroll≠null) за категорією. Сводна: Σ gotowka рядків міста (фабричні ↔
+// firm≠Klinex по місту, Клінекс ↔ firm=Klinex, офіс ↔ вкладки «Офис …» по
+// місту). Агрегати по містах — свідомо видимі кадровій (вона ці суми й видає);
+// перс. даних тут немає. «Без розбивки» (legacy) віддається довідково.
+router.get("/cash/payroll-reconcile", async (req, res) => {
+  const kasaMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(req.query.month)) ? String(req.query.month) : null;
+  if (!kasaMonth) return fail(res, 400, "month=YYYY-MM required");
+  const [y, m] = kasaMonth.split("-").map(Number);
+  const svodniMonth = `${m === 1 ? y! - 1 : y}-${String(m === 1 ? 12 : m! - 1).padStart(2, "0")}`;
+
+  // каса K: зарплатні видатки за компʼютованою категорією (ручна або авто)
+  const cash = await db.select().from(cashEntriesTable)
+    .where(and(eq(cashEntriesTable.periodMonth, kasaMonth), eq(cashEntriesTable.kind, "out"), isNull(cashEntriesTable.transferGroup)));
+  const kasaByKey = new Map<string, number>();
+  for (const e of cash) {
+    const key = cashCategory(e);
+    if (key) kasaByKey.set(key, round2((kasaByKey.get(key) ?? 0) + e.amount));
+  }
+
+  // сводна K−1: Σ gotowka по групах (сегменти-діти пропускаються)
+  const sv = await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, svodniMonth), isNull(svodniRowsTable.segmentOf)));
+  const svGroup = (pred: (r: (typeof sv)[number]) => boolean) => {
+    let gotowka = 0, unsplit = 0;
+    for (const r of sv) {
+      if (!pred(r)) continue;
+      if (r.konto == null && r.gotowka == null) unsplit = round2(unsplit + (r.doWyplaty ?? 0));
+      else gotowka = round2(gotowka + (r.gotowka ?? 0));
+    }
+    return { gotowka, unsplit };
+  };
+  const isOffice = (r: (typeof sv)[number]) => OFFICE_TAB_RE.test(r.factoryLabel);
+  const svFor = (cat: { payroll: string | null; city: string | null }) => {
+    if (cat.payroll === "factory") return svGroup(r => !isOffice(r) && r.firm !== "Klinex" && r.city === cat.city);
+    if (cat.payroll === "office") return svGroup(r => isOffice(r) && r.city === cat.city);
+    if (cat.payroll === "cleaning") return svGroup(r => !isOffice(r) && r.firm === "Klinex");
+    return null; // legacy «без розбивки» — немає своєї групи у сводній
+  };
+
+  const salaryCats = (await getCashCats()).filter(c => c.flow === "out" && c.payroll);
+  const refs = salaryCats.map(c => `${kasaMonth}|${c.key}`);
+  const acks = await acksFor("payroll", refs);
+  const groups = salaryCats.map(c => {
+    const svTot = svFor(c);
+    const kasa = kasaByKey.get(c.key) ?? 0;
+    const ref = `${kasaMonth}|${c.key}`;
+    return {
+      key: c.key, label: c.label, city: c.city, payroll: c.payroll,
+      kasa, svodni: svTot?.gotowka ?? null, unsplit: svTot?.unsplit ?? 0,
+      diff: svTot ? round2(kasa - svTot.gotowka) : null,
+      ref, ack: acks.get(ref) ?? null,
+    };
+  });
+  const kasaTotal = round2(groups.reduce((s, g) => s + g.kasa, 0));
+  const svodniTotal = round2(groups.reduce((s, g) => s + (g.svodni ?? 0), 0));
+  ok(res, { kasaMonth, svodniMonth, groups, kasaTotal, svodniTotal, diffTotal: round2(kasaTotal - svodniTotal) });
 });
 
 // active firms for the picker (page-gated users can't call /bank/meta)

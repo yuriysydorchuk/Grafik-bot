@@ -666,9 +666,39 @@ export const cashEntriesTable = pgTable("cash_entries", {
   tabName: text("tab_name").notNull(),         // source sheet tab, for traceability
   sortIdx: integer("sort_idx").notNull().default(0), // original row order within the tab
   transferGroup: text("transfer_group"),       // links the two legs of a box↔box transfer (internal move, cancels out in totals)
-  manualCategory: text("manual_category"),     // override for the auto text-based category of an outflow
+  manualCategory: text("manual_category"),     // override for the auto text-based category (outflow: expense cat; inflow: income cat, 'card' = знято з карти)
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 });
+
+// Категорії каси — окремий від банківського довідник (веде кадрова на /cash):
+// flow=out — видатки, flow=in — приходи («знято з карти» / додаткові). Зарплатні
+// категорії несуть payroll (factory | office | cleaning | legacy) і city — по них
+// іде звірка готівкових ЗП зі сводною міста. requires_desc — запис із цією
+// категорією мусить мати опис (напр. «Повернення коштів працівникам»).
+export const cashCategoriesTable = pgTable("cash_categories", {
+  id: serial("id").primaryKey(),
+  flow: text("flow").notNull().default("out"), // out | in
+  key: text("key").notNull().unique(),         // стабільний ключ, живе в cash_entries.manual_category
+  label: text("label").notNull(),
+  city: text("city"),                          // Люблін | Лодзь | Познань (для payroll-категорій)
+  payroll: text("payroll"),                    // factory | office | cleaning | legacy → зарплатна категорія
+  requiresDesc: boolean("requires_desc").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+// Зафіксовані розбіжності звірок каси («передивилися, причина відома»):
+// side=bank (зняття з банку без пари в касі) | cash (прихід каси без пари в банку)
+// | month (відкриття місяця ≠ закриття попереднього) | payroll (готівка ЗП ≠ сводна).
+// ref — id запису (bank/cash) або складений ключ області (month: box|companyId|month,
+// payroll: kasaMonth|catKey). Зняття фіксації = видалення рядка.
+export const cashReconAcksTable = pgTable("cash_recon_acks", {
+  id: serial("id").primaryKey(),
+  side: text("side").notNull(),
+  ref: text("ref").notNull(),
+  note: text("note"),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("cash_recon_acks_uniq").on(t.side, t.ref)]);
 
 // ─── Довідник контрагентів ─────────────────────────────────────────────────────
 // Єдина ідентичність клієнтів/постачальників поверх трьох джерел: KSeF (NIP+назви),
@@ -1158,6 +1188,8 @@ export type BankApiAccount = typeof bankApiAccountsTable.$inferSelect;
 export type Counterparty = typeof counterpartiesTable.$inferSelect;
 export type WorkerBankAccount = typeof workerBankAccountsTable.$inferSelect;
 export type CashEntry = typeof cashEntriesTable.$inferSelect;
+export type CashCategory = typeof cashCategoriesTable.$inferSelect;
+export type CashReconAck = typeof cashReconAcksTable.$inferSelect;
 export type AdminSession = typeof adminSessionsTable.$inferSelect;
 export type LoginEvent = typeof loginEventsTable.$inferSelect;
 export type Penalty = typeof penaltiesTable.$inferSelect;

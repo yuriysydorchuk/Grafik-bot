@@ -158,11 +158,8 @@ export function startScheduler() {
         const r = await syncBankTransactions();
         logger.info({ files: r.files, imported: r.imported, skipped: r.skipped }, "Daily bank statement import");
       } catch (e: any) { logger.warn({ err: e?.message }, "Daily bank import failed"); }
-      try {
-        const { syncCashRegister } = await import("./cashRegister");
-        const c = await syncCashRegister();
-        logger.info({ tabs: c.tabs, entries: c.entries }, "Daily cash register sync");
-      } catch (e: any) { logger.warn({ err: e?.message }, "Daily cash register sync failed"); }
+      // Каса більше не синкається зі STAN KASY (таблиця виведена з експлуатації
+      // 08.2026): записи ведуться на /cash, історія таблиці лишилась read-only.
       try {
         const { syncInvoices } = await import("./invoices");
         const i = await syncInvoices();

@@ -11,7 +11,8 @@ import { sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { BUCKET, OPER, T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP, TXT, catCondition, catCaseExpr, getExpenseCats, periodRange } from "../services/bankClassify";
 import { balanceAt, balanceAtLive, balanceAccountsAt } from "./bank";
-import { cashPosition, cashBoxesAt, cashCategory } from "./cash";
+import { cashPosition, cashBoxesAt } from "./cash";
+import { cashCategory, getCashCats } from "../services/cashCategories";
 import { openObligations, openObligationRows } from "./obligations";
 import { unpaidInvoicesAt } from "./invoices";
 import { ksefReceivablesAt } from "../services/ksef";
@@ -152,15 +153,19 @@ router.get("/cashflow/entries", async (req, res) => {
   const offset = Math.max(Number(req.query.offset) || 0, 0);
 
   const expenseCats = await getExpenseCats();
+  // касові категорії, яких немає в банку (зарплатні розбивки, повернення, …):
+  // банк-сторона порожня, рухи лише готівкові
+  const cashOnlyKeys = new Set((await getCashCats()).filter(c => c.flow === "out" && !expenseCats.some(b => b.key === c.key)).map(c => c.key));
   let bankCond: string | null;
   if (!cat) bankCond = OPER;
   else if (cat === "income") bankCond = BUCKET.income!;
   else if (cat === "vat_refund") bankCond = `direction='in' AND NOT (${T_INTERNAL}) AND (${T_VATREF})`;
   else if (cat.startsWith("owner_") && BUCKET[cat]) bankCond = BUCKET[cat]!;
+  else if (cashOnlyKeys.has(cat)) bankCond = "FALSE";
   else bankCond = catCondition(cat, expenseCats);
   if (!bankCond) { res.status(400).json({ error: "unknown cat" }); return; }
   // готівкова сторона є лише у витратних категорій і виплат власникам
-  const cashApplicable = !cat || cat === "other" || cat.startsWith("owner_") || expenseCats.some(c => c.key === cat);
+  const cashApplicable = !cat || cat === "other" || cat.startsWith("owner_") || expenseCats.some(c => c.key === cat) || cashOnlyKeys.has(cat);
 
   // bank side: top-(offset+limit) rows by date + full count/sums for the filter
   let bankRows: any[] = [], bankTotal = 0, bankIn = 0, bankOut = 0;

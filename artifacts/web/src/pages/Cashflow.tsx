@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Wallet, TrendingUp, TrendingDown, ArrowDownLeft, Search, X } from "lucide-react";
-import { get } from "../lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight, Wallet, TrendingUp, TrendingDown, ArrowDownLeft, Search, X, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { get, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
-import { useCats } from "../lib/financeCats";
+import { useCats, useCashCats } from "../lib/financeCats";
+import { AckNoteModal, type AckTarget } from "../components/AckNoteModal";
 
 interface CatRow { key: string; bank: number; cash: number; total: number }
 interface Data {
@@ -33,7 +34,9 @@ const OWNER_LABELS: Record<string, string> = { owner_roman: "Сидорчук Р
 
 export default function Cashflow() {
   const t = useT();
-  const { label: catLabel } = useCats();
+  const { label: bankLabel } = useCats();
+  const { labels: cashLabels } = useCashCats(); // касові розбивки (зарплати по містах тощо), яких немає в банку
+  const catLabel = (k: string) => bankLabel(k) !== k ? bankLabel(k) : (cashLabels[k] ?? k);
   const now = new Date();
   const [year, setYear] = useState(String(now.getFullYear()));
   const [monthNum, setMonthNum] = useState(String(now.getMonth() + 1).padStart(2, "0"));
@@ -101,6 +104,8 @@ export default function Cashflow() {
               </div>
             </Card>
           </div>
+
+          <CashAlertsBlock year={year} monthNum={monthNum} />
 
           {/* expenses merged bank + cash */}
           <Card className="mt-5 p-0">
@@ -243,12 +248,15 @@ function EntriesPanel({ year, monthNum, initialCat, query, onClose }: { year: st
   const rows = d?.rows ?? [];
 
   const { label: dbLabel, cats } = useCats();
+  const { labels: cashLabels, outCats: cashOutCats } = useCashCats();
   const catLabel = (k: string) =>
     k === "" ? t("Всі рухи") :
     k === "income" ? t("Надходження від клієнтів") :
     k === "vat_refund" ? t("Повернення VAT") :
-    k.startsWith("owner_") ? t(OWNER_LABELS[k] ?? k) : t(dbLabel(k));
-  const catOptions = ["", "income", "vat_refund", ...cats.map(c => c.key), "other", "owner_roman", "owner_tetiana", "owner_yuriy"];
+    k.startsWith("owner_") ? t(OWNER_LABELS[k] ?? k) : t(dbLabel(k) !== k ? dbLabel(k) : (cashLabels[k] ?? k));
+  // + касові категорії, яких немає в банку (зарплатні розбивки, повернення, …)
+  const cashOnlyKeys = cashOutCats.map(c => c.key).filter(k => k !== "deposit" && !cats.some(b => b.key === k) && k !== "other" && !k.startsWith("owner_"));
+  const catOptions = ["", "income", "vat_refund", ...cats.map(c => c.key), ...cashOnlyKeys, "other", "owner_roman", "owner_tetiana", "owner_yuriy"];
 
   return (
     <Card className="mt-4 p-0">
@@ -353,5 +361,103 @@ function PositionCard({ label, icon, total, banks, cash, t }: { label: string; i
       <div className="mt-2 text-2xl font-bold text-slate-800">{zl(total)}</div>
       <div className="mt-1 text-xs text-slate-400">{t("банки {a} · готівка {b}", { a: zl(banks), b: zl(cash) })}</div>
     </Card>
+  );
+}
+
+// ── Каса: рапорт розбіжностей (межі місяців, банк↔каса, ЗП↔сводна) ────────────
+// Ті самі звірки, що на /cash, у компактному вигляді для фінаналізу; фіксація
+// («передивилися, причина відома») доступна і звідси.
+interface CfAck { id: number; note: string | null }
+interface CfDiscrepancy { box: string; companyId: number | null; month: string; entered: number; expected: number; diff: number; ref: string; ack: CfAck | null }
+interface CfRecItem { id: number; date: string; amount: number; ack: CfAck | null }
+interface CfCashSummary { discrepancies: CfDiscrepancy[]; ackedDiscrepancies: CfDiscrepancy[] }
+interface CfCashRec { unmatchedBank: CfRecItem[]; unmatchedBankTotal: number; unmatchedCash: CfRecItem[]; unmatchedCashTotal: number; ackedBank: CfRecItem[]; ackedCash: CfRecItem[] }
+interface CfPayrollGroup { key: string; label: string; payroll: string | null; kasa: number; svodni: number | null; unsplit: number; diff: number | null; ref: string; ack: CfAck | null }
+interface CfPayrollRec { svodniMonth: string; groups: CfPayrollGroup[]; kasaTotal: number; svodniTotal: number; diffTotal: number }
+
+function CashAlertsBlock({ year, monthNum }: { year: string; monthNum: string }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const params = new URLSearchParams({ year });
+  if (monthNum) params.set("month", monthNum);
+  const summary = useQuery<CfCashSummary>({ queryKey: ["cf-cash-summary", params.toString()], queryFn: () => get(`/cash/summary?${params}`) });
+  const rec = useQuery<CfCashRec>({ queryKey: ["cf-cash-rec", params.toString()], queryFn: () => get(`/cash/reconcile?${params}`) });
+  const payroll = useQuery<CfPayrollRec>({
+    queryKey: ["cf-cash-payroll", year, monthNum],
+    queryFn: () => get(`/cash/payroll-reconcile?month=${year}-${monthNum}`),
+    enabled: !!monthNum,
+  });
+  const meta = useQuery<{ companies: { id: number; name: string }[] }>({ queryKey: ["cash-meta"], queryFn: () => get("/cash/meta") });
+  const coName = (id: number | null) => meta.data?.companies.find(c => c.id === id)?.name ?? "—";
+  const BOXES_UA: Record<string, string> = { office: "Каса офісу", yuriy: "Сейф Юрія", tetiana: "Сейф Тетяни", hostel: "Каса хостелів" };
+
+  const invalidate = () => ["cf-cash-summary", "cf-cash-rec", "cf-cash-payroll"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
+  const [ackTarget, setAckTarget] = useState<AckTarget | null>(null);
+  const ackIt = (side: string, ref: string) => setAckTarget({ side, ref });
+  const unack = async (id: number) => { await del(`/cash/recon-ack/${id}`); invalidate(); };
+
+  const s = summary.data, r = rec.data, p = payroll.data;
+  if (!s || !r) return null;
+  // сводна ще без готівкових сум = «ще не заповнена», а не «не сходиться»
+  const svodniReady = (p?.svodniTotal ?? 0) > 0 || (p?.groups ?? []).some(g => (g.svodni ?? 0) > 0 || g.unsplit > 0);
+  const payrollIssues = svodniReady ? (p?.groups ?? []).filter(g => g.diff != null && Math.abs(g.diff) > 1 && !g.ack) : [];
+  const ackedCount = s.ackedDiscrepancies.length + r.ackedBank.length + r.ackedCash.length + (p?.groups ?? []).filter(g => g.ack).length;
+  const hasIssues = s.discrepancies.length > 0 || r.unmatchedBank.length > 0 || r.unmatchedCash.length > 0 || payrollIssues.length > 0;
+
+  if (!hasIssues) {
+    return (
+      <div className="mt-4 flex items-center gap-2 text-sm text-emerald-700">
+        <CheckCircle2 className="h-4 w-4" />
+        {t("Каса: звірки сходяться (межі місяців, банк, зарплати зі сводною)")}
+        {ackedCount > 0 && <span className="text-slate-400">· {t("зафіксованих розбіжностей: {n}", { n: ackedCount })}</span>}
+      </div>
+    );
+  }
+  return (
+    <>
+    <Card className="mt-4 border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      <div className="mb-1 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" />{t("Каса: розбіжності (деталі — на сторінці Каса)")}</div>
+      <ul className="ml-6 list-disc space-y-1">
+        {s.discrepancies.map(d => (
+          <li key={d.ref} className="flex flex-wrap items-center gap-2">
+            <span>{t("межа місяців")} · {d.box === "office" ? coName(d.companyId) : t(BOXES_UA[d.box] ?? d.box)} · {d.month}: {t("вписаний початок {a}, а кінець попереднього місяця {b} (різниця {c})", { a: zl(d.entered), b: zl(d.expected), c: zl(d.diff) })}</span>
+            <button className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium hover:bg-amber-100" onClick={() => ackIt("month", d.ref)}>{t("Зафіксувати")}</button>
+          </li>
+        ))}
+        {r.unmatchedBank.length > 0 && (
+          <li>{t("банк ↔ каса: зняття без пари в касі — {n} на {v}", { n: r.unmatchedBank.length, v: zl(r.unmatchedBankTotal) })}</li>
+        )}
+        {r.unmatchedCash.length > 0 && (
+          <li>{t("банк ↔ каса: приходи в касі без пари в банку — {n} на {v}", { n: r.unmatchedCash.length, v: zl(r.unmatchedCashTotal) })}</li>
+        )}
+        {payrollIssues.map(g => (
+          <li key={g.key} className="flex flex-wrap items-center gap-2">
+            <span>{t("ЗП ↔ сводна {m}", { m: p!.svodniMonth })} · {g.payroll === "legacy" ? t("Зарплати (без розбивки, історія)") : g.label}: {t("каса {a}, сводна {b} (різниця {c})", { a: zl(g.kasa), b: zl(g.svodni ?? 0), c: zl(g.diff!) })}</span>
+            <button className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium hover:bg-amber-100" onClick={() => ackIt("payroll", g.ref)}>{t("Зафіксувати")}</button>
+          </li>
+        ))}
+      </ul>
+      {ackedCount > 0 && (
+        <details className="mt-2 text-xs text-amber-700/80">
+          <summary className="cursor-pointer">{t("Зафіксовані розбіжності: {n}", { n: ackedCount })}</summary>
+          <ul className="mt-1 space-y-0.5">
+            {s.ackedDiscrepancies.map(d => (
+              <li key={d.ref}>{t("межа місяців")} · {d.month}: {zl(d.diff)} — <i>{d.ack?.note || "—"}</i> <button className="underline decoration-dotted" onClick={() => unack(d.ack!.id)}>{t("скасувати")}</button></li>
+            ))}
+            {r.ackedBank.map(b => (
+              <li key={`b${b.id}`}>{t("зняття з банку")} {b.date} · {zl(b.amount)} — <i>{b.ack?.note || "—"}</i> <button className="underline decoration-dotted" onClick={() => unack(b.ack!.id)}>{t("скасувати")}</button></li>
+            ))}
+            {r.ackedCash.map(c => (
+              <li key={`c${c.id}`}>{t("прихід каси")} {c.date} · {zl(c.amount)} — <i>{c.ack?.note || "—"}</i> <button className="underline decoration-dotted" onClick={() => unack(c.ack!.id)}>{t("скасувати")}</button></li>
+            ))}
+            {(p?.groups ?? []).filter(g => g.ack).map(g => (
+              <li key={`p${g.key}`}>{t("ЗП ↔ сводна")} · {g.label}: {zl(g.diff ?? 0)} — <i>{g.ack?.note || "—"}</i> <button className="underline decoration-dotted" onClick={() => unack(g.ack!.id)}>{t("скасувати")}</button></li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </Card>
+    <AckNoteModal target={ackTarget} onClose={() => setAckTarget(null)} onDone={() => { setAckTarget(null); invalidate(); }} />
+    </>
   );
 }
