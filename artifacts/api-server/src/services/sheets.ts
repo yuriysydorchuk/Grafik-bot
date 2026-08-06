@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { availabilityTable, workersTable, factoriesTable, type DayOfWeek, type Shift } from "@workspace/db";
 import { eq, and, or } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { nextWorkerCode } from "../lib/workerCode";
 
 const DAYS: DayOfWeek[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_NAMES_UK: Record<DayOfWeek, string> = {
@@ -210,6 +211,7 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
     if (!worker) {
       const [newWorker] = await db.insert(workersTable).values({
         fullName: row.fullName.trim(),
+        workerCode: await nextWorkerCode(),
         isActive: true,
       }).returning();
       worker = newWorker;

@@ -32,6 +32,8 @@ export interface EurocashRowExtras {
 export interface ParsedHoursRow {
   name: string;
   hours: number;
+  /** ключ фабрики (особистий номер працівника, digits-only) — якщо рядок його містить */
+  key?: string;
   /** розбивка по днях місяця (день 1..31), якщо файл її містить: число =
    *  разом за день (матриця/lista); обʼєкт = по змінах, ключ — № зміни
    *  ("1".."6" → години; ewidencja I/II/III) */
@@ -344,14 +346,70 @@ export function monthFromPolishFilename(filename: string): string | null {
 export function parseFactoryHoursText(text: string): ParsedHoursRow[] {
   const out: ParsedHoursRow[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = collapse(rawLine.replace(/\t/g, " "));
+    // Ключ фабрики на початку рядка: «1234; Kowalski Jan; 168». Роздільник —
+    // лише ; , або таб: «12 Kowalski 168» і «12. Kowalski 168» — нумерація, не ключ.
+    const keyM = /^\s*(\d{1,10})\s*[;,\t]\s*(\S.*)$/.exec(rawLine);
+    const key = keyM?.[1];
+    const line = collapse((keyM?.[2] ?? rawLine).replace(/\t/g, " "));
     if (!line) continue;
     const m = /^(?:\d{1,3}[.)]\s*)?(.+?)[\s;,–—-]+(\d{1,4}(?:[.,]\d{1,2})?|\d{1,4}:[0-5]\d)$/.exec(line);
     if (!m) continue;
     const name = dedupeDoubledName(m[1]!.replace(/[;,–—-]+$/, ""));
     const hours = parseHoursValue(m[2]!);
     if (!name || hours == null) continue;
-    out.push({ name, hours });
+    out.push({ name, hours, ...(key ? { key } : {}) });
+  }
+  return out;
+}
+
+// Клітинка-ключ фабрики з Excel-причудами: «898 357 169» (пробіли всередині),
+// «906,00» (десятковий хвіст), «1 066» (розряди). Не-числова клітинка → null.
+function factoryCodeCell(raw: string): string | null {
+  let s = collapse(raw.replace(/\u00a0/g, " "));
+  s = s.replace(/[.,]0{1,2}$/, "");                                // «906,00» → «906»
+  if (/^\d{1,3}([ ,]\d{3})+$/.test(s)) s = s.replace(/[ ,]/g, ""); // «1 066» / «1,066» → «1066»
+  s = s.replace(/ /g, "");                                          // «898 357 169» → «898357169»
+  return /^\d{1,12}$/.test(s) ? s : null;
+}
+
+// Список «ключ — ім'я» для довідника ключів фабрики. Розуміє обидва порядки:
+// «1234; Kowalski Jan» і таблицю з фабрики «KOWALSKI JAN<tab>1082» — у рядку
+// з роздільниками (таб/;/,) ключ = перша числова клітинка, ім'я = перша з
+// літерами, зайві числа (години) відкидаються — можна вставити той самий
+// список, що й у імпорт годин. Рядки без ключа чи імені (шапки) пропускаються.
+export function parseFactoryCodesText(text: string): { code: string; name: string }[] {
+  const out: { code: string; name: string }[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    let code: string | null = null;
+    let name: string | null = null;
+    const cells = rawLine.includes("\t") ? rawLine.split("\t")
+      : rawLine.includes(";") ? rawLine.split(";")
+      : rawLine.includes(",") ? rawLine.split(",")
+      : null;
+    if (cells) {
+      for (const cRaw of cells) {
+        const c = collapse(cRaw);
+        if (!c) continue;
+        const k = factoryCodeCell(c);
+        if (k != null) { if (code == null) code = k; continue; }
+        if (name == null && /\p{L}/u.test(c)) name = c;
+      }
+    } else {
+      // без роздільників: «789 Nowak Anna [168]» (ключ спереду, хвостові
+      // години відкидаються) або «KOWALSKI JAN 1082» (ключ у кінці)
+      const line = collapse(rawLine);
+      let m = /^(\d{1,10})\s+(\S.*)$/.exec(line);
+      if (m) {
+        code = m[1]!;
+        name = m[2]!.replace(/\s+\d{1,4}(?:[.,:]\d{1,2})?$/, "").trim() || null;
+      } else if ((m = /^(.+?)\s+(\d[\d ,.]*)$/.exec(line)) && /\p{L}/u.test(m[1]!)) {
+        name = m[1]!.trim();
+        code = factoryCodeCell(m[2]!);
+      }
+    }
+    if (!code || !name || !/\p{L}/u.test(name)) continue;
+    out.push({ code, name });
   }
   return out;
 }

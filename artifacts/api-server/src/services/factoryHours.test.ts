@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { hhmmToHours, parseHoursValue, parseFactoryHoursWorkbook, parseFactoryHoursText, dedupeDoubledName, monthFromPolishFilename } from "./factoryHours.ts";
+import { hhmmToHours, parseHoursValue, parseFactoryHoursWorkbook, parseFactoryHoursText, parseFactoryCodesText, dedupeDoubledName, monthFromPolishFilename } from "./factoryHours.ts";
 
 const wbBuf = (aoa: unknown[][], sheetName = "Sheet"): Buffer => {
   const wb = XLSX.utils.book_new();
@@ -182,5 +182,62 @@ test("текст: десяткові, HH:MM, нумерація, таби і т�
     { name: "Admire Kufakunesu", hours: 104 },
     { name: "Artemiev Oleksandr", hours: 152.5 },
     { name: "Jebet Sandra", hours: 140.25 },
+  ]);
+});
+
+test("текст: ключ фабрики на початку рядка («ключ; ім'я; години»)", () => {
+  const rows = parseFactoryHoursText([
+    "1234; Kowalski Jan; 168",       // канонічний формат
+    "0456,Nowak Anna,152,5",         // коми + провідний нуль зберігається
+    "789\tWiśniewski Piotr\t140:30", // таби (вставка з Excel)
+    "Zielinska Maria 120",           // без ключа — як раніше
+    "12. Iksinski Adam 88",          // нумерація з крапкою — НЕ ключ
+  ].join("\n"));
+  assert.deepEqual(rows, [
+    { name: "Kowalski Jan", hours: 168, key: "1234" },
+    { name: "Nowak Anna", hours: 152.5, key: "0456" },
+    { name: "Wiśniewski Piotr", hours: 140.5, key: "789" },
+    { name: "Zielinska Maria", hours: 120 },
+    { name: "Iksinski Adam", hours: 88 },
+  ]);
+});
+
+test("parseFactoryCodesText: список «ключ — ім'я», хвостові години відкидаються", () => {
+  const rows = parseFactoryCodesText([
+    "1234; Kowalski Jan",
+    "789 Nowak Anna",
+    "555; Wiśniewski Piotr; 140",  // той самий список, що і в імпорт годин
+    "Zielinska Maria",             // без ключа — пропускається
+    "777; 888",                    // без імені — пропускається
+    "",
+  ].join("\n"));
+  assert.deepEqual(rows, [
+    { code: "1234", name: "Kowalski Jan" },
+    { code: "789", name: "Nowak Anna" },
+    { code: "555", name: "Wiśniewski Piotr" },
+  ]);
+});
+
+test("parseFactoryCodesText: таблиця фабрики «ім'я<tab>ключ» з Excel-причудами", () => {
+  // реальний формат списку Agram (NR CZIPA): шапки, суфікси посад, числа
+  // з пробілами/десятковим хвостом
+  const rows = parseFactoryCodesText([
+    "PRACOWNICY AGRAM LUBLIN\tNR CZIPA",        // шапка — пропускається
+    "CHINAKIDZWA MITCHELL CHIYEDZA\t1082",
+    "OKSENCHUK VLADYSLAV - wózkowy\t1083",      // суфікс посади лишається в імені (матчер стерпить)
+    "SHYTOVA NATALIIA\t649643996",
+    "PETRENKO OLEKSII\t898 357 169",            // пробіли всередині номера
+    "VOLOKITIN ARTEM\t906,00",                  // Excel-десятковий хвіст
+    "ZALATA SVITLANA\t1 066",                   // розрядний пробіл
+    "SHOKULOV KUVONDIK 888",                    // без таба — ключ у кінці
+  ].join("\n"));
+  assert.deepEqual(rows, [
+    { code: "1082", name: "CHINAKIDZWA MITCHELL CHIYEDZA" },
+    { code: "1083", name: "OKSENCHUK VLADYSLAV - wózkowy" },
+    { code: "649643996", name: "SHYTOVA NATALIIA" },
+    { code: "898357169", name: "PETRENKO OLEKSII" },
+    { code: "906", name: "VOLOKITIN ARTEM" },
+    { code: "1066", name: "ZALATA SVITLANA" },
+    { code: "888", name: "SHOKULOV KUVONDIK" },
   ]);
 });

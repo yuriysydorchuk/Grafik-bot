@@ -11,7 +11,7 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -34,6 +34,7 @@ import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
 import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
+import { nextWorkerCode } from "../lib/workerCode";
 
 const router: IRouter = Router();
 
@@ -319,14 +320,6 @@ router.get("/workers", RW, async (req, res) => {
   }
   ok(res, filtered);
 });
-
-async function nextWorkerCode(): Promise<string> {
-  const [row] = await db
-    .select({ max: sql<number>`coalesce(max(${workersTable.workerCode}::int), 0)` })
-    .from(workersTable)
-    .where(sql`${workersTable.workerCode} ~ '^[0-9]+$'`);
-  return String((row?.max ?? 0) + 1).padStart(5, "0");
-}
 
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
@@ -2819,6 +2812,10 @@ router.post("/hours/factory-confirm", RW, async (req, res) => {
   ok(res, { ok: true, confirmed });
 });
 
+// Нормалізація ключа фабрики (особистого номера працівника) для порівняння:
+// digits-only ключі звіряємо без провідних нулів ("0123" == "123").
+const normFactoryKey = (s: string) => s.trim().replace(/^0+(?=\d)/, "");
+
 // Розбір файла фабрики (Excel, 3 формати) або вставленого списку «ім'я + години»
 // → превʼю з матчингом імен по базі (bot/workerMatch). Нічого не зберігає.
 const uploadHoursFile = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -2871,12 +2868,28 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
     for (const r of await db.select({ workerId: factoryHoursTable.workerId }).from(factoryHoursTable)
       .where(and(eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, parseFactoryId)))) inHours.add(r.workerId);
   }
+  // Ключі фабрики (особисті номери працівників): відомий ключ у рядку файла —
+  // впевнений матч без fuzzy. Порівняння — без провідних нулів ("0123" == "123").
+  const codeByKey = new Map<string, number>();
+  if (parseFactoryId) {
+    for (const c of await db.select().from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.factoryId, parseFactoryId)))
+      codeByKey.set(normFactoryKey(c.code), c.workerId);
+  }
+  const byId = new Map(all.map(w => [w.id, w]));
   const rows = parsed.map(p => {
+    const key = p.key ?? p.extras?.nrOsobowy ?? null;
+    const keyWorker = key != null ? byId.get(codeByKey.get(normFactoryKey(key)) ?? -1) : undefined;
+    if (keyWorker) {
+      return {
+        name: p.name, hours: p.hours, days: p.days ?? null, extras: p.extras ?? null, key, byKey: true,
+        workerId: keyWorker.id, matchName: keyWorker.fullName, candidates: [],
+      };
+    }
     // нижчий поріг кандидатів, ніж у водійському флоу: сильно спотворені
     // прізвища ("Khdvarenko") мають хоч показати людей зі спільним іменем
     const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8, prefer: w => inHours.has(w.id) ? 1 : 0 });
     return {
-      name: p.name, hours: p.hours, days: p.days ?? null, extras: p.extras ?? null,
+      name: p.name, hours: p.hours, days: p.days ?? null, extras: p.extras ?? null, key, byKey: false,
       workerId: m.confident?.id ?? null,
       matchName: m.confident?.fullName ?? null,
       candidates: m.confident ? [] : m.candidates.map(c => ({ id: c.id, name: c.fullName, active: !!c.isActive })),
@@ -2890,7 +2903,7 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   const source = ["excel", "paste"].includes(req.body?.source) ? String(req.body.source) : "excel";
-  const rows: { workerId?: unknown; hours?: unknown; days?: unknown; create?: unknown; name?: unknown; extras?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const rows: { workerId?: unknown; hours?: unknown; days?: unknown; create?: unknown; name?: unknown; extras?: unknown; key?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
   // фірма для СТВОРЮВАНИХ профілів (вкладка мульти-контрактної фабрики знає свою)
   const createCompanyId = req.body?.createCompanyId != null ? Number(req.body.createCompanyId) : null;
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
@@ -2941,8 +2954,104 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     // (null для форматів без extras — застарілі значення не залипають)
     await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days, normFactoryHoursExtras(r.extras));
     saved++;
+    // Ключ фабрики з підтвердженого рядка (вставка або Nr Osobowy Eurocash) —
+    // запам'ятовуємо пару, наступні імпорти заматчаться по ньому без fuzzy.
+    // Ключ, зайнятий іншим працівником цієї фабрики, мовчки пропускаємо.
+    const rawKey = typeof r.key === "string" && r.key.trim()
+      ? r.key : (r.extras as any)?.nrOsobowy;
+    if (typeof rawKey === "string" && rawKey.trim()) {
+      try {
+        await db.insert(workerFactoryCodesTable)
+          .values({ workerId, factoryId, code: normFactoryKey(rawKey) })
+          .onConflictDoUpdate({
+            target: [workerFactoryCodesTable.workerId, workerFactoryCodesTable.factoryId],
+            set: { code: normFactoryKey(rawKey) },
+          });
+      } catch { /* unique (factory, code) — ключ уже за іншим профілем */ }
+    }
   }
   ok(res, { saved, skipped: rows.length - saved, created });
+});
+
+// ── Ключі фабрики: особисті номери працівників у системі фабрики ─────────────
+// Довідник пар «працівник ↔ номер» по фабриці; імпорт годин матчить рядки
+// спершу по цих ключах (без fuzzy), потім по імені.
+
+router.get("/hours/factory-codes", RW, async (req, res) => {
+  const factoryId = Number(req.query.factoryId);
+  if (!factoryId) return fail(res, 400, "factoryId обовʼязковий");
+  const rows = await db.select({
+    id: workerFactoryCodesTable.id, code: workerFactoryCodesTable.code,
+    workerId: workerFactoryCodesTable.workerId, workerName: workersTable.fullName,
+    isActive: workersTable.isActive,
+  }).from(workerFactoryCodesTable)
+    .leftJoin(workersTable, eq(workerFactoryCodesTable.workerId, workersTable.id))
+    .where(eq(workerFactoryCodesTable.factoryId, factoryId));
+  rows.sort((a, b) => (Number(a.code) - Number(b.code)) || a.code.localeCompare(b.code));
+  ok(res, rows);
+});
+
+// Превʼю вставленого списку «ключ; ім'я» → матчинг імен по базі (нічого не зберігає)
+router.post("/hours/factory-codes-parse", RW, async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!factoryId || !text.trim()) return fail(res, 400, "factoryId і text обовʼязкові");
+  const { parseFactoryCodesText } = await import("../services/factoryHours");
+  const parsed = parseFactoryCodesText(text);
+  if (!parsed.length) return fail(res, 400, "Не знайдено жодного рядка «ключ — ім'я»");
+  const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
+    .from(workersTable);
+  const byId = new Map(all.map(w => [w.id, w]));
+  const existing = await db.select().from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.factoryId, factoryId));
+  const codeToWorker = new Map(existing.map(c => [normFactoryKey(c.code), c.workerId]));
+  const rows = parsed.map(p => {
+    const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8 });
+    // ключ уже за ІНШИМ профілем цієї фабрики — показуємо конфлікт у превʼю
+    const holderId = codeToWorker.get(normFactoryKey(p.code)) ?? null;
+    const conflict = holderId != null && holderId !== m.confident?.id ? byId.get(holderId) : null;
+    return {
+      code: p.code, name: p.name,
+      workerId: m.confident?.id ?? null, matchName: m.confident?.fullName ?? null,
+      candidates: m.confident ? [] : m.candidates.map(c => ({ id: c.id, name: c.fullName, active: !!c.isActive })),
+      conflictName: conflict?.fullName ?? null,
+    };
+  });
+  ok(res, { rows });
+});
+
+// Масове збереження підтвердженого превʼю: upsert пари працівник↔ключ.
+// Ключ, зайнятий іншим профілем фабрики, не перезаписується — у conflicts
+// (звільни його видаленням старої пари).
+router.post("/hours/factory-codes-apply", RW, async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const rows: { workerId?: unknown; code?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!factoryId) return fail(res, 400, "factoryId обовʼязковий");
+  if (!rows.length) return fail(res, 400, "Порожній список рядків");
+  const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  let saved = 0;
+  const conflicts: string[] = [];
+  for (const r of rows) {
+    const workerId = Number(r.workerId);
+    const code = typeof r.code === "string" ? normFactoryKey(r.code) : "";
+    if (!workerId || !code) continue;
+    try {
+      await db.insert(workerFactoryCodesTable).values({ workerId, factoryId, code })
+        .onConflictDoUpdate({
+          target: [workerFactoryCodesTable.workerId, workerFactoryCodesTable.factoryId],
+          set: { code },
+        });
+      saved++;
+    } catch { conflicts.push(code); }
+  }
+  ok(res, { saved, skipped: rows.length - saved, conflicts });
+});
+
+router.delete("/hours/factory-codes/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return fail(res, 400, "Невірний id");
+  await db.delete(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.id, id));
+  ok(res, { ok: true });
 });
 
 // Позмінна звірка для листа: коли рапорт ≠ фабрика, але рапорт = нашим

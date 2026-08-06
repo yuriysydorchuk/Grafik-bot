@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, upload } from "../lib/api";
 import { monthOptions } from "../lib/dates";
@@ -77,6 +77,7 @@ export default function Hours() {
   // Ключі груп, для яких відкриті модалки (сам Group береться свіжим із query —
   // так лист/превʼю живо перераховуються після правок годин)
   const [importKey, setImportKey] = useState<string | null>(null);
+  const [facKeysKey, setFacKeysKey] = useState<string | null>(null); // модалка «Ключі фабрики» (особисті номери працівників)
   const [emailKey, setEmailKey] = useState<string | null>(null);
   const [notifyKey, setNotifyKey] = useState<string | null>(null); // розсилка «підтверди свої години» у бот
   // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
@@ -348,6 +349,13 @@ export default function Hours() {
                       <UploadIcon className="h-3.5 w-3.5" /> {t("Імпорт годин фабрики")}
                     </button>
                   )}
+                  {canEdit && g.factoryId != null && (
+                    <button onClick={() => setFacKeysKey(g.key)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      title={t("Ключі фабрики: особисті номери працівників у системі фабрики — імпорт годин матчить по них")}>
+                      <KeyRound className="h-3.5 w-3.5" /> {t("Ключі")}
+                    </button>
+                  )}
                   {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
                     <button onClick={() => setNotifyKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
@@ -519,6 +527,10 @@ export default function Hours() {
       {(() => {
         const ng = notifyKey ? groups.find(g => g.key === notifyKey) : null;
         return ng?.factoryId != null ? <NotifyAskModal group={ng} month={month} onClose={() => setNotifyKey(null)} /> : null;
+      })()}
+      {(() => {
+        const kg = facKeysKey ? groups.find(g => g.key === facKeysKey) : null;
+        return kg?.factoryId != null ? <FactoryKeysModal group={kg} onClose={() => setFacKeysKey(null)} /> : null;
       })()}
       {(() => {
         // групи беруться свіжими з query — правки годин живо оновлюють модалки
@@ -933,7 +945,7 @@ function AddFactoryDayRow({ nShifts, month, onAdd, pending }: { nShifts: number;
 // extras формату eurocash: нічні/продуктивність/ставка агенції/потроненя —
 // зберігаються з годинами і їдуть у сводну (ставка від порогу продуктивності)
 type EcExtras = { nocneH?: number; produktywnosc?: number; stawkaAgencji?: number; potracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string };
-interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; extras: EcExtras | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
+interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; extras: EcExtras | null; key: string | null; byKey?: boolean; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
 
 // Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
 // з матчингом імен (bot/workerMatch) → масове збереження.
@@ -987,8 +999,8 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
         .map((r, i) => ({ r, i }))
         .filter(({ i }) => checked[i] && (picked[i] != null || createSel[i]))
         .map(({ r, i }) => picked[i] != null
-          ? { workerId: picked[i]!, hours: r.hours, days: r.days, extras: r.extras }
-          : { create: true, name: r.name, hours: r.hours, days: r.days, extras: r.extras });
+          ? { workerId: picked[i]!, hours: r.hours, days: r.days, extras: r.extras, key: r.key ?? undefined }
+          : { create: true, name: r.name, hours: r.hours, days: r.days, extras: r.extras, key: r.key ?? undefined });
       return post<{ saved: number; skipped: number; created: number }>("/hours/factory-apply", {
         month, factoryId: group.factoryId, source: srcKind, rows: out,
         ...(createCompanyId !== "" ? { createCompanyId } : {}),
@@ -1031,16 +1043,18 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
             <div className="h-px flex-1 bg-slate-200" />{t("або")}<div className="h-px flex-1 bg-slate-200" />
           </div>
           <div>
-            <Label>{t("Вставити список «ім'я — години» (по рядку на людину)")}</Label>
+            <Label>{t("Вставити список «ім'я — години» або «ключ; ім'я; години» (по рядку на людину)")}</Label>
             <textarea value={text} onChange={e => setText(e.target.value)} rows={8}
-              placeholder={"Kowalski Jan 168\nNowak Anna — 152,5\nWiśniewski Piotr 140:30"}
+              placeholder={"Kowalski Jan 168\nNowak Anna — 152,5\n1234; Wiśniewski Piotr; 140:30"}
               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:border-red-300" />
             <div className="mt-2 flex justify-end">
               <Button onClick={() => parse.mutate(null)} loading={parse.isPending} disabled={!text.trim()}>{t("Розібрати")}</Button>
             </div>
           </div>
         </div>
-      ) : (
+      ) : (() => {
+        const hasKeys = rows.some(r => r.key);
+        return (
         <div className="space-y-3">
           {monthDetected && monthDetected !== month && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
@@ -1053,6 +1067,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
               <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
                 <tr>
                   <th className="px-3 py-2" />
+                  {hasKeys && <th className="px-3 py-2">{t("Ключ")}</th>}
                   <th className="px-3 py-2">{t("Ім'я у файлі")}</th>
                   <th className="px-3 py-2 text-right">{t("Години")}</th>
                   {format === "eurocash" && (
@@ -1070,6 +1085,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
                 {rows.map((r, i) => (
                   <tr key={i} className={checked[i] ? "" : "opacity-50"}>
                     <td className="px-3 py-2"><input type="checkbox" checked={!!checked[i]} onChange={e => setChecked(c => ({ ...c, [i]: e.target.checked }))} className="h-4 w-4 accent-red-600" /></td>
+                    {hasKeys && <td className="px-3 py-2 tabular-nums text-slate-500">{r.key ?? "—"}</td>}
                     <td className="px-3 py-2 font-medium text-slate-700">{r.name}</td>
                     <td className="px-3 py-2 text-right font-semibold text-slate-700">{r.hours}</td>
                     {format === "eurocash" && (
@@ -1082,7 +1098,9 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
                     )}
                     <td className="px-3 py-2">
                       {r.workerId != null ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700"><Check className="h-3.5 w-3.5" /> {r.matchName}</span>
+                        <span className="inline-flex items-center gap-1 text-emerald-700" title={r.byKey ? t("Заматчено по ключу фабрики") : undefined}>
+                          {r.byKey ? <KeyRound className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />} {r.matchName}
+                        </span>
                       ) : (() => {
                         // «Чи це та сама людина?»: пропонуються ЛИШЕ люди з рапортом
                         // без збігу з фабрикою, найближчі за годинами — вгорі.
@@ -1142,7 +1160,146 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
             </Button>
           </div>
         </div>
-      )}
+        );
+      })()}
+    </Modal>
+  );
+}
+
+// Ключі фабрики: особисті номери працівників у системі фабрики (Nr Osobowy).
+// Імпорт годин матчить рядки спершу по цих ключах — без fuzzy по імені.
+// Масова заливка: вставлений список «ключ; ім'я» → превʼю з матчингом → збереження.
+function FactoryKeysModal({ group, onClose }: { group: Group; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const factoryId = group.factoryId!;
+  interface KeyItem { id: number; code: string; workerId: number; workerName: string | null; isActive: boolean | null }
+  interface KeyRow { code: string; name: string; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[]; conflictName: string | null }
+  const { data: keys = [] } = useQuery<KeyItem[]>({
+    queryKey: ["factory-codes", factoryId],
+    queryFn: () => get(`/hours/factory-codes?factoryId=${factoryId}`),
+  });
+  const [text, setText] = useState("");
+  const [rows, setRows] = useState<KeyRow[] | null>(null);
+  const [picked, setPicked] = useState<Record<number, number | null>>({});
+  const parse = useMutation({
+    mutationFn: () => post<{ rows: KeyRow[] }>("/hours/factory-codes-parse", { factoryId, text }),
+    onSuccess: r => {
+      setRows(r.rows);
+      const p: Record<number, number | null> = {};
+      r.rows.forEach((row, i) => { p[i] = row.workerId; });
+      setPicked(p);
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const apply = useMutation({
+    mutationFn: () => post<{ saved: number; conflicts: string[] }>("/hours/factory-codes-apply", {
+      factoryId,
+      rows: (rows ?? []).map((r, i) => ({ code: r.code, workerId: picked[i] })).filter(r => r.workerId != null),
+    }),
+    onSuccess: r => {
+      toast.success(t("Збережено ключів: {n}", { n: r.saved }), {
+        description: r.conflicts.length ? t("Зайняті іншими профілями: {codes}", { codes: r.conflicts.join(", ") }) : undefined,
+      });
+      qc.invalidateQueries({ queryKey: ["factory-codes", factoryId] });
+      setRows(null); setText("");
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const removeKey = useMutation({
+    mutationFn: (id: number) => del(`/hours/factory-codes/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["factory-codes", factoryId] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+  const nSelected = rows ? rows.filter((_, i) => picked[i] != null).length : 0;
+  return (
+    <Modal open onClose={onClose} title={`${t("Ключі фабрики")} — ${group.name}`} size="lg">
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">{t("Особисті номери працівників у системі фабрики. Імпорт годин матчить рядки «ключ; ім'я; години» спершу по цих ключах — надійніше за матч по імені.")}</p>
+        {!rows ? (
+          <>
+            <div>
+              <Label>{t("Вставити список «ключ; ім'я» (по рядку на людину)")}</Label>
+              <textarea value={text} onChange={e => setText(e.target.value)} rows={6}
+                placeholder={"1234; Kowalski Jan\n5678; Nowak Anna"}
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:border-red-300" />
+              <div className="mt-2 flex justify-end">
+                <Button onClick={() => parse.mutate()} loading={parse.isPending} disabled={!text.trim()}>{t("Розібрати")}</Button>
+              </div>
+            </div>
+            {keys.length > 0 ? (
+              <div className="max-h-[40vh] overflow-y-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+                    <tr>
+                      <th className="px-3 py-2">{t("Ключ")}</th>
+                      <th className="px-3 py-2">{t("Працівник")}</th>
+                      <th className="px-3 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {keys.map(k => (
+                      <tr key={k.id}>
+                        <td className="px-3 py-2 font-medium tabular-nums text-slate-700">{k.code}</td>
+                        <td className="px-3 py-2 text-slate-700">{k.workerName ?? "—"}{k.isActive === false && <span className="ml-1.5 text-xs text-slate-400">({t("звільнений")})</span>}</td>
+                        <td className="px-3 py-2 text-right">
+                          <button onClick={() => removeKey.mutate(k.id)} disabled={removeKey.isPending}
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити ключ")}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">{t("Ключів для цієї фабрики ще немає.")}</p>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="max-h-[50vh] overflow-y-auto rounded-xl border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+                  <tr>
+                    <th className="px-3 py-2">{t("Ключ")}</th>
+                    <th className="px-3 py-2">{t("Ім'я у файлі")}</th>
+                    <th className="px-3 py-2">{t("Працівник у базі")}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {rows.map((r, i) => (
+                    <tr key={i} className={picked[i] != null ? "" : "opacity-60"}>
+                      <td className="px-3 py-2 font-medium tabular-nums text-slate-700">{r.code}</td>
+                      <td className="px-3 py-2 text-slate-700">{r.name}</td>
+                      <td className="px-3 py-2">
+                        {r.workerId != null && picked[i] === r.workerId ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-700"><Check className="h-3.5 w-3.5" /> {r.matchName}</span>
+                        ) : (
+                          <Select value={picked[i] ?? ""} onChange={e => setPicked(p => ({ ...p, [i]: e.target.value ? Number(e.target.value) : null }))} className="w-full">
+                            <option value="">{r.candidates.length ? t("— вибери, якщо це та сама людина —") : t("не знайдено в базі")}</option>
+                            {r.candidates.map(c => <option key={c.id} value={c.id}>{c.name}{c.active ? "" : ` (${t("звільнений")})`}</option>)}
+                          </Select>
+                        )}
+                        {r.conflictName && (
+                          <div className="mt-0.5 text-xs text-amber-600">{t("Ключ зараз за: {name} — збереження пропустить його, спершу видали стару пару", { name: r.conflictName })}</div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between">
+              <button onClick={() => setRows(null)} className="text-sm text-slate-500 underline-offset-2 hover:underline">{t("← Назад до списку")}</button>
+              <Button onClick={() => apply.mutate()} loading={apply.isPending} disabled={!nSelected}>
+                <Check className="h-4 w-4" /> {t("Зберегти {n} ключів", { n: nSelected })}
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
     </Modal>
   );
 }

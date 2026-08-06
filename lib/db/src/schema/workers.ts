@@ -83,6 +83,20 @@ export const workersTable = pgTable("workers", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Особисті номери працівників у системах фабрик (Nr Osobowy: Agram, Poznań…).
+// Імпорт годин матчить рядок спершу по цьому ключу, потім fuzzy по імені.
+// Код — digits-only рядок; порівнюється без провідних нулів ("0123" == "123").
+export const workerFactoryCodesTable = pgTable("worker_factory_codes", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  code: text("code").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("worker_factory_codes_worker_factory_uniq").on(t.workerId, t.factoryId),
+  uniqueIndex("worker_factory_codes_factory_code_uniq").on(t.factoryId, t.code),
+]);
+
 export const driversTable = pgTable("drivers", {
   id: serial("id").primaryKey(),
   telegramId: text("telegram_id").unique(),
