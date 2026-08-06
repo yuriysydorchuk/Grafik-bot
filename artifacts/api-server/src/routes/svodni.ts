@@ -1370,10 +1370,15 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     ));
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
   const hoursByPair = new Map<string, { workerId: number; factoryId: number | null; hours: number }>();
+  // остання ТОЧНА дата активності місяця по людині (явки; нижче — дні з файлу
+  // фабрики): маркер «не оформлений» для звільнених ранішою датою
+  const lastActByWorker = new Map<number, string>();
+  const bumpAct = (w: number, date: string) => { if (date > (lastActByWorker.get(w) ?? "")) lastActByWorker.set(w, date); };
   for (const r of att) {
     if (!r.workerId) continue;
     const date = entryDateStr(String(r.weekStart), r.day);
     if (date < monthStart || date >= monthEnd) continue;
+    bumpAct(r.workerId, date);
     const cur = hoursByPair.get(key2(r.workerId, r.factoryId))
       ?? hoursByPair.set(key2(r.workerId, r.factoryId), { workerId: r.workerId, factoryId: r.factoryId, hours: 0 }).get(key2(r.workerId, r.factoryId))!;
     cur.hours += r.hoursOverride ?? factoryShiftHours(r.factoryId != null ? facById.get(r.factoryId) : undefined, r.shift as any);
@@ -1432,6 +1437,26 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
   const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
   const wById = new Map(workers.map(w => [w.id, w]));
+  // дні з файлу фабрики (factory_hours.days) — теж точні дати активності
+  {
+    const { factoryHoursTable } = await import("@workspace/db");
+    const fhDays = await db.select({ workerId: factoryHoursTable.workerId, days: factoryHoursTable.days })
+      .from(factoryHoursTable).where(and(eq(factoryHoursTable.month, month), inArray(factoryHoursTable.workerId, workerIds)));
+    for (const r of fhDays) for (const d of Object.keys(r.days ?? {})) bumpAct(r.workerId, d);
+  }
+  // «Не оформлений»: людина звільнена, а точні дати активності місяця ПІЗНІШІ
+  // за дату звільнення (або звільнена ще до початку місяця, а години є) —
+  // період після звільнення юридично не оформлений. Позначка ставиться в
+  // статус рядка (extras.zusStatus) ПІСЛЯ applyLegalDefaults: суто текст у
+  // колонці статусу, розклад konto/готівки не зачіпає (legalStatusOf її не знає).
+  const localDayStr = (v: Date) => `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  const isUnregistered = (w: typeof workers[number], pairHours: number): boolean => {
+    if (w.isActive || !w.firedAt || pairHours <= 0) return false;
+    const fired = localDayStr(new Date(w.firedAt));
+    if (fired < monthStart) return true;
+    const lastAct = lastActByWorker.get(w.id);
+    return lastAct != null && fired < lastAct;
+  };
   // Мульти-контрактні фабрики — ЛИШЕ явний прапорець factories.multi_firm
   // (Sushi&Food: Klinex + аутсорсинг). Вивід з фірм працівників був багом:
   // разова підміна/помилка профілю ділила вкладки одноконтрактних клієнтів
@@ -1633,9 +1658,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
       applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
+      const unregU = isUnregistered(w, r2(pair.hours));
+      if (unregU) merged.extras = { ...merged.extras, zusStatus: "не оформлений" };
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
-        ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia, extras: merged.extras } : {}),
+        ...(ec || unregU ? { extras: merged.extras } : {}),
+        ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia } : {}),
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
         ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
@@ -1669,6 +1697,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
     applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
+    if (isUnregistered(w, r2(pair.hours))) row.extras = { ...row.extras, zusStatus: "не оформлений" };
     await db.insert(svodniRowsTable).values(row);
     created++;
   }

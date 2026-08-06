@@ -9,7 +9,7 @@
 // нульовим рядком під своєю поточною фабрикою.
 import { db } from "@workspace/db";
 import {
-  companiesTable, factoriesTable, factoryHoursTable, hoursNotesTable, monthlyReportsTable,
+  companiesTable, factoriesTable, factoryHoursTable, hoursMonthExclusionsTable, hoursNotesTable, monthlyReportsTable,
   scheduleEntriesTable, scheduleWeeksTable, workersTable,
 } from "@workspace/db";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
@@ -56,6 +56,8 @@ const rowKey = (workerId: number, factoryId: number | null) => `${workerId}|${fa
 export async function buildHoursMergedRows(month: string): Promise<{
   rows: HoursMergedRow[];
   facById: Map<number, FactoryRow>;
+  /** активні, приховані з цього місяця (hours_month_exclusions) — для чипа «приховані» на вкладці фабрики */
+  excluded: { workerId: number; name: string; factoryId: number | null; reason: string }[];
 }> {
   const [y, m] = month.split("-").map(Number);
   const monthStart = `${month}-01`;
@@ -71,12 +73,14 @@ export async function buildHoursMergedRows(month: string): Promise<{
     id: number; fullName: string; code: string | null; positionId: number | null;
     factoryId: number | null; rate: number | null; isStudent: boolean | null; under26: boolean | null;
     legalStatus: string | null; birthDate: string | Date | null; isActive: boolean;
+    employmentStartDate?: string | Date | null; createdAt?: string | Date | null;
   };
   const workerMetaCols = {
     id: workersTable.id, fullName: workersTable.fullName, code: workersTable.workerCode,
     positionId: workersTable.positionId, factoryId: workersTable.factoryId,
     rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate, isActive: workersTable.isActive,
+    employmentStartDate: workersTable.employmentStartDate, createdAt: workersTable.createdAt,
   };
 
   const blankRow = (w: WorkerMeta, factoryId: number | null): HoursMergedRow => {
@@ -137,11 +141,27 @@ export async function buildHoursMergedRows(month: string): Promise<{
   }
 
   // Всі активні працівники — навіть без жодної зміни місяця (нульовий рядок
-  // під поточною фабрикою), щоб було видно, хто не здав рапорт.
+  // під поточною фабрикою), щоб було видно, хто не здав рапорт. Але:
+  //  • людина потрапляє в списки лише від дати працевлаштування (нема — від
+  //    створення профілю): найнятий у серпні не висить у липневому обліку;
+  //  • виключені на цей місяць (hours_month_exclusions: прибрано вручну /
+  //    відпустка / ще не приступив) — ховаються, поки нема реальних даних.
+  const dayStr = (v: string | Date | null | undefined): string | null => {
+    if (!v) return null;
+    if (typeof v === "string") return v.slice(0, 10);
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  };
+  const exclusionRows = await db.select().from(hoursMonthExclusionsTable).where(eq(hoursMonthExclusionsTable.month, month));
+  const exclusionByWorker = new Map(exclusionRows.map(e => [e.workerId, e.reason]));
   const activeWorkers = await db.select(workerMetaCols).from(workersTable).where(eq(workersTable.isActive, true));
   const workersWithRows = new Set<number>([...byKey.values()].map(w => w.workerId));
+  const excluded: { workerId: number; name: string; factoryId: number | null; reason: string }[] = [];
   for (const aw of activeWorkers) {
     if (workersWithRows.has(aw.id)) continue;
+    const startStr = dayStr(aw.employmentStartDate) ?? dayStr(aw.createdAt);
+    if (startStr != null && startStr >= monthEnd) continue; // приступив після цього місяця
+    const reason = exclusionByWorker.get(aw.id);
+    if (reason) { excluded.push({ workerId: aw.id, name: aw.fullName, factoryId: aw.factoryId, reason }); continue; }
     byKey.set(rowKey(aw.id, aw.factoryId), blankRow(aw, aw.factoryId));
   }
   const curFacByWorker = new Map(activeWorkers.map(a => [a.id, a.factoryId]));
@@ -222,5 +242,5 @@ export async function buildHoursMergedRows(month: string): Promise<{
     row.createdViaImport = importCreated.has(row.workerId);
   }
 
-  return { rows: [...byKey.values()], facById };
+  return { rows: [...byKey.values()], facById, excluded };
 }

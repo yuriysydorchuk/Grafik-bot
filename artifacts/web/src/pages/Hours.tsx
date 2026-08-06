@@ -33,6 +33,11 @@ interface HourRow {
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
+// активний працівник, прихований з місяця (hours_month_exclusions)
+interface ExcludedInfo { workerId: number; name: string; factoryId: number | null; reason: string }
+const EXCL_REASON_LABEL: Record<string, string> = { manual: "прибрано", vacation: "відпустка", not_started: "ще не приступив" };
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const ddmm = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 
 // Звірка «рапорт працівника vs години фабрики» для підсвітки рядка:
 // match — обидва є і збігаються (±0.01), mismatch — розходяться, partial — є лише одне.
@@ -85,9 +90,15 @@ export default function Hours() {
   // жодних явок/рапортів — вкладка зʼявиться після збереження годин).
   // Типовий кейс — Eurocash: графік не ведеться в системі, всі дані з файлу.
   const [importFacId, setImportFacId] = useState<number | null>(null);
+  // мультивибір рядків (по людині) → групові дії: прибрати зі списку місяця / звільнити з датою
+  const [selWorkers, setSelWorkers] = useState<Record<number, boolean>>({});
+  useEffect(() => setSelWorkers({}), [month]);
+  const [fireIds, setFireIds] = useState<number[] | null>(null);       // модалка звільнення
+  const [hiddenFor, setHiddenFor] = useState<{ factoryId: number | null; name: string } | null>(null); // модалка «приховані»
+  const [leftoverKey, setLeftoverKey] = useState<string | null>(null); // «залишки» після імпорту годин
   const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
-  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
+  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
   });
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
@@ -103,6 +114,20 @@ export default function Hours() {
       toast.success(t("Профіль видалено"));
       qc.invalidateQueries({ queryKey: ["hours", month] });
       qc.invalidateQueries({ queryKey: ["workers"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const selIds = useMemo(() => Object.entries(selWorkers).filter(([, v]) => v).map(([k]) => Number(k)), [selWorkers]);
+  const nameById = useMemo(() => new Map((data?.workers ?? []).map(w => [w.workerId, w.name])), [data]);
+  // «Прибрати зі списку місяця»: ховає лише порожній авто-рядок людини; реальні
+  // дані (явки/рапорт/години фабрики) повертають рядок автоматично
+  const excludeSel = useMutation({
+    mutationFn: (p: { workerIds: number[]; reason: string }) =>
+      post<{ saved: number }>("/hours/exclusions", { month, items: p.workerIds.map(id => ({ workerId: id, reason: p.reason })) }),
+    onSuccess: (r) => {
+      toast.success(t("Приховано зі списку місяця: {n}", { n: r.saved }));
+      setSelWorkers({});
+      qc.invalidateQueries({ queryKey: ["hours", month] });
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -351,6 +376,16 @@ export default function Hours() {
                       <KeyRound className="h-3.5 w-3.5" /> {t("Ключі")}
                     </button>
                   )}
+                  {(() => {
+                    const hid = (data?.excluded ?? []).filter(e => e.factoryId === g.factoryId);
+                    return hid.length > 0 ? (
+                      <button onClick={() => setHiddenFor({ factoryId: g.factoryId, name: g.name })}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-100"
+                        title={t("Приховані з цього місяця працівники (прибрані вручну / відпустка / ще не приступили)")}>
+                        {t("приховано {n}", { n: hid.length })}
+                      </button>
+                    ) : null;
+                  })()}
                   {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
                     <button onClick={() => setNotifyKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
@@ -385,6 +420,7 @@ export default function Hours() {
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
                       <tr>
+                        {canEdit && <th className="w-8 px-2 py-2.5" />}
                         <th className="px-4 py-2.5">{t("Працівник")}</th><th className="px-4 py-2.5">{t("Код")}</th>
                         {cols.map(c => <th key={c} className="px-3 py-2.5 text-center">{c} {t("зм")}</th>)}
                         <th className="px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="px-4 py-2.5 text-right">{t("Години")}</th>
@@ -399,6 +435,11 @@ export default function Hours() {
                       {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
                       {g.rows.map(w => (
                         <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }} className="cursor-pointer hover:bg-red-50/40">
+                          {canEdit && (
+                            <td className="px-2 py-2.5" onClick={e => e.stopPropagation()}>
+                              <input type="checkbox" checked={!!selWorkers[w.workerId]} onChange={e => setSelWorkers(s => ({ ...s, [w.workerId]: e.target.checked }))} className="h-4 w-4 accent-red-600" />
+                            </td>
+                          )}
                           <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
                             {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
                             {w.name}
@@ -426,7 +467,7 @@ export default function Hours() {
                     </tbody>
                     <tfoot>
                       <tr className="bg-slate-50 font-semibold text-slate-700">
-                        <td className="px-4 py-2.5" colSpan={2 + cols.length}>{t("Разом по фабриці")}</td>
+                        <td className="px-4 py-2.5" colSpan={(canEdit ? 3 : 2) + cols.length}>{t("Разом по фабриці")}</td>
                         <td className="px-4 py-2.5 text-center">{g.shifts}</td>
                         <td className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>
                         <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>
@@ -527,6 +568,37 @@ export default function Hours() {
         const kg = facKeysKey ? groups.find(g => g.key === facKeysKey) : null;
         return kg?.factoryId != null ? <FactoryKeysModal group={kg} onClose={() => setFacKeysKey(null)} /> : null;
       })()}
+      {selIds.length > 0 && canEdit && (
+        <div className="fixed inset-x-0 bottom-4 z-40 mx-auto flex w-fit items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-lg">
+          <span className="text-sm font-medium text-slate-700">{t("Вибрано: {n}", { n: selIds.length })}</span>
+          <button onClick={() => excludeSel.mutate({ workerIds: selIds, reason: "manual" })} disabled={excludeSel.isPending}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            title={t("Прибрати порожні рядки цих людей з поточного місяця (реальні дані повернуть рядок)")}>
+            {t("Прибрати зі списку місяця")}
+          </button>
+          <button onClick={() => setFireIds(selIds)}
+            className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
+            {t("Звільнити…")}
+          </button>
+          <button onClick={() => setSelWorkers({})} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X className="h-4 w-4" /></button>
+        </div>
+      )}
+      {fireIds && (
+        <FireWorkersModal workers={fireIds.map(id => ({ id, name: nameById.get(id) ?? `#${id}` }))}
+          onClose={() => setFireIds(null)} onDone={() => setSelWorkers({})} />
+      )}
+      {hiddenFor && (
+        <HiddenWorkersModal name={hiddenFor.name} month={month}
+          items={(data?.excluded ?? []).filter(e => e.factoryId === hiddenFor.factoryId)}
+          onClose={() => setHiddenFor(null)} />
+      )}
+      {leftoverKey && !isFetching && (() => {
+        const lg = groups.find(g => g.key === leftoverKey);
+        const leftovers = lg ? lg.rows.filter(r => r.shifts === 0 && r.reportHours == null && r.factoryHours == null) : [];
+        return lg && leftovers.length > 0
+          ? <LeftoversModal group={lg} leftovers={leftovers} month={month} onClose={() => setLeftoverKey(null)} />
+          : null;
+      })()}
       {(() => {
         // групи беруться свіжими з query — правки годин живо оновлюють модалки
         const ig = importKey ? groups.find(g => g.key === importKey) : null;
@@ -535,8 +607,9 @@ export default function Hours() {
           <>
             {ig?.factoryId != null && <ImportHoursModal group={ig} month={month} onClose={() => setImportKey(null)}
               // Eurocash: файл фабрики несе все для сводної (пороги/нічні/потроненя)
-              // — після збереження годин одразу переносимо вкладку в сводну
-              onApplied={fmt => { if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: ig.factoryId!, source: "factory" }); }} />}
+              // — після збереження годин одразу переносимо вкладку в сводну.
+              // Після імпорту — «залишки» вкладки (люди без годин): що з ними робити
+              onApplied={fmt => { setLeftoverKey(ig.key); if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: ig.factoryId!, source: "factory" }); }} />}
             {eg?.factoryId != null && <DiscrepancyEmailModal group={eg} month={month} onClose={() => setEmailKey(null)} />}
           </>
         );
@@ -548,7 +621,7 @@ export default function Hours() {
         const g: Group = groups.find(x => x.factoryId === importFacId && !x.firm)
           ?? { key: `f${importFacId}`, name: f?.name ?? `#${importFacId}`, factoryId: importFacId, firm: null, city: f?.city ?? "", n: 1, rows: [], shifts: 0, hours: 0, net: 0 };
         return <ImportHoursModal group={g} month={month} onClose={() => setImportFacId(null)}
-          onApplied={fmt => { if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: importFacId, source: "factory" }); }} />;
+          onApplied={fmt => { setLeftoverKey(g.key); if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: importFacId, source: "factory" }); }} />;
       })()}
     </>
   );
@@ -1294,6 +1367,170 @@ function FactoryKeysModal({ group, onClose }: { group: Group; onClose: () => voi
             </div>
           </>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+// Звільнення вибраних із датою «від коли». Перед підтвердженням — перевірка
+// конфліктів: якщо у людини є дані (явки/дні фабрики/рапорти) ПІЗНІШІ за дату
+// звільнення, показується попередження. Дані після звільнення не видаляються —
+// сводна позначає такий період як «не оформлений».
+function FireWorkersModal({ workers, onClose, onDone }: { workers: { id: number; name: string }[]; onClose: () => void; onDone?: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [date, setDate] = useState(todayStr());
+  const { data: acts = [] } = useQuery<{ workerId: number; date: string; source: string }[]>({
+    queryKey: ["last-activity", workers.map(w => w.id).sort().join(",")],
+    queryFn: async () => (await post<{ last: { workerId: number; date: string; source: string }[] }>("/hours/last-activity", { workerIds: workers.map(w => w.id) })).last,
+  });
+  const actBy = useMemo(() => new Map(acts.map(a => [a.workerId, a])), [acts]);
+  const conflicts = workers.filter(w => { const a = actBy.get(w.id); return a && a.date > date; });
+  const fire = useMutation({
+    mutationFn: async () => { for (const w of workers) await post(`/workers/${w.id}/fire`, { date }); },
+    onSuccess: () => {
+      toast.success(t("Звільнено: {n}", { n: workers.length }));
+      qc.invalidateQueries({ queryKey: ["hours"] });
+      qc.invalidateQueries({ queryKey: ["workers"] });
+      onDone?.(); onClose();
+    },
+    onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["hours"] }); },
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Звільнити: {n} людей", { n: workers.length })} size="md">
+      <div className="space-y-3">
+        <div className="max-h-48 overflow-y-auto rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
+          {workers.map(w => <div key={w.id}>{w.name}</div>)}
+        </div>
+        <div>
+          <Label>{t("Дата звільнення (від коли)")}</Label>
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-1 w-44" />
+        </div>
+        {conflicts.length > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
+            <span className="font-medium">{t("Є дані пізніші за дату звільнення — вони НЕ зникнуть, а сводна позначить цей період як «не оформлений»:")}</span>
+            <ul className="mt-1 space-y-0.5">
+              {conflicts.map(w => { const a = actBy.get(w.id)!; return <li key={w.id}>• {w.name} — {t("дані до {date} ({source})", { date: ddmm(a.date), source: t(a.source) })}</li>; })}
+            </ul>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => fire.mutate()} loading={fire.isPending}>{t("Звільнити з {date}", { date: ddmm(date) })}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Приховані з місяця працівники вкладки (прибрані вручну / відпустка / ще не
+// приступив) — список із поверненням у місяць.
+function HiddenWorkersModal({ name, month, items, onClose }: { name: string; month: string; items: ExcludedInfo[]; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const unhide = useMutation({
+    mutationFn: (workerIds: number[]) => post("/hours/exclusions-remove", { month, workerIds }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["hours", month] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={`${t("Приховані цього місяця")} — ${name}`} size="md">
+      <div className="space-y-3">
+        {items.length === 0 ? <Empty>{t("Нікого не приховано")}</Empty> : (
+          <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+            {items.map(e => (
+              <div key={e.workerId} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <span className="font-medium text-slate-700">{e.name}</span>
+                <Badge color="slate">{t(EXCL_REASON_LABEL[e.reason] ?? e.reason)}</Badge>
+                <button onClick={() => unhide.mutate([e.workerId])} disabled={unhide.isPending}
+                  className="ml-auto rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                  {t("Повернути")}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {items.length > 1 && (
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={() => unhide.mutate(items.map(i => i.workerId))} loading={unhide.isPending}>{t("Повернути всіх")}</Button>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// «Залишки» після імпорту годин фабрики: активні люди вкладки БЕЗ годин з
+// файлу, без рапорту і без явок місяця — ймовірно вже не працюють тут. По
+// кожному вибір дії + масове застосування до всіх.
+function LeftoversModal({ group, leftovers, month, onClose }: { group: Group; leftovers: HourRow[]; month: string; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  type Act = "keep" | "fire" | "vacation" | "not_started";
+  const [action, setAction] = useState<Record<number, Act>>({});
+  const [date, setDate] = useState(todayStr());
+  const actOf = (id: number): Act => action[id] ?? "keep";
+  const setAll = (a: Act) => setAction(Object.fromEntries(leftovers.map(r => [r.workerId, a])));
+  const nFire = leftovers.filter(r => actOf(r.workerId) === "fire").length;
+  const nHide = leftovers.filter(r => ["vacation", "not_started"].includes(actOf(r.workerId))).length;
+  const apply = useMutation({
+    mutationFn: async () => {
+      const fireIds = leftovers.filter(r => actOf(r.workerId) === "fire").map(r => r.workerId);
+      const excl = leftovers.filter(r => ["vacation", "not_started"].includes(actOf(r.workerId)))
+        .map(r => ({ workerId: r.workerId, reason: actOf(r.workerId) }));
+      for (const id of fireIds) await post(`/workers/${id}/fire`, { date });
+      if (excl.length) await post("/hours/exclusions", { month, items: excl });
+      return { fired: fireIds.length, hidden: excl.length };
+    },
+    onSuccess: (r) => {
+      if (r.fired || r.hidden) toast.success(t("Готово: звільнено {f}, приховано {h}", { f: r.fired, h: r.hidden }));
+      qc.invalidateQueries({ queryKey: ["hours", month] });
+      qc.invalidateQueries({ queryKey: ["workers"] });
+      onClose();
+    },
+    onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["hours", month] }); },
+  });
+  const ACTS: [Act, string][] = [["keep", t("залишити")], ["fire", t("звільнити")], ["vacation", t("відпустка")], ["not_started", t("ще не приступив")]];
+  return (
+    <Modal open onClose={onClose} title={`${t("Люди без годин цього місяця")} — ${group.name}`} size="lg">
+      <div className="space-y-3">
+        <p className="text-sm text-slate-500">{t("Ці люди активні на вкладці, але не отримали годин з файлу фабрики, не здали рапорт і не мають явок місяця ({n}). Ймовірно, вже тут не працюють — вибери, що з ними зробити:", { n: leftovers.length })}</p>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          {t("Всім:")}
+          {ACTS.map(([a, label]) => (
+            <button key={a} onClick={() => setAll(a)}
+              className={`rounded-lg border px-2 py-1 font-medium ${a === "fire" ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
+              {label}
+            </button>
+          ))}
+          <span className="ml-auto inline-flex items-center gap-1.5">
+            {t("Дата звільнення")}
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-40" />
+          </span>
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto rounded-xl border border-slate-200">
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-slate-100">
+              {leftovers.map(r => (
+                <tr key={r.workerId} className={actOf(r.workerId) === "fire" ? "bg-rose-50/40" : ""}>
+                  <td className="px-3 py-2 font-medium text-slate-700">{r.name}</td>
+                  <td className="px-3 py-2 text-right">
+                    <Select value={actOf(r.workerId)} onChange={e => setAction(s => ({ ...s, [r.workerId]: e.target.value as Act }))} className="w-44">
+                      {ACTS.map(([a, label]) => <option key={a} value={a}>{label}</option>)}
+                    </Select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-400">{nFire > 0 && t("Звільнено буде: {n} (з {date})", { n: nFire, date: ddmm(date) })}{nFire > 0 && nHide > 0 ? " · " : ""}{nHide > 0 && t("Приховано з місяця: {n}", { n: nHide })}</span>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={onClose}>{t("Закрити")}</Button>
+            <Button onClick={() => apply.mutate()} loading={apply.isPending} disabled={!nFire && !nHide}>{t("Застосувати")}</Button>
+          </div>
+        </div>
       </div>
     </Modal>
   );

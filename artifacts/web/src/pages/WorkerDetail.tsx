@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock, KeyRound
 } from "lucide-react";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
@@ -25,6 +25,7 @@ interface WorkerProfile {
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
   employmentStartDate?: string | null;
+  factoryCodes?: { factoryId: number; factoryName: string | null; code: string }[]; // ключі фабрик (Nr Osobowy); ведуться в Обліку годин → «🔑 Ключі»
   agramFactory?: boolean; agramStazBonus?: boolean; agramCashBonus?: boolean;
   cashBonusFactory?: boolean; // не-Agram бонусна фабрика (LST): лише нал-бонус
   note?: string | null; payoutPrefKind?: string | null; payoutPrefValue?: number | null;
@@ -117,6 +118,10 @@ export default function WorkerDetail() {
           <Info icon={Users} label={t("Стать")} value={w.gender === "male" ? t("Чоловік") : w.gender === "female" ? t("Жінка") : "—"} />
           {w.fixedShift && <Info icon={CalendarCheck} label={t("Закріплена зміна")} value={t("{n} зміна", { n: w.fixedShift })} />}
           {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
+          {(w.factoryCodes ?? []).length > 0 && (
+            <Info icon={KeyRound} label={t("Ключі фабрики")}
+              value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
+          )}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} />

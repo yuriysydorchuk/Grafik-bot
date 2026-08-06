@@ -11,7 +11,7 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -487,10 +487,16 @@ router.patch("/workers/:id", RW, async (req, res) => {
 router.post("/workers/:id/fire", RW, async (req, res) => {
   const id = Number(req.params.id);
   const offerReport = !!(req.body ?? {}).offerReport;
-  const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt: new Date() }).where(eq(workersTable.id, id)).returning();
+  // Опційна дата звільнення «від коли» (YYYY-MM-DD, множинне звільнення зі
+  // списку обліку годин); без неї — сьогодні. Години/явки після дати ніде не
+  // видаляються — сводна позначає такий період як «не оформлений».
+  const rawDate = typeof (req.body ?? {}).date === "string" ? String(req.body.date) : "";
+  const fireDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+  const firedAt = fireDate ? new Date(`${fireDate}T12:00:00`) : new Date();
+  const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt }).where(eq(workersTable.id, id)).returning();
   await db.insert(workerChangesTable).values({
     workerId: id, field: "fired", oldValue: "active", newValue: "fired",
-    effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
+    effectiveDate: fireDate ?? warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
   }).catch(err => logger.error({ err }, "worker change journal failed"));
   // Farewell report: on the scheduler's request the leaver gets inline month
   // buttons in the bot (entry stays valid 30 days after firing).
@@ -642,8 +648,13 @@ router.get("/workers/:id", RW, async (req, res) => {
     .map(f => ({ ...f, hours: round(f.hours) }))
     .sort((a, b) => b.lastDate.localeCompare(a.lastDate));
 
+  // ключі фабрик (особисті номери в системах фабрик, worker_factory_codes) —
+  // показ у профілі; ведуться в Обліку годин (модалка «🔑 Ключі»)
+  const facCodes = await db.select({ factoryId: workerFactoryCodesTable.factoryId, code: workerFactoryCodesTable.code })
+    .from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.workerId, id));
   ok(res, {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
+    factoryCodes: facCodes.map(c => ({ factoryId: c.factoryId, factoryName: facMap.get(c.factoryId)?.name ?? null, code: c.code })),
     factoryId: w.factoryId, factoryName: w.factoryId ? (facMap.get(w.factoryId)?.name ?? null) : null,
     companyId: w.companyId, companyName: coName,
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
@@ -2467,7 +2478,7 @@ router.get("/hours", RW, async (req, res) => {
   // збирач з Excel-експортом (services/hoursRows.ts), щоб файл ніколи не
   // розходився зі сторінкою.
   const { buildHoursMergedRows } = await import("../services/hoursRows");
-  const { rows: merged, facById } = await buildHoursMergedRows(month);
+  const { rows: merged, facById, excluded } = await buildHoursMergedRows(month);
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
   const workers = merged
@@ -2503,7 +2514,7 @@ router.get("/hours", RW, async (req, res) => {
     })
     .sort((a, b) => (a.factory ?? "").localeCompare(b.factory ?? "", "uk") || a.name.localeCompare(b.name, "uk"));
   ok(res, {
-    month, workers,
+    month, workers, excluded,
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
     totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),
@@ -3051,6 +3062,69 @@ router.delete("/hours/factory-codes/:id", RW, async (req, res) => {
   if (!id) return fail(res, 400, "Невірний id");
   await db.delete(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.id, id));
   ok(res, { ok: true });
+});
+
+// ── Виключення з місяця обліку («прибрати зі списку» / відпустка / не приступив) ──
+// Ховає лише авто-доданий нульовий рядок працівника в місяці; реальні дані
+// (явки/рапорт/години фабрики) повертають рядок незалежно від виключення.
+
+router.post("/hours/exclusions", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
+  const items: { workerId?: unknown; reason?: unknown }[] = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!items.length) return fail(res, 400, "Порожній список");
+  let saved = 0;
+  for (const it of items) {
+    const workerId = Number(it.workerId);
+    const reason = ["manual", "vacation", "not_started"].includes(String(it.reason)) ? String(it.reason) : "manual";
+    if (!workerId) continue;
+    await db.insert(hoursMonthExclusionsTable).values({ workerId, month, reason })
+      .onConflictDoUpdate({ target: [hoursMonthExclusionsTable.workerId, hoursMonthExclusionsTable.month], set: { reason } });
+    saved++;
+  }
+  ok(res, { saved });
+});
+
+router.post("/hours/exclusions-remove", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Boolean) : [];
+  if (!/^\d{4}-\d{2}$/.test(month) || !workerIds.length) return fail(res, 400, "month і workerIds обовʼязкові");
+  await db.delete(hoursMonthExclusionsTable)
+    .where(and(eq(hoursMonthExclusionsTable.month, month), inArray(hoursMonthExclusionsTable.workerId, workerIds)));
+  ok(res, { ok: true });
+});
+
+// Остання дата даних працівників (явки затверджених тижнів, дні/місяці годин
+// фабрики, рапорти) — попередження про конфлікт при звільненні ранішою датою:
+// «звільняєш з 1.07, а в нього явки до 5.07».
+router.post("/hours/last-activity", RW, async (req, res) => {
+  const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Boolean) : [];
+  if (!workerIds.length) return fail(res, 400, "workerIds обовʼязкові");
+  const monthLastDay = (m: string): string => {
+    const [yy, mm] = m.split("-").map(Number);
+    return `${m}-${String(new Date(yy!, mm!, 0).getDate()).padStart(2, "0")}`;
+  };
+  const last = new Map<number, { date: string; source: string }>();
+  const bump = (id: number, date: string, source: string) => {
+    const cur = last.get(id);
+    if (!cur || date > cur.date) last.set(id, { date, source });
+  };
+  const ents = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
+    .from(scheduleEntriesTable)
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"), inArray(scheduleEntriesTable.workerId, workerIds)));
+  for (const e of ents) if (e.workerId) bump(e.workerId, entryDateStr(String(e.weekStart), e.day), "явка");
+  const fh = await db.select({ workerId: factoryHoursTable.workerId, month: factoryHoursTable.month, hours: factoryHoursTable.hours, days: factoryHoursTable.days })
+    .from(factoryHoursTable).where(inArray(factoryHoursTable.workerId, workerIds));
+  for (const r of fh) {
+    if (!r.hours || r.hours <= 0) continue;
+    const days = r.days && typeof r.days === "object" ? Object.keys(r.days).sort() : [];
+    bump(r.workerId, days.at(-1) ?? monthLastDay(r.month), "години фабрики");
+  }
+  const reps = await db.select({ workerId: monthlyReportsTable.workerId, month: monthlyReportsTable.month })
+    .from(monthlyReportsTable).where(inArray(monthlyReportsTable.workerId, workerIds));
+  for (const r of reps) bump(r.workerId, monthLastDay(r.month), "рапорт");
+  ok(res, { last: [...last.entries()].map(([workerId, v]) => ({ workerId, ...v })) });
 });
 
 // Позмінна звірка для листа: коли рапорт ≠ фабрика, але рапорт = нашим

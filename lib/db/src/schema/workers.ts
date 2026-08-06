@@ -97,6 +97,17 @@ export const workerFactoryCodesTable = pgTable("worker_factory_codes", {
   uniqueIndex("worker_factory_codes_factory_code_uniq").on(t.factoryId, t.code),
 ]);
 
+// Виключення працівника з місяця Обліку годин («прибрати зі списку», відпустка,
+// ще не приступив): ховає лише авто-доданий нульовий рядок; реальні дані місяця
+// (явки/рапорт/години фабрики) повертають рядок незалежно від виключення.
+export const hoursMonthExclusionsTable = pgTable("hours_month_exclusions", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  month: text("month").notNull(), // YYYY-MM
+  reason: text("reason").notNull().default("manual"), // manual | vacation | not_started
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("hours_month_exclusions_uniq").on(t.workerId, t.month)]);
+
 export const driversTable = pgTable("drivers", {
   id: serial("id").primaryKey(),
   telegramId: text("telegram_id").unique(),
