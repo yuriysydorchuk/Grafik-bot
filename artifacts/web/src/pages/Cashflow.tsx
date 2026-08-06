@@ -403,8 +403,10 @@ function CashAlertsBlock({ year, monthNum }: { year: string; monthNum: string })
   const svodniReady = (p?.svodniTotal ?? 0) > 0 || (p?.groups ?? []).some(g => (g.svodni ?? 0) > 0 || g.unsplit > 0);
   const now = new Date();
   const payoutsOngoing = !monthNum || `${year}-${monthNum}` >= `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // перевидача — проти max(сводна, 0): технічно відʼємна/незаповнена сводна не алярмить
   const payrollIssues = svodniReady
-    ? (p?.groups ?? []).filter(g => g.diff != null && !g.ack && (g.diff > 1 || (!payoutsOngoing && g.diff < -1)))
+    ? (p?.groups ?? []).filter(g => g.svodni != null && !g.ack
+        && (g.kasa > Math.max(g.svodni, 0) + 1 || (!payoutsOngoing && Math.abs(g.diff ?? 0) > 1)))
     : [];
   const ackedCount = s.ackedDiscrepancies.length + r.ackedBank.length + r.ackedCash.length + (p?.groups ?? []).filter(g => g.ack).length;
   const hasIssues = s.discrepancies.length > 0 || r.unmatchedBank.length > 0 || r.unmatchedCash.length > 0 || payrollIssues.length > 0;

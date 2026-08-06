@@ -244,9 +244,11 @@ export default function CashRegister() {
             <tbody>
               {payrollGroups.map(g => {
                 const remaining = g.svodni != null ? Math.round((g.svodni - g.kasa) * 100) / 100 : null;
-                const overpaid = remaining != null && remaining < -1;
+                // перевидача — проти max(сводна, 0): відʼємна/ще не заповнена сводна
+                // (технічні мінуси вкладок) не має створювати алярм посеред місяця
+                const overpaid = g.svodni != null && g.kasa > Math.max(g.svodni, 0) + 1;
                 // недоплата — розбіжність лише після завершення місяця виплат
-                const bad = !g.ack && remaining != null && (overpaid || (!payoutsOngoing && remaining > 1));
+                const bad = !g.ack && remaining != null && (overpaid || (!payoutsOngoing && Math.abs(remaining) > 1));
                 return (
                   <tr key={g.key} className={`border-b border-slate-100 ${bad ? "bg-amber-50" : ""}`}>
                     <td className="px-4 py-1.5 text-slate-700">
@@ -256,8 +258,8 @@ export default function CashRegister() {
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{zl(g.kasa)}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{g.svodni != null ? zl(g.svodni) : "—"}</td>
-                    <td className={`px-3 py-1.5 text-right font-medium tabular-nums ${remaining == null ? "text-slate-400" : overpaid ? "text-amber-700" : bad ? "text-amber-700" : Math.abs(remaining) <= 1 ? "text-emerald-600" : "text-slate-500"}`}>
-                      {remaining == null ? "—" : overpaid ? t("перевидано на {v}", { v: zl(-remaining) }) : zl(remaining)}
+                    <td className={`px-3 py-1.5 text-right font-medium tabular-nums ${remaining == null ? "text-slate-400" : bad ? "text-amber-700" : Math.abs(remaining) <= 1 ? "text-emerald-600" : "text-slate-500"}`}>
+                      {remaining == null ? "—" : overpaid ? t("перевидано на {v}", { v: zl(Math.round((g.kasa - Math.max(g.svodni!, 0)) * 100) / 100) }) : zl(remaining)}
                     </td>
                     <td className="px-2 py-1.5 text-right">
                       {bad && <button className="rounded border border-amber-300 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100" onClick={() => ackIt("payroll", g.ref)}>{t("Зафіксувати")}</button>}
