@@ -69,6 +69,9 @@ pnpm --filter @workspace/web run build         # тільки веб → artifac
 # Тести
 pnpm --filter @workspace/api-server run test   # node --test: чисті юніти БЕЗ БД (напр. bot/time.test.ts)
 # Інтеграційні (*.integration.test.ts, supertest+Postgres) САМІ скіпаються без TEST_DATABASE_URL.
+# Обірваний прогін (timeout/обрізаний pipe) лишає процес-сироту, що довбе тестову БД →
+# рандомні падіння resetDb (duplicate key на сідингу). Перед прогоном: pkill -f test-hooks
+
 # Ганяти з одноразовою БД (НЕ дев-базою — харнес форсує DATABASE_URL=TEST_DATABASE_URL і truncate):
 #   createdb grafik_bot_test && psql -d grafik_bot_test -f deploy/schema.sql && \
 #     for m in deploy/migrations/*.sql; do psql -d grafik_bot_test -f "$m"; done
