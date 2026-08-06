@@ -1,4 +1,4 @@
-import { Telegraf } from "telegraf";
+import { Telegraf, Telegram } from "telegraf";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -9,20 +9,24 @@ export const bot = new Telegraf(token);
 // Telegram rejects a payload whose parse_mode markup is malformed
 // ("400: can't parse entities") — e.g. a user name with an unbalanced * or _.
 // We wrap `callApi`, the single chokepoint EVERY Telegram method goes through
-// (sendMessage, editMessageText, sendPhoto caption, …) — and `ctx.reply`/edits too —
-// so on that specific error we retry once with parse_mode stripped (plain text).
-// The message still goes out and bot.catch isn't triggered. Retries only after a
-// real failure, so a successful first call never produces a duplicate. Other
-// payloads (e.g. getUpdates — no parse_mode) are untouched.
-const _origCallApi: (...args: any[]) => Promise<any> = bot.telegram.callApi.bind(bot.telegram);
-(bot.telegram as any).callApi = async (method: string, payload: any, ...rest: any[]) => {
+// (sendMessage, editMessageText, sendPhoto caption, …), so on that specific error
+// we retry once with parse_mode stripped (plain text). The message still goes out
+// and bot.catch isn't triggered. Retries only after a real failure, so a successful
+// first call never produces a duplicate. Other payloads (getUpdates — no
+// parse_mode) are untouched.
+// PROTOTYPE-level on purpose: Telegraf creates a fresh `new Telegram(...)` per
+// update (handleUpdate), so patching only bot.telegram would leave every
+// ctx.reply/ctx.editMessageText outside the fallback (that was the regression:
+// handler replies with broken Markdown died silently).
+const _origCallApi: (...args: any[]) => Promise<any> = (Telegram.prototype as any).callApi;
+(Telegram.prototype as any).callApi = async function (method: string, payload: any, ...rest: any[]) {
   try {
-    return await _origCallApi(method, payload, ...rest);
+    return await _origCallApi.call(this, method, payload, ...rest);
   } catch (e: any) {
     const desc: string = e?.response?.description ?? e?.description ?? e?.message ?? "";
     if (payload?.parse_mode && typeof desc === "string" && desc.includes("can't parse entities")) {
       const { parse_mode, ...clean } = payload;
-      return await _origCallApi(method, clean, ...rest); // retry without formatting
+      return await _origCallApi.call(this, method, clean, ...rest); // retry without formatting
     }
     throw e;
   }

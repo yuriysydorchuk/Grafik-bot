@@ -97,6 +97,7 @@ const D: Dict = {
   "fac.notSet":    { uk: "не налаштовано", en: "not set", es: "no configurado", ru: "не настроено", pl: "nie ustawiono" },
   "fac.stops":     { uk: "🚌 *Зупинки (де забирає водій):*", en: "🚌 *Pickup stops (where the driver collects you):*", es: "🚌 *Paradas (donde te recoge el conductor):*", ru: "🚌 *Остановки (где забирает водитель):*", pl: "🚌 *Przystanki (gdzie zabiera kierowca):*" },
   "fac.stopAt":    { uk: "бути о", en: "be there at", es: "estar a las", ru: "быть в", pl: "być o" },
+  "fac.map":       { uk: "📍 Мапа", en: "📍 Map", es: "📍 Mapa", ru: "📍 Карта", pl: "📍 Mapa" },
   "fac.noStops":   { uk: "ℹ️ Зупинки ще не вказані. Уточніть у диспетчера.", en: "ℹ️ Pickup stops not set yet. Ask the dispatcher.", es: "ℹ️ Paradas aún no definidas. Pregunta al despachador.", ru: "ℹ️ Остановки ещё не указаны. Уточните у диспетчера.", pl: "ℹ️ Przystanki jeszcze nieustawione. Zapytaj dyspozytora." },
 
   // ── my hours (read-only) ──

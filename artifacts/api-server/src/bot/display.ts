@@ -21,6 +21,20 @@ export function mdSafe(text: string | null | undefined): string {
   return String(text ?? "").replace(/[*_`\[\]]/g, "");
 }
 
+// Free-form text that may contain URLs (pickup stop names carry Google-Maps links).
+// mdSafe would mutate the URL (strips "_" → dead link), so instead each URL becomes
+// a proper Markdown inline link with a short label and the surrounding text is
+// mdSafe'd. ")" inside a URL would end the (...) part early — percent-encode it.
+export function mdSafeWithLinks(text: string | null | undefined, linkLabel: string): string {
+  return String(text ?? "")
+    .split(/(https?:\/\/\S+)/)
+    .map((part, i) => i % 2 === 1
+      ? `[${linkLabel}](${part.replace(/\)/g, "%29")})`
+      : mdSafe(part))
+    .join("")
+    .replace(/[,;\s]+\[/g, " [");
+}
+
 // Split a message into Telegram-safe chunks (max 4000 chars, split on newlines)
 export function splitMessage(text: string, maxLen = 4000): string[] {
   if (text.length <= maxLen) return [text];

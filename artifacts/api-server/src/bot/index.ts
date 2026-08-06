@@ -81,7 +81,7 @@ async function tgTakenByDriver(tid: string, exceptId?: number): Promise<boolean>
 const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
-import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe } from "./display";
+import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
 import { isAdmin, getAdmin, getWorker, getDriver } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
@@ -1031,8 +1031,8 @@ bot.hears(trAll("menu.factoryInfo"), async (ctx) => {
   if (!worker.factoryId) return ctx.reply(t(lang, "fac.noFactory"), await workerMenuFor(worker, lang));
   const f = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId)))[0];
   if (!f) return ctx.reply(t(lang, "fac.notFound"), await workerMenuFor(worker, lang));
-  let msg = `🏭 *${f.name}*\n`;
-  if (f.address) msg += `📍 ${f.address}\n`;
+  let msg = `🏭 *${mdSafe(f.name)}*\n`;
+  if (f.address) msg += `📍 ${mdSafe(f.address)}\n`;
   const shifts = factoryShifts(f);
   msg += `\n${t(lang, "fac.shifts")}\n`;
   if (shifts.length) shifts.forEach((s, i) => { msg += t(lang, "fac.shiftRow", { n: i + 1, start: s.start, end: s.end }) + "\n"; });
@@ -1042,7 +1042,7 @@ bot.hears(trAll("menu.factoryInfo"), async (ctx) => {
     const stops = (f.stops ?? []) as { name: string; time: string }[];
     if (stops.length) {
       msg += `\n${t(lang, "fac.stops")}\n`;
-      for (const st of stops) msg += `• ${st.name}${st.time ? ` — ${t(lang, "fac.stopAt")} *${st.time}*` : ""}\n`;
+      for (const st of stops) msg += `• ${mdSafeWithLinks(st.name, t(lang, "fac.map"))}${st.time ? ` — ${t(lang, "fac.stopAt")} *${st.time}*` : ""}\n`;
     } else {
       msg += `\n${t(lang, "fac.noStops")}\n`;
     }
