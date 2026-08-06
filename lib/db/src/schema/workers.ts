@@ -487,17 +487,22 @@ export const hoursDisputesTable = pgTable("hours_disputes", {
   resolvedAt: timestamp("resolved_at"),
 });
 
-// Salary-advance requests: a worker asks for an advance via the bot; office staff
-// review on the web (approve/reject) and mark paid. The worker sees the status.
+// Salary-advance requests: a worker asks via the bot, or office staff submit on the
+// worker's behalf (then the row is approved immediately, decided_by = submitter).
+// Approval assigns a payout group (lib/advancePayout.ts): decided 1–14 → the 15th,
+// 15–29 → the 30th, 30–31 → the 15th of the next month. The worker sees the status.
 export const advanceRequestsTable = pgTable("advance_requests", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id),
   amount: real("amount").notNull(),                       // requested amount (PLN)
   comment: text("comment"),                               // worker's optional note
-  status: text("status").notNull().default("pending"),   // pending | approved | rejected | paid
+  status: text("status").notNull().default("pending"),   // pending | approved (= передано до виплати) | rejected | paid
   adminNote: text("admin_note"),                          // optional note on the decision
   decidedBy: integer("decided_by").references(() => adminsTable.id),
   decidedAt: timestamp("decided_at"),
+  payoutMonth: text("payout_month"),                      // "YYYY-MM" of the payout group; manually movable
+  payoutGroup: text("payout_group"),                      // "15" | "30" — payout on the 15th / 30th
+  paidMethod: text("paid_method"),                        // transfer | cash (NULL = не вказано / стара історія)
   paidAt: timestamp("paid_at"),
   // авто-помітка «виплачено» по банківському переказу (services/advances.ts);
   // set null — MT940-імпорт заміщає api-рядки, статус авансу при цьому лишається
@@ -762,13 +767,17 @@ export const counterpartyAccountsTable = pgTable("counterparty_accounts", {
 
 // IBAN-и працівників: перекази на ці рахунки — це ЗП/аванси незалежно від тексту
 // призначення (щоб виплати без слова WYNAGRODZENIE не падали в «Інше»).
+// is_primary — «номер рахунку» профілю: показується в авансах, іде у файл виплат.
 export const workerBankAccountsTable = pgTable("worker_bank_accounts", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
   iban: text("iban").notNull().unique(),
   source: text("source").notNull().default("manual"), // manual | auto (сідинг із ЗП-переказів)
+  isPrimary: boolean("is_primary").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  uniqueIndex("worker_bank_accounts_primary_uniq").on(t.workerId).where(sql`${t.isPrimary}`),
+]);
 
 // Counterparty → category rules: re-categorize all (past and future) transactions
 // of a counterparty at once. Never applied to owner-payout transactions.

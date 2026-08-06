@@ -56,7 +56,7 @@ export async function autoMarkPaidAdvances(): Promise<string[]> {
     });
     if (!candidate) continue;
     const [updated] = await db.update(advanceRequestsTable)
-      .set({ status: "paid", paidAt: new Date(`${candidate.value_date}T12:00:00Z`), paidTxnId: Number(candidate.id) })
+      .set({ status: "paid", paidAt: new Date(`${candidate.value_date}T12:00:00Z`), paidTxnId: Number(candidate.id), paidMethod: "transfer" })
       .where(and(eq(advanceRequestsTable.id, adv.id), eq(advanceRequestsTable.status, "approved")))
       .returning({ id: advanceRequestsTable.id });
     if (!updated) continue;

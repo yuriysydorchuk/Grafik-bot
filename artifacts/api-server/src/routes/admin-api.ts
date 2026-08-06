@@ -32,6 +32,7 @@ import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/pa
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
+import { payoutFor } from "../lib/advancePayout";
 import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 import { nextWorkerCode } from "../lib/workerCode";
@@ -805,13 +806,28 @@ router.get("/workers/:id/bank-accounts", async (req, res) => {
   ok(res, rows);
 });
 router.post("/workers/:id/bank-accounts", RW, async (req, res) => {
+  const workerId = Number(req.params.id);
   const iban = String(req.body?.iban ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (iban.length < 15) return fail(res, 400, "IBAN закороткий");
   try {
-    const [row] = await db.insert(workerBankAccountsTable).values({ workerId: Number(req.params.id), iban, source: "manual" }).returning();
+    // перший ручний рахунок людини стає основним (показ в авансах, файл виплат)
+    const hasPrimary = (await db.select({ id: workerBankAccountsTable.id }).from(workerBankAccountsTable)
+      .where(and(eq(workerBankAccountsTable.workerId, workerId), eq(workerBankAccountsTable.isPrimary, true))).limit(1)).length > 0;
+    const [row] = await db.insert(workerBankAccountsTable).values({ workerId, iban, source: "manual", isPrimary: !hasPrimary }).returning();
     import("../services/counterparties").then(m => m.resolveBankCounterparties()).catch(() => {});
     ok(res, row);
   } catch { fail(res, 400, "Цей IBAN уже привʼязаний (можливо, до іншого працівника)"); }
+});
+router.post("/worker-bank-accounts/:id/primary", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [acc] = await db.select().from(workerBankAccountsTable).where(eq(workerBankAccountsTable.id, id));
+  if (!acc) return fail(res, 404, "Не знайдено");
+  await db.transaction(async (tx) => {
+    await tx.update(workerBankAccountsTable).set({ isPrimary: false })
+      .where(and(eq(workerBankAccountsTable.workerId, acc.workerId), eq(workerBankAccountsTable.isPrimary, true)));
+    await tx.update(workerBankAccountsTable).set({ isPrimary: true }).where(eq(workerBankAccountsTable.id, id));
+  });
+  ok(res, { ok: true });
 });
 router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
   await db.delete(workerBankAccountsTable).where(eq(workerBankAccountsTable.id, Number(req.params.id)));
@@ -3841,33 +3857,88 @@ router.get("/advances", RW, async (_req, res) => {
     .select({
       id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
-      factoryId: workersTable.factoryId,
+      factoryId: workersTable.factoryId, company: companiesTable.name,
       amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
       status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
-      decidedAt: advanceRequestsTable.decidedAt, paidAt: advanceRequestsTable.paidAt,
+      decidedAt: advanceRequestsTable.decidedAt, decidedByName: adminsTable.name,
+      payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
+      paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
       paidTxnId: advanceRequestsTable.paidTxnId,
       createdAt: advanceRequestsTable.createdAt,
     })
     .from(advanceRequestsTable)
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+    .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
+    .leftJoin(adminsTable, eq(advanceRequestsTable.decidedBy, adminsTable.id))
     .orderBy(desc(advanceRequestsTable.id));
   // місто фабрики — історія сводних + регіони «Зарплат» (той самий словник, що у from-hours)
   const cityByFactory = await factoryCityMap();
+  // IBAN для показу/копіювання: основний → найновіший ручний → найновіший авто
+  const accts = await db.select().from(workerBankAccountsTable);
+  const bestIban = new Map<number, { score: number; id: number; iban: string }>();
+  for (const a of accts) {
+    const score = a.isPrimary ? 2 : a.source === "manual" ? 1 : 0;
+    const cur = bestIban.get(a.workerId);
+    if (!cur || score > cur.score || (score === cur.score && a.id > cur.id))
+      bestIban.set(a.workerId, { score, id: a.id, iban: a.iban });
+  }
   ok(res, rows.map(({ factoryId, ...r }) => ({
-    ...r, city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
+    ...r,
+    city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
+    iban: bestIban.get(r.workerId)?.iban ?? null,
   })));
 });
 
+// Офісна подача залічки: одразу «передано до виплати» від імені того, хто подав
+// (decided_by = подавач), група виплати — за сьогоднішньою датою (Warsaw).
+router.post("/advances", RW, async (req, res) => {
+  const workerId = Number(req.body?.workerId);
+  const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+  if (!workerId || !isFinite(amount) || amount <= 0) return fail(res, 400, "Вкажіть працівника і суму");
+  const comment = String(req.body?.comment ?? "").trim() || null;
+  const w = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
+  if (!w) return fail(res, 404, "Працівника не знайдено");
+  const [row] = await db.insert(advanceRequestsTable).values({
+    workerId, amount, comment, status: "approved",
+    decidedBy: (req as AuthedRequest).admin?.adminId ?? null, decidedAt: new Date(),
+    ...payoutFor(warsawDateStr()),
+  }).returning();
+  import("../bot/notify").then(m => m.notifyWorkerAdvance(workerId, "approved", amount, null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
+  ok(res, row);
+});
+
+// Перенесення авансу в іншу групу виплат (лише поки не виплачений).
+router.patch("/advances/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const month = String(req.body?.payoutMonth ?? "");
+  const group = String(req.body?.payoutGroup ?? "");
+  if (!/^\d{4}-\d{2}$/.test(month) || !["15", "30"].includes(group)) return fail(res, 400, "Вкажіть місяць (YYYY-MM) і групу (15 або 30)");
+  const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
+  if (!r) return fail(res, 404, "Не знайдено");
+  if (r.status !== "approved") return fail(res, 400, "Переносити можна лише аванс у статусі «передано до виплати»");
+  await db.update(advanceRequestsTable).set({ payoutMonth: month, payoutGroup: group as "15" | "30" }).where(eq(advanceRequestsTable.id, id));
+  ok(res, { ok: true });
+});
+
 // Approve / reject / mark-paid. Each notifies the worker of the new status.
+// approve = «передано до виплати» + група за датою рішення; paid приймає method
+// (transfer | cash) — ручна помітка виплати вимагає вибору способу.
 async function decideAdvance(req: any, res: any, target: "approved" | "rejected" | "paid") {
   const id = Number(req.params.id);
   const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
-  if (target === "paid" && r.status !== "approved") return fail(res, 400, "Виплатити можна лише затверджений аванс");
+  if (target === "paid" && r.status !== "approved") return fail(res, 400, "Виплатити можна лише переданий до виплати аванс");
   const patch: any = { status: target };
-  if (target === "paid") patch.paidAt = new Date();
-  else { patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date(); if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null; }
+  if (target === "paid") {
+    patch.paidAt = new Date();
+    const method = String(req.body?.method ?? "");
+    patch.paidMethod = method === "cash" ? "cash" : method === "transfer" ? "transfer" : null;
+  } else {
+    patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date();
+    if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null;
+    if (target === "approved") Object.assign(patch, payoutFor(warsawDateStr()));
+  }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
   import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount, patch.adminNote ?? null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
   ok(res, { ok: true });

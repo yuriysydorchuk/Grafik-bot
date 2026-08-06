@@ -53,8 +53,11 @@ export interface Me { id: number; name: string; username: string; isMain: boolea
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
-  city: string; amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
-  adminNote: string | null; decidedAt: string | null; paidAt: string | null; paidTxnId: number | null; createdAt: string;
+  city: string; company: string | null; iban: string | null;
+  amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
+  adminNote: string | null; decidedAt: string | null; decidedByName: string | null;
+  payoutMonth: string | null; payoutGroup: "15" | "30" | null;
+  paidAt: string | null; paidMethod: "transfer" | "cash" | null; paidTxnId: number | null; createdAt: string;
 }
 export interface Company { id: number; name: string; workerCount?: number }
 export type Gender = "male" | "female";

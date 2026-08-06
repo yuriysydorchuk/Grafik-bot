@@ -315,12 +315,13 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
 // Банківські рахунки працівника: перекази на ці IBAN-и класифікуються у витягах
 // як ЗП/аванси навіть без ключових слів у призначенні. Більшість підтягується
 // автоматично з зарплатних переказів; тут — перегляд і ручні правки.
+// «Основний» рахунок показується в авансах і піде у файл виплат онлайн-банкінгу.
 function WorkerBankAccounts({ workerId }: { workerId: number }) {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [iban, setIban] = useState("");
-  const { data: rows = [], isLoading } = useQuery<{ id: number; iban: string; source: string }[]>({
+  const { data: rows = [], isLoading } = useQuery<{ id: number; iban: string; source: string; isPrimary: boolean }[]>({
     queryKey: ["worker-bank-accounts", workerId], queryFn: () => get(`/workers/${workerId}/bank-accounts`),
   });
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-bank-accounts", workerId] });
@@ -328,6 +329,10 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
     mutationFn: () => post(`/workers/${workerId}/bank-accounts`, { iban }),
     onSuccess: () => { inv(); setIban(""); toast.success(t("Рахунок додано")); },
     onError: (e: any) => toast.error(e.message),
+  });
+  const setPrimary = useMutation({
+    mutationFn: (id: number) => post(`/worker-bank-accounts/${id}/primary`),
+    onSuccess: inv, onError: (e: any) => toast.error(e.message),
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-bank-accounts/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
   const fmtIban = (s: string) => s.replace(/(.{4})/g, "$1 ").trim();
@@ -343,6 +348,14 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
             <div key={r.id} className="flex items-center gap-2 border-b border-slate-50 px-4 py-2 text-sm last:border-0">
               <span className="tabular-nums text-slate-700">{fmtIban(r.iban)}</span>
               <span className="text-[10px] uppercase text-slate-400">{r.source === "auto" ? t("авто") : t("ручна")}</span>
+              {r.isPrimary ? (
+                <Badge color="green">{t("основний")}</Badge>
+              ) : (
+                <button className="rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-emerald-50 hover:text-emerald-700"
+                  onClick={() => setPrimary.mutate(r.id)} disabled={setPrimary.isPending}>
+                  {t("зробити основним")}
+                </button>
+              )}
               <button className="ml-auto rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
                 onClick={async () => { if (await confirm({ title: t("Видалити рахунок?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }}>
                 <Trash2 className="h-3.5 w-3.5" />

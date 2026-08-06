@@ -27,6 +27,7 @@ import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
+import { payoutFor } from "../lib/advancePayout";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import { loadDateShiftOverrides, loadDatesShiftOverrides, loadWeekShiftOverrides, overrideFor, shiftOverrideKey, type ShiftOverrideMap } from "../services/shiftOverrides";
 import {
@@ -1016,10 +1017,11 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   const admin = await getAdmin(tid);
   const patch: any = { status: target };
   if (target === "paid") patch.paidAt = new Date();
-  else { patch.decidedBy = admin?.id ?? null; patch.decidedAt = new Date(); }
+  // затвердження = «передано до виплати»: група 15-го/30-го за датою рішення (lib/advancePayout.ts)
+  else { patch.decidedBy = admin?.id ?? null; patch.decidedAt = new Date(); Object.assign(patch, payoutFor(warsawDateStr())); }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
   await ctx.answerCbQuery("✅");
-  const label = target === "approved" ? "✅ Затверджено" : "💸 Виплачено";
+  const label = target === "approved" ? "✅ Передано до виплати" : "💸 Виплачено";
   try { await ctx.editMessageText(`${(ctx.callbackQuery.message as any)?.text ?? ""}\n\n— ${label}`); } catch { /* ignore */ }
   notifyWorkerAdvance(r.workerId, target, r.amount).catch(() => {});
 });
