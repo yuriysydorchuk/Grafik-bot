@@ -22,7 +22,6 @@ const facDayTotal = (v: FacDayVal) => typeof v === "number" ? v : Object.values(
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   firm?: string | null; // наша юрособа фабрики (ES/ESO/Klinex) — колір вкладки
-  workerFirm?: string | null; // юрособа ПРАЦІВНИКА — бекенд шле лише рядкам мульти-контрактних фабрик (ANDROS) → поділ вкладки
   city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   factoryHours?: number | null; factoryDays?: Record<string, FacDayVal> | null; factoryConfirmed?: boolean; clientEmail?: string | null;
@@ -166,19 +165,15 @@ export default function Hours() {
   const confirmToSvodni = (label: string, scope: { factoryId?: number; city?: string }) => setSvodniAsk({ label, scope });
 
   const groups = useMemo<Group[]>(() => {
-    // Мульти-контрактні фабрики (ANDROS: Klinex + Euro Support): вкладка
-    // ділиться по фірмі працівника, дзеркально сводній. Правило «чи ділити» —
-    // на бекенді (workerFirm приходить лише рядкам мульти-контрактних фабрик);
-    // суфікс — як вкладки таблиці: ES → EURO SUPORT
-    const firmSuffix = (firm: string) => firm === "ES" ? "EURO SUPORT" : firm.toUpperCase();
+    // Одна вкладка на фабрику: фабрика шле одну евіденцію на всіх, незалежно
+    // від фірм працівників. multi_firm ділить лише сводну (from-hours).
     const map = new Map<string, Group>();
     for (const r of data?.workers ?? []) {
-      const split = r.factoryId != null ? r.workerFirm ?? null : null;
-      const key = r.factoryId != null ? (split ? `f${r.factoryId}:${split}` : `f${r.factoryId}`) : "none";
+      const key = r.factoryId != null ? `f${r.factoryId}` : "none";
       if (!map.has(key)) map.set(key, {
         key,
-        name: r.factoryId != null && split ? `${r.factory} ${firmSuffix(split)}` : r.factory ?? t("Без фабрики"),
-        factoryId: r.factoryId, firm: split ?? r.firm ?? null, city: r.city,
+        name: r.factory ?? t("Без фабрики"),
+        factoryId: r.factoryId, firm: r.firm ?? null, city: r.city,
         n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0,
       });
       const g = map.get(key)!;

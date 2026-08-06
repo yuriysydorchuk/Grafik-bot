@@ -2478,7 +2478,6 @@ router.get("/hours", RW, async (req, res) => {
         factoryShiftCount: w.factoryShiftCount,
         rate: svodniRate(w.profileRate, w.factoryId, w.positionId), ...stud26Of(w),
         byShift: w.byShift, shifts: w.shifts, hours,
-        workerFirm: w.workerFirm,
         reportHours: w.reportHours, reportSubmitted: w.reportSubmitted, reportLink: w.reportLink,
         factoryHours: w.factoryHours, factoryDays: w.factoryDays, factoryConfirmed: w.factoryConfirmed,
         createdViaImport: w.createdViaImport,

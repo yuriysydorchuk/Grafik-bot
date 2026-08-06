@@ -32,7 +32,6 @@ export type HoursMergedRow = {
   factoryId: number | null;
   factory: string | null;
   firm: string | null;                 // фірма фабрики (companies.name)
-  workerFirm: string | null;           // фірма працівника — лише на мульти-контрактних фабриках
   factoryShiftCount: number;
   byShift: Record<string, number>;
   shifts: number;
@@ -86,7 +85,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
       workerId: w.id, name: w.fullName, code: w.code, isActive: w.isActive,
       positionId: w.positionId, profileRate: w.rate,
       isStudent: w.isStudent, under26: w.under26, legalStatus: w.legalStatus, birthDate: w.birthDate,
-      factoryId, factory: fac?.name ?? null, firm: firmOf(fac), workerFirm: null,
+      factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
       byShift: {}, shifts: 0, hours: 0,
       reportHours: null, reportSubmitted: false, reportLink: null,
@@ -196,14 +195,13 @@ export async function buildHoursMergedRows(month: string): Promise<{
     .from(hoursNotesTable).where(eq(hoursNotesTable.month, month));
   const noteByKey = new Map(noteRows.map(r => [rowKey(r.workerId, r.factoryId), r.note]));
 
-  // Мульти-контрактні фабрики (ANDROS): вкладка ділиться по фірмі ПРАЦІВНИКА —
-  // workerFirm віддаємо лише рядкам явно позначених фабрик (factories.multi_firm).
-  const multiFirmFacs = new Set(facRows.filter(f => f.multiFirm).map(f => f.id));
+  // Облік годин НЕ ділиться по фірмі працівника: фабрика шле одну евіденцію на
+  // всіх, вкладка одна (рішення 06.08.2026, Sushi&Food). factories.multi_firm
+  // керує лише сводною — from-hours ділить вкладки по фірмі (routes/svodni.ts).
   const rowWorkerIds = [...new Set([...byKey.values()].map(w => w.workerId))];
   const workerCos = rowWorkerIds.length ? await db.select({
-    id: workersTable.id, companyId: workersTable.companyId, createdSource: workersTable.createdSource,
+    id: workersTable.id, createdSource: workersTable.createdSource,
   }).from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
-  const workerFirmById = new Map(workerCos.map(w => [w.id, w.companyId != null ? companyName.get(w.companyId) ?? null : null]));
   const importCreated = new Set(workerCos.filter(w => w.createdSource === "hours_import").map(w => w.id));
 
   for (const row of byKey.values()) {
@@ -221,7 +219,6 @@ export async function buildHoursMergedRows(month: string): Promise<{
     row.workerResponseAt = fh?.workerResponseAt ?? null;
     row.workerNote = fh?.workerNote ?? null;
     row.note = noteByKey.get(rowKey(row.workerId, row.factoryId)) ?? null;
-    row.workerFirm = row.factoryId != null && multiFirmFacs.has(row.factoryId) ? workerFirmById.get(row.workerId) ?? null : null;
     row.createdViaImport = importCreated.has(row.workerId);
   }
 
