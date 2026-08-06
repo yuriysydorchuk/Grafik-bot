@@ -117,6 +117,31 @@ const CATALOG_HIDDEN = new Set([
   "oplataKierowcy", "badania", "nakladki", "zadluzenie", "dokumenty", "zwrotKosztow",
 ]);
 const EXTRA_ORDER = Object.keys(EXTRA_LABEL).filter(k => !CATALOG_HIDDEN.has(k));
+
+// кольорове кодування колонок за змістом: години — блакитні, ставки — фіолетові,
+// нарахування — зелені, утримання — помаранчеві («До виплати» і księgowe мають
+// власні червоний/бурштиновий). Класи буквальні — Tailwind v4 не бачить динамічних.
+const TINT = {
+  sky: { th: "bg-sky-100/70 text-sky-800", td: "bg-sky-50/50" },
+  violet: { th: "bg-violet-100/60 text-violet-800", td: "bg-violet-50/40" },
+  emerald: { th: "bg-emerald-100/60 text-emerald-800", td: "bg-emerald-50/40" },
+  orange: { th: "bg-orange-100/60 text-orange-800", td: "bg-orange-50/40" },
+} as const;
+const COL_TINT: Record<string, keyof typeof TINT> = {
+  hoursNotified: "sky", hours: "sky", "extras.nocneH": "sky", "extras.workListHours": "sky", "extras.ksiegHours": "sky",
+  rateBrutto: "violet", rateNetto: "violet",
+  premia: "emerald", brutto: "emerald", "extras.premiaBase": "emerald", "extras.premiaAgram": "emerald",
+  "extras.premiaEs": "emerald", "extras.doplataNocna": "emerald", "extras.doplataEs": "emerald", "extras.zwrotKosztow": "emerald",
+  zaliczka: "orange", zaliczkaBd: "orange", hostel: "orange", odziez: "orange", dojazd: "orange",
+  kara: "orange", komornik: "orange", kaucja: "orange", potracenia: "orange",
+  "extras.karaKlient": "orange", "extras.karaEs": "orange", "extras.zadluzenie": "orange",
+  "extras.badania": "orange", "extras.nakladki": "orange", "extras.migawka": "orange",
+  "extras.kartaPobytu": "orange", "extras.oplataKierowcy": "orange", "extras.dokumenty": "orange",
+};
+// «не оформлений» (без форми легалізації і не студент — дзеркало бейджа «?») і
+// «не поданий» (oczekuje — чекає дозвіл): підсвічуються червоним — на них треба реагувати
+const isUnlegalized = (r: { legalStatus?: string | null; isStudent?: boolean | null }) =>
+  (!r.legalStatus && !r.isStudent) || r.legalStatus === "oczekuje";
 const extraLabel = (k: string) => EXTRA_LABEL[k] ?? k;
 const EXTRA_STUDENTS = "Додаткові студенти";
 const OFFICE_CITY = "Офіс"; // віртуальна вкладка поряд із містами
@@ -604,14 +629,14 @@ export default function Svodni() {
 }
 
 // Заголовок колонки з кнопкою «сховати» (зʼявляється при наведенні)
-function Th({ label, onHide, left, amber, strong, onSort, sortDir }: {
-  label: string; onHide: () => void; left?: boolean; amber?: boolean; strong?: boolean;
+function Th({ label, onHide, left, amber, strong, divider, tint, onSort, sortDir }: {
+  label: string; onHide: () => void; left?: boolean; amber?: boolean; strong?: boolean; divider?: boolean; tint?: string;
   onSort?: () => void; sortDir?: "asc" | "desc" | null;
 }) {
   const t = useT();
   return (
-    <th className={`group/th px-1.5 py-2.5 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide ${
-      left ? "text-left" : "text-right"} ${amber ? "bg-amber-50 text-amber-700/70" : strong ? "bg-red-50/70 text-red-700/80" : "text-slate-400"}`}>
+    <th className={`group/th px-1.5 py-2.5 whitespace-nowrap text-xs font-semibold uppercase tracking-wide ${
+      left ? "text-left" : "text-right"} ${divider ? (amber ? "border-l-2 border-amber-300 " : "border-l-2 border-slate-300 ") : ""}${amber ? "bg-amber-100/80 text-amber-700" : strong ? "border-x-2 border-red-200 bg-red-100/70 text-red-700" : tint ?? "text-slate-500"}`}>
       <span className="inline-flex items-center gap-0.5">
         {onSort ? (
           <button type="button" onClick={onSort} title={t("Сортувати")} className="inline-flex items-center gap-0.5 uppercase hover:text-slate-600">
@@ -859,7 +884,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
         <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-3">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Ставки Eurocash (за діапазонами годин)")}</div>
           <div className="overflow-x-auto">
-            <table className="border-collapse text-[11px]">
+            <table className="border-collapse text-xs">
               <tbody>
                 {meta.info.stawkaEurocash.map((row, i) => (
                   <tr key={i} className={i === 0 ? "font-semibold text-slate-700" : "text-slate-600"}>
@@ -876,20 +901,22 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
         </div>
       )}
       <div ref={scrollRef} className="max-h-[70vh] overflow-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 z-20 bg-white shadow-sm">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 z-20 border-b-2 border-slate-200 bg-slate-100 shadow-sm">
             <tr>
-              <th className="sticky left-0 z-30 bg-white px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                <button type="button" onClick={() => cycleSort("name")} className="inline-flex items-center gap-0.5 uppercase hover:text-slate-600" title={t("Сортувати")}>
+              <th className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <button type="button" onClick={() => cycleSort("name")} className="inline-flex items-center gap-0.5 uppercase hover:text-slate-700" title={t("Сортувати")}>
                   {t("Працівник")}
                   {sort?.key === "name" && (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
                 </button>
               </th>
-              <th className="whitespace-nowrap px-1.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Замітки")}</th>
-              {shownCols.map(d => <Th key={d.key}
+              <th className="whitespace-nowrap px-1.5 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">{t("Замітки")}</th>
+              {shownCols.map((d, ci) => <Th key={d.key}
                 label={d.key === "dojazd" && city === "Лодзь" ? t("Dojazd (доплата)") : t(d.label)}
-                strong={d.key === "doWyplaty"} left={d.kind === "hr"} onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
-              {sensCols.map(([k, h]) => <Th key={k} label={t(h)} amber onHide={() => onHideCol(k)} onSort={() => cycleSort(k)} sortDir={sort?.key === k ? sort.dir : null} />)}
+                strong={d.key === "doWyplaty"} left={d.kind === "hr"} divider={ci > 0 && (shownCols[ci - 1].kind === "hr") !== (d.kind === "hr")}
+                tint={COL_TINT[d.key] ? TINT[COL_TINT[d.key]].th : undefined}
+                onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
+              {sensCols.map(([k, h], ci) => <Th key={k} label={t(h)} amber divider={ci === 0} onHide={() => onHideCol(k)} onSort={() => cycleSort(k)} sortDir={sort?.key === k ? sort.dir : null} />)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -900,12 +927,12 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
               const sectionChanged = !sort && r.section && r.section !== sortedRows[i - 1]?.section;
               return [
                 sectionChanged ? (
-                  <tr key={`sec-${r.id}`} className="bg-slate-50/80">
-                    <td colSpan={colCount} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{r.section}</td>
+                  <tr key={`sec-${r.id}`} className="border-y border-slate-200 bg-slate-100">
+                    <td colSpan={colCount} className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{r.section}</td>
                   </tr>
                 ) : null,
-                <tr key={r.id} className={`group/row transition ${r.mismatch ? "bg-rose-50/60" : "hover:bg-red-50/30"}`}>
-                  <td className={`sticky left-0 z-10 px-3 py-1 ${r.mismatch ? "bg-rose-50" : "bg-white group-hover/row:bg-red-50/60"}`}
+                <tr key={r.id} className={`group/row transition ${r.mismatch || isUnlegalized(r) ? "bg-rose-50/70 hover:bg-rose-100/60" : `${i % 2 ? "bg-slate-50/70" : ""} hover:bg-red-50/30`}`}>
+                  <td className={`sticky left-0 z-10 px-3 py-1 ${r.mismatch || isUnlegalized(r) ? "border-l-2 border-rose-400 bg-rose-50" : `${i % 2 ? "bg-slate-50" : "bg-white"} group-hover/row:bg-red-50/60`}`}
                     title={r.workerName ?? r.rawName}>
                     <span className="flex w-56 items-center gap-1.5">
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
@@ -953,20 +980,24 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                   <td className="max-w-48 px-1 py-0.5 text-left text-slate-500">
                     <EditableCell row={r} field="note" value={r.note} month={month} text />
                   </td>
-                  {shownCols.map(d => d.kind === "hr" ? (
-                    <td key={d.key} className="max-w-48 px-1 py-0.5 text-left text-slate-500">
+                  {shownCols.map((d, ci) => {
+                    const divider = ci > 0 && (shownCols[ci - 1].kind === "hr") !== (d.kind === "hr") ? "border-l-2 border-slate-200 " : "";
+                    const tint = COL_TINT[d.key] ? `${TINT[COL_TINT[d.key]].td} ` : "";
+                    return d.kind === "hr" ? (
+                    <td key={d.key} className={`max-w-48 px-1 py-0.5 text-left text-slate-500 ${divider}`}>
                       <EditableCell row={r} field={d.key} value={hrVal(r, d.key)} month={month} text options={hrOptions.get(d.key)}
                         locked={locked || !hrEditableKey(d.key)} />
                     </td>
                   ) : (
-                    <td key={d.key} className={`px-1 py-0.5 text-right ${d.key === "doWyplaty" ? "bg-red-50/40" : ""} text-slate-600`}
+                    <td key={d.key} className={`px-1 py-0.5 text-right ${divider}${tint}${d.key === "doWyplaty" ? "border-x-2 border-red-100 bg-red-50/70 font-medium" : ""} text-slate-600`}
                       title={cellLockTitle(r, d.key, t)}>
                       <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} formula={cellFormula(r, d.key, t)}
                         locked={locked || cellIsSegLocked(r, d.key) || (d.kind === "extra" && !EXTRA_LABEL[d.key.slice(7)])} />
                     </td>
-                  ))}
-                  {sensCols.map(([k]) => (
-                    <td key={k} className="bg-amber-50/50 px-1 py-0.5 text-right text-slate-700" title={cellLockTitle(r, k, t)}>
+                  );
+                  })}
+                  {sensCols.map(([k], ci) => (
+                    <td key={k} className={`bg-amber-50/50 px-1 py-0.5 text-right text-slate-700 ${ci === 0 ? "border-l-2 border-amber-300" : ""}`} title={cellLockTitle(r, k, t)}>
                       <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)}
                         locked={locked || cellIsSegLocked(r, k)} />
                     </td>
@@ -1037,13 +1068,13 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
               <td className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5">{t("Разом")}</td>
               <td />
               {shownCols.map(d => d.kind === "hr" || ["rateBrutto", "rateNetto"].includes(d.key) ? <td key={d.key} /> : (
-                <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "text-red-700" : ""}`}>
+                <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "border-x-2 border-red-200 bg-red-100/60 text-red-700" : ""}`}>
                   {fmt(sum(r => d.kind === "extra"
                     ? (typeof r.extras[d.key.slice(7)] === "number" ? r.extras[d.key.slice(7)] as number : 0)
                     : r[d.key as keyof Row & string] as number | null))}
                 </td>
               ))}
-              {sensCols.map(([k]) => <td key={k} className="bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums">{fmt(sum(r => r[k] as number | null))}</td>)}
+              {sensCols.map(([k], ci) => <td key={k} className={`bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}>{fmt(sum(r => r[k] as number | null))}</td>)}
             </tr>
           </tfoot>
         </table>
@@ -1213,16 +1244,16 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
     if (!ppl.length) return undefined;
     return `${t("Не розписані")}: ${ppl.slice(0, 20).join(", ")}${ppl.length > 20 ? ` … ${t("і ще")} ${ppl.length - 20}` : ""}`;
   };
-  const num = (v: number) => <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(v))}</td>;
+  const num = (v: number) => <td className="bg-orange-50/40 px-2 py-1.5 text-right tabular-nums">{fmt(r2(v))}</td>;
   const cells = (a: Agg, payCls = "", nierozpTitle?: string) => (
     <>
       <td className="px-2 py-1.5 text-right tabular-nums">{a.count}</td>
-      <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.hours))}</td>
-      <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
-      {sensitive && num(a.konto)}
-      {sensitive && num(a.gotowkaPay)}
+      <td className="bg-sky-50/40 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.hours))}</td>
+      <td className={`border-x-2 border-red-100 bg-red-50/60 px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
+      {sensitive && <td className="bg-amber-50/50 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.konto))}</td>}
+      {sensitive && <td className="bg-amber-50/50 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.gotowkaPay))}</td>}
       {sensitive && (
-        <td className={`px-2 py-1.5 text-right tabular-nums ${nierozpTitle ? "cursor-help text-amber-600 underline decoration-dotted underline-offset-2" : "text-slate-400"}`}
+        <td className={`bg-amber-50/50 px-2 py-1.5 text-right tabular-nums ${nierozpTitle ? "cursor-help text-amber-600 underline decoration-dotted underline-offset-2" : "text-slate-400"}`}
           title={nierozpTitle}>
           {nierozpOf(a) > 0.5 ? fmt(nierozpOf(a)) : ""}
         </td>
@@ -1240,26 +1271,26 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
         {t("Розбивка по містах і фабриках")}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        <table className="w-full border-collapse text-sm">
+          <thead className="border-b-2 border-slate-200 bg-slate-100/80">
+            <tr className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               <th className="px-3 py-2.5 text-left">{t("Фабрика")}</th>
               <th className="px-2 py-2.5 text-right">{t("Людей")}</th>
-              <th className="px-2 py-2.5 text-right">{t("Години")}</th>
-              <th className="px-2 py-2.5 text-right">{t("До виплати")}</th>
-              {sensitive && <th className="px-2 py-2.5 text-right">{t("На карту")}</th>}
-              {sensitive && <th className="px-2 py-2.5 text-right">{t("Готівка")}</th>}
-              {sensitive && <th className="px-2 py-2.5 text-right" title={t("Виплата, для якої бухгалтерія ще не розписала конто/готівку")}>{t("Не розп.")}</th>}
-              <th className="px-2 py-2.5 text-right">{t("Аванси")}</th>
-              <th className="px-2 py-2.5 text-right">{t("Хостел")}</th>
-              <th className="px-2 py-2.5 text-right">{t("Штрафи")}</th>
+              <th className="bg-sky-100/70 px-2 py-2.5 text-right text-sky-800">{t("Години")}</th>
+              <th className="border-x-2 border-red-200 bg-red-100/70 px-2 py-2.5 text-right text-red-700">{t("До виплати")}</th>
+              {sensitive && <th className="bg-amber-100/80 px-2 py-2.5 text-right text-amber-700">{t("На карту")}</th>}
+              {sensitive && <th className="bg-amber-100/80 px-2 py-2.5 text-right text-amber-700">{t("Готівка")}</th>}
+              {sensitive && <th className="bg-amber-100/80 px-2 py-2.5 text-right text-amber-700" title={t("Виплата, для якої бухгалтерія ще не розписала конто/готівку")}>{t("Не розп.")}</th>}
+              <th className="bg-orange-100/60 px-2 py-2.5 text-right text-orange-800">{t("Аванси")}</th>
+              <th className="bg-orange-100/60 px-2 py-2.5 text-right text-orange-800">{t("Хостел")}</th>
+              <th className="bg-orange-100/60 px-2 py-2.5 text-right text-orange-800">{t("Штрафи")}</th>
               <th className="px-2 py-2.5 text-right">{t("Студ.")}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {cities.map(({ city, factories, total }) => [
-              <tr key={`c-${city}`} className="bg-slate-50/80">
-                <td className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+              <tr key={`c-${city}`} className="border-y border-slate-200 bg-slate-100">
+                <td className="px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-slate-600">
                   {city === OFFICE_CITY ? "🏢 " : ""}{t(city)}
                 </td>
                 {cells(total, "", nierozpNames(rows.filter(r => (isSpecial(r.factoryLabel) ? OFFICE_CITY : r.city) === city)))}
@@ -1284,7 +1315,7 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
                 if (open) out.push(
                   <tr key={`${k}-detail`}>
                     <td colSpan={sensitive ? 11 : 8} className="bg-slate-50/60 px-3 pb-2 pt-1">
-                      <table className="w-full text-[11px]">
+                      <table className="w-full text-[13px]">
                         <tbody className="divide-y divide-slate-100">
                           {people.map(r => (
                             <tr key={r.id} className={rowNierozp(r) ? "text-amber-700" : "text-slate-600"}>
@@ -1411,10 +1442,10 @@ function UnmatchedPanel() {
       </div>
       {!people.length ? <div className="p-4 text-sm text-slate-400">{t("Всі рядки привʼязані")} 🎉</div> : (
         <div className="max-h-96 overflow-y-auto">
-          <table className="w-full text-xs">
+          <table className="w-full text-sm">
             <tbody className="divide-y divide-slate-100">
               {people.map(p => (
-                <tr key={`${p.city}-${p.rawName}`} className="hover:bg-slate-50/60">
+                <tr key={`${p.city}-${p.rawName}`} className="even:bg-slate-50/60 hover:bg-red-50/30">
                   <td className="px-4 py-2 font-semibold text-slate-700">{p.rawName}</td>
                   <td className="px-2 py-2 text-slate-500">{t(p.city)} · {p.factories.join(", ")}</td>
                   <td className="px-2 py-2">

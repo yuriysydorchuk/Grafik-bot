@@ -30,6 +30,7 @@ interface HourRow {
   askSentAt?: string | null; askHours?: number | null;
   workerResponse?: "confirmed" | "dispute" | null; workerResponseAt?: string | null; workerNote?: string | null;
   note?: string | null; // ручна замітка графіка/офісу (hours_notes)
+  unlegalized?: boolean; // без форми легалізації або oczekuje — лише з cap svodni
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
 interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
@@ -52,7 +53,7 @@ function diffState(w: HourRow): DiffState {
   return w.factoryConfirmed ? "match" : "mismatch";
 }
 const DIFF_CELL: Record<DiffState, string> = {
-  match: "bg-emerald-50", mismatch: "bg-red-50", partial: "bg-amber-50/60", none: "",
+  match: "bg-emerald-50", mismatch: "bg-red-50", partial: "bg-amber-50/60", none: "bg-sky-50/40",
 };
 
 export default function Hours() {
@@ -325,11 +326,12 @@ export default function Hours() {
       )}
 
       {isFetching && !data ? <Spinner /> : !groups.length ? <Empty>{t("За цей місяць немає затверджених змін")}</Empty> : (
-        <div className="space-y-8">
+        <div className="space-y-12">
           {shownCityGroups.map(([city, cityGs]) => (
           <div key={city}>
-            <div className="mb-3 flex items-center gap-2 border-b border-slate-200 pb-2">
-              <h2 className="text-base font-bold tracking-tight text-slate-800">{t(city)}</h2>
+            <div className="mb-3 flex items-center gap-2.5 border-b-2 border-slate-200 pb-2">
+              <span className="h-5 w-1.5 rounded-full bg-red-600" />
+              <h2 className="text-lg font-bold tracking-tight text-slate-900">{t(city)}</h2>
               <Badge color="slate">{cityGs.length} {t("фабрик")}</Badge>
               <Badge color="slate">{new Set(cityGs.flatMap(g => g.rows.map(w => w.workerId))).size} {t("людей")}</Badge>
               <Badge color="green">{round(cityGs.reduce((s, g) => s + g.hours, 0))} {t("год")}</Badge>
@@ -343,19 +345,20 @@ export default function Hours() {
                 </button>
               )}
             </div>
-            <div className="space-y-6">
+            <div className="space-y-8">
           {cityGs.map(g => {
             const cols = Array.from({ length: g.n }, (_, i) => String(i + 1));
             return (
-              <div key={g.key}>
-                <div className="mb-2 flex items-center gap-2">
-                  <FactoryIcon className="h-4 w-4 text-slate-400" />
-                  <h2 className="text-sm font-semibold text-slate-700">{g.name}</h2>
+              <Card key={g.key} className="overflow-hidden">
+                {/* хедер фабрики — всередині картки, щоб таблиці сусідніх фабрик не зливались */}
+                <div className="flex flex-wrap items-center gap-2 border-b-2 border-slate-200 bg-gradient-to-r from-red-50/70 via-slate-50 to-white px-4 py-3">
+                  <FactoryIcon className="h-4 w-4 text-red-500" />
+                  <h2 className="text-[15px] font-bold tracking-tight text-slate-800">{g.name}</h2>
                   <Badge color="slate">{g.rows.length} {t("людей")}</Badge>
                   <Badge color="slate">{g.shifts} {t("змін")}</Badge>
                   <Badge color="green">{round(g.hours)} {t("год")}</Badge>
                   {isOwner && <Badge color="green">{round(g.net)} {t("zł нетто")}</Badge>}
-                  <span className="ml-auto inline-flex items-center gap-2">
+                  <span className="ml-auto inline-flex flex-wrap items-center gap-2">
                   {can(me, "svodni") && canEdit && g.factoryId != null && (
                     <button onClick={() => confirmToSvodni(g.name, { factoryId: g.factoryId! })} disabled={toSvodni.isPending}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
@@ -416,25 +419,26 @@ export default function Hours() {
                   )}
                   </span>
                 </div>
-                <Card className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[15px]">
+                    <thead className="border-b-2 border-slate-200 bg-slate-100/80 text-left text-xs uppercase tracking-wide text-slate-500">
                       <tr>
                         {canEdit && <th className="w-8 px-2 py-2.5" />}
                         <th className="px-4 py-2.5">{t("Працівник")}</th><th className="px-4 py-2.5">{t("Код")}</th>
-                        {cols.map(c => <th key={c} className="px-3 py-2.5 text-center">{c} {t("зм")}</th>)}
-                        <th className="px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="px-4 py-2.5 text-right">{t("Години")}</th>
-                        <th className="px-4 py-2.5 text-right">{t("Години з рапорту")}</th>
-                        <th className="px-4 py-2.5 text-right">{t("Години з фабрики")}</th>
-                        <th className="px-3 py-2.5 text-center" title={t("Відповідь працівника на запит підтвердження годин у боті")}>{t("Підтв. працівника")}</th>
-                        <th className="px-3 py-2.5">{t("Замітки")}</th>
-                        {isOwner && <><th className="px-3 py-2.5 text-right">{t("Ставка")}</th><th className="px-4 py-2.5 text-right">{t("ЗП нетто")}</th><th className="px-4 py-2.5 text-right">{t("ЗП по рапорту")}</th></>}
+                        {cols.map((c, ci) => <th key={c} className={`px-3 py-2.5 text-center ${ci === 0 ? "border-l-2 border-slate-300" : ""}`}>{c} {t("зм")}</th>)}
+                        <th className="border-l-2 border-slate-300 px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800">{t("Години")}</th>
+                        <th className="border-l-2 border-slate-300 bg-sky-100/70 px-4 py-2.5 text-right text-sky-800">{t("Години з рапорту")}</th>
+                        <th className="bg-sky-100/70 px-4 py-2.5 text-right text-sky-800">{t("Години з фабрики")}</th>
+                        <th className="bg-sky-100/70 px-3 py-2.5 text-center text-sky-800" title={t("Відповідь працівника на запит підтвердження годин у боті")}>{t("Підтв. працівника")}</th>
+                        <th className="border-l-2 border-slate-300 px-3 py-2.5">{t("Замітки")}</th>
+                        {isOwner && <><th className="border-l-2 border-slate-300 bg-violet-100/60 px-3 py-2.5 text-right text-violet-800">{t("Ставка")}</th><th className="bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800">{t("ЗП нетто")}</th><th className="bg-blue-100/60 px-4 py-2.5 text-right text-blue-800">{t("ЗП по рапорту")}</th></>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
                       {g.rows.map(w => (
-                        <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }} className="cursor-pointer hover:bg-red-50/40">
+                        <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }}
+                          className={`cursor-pointer ${w.unlegalized ? "bg-rose-50/70 hover:bg-rose-100/60" : "even:bg-slate-50/60 hover:bg-red-50/40"}`}>
                           {canEdit && (
                             <td className="px-2 py-2.5" onClick={e => e.stopPropagation()}>
                               <input type="checkbox" checked={!!selWorkers[w.workerId]} onChange={e => setSelWorkers(s => ({ ...s, [w.workerId]: e.target.checked }))} className="h-4 w-4 accent-red-600" />
@@ -443,6 +447,12 @@ export default function Hours() {
                           <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
                             {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
                             {w.name}
+                            {w.unlegalized && (
+                              <span className="ml-1.5 rounded bg-rose-100 px-1 py-0.5 align-middle text-[10px] font-semibold text-rose-700"
+                                title={t("Не оформлений або не поданий (oczekuje) — потрібна легалізація")}>
+                                {t("не оформл.")}
+                              </span>
+                            )}
                             {canDelete && w.createdViaImport && w.shifts === 0 && (
                               <button onClick={e => {
                                   e.stopPropagation();
@@ -454,19 +464,19 @@ export default function Hours() {
                             )}
                           </td>
                           <td className="px-4 py-2.5 text-slate-400">{w.code ?? "—"}</td>
-                          {cols.map(c => <td key={c} className="px-3 py-2.5 text-center text-slate-600">{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
-                          <td className="px-4 py-2.5 text-center font-medium text-slate-700">{w.shifts}</td>
-                          <td className="px-4 py-2.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
-                          <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
+                          {cols.map((c, ci) => <td key={c} className={`px-3 py-2.5 text-center text-slate-600 ${ci === 0 ? "border-l-2 border-slate-200" : ""}`}>{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
+                          <td className="border-l-2 border-slate-200 px-4 py-2.5 text-center font-medium text-slate-700">{w.shifts}</td>
+                          <td className="bg-emerald-50/40 px-4 py-2.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
+                          <td className={`border-l-2 border-slate-200 px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
                           <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
-                          <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
-                          <td className="max-w-[16rem] px-3 py-2.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
-                          {isOwner && <><td className="px-3 py-2.5 text-right text-slate-400">{w.rate ?? "—"}</td><td className="px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="px-4 py-2.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
+                          <td className={`px-3 py-2.5 text-center ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
+                          <td className="max-w-[16rem] border-l-2 border-slate-200 px-3 py-2.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
+                          {isOwner && <><td className="border-l-2 border-slate-200 bg-violet-50/40 px-3 py-2.5 text-right text-slate-500">{w.rate ?? "—"}</td><td className="bg-emerald-50/40 px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="bg-blue-50/40 px-4 py-2.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
                         </tr>
                       ))}
                     </tbody>
                     <tfoot>
-                      <tr className="bg-slate-50 font-semibold text-slate-700">
+                      <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
                         <td className="px-4 py-2.5" colSpan={(canEdit ? 3 : 2) + cols.length}>{t("Разом по фабриці")}</td>
                         <td className="px-4 py-2.5 text-center">{g.shifts}</td>
                         <td className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>
@@ -479,8 +489,8 @@ export default function Hours() {
                       </tr>
                     </tfoot>
                   </table>
-                </Card>
-              </div>
+                </div>
+              </Card>
             );
           })}
             </div>
@@ -792,7 +802,7 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
       )}
       {facEntries.length > 0 && <div className="max-h-[55vh] overflow-auto rounded-xl border border-slate-200">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+          <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-3 py-2">{t("Дата")}</th>
               <th className="px-3 py-2">{t("Зміна")}</th>
@@ -930,7 +940,7 @@ function NotifyAskModal({ group, month, onClose }: { group: Group; month: string
       <p className="mb-2 text-sm text-slate-500">{t("Кожен вибраний отримає в бот свої години з колонки «Години з фабрики» з кнопками «✅ Все вірно» / «❌ Є помилка». Повторна розсилка скидає попередню відповідь.")}</p>
       <div className="max-h-[50vh] overflow-auto rounded-xl border border-slate-200">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+          <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-3 py-2"><input type="checkbox" checked={allOn} className="h-4 w-4 accent-red-600"
                 onChange={e => setChecked(Object.fromEntries(rows.map(w => [w.workerId, e.target.checked])))} /></th>
@@ -1132,7 +1142,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
           )}
           <div className="max-h-[50vh] overflow-y-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-3 py-2" />
                   {hasKeys && <th className="px-3 py-2">{t("Ключ")}</th>}
@@ -1298,7 +1308,7 @@ function FactoryKeysModal({ group, onClose }: { group: Group; onClose: () => voi
             {keys.length > 0 ? (
               <div className="max-h-[40vh] overflow-y-auto rounded-xl border border-slate-200">
                 <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+                  <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2">{t("Ключ")}</th>
                       <th className="px-3 py-2">{t("Працівник")}</th>
@@ -1329,7 +1339,7 @@ function FactoryKeysModal({ group, onClose }: { group: Group; onClose: () => voi
           <>
             <div className="max-h-[50vh] overflow-y-auto rounded-xl border border-slate-200">
               <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+                <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-3 py-2">{t("Ключ")}</th>
                     <th className="px-3 py-2">{t("Ім'я у файлі")}</th>

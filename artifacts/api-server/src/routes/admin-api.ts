@@ -2599,6 +2599,9 @@ router.get("/hours-reports/:id/photo", RW, async (req, res) => {
 router.get("/hours", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const isOwner = canFinance(req);
+  // «не оформлений» (без форми легалізації і не студент) або «не поданий» (oczekuje) —
+  // прапорець для червоної підсвітки; видимість — як у бейджів легалізації сводної (cap svodni)
+  const canSvodni = hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodni");
   const rates = await getFinanceRates();
   // Ставка — тим самим ланцюжком, що сводна (resolveBaseRates): профіль →
   // пара посади фабрики → найдешевша посада → базова пара фабрики; дефолт
@@ -2632,6 +2635,7 @@ router.get("/hours", RW, async (req, res) => {
         note: w.note,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
+        ...(canSvodni ? { unlegalized: (!w.legalStatus && !w.isStudent) || w.legalStatus === "oczekuje" } : {}),
       };
       if (isOwner) {
         const p = calcPayroll(hours * (base.rate ?? rates.defaultRate), base.isStudent, base.under26, rates);

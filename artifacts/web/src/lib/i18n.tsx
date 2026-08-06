@@ -1103,6 +1103,8 @@ const EN: Record<string, string> = {
   "Ставка": "Rate",
   "ЗП нетто": "Net pay",
   "Є скарга на години": "There is an hours complaint",
+  "Не оформлений або не поданий (oczekuje) — потрібна легалізація": "Not legalized or not submitted (oczekuje) — legalization needed",
+  "не оформл.": "not legal.",
   "Разом по фабриці": "Factory total",
 
   // ── Absences ──
