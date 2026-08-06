@@ -2042,10 +2042,11 @@ router.post("/schedule/approve", RW, async (req, res) => {
 // Add a worker to a shift (manual edit)
 router.post("/schedule/entry", RW, async (req, res) => {
   const { weekStart, workerId, factoryId, day, shift } = req.body ?? {};
-  // Same row resolution as GET /schedule: prefer the approved row, else the newest
-  const weekCands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  const week = weekCands.find(w => w.status === "approved") ?? weekCands[0];
-  if (!week) return fail(res, 404, "Тиждень не знайдено");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(weekStart))) return fail(res, 400, "Невірні дані");
+  // Тиждень: approved ?? останній draft; якщо графіку ще немає взагалі — створюємо
+  // draft-рядок, щоб графік можна було зібрати вручну ще до «Згенерувати»
+  // (дзеркально призначенню водіїв наперед у PUT /schedule/driver-assignments).
+  const week = await ensureWeekRow(String(weekStart));
   // avoid duplicate / two shifts same day
   const existing = await db.select().from(scheduleEntriesTable)
     .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.dayOfWeek, day)));

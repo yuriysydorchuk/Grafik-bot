@@ -101,6 +101,36 @@ test("POST /schedule/shift-override відхиляє невалідні дані
   assert.equal(badShift.status, 400);
 });
 
+// ─── Ручне додавання в зміну до генерації ─────────────────────────────────────
+
+// Регресія: до першого «Згенерувати» тижня не існує, і drag людини в зміну падав
+// 404 «Тиждень не знайдено» — хоча GET /schedule навмисно віддає пули для ручного
+// збирання. Тепер POST /schedule/entry сам створює draft-тиждень.
+test("POST /schedule/entry без згенерованого тижня створює draft-тиждень і запис", opts, async () => {
+  const f = await mkFactory(), w = await mkWorker(f);
+  const res = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H)
+    .send({ weekStart: WEEK, workerId: w, factoryId: f, day: "mon", shift: "1" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  const weeks = await db.select().from(scheduleWeeksTable);
+  assert.equal(weeks.length, 1, "створився рівно один рядок тижня");
+  assert.equal(weeks[0]!.status, "draft");
+  assert.equal(weeks[0]!.weekStart, WEEK);
+  const entries = await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, weeks[0]!.id));
+  assert.deepEqual(entries.map(e => [e.workerId, e.dayOfWeek, e.shift, e.status]), [[w, "mon", "1", "scheduled"]]);
+
+  // повторне додавання того самого дня — старий гард лишився
+  const dup = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H)
+    .send({ weekStart: WEEK, workerId: w, factoryId: f, day: "mon", shift: "2" });
+  assert.equal(dup.status, 400);
+
+  // невалідний weekStart не створює сміттєвий рядок тижня
+  const bad = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H)
+    .send({ weekStart: "not-a-date", workerId: w, factoryId: f, day: "tue", shift: "1" });
+  assert.equal(bad.status, 400);
+  assert.equal((await db.select().from(scheduleWeeksTable)).length, 1);
+});
+
 // ─── Excel обліку годин: вибір колонок + errorsOnly ───────────────────────────
 
 async function excelHeaderAndRows(buf: Buffer): Promise<{ header: string[]; dataRows: any[][] }> {
