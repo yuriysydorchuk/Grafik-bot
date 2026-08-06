@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban } from "lucide-react";
+import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy } from "lucide-react";
 import { toast } from "sonner";
 import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
-  DAYS, DAY_FULL, SHIFT_UK, type DayCode, type ShiftCode,
+  DAYS, DAY_UK, DAY_FULL, SHIFT_UK, type DayCode, type ShiftCode,
 } from "../lib/api";
 import { upcomingWeeks, dayDate } from "../lib/dates";
 import { useConfirm } from "../components/confirm";
@@ -70,6 +70,7 @@ export default function Schedule() {
   const [cancelTo, setCancelTo] = useState<{ day: DayCode; shift: ShiftCode } | null>(null); // cancel a whole day+shift cell
   const [extraTo, setExtraTo] = useState<{ day: DayCode; shift?: ShiftCode } | null>(null); // one-off shift for a single day
   const [genOpen, setGenOpen] = useState(false); // generate options (replace vs augment)
+  const [copyFrom, setCopyFrom] = useState<DayCode | null>(null); // «заповнити тиждень як цей день»
 
   useEffect(() => { if (!factoryId && factories.length) setFactoryId(String(factories[0]!.id)); }, [factories]);
 
@@ -317,6 +318,14 @@ export default function Schedule() {
                       </button>
                     )}
                     {entries.some(e => e.day === day) && (<>
+                      {editable && (
+                        <button
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-sky-600 hover:bg-sky-50"
+                          title={t("Розставити людей цього дня на інші дні тижня — з перевіркою диспозиційності")}
+                          onClick={() => setCopyFrom(day)}>
+                          <Copy className="h-3 w-3" /> {t("На тиждень")}
+                        </button>
+                      )}
                       <a
                         href={`/api/schedule/excel?weekStart=${weekStart}&factoryId=${factoryId}&day=${day}`}
                         className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
@@ -588,6 +597,17 @@ export default function Schedule() {
 
       {genOpen && <GenerateModal loading={generate.isPending} onClose={() => setGenOpen(false)} onGenerate={(augment) => generate.mutate(augment)} />}
 
+      {copyFrom && (
+        <CopyWeekModal
+          sourceDay={copyFrom}
+          sourceLabel={`${DAY_FULL[copyFrom]} · ${dayDate(weekStart, DAYS.indexOf(copyFrom))}`}
+          weekStart={weekStart}
+          factoryId={Number(factoryId)}
+          onClose={() => setCopyFrom(null)}
+          onDone={(created) => { setCopyFrom(null); reload(); toast.success(t("Поставлено: {n}", { n: created })); }}
+        />
+      )}
+
       {extraTo && (
         <ExtraShiftModal
           dayLabel={`${DAY_FULL[extraTo.day]} · ${dayDate(weekStart, DAYS.indexOf(extraTo.day))}`}
@@ -711,6 +731,146 @@ function GenerateModal({ loading, onClose, onGenerate }: {
             {mode === "augment" ? t("Доповнити") : t("Перегенерувати")}
           </Button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+// «Заповнити тиждень як цей день»: превʼю з сервера (хто проходить по диспозиційності,
+// хто ні, хто відпросився), вибір цільових днів, поіменне і масове підтвердження
+// попереджених. Ставить кожного у ту саму зміну, що в джерельний день.
+type CopyPerson = { workerId: number; name: string; shift: ShiftCode; note?: string | null };
+type CopyPlanDay = {
+  day: DayCode; ok: CopyPerson[]; noAvail: CopyPerson[]; absence: CopyPerson[];
+  skipped: (CopyPerson & { reason: "cancelled" | "busy" })[];
+};
+
+function CopyWeekModal({ sourceDay, sourceLabel, weekStart, factoryId, onClose, onDone }: {
+  sourceDay: DayCode; sourceLabel: string; weekStart: string; factoryId: number;
+  onClose: () => void; onDone: (created: number) => void;
+}) {
+  const t = useT();
+  const allTargets = DAYS.filter(d => d !== sourceDay);
+  // типово вибрані дні після джерельного — «далі так само»
+  const [selDays, setSelDays] = useState<Set<DayCode>>(new Set(DAYS.slice(DAYS.indexOf(sourceDay) + 1)));
+  const [forced, setForced] = useState<Set<string>>(new Set()); // "day-workerId" — підтверджені з попереджених
+  const { data: preview, isLoading, error } = useQuery<{ usesAvailability: boolean; people: number; days: CopyPlanDay[] }>({
+    queryKey: ["copy-day", factoryId, weekStart, sourceDay],
+    queryFn: () => post("/schedule/copy-day", { weekStart, factoryId, sourceDay, targetDays: allTargets, mode: "preview" }),
+  });
+  const toggleDay = (d: DayCode) => setSelDays(prev => { const n = new Set(prev); n.has(d) ? n.delete(d) : n.add(d); return n; });
+  const toggleForce = (k: string) => setForced(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+  const dayPlans = (preview?.days ?? []).filter(d => selDays.has(d.day));
+  const warnKeys = dayPlans.flatMap(d => [...d.noAvail, ...d.absence].map(p => `${d.day}-${p.workerId}`));
+  const total = dayPlans.reduce((s, d) => s + d.ok.length + [...d.noAvail, ...d.absence].filter(p => forced.has(`${d.day}-${p.workerId}`)).length, 0);
+
+  const apply = useMutation({
+    mutationFn: () => post("/schedule/copy-day", {
+      weekStart, factoryId, sourceDay, targetDays: [...selDays], mode: "apply",
+      force: [...forced]
+        .filter(k => selDays.has(k.slice(0, k.indexOf("-")) as DayCode))
+        .map(k => ({ day: k.slice(0, k.indexOf("-")), workerId: Number(k.slice(k.indexOf("-") + 1)) })),
+    }),
+    onSuccess: (r: any) => onDone(r.created ?? 0),
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  return (
+    <Modal open onClose={onClose} title={`${t("Заповнити тиждень")} — ${sourceLabel}`}>
+      <div className="space-y-3">
+        {error ? (
+          <p className="text-sm text-rose-600">{(error as any).message}</p>
+        ) : isLoading || !preview ? (
+          <p className="py-4 text-center text-sm text-slate-400">{t("Завантаження превʼю…")}</p>
+        ) : (
+          <>
+            <p className="text-xs text-slate-500">
+              {t("У джерельному дні: {n} людей. Кожен буде поставлений у ту саму зміну у вибрані дні.", { n: preview.people })}
+              {!preview.usesAvailability && <> {t("Фабрика не використовує диспозиційність — перевірки немає, ставляться всі.")}</>}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {allTargets.map(d => {
+                const p = preview.days.find(x => x.day === d);
+                const warnN = p ? p.noAvail.length + p.absence.length : 0;
+                const on = selDays.has(d);
+                return (
+                  <button key={d} onClick={() => toggleDay(d)}
+                    className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+                    {DAY_UK[d]}{p && <span className="opacity-70"> · {p.ok.length}✓{warnN > 0 ? ` ${warnN}⚠` : ""}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="max-h-[45vh] space-y-2 overflow-y-auto">
+              {dayPlans.map(d => {
+                const warn = [
+                  ...d.noAvail.map(p => ({ ...p, kind: "noAvail" as const })),
+                  ...d.absence.map(p => ({ ...p, kind: "absence" as const })),
+                ];
+                const forcedCount = warn.filter(p => forced.has(`${d.day}-${p.workerId}`)).length;
+                return (
+                  <div key={d.day} className="rounded-lg border border-slate-200 p-3">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-sm font-semibold text-slate-700">
+                        {DAY_FULL[d.day]} <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, DAYS.indexOf(d.day))}</span>
+                      </span>
+                      <span className="shrink-0 text-xs text-slate-500">
+                        {t("буде поставлено")}: <b className="text-emerald-600">{d.ok.length + forcedCount}</b>
+                        {d.skipped.length > 0 && <> · {t("пропущено")}: {d.skipped.length}</>}
+                      </span>
+                    </div>
+                    {warn.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {warn.map(p => {
+                          const k = `${d.day}-${p.workerId}`;
+                          return (
+                            <label key={k} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-slate-50">
+                              <input type="checkbox" checked={forced.has(k)} onChange={() => toggleForce(k)} />
+                              <span className="min-w-0 flex-1 truncate text-slate-700">{p.name}</span>
+                              <span className="shrink-0 text-[11px] text-slate-400">{SHIFT_UK[p.shift]}</span>
+                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${p.kind === "absence" ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
+                                {p.kind === "absence"
+                                  ? `🙋 ${t("відпросився")}${p.note ? ` — ${p.note}` : ""}`
+                                  : p.note === "other_shift" ? t("диспозиційність на іншу зміну") : t("без диспозиційності")}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {d.skipped.length > 0 && (
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        ⏭ {d.skipped.map(p => `${p.name} (${p.reason === "busy" ? t("вже має зміну") : t("зміну скасовано")})`).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+              {dayPlans.length === 0 && <Empty>{t("Виберіть хоча б один день")}</Empty>}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              {warnKeys.length > 0 ? (
+                <div className="flex gap-1.5">
+                  <button onClick={() => setForced(new Set(warnKeys))}
+                    className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                    {t("Поставити всіх")}
+                  </button>
+                  <button onClick={() => setForced(new Set())}
+                    className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                    {t("Лише з диспозиційністю")}
+                  </button>
+                </div>
+              ) : <span />}
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+                <Button loading={apply.isPending} disabled={total === 0} onClick={() => apply.mutate()}>
+                  {t("Поставити")} ({total})
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );

@@ -2069,6 +2069,123 @@ router.delete("/schedule/entry/:id", RW, async (req, res) => {
   ok(res, { ok: true });
 });
 
+// «Заповнити тиждень як цей день»: людей джерельного дня розставити в ті самі зміни
+// вибраних днів тижня. mode=preview — класифікація без запису (ok / noAvail /
+// absence / skipped), mode=apply — вставка ok-людей плюс явно підтверджених у force
+// ("day-workerId" пари з попереджених). Разовий час зміни джерельної клітинки
+// копіюється на цільову дату, якщо там свого нема — інакше зміна поза налаштуванням
+// фабрики лишилась би без часу (пуші/борд водія/Excel її не побачили б).
+router.post("/schedule/copy-day", RW, async (req, res) => {
+  const { weekStart, factoryId, sourceDay, targetDays, mode, force } = req.body ?? {};
+  const fid = Number(factoryId);
+  const tgt: string[] = Array.isArray(targetDays) ? targetDays.map(String) : [];
+  const days = DAYS.filter(d => tgt.includes(d) && d !== sourceDay);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(weekStart)) || !Number.isInteger(fid)
+    || !DAYS.includes(sourceDay) || !days.length || !["preview", "apply"].includes(mode)) {
+    return fail(res, 400, "Невірні дані");
+  }
+  // Same row resolution as GET /schedule: prefer the approved row, else the newest
+  const weekCands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
+  const week = weekCands.find(w => w.status === "approved") ?? weekCands[0];
+  if (!week) return fail(res, 404, "Тиждень не знайдено");
+
+  const src = await db.select({ workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, name: workersTable.fullName })
+    .from(scheduleEntriesTable)
+    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.factoryId, fid), eq(scheduleEntriesTable.dayOfWeek, sourceDay)));
+  if (!src.length) return fail(res, 400, "У джерельному дні нікого немає");
+  // одна людина = одна зміна на день, але про всяк випадок дедуп по працівнику
+  const srcByWorker = new Map<number, { workerId: number; shift: Shift; name: string }>();
+  for (const e of src) if (!srcByWorker.has(e.workerId)) srcByWorker.set(e.workerId, { workerId: e.workerId, shift: e.shift, name: e.name ?? "—" });
+  const people = [...srcByWorker.values()];
+  const workerIds = people.map(p => p.workerId);
+
+  const [factory] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, fid));
+  const usesAvail = factory?.usesAvailability ?? true;
+
+  // запис будь-якої фабрики того дня блокує (та сама семантика, що POST /schedule/entry)
+  const busyRows = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek })
+    .from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), inArray(scheduleEntriesTable.workerId, workerIds), inArray(scheduleEntriesTable.dayOfWeek, days)));
+  const busy = new Set(busyRows.map(r => `${r.day}-${r.workerId}`));
+
+  const availRows = !usesAvail ? [] : await db
+    .select({ workerId: availabilityTable.workerId, day: availabilityTable.dayOfWeek, shift: availabilityTable.shift })
+    .from(availabilityTable)
+    .where(and(eq(availabilityTable.weekStart, weekStart), inArray(availabilityTable.workerId, workerIds)));
+  const availExact = new Set(availRows.map(r => `${r.day}-${r.shift}-${r.workerId}`));
+  const availDay = new Set(availRows.map(r => `${r.day}-${r.workerId}`));
+
+  const cancRows = await db.select({ day: shiftCancellationsTable.dayOfWeek, shift: shiftCancellationsTable.shift })
+    .from(shiftCancellationsTable)
+    .where(and(eq(shiftCancellationsTable.weekId, week.id), eq(shiftCancellationsTable.factoryId, fid)));
+  const cancelledCell = new Set(cancRows.map(r => `${r.day}-${r.shift}`));
+
+  const absRows = await db.select().from(absenceRequestsTable)
+    .where(and(eq(absenceRequestsTable.weekStart, weekStart), inArray(absenceRequestsTable.workerId, workerIds), ne(absenceRequestsTable.status, "rejected")));
+  const absenceOf = (workerId: number, day: DayOfWeek, shift: Shift) =>
+    absRows.find(r => r.workerId === workerId && r.dayOfWeek === day && (r.shift == null || r.shift === shift));
+
+  const ovRows = await db.select().from(factoryShiftOverridesTable).where(and(
+    eq(factoryShiftOverridesTable.factoryId, fid),
+    gte(factoryShiftOverridesTable.date, String(weekStart)),
+    lte(factoryShiftOverridesTable.date, addDaysStr(String(weekStart), 6)),
+  ));
+  const ovByDateShift = new Map(ovRows.map(r => [`${r.date}-${r.shift}`, { start: r.start, end: r.end }]));
+
+  type PlanPerson = { workerId: number; name: string; shift: Shift; note?: string | null };
+  const plan = days.map(day => {
+    const okL: PlanPerson[] = [], noAvail: PlanPerson[] = [], absence: PlanPerson[] = [];
+    const skipped: (PlanPerson & { reason: "cancelled" | "busy" })[] = [];
+    for (const p of people) {
+      if (cancelledCell.has(`${day}-${p.shift}`)) { skipped.push({ ...p, reason: "cancelled" }); continue; }
+      if (busy.has(`${day}-${p.workerId}`)) { skipped.push({ ...p, reason: "busy" }); continue; }
+      const ab = absenceOf(p.workerId, day, p.shift);
+      if (ab) { absence.push({ ...p, note: ab.reason }); continue; }
+      if (!usesAvail || availExact.has(`${day}-${p.shift}-${p.workerId}`)) { okL.push(p); continue; }
+      noAvail.push({ ...p, note: availDay.has(`${day}-${p.workerId}`) ? "other_shift" : null });
+    }
+    return { day, ok: okL, noAvail, absence, skipped };
+  });
+
+  if (mode === "preview") return ok(res, { sourceDay, usesAvailability: usesAvail, people: people.length, days: plan });
+
+  const forceSet = new Set((Array.isArray(force) ? force : []).map((f: any) => `${f?.day}-${Number(f?.workerId)}`));
+  const srcDate = entryDateStr(String(weekStart), String(sourceDay));
+  let created = 0, overridesCopied = 0;
+  const perDay: Record<string, number> = {};
+  for (const d of plan) {
+    const toAdd = [...d.ok, ...[...d.noAvail, ...d.absence].filter(p => forceSet.has(`${d.day}-${p.workerId}`))];
+    perDay[d.day] = toAdd.length;
+    if (!toAdd.length) continue;
+    const date = entryDateStr(String(weekStart), d.day);
+    // час клітинки: свій разовий, інакше копія разового часу джерельного дня
+    const hoursFor = new Map<Shift, number | null>();
+    for (const shift of new Set(toAdd.map(p => p.shift))) {
+      let ov = ovByDateShift.get(`${date}-${shift}`) ?? null;
+      if (!ov) {
+        const srcOv = ovByDateShift.get(`${srcDate}-${shift}`);
+        if (srcOv) {
+          await db.insert(factoryShiftOverridesTable)
+            .values({ factoryId: fid, date, shift, start: srcOv.start, end: srcOv.end })
+            .onConflictDoNothing();
+          ovByDateShift.set(`${date}-${shift}`, srcOv);
+          ov = srcOv;
+          overridesCopied++;
+        }
+      }
+      hoursFor.set(shift, ov ? shiftDurationHours(ov.start, ov.end) : null);
+    }
+    const inserted = await db.insert(scheduleEntriesTable).values(toAdd.map(p => ({
+      weekId: week.id, workerId: p.workerId, factoryId: fid, dayOfWeek: d.day, shift: p.shift,
+      status: "scheduled" as const, hoursOverride: hoursFor.get(p.shift) ?? null,
+    }))).returning({ id: scheduleEntriesTable.id });
+    created += inserted.length;
+    perDay[d.day] = inserted.length;
+  }
+  ok(res, { created, overridesCopied, days: perDay });
+});
+
 // Разова зміна на конкретний день фабрики: додати зміну поза стандартним набором
 // або змінити час наявної зміни лише на цю дату. Люди в зміну додаються звичайним
 // POST /schedule/entry — запис у factory_shift_overrides дає їй час скрізь
