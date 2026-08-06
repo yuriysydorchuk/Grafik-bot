@@ -128,6 +128,36 @@ test("ewidencja: SUMA + зміни I/II/III, аркуші зливаються, 
   ]);
 });
 
+// ── формат E: розрахунковий файл Eurocash (EUROSUPPORT LIPIEC 2026) ─────────
+// Лівий блок по працівнику + (правіше в тих самих рядках і нижче) сирі денні
+// дані без імені в колонці «Nazwisko i Imię» — вони не мають потрапити в рядки.
+
+const EUROCASH = [
+  ["NUMER ZRFM", "NR OSOBOWY", "Nazwisko i Imię", "Zatrud.", "Suma z Wyk. [h]", "Suma z Wyk. [h] AMBIENT", "Suma z Nocne [h]",
+    "Produktywność kartonowa", "Produktywność punktowa", "Stawka H NEW AGENCJA", "TOTAL DLA AGENCJI",
+    "POTRĄCENIA ZA POMYŁKOWOŚĆ - SUMA", "KOREKTA", "KOŃCOWE ROZLICZENIE", null, "Dzień", "Pracownik (Kod)"],
+  ["5855", "565469", "THABO NKOMO CRAIG", "2025-06-26", "159.5", "159.5", "44",
+    "154.68", "162.54544200626958", "50.83097882465875", "8330.62", "510", null, "7820.62", null, "2026-07-01", "565573"],
+  ["5903", "565573", "ZHAKATA BYRON TINAYEISHE", "2025-09-16", "143", "143", "29",
+    "150.69", "158.61837062937073", "50.83097882465875", "7415.86", "130", null, "7285.86", null, "2026-07-01", "565469"],
+  // сирий денний рядок правого блоку — без імені, пропускається
+  [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, "2026-07-08", "565469"],
+];
+
+test("eurocash: години + extras (нічні/продуктивність/ставка/потроненя), правий блок ігнорується", () => {
+  const f = parseFactoryHoursWorkbook(wbBuf(EUROCASH));
+  assert.equal(f.format, "eurocash");
+  assert.equal(f.monthDetected, null); // місяць — з імені файла (EUROSUPPORT LIPIEC 2026)
+  assert.deepEqual(f.rows, [
+    { name: "THABO NKOMO CRAIG", hours: 159.5, extras: {
+      nocneH: 44, produktywnosc: 162.54544200626958, stawkaAgencji: 50.83097882465875,
+      potracenia: 510, koncowe: 7820.62, nrOsobowy: "565469" } },
+    { name: "ZHAKATA BYRON TINAYEISHE", hours: 143, extras: {
+      nocneH: 29, produktywnosc: 158.61837062937073, stawkaAgencji: 50.83097882465875,
+      potracenia: 130, koncowe: 7285.86, nrOsobowy: "565573" } },
+  ]);
+});
+
 test("monthFromPolishFilename: польський місяць + рік з імені файла", () => {
   assert.equal(monthFromPolishFilename("EWIDENCJA KLINEX 2026 LIPIEC.xlsx"), "2026-07");
   assert.equal(monthFromPolishFilename("ewidencja ES styczeń 2027.xlsx"), "2027-01");

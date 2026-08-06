@@ -271,6 +271,73 @@ export function factoryBonusPerHour(
   return 0;
 }
 
+// ── Eurocash: ставка працівника від порогів продуктивності ───────────────────
+// Джерело — блок STAWKA EUROCASH вкладки сводної (дзеркало в svodni_tab_meta):
+// зелений рядок = ставка фабрики нам за порогом, жовтий = діапазони
+// продуктивності, під ними нетто і брутто працівника; клітинки A нетто/брутто
+// рядків = доплата за нічну годину (3,50 нетто / 4,50 брутто). Студент до 26 —
+// нетто = брутто і нічна брутто. Таблиці різні по містах — поки лише Люблін.
+export const EUROCASH_FACTORY_IDS = new Set([9]); // 9=EUROCASH LUBLIN (Białystok/Krosno — свої таблиці, згодом)
+
+export interface EurocashRates {
+  agency: (number | null)[]; // ставки фабрики нам (зелений рядок)
+  ranges: ({ from: number; to: number | null } | null)[]; // діапазони продуктивності («237 +» → to=null)
+  netto: (number | null)[];
+  brutto: (number | null)[];
+  nightNetto: number;  // доплата за нічну, не студент
+  nightBrutto: number; // студент до 26
+}
+
+const parseEurocashRange = (c: unknown): { from: number; to: number | null } | null => {
+  const s = String(c ?? "").trim();
+  const num = (t: string) => Number(t.replace(",", "."));
+  let m = /^([\d.,]+)\s*-\s*([\d.,]+)$/.exec(s);
+  if (m) return { from: num(m[1]!), to: num(m[2]!) };
+  m = /^([\d.,]+)\s*\+$/.exec(s);
+  if (m) return { from: num(m[1]!), to: null };
+  return null;
+};
+
+/** Розбір дзеркала блоку STAWKA EUROCASH: [0] зелений, [1] жовтий (діапазони),
+ *  [2] нетто, [3] брутто. Індекси колонок вирівняні між рядками. */
+export function eurocashRatesFromBlock(block: (string | number)[][] | null | undefined): EurocashRates | null {
+  if (!block || block.length < 4) return null;
+  const [green, yellow, nettoRow, bruttoRow] = block;
+  if (!/STAWKA EUROCASH/i.test(String(green![0] ?? ""))) return null;
+  const num = (c: unknown): number | null => (typeof c === "number" && Number.isFinite(c) ? c : null);
+  const count = Math.max(green!.length, yellow?.length ?? 0, nettoRow!.length, bruttoRow!.length) - 1;
+  const rates: EurocashRates = {
+    agency: [], ranges: [], netto: [], brutto: [],
+    nightNetto: num(nettoRow![0]) ?? 3.5, nightBrutto: num(bruttoRow![0]) ?? 4.5,
+  };
+  for (let i = 1; i <= count; i++) {
+    rates.agency.push(num(green![i]));
+    rates.ranges.push(parseEurocashRange(yellow?.[i]));
+    rates.netto.push(num(nettoRow![i]));
+    rates.brutto.push(num(bruttoRow![i]));
+  }
+  return rates.netto.some(v => v != null) ? rates : null;
+}
+
+/** Індекс порогу: точний матч ставки агенції з файлу фабрики із зеленим рядком
+ *  (±0.011 — дзеркало може бути округлене до копійки), фолбек — продуктивність
+ *  у діапазони жовтого рядка. null = поріг не знайдено (ставки не проставляємо). */
+export function eurocashBracketIndex(
+  rates: EurocashRates,
+  stawkaAgencji: number | null | undefined,
+  produktywnosc: number | null | undefined,
+): number | null {
+  if (stawkaAgencji != null) {
+    const i = rates.agency.findIndex(a => a != null && Math.abs(a - stawkaAgencji) <= 0.011);
+    if (i >= 0) return i;
+  }
+  if (produktywnosc != null) {
+    const i = rates.ranges.findIndex(r => r != null && produktywnosc >= r.from && (r.to == null || produktywnosc <= r.to));
+    if (i >= 0) return i;
+  }
+  return null;
+}
+
 // ── Резолюція базової пари ставок (без фабричних бонусів) ────────────────────
 // Пріоритет: профіль (якщо ставка вказана) → пара посади фабрики → найдешевша
 // посада (фабрика веде посади, а в профілі посада не вказана = «звичайний
@@ -528,7 +595,9 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
     if (norm(cell(rows[i], 0)) !== "STAWKA EUROCASH") continue;
     const block: (string | number)[][] = [];
     for (let j = i; j < Math.min(i + 5, rows.length); j++) {
-      const rr = (rows[j] ?? []).map(c => (typeof c === "number" ? r2(c) : String(c ?? "")));
+      // числа — повної точності: з блоку рахуються ставки працівника (from-hours
+      // Eurocash), як у формулах таблиці; веб округлює лише при показі
+      const rr = (rows[j] ?? []).map(c => (typeof c === "number" ? c : String(c ?? "")));
       while (rr.length && rr[rr.length - 1] === "") rr.pop();
       if (rr.length) block.push(rr);
     }

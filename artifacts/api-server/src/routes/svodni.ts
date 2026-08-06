@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -13,7 +13,7 @@ import { logger } from "../lib/logger";
 import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
-import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, SEG_SHARE_COLS, type RateRules, type SegmentCalcIn } from "../services/svodni";
+import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, SEG_SHARE_COLS, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { loadRateRules } from "../services/rateRules";
 import { addDaysStr } from "../lib/dates";
 
@@ -1451,6 +1451,33 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   const posById = new Map(positions.map(p => [p.id, p.name]));
   const ruleOf = await loadRateRules();
 
+  // Eurocash: ставка працівника — від порогу продуктивності. Extras пари
+  // (нічні/ставка агенції/потроненя) — з обліку годин (імпорт розрахункового
+  // файлу фабрики); таблиця порогів — дзеркало блоку STAWKA EUROCASH вкладки
+  // сводної (найсвіжіший місяць ≤ поточного; фолбек — останній наявний, ставки
+  // міняються рідко, а вкладки нового місяця на момент розрахунку ще нема).
+  const ecFactoryIds = [...new Set([...hoursByPair.values()]
+    .filter(p => p.factoryId != null && EUROCASH_FACTORY_IDS.has(p.factoryId)).map(p => p.factoryId!))];
+  const ecExtrasByPair = new Map<string, NonNullable<typeof factoryHoursTable.$inferSelect.extras>>();
+  const ecRatesByFactory = new Map<number, EurocashRates | null>();
+  if (ecFactoryIds.length) {
+    const fhRows = await db.select().from(factoryHoursTable).where(and(
+      eq(factoryHoursTable.month, month), inArray(factoryHoursTable.factoryId, ecFactoryIds),
+    ));
+    for (const r of fhRows) if (r.extras) ecExtrasByPair.set(key2(r.workerId, r.factoryId), r.extras);
+    for (const fid of ecFactoryIds) {
+      const label = facById.get(fid)?.name ?? "";
+      const metas = await db.select().from(svodniTabMetaTable)
+        .where(eq(svodniTabMetaTable.factoryLabel, label))
+        .orderBy(desc(svodniTabMetaTable.periodMonth));
+      const withBlock = metas.filter(m => (m.info as { stawkaEurocash?: (string | number)[][] })?.stawkaEurocash);
+      const meta = withBlock.find(m => m.periodMonth <= month) ?? withBlock[0];
+      ecRatesByFactory.set(fid, eurocashRatesFromBlock(
+        (meta?.info as { stawkaEurocash?: (string | number)[][] } | undefined)?.stawkaEurocash ?? null));
+    }
+  }
+  const eurocashUnmatched: { name: string; reason: string }[] = [];
+
   // системні джерела відрахувань: виплачені аванси місяця → Zaliczka,
   // зняття за хостел (вкладка «Хостели») → Hostel
   const advances = await db.select().from(advanceRequestsTable).where(and(
@@ -1509,6 +1536,36 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const b = stud26 ? base.brutto : (base.netto ?? KSIEG_STD_NETTO());
       return b != null ? r2(b + bonus) : null;
     };
+    // Eurocash: пара ставок від порогу (ставка агенції з файлу → зелений рядок,
+    // фолбек — продуктивність у діапазони); студент до 26 — нетто = брутто і
+    // нічна брутто (4,50), інші — нетто-рядок і нічна нетто (3,50). Потроненя
+    // фабрики переносяться в колонку potrąceń. Виплата Eurocash — вся на конто.
+    const isEurocash = pair.factoryId != null && EUROCASH_FACTORY_IDS.has(pair.factoryId);
+    let ec: { rateNetto: number; rateBrutto: number; nocneH: number | null; doplataNocna: number; potracenia: number | null } | null = null;
+    if (isEurocash) {
+      const ecx = ecExtrasByPair.get(key2(pair.workerId, pair.factoryId));
+      const ecRates = ecRatesByFactory.get(pair.factoryId!) ?? null;
+      if (!ecx) eurocashUnmatched.push({ name: w.fullName, reason: "немає даних файлу фабрики в обліку годин" });
+      else if (!ecRates) eurocashUnmatched.push({ name: w.fullName, reason: "немає блоку STAWKA EUROCASH у дзеркалі вкладки — запусти синк сводних" });
+      else {
+        const idx = eurocashBracketIndex(ecRates, ecx.stawkaAgencji ?? null, ecx.produktywnosc ?? null);
+        if (idx == null || ecRates.brutto[idx] == null || ecRates.netto[idx] == null) {
+          eurocashUnmatched.push({ name: w.fullName, reason: `поріг не знайдено (ставка агенції ${ecx.stawkaAgencji ?? "—"}, продуктивність ${ecx.produktywnosc ?? "—"})` });
+        } else {
+          ec = {
+            rateBrutto: ecRates.brutto[idx]!,
+            rateNetto: stud26 ? ecRates.brutto[idx]! : ecRates.netto[idx]!,
+            nocneH: ecx.nocneH != null && ecx.nocneH > 0 ? r2(ecx.nocneH) : null,
+            doplataNocna: stud26 ? ecRates.nightBrutto : ecRates.nightNetto,
+            potracenia: ecx.potracenia != null && ecx.potracenia !== 0 ? r2(ecx.potracenia) : null,
+          };
+        }
+      }
+    }
+    // побажання по виплаті: профіль → Eurocash-дефолт «все на конто»
+    const payoutPref = w.payoutPrefKind
+      ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null }
+      : isEurocash ? { kind: "all_konto" as const, value: null } : null;
     const prev = existByKey.get(`${pair.workerId}|${factoryLabel}`);
     if (prev) {
       // порізаний на сегменти рядок: нові сумарні години розкладаються по тих
@@ -1549,20 +1606,30 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       // (аванси/хостели — їх джерело тепер система), перераховуємо формули;
       // інші ручні правки (кари, odzież…) не затираються.
       // Бонусні фабрики (Agram/LST): ставка перечитується (галочки/дата могли змінитися)
+      // Eurocash: файл фабрики авторитетний — ставки/нічні/потроненя перекриваються
       const zal = isMainPair(pair) ? advByWorker.get(pair.workerId) : undefined;
       const hos = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
+      const mergedExtras: Record<string, number | string> = { ...((prev.extras as Record<string, number | string>) ?? {}) };
+      if (ec) {
+        if (ec.nocneH != null) { mergedExtras.nocneH = ec.nocneH; mergedExtras.doplataNocna = ec.doplataNocna; }
+        else { delete mergedExtras.nocneH; delete mergedExtras.doplataNocna; }
+      }
       const merged: any = {
         ...prev, hours: r2(pair.hours),
-        rateNetto: isBonusFac ? bonusNetto() ?? prev.rateNetto : prev.rateNetto,
+        rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() ?? prev.rateNetto : prev.rateNetto,
+        rateBrutto: ec ? ec.rateBrutto : prev.rateBrutto,
+        potracenia: ec ? ec.potracenia : prev.potracenia,
+        extras: mergedExtras,
         zaliczka: zal != null ? r2(zal) : prev.zaliczka,
         hostel: hos != null ? r2(hos) : prev.hostel,
       };
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null });
+      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
+        ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia, extras: merged.extras } : {}),
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
         ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
@@ -1580,19 +1647,22 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
       hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
       // без статусу легалізації і без ставки (профіль+правила) — мінімалка
-      // («як по освядченню»); розклад applyLegalDefaults і так віддасть готівкою
-      rateBrutto: base.brutto ?? (w.legalStatus == null || (isBonusFac && !stud26) ? KSIEG_STD_BRUTTO() : null),
-      rateNetto: isBonusFac ? bonusNetto() : base.netto ?? (w.legalStatus == null ? KSIEG_STD_NETTO() : null),
+      // («як по освядченню»); розклад applyLegalDefaults і так віддасть готівкою.
+      // Eurocash: пара від порогу продуктивності + нічні/потроненя з файлу фабрики
+      rateBrutto: ec ? ec.rateBrutto : base.brutto ?? (w.legalStatus == null || (isBonusFac && !stud26) ? KSIEG_STD_BRUTTO() : null),
+      rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() : base.netto ?? (w.legalStatus == null ? KSIEG_STD_NETTO() : null),
+      potracenia: ec ? ec.potracenia : null,
       zaliczka: isMainPair(pair) && advByWorker.has(pair.workerId) ? r2(advByWorker.get(pair.workerId)!) : null,
       hostel: isMainPair(pair) && hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
-      extras: {}, hr, sheetValues: {}, mismatch: null,
+      extras: ec && ec.nocneH != null ? { nocneH: ec.nocneH, doplataNocna: ec.doplataNocna } : {},
+      hr, sheetValues: {}, mismatch: null,
       doWyplaty: null, brutto: null,
     };
     if (row.rateNetto == null) skippedNoRate++;
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null });
+    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
     await db.insert(svodniRowsTable).values(row);
     created++;
   }
@@ -1614,7 +1684,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
   ok(res, {
     month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate, skippedLocked, noCity: [...noCity],
-    verified: expectedRows.length, verifyMismatches,
+    verified: expectedRows.length, verifyMismatches, eurocashUnmatched,
   });
 });
 

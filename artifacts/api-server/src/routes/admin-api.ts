@@ -2663,14 +2663,29 @@ router.post("/hours/note", RW, async (req, res) => {
 
 // ─── Години з фабрики (звірка з рапортами) ───────────────────────────────────
 type FactoryDayValue = number | Record<string, number>; // разом за день АБО { "№зміни": год }
-const upsertFactoryHours = async (workerId: number, month: string, factoryId: number, hours: number, source: string, days: Record<string, FactoryDayValue> | null = null) => {
+type FactoryHoursExtras = NonNullable<typeof factoryHoursTable.$inferSelect.extras>;
+// extras: undefined = не чіпати збережене (ручна правка годин не губить нічні
+// Eurocash), null/обʼєкт = записати як є (повторний імпорт файла перекриває)
+const upsertFactoryHours = async (workerId: number, month: string, factoryId: number, hours: number, source: string, days: Record<string, FactoryDayValue> | null = null, extras?: FactoryHoursExtras | null) => {
   await db.insert(factoryHoursTable)
-    .values({ workerId, month, factoryId, hours, source, days })
+    .values({ workerId, month, factoryId, hours, source, days, extras: extras ?? null })
     .onConflictDoUpdate({
       target: [factoryHoursTable.workerId, factoryHoursTable.month, factoryHoursTable.factoryId],
       // години змінилися → ручне «все ок» більше не діє
-      set: { hours, source, days, confirmed: false, updatedAt: new Date() },
+      set: { hours, source, days, confirmed: false, updatedAt: new Date(), ...(extras !== undefined ? { extras } : {}) },
     });
+};
+// Санітизація extras Eurocash з тіла запиту: лише відомі ключі, числа скінченні
+const normFactoryHoursExtras = (v: unknown): FactoryHoursExtras | null => {
+  if (!v || typeof v !== "object") return null;
+  const src = v as Record<string, unknown>;
+  const out: FactoryHoursExtras = {};
+  for (const k of ["nocneH", "produktywnosc", "stawkaAgencji", "potracenia", "korekta", "koncowe"] as const) {
+    const n = Number(src[k]);
+    if (src[k] != null && Number.isFinite(n)) out[k] = n;
+  }
+  if (typeof src.nrOsobowy === "string" && src.nrOsobowy.trim()) out.nrOsobowy = src.nrOsobowy.trim().slice(0, 32);
+  return Object.keys(out).length ? out : null;
 };
 // Валідація значення дня розбивки: число (0..24) або { зміна 1..6: год 0..24 }.
 const normFactoryDayValue = (v: unknown): FactoryDayValue | null => {
@@ -2812,7 +2827,7 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
   const parseFactoryId = req.body?.factoryId != null && Number(req.body.factoryId) > 0 ? Number(req.body.factoryId) : null;
   const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
-  let parsed: { name: string; hours: number; days?: Record<number, number | Record<string, number>> }[] = [];
+  let parsed: import("../services/factoryHours").ParsedHoursRow[] = [];
   let monthDetected: string | null = null;
   let format: string = "text";
   try {
@@ -2861,7 +2876,7 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
     // прізвища ("Khdvarenko") мають хоч показати людей зі спільним іменем
     const m = matchWorker(p.name, all, { minCandidate: 0.5, maxCandidates: 8, prefer: w => inHours.has(w.id) ? 1 : 0 });
     return {
-      name: p.name, hours: p.hours, days: p.days ?? null,
+      name: p.name, hours: p.hours, days: p.days ?? null, extras: p.extras ?? null,
       workerId: m.confident?.id ?? null,
       matchName: m.confident?.fullName ?? null,
       candidates: m.confident ? [] : m.candidates.map(c => ({ id: c.id, name: c.fullName, active: !!c.isActive })),
@@ -2875,7 +2890,7 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   const source = ["excel", "paste"].includes(req.body?.source) ? String(req.body.source) : "excel";
-  const rows: { workerId?: unknown; hours?: unknown; days?: unknown; create?: unknown; name?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const rows: { workerId?: unknown; hours?: unknown; days?: unknown; create?: unknown; name?: unknown; extras?: unknown }[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
   // фірма для СТВОРЮВАНИХ профілів (вкладка мульти-контрактної фабрики знає свою)
   const createCompanyId = req.body?.createCompanyId != null ? Number(req.body.createCompanyId) : null;
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
@@ -2922,7 +2937,9 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
       }
       if (!Object.keys(days).length) days = null;
     }
-    await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days);
+    // extras Eurocash (нічні/ставка/потроненя): імпорт файла завжди їх виставляє
+    // (null для форматів без extras — застарілі значення не залипають)
+    await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days, normFactoryHoursExtras(r.extras));
     saved++;
   }
   ok(res, { saved, skipped: rows.length - saved, created });

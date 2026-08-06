@@ -509,6 +509,13 @@ export const factoryHoursTable = pgTable("factory_hours", {
   hours: real("hours").notNull(),                          // factory-reported monthly total
   source: text("source").notNull().default("manual"),      // excel | paste | manual
   days: jsonb("days").$type<Record<string, number | Record<string, number>>>(), // "YYYY-MM-DD" → год АБО { "№зміни": год } (позмінна розбивка ewidencja I/II/III)
+  // Розрахунковий файл Eurocash несе більше за години: нічні, продуктивність,
+  // ставку агенції за порогом, потроненя (переносяться у сводну), korekta/końcowe
+  // (агентський рівень, довідково) + NR OSOBOWY фабрики
+  extras: jsonb("extras").$type<{
+    nocneH?: number; produktywnosc?: number; stawkaAgencji?: number;
+    potracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string;
+  } | null>(),
   confirmed: boolean("confirmed").notNull().default(false), // розбіжність рапорт↔фабрика перевірена вручну («все ок») — рядок зелений; скидається при зміні годин
   // запит підтвердження годин працівнику в бот і його відповідь
   askSentAt: timestamp("ask_sent_at"),        // коли надіслано запит у бот

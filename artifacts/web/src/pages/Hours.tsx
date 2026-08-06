@@ -81,6 +81,11 @@ export default function Hours() {
   const [notifyKey, setNotifyKey] = useState<string | null>(null); // розсилка «підтверди свої години» у бот
   // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
   const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string } | null>(null);
+  // Імпорт файла фабрики, якої ще НЕМАЄ у вкладках місяця (перший імпорт:
+  // жодних явок/рапортів — вкладка зʼявиться після збереження годин).
+  // Типовий кейс — Eurocash: графік не ведеться в системі, всі дані з файлу.
+  const [importFacId, setImportFacId] = useState<number | null>(null);
+  const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
   const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
@@ -129,13 +134,20 @@ export default function Hours() {
   const [svodniSource, setSvodniSource] = useState<"reports" | "factory" | "attendance">("reports");
   const toSvodni = useMutation({
     mutationFn: (v: { factoryId?: number; city?: string; source: string; workerIds?: number[] }) =>
-      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[]; verified: number; verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[] }>("/svodni/from-hours", { month, ...v }),
+      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[]; verified: number; verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[]; eurocashUnmatched?: { name: string; reason: string }[] }>("/svodni/from-hours", { month, ...v }),
     onSuccess: (r) => {
       // самозвірка бекенду: передані години ↔ що реально видно в сводній
       if (r.verifyMismatches?.length) {
         toast.error(t("⚠️ Після запису розійшлись години ({n}): {list}", {
           n: r.verifyMismatches.length,
           list: r.verifyMismatches.slice(0, 5).map(m => `${m.name} ${m.expected}→${m.actual ?? "—"}`).join(", "),
+        }));
+      }
+      // Eurocash: кому не вдалося порахувати ставку від порогу — і чому
+      if (r.eurocashUnmatched?.length) {
+        toast.error(t("⚠️ Eurocash: ставка не проставлена ({n}): {list}", {
+          n: r.eurocashUnmatched.length,
+          list: r.eurocashUnmatched.slice(0, 5).map(m => `${m.name} — ${m.reason}`).join("; "),
         }));
       }
       toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
@@ -235,6 +247,13 @@ export default function Hours() {
             )}
             <Button variant="secondary" loading={remind.isPending} onClick={() => remind.mutate()}><BellRing className="h-4 w-4" /> {t("Нагадати про рапорт")}</Button>
             <button onClick={() => setExportTo({ factoryId: null, name: t("всі фабрики") })} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> {t("Excel рапорту")}</button>
+            {/* перший імпорт місяця: фабрика без вкладки (немає явок/рапортів) —
+                вибір зі списку відкриває ту саму модалку імпорту */}
+            <Select value="" onChange={e => { const id = Number(e.target.value); if (id) setImportFacId(id); }}
+              className="w-52" title={t("Імпорт годин з файла фабрики або вставленого списку")}>
+              <option value="">{t("Імпорт файла фабрики…")}</option>
+              {allFactories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </Select>
           </div>
         )}
       </div>
@@ -507,10 +526,22 @@ export default function Hours() {
         const eg = emailKey ? groups.find(g => g.key === emailKey) : null;
         return (
           <>
-            {ig?.factoryId != null && <ImportHoursModal group={ig} month={month} onClose={() => setImportKey(null)} />}
+            {ig?.factoryId != null && <ImportHoursModal group={ig} month={month} onClose={() => setImportKey(null)}
+              // Eurocash: файл фабрики несе все для сводної (пороги/нічні/потроненя)
+              // — після збереження годин одразу переносимо вкладку в сводну
+              onApplied={fmt => { if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: ig.factoryId!, source: "factory" }); }} />}
             {eg?.factoryId != null && <DiscrepancyEmailModal group={eg} month={month} onClose={() => setEmailKey(null)} />}
           </>
         );
+      })()}
+      {importFacId != null && (() => {
+        // імпорт з тулбара: реальна група місяця, якщо вкладка вже є, інакше
+        // синтетична порожня (перший імпорт — вкладка виникне після збереження)
+        const f = allFactories.find(x => x.id === importFacId);
+        const g: Group = groups.find(x => x.factoryId === importFacId && !x.firm)
+          ?? { key: `f${importFacId}`, name: f?.name ?? `#${importFacId}`, factoryId: importFacId, firm: null, city: f?.city ?? "", n: 1, rows: [], shifts: 0, hours: 0, net: 0 };
+        return <ImportHoursModal group={g} month={month} onClose={() => setImportFacId(null)}
+          onApplied={fmt => { if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: importFacId, source: "factory" }); }} />;
       })()}
     </>
   );
@@ -899,11 +930,14 @@ function AddFactoryDayRow({ nShifts, month, onAdd, pending }: { nShifts: number;
   );
 }
 
-interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
+// extras формату eurocash: нічні/продуктивність/ставка агенції/потроненя —
+// зберігаються з годинами і їдуть у сводну (ставка від порогу продуктивності)
+type EcExtras = { nocneH?: number; produktywnosc?: number; stawkaAgencji?: number; potracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string };
+interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; extras: EcExtras | null; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
 
 // Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
 // з матчингом імен (bot/workerMatch) → масове збереження.
-function ImportHoursModal({ group, month, onClose }: { group: Group; month: string; onClose: () => void }) {
+function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; month: string; onClose: () => void; onApplied?: (format: string | null) => void }) {
   const t = useT();
   const qc = useQueryClient();
   const [text, setText] = useState("");
@@ -923,6 +957,7 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
     if (co) { setCreateCompanyId(co.id); companyDefaulted.current = true; }
   }, [companies, group.firm]);
   const [monthDetected, setMonthDetected] = useState<string | null>(null);
+  const [format, setFormat] = useState<string | null>(null);
   const [srcKind, setSrcKind] = useState<"excel" | "paste">("paste");
   const fileRef = useRef<HTMLInputElement>(null);
   const initPreview = (r: ParsedRow[], detected: string | null) => {
@@ -939,11 +974,11 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
         form.append("file", file);
         form.append("month", month);
         if (group.factoryId != null) form.append("factoryId", String(group.factoryId)); // дубль-профілі: перевага тим, хто вже в обліку годин фабрики
-        return upload<{ rows: ParsedRow[]; monthDetected: string | null }>("/hours/factory-parse", form);
+        return upload<{ rows: ParsedRow[]; monthDetected: string | null; format: string }>("/hours/factory-parse", form);
       }
-      return post<{ rows: ParsedRow[]; monthDetected: string | null }>("/hours/factory-parse", { month, text, factoryId: group.factoryId });
+      return post<{ rows: ParsedRow[]; monthDetected: string | null; format: string }>("/hours/factory-parse", { month, text, factoryId: group.factoryId });
     },
-    onSuccess: (r) => initPreview(r.rows, r.monthDetected),
+    onSuccess: (r) => { setFormat(r.format ?? null); initPreview(r.rows, r.monthDetected); },
     onError: (e: any) => toast.error(e.message),
   });
   const apply = useMutation({
@@ -952,8 +987,8 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
         .map((r, i) => ({ r, i }))
         .filter(({ i }) => checked[i] && (picked[i] != null || createSel[i]))
         .map(({ r, i }) => picked[i] != null
-          ? { workerId: picked[i]!, hours: r.hours, days: r.days }
-          : { create: true, name: r.name, hours: r.hours, days: r.days });
+          ? { workerId: picked[i]!, hours: r.hours, days: r.days, extras: r.extras }
+          : { create: true, name: r.name, hours: r.hours, days: r.days, extras: r.extras });
       return post<{ saved: number; skipped: number; created: number }>("/hours/factory-apply", {
         month, factoryId: group.factoryId, source: srcKind, rows: out,
         ...(createCompanyId !== "" ? { createCompanyId } : {}),
@@ -966,6 +1001,7 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
       qc.invalidateQueries({ queryKey: ["hours", month] });
       qc.invalidateQueries({ queryKey: ["hours-day-compare"] });
       if (r.created) qc.invalidateQueries({ queryKey: ["workers"] });
+      onApplied?.(format);
       onClose();
     },
     onError: (e: any) => toast.error(e.message),
@@ -1019,6 +1055,14 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
                   <th className="px-3 py-2" />
                   <th className="px-3 py-2">{t("Ім'я у файлі")}</th>
                   <th className="px-3 py-2 text-right">{t("Години")}</th>
+                  {format === "eurocash" && (
+                    <>
+                      <th className="px-3 py-2 text-right">{t("Нічні")}</th>
+                      <th className="px-3 py-2 text-right">{t("Продуктивність")}</th>
+                      <th className="px-3 py-2 text-right">{t("Ставка фабрики")}</th>
+                      <th className="px-3 py-2 text-right">{t("Потроненя")}</th>
+                    </>
+                  )}
                   <th className="px-3 py-2">{t("Працівник у базі")}</th>
                 </tr>
               </thead>
@@ -1028,6 +1072,14 @@ function ImportHoursModal({ group, month, onClose }: { group: Group; month: stri
                     <td className="px-3 py-2"><input type="checkbox" checked={!!checked[i]} onChange={e => setChecked(c => ({ ...c, [i]: e.target.checked }))} className="h-4 w-4 accent-red-600" /></td>
                     <td className="px-3 py-2 font-medium text-slate-700">{r.name}</td>
                     <td className="px-3 py-2 text-right font-semibold text-slate-700">{r.hours}</td>
+                    {format === "eurocash" && (
+                      <>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.nocneH ?? "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.produktywnosc != null ? Math.round(r.extras.produktywnosc * 100) / 100 : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.stawkaAgencji != null ? Math.round(r.extras.stawkaAgencji * 100) / 100 : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-red-600">{r.extras?.potracenia ?? "—"}</td>
+                      </>
+                    )}
                     <td className="px-3 py-2">
                       {r.workerId != null ? (
                         <span className="inline-flex items-center gap-1 text-emerald-700"><Check className="h-3.5 w-3.5" /> {r.matchName}</span>

@@ -4,6 +4,7 @@ import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch, parseOfficeTab,
   legalStatusOf, applyLegalDefaults, computePayout, agramBonusPerHour, monthsBetween, monthEndStr,
   segmentsBase, splitTotalByWindows, computeSegmented,
+  eurocashRatesFromBlock, eurocashBracketIndex,
 } from "./svodni.ts";
 
 const near = (actual: number | null | undefined, expected: number, msg?: string) =>
@@ -69,6 +70,50 @@ test("Люблін: інфо-блок STAWKA EUROCASH зберігається �
     [4.5, 30.5, 31],
     ["", 1, 2], // рядок нумерації рівнів — дзеркалимо як у таблиці
   ]);
+});
+
+// ── Eurocash: ставки від порогів продуктивності ──────────────────────────────
+// Реальний блок EUROCASH LUBLIN 06.2026 (скорочений до перших 7 порогів).
+const EC_BLOCK: (string | number)[][] = [
+  ["STAWKA EUROCASH", 41.2, 42.43, 43.88, 45.33, 46.95, 48.83, 50.83],
+  [5.55, "1 - 114.99", "115-124.99", "125 - 132.99", "133 - 140.99", "141-148.99", "149-156.99", "157 +"],
+  [3.5, 24.6, 25.03, 25.89, 26.74, 27.7, 28.805441904312982, 29.83],
+  [4.5, 30.5, 31, 32.06, 33.12, 34.3, 35.675936837143524, 37.14],
+  ["", 1, 2, 3, 4, 5, 6, 7],
+];
+
+test("eurocash: розбір блоку порогів + індекс за ставкою агенції і продуктивністю", () => {
+  const rates = eurocashRatesFromBlock(EC_BLOCK)!;
+  assert.equal(rates.agency.length, 7);
+  near(rates.nightNetto, 3.5);
+  near(rates.nightBrutto, 4.5);
+  assert.deepEqual(rates.ranges[6], { from: 157, to: null }); // «157 +»
+  // матч по ставці агенції (файл — повна точність, дзеркало може бути округлене)
+  assert.equal(eurocashBracketIndex(rates, 48.83097882465875, null), 5);
+  assert.equal(eurocashBracketIndex(rates, 48.83, null), 5);
+  // фолбек — продуктивність у діапазони жовтого рядка
+  assert.equal(eurocashBracketIndex(rates, null, 162.55), 6);   // «157 +»
+  assert.equal(eurocashBracketIndex(rates, null, 118.67), 1);   // «115-124.99»
+  assert.equal(eurocashBracketIndex(rates, null, 108.79), 0);   // «1 - 114.99»
+  // невідома ставка агенції → фолбек по продуктивності; без обох — null
+  assert.equal(eurocashBracketIndex(rates, 99.99, 141), 4);
+  assert.equal(eurocashBracketIndex(rates, 99.99, null), null);
+  // зіпсутий блок → null
+  assert.equal(eurocashRatesFromBlock([["STAWKA EUROCASH", 41.2]]), null);
+  assert.equal(eurocashRatesFromBlock(null), null);
+});
+
+test("eurocash: студент до 26 — брутто-ставка і нічна 4,50; формула = таблиця 06.2026", () => {
+  // NKOMO THABO 06.2026: 158 год × 35.675936837… + 65.5 нічних × 4.5 − 190 кари
+  const rates = eurocashRatesFromBlock(EC_BLOCK)!;
+  const i = eurocashBracketIndex(rates, 48.83, null)!;
+  const rate = rates.brutto[i]!; // студент: нетто = брутто
+  const row = {
+    hours: 158, rateNetto: rate, premia: null, zaliczka: null, zaliczkaBd: null,
+    hostel: null, odziez: null, dojazd: null, kara: 190, komornik: null, kaucja: null,
+    potracenia: null, extras: { nocneH: 65.5, doplataNocna: rates.nightBrutto },
+  };
+  near(computePayout(row, "Люблін")!, 5741.55); // клітинка таблиці: 5741.548…
 });
 
 test("Люблін: «Brutto|Netto» перед Do Wypłaty — це ставки (ANDROS-варіант)", () => {

@@ -12,8 +12,23 @@
 //      змін I/II/III (день = 3 підколонки, номер дня — merge над першою);
 //      аркуші KOBIETY + MĘŻCZYZNI зливаються. SUMA = Σ денних клітинок
 //      (перевірено на файлі), premia — окремо, у години не входить.
+//   E. «Eurocash» (розрахунковий файл, EUROSUPPORT LIPIEC 2026.xlsx): лівий
+//      блок по працівнику `NR OSOBOWY | Nazwisko i Imię | … | Suma z Wyk. [h] |
+//      Suma z Nocne [h] | … | Produktywność punktowa | Stawka H NEW AGENCJA |
+//      … | POTRĄCENIA … | KOREKTA | KOŃCOWE ROZLICZENIE`; крім годин несе
+//      extras для сводної (нічні/продуктивність/ставка агенції/потроненя).
 import * as XLSX from "xlsx";
 
+/** додаткові поля рядка Eurocash-файла (ставки — повної точності, для матчу порогу) */
+export interface EurocashRowExtras {
+  nocneH?: number;
+  produktywnosc?: number;
+  stawkaAgencji?: number;
+  potracenia?: number;
+  korekta?: number;
+  koncowe?: number;
+  nrOsobowy?: string;
+}
 export interface ParsedHoursRow {
   name: string;
   hours: number;
@@ -21,12 +36,14 @@ export interface ParsedHoursRow {
    *  разом за день (матриця/lista); обʼєкт = по змінах, ключ — № зміни
    *  ("1".."6" → години; ewidencja I/II/III) */
   days?: Record<number, number | Record<string, number>>;
+  /** лише формат eurocash */
+  extras?: EurocashRowExtras;
 }
 export interface ParsedHoursFile {
   rows: ParsedHoursRow[];
   /** "YYYY-MM", якщо місяць вдалося визначити з файлу */
   monthDetected: string | null;
-  format: "matrix" | "lista" | "ewidencja";
+  format: "matrix" | "lista" | "ewidencja" | "eurocash";
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -225,6 +242,68 @@ function parseEwidencja(rows: string[][]): ParsedHoursFile | null {
   return { rows: out, monthDetected: null, format: "ewidencja" };
 }
 
+// ── Формат E: розрахунковий файл Eurocash ────────────────────────────────────
+// Заголовки нормалізуємо без діакритики (NFD не розкладає Ł — міняємо вручну).
+const flatHdr = (s: string) =>
+  s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/Ł/g, "L").replace(/ł/g, "l")
+    .toUpperCase().replace(/\s+/g, " ").trim();
+// Числа файла — повної точності (ставка 50.83097… потрібна для матчу порогу),
+// parseHoursValue тут не годиться (обрізає до 2 знаків після коми).
+const numLoose = (s: string): number | null => {
+  const t = s.replace(/\s/g, "").replace(",", ".");
+  if (!t || !/^-?\d+(\.\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
+
+function parseEurocash(rows: string[][]): ParsedHoursFile | null {
+  let hdrIdx = -1;
+  const cols = { name: -1, hours: -1, nocne: -1, prod: -1, stawka: -1, potr: -1, korekta: -1, koncowe: -1, nrOs: -1 };
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const h = rows[i]!.map(flatHdr);
+    const idx = (re: RegExp) => h.findIndex(c => re.test(c));
+    // «Suma z Wyk. [h]» — точний збіг: далі йдуть AMBIENT/FRESH-варіанти
+    const name = idx(/^NAZWISKO I IMIE$/), hours = idx(/^SUMA Z WYK\.? \[H\]$/), stawka = idx(/^STAWKA H NEW AGENCJA/);
+    if (name < 0 || hours < 0 || stawka < 0) continue;
+    hdrIdx = i;
+    Object.assign(cols, {
+      name, hours, stawka,
+      nocne: idx(/^SUMA Z NOCNE/), prod: idx(/^PRODUKTYWNOSC PUNKTOWA/),
+      potr: idx(/^POTRACENIA ZA POMYLKOW/), korekta: idx(/^KOREKTA$/),
+      koncowe: idx(/^KONCOWE ROZLICZENIE/), nrOs: idx(/^NR OSOBOWY$/),
+    });
+    break;
+  }
+  if (hdrIdx < 0) return null;
+  const out: ParsedHoursRow[] = [];
+  for (let i = hdrIdx + 1; i < rows.length; i++) {
+    const row = rows[i]!;
+    const name = dedupeDoubledName(row[cols.name] ?? "");
+    if (!name || /razem|suma/i.test(name)) continue; // правий блок (сирі денні дані) без імен у цій колонці — не наш
+
+    const hours = numLoose(row[cols.hours] ?? "");
+    if (hours == null) continue;
+    const at = (c: number) => (c >= 0 ? numLoose(row[c] ?? "") : null);
+    const extras: EurocashRowExtras = {};
+    const nocne = at(cols.nocne);
+    if (nocne != null && nocne > 0) extras.nocneH = r2(nocne);
+    const prod = at(cols.prod);
+    if (prod != null) extras.produktywnosc = prod;
+    const stawka = at(cols.stawka);
+    if (stawka != null) extras.stawkaAgencji = stawka;
+    const potr = at(cols.potr);
+    if (potr != null && potr !== 0) extras.potracenia = r2(potr);
+    const korekta = at(cols.korekta);
+    if (korekta != null && korekta !== 0) extras.korekta = r2(korekta);
+    const koncowe = at(cols.koncowe);
+    if (koncowe != null) extras.koncowe = r2(koncowe);
+    const nrOs = (row[cols.nrOs] ?? "").trim();
+    if (cols.nrOs >= 0 && nrOs) extras.nrOsobowy = nrOs;
+    out.push({ name, hours: r2(hours), extras });
+  }
+  return out.length ? { rows: out, monthDetected: null, format: "eurocash" } : null;
+}
+
 /** Розбір Excel-файла фабрики (усі формати, авто-детекція). Аркуші формату
  *  ewidencja (KOBIETY/MĘŻCZYZNI) зливаються в один список. */
 export function parseFactoryHoursWorkbook(buf: Buffer): ParsedHoursFile {
@@ -237,13 +316,15 @@ export function parseFactoryHoursWorkbook(buf: Buffer): ParsedHoursFile {
     const e = parseEwidencja(rows);
     if (e) { ewFound = true; ew.rows.push(...e.rows); continue; }
     if (ewFound) continue; // режим евіденції — сторонні аркуші не пробуємо
+    const eurocash = parseEurocash(rows);
+    if (eurocash) return eurocash;
     const lista = parseLista(rows);
     if (lista) return lista;
     const matrix = parseMatrix(rows);
     if (matrix) return matrix;
   }
   if (ewFound) return ew;
-  throw new Error("Невідомий формат файла: не знайдено ні «Imię i nazwisko … Razem», ні «lista dni szczegółowo», ні евіденції «SUMA … I/II/III»");
+  throw new Error("Невідомий формат файла: не знайдено ні «Imię i nazwisko … Razem», ні «lista dni szczegółowo», ні евіденції «SUMA … I/II/III», ні розрахунку Eurocash «Nazwisko i Imię … Stawka H NEW AGENCJA»");
 }
 
 // Місяць з імені файла евіденції («EWIDENCJA KLINEX 2026 LIPIEC.xlsx») —
