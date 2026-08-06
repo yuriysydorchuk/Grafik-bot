@@ -8,7 +8,7 @@ import {
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
-  factoryHoursTable, factoryShiftOverridesTable,
+  factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -25,7 +25,7 @@ export {
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
-  factoryHoursTable, factoryShiftOverridesTable,
+  factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
