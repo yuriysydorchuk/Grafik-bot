@@ -158,7 +158,7 @@ Drizzle, уся схема в `lib/db/src/schema/workers.ts`. Групи таб�
 
 ## Ролі доступу
 
-**Динамічні** — живуть у БД-таблиці `roles` (`pages` jsonb + `caps` jsonb), редагуються головним адміном у Налаштування → «Користувачі та ролі». Каталоги capability/сторінок — `api-server/src/lib/roles.ts` ↔ `web/src/lib/roles.ts` (тримати синхронними). Гейти API: `requireCap`/`requireAnyCap`; capabilities: `editData`, `viewFinance`, `assignDrivers`, `deleteWorkers`, `svodni` (офіційна частина сводних), `svodniSensitive` (закритий шар: księgowość, готівка).
+**Динамічні** — живуть у БД-таблиці `roles` (`pages` jsonb + `caps` jsonb), редагуються головним адміном у Налаштування → «Користувачі та ролі». Каталоги capability/сторінок — `api-server/src/lib/roles.ts` ↔ `web/src/lib/roles.ts` (тримати синхронними). Гейти API: `requireCap`/`requireAnyCap`; capabilities: `editData`, `viewFinance`, `factoryRates` (ставки в налаштуваннях фабрики — брутто/нетто/нічна/фактурна + ставки посад; без NIP/P&L-підпису — ті лише `viewFinance`), `assignDrivers`, `deleteWorkers`, `svodni` (офіційна частина сводних), `svodniSensitive` (закритий шар: księgowość, готівка).
 
 - **owner** — незмінний суперюзер (повний доступ у коді, редагування/видалення ролі заблоковано).
 - **scheduler** — системна, редагована (типово editData+assignDrivers, без фінансів).

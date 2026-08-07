@@ -55,6 +55,10 @@ const stud26Of = (w: { isStudent: boolean | null; legalStatus?: string | null; b
 // Whether the requester's role may see/edit financial fields (rates, invoices).
 const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "viewFinance");
 const canSensitiveReq = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodniSensitive");
+// Ставки фабрик (rateBrutto/rateNetto/nightAddon/invoiceRate + ставки посад) відкриті
+// й вужчим правом factoryRates; привʼязка клієнта до фінблоку (clientNip, pnlLabel)
+// лишається лише під viewFinance.
+const canFactoryRates = (req: any) => canFinance(req) || hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "factoryRates");
 
 // Ехо-відповіді create/PATCH/fire/restore працівника фільтруються тими самими
 // гейтами, що GET /workers/:id — інакше editData читав би ставки/нотатки з еха
@@ -69,11 +73,14 @@ function stripWorkerEcho(w: Record<string, unknown> | undefined, req: any) {
   return out;
 }
 
-// Те саме для фабрик: фінансові поля еха POST/PATCH — лише з viewFinance (дзеркало GET /factories)
+// Те саме для фабрик: фінансові поля еха POST/PATCH фільтруються дзеркально GET /factories
+// (NIP/P&L-підпис — viewFinance; ставки — viewFinance або factoryRates)
 function stripFactoryEcho(f: Record<string, unknown> | undefined, req: any) {
   if (!f || canFinance(req)) return f;
-  const { invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest } = f as any;
-  return rest;
+  const { clientNip, pnlLabel, ...rest } = f as any;
+  if (canFactoryRates(req)) return rest;
+  const { invoiceRate, rateBrutto, rateNetto, nightAddon, ...rest2 } = rest;
+  return rest2;
 }
 
 const ok = (res: any, data: any) => res.json(data);
@@ -1398,8 +1405,9 @@ router.get("/factories", async (req, res) => {
   const rows = await db.select().from(factoriesTable).orderBy(factoriesTable.name);
   const companies = await db.select().from(companiesTable);
   const coMap = new Map(companies.map(c => [c.id, c.name]));
-  const isOwner = canFinance(req);
-  // per-factory positions (with the catalogue name/colour); rate is financial → owner only
+  const fin = canFinance(req);
+  const rates = canFactoryRates(req);
+  // per-factory positions (with the catalogue name/colour); rates → viewFinance|factoryRates
   const fp = await db
     .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, rateNetto: factoryPositionsTable.rateNetto, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, name: positionsTable.name, color: positionsTable.color })
     .from(factoryPositionsTable)
@@ -1408,7 +1416,7 @@ router.get("/factories", async (req, res) => {
   const posByFactory = new Map<number, any[]>();
   for (const p of fp) {
     const entry: any = { positionId: p.positionId, name: p.name, color: p.color ?? "slate" };
-    if (isOwner) { entry.rate = p.rate; entry.rateNetto = p.rateNetto; entry.invoiceRate = p.invoiceRate; }
+    if (rates) { entry.rate = p.rate; entry.rateNetto = p.rateNetto; entry.invoiceRate = p.invoiceRate; }
     (posByFactory.get(p.factoryId) ?? posByFactory.set(p.factoryId, []).get(p.factoryId)!).push(entry);
   }
   const withCo = rows.map(r => ({
@@ -1416,18 +1424,19 @@ router.get("/factories", async (req, res) => {
     companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
     positions: posByFactory.get(r.id) ?? [],
   }));
-  // pay/invoice rates are financial — only the owner sees them
-  if (!isOwner) return ok(res, withCo.map(({ invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest }) => rest));
-  ok(res, withCo);
+  // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
+  if (fin) return ok(res, withCo);
+  if (rates) return ok(res, withCo.map(({ clientNip, pnlLabel, ...rest }) => rest));
+  ok(res, withCo.map(({ invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest }) => rest));
 });
 
 // Replace a factory's position rows from a [{positionId, rate}] payload.
-// Ставки (rate/rateNetto/invoiceRate) — фінансові: без viewFinance вхідні
-// значення ігноруються, а наявні ставки позицій зберігаються (не-owner UI
-// шле позиції БЕЗ ставок — інакше збереження фабрики тихо стирало б їх).
-async function setFactoryPositions(factoryId: number, positions: any, financeAllowed: boolean) {
+// Ставки (rate/rateNetto/invoiceRate) — фінансові: без viewFinance|factoryRates
+// вхідні значення ігноруються, а наявні ставки позицій зберігаються (UI без
+// права шле позиції БЕЗ ставок — інакше збереження фабрики тихо стирало б їх).
+async function setFactoryPositions(factoryId: number, positions: any, ratesAllowed: boolean) {
   if (!Array.isArray(positions)) return;
-  const prev = financeAllowed ? [] : await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
+  const prev = ratesAllowed ? [] : await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
   const prevById = new Map(prev.map(p => [p.positionId, p]));
   await db.delete(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
   const seen = new Set<number>();
@@ -1435,7 +1444,7 @@ async function setFactoryPositions(factoryId: number, positions: any, financeAll
     .map((p: any, i: number) => {
       const positionId = Number(p?.positionId);
       const old = prevById.get(positionId);
-      return financeAllowed
+      return ratesAllowed
         ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i }
         : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i };
     })
@@ -1490,19 +1499,21 @@ router.post("/factories", RW, async (req, res) => {
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
   if (canFinance(req)) {
-    if (invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
     if (req.body?.clientNip !== undefined) {
       const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
       if (nip && nip.length !== 10) return fail(res, 400, "NIP — 10 цифр");
       values.clientNip = nip || null;
     }
     if (req.body?.pnlLabel !== undefined) values.pnlLabel = String(req.body.pnlLabel ?? "").trim() || null;
+  }
+  if (canFactoryRates(req)) {
+    if (invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
     for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
       if (req.body?.[k] !== undefined) values[k] = parseRate(req.body[k]);
     }
   }
   const [f] = await db.insert(factoriesTable).values(values).returning();
-  if (positions !== undefined) await setFactoryPositions(f!.id, positions, canFinance(req));
+  if (positions !== undefined) await setFactoryPositions(f!.id, positions, canFactoryRates(req));
   ok(res, stripFactoryEcho(f, req));
 });
 
@@ -1515,12 +1526,8 @@ router.patch("/factories/:id", RW, async (req, res) => {
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (req.body?.city !== undefined) patch.city = String(req.body.city).trim() || null;
-  // pay/invoice rates are financial — owner only
+  // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (canFinance(req)) {
-    if (invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
-    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
-      if (req.body?.[k] !== undefined) patch[k] = parseRate(req.body[k]);
-    }
     // привʼязка клієнта для P&L: NIP (матчинг фактур KSeF) + канонічний підпис
     if (req.body?.clientNip !== undefined) {
       const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
@@ -1528,6 +1535,12 @@ router.patch("/factories/:id", RW, async (req, res) => {
       patch.clientNip = nip || null;
     }
     if (req.body?.pnlLabel !== undefined) patch.pnlLabel = String(req.body.pnlLabel ?? "").trim() || null;
+  }
+  if (canFactoryRates(req)) {
+    if (invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
+    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
+      if (req.body?.[k] !== undefined) patch[k] = parseRate(req.body[k]);
+    }
   }
   const cs = cleanShifts(shifts);
   if (cs) {
@@ -1553,7 +1566,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   const [f] = Object.keys(patch).length
     ? await db.update(factoriesTable).set(patch).where(eq(factoriesTable.id, id)).returning()
     : await db.select().from(factoriesTable).where(eq(factoriesTable.id, id));
-  if (positions !== undefined) await setFactoryPositions(id, positions, canFinance(req));
+  if (positions !== undefined) await setFactoryPositions(id, positions, canFactoryRates(req));
   ok(res, stripFactoryEcho(f, req));
 });
 

@@ -5,11 +5,12 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
   viewFinance: "Фінанси (ставки, рахунки)",
+  factoryRates: "Ставки фабрик (оплата працівникам і ставка клієнту; без NIP/P&L)",
   assignDrivers: "Водійські дії (борд, призначення, посадка)",
   deleteWorkers: "Видаляти працівників назавжди",
   svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",

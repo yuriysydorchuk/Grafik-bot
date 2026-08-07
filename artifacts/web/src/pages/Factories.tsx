@@ -8,8 +8,10 @@ import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass } from "../lib/colors";
+import { can } from "../lib/roles";
 
-// New backend fields not yet in the shared Factory type (owner-gated ones come only for owner)
+// New backend fields not yet in the shared Factory type (fin-gated ones come per-cap:
+// rates — viewFinance|factoryRates, NIP/P&L — viewFinance only)
 type FactoryX = Omit<Factory, "positions"> & {
   city?: string | null;
   rateBrutto?: number | null; rateNetto?: number | null; nightAddon?: number | null;
@@ -27,7 +29,10 @@ export default function Factories() {
   const t = useT();
   const qc = useQueryClient();
   const me = useMe();
-  const isOwner = me?.role === "owner";
+  // ставки (брутто/нетто/нічна/фактурна + посади) — viewFinance або factoryRates;
+  // NIP/P&L-підпис — лише viewFinance (canRates ⊇ canInvoice)
+  const canRates = can(me, "viewFinance") || can(me, "factoryRates");
+  const canInvoice = can(me, "viewFinance");
   const { data: factories, isLoading } = useQuery<FactoryX[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const [edit, setEdit] = useState<FactoryX | null>(null);
   const [adding, setAdding] = useState(false);
@@ -72,17 +77,17 @@ export default function Factories() {
               <div className="mt-2 flex flex-wrap gap-1">
                 {f.positions.map(p => (
                   <span key={p.positionId} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(p.color ?? "slate")}`}>
-                    <span className={`h-1.5 w-1.5 rounded-full ${dotClass(p.color ?? "slate")}`} />{p.name}{isOwner && p.rate != null && <span className="opacity-60">· {p.rate} zł</span>}
+                    <span className={`h-1.5 w-1.5 rounded-full ${dotClass(p.color ?? "slate")}`} />{p.name}{canRates && p.rate != null && <span className="opacity-60">· {p.rate} zł</span>}
                   </span>
                 ))}
               </div>
             )}
             <div className="mt-3 text-sm text-slate-500">📧 {f.clientEmail || <span className="text-slate-300">{t("email клієнта не вказано")}</span>}</div>
-            {isOwner && <div className="mt-1 text-sm text-slate-500">💰 {t("Ставка фактури:")} {f.invoiceRate != null ? <span className="font-medium text-slate-700">{f.invoiceRate} {t("zł/год нетто")}</span> : <span className="text-amber-500">{t("не задано")}</span>}</div>}
+            {canRates && <div className="mt-1 text-sm text-slate-500">💰 {t("Ставка фактури:")} {f.invoiceRate != null ? <span className="font-medium text-slate-700">{f.invoiceRate} {t("zł/год нетто")}</span> : <span className="text-amber-500">{t("не задано")}</span>}</div>}
           </Card>
         ))}
       </div>
-      {(adding || edit) && <FactoryModal factory={edit} isOwner={isOwner} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { inv(); setAdding(false); setEdit(null); }} />}
+      {(adding || edit) && <FactoryModal factory={edit} canRates={canRates} canInvoice={canInvoice} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { inv(); setAdding(false); setEdit(null); }} />}
     </>
   );
 }
@@ -100,7 +105,7 @@ const initialShifts = (f: FactoryX | null): ShiftTime[] => {
 };
 
 type PosRow = { positionId: number; rate: string; rateNetto: string; invoiceRate: string };
-function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: FactoryX | null; isOwner: boolean; onClose: () => void; onSaved: () => void }) {
+function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { factory: FactoryX | null; canRates: boolean; canInvoice: boolean; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: allPositions = [] } = useQuery<Position[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
@@ -153,9 +158,14 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
-    positions: v.usesPositions ? posRows.map(r => ({ positionId: r.positionId, rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate) })) : [],
+    // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
+    positions: v.usesPositions ? posRows.map(r => ({
+      positionId: r.positionId,
+      ...(canRates ? { rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate) } : {}),
+    })) : [],
     shifts, stops: stops.filter(s => s.name.trim()),
-    ...(isOwner ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon), clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
+    ...(canRates ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon) } : {}),
+    ...(canInvoice ? { clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
   });
   const save = useMutation({
     mutationFn: () => factory ? patch(`/factories/${factory.id}`, payload()) : post(`/factories`, payload()),
@@ -216,7 +226,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
           {v.usesPositions && (
             <div className="space-y-1.5 pl-6">
               {posRows.length === 0 && <p className="text-xs text-slate-400">{t("Додайте посади, які є на цій фабриці.")}</p>}
-              {isOwner && posRows.length > 0 && (
+              {canRates && posRows.length > 0 && (
                 <div className="flex items-center gap-2 pr-9 text-[10px] font-medium uppercase tracking-wide text-slate-400">
                   <span className="flex-1">{t("Посада")}</span>
                   <span className="w-20 text-center">{t("Платимо")}</span>
@@ -229,9 +239,9 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
                   <Select value={String(r.positionId)} onChange={e => setPosRow(i, { positionId: Number(e.target.value) })} className="flex-1">
                     {allPositions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </Select>
-                  {isOwner && <Input value={r.rate} onChange={e => setPosRow(i, { rate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
-                  {isOwner && <Input value={r.rateNetto} onChange={e => setPosRow(i, { rateNetto: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
-                  {isOwner && <Input value={r.invoiceRate} onChange={e => setPosRow(i, { invoiceRate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
+                  {canRates && <Input value={r.rate} onChange={e => setPosRow(i, { rate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
+                  {canRates && <Input value={r.rateNetto} onChange={e => setPosRow(i, { rateNetto: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
+                  {canRates && <Input value={r.invoiceRate} onChange={e => setPosRow(i, { invoiceRate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
                   <button type="button" onClick={() => removePosRow(i)} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><X className="h-4 w-4" /></button>
                 </div>
               ))}
@@ -239,7 +249,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
                 <button type="button" onClick={addPosRow} className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50"><Plus className="h-3.5 w-3.5" /> {t("Додати посаду")}</button>
               )}
               {!allPositions.length && <p className="text-xs text-amber-600">{t("Спершу створіть посади в Налаштування → Посади.")}</p>}
-              {isOwner && <p className="text-xs text-slate-400">{t("«Платимо» — ставка працівнику (брутто zł/год), «Нетто» — та сама ставка нетто. «Клієнт» — скільки виставляємо клієнту за цю посаду (нетто zł/год). Порожньо = власна ставка / загальна ставка фабрики.")}</p>}
+              {canRates && <p className="text-xs text-slate-400">{t("«Платимо» — ставка працівнику (брутто zł/год), «Нетто» — та сама ставка нетто. «Клієнт» — скільки виставляємо клієнту за цю посаду (нетто zł/год). Порожньо = власна ставка / загальна ставка фабрики.")}</p>}
             </div>
           )}
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -305,7 +315,7 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
           <p className="mt-1 text-xs text-slate-400">{t("Час — коли працівник має бути на зупинці (необов'язково).")}</p>
         </div>
         <div><Label>{t("Email клієнта (для розсилки графіку)")}</Label><Input value={v.clientEmail} onChange={set("clientEmail")} type="email" /></div>
-        {isOwner && (
+        {canRates && (
           <div>
             <Label>{t("Ставка фактури (zł/год, нетто — для фінансів)")}</Label>
             <Input value={v.invoiceRate} onChange={set("invoiceRate")} placeholder={t("напр. 50")} inputMode="decimal" />
@@ -325,17 +335,21 @@ function FactoryModal({ factory, isOwner, onClose, onSaved }: { factory: Factory
               <Label>{t("Нічна доплата, zł/год (нетто)")}</Label>
               <Input value={v.nightAddon} onChange={set("nightAddon")} placeholder={t("порожньо = без нічних")} inputMode="decimal" />
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <div>
-                <Label>{t("NIP клієнта (для P&L)")}</Label>
-                <Input value={v.clientNip} onChange={set("clientNip")} placeholder="7791906082" inputMode="numeric" />
-              </div>
-              <div>
-                <Label>{t("Підпис клієнта в P&L")}</Label>
-                <Input value={v.pnlLabel} onChange={set("pnlLabel")} placeholder={t("напр. Eurocash")} />
-              </div>
-            </div>
-            <p className="mt-1 text-xs text-slate-400">{t("Фактури KSeF матчаться по NIP; дохід і собівартість зливаються цим підписом. Кілька фабрик одного клієнта — однаковий NIP і підпис.")}</p>
+            {canInvoice && (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div>
+                    <Label>{t("NIP клієнта (для P&L)")}</Label>
+                    <Input value={v.clientNip} onChange={set("clientNip")} placeholder="7791906082" inputMode="numeric" />
+                  </div>
+                  <div>
+                    <Label>{t("Підпис клієнта в P&L")}</Label>
+                    <Input value={v.pnlLabel} onChange={set("pnlLabel")} placeholder={t("напр. Eurocash")} />
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">{t("Фактури KSeF матчаться по NIP; дохід і собівартість зливаються цим підписом. Кілька фабрик одного клієнта — однаковий NIP і підпис.")}</p>
+              </>
+            )}
           </div>
         )}
         <div className="flex justify-end gap-2 pt-1">

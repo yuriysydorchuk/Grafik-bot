@@ -1235,6 +1235,7 @@ const EN: Record<string, string> = {
   "Роль видалено": "Role deleted",
   "Редагувати дані (графіки, замовлення, фабрики, працівники)": "Edit data (schedules, orders, factories, workers)",
   "Фінанси (ставки, рахунки)": "Finance (rates, invoices)",
+  "Ставки фабрик (оплата працівникам і ставка клієнту; без NIP/P&L)": "Factory rates (worker pay & client invoice rate; excludes NIP/P&L)",
   "Водійські дії (борд, призначення, посадка)": "Driver actions (board, assignment, boarding)",
   "Видаляти працівників назавжди": "Delete workers permanently",
   "Зміни водіїв": "Driver shifts",
