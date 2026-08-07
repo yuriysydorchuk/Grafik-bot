@@ -886,17 +886,23 @@ async function profileChangeContext(workerId: number, body: Record<string, unkno
       .where(inArray(svodniRowsTable.segmentOf, rows.map(r => r.id)));
     for (const s of segs) { const l = segsByParent.get(s.segmentOf!) ?? []; l.push(s); segsByParent.set(s.segmentOf!, l); }
   }
-  // посада → секція (лише фабрики, що ведуть посади)
+  const ruleOf = await loadRateRules();
+  // посада → секція (лише фабрики, що ведуть посади); без посади — найдешевша
+  // посада фабрики рядка (дзеркало from-hours: ставка безпосадних і так від неї)
   let sectionOf: (row: typeof svodniRowsTable.$inferSelect) => string | null | undefined = () => undefined;
   if (changed.has("positionId")) {
     const facs = await db.select().from(factoriesTable);
     const facById = new Map(facs.map(f => [f.id, f]));
-    const pos = nextW.positionId != null ? (await db.select().from(positionsTable).where(eq(positionsTable.id, nextW.positionId)))[0] : null;
-    sectionOf = (row) => (row.factoryId != null && facById.get(row.factoryId)?.usesPositions) ? (pos?.name ?? null) : undefined;
+    const positions = await db.select().from(positionsTable);
+    const posById = new Map(positions.map(p => [p.id, p.name]));
+    sectionOf = (row) => {
+      if (row.factoryId == null || !facById.get(row.factoryId)?.usesPositions) return undefined;
+      const pid = nextW.positionId ?? ruleOf(row.factoryId, null).cheapestPositionId ?? null;
+      return pid != null ? posById.get(pid) ?? null : null;
+    };
   }
   const locksByMonth = new Map<string, LockRow[]>();
   for (const month of new Set(rows.map(r => r.periodMonth))) locksByMonth.set(month, await monthLocks(month));
-  const ruleOf = await loadRateRules();
   // зміна з середини місяця по полях, що міняють умови оплати → перший
   // зачеплений місяць ріжеться на сегменти (до дати — старі умови, з дати — нові)
   const SPLIT_FIELDS = new Set(["hourlyRate", "hourlyRateNetto", "positionId", "legalStatus", "isStudent", "birthDate", "agramStazBonus", "agramCashBonus", "employmentStartDate"]);
@@ -1542,8 +1548,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = tabLabelFor(fac, w);
     const city = cityOf(pair.factoryId)!; // пари без міста відфільтровані вище
-    // становіско (секція): позиція з профілю — для фабрик, що ведуть посади
-    const section = fac?.usesPositions && w.positionId != null ? posById.get(w.positionId) ?? null : null;
+    // становіско (секція): позиція з профілю — для фабрик, що ведуть посади;
+    // без посади в профілі — найдешевша посада фабрики (ставку вона й так задає),
+    // інакше безсекційні рядки візуально «прилипали» до останньої секції вкладки
+    const rules = ruleOf(pair.factoryId, w.positionId);
+    const sectionPosId = w.positionId ?? rules.cheapestPositionId ?? null;
+    const section = fac?.usesPositions && sectionPosId != null ? posById.get(sectionPosId) ?? null : null;
     // вік «до 26» — на момент розрахунку (наближення дати виплати, яка в M+1);
     // остаточно вік фіксується локом сводної (freezeUnder26AtLock)
     const under26 = w.birthDate ? isUnder26(w.birthDate) : w.under26;
@@ -1553,7 +1563,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const isAgram = pair.factoryId != null && AGRAM_FACTORY_IDS.has(pair.factoryId);
     const isBonusFac = pair.factoryId != null && CASH_BONUS_FACTORY_IDS.has(pair.factoryId);
     const stud26 = (w.isStudent || w.legalStatus === "student") && !!under26;
-    const base = resolveBaseRates(w, ruleOf(pair.factoryId, w.positionId), stud26);
+    const base = resolveBaseRates(w, rules, stud26);
     const bonus = stud26 ? 0 : factoryBonusPerHour(w, pair.factoryId, month, r2(pair.hours));
     const bonusNetto = (): number | null => {
       // бонусна фабрика без бази з профілю/правил — стандартна пара (25,35)

@@ -349,6 +349,8 @@ export interface RateRules {
   position?: RatePair | null; // пара посади людини на цій фабриці
   cheapestPosition?: RatePair | null; // найдешевша посада фабрики (fallback без посади)
   factory?: RatePair | null; // базова пара фабрики
+  /** id найдешевшої посади — секція безпосадних рядків сводної (ставку їм і так задає вона) */
+  cheapestPositionId?: number | null;
 }
 export function resolveBaseRates(
   w: { hourlyRate: number | null; hourlyRateNetto: number | null },
