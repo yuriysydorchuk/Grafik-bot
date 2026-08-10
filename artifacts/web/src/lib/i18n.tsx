@@ -2170,7 +2170,6 @@ const EN: Record<string, string> = {
   "Немає витрат за цей рік": "No expenses this year",
   "Сховати список витрат": "Hide expense list",
   "Показати список витрат": "Show expense list",
-  "Місяць": "Month",
   "Сервіс": "Service",
   "ремонт": "repair",
   "шини": "tires",
