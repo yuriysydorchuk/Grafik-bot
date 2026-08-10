@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock, KeyRound
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock, Home, KeyRound
 } from "lucide-react";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
@@ -185,6 +185,9 @@ export default function WorkerDetail() {
       <WorkerDocuments workerId={w.id} />
 
       <WorkerBankAccounts workerId={w.id} />
+
+      {/* Хостел: де живе і скільки платить (довідник — сторінка /hostels) */}
+      {canSvodni && <WorkerHostel workerId={w.id} />}
 
       {/* Recent shifts */}
       <Card className="mt-5 overflow-hidden">
@@ -916,6 +919,41 @@ function ProfileChangeModal({ workerId, changes, title, initialFrom, onClose }: 
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Хостел: історія проживань (hostel_stays) — де живе, з якої дати, скільки платить.
+// Керування — на сторінці /hostels; тут лише перегляд (cap svodni).
+function WorkerHostel({ workerId }: { workerId: number }) {
+  const t = useT();
+  const { data: stays } = useQuery<{
+    stayId: number; hostelId: number; hostelName: string; city: string;
+    fromDate: string; toDate: string | null; monthlyRate: number | null; note: string | null;
+  }[]>({ queryKey: ["worker-hostel", workerId], queryFn: () => get(`/hostels/worker/${workerId}`) });
+  if (!stays?.length) return null;
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  return (
+    <Card className="mt-5 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
+        <Home className="h-4 w-4 text-slate-400" />
+        <h3 className="text-sm font-semibold text-slate-700">{t("Хостел")}</h3>
+        <Link href="/hostels" className="ml-auto text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до хостелів")} →</Link>
+      </div>
+      <table className="w-full text-sm">
+        <tbody className="divide-y divide-slate-100">
+          {[...stays].reverse().map(s => (
+            <tr key={s.stayId} className="hover:bg-slate-50">
+              <td className="px-4 py-2 font-medium text-slate-700">
+                {s.hostelName} <span className="font-normal text-slate-400">· {t(s.city)}</span>
+                {!s.toDate && <span className="ml-2"><Badge color="green">{t("живе")}</Badge></span>}
+              </td>
+              <td className="px-4 py-2 text-slate-500">{fmtD(s.fromDate)} — {s.toDate ? fmtD(s.toDate) : "…"}</td>
+              <td className="px-4 py-2 text-right tabular-nums text-slate-600">{s.monthlyRate != null ? `${s.monthlyRate.toFixed(2)} zł/${t("міс")}` : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
   );
 }
 

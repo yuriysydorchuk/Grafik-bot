@@ -14,6 +14,7 @@ import { can } from "../lib/roles";
 // rates — viewFinance|factoryRates, NIP/P&L — viewFinance only)
 type FactoryX = Omit<Factory, "positions"> & {
   city?: string | null;
+  fuelCommute?: boolean;
   rateBrutto?: number | null; rateNetto?: number | null; nightAddon?: number | null;
   clientNip?: string | null; pnlLabel?: string | null;
   positions: (FactoryPositionConf & { rateNetto?: number | null })[];
@@ -118,6 +119,7 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
     usesPositions: factory?.usesPositions ?? false,
     usesGender: factory?.usesGender ?? false,
     usesTransport: factory?.usesTransport ?? true,
+    fuelCommute: factory?.fuelCommute ?? false,
     usesScheduling: factory?.usesScheduling ?? true,
     showWorkerHours: factory?.showWorkerHours ?? true,
     showCode: factory?.showCode ?? true,
@@ -157,7 +159,7 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
     name: v.name.trim(), address: v.address, city: v.city.trim() || null, clientEmail: v.clientEmail,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
-    usesTransport: v.usesTransport, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
+    usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
       positionId: r.positionId,
@@ -267,6 +269,10 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
             <input type="checkbox" checked={v.usesTransport} onChange={e => setV({ ...v, usesTransport: e.target.checked })} />
             {t("Є довіз працівників (показувати зупинки)")}
+          </label>
+          <label className="flex items-center gap-2 pl-6 text-sm text-slate-600">
+            <input type="checkbox" checked={v.fuelCommute} onChange={e => setV({ ...v, fuelCommute: e.target.checked })} />
+            {t("Доїзд нашим транспортом — паливо ділиться на це місто (P&L)")}
           </label>
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
             <input type="checkbox" checked={v.showWorkerHours} onChange={e => setV({ ...v, showWorkerHours: e.target.checked })} />

@@ -994,7 +994,7 @@ const PNL_LABEL_MERGE: Record<string, string> = {
 };
 const pnlLabelFor = (factory: string) => PNL_LABEL_MERGE[key(factory)] ?? factory;
 const PNL_FACTORY_ALIASES: Record<string, string> = { ALLMIZ: "ALMIZ" }; // одрукування вкладок
-async function pnlLabelResolver(): Promise<(factoryLabel: string) => string> {
+export async function pnlLabelResolver(): Promise<(factoryLabel: string) => string> {
   const rows = await db.select({ name: factoriesTable.name, pnlLabel: factoriesTable.pnlLabel }).from(factoriesTable);
   const entries = rows.filter(r => r.pnlLabel).map(r => ({ key: key(r.name), label: r.pnlLabel! }));
   return (factoryLabel: string) => {

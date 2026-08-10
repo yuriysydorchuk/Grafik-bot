@@ -26,6 +26,9 @@ import Absences from "./pages/Absences";
 import Advances from "./pages/Advances";
 import Trips from "./pages/Trips";
 import Mileage from "./pages/Mileage";
+import Fleet from "./pages/Fleet";
+import Transport from "./pages/Transport";
+import Clothing from "./pages/Clothing";
 import Finance from "./pages/Finance";
 import BankStatements from "./pages/BankStatements";
 import CashRegister from "./pages/CashRegister";
@@ -35,12 +38,14 @@ import Obligations from "./pages/Obligations";
 import Invoices from "./pages/Invoices";
 import CostInvoices from "./pages/CostInvoices";
 import Cfo from "./pages/Cfo";
+import Analytics from "./pages/Analytics";
 import Pnl from "./pages/Pnl";
 import Payroll from "./pages/Payroll";
 import Svodni from "./pages/Svodni";
 import Hostels from "./pages/Hostels";
 import Penalties from "./pages/Penalties";
 import Ksef from "./pages/Ksef";
+import Fuel from "./pages/Fuel";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
@@ -116,6 +121,9 @@ export default function App() {
         <Route path="/reports">{() => guard("/reports", <Reports />)}</Route>
         <Route path="/trips">{() => guard("/trips", <Trips />)}</Route>
         <Route path="/mileage">{() => guard("/mileage", <Mileage />)}</Route>
+        <Route path="/fleet">{() => guard("/fleet", <Fleet />)}</Route>
+        <Route path="/transport">{() => guard("/transport", <Transport />)}</Route>
+        <Route path="/clothing">{() => guard("/clothing", <Clothing />)}</Route>
         <Route path="/finance">{() => guard("/finance", <Finance />)}</Route>
         <Route path="/bank">{() => guard("/bank", <BankStatements />)}</Route>
         <Route path="/cash">{() => guard("/cash", <CashRegister />)}</Route>
@@ -125,12 +133,14 @@ export default function App() {
         <Route path="/invoices">{() => guard("/invoices", <Invoices />)}</Route>
         <Route path="/cost-invoices">{() => guard("/cost-invoices", <CostInvoices />)}</Route>
         <Route path="/cfo">{() => guard("/cfo", <Cfo />)}</Route>
+        <Route path="/analytics">{() => guard("/analytics", <Analytics />)}</Route>
         <Route path="/pnl">{() => guard("/pnl", <Pnl />)}</Route>
         <Route path="/payroll">{() => guard("/payroll", <Payroll />)}</Route>
         <Route path="/svodni">{() => guard("/svodni", <Svodni />)}</Route>
         <Route path="/hostels">{() => guard("/hostels", <Hostels />)}</Route>
         <Route path="/penalties">{() => guard("/penalties", <Penalties />)}</Route>
         <Route path="/ksef">{() => guard("/ksef", <Ksef />)}</Route>
+        <Route path="/fuel">{() => guard("/fuel", <Fuel />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>

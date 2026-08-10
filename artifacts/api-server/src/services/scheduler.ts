@@ -72,6 +72,7 @@ let pickupGapTask: ScheduledTask | null = null;
 let bankImportTask: ScheduledTask | null = null;
 let bankApiTask: ScheduledTask | null = null;
 let cfoTask: ScheduledTask | null = null;
+let fleetAlertTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
 // Фінансові алерти йдуть головному адміну (не в ALERT_TELEGRAM_CHAT_ID — то канал
@@ -238,6 +239,19 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Weekly Monday 08:00 Warsaw: insurance/inspection expiry digest for the fleet
+  // (head driver + main admin in the bot). Раз на тиждень — без щоденного спаму.
+  fleetAlertTask = cron.schedule(
+    "0 8 * * 1",
+    async () => {
+      try {
+        const { notifyFleetExpiry } = await import("./fleet");
+        await notifyFleetExpiry();
+      } catch (e: any) { logger.warn({ err: e?.message }, "Fleet expiry alert failed"); }
+    },
+    { timezone: TZ },
+  );
+
   pruneNotifications(); // run once on boot so the table is bounded immediately
 
   logger.info({ cron: `0 ${reminderHour} * * 0`, tz: TZ }, "Weekly reminder scheduler started");
@@ -270,6 +284,7 @@ export function stopScheduler() {
   bankImportTask?.stop();     bankImportTask = null;
   bankApiTask?.stop();        bankApiTask = null;
   cfoTask?.stop();            cfoTask = null;
+  fleetAlertTask?.stop();     fleetAlertTask = null;
 }
 
 export function setReminderHour(hour: number) {

@@ -264,7 +264,35 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       ? and(eq(svodniTabMetaTable.periodMonth, month), eq(svodniTabMetaTable.city, city))
       : eq(svodniTabMetaTable.periodMonth, month)))
     .filter(m => tabAllowed(m.factoryLabel))
-    .map(m => ({ city: m.city, factoryLabel: m.factoryLabel, colOrder: m.colOrder, info: m.info }));
+    .map(m => ({ city: m.city, factoryLabel: m.factoryLabel, colOrder: m.colOrder, info: m.info as Record<string, unknown> }));
+
+  // Інфо-блок STAWKA EUROCASH: вкладка місяця без свого блоку (типово Eurocash —
+  // сводну тепер робить сайт, вкладки в книзі Google ще нема) успадковує блок
+  // найсвіжішого минулого місяця цього ж міста+factoryLabel — таблиця норм і
+  // ставок видна щомісяця (та сама логіка, що у from-hours при розрахунку).
+  {
+    const hasBlock = (info: unknown) => !!(info as { stawkaEurocash?: unknown } | null)?.stawkaEurocash;
+    const covered = new Set(tabMeta.filter(m => hasBlock(m.info)).map(m => `${m.city}|${m.factoryLabel}`));
+    const wanted = new Map<string, { city: string; factoryLabel: string }>();
+    for (const { r } of raw) {
+      const k = `${r.city}|${r.factoryLabel}`;
+      if (!covered.has(k) && tabAllowed(r.factoryLabel)) wanted.set(k, { city: r.city, factoryLabel: r.factoryLabel });
+    }
+    if (wanted.size) {
+      const older = await db.select().from(svodniTabMetaTable).where(and(
+        sql`${svodniTabMetaTable.periodMonth} < ${month}`,
+        inArray(svodniTabMetaTable.factoryLabel, [...new Set([...wanted.values()].map(w => w.factoryLabel))]),
+      )).orderBy(desc(svodniTabMetaTable.periodMonth));
+      for (const w of wanted.values()) {
+        const src = older.find(m => m.city === w.city && m.factoryLabel === w.factoryLabel && hasBlock(m.info));
+        if (!src) continue;
+        const block = (src.info as { stawkaEurocash: (string | number)[][] }).stawkaEurocash;
+        const cur = tabMeta.find(m => m.city === w.city && m.factoryLabel === w.factoryLabel);
+        if (cur) cur.info = { ...cur.info, stawkaEurocash: block };
+        else tabMeta.push({ city: w.city, factoryLabel: w.factoryLabel, colOrder: [], info: { stawkaEurocash: block } });
+      }
+    }
+  }
 
   const lockRows = await monthLocks(month);
   const locks = lockRows.map(l => ({ city: l.city, factoryLabel: l.factoryLabel }));
@@ -1586,12 +1614,14 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         if (idx == null || ecRates.brutto[idx] == null || ecRates.netto[idx] == null) {
           eurocashUnmatched.push({ name: w.fullName, reason: `поріг не знайдено (ставка агенції ${ecx.stawkaAgencji ?? "—"}, продуктивність ${ecx.produktywnosc ?? "—"})` });
         } else {
+          // потроненя: за błędy + inne (Białystok ROZLICZENIE) — у сводній одна колонка
+          const potrSum = (ecx.potracenia ?? 0) + (ecx.innePotracenia ?? 0);
           ec = {
             rateBrutto: ecRates.brutto[idx]!,
             rateNetto: stud26 ? ecRates.brutto[idx]! : ecRates.netto[idx]!,
             nocneH: ecx.nocneH != null && ecx.nocneH > 0 ? r2(ecx.nocneH) : null,
             doplataNocna: stud26 ? ecRates.nightBrutto : ecRates.nightNetto,
-            potracenia: ecx.potracenia != null && ecx.potracenia !== 0 ? r2(ecx.potracenia) : null,
+            potracenia: potrSum !== 0 ? r2(potrSum) : null,
           };
         }
       }

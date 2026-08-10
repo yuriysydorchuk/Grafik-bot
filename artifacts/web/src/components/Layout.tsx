@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
@@ -60,6 +60,9 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/workers", label: "Працівники", icon: Users },
       { href: "/drivers", label: "Водії", icon: Truck },
+      { href: "/fleet", label: "Автопарк", icon: CarFront },
+      { href: "/transport", label: "Транспорт", icon: Bus },
+      { href: "/clothing", label: "Одяг", icon: Shirt },
       { href: "/recruitment", label: "Рекрутація", icon: UserPlus },
       { href: "/broadcast", label: "Розсилка", icon: Megaphone },
     ],
@@ -84,6 +87,7 @@ const NAV: NavGroup[] = [
       { href: "/cash", label: "Каса", icon: Vault },
       { href: "/cashflow", label: "Кешфлоу", icon: TrendingUp },
       { href: "/cfo", label: "CFO", icon: TrendingUp },
+      { href: "/analytics", label: "Аналітика", icon: BarChart3 },
       { href: "/balance", label: "Баланс", icon: PiggyBank },
       { href: "/cost-invoices", label: "Фактури", icon: FileText },
       { href: "/invoices", label: "Фактури (таблиця)", icon: FileText },
@@ -93,6 +97,7 @@ const NAV: NavGroup[] = [
       { href: "/hostels", label: "Хостели", icon: Home },
       { href: "/penalties", label: "Штрафи", icon: Gavel },
       { href: "/ksef", label: "KSeF", icon: FileText },
+      { href: "/fuel", label: "Пальне", icon: Fuel },
     ],
   },
   {

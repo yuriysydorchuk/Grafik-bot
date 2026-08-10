@@ -4,7 +4,7 @@
 // re-sync). Unpaid invoices (effective status) feed the net position on /balance.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { invoicesTable, companiesTable } from "@workspace/db";
+import { invoicesTable, companiesTable, hostelsTable, vehiclesTable } from "@workspace/db";
 import { and, eq, desc, asc, ilike, or, sql, type SQL } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { syncInvoices } from "../services/invoices";
@@ -93,16 +93,24 @@ router.get("/invoices/meta", async (_req, res) => {
   const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.isActive, true));
   const years: any = await db.execute(sql`SELECT DISTINCT left(period_month, 4) AS y FROM invoices ORDER BY 1 DESC`);
   const cats: any = await db.execute(sql`SELECT DISTINCT coalesce(nullif(trim(coalesce(manual_category, category)), ''), 'Inne') AS c FROM invoices ORDER BY 1`);
+  // cost-center міста для селекторів (фабрики ∪ хостели ∪ уже проставлені)
+  const cities: any = await db.execute(sql`
+    SELECT DISTINCT c FROM (
+      SELECT city AS c FROM factories WHERE city IS NOT NULL AND city <> ''
+      UNION SELECT city FROM hostels WHERE city IS NOT NULL AND city <> ''
+      UNION SELECT city FROM invoices WHERE city IS NOT NULL AND city <> ''
+    ) x ORDER BY 1`);
   ok(res, {
     companies: companies.filter(c => ["ES", "ESO", "Klinex"].includes(c.name)),
     years: ((years.rows ?? years) as any[]).map((r: any) => String(r.y)),
     categories: ((cats.rows ?? cats) as any[]).map((r: any) => String(r.c)),
+    cities: ((cities.rows ?? cities) as any[]).map((r: any) => String(r.c)),
   });
 });
 
 // add a manual invoice (panel-owned row, survives sheet syncs)
 router.post("/invoices", async (req, res) => {
-  const { companyId, issueDate, number, amount, counterparty, category, dueDate, paid, paidDate } = req.body ?? {};
+  const { companyId, issueDate, number, amount, counterparty, category, dueDate, paid, paidDate, hostelId, vehicleId } = req.body ?? {};
   if (!companyId) return fail(res, 400, "companyId required");
   if (!validDate(issueDate)) return fail(res, 400, "issueDate must be YYYY-MM-DD");
   if (!number || !String(number).trim()) return fail(res, 400, "number required");
@@ -118,6 +126,9 @@ router.post("/invoices", async (req, res) => {
     counterparty: counterparty ? String(counterparty).trim() : null,
     category: category ? String(category).trim() : null,
     paidDate: paid && paidDate && validDate(paidDate) ? paidDate : (paid ? new Date().toISOString().slice(0, 10) : null),
+    hostelId: hostelId ? Number(hostelId) : null,
+    vehicleId: vehicleId ? Number(vehicleId) : null,
+    city: req.body?.city ? String(req.body.city).trim() : null,
     tabName: MANUAL, sortIdx: Math.floor(Date.now() / 1000),
   }).returning();
   ok(res, effRow(row!));
@@ -156,6 +167,28 @@ router.patch("/invoices/:id", async (req, res) => {
     if (isManual) patch.category = cat;
     else patch.manualCategory = cat && cat !== (row.category ?? "").trim() ? cat : null;
   }
+  if (b.hostelId !== undefined) {
+    // привʼязка до хостелу — наша метадата, працює і для sheet-рядків (переживає ресинк)
+    const hid = b.hostelId ? Number(b.hostelId) : null;
+    if (hid !== null && !Number.isFinite(hid)) return fail(res, 400, "bad hostelId");
+    if (hid) {
+      const [h] = await db.select({ id: hostelsTable.id }).from(hostelsTable).where(eq(hostelsTable.id, hid));
+      if (!h) return fail(res, 400, "unknown hostel");
+    }
+    patch.hostelId = hid;
+  }
+  if (b.vehicleId !== undefined) {
+    // привʼязка до авто (лізинг/сервіс) — наша метадата, переживає ресинк
+    const vid = b.vehicleId ? Number(b.vehicleId) : null;
+    if (vid !== null && !Number.isFinite(vid)) return fail(res, 400, "bad vehicleId");
+    if (vid) {
+      const [v] = await db.select({ id: vehiclesTable.id }).from(vehiclesTable).where(eq(vehiclesTable.id, vid));
+      if (!v) return fail(res, 400, "unknown vehicle");
+    }
+    patch.vehicleId = vid;
+  }
+  // cost-center місто (P&L по містах) — теж наша метадата
+  if (b.city !== undefined) patch.city = b.city ? String(b.city).trim() : null;
   if (isManual) {
     if (b.issueDate !== undefined) { if (!validDate(b.issueDate)) return fail(res, 400, "bad issueDate"); patch.issueDate = b.issueDate; patch.periodMonth = String(b.issueDate).slice(0, 7); }
     if (b.number !== undefined) { if (!String(b.number).trim()) return fail(res, 400, "number required"); patch.number = String(b.number).trim(); }

@@ -72,6 +72,32 @@ test("Люблін: інфо-блок STAWKA EUROCASH зберігається �
   ]);
 });
 
+test("Білосток: блок з нормами wózkowych (7 рядків) — до порожнього рядка", () => {
+  const rows = [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka netto", "Do wypłaty Netto"],
+    ["MUKWENJE INNOCENT", "Dyplom", 219, 24.6, 5217.15],
+    ["Suma Godzin", "", 219, "", 5217.15],
+    [],
+    ["STAWKA EUROCASH", 41.2, 42.42],
+    [5.55, "1 - 115.99", "116-125.99"],
+    [3.5, 24.6, 25.03],
+    [4.5, 30.5, 31],
+    ["Wózkowi", 1, 2],
+    ["operacji GD na godzinę", 8, 12],
+    ["kartonów na operację GD", 30, 31],
+    [], // порожній рядок завершує блок
+    ["Nazwisko i Imię", "Suma czasu pracy"], // стороння міні-таблиця нижче — не в блоці
+  ];
+  const p = parseLublinTab("EUROCASH BIAŁYSTOK", rows)!;
+  assert.equal(p.info?.stawkaEurocash?.length, 7);
+  assert.deepEqual(p.info!.stawkaEurocash![5], ["operacji GD na godzinę", 8, 12]);
+  assert.deepEqual(p.info!.stawkaEurocash![6], ["kartonów na operację GD", 30, 31]);
+  // розбір ставок працює і з 7-рядковим блоком (зайві рядки — довідкові)
+  const rates = eurocashRatesFromBlock(p.info!.stawkaEurocash!)!;
+  assert.equal(eurocashBracketIndex(rates, 42.42, null), 1);
+  near(rates.brutto[1]!, 31);
+});
+
 // ── Eurocash: ставки від порогів продуктивності ──────────────────────────────
 // Реальний блок EUROCASH LUBLIN 06.2026 (скорочений до перших 7 порогів).
 const EC_BLOCK: (string | number)[][] = [

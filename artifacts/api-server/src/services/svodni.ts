@@ -277,7 +277,7 @@ export function factoryBonusPerHour(
 // продуктивності, під ними нетто і брутто працівника; клітинки A нетто/брутто
 // рядків = доплата за нічну годину (3,50 нетто / 4,50 брутто). Студент до 26 —
 // нетто = брутто і нічна брутто. Таблиці різні по містах — поки лише Люблін.
-export const EUROCASH_FACTORY_IDS = new Set([9]); // 9=EUROCASH LUBLIN (Białystok/Krosno — свої таблиці, згодом)
+export const EUROCASH_FACTORY_IDS = new Set([9, 8]); // 9=EUROCASH LUBLIN, 8=EUROCASH BIAŁYSTOK (Krosno — згодом)
 
 export interface EurocashRates {
   agency: (number | null)[]; // ставки фабрики нам (зелений рядок)
@@ -596,12 +596,15 @@ export function parseLublinTab(factoryLabel: string, rows: unknown[][]): SvodniP
   for (let i = r; i < rows.length; i++) {
     if (norm(cell(rows[i], 0)) !== "STAWKA EUROCASH") continue;
     const block: (string | number)[][] = [];
-    for (let j = i; j < Math.min(i + 5, rows.length); j++) {
+    // до першого порожнього рядка, макс 8: у Білостоку під основними 5 рядками
+    // ще норми wózkowych («operacji GD na godzinę» / «kartonów na operację GD»)
+    for (let j = i; j < Math.min(i + 8, rows.length); j++) {
       // числа — повної точності: з блоку рахуються ставки працівника (from-hours
       // Eurocash), як у формулах таблиці; веб округлює лише при показі
       const rr = (rows[j] ?? []).map(c => (typeof c === "number" ? c : String(c ?? "")));
       while (rr.length && rr[rr.length - 1] === "") rr.pop();
-      if (rr.length) block.push(rr);
+      if (!rr.length) break;
+      block.push(rr);
     }
     if (block.length) out.info = { ...(out.info ?? {}), stawkaEurocash: block };
     break;

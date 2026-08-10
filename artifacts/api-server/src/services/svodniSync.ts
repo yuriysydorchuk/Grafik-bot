@@ -372,9 +372,26 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     const noteByKey = new Map(noted.map(n => [`${key(n.factoryLabel)}::${key(cleanName(n.rawName))}`, n.note]));
     // правлені на сайті рядки — джерело правди: лишаються, а парсовані
     // дублікати тих самих людей (фабрика+імʼя) не вставляються
-    const manualRows = await tx.select({ factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName })
+    const manualRows = await tx.select({ id: svodniRowsTable.id, factoryLabel: svodniRowsTable.factoryLabel, rawName: svodniRowsTable.rawName })
       .from(svodniRowsTable).where(and(scope, eq(svodniRowsTable.manual, true)));
-    const manualKeys = new Set(manualRows.map(m => `${key(m.factoryLabel)}::${key(cleanName(m.rawName))}`));
+    // Перейменована/зникла вкладка: ручний рядок під старою назвою — дубль тієї
+    // самої людини, яку свіжий парс несе вже під новою назвою вкладки (інцидент
+    // 01.08.2026: AGRAM LUBLIN→AGRAM, ALMIZ→ALLMIZ, KUŻNIA MATRYCOWA→KUZNIA —
+    // червень подвоївся на ~95 тис.). Такі рядки прибираємо: таблиця — джерело
+    // правди; людина, якої у свіжому парсі немає ніде, лишається (додана вручну).
+    const currentLabelKeys = new Set(rowsToInsert.map(r => key(r.factoryLabel)));
+    const freshNameKeys = new Set(rowsToInsert.map(r => key(cleanName(r.rawName))));
+    const staleManualIds = manualRows
+      .filter(m => !currentLabelKeys.has(key(m.factoryLabel))
+        && !lockedNorm.has(key(m.factoryLabel))
+        && freshNameKeys.has(key(cleanName(m.rawName))))
+      .map(m => m.id);
+    if (staleManualIds.length) {
+      await tx.delete(svodniRowsTable).where(inArray(svodniRowsTable.id, staleManualIds));
+      res.notes.push(`прибрано ручних рядків перейменованих вкладок: ${staleManualIds.length}`);
+    }
+    const keptManual = manualRows.filter(m => !staleManualIds.includes(m.id));
+    const manualKeys = new Set(keptManual.map(m => `${key(m.factoryLabel)}::${key(cleanName(m.rawName))}`));
     if (lockedNorm.size) {
       // видаляємо не-ручні лише поза локами (порівняння нормалізоване — робимо в JS)
       const cand = await tx.select({ id: svodniRowsTable.id, factoryLabel: svodniRowsTable.factoryLabel })
@@ -415,8 +432,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     if (fresh.length) await tx.insert(svodniRowsTable).values(fresh);
     if (checksToInsert.length) await tx.insert(svodniTabChecksTable).values(checksToInsert);
     if (metaToInsert.length) await tx.insert(svodniTabMetaTable).values(metaToInsert);
-    res.rows = fresh.length + manualRows.length;
-    if (manualRows.length) res.notes.push(`збережено ручних рядків: ${manualRows.length}`);
+    res.rows = fresh.length + keptManual.length;
+    if (keptManual.length) res.notes.push(`збережено ручних рядків: ${keptManual.length}`);
   });
   return res;
 }

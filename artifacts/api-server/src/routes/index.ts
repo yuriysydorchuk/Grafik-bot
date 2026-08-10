@@ -10,20 +10,30 @@ import obligationsRouter from "./obligations";
 import invoicesRouter from "./invoices";
 import costInvoicesRouter from "./costInvoices";
 import pnlRouter from "./pnl";
+import analyticsRouter from "./analytics";
 import payrollRouter from "./payroll";
 import svodniRouter from "./svodni";
+import hostelsRouter from "./hostels";
 import penaltiesRouter from "./penalties";
 import ksefRouter from "./ksef";
+import fuelRouter from "./fuel";
 import securityRouter from "./security";
+import fleetRouter from "./fleet";
+import transportRouter from "./transport";
+import clothingRouter from "./clothing";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
 router.use(adminApiRouter);
+router.use(fleetRouter);
+router.use(transportRouter);
+router.use(clothingRouter);
 // ВАЖЛИВО: до фінансових роутерів — ті вішають глобальні use-гейти (viewFinance/owner),
 // які в Express зачепили б і всі наступні роутери
 router.use(svodniRouter);
+router.use(hostelsRouter);
 router.use(penaltiesRouter);
 router.use(bankRouter);
 router.use(cashRouter);
@@ -33,8 +43,10 @@ router.use(obligationsRouter);
 router.use(invoicesRouter);
 router.use(costInvoicesRouter);
 router.use(pnlRouter);
+router.use(analyticsRouter);
 router.use(payrollRouter);
 router.use(ksefRouter);
+router.use(fuelRouter);
 router.use(securityRouter);
 
 export default router;

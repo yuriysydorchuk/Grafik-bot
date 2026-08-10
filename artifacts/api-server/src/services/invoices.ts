@@ -6,7 +6,7 @@
 import { google } from "googleapis";
 import { db } from "@workspace/db";
 import { invoicesTable, companiesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
 const INVOICE_SHEETS: { sheetId: string; company: string }[] = [
@@ -85,14 +85,14 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
         });
       }
       // mirror the tab: the office keeps editing the sheet, so wipe & reinsert.
-      // manual_* overrides are OUR metadata — carry them over by row identity
-      // (invoice number + amount), first unused match wins
+      // manual_* overrides + hostel link are OUR metadata — carry them over by
+      // row identity (invoice number + amount), first unused match wins
       const old = await db.select().from(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
-      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null }[]>();
+      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null }[]>();
       const rowKey = (e: { number: string | null; amount: number }) => `${(e.number ?? "").trim()}|${e.amount}`;
-      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory) {
+      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city) {
         const k = rowKey(o);
-        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory });
+        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city });
       }
       for (const e of entries) {
         const stack = overrides.get(rowKey(e as any));
@@ -105,6 +105,39 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
       result.unpaid += entries.filter(e => e.unpaid).length;
     }
   }
+  const attached = await autoAttachLeaseInvoices();
+  if (attached) logger.info({ attached }, "lease invoices auto-attached");
   logger.info(result, "invoices sync done");
   return result;
+}
+
+// Авто-привʼязка лізингових фактур до авто за правилом власника: контрагент
+// фактури ~ lease_lessor авто; якщо кілька авто ділять лізингодавця — розрізняє
+// lease_contract_no (токен у номері/нотатці фактури), інакше НЕ вгадуємо.
+export async function autoAttachLeaseInvoices(): Promise<number> {
+  const { vehiclesTable } = await import("@workspace/db");
+  const norm = (s: string | null | undefined) => (s ?? "").toLowerCase().replace(/s\.?a\.?$/i, "").replace(/[^a-z0-9а-яіїєґ]+/gi, "");
+  const vehicles = (await db.select().from(vehiclesTable)).filter(v => v.leaseLessor);
+  if (!vehicles.length) return 0;
+  const unattached = await db.select().from(invoicesTable).where(isNull(invoicesTable.vehicleId));
+  let attached = 0;
+  for (const inv of unattached) {
+    const cp = norm(inv.counterparty);
+    if (!cp) continue;
+    const byLessor = vehicles.filter(v => {
+      const l = norm(v.leaseLessor);
+      return l && (cp.includes(l) || l.includes(cp));
+    });
+    if (!byLessor.length) continue;
+    let winner = byLessor.length === 1 ? byLessor[0]! : undefined;
+    if (!winner) {
+      const hay = `${inv.number ?? ""} ${inv.note ?? ""} ${inv.category ?? ""}`.toLowerCase();
+      const byContract = byLessor.filter(v => v.leaseContractNo && hay.includes(v.leaseContractNo.toLowerCase()));
+      if (byContract.length === 1) winner = byContract[0]!;
+    }
+    if (!winner) continue; // неоднозначно — лишаємо на ручну привʼязку
+    await db.update(invoicesTable).set({ vehicleId: winner.id }).where(eq(invoicesTable.id, inv.id));
+    attached++;
+  }
+  return attached;
 }

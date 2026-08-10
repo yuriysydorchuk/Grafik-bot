@@ -214,6 +214,9 @@ importers:
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
+      pdfjs-dist:
+        specifier: ^6.1.200
+        version: 6.1.200
       pino:
         specifier: ^9.14.0
         version: 9.14.0

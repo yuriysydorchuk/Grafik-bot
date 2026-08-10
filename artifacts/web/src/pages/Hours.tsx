@@ -1022,7 +1022,7 @@ function AddFactoryDayRow({ nShifts, month, onAdd, pending }: { nShifts: number;
 
 // extras формату eurocash: нічні/продуктивність/ставка агенції/потроненя —
 // зберігаються з годинами і їдуть у сводну (ставка від порогу продуктивності)
-type EcExtras = { nocneH?: number; produktywnosc?: number; stawkaAgencji?: number; potracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string };
+type EcExtras = { nocneH?: number; produktywnosc?: number; stawkaAgencji?: number; potracenia?: number; innePotracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string };
 interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVal> | null; extras: EcExtras | null; key: string | null; byKey?: boolean; workerId: number | null; matchName: string | null; candidates: { id: number; name: string; active: boolean }[] }
 
 // Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
@@ -1171,7 +1171,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
                         <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.nocneH ?? "—"}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.produktywnosc != null ? Math.round(r.extras.produktywnosc * 100) / 100 : "—"}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-slate-600">{r.extras?.stawkaAgencji != null ? Math.round(r.extras.stawkaAgencji * 100) / 100 : "—"}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-red-600">{r.extras?.potracenia ?? "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-red-600">{((r.extras?.potracenia ?? 0) + (r.extras?.innePotracenia ?? 0)) || "—"}</td>
                       </>
                     )}
                     <td className="px-3 py-2">

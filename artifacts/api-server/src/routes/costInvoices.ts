@@ -8,8 +8,8 @@ import { Router, type IRouter } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
-import { db } from "@workspace/db";
-import { invoicesTable, ksefInvoicesTable, companiesTable } from "@workspace/db";
+import { db , vehiclesTable } from "@workspace/db";
+import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable } from "@workspace/db";
 import { and, eq, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
@@ -37,6 +37,9 @@ export type CostInvoiceRow = {
   paid: boolean; paidDate: string | null; paidSource: string | null;
   note: string | null; hasFile: boolean;
   dupOfKsefId: number | null; // ручна/sheet-фактура, яку вже видно в KSeF (щоб не рахувати двічі)
+  hostelId: number | null;    // привʼязка до хостелу (лише local-рядки)
+  vehicleId: number | null;   // привʼязка до авто (лізинг/сервіс; лише local-рядки)
+  city: string | null;        // cost-center місто (P&L по містах; лише local-рядки)
 };
 
 router.get("/cost-invoices", async (req, res) => {
@@ -73,7 +76,7 @@ router.get("/cost-invoices", async (req, res) => {
       paid,
       paidDate: k.manualStatus === "paid" ? k.manualPaidDate ?? k.paidDate : k.manualStatus ? null : k.paidDate,
       paidSource: k.manualStatus ? "manual" : k.paidDate ? k.paidVia ?? "bank" : null,
-      note: null, hasFile: false, dupOfKsefId: null,
+      note: null, hasFile: false, dupOfKsefId: null, hostelId: null, vehicleId: null, city: null,
     });
   }
   for (const l of localRows) {
@@ -89,15 +92,24 @@ router.get("/cost-invoices", async (req, res) => {
       paid,
       paidDate: l.manualStatus === "paid" ? l.manualPaidDate ?? l.paidDate : l.manualStatus ? null : l.paidDate,
       paidSource: l.manualStatus ? "manual" : paid ? "sheet" : null,
-      note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null,
+      note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null, hostelId: l.hostelId, vehicleId: l.vehicleId, city: l.city,
     });
   }
   rows.sort((a, b) => String(b.issueDate ?? "").localeCompare(String(a.issueDate ?? "")));
+
+  // cost-center міста для селектора (фабрики ∪ хостели ∪ уже проставлені)
+  const cityRows: any = await db.execute(sql`
+    SELECT DISTINCT c FROM (
+      SELECT city AS c FROM factories WHERE city IS NOT NULL AND city <> ''
+      UNION SELECT city FROM hostels WHERE city IS NOT NULL AND city <> ''
+      UNION SELECT city FROM invoices WHERE city IS NOT NULL AND city <> ''
+    ) x ORDER BY 1`);
 
   // зведення без дублів (дубльований локальний рядок не рахуємо вдруге)
   const counted = rows.filter(r => !r.dupOfKsefId);
   ok(res, {
     month, rows,
+    cities: ((cityRows.rows ?? cityRows) as any[]).map((r: any) => String(r.c)),
     totals: {
       count: counted.length,
       gross: r2(counted.reduce((s, r) => s + r.gross, 0)),
@@ -133,6 +145,34 @@ function parseBody(b: any): { err?: string; patch?: Record<string, unknown> } {
   return { patch };
 }
 
+// привʼязка фактури до хостелу (рахунки за оренду/медіа) і cost-center міста
+// (P&L по містах) — наша метадата
+async function applyHostelId(b: any, patch: Record<string, unknown>): Promise<string | null> {
+  if (b.city !== undefined) patch.city = b.city ? String(b.city).trim() : null;
+  if (b.hostelId === undefined) return null;
+  const hid = b.hostelId ? Number(b.hostelId) : null;
+  if (hid !== null && !Number.isFinite(hid)) return "bad hostelId";
+  if (hid) {
+    const [h] = await db.select({ id: hostelsTable.id }).from(hostelsTable).where(eq(hostelsTable.id, hid));
+    if (!h) return "unknown hostel";
+  }
+  patch.hostelId = hid;
+  return null;
+}
+
+// привʼязка фактури до авто (лізингові/сервісні — картка авто рахує виплачено/залишок)
+async function applyVehicleId(b: any, patch: Record<string, unknown>): Promise<string | null> {
+  if (b.vehicleId === undefined) return null;
+  const vid = b.vehicleId ? Number(b.vehicleId) : null;
+  if (vid !== null && !Number.isFinite(vid)) return "bad vehicleId";
+  if (vid) {
+    const [v] = await db.select({ id: vehiclesTable.id }).from(vehiclesTable).where(eq(vehiclesTable.id, vid));
+    if (!v) return "unknown vehicle";
+  }
+  patch.vehicleId = vid;
+  return null;
+}
+
 router.post("/cost-invoices", async (req, res) => {
   const b = req.body ?? {};
   const companyId = Number(b.companyId);
@@ -142,6 +182,10 @@ router.post("/cost-invoices", async (req, res) => {
   const { err, patch } = parseBody(b);
   if (err) return fail(res, 400, err);
   if (!patch?.issueDate || !patch?.number || !patch?.amount) return fail(res, 400, "issueDate, number, amount — обов'язкові");
+  const hostelErr = await applyHostelId(b, patch);
+  const vehicleErr = await applyVehicleId(b, patch);
+  if (vehicleErr) return fail(res, 400, vehicleErr);
+  if (hostelErr) return fail(res, 400, hostelErr);
   const paid = !!b.paid;
   const paidDate = paid ? (validDate(b.paidDate) ? b.paidDate : new Date().toISOString().slice(0, 10)) : null;
   const [row] = await db.insert(invoicesTable).values({
@@ -171,6 +215,12 @@ router.patch("/cost-invoices/:id", async (req, res) => {
       patch.companyId = Number(b.companyId);
     }
   } else if (b.note !== undefined) patch.note = String(b.note ?? "").trim() || null;
+  {
+    const hostelErr = await applyHostelId(b, patch);
+  const vehicleErr = await applyVehicleId(b, patch);
+  if (vehicleErr) return fail(res, 400, vehicleErr);
+    if (hostelErr) return fail(res, 400, hostelErr);
+  }
   if (b.paid !== undefined) {
     if (row.source === "manual" || row.source === "scan") {
       patch.unpaid = !b.paid;

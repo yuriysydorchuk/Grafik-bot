@@ -6,14 +6,14 @@ import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../component
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 
-interface Meta { companies: { id: number; name: string }[]; years: string[]; categories: string[] }
+interface Meta { companies: { id: number; name: string }[]; years: string[]; categories: string[]; cities: string[] }
 interface Inv {
   id: number; companyId: number | null; periodMonth: string; docType: string | null;
   issueDate: string | null; number: string | null; amount: number; statusRaw: string | null;
   unpaid: boolean; dueDate: string | null; counterparty: string | null; category: string | null; paidDate: string | null;
   manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null;
   effUnpaid: boolean; effPaidDate: string | null; effCategory: string; editable: boolean;
-  cashPaid: boolean;
+  cashPaid: boolean; hostelId: number | null; city: string | null;
 }
 interface CatSum { category: string; total: number; n: number; unpaid: number; unpaidCount: number }
 
@@ -230,6 +230,7 @@ export default function Invoices() {
         <InvModal
           companies={meta.data?.companies ?? []}
           categories={meta.data?.categories ?? []}
+          cities={meta.data?.cities ?? []}
           inv={editing}
           defaultCompany={companyId}
           onClose={() => { setAdding(false); setEditing(null); }}
@@ -240,8 +241,8 @@ export default function Invoices() {
   );
 }
 
-function InvModal({ companies, categories, inv, defaultCompany, onClose, onSaved }: {
-  companies: { id: number; name: string }[]; categories: string[]; inv: Inv | null; defaultCompany: string;
+function InvModal({ companies, categories, cities, inv, defaultCompany, onClose, onSaved }: {
+  companies: { id: number; name: string }[]; categories: string[]; cities: string[]; inv: Inv | null; defaultCompany: string;
   onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
@@ -255,16 +256,21 @@ function InvModal({ companies, categories, inv, defaultCompany, onClose, onSaved
   const [dueDate, setDueDate] = useState(inv?.dueDate ?? "");
   const [paid, setPaid] = useState(inv ? !inv.effUnpaid : false);
   const [paidDate, setPaidDate] = useState(inv?.effPaidDate ?? "");
+  const [hostelId, setHostelId] = useState(inv?.hostelId ? String(inv.hostelId) : "");
+  const [city, setCity] = useState(inv?.city ?? "");
   const [busy, setBusy] = useState(false);
+  const hostels = useQuery<{ id: number; name: string; city: string; active: boolean }[]>({
+    queryKey: ["hostel-options"], queryFn: () => get("/hostels/options"), staleTime: 60_000,
+  });
   const save = async () => {
     setBusy(true);
     try {
       if (inv) {
-        const body: any = { paid, paidDate: paid ? (paidDate || undefined) : undefined, category };
+        const body: any = { paid, paidDate: paid ? (paidDate || undefined) : undefined, category, hostelId: hostelId ? Number(hostelId) : null, city: city.trim() || null };
         if (!sheetRow) Object.assign(body, { companyId: Number(companyId), issueDate, number, amount, counterparty, dueDate: dueDate || null });
         await patch(`/invoices/${inv.id}`, body);
       } else {
-        await post("/invoices", { companyId: Number(companyId), issueDate, number, amount, counterparty, category, dueDate: dueDate || null, paid, paidDate: paid ? (paidDate || undefined) : undefined });
+        await post("/invoices", { companyId: Number(companyId), issueDate, number, amount, counterparty, category, dueDate: dueDate || null, paid, paidDate: paid ? (paidDate || undefined) : undefined, hostelId: hostelId ? Number(hostelId) : null, city: city.trim() || null });
       }
       onSaved();
     } finally { setBusy(false); }
@@ -300,6 +306,18 @@ function InvModal({ companies, categories, inv, defaultCompany, onClose, onSaved
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Категорія")}</div>
           <Input list="inv-cats" value={category} onChange={e => setCategory(e.target.value)} />
           <datalist id="inv-cats">{categories.map(c => <option key={c} value={c} />)}</datalist></label>
+        {(hostels.data?.length ?? 0) > 0 && (
+          <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Хостел (оренда/медіа)")}</div>
+            <Select value={hostelId} onChange={e => setHostelId(e.target.value)}>
+              <option value="">—</option>
+              {hostels.data!.map(h => <option key={h.id} value={h.id}>{h.city} · {h.name}</option>)}
+            </Select></label>
+        )}
+        {!hostelId && (
+          <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Місто (cost-center для P&L)")}</div>
+            <Input list="inv-cities" value={city} onChange={e => setCity(e.target.value)} placeholder="—" />
+            <datalist id="inv-cities">{cities.map(c => <option key={c} value={c} />)}</datalist></label>
+        )}
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm text-slate-600">
             <input type="checkbox" checked={paid} onChange={e => setPaid(e.target.checked)} className="h-4 w-4 rounded border-slate-300" />

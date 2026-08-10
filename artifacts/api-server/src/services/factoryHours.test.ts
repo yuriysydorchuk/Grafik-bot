@@ -158,6 +158,30 @@ test("eurocash: години + extras (нічні/продуктивність/�
   ]);
 });
 
+// ── формат F: ROZLICZENIE Eurocash Białystok ────────────────────────────────
+// Рахуємо лише з Suma czasu pracy / Godziny nocne / Stawka netto / Potrącenia
+// za błędy / Inne potrącenia; Login → ключ; місяць — з колонки Miesiąc.
+
+const ROZLICZENIE = [
+  ["Miesiąc", "APT", "Login", "Nazwisko i Imię", "Sekcja", "UA/PL", "Suma czasu pracy ", "Czas pracy akordowej", "Godziny nocne ",
+    "Wydajność ", "Próg wydajn.", "Stawka netto", "Potrącenia za błędy ", "Inne potrącenia ", "Dodatek za godz. nocne"],
+  ["07.2026", "EURO SUPPORT", "5768", "KHANYE DENZEL", "KOMPL", "UA", "210.5", "209.5", "76.5", "118", "2", "42.42", "110", null, "387.86"],
+  ["07.2026", "EURO SUPPORT", "5940", "MUKWENJE INNOCENT", "KOMPL", "UA", "263", "263", "104.5", "110", "1", "41.2", "570", "100", "529.82"],
+  ["Suma końcowa", null, null, null, null, null, "473.5", null, "181", null, null, null, "680", "100", "917.68"],
+];
+
+test("rozliczenie (Białystok): 5 розрахункових колонок, Login → key, місяць з Miesiąc", () => {
+  const f = parseFactoryHoursWorkbook(wbBuf(ROZLICZENIE));
+  assert.equal(f.format, "eurocash");
+  assert.equal(f.monthDetected, "2026-07");
+  assert.deepEqual(f.rows, [
+    { name: "KHANYE DENZEL", hours: 210.5, key: "5768", extras: {
+      nocneH: 76.5, stawkaAgencji: 42.42, potracenia: 110, nrOsobowy: "5768" } },
+    { name: "MUKWENJE INNOCENT", hours: 263, key: "5940", extras: {
+      nocneH: 104.5, stawkaAgencji: 41.2, potracenia: 570, innePotracenia: 100, nrOsobowy: "5940" } },
+  ]);
+});
+
 test("monthFromPolishFilename: польський місяць + рік з імені файла", () => {
   assert.equal(monthFromPolishFilename("EWIDENCJA KLINEX 2026 LIPIEC.xlsx"), "2026-07");
   assert.equal(monthFromPolishFilename("ewidencja ES styczeń 2027.xlsx"), "2027-01");

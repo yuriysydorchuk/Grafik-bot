@@ -32,7 +32,6 @@ import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/pa
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { randomInviteCode } from "../lib/invite";
-import { payoutFor } from "../lib/advancePayout";
 import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 import { nextWorkerCode } from "../lib/workerCode";
@@ -813,28 +812,13 @@ router.get("/workers/:id/bank-accounts", async (req, res) => {
   ok(res, rows);
 });
 router.post("/workers/:id/bank-accounts", RW, async (req, res) => {
-  const workerId = Number(req.params.id);
   const iban = String(req.body?.iban ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (iban.length < 15) return fail(res, 400, "IBAN закороткий");
   try {
-    // перший ручний рахунок людини стає основним (показ в авансах, файл виплат)
-    const hasPrimary = (await db.select({ id: workerBankAccountsTable.id }).from(workerBankAccountsTable)
-      .where(and(eq(workerBankAccountsTable.workerId, workerId), eq(workerBankAccountsTable.isPrimary, true))).limit(1)).length > 0;
-    const [row] = await db.insert(workerBankAccountsTable).values({ workerId, iban, source: "manual", isPrimary: !hasPrimary }).returning();
+    const [row] = await db.insert(workerBankAccountsTable).values({ workerId: Number(req.params.id), iban, source: "manual" }).returning();
     import("../services/counterparties").then(m => m.resolveBankCounterparties()).catch(() => {});
     ok(res, row);
   } catch { fail(res, 400, "Цей IBAN уже привʼязаний (можливо, до іншого працівника)"); }
-});
-router.post("/worker-bank-accounts/:id/primary", RW, async (req, res) => {
-  const id = Number(req.params.id);
-  const [acc] = await db.select().from(workerBankAccountsTable).where(eq(workerBankAccountsTable.id, id));
-  if (!acc) return fail(res, 404, "Не знайдено");
-  await db.transaction(async (tx) => {
-    await tx.update(workerBankAccountsTable).set({ isPrimary: false })
-      .where(and(eq(workerBankAccountsTable.workerId, acc.workerId), eq(workerBankAccountsTable.isPrimary, true)));
-    await tx.update(workerBankAccountsTable).set({ isPrimary: true }).where(eq(workerBankAccountsTable.id, id));
-  });
-  ok(res, { ok: true });
 });
 router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
   await db.delete(workerBankAccountsTable).where(eq(workerBankAccountsTable.id, Number(req.params.id)));
@@ -1498,6 +1482,7 @@ router.post("/factories", RW, async (req, res) => {
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
+  if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (canFinance(req)) {
     if (req.body?.clientNip !== undefined) {
       const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
@@ -1526,6 +1511,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (req.body?.city !== undefined) patch.city = String(req.body.city).trim() || null;
+  if (req.body?.fuelCommute !== undefined) patch.fuelCommute = !!req.body.fuelCommute;
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (canFinance(req)) {
     // привʼязка клієнта для P&L: NIP (матчинг фактур KSeF) + канонічний підпис
@@ -2105,11 +2091,10 @@ router.post("/schedule/approve", RW, async (req, res) => {
 // Add a worker to a shift (manual edit)
 router.post("/schedule/entry", RW, async (req, res) => {
   const { weekStart, workerId, factoryId, day, shift } = req.body ?? {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(weekStart))) return fail(res, 400, "Невірні дані");
-  // Тиждень: approved ?? останній draft; якщо графіку ще немає взагалі — створюємо
-  // draft-рядок, щоб графік можна було зібрати вручну ще до «Згенерувати»
-  // (дзеркально призначенню водіїв наперед у PUT /schedule/driver-assignments).
-  const week = await ensureWeekRow(String(weekStart));
+  // Same row resolution as GET /schedule: prefer the approved row, else the newest
+  const weekCands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
+  const week = weekCands.find(w => w.status === "approved") ?? weekCands[0];
+  if (!week) return fail(res, 404, "Тиждень не знайдено");
   // avoid duplicate / two shifts same day
   const existing = await db.select().from(scheduleEntriesTable)
     .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.dayOfWeek, day)));
@@ -2131,123 +2116,6 @@ router.post("/schedule/entry", RW, async (req, res) => {
 router.delete("/schedule/entry/:id", RW, async (req, res) => {
   await db.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, Number(req.params.id)));
   ok(res, { ok: true });
-});
-
-// «Заповнити тиждень як цей день»: людей джерельного дня розставити в ті самі зміни
-// вибраних днів тижня. mode=preview — класифікація без запису (ok / noAvail /
-// absence / skipped), mode=apply — вставка ok-людей плюс явно підтверджених у force
-// ("day-workerId" пари з попереджених). Разовий час зміни джерельної клітинки
-// копіюється на цільову дату, якщо там свого нема — інакше зміна поза налаштуванням
-// фабрики лишилась би без часу (пуші/борд водія/Excel її не побачили б).
-router.post("/schedule/copy-day", RW, async (req, res) => {
-  const { weekStart, factoryId, sourceDay, targetDays, mode, force } = req.body ?? {};
-  const fid = Number(factoryId);
-  const tgt: string[] = Array.isArray(targetDays) ? targetDays.map(String) : [];
-  const days = DAYS.filter(d => tgt.includes(d) && d !== sourceDay);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(weekStart)) || !Number.isInteger(fid)
-    || !DAYS.includes(sourceDay) || !days.length || !["preview", "apply"].includes(mode)) {
-    return fail(res, 400, "Невірні дані");
-  }
-  // Same row resolution as GET /schedule: prefer the approved row, else the newest
-  const weekCands = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
-  const week = weekCands.find(w => w.status === "approved") ?? weekCands[0];
-  if (!week) return fail(res, 404, "Тиждень не знайдено");
-
-  const src = await db.select({ workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, name: workersTable.fullName })
-    .from(scheduleEntriesTable)
-    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.factoryId, fid), eq(scheduleEntriesTable.dayOfWeek, sourceDay)));
-  if (!src.length) return fail(res, 400, "У джерельному дні нікого немає");
-  // одна людина = одна зміна на день, але про всяк випадок дедуп по працівнику
-  const srcByWorker = new Map<number, { workerId: number; shift: Shift; name: string }>();
-  for (const e of src) if (!srcByWorker.has(e.workerId)) srcByWorker.set(e.workerId, { workerId: e.workerId, shift: e.shift, name: e.name ?? "—" });
-  const people = [...srcByWorker.values()];
-  const workerIds = people.map(p => p.workerId);
-
-  const [factory] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, fid));
-  const usesAvail = factory?.usesAvailability ?? true;
-
-  // запис будь-якої фабрики того дня блокує (та сама семантика, що POST /schedule/entry)
-  const busyRows = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek })
-    .from(scheduleEntriesTable)
-    .where(and(eq(scheduleEntriesTable.weekId, week.id), inArray(scheduleEntriesTable.workerId, workerIds), inArray(scheduleEntriesTable.dayOfWeek, days)));
-  const busy = new Set(busyRows.map(r => `${r.day}-${r.workerId}`));
-
-  const availRows = !usesAvail ? [] : await db
-    .select({ workerId: availabilityTable.workerId, day: availabilityTable.dayOfWeek, shift: availabilityTable.shift })
-    .from(availabilityTable)
-    .where(and(eq(availabilityTable.weekStart, weekStart), inArray(availabilityTable.workerId, workerIds)));
-  const availExact = new Set(availRows.map(r => `${r.day}-${r.shift}-${r.workerId}`));
-  const availDay = new Set(availRows.map(r => `${r.day}-${r.workerId}`));
-
-  const cancRows = await db.select({ day: shiftCancellationsTable.dayOfWeek, shift: shiftCancellationsTable.shift })
-    .from(shiftCancellationsTable)
-    .where(and(eq(shiftCancellationsTable.weekId, week.id), eq(shiftCancellationsTable.factoryId, fid)));
-  const cancelledCell = new Set(cancRows.map(r => `${r.day}-${r.shift}`));
-
-  const absRows = await db.select().from(absenceRequestsTable)
-    .where(and(eq(absenceRequestsTable.weekStart, weekStart), inArray(absenceRequestsTable.workerId, workerIds), ne(absenceRequestsTable.status, "rejected")));
-  const absenceOf = (workerId: number, day: DayOfWeek, shift: Shift) =>
-    absRows.find(r => r.workerId === workerId && r.dayOfWeek === day && (r.shift == null || r.shift === shift));
-
-  const ovRows = await db.select().from(factoryShiftOverridesTable).where(and(
-    eq(factoryShiftOverridesTable.factoryId, fid),
-    gte(factoryShiftOverridesTable.date, String(weekStart)),
-    lte(factoryShiftOverridesTable.date, addDaysStr(String(weekStart), 6)),
-  ));
-  const ovByDateShift = new Map(ovRows.map(r => [`${r.date}-${r.shift}`, { start: r.start, end: r.end }]));
-
-  type PlanPerson = { workerId: number; name: string; shift: Shift; note?: string | null };
-  const plan = days.map(day => {
-    const okL: PlanPerson[] = [], noAvail: PlanPerson[] = [], absence: PlanPerson[] = [];
-    const skipped: (PlanPerson & { reason: "cancelled" | "busy" })[] = [];
-    for (const p of people) {
-      if (cancelledCell.has(`${day}-${p.shift}`)) { skipped.push({ ...p, reason: "cancelled" }); continue; }
-      if (busy.has(`${day}-${p.workerId}`)) { skipped.push({ ...p, reason: "busy" }); continue; }
-      const ab = absenceOf(p.workerId, day, p.shift);
-      if (ab) { absence.push({ ...p, note: ab.reason }); continue; }
-      if (!usesAvail || availExact.has(`${day}-${p.shift}-${p.workerId}`)) { okL.push(p); continue; }
-      noAvail.push({ ...p, note: availDay.has(`${day}-${p.workerId}`) ? "other_shift" : null });
-    }
-    return { day, ok: okL, noAvail, absence, skipped };
-  });
-
-  if (mode === "preview") return ok(res, { sourceDay, usesAvailability: usesAvail, people: people.length, days: plan });
-
-  const forceSet = new Set((Array.isArray(force) ? force : []).map((f: any) => `${f?.day}-${Number(f?.workerId)}`));
-  const srcDate = entryDateStr(String(weekStart), String(sourceDay));
-  let created = 0, overridesCopied = 0;
-  const perDay: Record<string, number> = {};
-  for (const d of plan) {
-    const toAdd = [...d.ok, ...[...d.noAvail, ...d.absence].filter(p => forceSet.has(`${d.day}-${p.workerId}`))];
-    perDay[d.day] = toAdd.length;
-    if (!toAdd.length) continue;
-    const date = entryDateStr(String(weekStart), d.day);
-    // час клітинки: свій разовий, інакше копія разового часу джерельного дня
-    const hoursFor = new Map<Shift, number | null>();
-    for (const shift of new Set(toAdd.map(p => p.shift))) {
-      let ov = ovByDateShift.get(`${date}-${shift}`) ?? null;
-      if (!ov) {
-        const srcOv = ovByDateShift.get(`${srcDate}-${shift}`);
-        if (srcOv) {
-          await db.insert(factoryShiftOverridesTable)
-            .values({ factoryId: fid, date, shift, start: srcOv.start, end: srcOv.end })
-            .onConflictDoNothing();
-          ovByDateShift.set(`${date}-${shift}`, srcOv);
-          ov = srcOv;
-          overridesCopied++;
-        }
-      }
-      hoursFor.set(shift, ov ? shiftDurationHours(ov.start, ov.end) : null);
-    }
-    const inserted = await db.insert(scheduleEntriesTable).values(toAdd.map(p => ({
-      weekId: week.id, workerId: p.workerId, factoryId: fid, dayOfWeek: d.day, shift: p.shift,
-      status: "scheduled" as const, hoursOverride: hoursFor.get(p.shift) ?? null,
-    }))).returning({ id: scheduleEntriesTable.id });
-    created += inserted.length;
-    perDay[d.day] = inserted.length;
-  }
-  ok(res, { created, overridesCopied, days: perDay });
 });
 
 // Разова зміна на конкретний день фабрики: додати зміну поза стандартним набором
@@ -2868,7 +2736,7 @@ const normFactoryHoursExtras = (v: unknown): FactoryHoursExtras | null => {
   if (!v || typeof v !== "object") return null;
   const src = v as Record<string, unknown>;
   const out: FactoryHoursExtras = {};
-  for (const k of ["nocneH", "produktywnosc", "stawkaAgencji", "potracenia", "korekta", "koncowe"] as const) {
+  for (const k of ["nocneH", "produktywnosc", "stawkaAgencji", "potracenia", "innePotracenia", "korekta", "koncowe"] as const) {
     const n = Number(src[k]);
     if (src[k] != null && Number.isFinite(n)) out[k] = n;
   }
@@ -3908,88 +3776,33 @@ router.get("/advances", RW, async (_req, res) => {
     .select({
       id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
-      factoryId: workersTable.factoryId, company: companiesTable.name,
+      factoryId: workersTable.factoryId,
       amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
       status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
-      decidedAt: advanceRequestsTable.decidedAt, decidedByName: adminsTable.name,
-      payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
-      paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
+      decidedAt: advanceRequestsTable.decidedAt, paidAt: advanceRequestsTable.paidAt,
       paidTxnId: advanceRequestsTable.paidTxnId,
       createdAt: advanceRequestsTable.createdAt,
     })
     .from(advanceRequestsTable)
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
-    .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
-    .leftJoin(adminsTable, eq(advanceRequestsTable.decidedBy, adminsTable.id))
     .orderBy(desc(advanceRequestsTable.id));
   // місто фабрики — історія сводних + регіони «Зарплат» (той самий словник, що у from-hours)
   const cityByFactory = await factoryCityMap();
-  // IBAN для показу/копіювання: основний → найновіший ручний → найновіший авто
-  const accts = await db.select().from(workerBankAccountsTable);
-  const bestIban = new Map<number, { score: number; id: number; iban: string }>();
-  for (const a of accts) {
-    const score = a.isPrimary ? 2 : a.source === "manual" ? 1 : 0;
-    const cur = bestIban.get(a.workerId);
-    if (!cur || score > cur.score || (score === cur.score && a.id > cur.id))
-      bestIban.set(a.workerId, { score, id: a.id, iban: a.iban });
-  }
   ok(res, rows.map(({ factoryId, ...r }) => ({
-    ...r,
-    city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
-    iban: bestIban.get(r.workerId)?.iban ?? null,
+    ...r, city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
   })));
 });
 
-// Офісна подача залічки: одразу «передано до виплати» від імені того, хто подав
-// (decided_by = подавач), група виплати — за сьогоднішньою датою (Warsaw).
-router.post("/advances", RW, async (req, res) => {
-  const workerId = Number(req.body?.workerId);
-  const amount = Math.round(Number(req.body?.amount) * 100) / 100;
-  if (!workerId || !isFinite(amount) || amount <= 0) return fail(res, 400, "Вкажіть працівника і суму");
-  const comment = String(req.body?.comment ?? "").trim() || null;
-  const w = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
-  if (!w) return fail(res, 404, "Працівника не знайдено");
-  const [row] = await db.insert(advanceRequestsTable).values({
-    workerId, amount, comment, status: "approved",
-    decidedBy: (req as AuthedRequest).admin?.adminId ?? null, decidedAt: new Date(),
-    ...payoutFor(warsawDateStr()),
-  }).returning();
-  import("../bot/notify").then(m => m.notifyWorkerAdvance(workerId, "approved", amount, null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
-  ok(res, row);
-});
-
-// Перенесення авансу в іншу групу виплат (лише поки не виплачений).
-router.patch("/advances/:id", RW, async (req, res) => {
-  const id = Number(req.params.id);
-  const month = String(req.body?.payoutMonth ?? "");
-  const group = String(req.body?.payoutGroup ?? "");
-  if (!/^\d{4}-\d{2}$/.test(month) || !["15", "30"].includes(group)) return fail(res, 400, "Вкажіть місяць (YYYY-MM) і групу (15 або 30)");
-  const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
-  if (!r) return fail(res, 404, "Не знайдено");
-  if (r.status !== "approved") return fail(res, 400, "Переносити можна лише аванс у статусі «передано до виплати»");
-  await db.update(advanceRequestsTable).set({ payoutMonth: month, payoutGroup: group as "15" | "30" }).where(eq(advanceRequestsTable.id, id));
-  ok(res, { ok: true });
-});
-
 // Approve / reject / mark-paid. Each notifies the worker of the new status.
-// approve = «передано до виплати» + група за датою рішення; paid приймає method
-// (transfer | cash) — ручна помітка виплати вимагає вибору способу.
 async function decideAdvance(req: any, res: any, target: "approved" | "rejected" | "paid") {
   const id = Number(req.params.id);
   const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
-  if (target === "paid" && r.status !== "approved") return fail(res, 400, "Виплатити можна лише переданий до виплати аванс");
+  if (target === "paid" && r.status !== "approved") return fail(res, 400, "Виплатити можна лише затверджений аванс");
   const patch: any = { status: target };
-  if (target === "paid") {
-    patch.paidAt = new Date();
-    const method = String(req.body?.method ?? "");
-    patch.paidMethod = method === "cash" ? "cash" : method === "transfer" ? "transfer" : null;
-  } else {
-    patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date();
-    if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null;
-    if (target === "approved") Object.assign(patch, payoutFor(warsawDateStr()));
-  }
+  if (target === "paid") patch.paidAt = new Date();
+  else { patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date(); if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null; }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
   import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount, patch.adminNote ?? null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
   ok(res, { ok: true });

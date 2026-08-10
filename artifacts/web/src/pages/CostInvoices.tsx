@@ -19,9 +19,10 @@ interface Row {
   gross: number; dueDate: string | null;
   paid: boolean; paidDate: string | null; paidSource: string | null;
   note: string | null; hasFile: boolean; dupOfKsefId: number | null;
+  hostelId: number | null; vehicleId: number | null; city: string | null;
 }
 interface Resp {
-  month: string; rows: Row[];
+  month: string; rows: Row[]; cities: string[];
   totals: { count: number; gross: number; paidGross: number; unpaidGross: number; unpaidCount: number };
   companies: { id: number; name: string }[];
 }
@@ -233,6 +234,7 @@ export default function CostInvoices() {
           prefill={editing ? null : prefill}
           initialFile={editing ? null : scanFile}
           companies={d?.companies ?? []}
+          cities={d?.cities ?? []}
           onClose={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); }}
           onSaved={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); invalidate(); }}
         />
@@ -293,9 +295,9 @@ function Tile({ icon, label, value, sub, tone }: { icon: React.ReactNode; label:
   );
 }
 
-function InvoiceModal({ row, prefill, initialFile, companies, onClose, onSaved }: {
+function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, onSaved }: {
   row: Row | null; prefill?: Partial<Row> | null; initialFile?: File | null;
-  companies: { id: number; name: string }[]; onClose: () => void; onSaved: () => void;
+  companies: { id: number; name: string }[]; cities: string[]; onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
   const src = row ?? prefill;
@@ -310,10 +312,19 @@ function InvoiceModal({ row, prefill, initialFile, companies, onClose, onSaved }
     note: row?.note ?? "",
     paid: row?.paid ?? false,
     paidDate: row?.paidDate ?? "",
+    hostelId: row?.hostelId ? String(row.hostelId) : "",
+    vehicleId: row?.vehicleId ? String(row.vehicleId) : "",
+    city: row?.city ?? "",
   });
   const [file, setFile] = useState<File | null>(initialFile ?? null);
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: any) => setF(p => ({ ...p, [k]: v }));
+  const hostels = useQuery<{ id: number; name: string; city: string; active: boolean }[]>({
+    queryKey: ["hostel-options"], queryFn: () => get("/hostels/options"), staleTime: 60_000,
+  });
+  const vehicleOpts = useQuery<{ id: number; plate: string; brandModel: string | null }[]>({
+    queryKey: ["vehicles"], queryFn: () => get("/vehicles"), staleTime: 60_000,
+  });
 
   // превʼю: свіжовибраний файл або збережений скан — завжди через blob-URL,
   // щоб браузер рендерив інлайн (PDF у iframe), а не пропонував скачати
@@ -347,6 +358,9 @@ function InvoiceModal({ row, prefill, initialFile, companies, onClose, onSaved }
         seller: f.seller.trim() || null, sellerNip: f.sellerNip.trim() || null,
         amount: f.amount, dueDate: f.dueDate || null, note: f.note.trim() || null,
         paid: f.paid, paidDate: f.paid ? (f.paidDate || undefined) : undefined,
+        hostelId: f.hostelId ? Number(f.hostelId) : null,
+        vehicleId: f.vehicleId ? Number(f.vehicleId) : null,
+        city: f.city.trim() || null,
       };
       const saved = row ? await patch(`/cost-invoices/${row.id}`, body) : await post("/cost-invoices", body);
       if (file) {
@@ -384,6 +398,25 @@ function InvoiceModal({ row, prefill, initialFile, companies, onClose, onSaved }
           <Input type="date" value={f.dueDate} onChange={e => set("dueDate", e.target.value)} /></label>
         <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Нотатка")}</span>
           <Input value={f.note} onChange={e => set("note", e.target.value)} /></label>
+        {(hostels.data?.length ?? 0) > 0 && (
+          <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Хостел (оренда/медіа)")}</span>
+            <Select value={f.hostelId} onChange={e => set("hostelId", e.target.value)}>
+              <option value="">—</option>
+              {hostels.data!.map(h => <option key={h.id} value={h.id}>{h.city} · {h.name}</option>)}
+            </Select></label>
+        )}
+        {(vehicleOpts.data?.length ?? 0) > 0 && (
+          <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Авто (лізинг/сервіс)")}</span>
+            <Select value={f.vehicleId} onChange={e => set("vehicleId", e.target.value)}>
+              <option value="">—</option>
+              {vehicleOpts.data!.map(v => <option key={v.id} value={v.id}>{v.brandModel ?? ""} {v.plate}</option>)}
+            </Select></label>
+        )}
+        {!f.hostelId && (
+          <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Місто (cost-center для P&L)")}</span>
+            <Input list="ci-cities" value={f.city} onChange={e => set("city", e.target.value)} placeholder="—" />
+            <datalist id="ci-cities">{cities.map(c => <option key={c} value={c} />)}</datalist></label>
+        )}
         <label className="col-span-2 flex items-center gap-2 pt-1 text-sm text-slate-600">
           <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={f.paid} onChange={e => set("paid", e.target.checked)} />
           {t("Оплачена")}

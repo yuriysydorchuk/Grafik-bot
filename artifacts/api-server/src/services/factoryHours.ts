@@ -25,6 +25,8 @@ export interface EurocashRowExtras {
   produktywnosc?: number;
   stawkaAgencji?: number;
   potracenia?: number;
+  /** Białystok (ROZLICZENIE): «Inne potrącenia» — окремо від potrąceń за błędy */
+  innePotracenia?: number;
   korekta?: number;
   koncowe?: number;
   nrOsobowy?: string;
@@ -306,6 +308,59 @@ function parseEurocash(rows: string[][]): ParsedHoursFile | null {
   return out.length ? { rows: out, monthDetected: null, format: "eurocash" } : null;
 }
 
+// ── Формат F: ROZLICZENIE Eurocash Białystok ─────────────────────────────────
+// «ROZLICZENIE EURO SUPPORT ZA 07.2026.xlsx»: рядок на працівника, рахуємо
+// ЛИШЕ з колонок Suma czasu pracy / Godziny nocne / Stawka netto (= ставка
+// фабрики агенції, матчиться із зеленим рядком блоку STAWKA EUROCASH) /
+// Potrącenia za błędy / Inne potrącenia. Login → ключ фабрики (матчинг),
+// місяць — з колонки Miesiąc («07.2026»). Решту колонок (Wydajność, Próg,
+// Dodatek…) свідомо не читаємо — рішення власника 10.08.2026.
+function parseEurocashRozliczenie(rows: string[][]): ParsedHoursFile | null {
+  let hdrIdx = -1;
+  const cols = { name: -1, hours: -1, nocne: -1, stawka: -1, potr: -1, inne: -1, login: -1, miesiac: -1 };
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const h = rows[i]!.map(flatHdr);
+    const idx = (re: RegExp) => h.findIndex(c => re.test(c));
+    const name = idx(/^NAZWISKO I IMIE$/), hours = idx(/^SUMA CZASU PRACY$/), stawka = idx(/^STAWKA NETTO$/);
+    if (name < 0 || hours < 0 || stawka < 0) continue;
+    hdrIdx = i;
+    Object.assign(cols, {
+      name, hours, stawka,
+      nocne: idx(/^GODZINY NOCNE$/), potr: idx(/^POTRACENIA ZA BLEDY/),
+      inne: idx(/^INNE POTRACENIA/), login: idx(/^LOGIN$/), miesiac: idx(/^MIESIAC$/),
+    });
+    break;
+  }
+  if (hdrIdx < 0) return null;
+  let monthDetected: string | null = null;
+  const out: ParsedHoursRow[] = [];
+  for (let i = hdrIdx + 1; i < rows.length; i++) {
+    const row = rows[i]!;
+    const name = dedupeDoubledName(row[cols.name] ?? "");
+    if (!name || /razem|suma/i.test(name)) continue; // «Suma końcowa» — підсумок
+    const hours = numLoose(row[cols.hours] ?? "");
+    if (hours == null) continue;
+    if (!monthDetected && cols.miesiac >= 0) {
+      const m = /^(\d{2})\.(\d{4})$/.exec((row[cols.miesiac] ?? "").trim());
+      if (m) monthDetected = `${m[2]}-${m[1]}`;
+    }
+    const at = (c: number) => (c >= 0 ? numLoose((row[c] ?? "").replace(/zł/i, "")) : null);
+    const extras: EurocashRowExtras = {};
+    const nocne = at(cols.nocne);
+    if (nocne != null && nocne > 0) extras.nocneH = r2(nocne);
+    const stawka = at(cols.stawka);
+    if (stawka != null) extras.stawkaAgencji = stawka;
+    const potr = at(cols.potr);
+    if (potr != null && potr !== 0) extras.potracenia = r2(potr);
+    const inne = at(cols.inne);
+    if (inne != null && inne !== 0) extras.innePotracenia = r2(inne);
+    const login = (row[cols.login] ?? "").trim();
+    if (cols.login >= 0 && login) extras.nrOsobowy = login;
+    out.push({ name, hours: r2(hours), ...(login ? { key: login } : {}), extras });
+  }
+  return out.length ? { rows: out, monthDetected, format: "eurocash" } : null;
+}
+
 /** Розбір Excel-файла фабрики (усі формати, авто-детекція). Аркуші формату
  *  ewidencja (KOBIETY/MĘŻCZYZNI) зливаються в один список. */
 export function parseFactoryHoursWorkbook(buf: Buffer): ParsedHoursFile {
@@ -320,6 +375,8 @@ export function parseFactoryHoursWorkbook(buf: Buffer): ParsedHoursFile {
     if (ewFound) continue; // режим евіденції — сторонні аркуші не пробуємо
     const eurocash = parseEurocash(rows);
     if (eurocash) return eurocash;
+    const rozliczenie = parseEurocashRozliczenie(rows);
+    if (rozliczenie) return rozliczenie;
     const lista = parseLista(rows);
     if (lista) return lista;
     const matrix = parseMatrix(rows);

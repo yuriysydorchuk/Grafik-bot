@@ -120,8 +120,65 @@ export const driversTable = pgTable("drivers", {
   isHeadDriver: boolean("is_head_driver").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   language: text("language"), // uk | en | ru (null = not chosen, defaults to uk)
+  tripRate: real("trip_rate"), // зл/виїзд — базова ставка оплати водієві (NULL = не платиться); оверрайди — driver_trip_rates
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Оверрайд ставки «за виїзд» для пари водій × фабрика (рішення власника: базова
+// ставка водія + фабричні винятки). Розрахунок виплат бере оверрайд ?? tripRate.
+export const driverTripRatesTable = pgTable("driver_trip_rates", {
+  id: serial("id").primaryKey(),
+  driverId: integer("driver_id").notNull().references(() => driversTable.id),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  rate: real("rate").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("driver_trip_rates_uniq").on(t.driverId, t.factoryId)]);
+
+// Архів логістичних таблиць головного водія («Контроль поездок по фабрикам»,
+// 2022–2026): один рядок = один виїзд (дата × зміна × фабрика). Операційні
+// driver_workdays не зачіпає; звʼязки до наших водіїв/авто/фабрик — де заматчилось.
+export const driverTripLogTable = pgTable("driver_trip_log", {
+  id: serial("id").primaryKey(),
+  tripDate: date("trip_date").notNull(),
+  factoryLabel: text("factory_label").notNull(),
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  shiftTime: text("shift_time"),
+  driverName: text("driver_name"),
+  driverId: integer("driver_id").references(() => driversTable.id),
+  vehiclePlate: text("vehicle_plate"),
+  vehicleId: integer("vehicle_id").references(() => vehiclesTable.id),
+  odoFrom: integer("odo_from"),
+  odoTo: integer("odo_to"),
+  km: integer("km"),
+  people: integer("people"),
+  payAmount: real("pay_amount"), // оплата водієві за цей виїзд (з колонок імен у таблиці)
+  note: text("note"),
+  sourceRef: text("source_ref").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("driver_trip_log_date_idx").on(t.tripDate),
+  index("driver_trip_log_factory_idx").on(t.factoryLabel),
+  index("driver_trip_log_driver_idx").on(t.driverId),
+]);
+
+// Зняття з ЗП працівників за довіз (дзеркало hostel_deductions): місяць ×
+// працівник × фабрика. Джерело — «Контроль поездок работника» + ручний CRUD.
+export const transportDeductionsTable = pgTable("transport_deductions", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  workerId: integer("worker_id").references(() => workersTable.id),
+  workerName: text("worker_name"), // сирий підпис, коли не заматчилось
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  factoryLabel: text("factory_label"),
+  tripsCount: integer("trips_count"),
+  amount: real("amount").notNull().default(0),
+  note: text("note"),
+  sourceRef: text("source_ref"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("transport_deductions_month_idx").on(t.periodMonth),
+  index("transport_deductions_worker_idx").on(t.workerId),
+]);
 
 // Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
 // starting a workday; the plate shows up in the mileage report.
@@ -131,8 +188,60 @@ export const vehiclesTable = pgTable("vehicles", {
   brandModel: text("brand_model"),       // e.g. "Opel Vivaro"
   seats: integer("seats"),               // passenger capacity (null = unknown)
   isActive: boolean("is_active").notNull().default(true),
+  // Fleet 2.0 (дані з таблиці головного водія «АВТОПАРК 2»):
+  city: text("city"),                    // LUBLIN | POZNAN | LODZ | BIALYSTOK | …
+  companyId: integer("company_id").references(() => companiesTable.id), // наша фірма-власник/лізингоотримувач
+  ownerName: text("owner_name"),         // у кого орендуємо (приватна особа); NULL = власне/лізинг фірми
+  fuel: text("fuel"),                    // B | D | B/G
+  year: integer("year"),
+  vin: text("vin"),
+  ownership: text("ownership"),          // umowa | leasing | faktura | private
+  insuranceUntil: date("insurance_until"),   // UBEZP (OC/AC) — крон-алерт при наближенні
+  inspectionUntil: date("inspection_until"), // TO (przegląd techniczny) — крон-алерт при наближенні
+  rentMonthly: real("rent_monthly"),         // оренда/міс — фінансове, owner-only
+  purchasePrice: real("purchase_price"),     // фінансове, owner-only
+  marketPrice: real("market_price"),         // фінансове, owner-only
+  leaseTotal: real("lease_total"),           // повна вартість лізингового договору, зл (owner-only)
+  leaseInitialPaid: real("lease_initial_paid"), // wstępna брутто, якщо її фактури нема в реєстрі (додається до сплаченого)
+  leaseLessor: text("lease_lessor"),         // лізингодавець — нормалізований матч контрагента фактур
+  leaseContractNo: text("lease_contract_no"), // № договору (розрізняє авто одного лізингодавця)
+  purchasedAt: date("purchased_at"),
+  soldAt: date("sold_at"),
+  status: text("status").notNull().default("active"), // active | sold | scrapped
+  kind: text("kind"),                    // car | bus (секції таблиці водія)
+  personal: boolean("personal").notNull().default(false), // особисте авто власників — поза робочим флоу і підсумком парку
+  equipment: jsonb("equipment").$type<Record<string, string>>().notNull().default({}), // інвентар: домкрат/насос/вогнегасник/аптечка/жилетка…
+  notes: text("notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Витрати на авто (ремонти/шини) по місяцях — міграція аркушів «Ремонт 2023–2026»
+// + подальше ручне ведення. source_ref = провенанс міграції (файл|аркуш|рядок).
+export const vehicleExpensesTable = pgTable("vehicle_expenses", {
+  id: serial("id").primaryKey(),
+  vehicleId: integer("vehicle_id").references(() => vehiclesTable.id),
+  vehicleLabel: text("vehicle_label"), // сирий підпис авто, коли не заматчилось (напр. «audi i bmw И ПАНДА»)
+  month: text("month").notNull(),      // YYYY-MM
+  amount: real("amount").notNull(),
+  kind: text("kind").notNull().default("repair"), // repair | tire | other
+  service: text("service"),
+  invoiceNo: text("invoice_no"),
+  note: text("note"),                  // напр. «замена двигателя»
+  sourceRef: text("source_ref"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("vehicle_expenses_month_idx").on(t.month), index("vehicle_expenses_vehicle_idx").on(t.vehicleId)]);
+
+// Реєстр фактур автосервісів (FV… з аркушів «Ремонт NNNN»). Довідковий шар для звірки
+// з банком/фактурами витрат; аналітика витрат іде по vehicle_expenses (не сумувати обидва!).
+export const vehicleServiceInvoicesTable = pgTable("vehicle_service_invoices", {
+  id: serial("id").primaryKey(),
+  invoiceNo: text("invoice_no").notNull(),
+  service: text("service"),
+  month: text("month").notNull(),      // YYYY-MM
+  amount: real("amount").notNull(),
+  sourceRef: text("source_ref"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("vehicle_service_invoices_uniq").on(t.invoiceNo, t.month, t.amount)]);
 
 export const factoriesTable = pgTable("factories", {
   id: serial("id").primaryKey(),
@@ -164,6 +273,7 @@ export const factoriesTable = pgTable("factories", {
   clientEmail: text("client_email"), // where to send approved schedule
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
+  fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
   multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (ANDROS: Klinex + ES) — Облік годин ділить вкладку по фірмі працівника
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
@@ -544,7 +654,7 @@ export const factoryHoursTable = pgTable("factory_hours", {
   // (агентський рівень, довідково) + NR OSOBOWY фабрики
   extras: jsonb("extras").$type<{
     nocneH?: number; produktywnosc?: number; stawkaAgencji?: number;
-    potracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string;
+    potracenia?: number; innePotracenia?: number; korekta?: number; koncowe?: number; nrOsobowy?: string;
   } | null>(),
   confirmed: boolean("confirmed").notNull().default(false), // розбіжність рапорт↔фабрика перевірена вручну («все ок») — рядок зелений; скидається при зміні годин
   // запит підтвердження годин працівнику в бот і його відповідь
@@ -847,6 +957,9 @@ export const invoicesTable = pgTable("invoices", {
   // модуль «Фактури коштові» (/cost-invoices): ручне внесення і скан з бота
   source: text("source").notNull().default("sheet"), // sheet (синк з таблиці) | manual (сайт) | scan (бот-сканер)
   sellerNip: text("seller_nip"),               // NIP постачальника (для матчингу зі словником/KSeF)
+  hostelId: integer("hostel_id").references(() => hostelsTable.id), // рахунок за оренду/медіа конкретного хостелу
+  vehicleId: integer("vehicle_id").references(() => vehiclesTable.id), // лізингова/сервісна фактура конкретного авто (картка авто рахує виплачено/залишок)
+  city: text("city"),                          // cost-center місто для P&L по містах (хостельні беруть місто хостелу)
   note: text("note"),
   filePath: text("file_path"),                 // скан/фото фактури на диску (uploads/invoices/)
   createdBy: integer("created_by").references(() => adminsTable.id), // хто вніс (site/бот)
@@ -1062,6 +1175,110 @@ export const svodniTabChecksTable = pgTable("svodni_tab_checks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Мапінг обслуговуючого персоналу (рядки OFFICE-вкладок зведених ЗП) на міста
+// для P&L по містах. person_key = нормалізоване імʼя (cleanName). allocations =
+// [{city, pct}] із сумою 100; людина без рядка тут → місто своєї сводної на 100%.
+export const staffAllocationsTable = pgTable("staff_allocations", {
+  id: serial("id").primaryKey(),
+  personKey: text("person_key").notNull().unique(),
+  personName: text("person_name"),
+  allocations: jsonb("allocations").$type<{ city: string; pct: number }[]>().notNull().default([]),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Довідник хостелів: місто → хостел з умовами оренди. Фінансовий шар
+// (monthly_cost, kaucja) віддається лише з viewFinance; список/мешканці — svodni.
+export const hostelsTable = pgTable("hostels", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  city: text("city").notNull(),
+  address: text("address"),
+  rentModel: text("rent_model").notNull().default("whole"), // whole (цілий будинок) | per_place (платимо за місце)
+  monthlyCost: real("monthly_cost"),           // zł/міс, що платимо МИ (per_place — за одне місце)
+  places: integer("places"),                   // місткість (місць)
+  kaucja: real("kaucja"),                      // внесена кауція, zł
+  kaucjaNote: text("kaucja_note"),
+  workerRate: real("worker_rate"),             // типове зняття з мешканця, zł/міс (fallback для stays)
+  landlord: text("landlord"),                  // орендодавець
+  companyId: integer("company_id").references(() => companiesTable.id), // фірма-платник
+  monthlyTarget: real("monthly_target"),       // ціль доходу zł/міс («Цель» з таблиць водія)
+  active: boolean("active").notNull().default(true),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Кімнати хостела: місткість, тип («сімейний»), ціна кімнати. Основа шахматки
+// занятості; проживання привʼязуються через hostel_stays.room_id.
+export const hostelRoomsTable = pgTable("hostel_rooms", {
+  id: serial("id").primaryKey(),
+  hostelId: integer("hostel_id").notNull().references(() => hostelsTable.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),      // «Номер 1», «Чердак», «2 этаж Номер 3»
+  capacity: integer("capacity"),
+  roomType: text("room_type"),         // family | regular
+  basePrice: real("base_price"),       // ціна кімнати zł/міс
+  sort: integer("sort").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("hostel_rooms_hostel_idx").on(t.hostelId)]);
+
+
+// Проживання: хто в якому хостелі живе і скільки платить (NULL = worker_rate
+// хостелу). to_date NULL = живе зараз. Джерело генерації hostel_deductions.
+export const hostelStaysTable = pgTable("hostel_stays", {
+  id: serial("id").primaryKey(),
+  hostelId: integer("hostel_id").notNull().references(() => hostelsTable.id, { onDelete: "cascade" }),
+  // NULL = історичний мешканець без профілю в базі (сире імʼя в residentName)
+  workerId: integer("worker_id").references(() => workersTable.id, { onDelete: "cascade" }),
+  residentName: text("resident_name"),
+  roomId: integer("room_id").references(() => hostelRoomsTable.id),
+  fromDate: date("from_date").notNull(),
+  toDate: date("to_date"),
+  monthlyRate: real("monthly_rate"),           // індивідуальна плата мешканця, zł/міс
+  payer: text("payer"),                        // self (готівка) | payroll (зняття з ЗП)
+  deposit: real("deposit"),                    // кауція при заселенні (200 зл)
+  keyDeposit: real("key_deposit"),             // застава за ключ (50 зл)
+  sourceRef: text("source_ref"),               // провенанс міграції
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("hostel_stays_hostel_idx").on(t.hostelId),
+  index("hostel_stays_worker_idx").on(t.workerId),
+]);
+
+// Облік спецодягу: видача працівникам (наш/свій/на продаж), ціна зняття з ЗП.
+// Джерело — таблиці водія «Учёт рабочей одежды» / «Forma» (мігровано 07.2026).
+export const clothingItemsTable = pgTable("clothing_items", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").references(() => workersTable.id),
+  workerName: text("worker_name"), // сире імʼя, коли не заматчилось (історія)
+  itemType: text("item_type").notNull(), // boots | coverall | jacket | hat | tshirt | set | other
+  ownership: text("ownership"),          // ours (видано наш) | own (своє) | sold (продано — зняти з ЗП)
+  price: real("price"),                  // ціна зняття з ЗП
+  deducted: boolean("deducted").notNull().default(false), // «вже знято»
+  writtenOff: boolean("written_off").notNull().default(false), // списано (не входить у «до зняття»)
+  periodMonth: text("period_month"),     // YYYY-MM, де відомий
+  note: text("note"),
+  sourceRef: text("source_ref"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("clothing_items_worker_idx").on(t.workerId)]);
+
+// Платежі мешканців по місяцях: готівка/картка «платит сам» + payroll-історія
+// з таблиць водія. Готівкові рухи дублюються записами каси (box hostel).
+export const hostelPaymentsTable = pgTable("hostel_payments", {
+  id: serial("id").primaryKey(),
+  hostelId: integer("hostel_id").notNull().references(() => hostelsTable.id, { onDelete: "cascade" }),
+  stayId: integer("stay_id").references(() => hostelStaysTable.id, { onDelete: "set null" }),
+  workerId: integer("worker_id").references(() => workersTable.id),
+  residentName: text("resident_name"), // сире імʼя, коли не заматчилось
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  amount: real("amount").notNull(),
+  method: text("method").notNull().default("cash"), // cash | card | payroll
+  note: text("note"),
+  sourceRef: text("source_ref"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("hostel_payments_month_idx").on(t.periodMonth), index("hostel_payments_hostel_idx").on(t.hostelId)]);
+
 // Хостели: зняття з ЗП за місяць. Джерело колонки Hostel у сводній —
 // «Години підтверджені → до сводної» тягне суму по (місяць, працівник).
 export const hostelDeductionsTable = pgTable("hostel_deductions", {
@@ -1175,6 +1392,75 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   uniqueIndex("ksef_invoices_number_kind_uniq").on(t.ksefNumber, t.kind),
 ]);
 
+// P&L, блок «Фактичні платежі»: ручні суми VAT/ZUS по фірмах за місяць
+// (платяться в M+1 за M; вносить власник руками).
+export const pnlManualItemsTable = pgTable("pnl_manual_items", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM — місяць, ЗА який податок
+  kind: text("kind").notNull(),                // vat | zus
+  firm: text("firm").notNull(),
+  amount: real("amount").notNull().default(0),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, t => [
+  uniqueIndex("pnl_manual_items_uniq").on(t.periodMonth, t.kind, t.firm),
+]);
+
+// ── Пальне: фактури Orlen (флотові картки) ─────────────────────────────────
+// Zbiorcze «Rozliczenie» від ORLEN S.A.: шапка фактури + детальний wykaz
+// транзакцій по картках — паливо в літрах і непаливні позиції (автострада,
+// AdBlue, товари). Аналітика місто/водій/авто йде через довідник fuel_cards.
+// Повторний імпорт фактури з тим самим номером замінює її транзакції.
+export const fuelInvoicesTable = pgTable("fuel_invoices", {
+  id: serial("id").primaryKey(),
+  number: text("number").notNull().unique(),      // «Rozliczenie Nr 0491322177»
+  invoiceDate: date("invoice_date").notNull(),    // Płock, dnia
+  saleDate: date("sale_date"),                    // Data sprzedaży (кінець періоду)
+  ksefNumber: text("ksef_number"),
+  net: real("net").notNull().default(0),          // рядок «Ogółem»
+  vat: real("vat").notNull().default(0),
+  gross: real("gross").notNull().default(0),
+  fileName: text("file_name"),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+export const fuelTransactionsTable = pgTable("fuel_transactions", {
+  id: serial("id").primaryKey(),
+  invoiceId: integer("invoice_id").notNull().references(() => fuelInvoicesTable.id, { onDelete: "cascade" }),
+  lp: integer("lp").notNull(),                    // порядковий № рядка у wykaz-і фактури
+  cardNumber: text("card_number").notNull(),
+  regNumber: text("reg_number"),                  // номер авто з фактури (буває порожній)
+  product: text("product").notNull(),             // EFECTA DIESEL, VERVA ON, PRZEJAZD AUTOSTRADĄ A2…
+  isFuel: boolean("is_fuel").notNull(),           // секція wykaz-у: паливо (літри) чи товар/послуга (шт)
+  stationCity: text("station_city"),              // місто станції з фактури (де фізично заправились)
+  stationNo: text("station_no"),
+  txDate: date("tx_date").notNull(),              // дата транзакції — місяць аналітики рахується з неї
+  txTime: text("tx_time"),                        // HH:MM:SS
+  qty: real("qty").notNull(),                     // літри (паливо) або штуки
+  unitPrice: real("unit_price"),
+  priceAfterRebate: real("price_after_rebate"),   // ціна/л після рабату (лише паливо)
+  vatRate: real("vat_rate"),                      // null = ND
+  net: real("net").notNull(),
+  vatAmount: real("vat_amount").notNull(),
+  gross: real("gross").notNull(),
+}, t => [
+  uniqueIndex("fuel_tx_invoice_lp_uniq").on(t.invoiceId, t.lp),
+]);
+
+// Довідник флотових карток: мапінг картка → місто команди / водій / авто.
+// Місто тут — основний розріз «кошти на місто» (не місто станції).
+export const fuelCardsTable = pgTable("fuel_cards", {
+  id: serial("id").primaryKey(),
+  cardNumber: text("card_number").notNull().unique(),
+  label: text("label"),                           // хто користується / призначення
+  city: text("city"),
+  driverId: integer("driver_id").references(() => driversTable.id),
+  vehicleId: integer("vehicle_id").references(() => vehiclesTable.id),
+  note: text("note"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Web-panel login sessions — one row per successful web login. The session id is embedded
 // in the HMAC token (sid); authRequired looks it up so a single device can be revoked
 // (revoked_at) without touching the others. Kept for audit even after revocation/expiry.
@@ -1217,6 +1503,14 @@ export type ScheduleEntry = typeof scheduleEntriesTable.$inferSelect;
 export type Admin = typeof adminsTable.$inferSelect;
 export type DriverWorkday = typeof driverWorkdaysTable.$inferSelect;
 export type Vehicle = typeof vehiclesTable.$inferSelect;
+export type VehicleExpense = typeof vehicleExpensesTable.$inferSelect;
+export type VehicleServiceInvoice = typeof vehicleServiceInvoicesTable.$inferSelect;
+export type DriverTripLog = typeof driverTripLogTable.$inferSelect;
+export type DriverTripRate = typeof driverTripRatesTable.$inferSelect;
+export type TransportDeduction = typeof transportDeductionsTable.$inferSelect;
+export type HostelRoom = typeof hostelRoomsTable.$inferSelect;
+export type HostelPayment = typeof hostelPaymentsTable.$inferSelect;
+export type ClothingItem = typeof clothingItemsTable.$inferSelect;
 export type ShiftCancellation = typeof shiftCancellationsTable.$inferSelect;
 export type FactoryShiftOverride = typeof factoryShiftOverridesTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
@@ -1234,6 +1528,9 @@ export type CashReconAck = typeof cashReconAcksTable.$inferSelect;
 export type AdminSession = typeof adminSessionsTable.$inferSelect;
 export type LoginEvent = typeof loginEventsTable.$inferSelect;
 export type Penalty = typeof penaltiesTable.$inferSelect;
+export type FuelInvoice = typeof fuelInvoicesTable.$inferSelect;
+export type FuelTransaction = typeof fuelTransactionsTable.$inferSelect;
+export type FuelCard = typeof fuelCardsTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

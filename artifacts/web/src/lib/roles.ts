@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "fuel", "hostelOps"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -16,6 +16,8 @@ export const CAP_LABEL: Record<Capability, string> = {
   svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",
   svodniSensitive: "Сводні — закритий шар (księgowość, готівка)",
   costInvoices: "Фактури коштові (внесення і оплати — для бухгалтерії)",
+  fuel: "Пальне (фактури Orlen, аналітика по містах/водіях/авто)",
+  hostelOps: "Хостели — операційне ведення (кімнати, проживання, платежі мешканців)",
 };
 
 // Pages a role can be granted access to (nav + route guards).
@@ -24,9 +26,9 @@ export const PAGE_LABEL: Record<string, string> = {
   "/orders": "Замовлення", "/availability": "Доступність", "/reliability": "Надійність",
   "/hours": "Облік годин", "/absences": "Відсутності", "/advances": "Аванси", "/trips": "Поїздки",
   "/mileage": "Звіт по пробігу",
-  "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/cfo": "CFO", "/balance": "Баланс", "/obligations": "Належності", "/invoices": "Фактури (таблиця)", "/cost-invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/svodni": "Сводні", "/hostels": "Хостели", "/penalties": "Штрафи", "/ksef": "KSeF", "/settings": "Налаштування",
+  "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/cfo": "CFO", "/analytics": "Аналітика", "/balance": "Баланс", "/obligations": "Належності", "/invoices": "Фактури (таблиця)", "/cost-invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/svodni": "Сводні", "/hostels": "Хостели", "/penalties": "Штрафи", "/ksef": "KSeF", "/fuel": "Пальне", "/settings": "Налаштування",
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
-  "/drivers": "Водії", "/factories": "Фабрики", "/admins": "Адміни",
+  "/drivers": "Водії", "/fleet": "Автопарк", "/transport": "Транспорт", "/clothing": "Одяг", "/factories": "Фабрики", "/admins": "Адміни",
 };
 export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 

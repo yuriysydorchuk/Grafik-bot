@@ -20,3 +20,6 @@ KSEF/
 
 # Enable Banking (open banking API) RSA key + cert — never commit
 secrets/
+
+# Знімки даних для міграцій (реальні дані — не комітити)
+data-import/
