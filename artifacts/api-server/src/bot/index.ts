@@ -2,7 +2,7 @@ import { Markup, type Context } from "telegraf";
 import { db } from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
-  scheduleWeeksTable, scheduleEntriesTable, driverShiftAssignmentsTable, adminsTable,
+  scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, driverShiftAssignmentsTable, adminsTable,
   absenceRequestsTable, driverTripsTable, driverWorkdaysTable, unplannedWorkersTable, availabilityTable,
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
   vehiclesTable, shiftCancellationsTable, factoryHoursTable,
@@ -22,7 +22,7 @@ import {
 } from "../services/drive";
 import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
-import { resolveWeekRow, ensureWeekRow, type WeekRow } from "../services/weeks";
+import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, type WeekRow } from "../services/weeks";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
@@ -838,21 +838,18 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
 });
 
 async function showMyScheduleWeek(ctx: Context, workerId: number, wantWeekStart: string | null, editMsgId: number | undefined, lang: Lang, factoryId: number | null = null) {
-  const weeks = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.status, "approved"));
-  if (weeks.length === 0) {
-    if (editMsgId) return; return ctx.reply(t(lang, "sched.noApproved"), await workerMenuFor({ factoryId }, lang));
-  }
   const curMon = getCurrentMonday(), nextMon = getNextMonday();
-  const cur = weeks.find(w => String(w.weekStart) === curMon);
-  const next = weeks.find(w => String(w.weekStart) === nextMon);
-  const tabs: { weekStart: string; labelKey: string; active: boolean }[] = [];
-  if (cur) tabs.push({ weekStart: String(cur.weekStart), labelKey: "sched.tabThis", active: false });
-  if (next) tabs.push({ weekStart: String(next.weekStart), labelKey: "sched.tabNext", active: false });
-  let target = wantWeekStart ? weeks.find(w => String(w.weekStart) === wantWeekStart) : (cur ?? next);
-  if (!target) target = cur ?? next ?? [...weeks].sort((a, b) => String(b.weekStart).localeCompare(String(a.weekStart)))[0];
-  if (!target) return;
-  for (const tb of tabs) tb.active = tb.weekStart === String(target.weekStart);
-  return showWorkerSchedule(ctx, workerId, target.id, String(target.weekStart), tabs, editMsgId, lang);
+  // Both tabs always show: a not-yet-approved week is a "⏳ pending" STATE, not a
+  // missing tab — hiding it made unapproved days read as "day off" in the bot.
+  const targetStart = wantWeekStart ?? curMon;
+  const tabs = [
+    { weekStart: curMon, labelKey: "sched.tabThis", active: targetStart === curMon },
+    { weekStart: nextMon, labelKey: "sched.tabNext", active: targetStart === nextMon },
+  ];
+  // Any-status row (approved ?? newest draft): the pending/day-off split needs the
+  // week's entries; workers still only ever SEE sent entries (sent_at filter inside).
+  const week = await resolveWeekRow(targetStart);
+  return showWorkerSchedule(ctx, workerId, week ?? null, targetStart, tabs, editMsgId, lang, factoryId);
 }
 
 bot.hears(trAll("menu.schedule"), async (ctx) => {
@@ -1729,6 +1726,7 @@ async function saveAvailability(ctx: Context, tid: string) {
   // already committed to. (Cancelling a confirmed shift goes through "Взяти вихідний".)
   const now = new Date();
   let count = 0;
+  const added: { day: DayOfWeek; shift: Shift }[] = [];
   for (const [day, shifts] of Object.entries(responses) as [DayOfWeek, Shift[] | null][]) {
     if (!Array.isArray(shifts)) continue;
     for (const shift of shifts) {
@@ -1744,7 +1742,29 @@ async function saveAvailability(ctx: Context, tid: string) {
         submittedAt: now,
       });
       count++;
+      added.push({ day, shift });
     }
+  }
+
+  // The scheduler must hear about every change AFTER the first submission — and
+  // about any submission once the factory's schedule is already approved/sent
+  // (the generator won't pick these up by itself). First-time fills before the
+  // schedule is in work stay silent: that's the normal flow.
+  if (count > 0) {
+    try {
+      const releaseAt = await factoryWeekReleaseAt(weekStart, worker.factoryId ?? null);
+      if (locked.length > 0 || releaseAt) {
+        const pairsTxt = DAYS
+          .flatMap(d => added.filter(a => a.day === d).map(a => `${DAY_UK[d]} ${SHIFT_SHORT[a.shift]}`))
+          .join(", ");
+        await notifyRoles("scheduler", {
+          type: "availability_change",
+          title: `📝 Диспозиційність: ${worker.fullName}`,
+          body: `${locked.length > 0 ? "Додано зміни" : "Заповнено вперше"} на тиждень ${formatWeekStart(weekStart)}: ${pairsTxt}`
+            + (releaseAt ? "\n⚠️ Графік уже затверджений/розісланий — перевірте призначення." : ""),
+        });
+      }
+    } catch (e) { logger.error({ err: e }, "availability change notify failed"); }
   }
 
   const summary = DAYS.map(d => {
@@ -3972,6 +3992,14 @@ bot.on("text", async (ctx) => {
     }
     if (bhears("✅ Затвердити графік").includes(text)) {
       await db.update(scheduleWeeksTable).set({ status: "approved", approvedAt: new Date() }).where(eq(scheduleWeeksTable.id, data.weekId));
+      // Mirror the web's POST /schedule/approve: record per-factory approval rows —
+      // the bot and worker screens read "approved for THIS factory" from them.
+      const facRows = await db.selectDistinct({ f: scheduleEntriesTable.factoryId }).from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, data.weekId));
+      for (const { f } of facRows) {
+        const exists = await db.select().from(scheduleApprovalsTable).where(and(eq(scheduleApprovalsTable.weekId, data.weekId), eq(scheduleApprovalsTable.factoryId, f)));
+        if (exists.length === 0) await db.insert(scheduleApprovalsTable).values({ weekId: data.weekId, factoryId: f });
+        else await db.update(scheduleApprovalsTable).set({ approvedAt: new Date() }).where(eq(scheduleApprovalsTable.id, exists[0]!.id));
+      }
       clearState(tid);
       await ctx.reply(tb(al, "✅ Графік на {week} затверджено!\n\n⏳ Зберігаю на Google Drive...", { week: formatWeekStart(data.weekStart) }));
       try {

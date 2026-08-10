@@ -240,25 +240,46 @@ export async function renderAttendanceMenu(ctx: Context, entries: { id: number; 
 }
 
 export async function showWorkerSchedule(
-  ctx: Context, workerId: number, weekId: number, weekStart: string,
+  ctx: Context, workerId: number, week: WeekRow | null, weekStart: string,
   tabs: { weekStart: string; labelKey: string; active: boolean }[] = [],
   editMessageId?: number,
   lang: Lang = "uk",
+  factoryId: number | null = null,
 ) {
-  const entries = await db
+  const entries = !week ? [] : await db
     .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, factoryName: factoriesTable.name, factoryAddress: factoriesTable.address })
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.workerId, workerId), ne(scheduleEntriesTable.status, "absent"), isNotNull(scheduleEntriesTable.sentAt)));
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), ne(scheduleEntriesTable.status, "absent"), isNotNull(scheduleEntriesTable.sentAt)));
+  // Day-level state of the worker's factory: a day is "released" once at least one
+  // of the factory's entries for it was sent (the per-day «Затвердити» in the web is
+  // a send, not a status). Only on released days does "no shift" mean a day off —
+  // otherwise the schedule simply isn't approved yet and must say so.
+  const facDayHasEntries = new Set<string>(), facDayReleased = new Set<string>();
+  if (week && factoryId != null) {
+    const fac = await db.select({ day: scheduleEntriesTable.dayOfWeek, sentAt: scheduleEntriesTable.sentAt })
+      .from(scheduleEntriesTable)
+      .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.factoryId, factoryId)));
+    for (const e of fac) { facDayHasEntries.add(e.day); if (e.sentAt) facDayReleased.add(e.day); }
+  }
+  const anyReleased = facDayReleased.size > 0;
+  // Worker without a factory: no per-day signal — fall back to the week's status.
+  const fallbackApproved = factoryId == null && week?.status === "approved";
+
   let msg = t(lang, "sched.title", { week: formatWeekStart(weekStart) }) + "\n\n";
-  if (entries.length === 0) {
-    msg += t(lang, "sched.none");
+  if (entries.length === 0 && !anyReleased && !fallbackApproved) {
+    msg += t(lang, "sched.notApprovedWeek");
   } else {
     const byDay: Record<string, typeof entries[0]> = {};
     entries.forEach(e => { byDay[e.day] = e; });
     for (const day of DAYS) {
       const e = byDay[day];
-      msg += e ? `${dayShort(lang, day)}: ${SHIFT_SHORT[e.shift as Shift]} — 🏭 ${e.factoryName}\n` : `${dayShort(lang, day)}: ${t(lang, "sched.dayOff")}\n`;
+      if (e) msg += `${dayShort(lang, day)}: ${SHIFT_SHORT[e.shift as Shift]} — 🏭 ${e.factoryName}\n`;
+      // Empty day on a released week: no entries at all for the factory that day =
+      // the factory doesn't run then → day off. Unsent entries = still pending.
+      else if (facDayReleased.has(day) || fallbackApproved || (anyReleased && !facDayHasEntries.has(day)))
+        msg += `${dayShort(lang, day)}: ${t(lang, "sched.dayOff")}\n`;
+      else msg += `${dayShort(lang, day)}: ${t(lang, "sched.pending")}\n`;
     }
     const addrs = new Map<string, string>();
     for (const e of entries) if (e.factoryName && e.factoryAddress) addrs.set(e.factoryName, e.factoryAddress);

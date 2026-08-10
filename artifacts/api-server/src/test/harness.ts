@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable, driversTable, workersTable,
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
-  scheduleWeeksTable, scheduleEntriesTable, bankTransactionsTable, pnlEntriesTable,
+  scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, notificationsTable, bankTransactionsTable, pnlEntriesTable,
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
   funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
@@ -20,7 +20,7 @@ import { DEFAULT_EXPENSE_CATS, invalidateExpenseCats } from "../services/bankCla
 export {
   db, adminsTable, adminSessionsTable, loginEventsTable, rolesTable,
   driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
-  availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable,
+  availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, notificationsTable,
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
   workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
@@ -43,7 +43,7 @@ export async function resetDb(): Promise<void> {
   await db.execute(sql.raw(
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
-    "schedule_weeks, schedule_entries, factory_shift_overrides, bank_transactions, pnl_entries, " +
+    "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, factory_hours, hours_notes, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +

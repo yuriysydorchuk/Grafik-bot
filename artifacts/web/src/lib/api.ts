@@ -124,7 +124,13 @@ export interface Dashboard {
   weeks: { weekStart: string; status: string; label: string }[];
   currentWeek: string; nextWeek: string;
 }
-export interface AvailRow { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff?: Record<string, string> }
+export interface AvailRow {
+  name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null;
+  days: Record<string, string[]>; dayOff?: Record<string, string>;
+  filledAt: string | null; // останнє Telegram-подання доступності
+  hasLate?: boolean; // є подання ПІСЛЯ затвердження/розсилки тижня фабрики
+  history?: { at: string; late?: boolean; pairs: { day: string; shift: string }[] }[]; // батчі подань (лише свіжі тижні, ~2 тижні)
+}
 
 export interface SessionRow {
   id: string; adminId: number; adminName: string | null;

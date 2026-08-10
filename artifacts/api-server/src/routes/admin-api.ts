@@ -1648,6 +1648,7 @@ router.get("/availability", RW, async (req, res) => {
     .select({
       workerId: availabilityTable.workerId, name: availabilityTable.fullNameRaw,
       day: availabilityTable.dayOfWeek, shift: availabilityTable.shift, source: availabilityTable.source,
+      submittedAt: availabilityTable.submittedAt,
       factoryId: workersTable.factoryId, factoryName: factoriesTable.name,
     })
     .from(availabilityTable)
@@ -1655,16 +1656,49 @@ router.get("/availability", RW, async (req, res) => {
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .where(eq(availabilityTable.weekStart, weekStart));
   // group by worker (a worker can report several shifts per day → arrays)
-  const byWorker = new Map<string, { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff: Record<string, string> }>();
+  const byWorker = new Map<string, { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff: Record<string, string>; filledAt: string | null; hasLate?: boolean; history?: { at: string; late?: boolean; pairs: { day: string; shift: string }[] }[] }>();
+  // Telegram submissions per worker: rows of one save share submitted_at, so the
+  // per-worker timeline groups back into batches — "filled first at X, added Y at Z".
+  const subsByKey = new Map<string, { at: Date; day: string; shift: string }[]>();
   for (const r of rows) {
     const key = r.workerId != null ? `w${r.workerId}` : `n:${r.name}`;
-    if (!byWorker.has(key)) byWorker.set(key, { name: r.name, workerId: r.workerId, source: r.source, factoryId: r.factoryId, factoryName: r.factoryName, days: {}, dayOff: {} });
+    if (!byWorker.has(key)) byWorker.set(key, { name: r.name, workerId: r.workerId, source: r.source, factoryId: r.factoryId, factoryName: r.factoryName, days: {}, dayOff: {}, filledAt: null });
     const days = byWorker.get(key)!.days;
     (days[r.day] ??= []);
     if (!days[r.day]!.includes(r.shift)) days[r.day]!.push(r.shift);
+    if (r.source === "telegram" && r.submittedAt)
+      (subsByKey.get(key) ?? subsByKey.set(key, []).get(key)!).push({ at: new Date(r.submittedAt), day: r.day, shift: r.shift });
   }
   // keep shifts sorted for stable display
   for (const w of byWorker.values()) for (const d of Object.keys(w.days)) w.days[d]!.sort();
+  // Fill history: needed by the scheduler only for ~2 weeks (current planning
+  // horizon) — older weeks keep just the plain availability, no timeline.
+  const historyOk = weekStart >= addDaysStr(warsawDateStr(), -14);
+  // «Пізні» батчі — надіслані ПІСЛЯ затвердження/розсилки тижня для фабрики
+  // працівника: підсвічуються в історії і бейджем на рядку.
+  const relByFac = new Map<number | null, Date | null>();
+  if (historyOk) {
+    const { factoryWeekReleaseAt } = await import("../services/weeks");
+    const facIds = [...new Set([...byWorker.values()].map(w => w.factoryId))];
+    for (const fid of facIds) relByFac.set(fid, await factoryWeekReleaseAt(weekStart, fid));
+  }
+  const dayIdx = (d: string) => DAYS.indexOf(d as DayOfWeek);
+  for (const [key, subs] of subsByKey) {
+    const w = byWorker.get(key)!;
+    subs.sort((a, b) => a.at.getTime() - b.at.getTime() || dayIdx(a.day) - dayIdx(b.day) || a.shift.localeCompare(b.shift));
+    w.filledAt = subs[subs.length - 1]!.at.toISOString();
+    if (!historyOk) continue;
+    const releaseAt = relByFac.get(w.factoryId) ?? null;
+    const batches: { at: string; late?: boolean; pairs: { day: string; shift: string }[] }[] = [];
+    for (const s of subs) {
+      const iso = s.at.toISOString();
+      const last = batches[batches.length - 1];
+      if (last && last.at === iso) last.pairs.push({ day: s.day, shift: s.shift });
+      else batches.push({ at: iso, ...(releaseAt && s.at > releaseAt ? { late: true } : {}), pairs: [{ day: s.day, shift: s.shift }] });
+    }
+    w.history = batches;
+    if (batches.some(b => b.late)) w.hasLate = true;
+  }
   // Day-off requests for this week → per-day marker on the worker's row
   // (pending = ⚠️ awaiting the scheduler's decision, accepted/substituted = confirmed off).
   const offReqs = await db.select({ workerId: absenceRequestsTable.workerId, day: absenceRequestsTable.dayOfWeek, status: absenceRequestsTable.status })
@@ -1676,7 +1710,7 @@ router.get("/availability", RW, async (req, res) => {
   if (missingIds.length) {
     const ws = await db.select({ id: workersTable.id, name: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name })
       .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(inArray(workersTable.id, missingIds));
-    for (const w of ws) byWorker.set(`w${w.id}`, { name: w.name, workerId: w.id, source: "dayoff", factoryId: w.factoryId, factoryName: w.factoryName, days: {}, dayOff: {} });
+    for (const w of ws) byWorker.set(`w${w.id}`, { name: w.name, workerId: w.id, source: "dayoff", factoryId: w.factoryId, factoryName: w.factoryName, days: {}, dayOff: {}, filledAt: null });
   }
   for (const r of offReqs) {
     const w = byWorker.get(`w${r.workerId}`);

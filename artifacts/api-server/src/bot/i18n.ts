@@ -70,7 +70,8 @@ const D: Dict = {
   "sched.none":       { uk: "На цей тиждень у вас немає змін.", en: "No shifts for you this week.", es: "No tienes turnos esta semana.", ru: "На эту неделю у вас нет смен.", pl: "W tym tygodniu nie masz zmian." },
   "sched.dayOff":     { uk: "вихідний", en: "day off", es: "libre", ru: "выходной", pl: "wolne" },
   "sched.addresses":  { uk: "📍 *Адреси:*", en: "📍 *Addresses:*", es: "📍 *Direcciones:*", ru: "📍 *Адреса:*", pl: "📍 *Adresy:*" },
-  "sched.noApproved": { uk: "📭 Немає затвердженого графіку.", en: "📭 No approved schedule yet.", es: "📭 Aún no hay horario aprobado.", ru: "📭 Нет утверждённого графика.", pl: "📭 Brak zatwierdzonego grafiku." },
+  "sched.pending":    { uk: "⏳ ще не затверджено", en: "⏳ not approved yet", es: "⏳ aún no aprobado", ru: "⏳ ещё не утверждено", pl: "⏳ jeszcze nie zatwierdzone" },
+  "sched.notApprovedWeek": { uk: "⏳ Графік на цей тиждень ще не затверджений.\nВи отримаєте повідомлення, коли він буде готовий.", en: "⏳ The schedule for this week is not approved yet.\nYou will get a message once it is ready.", es: "⏳ El horario de esta semana aún no está aprobado.\nRecibirás un mensaje cuando esté listo.", ru: "⏳ График на эту неделю ещё не утверждён.\nВы получите сообщение, когда он будет готов.", pl: "⏳ Grafik na ten tydzień nie jest jeszcze zatwierdzony.\nOtrzymasz wiadomość, gdy będzie gotowy." },
   "sched.tabThis":    { uk: "Цей тиждень", en: "This week", es: "Esta semana", ru: "Эта неделя", pl: "Ten tydzień" },
   "sched.tabNext":    { uk: "Наступний", en: "Next week", es: "Próxima", ru: "Следующая", pl: "Następny" },
 

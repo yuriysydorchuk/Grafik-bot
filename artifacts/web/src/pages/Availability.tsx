@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { get, post, type AvailRow, DAYS, DAY_UK } from "../lib/api";
 import { upcomingWeeks } from "../lib/dates";
 import { WeekSelect } from "../components/WeekSelect";
-import { Card, Spinner, Empty, Badge, Button } from "../components/ui";
+import { Card, Spinner, Empty, Badge, Button, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -15,6 +15,7 @@ import { useT } from "../lib/i18n";
 interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
 
 const shiftColor = (s?: string) => s === "1" ? "blue" : s === "2" ? "amber" : s === "3" ? "red" : "slate";
+const fmtAt = (iso: string) => new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 // Per-day×shift breakdown where every person is counted once a day: those who reported a
 // single shift land there; those who reported several are placed greedily into the least
@@ -56,6 +57,7 @@ type Group = { key: string; name: string; rows: AvailRow[]; summary: Summary };
 export default function Availability() {
   const t = useT();
   const [weekStart, setWeekStart] = useState(upcomingWeeks()[0]!.value);
+  const [hist, setHist] = useState<AvailRow | null>(null); // модалка історії заповнення
   const me = useMe();
   const canRemind = can(me, "editData");
   const confirm = useConfirm();
@@ -174,6 +176,7 @@ export default function Availability() {
                     <tr>
                       <th className="bg-slate-50 px-4 py-2.5 text-left md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Працівник")}</th>
                       {DAYS.map(d => <th key={d} className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{DAY_UK[d]}</th>)}
+                      <th className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Заповнено")}</th>
                       <th className="bg-slate-50 px-3 py-2.5 md:sticky md:top-[184px] md:z-20 md:shadow-[0_1px_0_rgb(226_232_240)]">{t("Джерело")}</th>
                     </tr>
                   </thead>
@@ -195,6 +198,28 @@ export default function Availability() {
                               : <span className="text-slate-300">—</span>}
                           </td>
                         ))}
+                        <td className="whitespace-nowrap px-3 py-2 text-center text-xs text-slate-500">
+                          {r.history?.length
+                            ? <button onClick={() => setHist(r)} title={t("Переглянути історію заповнення")}
+                                className="underline decoration-dotted underline-offset-2 hover:text-slate-700">
+                                {fmtAt(r.filledAt ?? r.history[r.history.length - 1]!.at)}
+                              </button>
+                            : r.filledAt ? fmtAt(r.filledAt) : <span className="text-slate-300">—</span>}
+                          {(r.history?.length ?? 0) > 1 && (
+                            <button onClick={() => setHist(r)}
+                              className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-200"
+                              title={t("Заповнював(ла) кілька разів — переглянути історію")}>
+                              ✎ ×{r.history!.length}
+                            </button>
+                          )}
+                          {r.hasLate && (
+                            <button onClick={() => setHist(r)}
+                              className="ml-1.5 rounded bg-rose-100 px-1 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-200"
+                              title={t("Додав(ла) диспозиційність уже ПІСЛЯ затвердження графіку — деталі в історії")}>
+                              📝 {t("після затвердж.")}
+                            </button>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-center text-xs text-slate-400">{r.source === "telegram" ? "Telegram" : "Sheets"}</td>
                       </tr>
                     ))}
@@ -204,6 +229,29 @@ export default function Availability() {
             </div>
           ))}
         </div>
+      )}
+      {hist && (
+        <Modal open onClose={() => setHist(null)} title={`${t("Історія заповнення")} — ${hist.name}`}>
+          <div className="space-y-3">
+            {(hist.history ?? []).map((b, i) => (
+              <div key={b.at} className={`rounded-lg border p-3 ${b.late ? "border-rose-200 bg-rose-50/40" : "border-slate-200"}`}>
+                <div className="mb-1.5 flex items-center gap-2 text-xs">
+                  <Badge color={i === 0 ? "green" : "amber"}>{i === 0 ? t("Перше заповнення") : t("Додав(ла) пізніше")}</Badge>
+                  {b.late && <Badge color="red">{t("після затвердження графіку")}</Badge>}
+                  <span className="text-slate-400">{fmtAt(b.at)}</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {b.pairs.map((p, j) => (
+                    <span key={j} className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                      {DAY_UK[p.day as keyof typeof DAY_UK] ?? p.day} <Badge color={shiftColor(p.shift) as any}>{p.shift} {t("зм")}</Badge>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <p className="text-xs text-slate-400">{t("Історія подань доступності зберігається для показу ~2 тижні.")}</p>
+          </div>
+        </Modal>
       )}
     </>
   );

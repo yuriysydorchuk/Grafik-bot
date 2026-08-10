@@ -444,6 +444,16 @@ const EN: Record<string, string> = {
   "осіб": "people",
   "Працівник": "Worker",
   "Джерело": "Source",
+  "Заповнено": "Filled",
+  "Переглянути історію заповнення": "View fill history",
+  "Заповнював(ла) кілька разів — переглянути історію": "Filled several times — view history",
+  "Історія заповнення": "Fill history",
+  "Перше заповнення": "First submission",
+  "Додав(ла) пізніше": "Added later",
+  "Історія подань доступності зберігається для показу ~2 тижні.": "Availability submission history is shown for ~2 weeks.",
+  "після затвердж.": "post-approval",
+  "після затвердження графіку": "after schedule approval",
+  "Додав(ла) диспозиційність уже ПІСЛЯ затвердження графіку — деталі в історії": "Added availability AFTER the schedule was approved — see history for details",
 
   // ── DriverShifts ──
   "Скопійовано з попереднього тижня": "Copied from previous week",

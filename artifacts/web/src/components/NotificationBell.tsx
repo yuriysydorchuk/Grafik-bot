@@ -12,6 +12,7 @@ interface Notif { id: number; type: string; title: string; body: string | null; 
 const routeForType = (type: string): string | null =>
   type === "cancellation" || type === "no_show" ? "/absences"
   : type === "hours_correction" ? "/hours"
+  : type === "availability_change" ? "/availability"
   : null;
 
 const timeAgo = (iso: string, t: TFn) => {

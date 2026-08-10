@@ -22,6 +22,10 @@ async function buildAll() {
     outdir: distDir,
     outExtension: { ".js": ".mjs" },
     logLevel: "info",
+    // node-fetch (внутри telegraf) перевіряє сигнал по constructor.name === "AbortSignal";
+    // без keepNames esbuild перейменовує клас поліфіла при колізії (AbortSignal2) —
+    // полінг бота падає з "Expected signal to be an instanceof AbortSignal".
+    keepNames: true,
     // Some packages may not be bundleable, so we externalize them, we can add more here as needed.
     // Some of the packages below may not be imported or installed, but we're adding them in case they are in the future.
     // Examples of unbundleable packages:
