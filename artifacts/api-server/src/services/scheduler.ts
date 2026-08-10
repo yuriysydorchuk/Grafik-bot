@@ -73,6 +73,8 @@ let bankImportTask: ScheduledTask | null = null;
 let bankApiTask: ScheduledTask | null = null;
 let cfoTask: ScheduledTask | null = null;
 let fleetAlertTask: ScheduledTask | null = null;
+let serverStatsSampleTask: ScheduledTask | null = null;
+let serverStatsReportTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
 // Фінансові алерти йдуть головному адміну (не в ALERT_TELEGRAM_CHAT_ID — то канал
@@ -252,6 +254,29 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Здоровʼя сервера: семпл CPU/RAM кожні 15 хв (ролінг 7 днів у settings; критичний
+  // диск ≥90% алертиться одразу) + тижневий дайджест власнику пн 08:00 Warsaw
+  serverStatsSampleTask = cron.schedule(
+    "*/15 * * * *",
+    async () => {
+      try {
+        const { sampleServerStats } = await import("./serverStats");
+        await sampleServerStats();
+      } catch (e: any) { logger.warn({ err: e?.message }, "Server stats sample failed"); }
+    },
+    { timezone: TZ },
+  );
+  serverStatsReportTask = cron.schedule(
+    "0 8 * * 1",
+    async () => {
+      try {
+        const { sendWeeklyServerReport } = await import("./serverStats");
+        await sendWeeklyServerReport();
+      } catch (e: any) { logger.warn({ err: e?.message }, "Weekly server stats report failed"); }
+    },
+    { timezone: TZ },
+  );
+
   pruneNotifications(); // run once on boot so the table is bounded immediately
 
   logger.info({ cron: `0 ${reminderHour} * * 0`, tz: TZ }, "Weekly reminder scheduler started");
@@ -285,6 +310,8 @@ export function stopScheduler() {
   bankApiTask?.stop();        bankApiTask = null;
   cfoTask?.stop();            cfoTask = null;
   fleetAlertTask?.stop();     fleetAlertTask = null;
+  serverStatsSampleTask?.stop(); serverStatsSampleTask = null;
+  serverStatsReportTask?.stop(); serverStatsReportTask = null;
 }
 
 export function setReminderHour(hour: number) {
