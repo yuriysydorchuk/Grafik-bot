@@ -15,6 +15,7 @@ import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, SEG_SHARE_COLS, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { loadRateRules } from "../services/rateRules";
+import { nameCaps } from "../services/drive";
 import { addDaysStr } from "../lib/dates";
 
 const router: IRouter = Router();
@@ -1842,7 +1843,7 @@ router.post("/svodni/sync", requireCap("svodni"), async (req, res) => {
 // ── Excel-експорт сводної: весь місяць / місто / фабрика, з вибором колонок ──
 // Документ польською (правило проєкту). Сенситивні колонки — лише з svodniSensitive.
 const XLS_COLS: { key: string; header: string; sensitive?: boolean; get: (r: any) => unknown }[] = [
-  { key: "name", header: "Nazwisko i imię", get: r => r.workerName ?? r.rawName },
+  { key: "name", header: "Nazwisko i imię", get: r => nameCaps(r.workerName ?? r.rawName) },
   { key: "section", header: "Stanowisko", get: r => r.section },
   { key: "hoursNotified", header: "Ilość godz w powiadomieniu", get: r => r.hoursNotified },
   { key: "hours", header: "Ilość godzin", get: r => r.hours },

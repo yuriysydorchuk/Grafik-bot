@@ -210,6 +210,9 @@ async function uploadOrUpdateFile(
 
 // ─── Schedule Excel builder (reused by Drive export + direct download) ─────────
 
+// Імена людей у згенерованих файлах (скачування з сайту, Drive-експорти, email) — завжди КАПСОМ.
+export const nameCaps = (s: string | null | undefined) => (s ?? "").toLocaleUpperCase("pl-PL");
+
 type SchedRow = { day: string; shift: string; workerName: string | null; workerCode: string | null; positionId?: number | null; positionName?: string | null; gender?: string | null };
 type SegConfig = { usesPositions: boolean; usesGender: boolean; showCode: boolean; posOrder: { id: number; name: string }[] };
 
@@ -333,7 +336,7 @@ async function buildFactoryWorkbook(
         }
         for (const p of grp.people) {
           const row = ws.getRow(r);
-          const vals: any[] = [n, p.workerName ?? ""];
+          const vals: any[] = [n, nameCaps(p.workerName)];
           if (seg.usesGender) vals.push(genderTagPL(p.gender));
           if (seg.showCode) vals.push(p.workerCode ?? "");
           vals.push("");            // blank notes column
@@ -629,7 +632,7 @@ export async function buildReportHoursExcel(
   const cellValue = (row: typeof rows[number], key: HoursXlsxColKey): string | number => {
     switch (key) {
       case "code": return row.code;
-      case "name": return row.name;
+      case "name": return nameCaps(row.name);
       case "factory": return row.factory;
       case "shifts": return row.shifts;
       case "hours": return row.hours;
@@ -757,7 +760,7 @@ export async function updateHoursTracking(month: string): Promise<string | null>
       for (const e of fEntries) {
         if (!e.workerId) continue;
         if (!workerStats.has(e.workerId)) {
-          workerStats.set(e.workerId, { name: e.workerName ?? "", code: e.workerCode ?? "", present: 0, absent: 0, cancelled: 0, details: [] });
+          workerStats.set(e.workerId, { name: nameCaps(e.workerName), code: e.workerCode ?? "", present: 0, absent: 0, cancelled: 0, details: [] });
         }
         const s = workerStats.get(e.workerId)!;
         if (e.status === "present") {
@@ -881,7 +884,7 @@ export async function updateDriverTripsExcel(month: string): Promise<string | nu
     for (const t of trips) {
       if (!t.driverId) continue;
       if (!driverStats.has(t.driverId)) {
-        driverStats.set(t.driverId, { name: t.driverName ?? "", vehicle: t.driverVehicle ?? null, total: 0, latePickup: 0, lateFactory: 0, byFactory: {} });
+        driverStats.set(t.driverId, { name: nameCaps(t.driverName), vehicle: t.driverVehicle ?? null, total: 0, latePickup: 0, lateFactory: 0, byFactory: {} });
       }
       const s = driverStats.get(t.driverId)!;
       s.total++;

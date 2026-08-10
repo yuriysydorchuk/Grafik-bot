@@ -169,7 +169,7 @@ test("GET /hours/report-excel: cols обмежує колонки, errorsOnly л
   assert.deepEqual(header, ["Imię i nazwisko", "Godziny (raport)", "Godziny (fabryka)", "Różnica"]);
   // 2 працівники + рядок Razem
   assert.equal(dataRows.length, 3);
-  const mm = dataRows.find(r => r[0] === "Mismatch Person")!;
+  const mm = dataRows.find(r => r[0] === "MISMATCH PERSON")!;    // імена у файлах — капсом
   assert.equal(mm[3], 10, "різниця 100-90");
 
   // errorsOnly: match-рядок випадає, лишається лише розбіжність (+Razem)
@@ -183,7 +183,7 @@ test("GET /hours/report-excel: cols обмежує колонки, errorsOnly л
   assert.equal(errRes.status, 200);
   const err = await excelHeaderAndRows(errRes.body as Buffer);
   assert.equal(err.dataRows.length, 2, "1 розбіжність + Razem");
-  assert.equal(err.dataRows[0]![0], "Mismatch Person");
+  assert.equal(err.dataRows[0]![0], "MISMATCH PERSON");
 });
 
 // Регресія 04.08.2026: експорт ішов лише по активних працівниках — рапорти
@@ -211,10 +211,10 @@ test("GET /hours/report-excel: звільнені з рапортом і пер�
   const { header, dataRows } = await excelHeaderAndRows(res.body as Buffer);
   assert.deepEqual(header, ["Imię i nazwisko", "Godziny (grafik)", "Godziny (raport)"]);
   const names = dataRows.map(r => r[0]);
-  assert.ok(names.includes("Fired Person"), "звільнений з рапортом присутній у файлі");
-  assert.ok(names.includes("Moved Person"), "переведений з явками присутній у файлі");
-  assert.equal(dataRows.find(r => r[0] === "Fired Person")![2], 120);
-  assert.equal(dataRows.find(r => r[0] === "Moved Person")![1], 8, "8 год із затвердженої явки");
+  assert.ok(names.includes("FIRED PERSON"), "звільнений з рапортом присутній у файлі");
+  assert.ok(names.includes("MOVED PERSON"), "переведений з явками присутній у файлі");
+  assert.equal(dataRows.find(r => r[0] === "FIRED PERSON")![2], 120);
+  assert.equal(dataRows.find(r => r[0] === "MOVED PERSON")![1], 8, "8 год із затвердженої явки");
   const razem = dataRows[dataRows.length - 1]!;
   assert.equal(razem[0], "Razem");
   assert.equal(razem[2], 120, "Razem рахує і рапорт звільненого");
@@ -243,7 +243,7 @@ test("POST /hours/note: створює/оновлює/чистить заміт�
     });
   const { header, dataRows: noteRows } = await excelHeaderAndRows(res.body as Buffer);
   assert.deepEqual(header, ["Imię i nazwisko", "Notatki"]);
-  assert.equal(noteRows.find(r => r[0] === "Noted Person")![1], "перевірити з фабрикою");
+  assert.equal(noteRows.find(r => r[0] === "NOTED PERSON")![1], "перевірити з фабрикою");
 
   // порожнє значення — замітка видаляється
   const clr = await request(app).post("/api/hours/note").set("Cookie", cookie).set(H)
