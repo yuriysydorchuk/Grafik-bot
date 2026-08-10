@@ -2533,6 +2533,14 @@ router.get("/hours", RW, async (req, res) => {
   const { rows: merged, facById, excluded } = await buildHoursMergedRows(month);
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
+  // фабрики, чиї рядки цього місяця вже є у сводній (from-hours пише factory_id) —
+  // маркер ✓ на вкладках фабрик; видимість — разом з кнопками «До сводної» (cap svodni)
+  let svodniDone: number[] = [];
+  if (canSvodni) {
+    const done = await db.selectDistinct({ factoryId: svodniRowsTable.factoryId }).from(svodniRowsTable)
+      .where(and(eq(svodniRowsTable.periodMonth, month), sql`${svodniRowsTable.factoryId} IS NOT NULL`));
+    svodniDone = done.map(r => r.factoryId).filter((n): n is number => n != null);
+  }
   const workers = merged
     .map(w => {
       const hours = round2(w.hours);
@@ -2568,6 +2576,7 @@ router.get("/hours", RW, async (req, res) => {
     .sort((a, b) => (a.factory ?? "").localeCompare(b.factory ?? "", "uk") || a.name.localeCompare(b.name, "uk"));
   ok(res, {
     month, workers, excluded,
+    ...(canSvodni ? { svodniDone } : {}),
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
     totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),

@@ -830,6 +830,7 @@ const EN: Record<string, string> = {
   "всі фабрики": "all factories",
   "Місто → до сводної": "City → to payroll sheet",
   "До сводної": "To payroll sheet",
+  "Перенесено до сводної": "Transferred to payroll sheet",
   "Пропущено затверджених фабрик: {n}": "Skipped approved factories: {n}",
   "Місто фабрики невідоме (пропущено): {list} — фабрика ще не зустрічалась ні в сводних, ні в Зарплатах": "Factory city unknown (skipped): {list} — the factory hasn't appeared in svodni or Payroll yet",
   "Без міста": "No city",

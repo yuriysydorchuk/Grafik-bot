@@ -254,9 +254,9 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
 }
 
 // остання позиція на сторінці (місяць/місто/фабрика) — переживає перехід у
-// профіль працівника і повернення «назад» (sessionStorage, у межах вкладки)
+// профіль працівника, оновлення сторінки і нові вкладки браузера (localStorage)
 const readNav = (): { m?: string; c?: string; f?: string } => {
-  try { return JSON.parse(sessionStorage.getItem("svodni.nav") ?? "{}"); } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem("svodni.nav") ?? "{}"); } catch { return {}; }
 };
 
 export default function Svodni() {
@@ -282,7 +282,8 @@ export default function Svodni() {
 
   const { data: monthsData } = useQuery<{ months: string[] }>({ queryKey: ["svodni-months"], queryFn: () => get("/svodni/months") });
   const months = monthsData?.months ?? [];
-  const effMonth = month || months[0] || "";
+  // збережений місяць, якого (вже) немає у списку, не показуємо порожнім селектом
+  const effMonth = (month && months.includes(month) ? month : months[0]) || "";
 
   const { data, isFetching } = useQuery<Data>({
     queryKey: ["svodni", effMonth], enabled: !!effMonth,
@@ -328,9 +329,9 @@ export default function Svodni() {
   const facDrag = useDragOrder(orderedFactories, saveFacOrder);
   const effFactory = factories.includes(factory) ? factory : orderedFactories[0] ?? "";
   useEffect(() => { if (factory && !factories.includes(factory) && orderedFactories.length) setFactory(orderedFactories[0]!); }, [factories]); // eslint-disable-line react-hooks/exhaustive-deps
-  // запам'ятати позицію (для повернення зі сторінки профілю)
+  // запам'ятати позицію (для повернення зі сторінки профілю і нових вкладок)
   useEffect(() => {
-    try { sessionStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
+    try { localStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
   }, [effMonth, effCity, effFactory]);
   // ключ набору прихованих колонок: конкретна фабрика конкретного місяця
   const colsScopeKey = `svodni.hiddenCols.${effMonth}.${effCity}.${effFactory}`;

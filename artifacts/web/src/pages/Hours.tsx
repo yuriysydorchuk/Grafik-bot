@@ -65,7 +65,8 @@ export default function Hours() {
   // Місяць і вкладки живуть в URL (?m=&city=&fac=) — оновлення сторінки
   // повертає на те саме місце, а не на «всі фабрики, поточний місяць»
   const [month, setMonth] = useState(() => {
-    const m = new URLSearchParams(window.location.search).get("m");
+    // URL → localStorage → поточний: перехід через меню (без query) не скидає місяць
+    const m = new URLSearchParams(window.location.search).get("m") ?? localStorage.getItem("hours.month");
     return m && months.some(x => x.value === m) ? m : months[0]!.value;
   });
   const [cityTab, setCityTab] = useState(() => new URLSearchParams(window.location.search).get("city") ?? "");   // "" = всі міста
@@ -77,6 +78,7 @@ export default function Hours() {
     if (facTab) p.set("fac", facTab); else p.delete("fac");
     const q = p.toString();
     window.history.replaceState(null, "", window.location.pathname + (q ? `?${q}` : ""));
+    try { localStorage.setItem("hours.month", month); } catch { /* ignore */ }
   }, [month, cityTab, facTab, months]);
   const [sel, setSel] = useState<{ id: number; name: string } | null>(null);
   // Ключі груп, для яких відкриті модалки (сам Group береться свіжим із query —
@@ -99,7 +101,7 @@ export default function Hours() {
   const [leftoverKey, setLeftoverKey] = useState<string | null>(null); // «залишки» після імпорту годин
   const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
-  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
+  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; svodniDone?: number[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
   });
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
@@ -185,6 +187,7 @@ export default function Hours() {
         ].filter(Boolean).join(" · ") || undefined,
       });
       setSvodniAsk(null);
+      qc.invalidateQueries({ queryKey: ["hours", month] }); // маркер ✓ «перенесено» на вкладках
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -307,6 +310,12 @@ export default function Hours() {
                     : "border-slate-200 bg-white text-slate-600 hover:border-red-300"}`}>
                   {fc && <span className={`h-2 w-2 shrink-0 rounded-full ${fc.dot} ${active ? "ring-1 ring-white/80" : ""}`} />}
                   {g ? g.name : t("Всі фабрики")}
+                  {g && g.factoryId != null && data?.svodniDone?.includes(g.factoryId) && (
+                    <span title={t("Перенесено до сводної")}
+                      className={`shrink-0 rounded-full p-0.5 ${active ? "bg-white/25 text-white" : "bg-emerald-100 text-emerald-700"}`}>
+                      <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                    </span>
+                  )}
                   <span className={`rounded-full px-1.5 text-[10px] font-medium ${active ? "bg-red-500 text-red-50" : "bg-slate-100 text-slate-500"}`}>
                     {g ? g.rows.length : facTabs.reduce((s, x) => s + x.rows.length, 0)}
                   </span>
@@ -440,38 +449,41 @@ export default function Hours() {
                         <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }}
                           className={`cursor-pointer ${w.unlegalized ? "bg-rose-50/70 hover:bg-rose-100/60" : "even:bg-slate-50/60 hover:bg-red-50/40"}`}>
                           {canEdit && (
-                            <td className="px-2 py-2.5" onClick={e => e.stopPropagation()}>
+                            <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
                               <input type="checkbox" checked={!!selWorkers[w.workerId]} onChange={e => setSelWorkers(s => ({ ...s, [w.workerId]: e.target.checked }))} className="h-4 w-4 accent-red-600" />
                             </td>
                           )}
-                          <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">
-                            {openByWorker.has(w.workerId) && <span title={t("Є скарга на години")}><AlertTriangle className="mr-1 inline h-3.5 w-3.5 text-amber-500" /></span>}
-                            {w.name}
-                            {w.unlegalized && (
-                              <span className="ml-1.5 rounded bg-rose-100 px-1 py-0.5 align-middle text-[10px] font-semibold text-rose-700"
-                                title={t("Не оформлений або не поданий (oczekuje) — потрібна легалізація")}>
-                                {t("не оформл.")}
-                              </span>
-                            )}
-                            {canDelete && w.createdViaImport && w.shifts === 0 && (
-                              <button onClick={e => {
-                                  e.stopPropagation();
-                                  if (window.confirm(t("Видалити профіль «{name}» повністю? Це прибере його рапорти, години фабрики й документи. Дія незворотна.", { name: w.name }))) delWorker.mutate(w.workerId);
-                                }} disabled={delWorker.isPending} title={t("Видалити профіль (випадковий дубль)")}
-                                className="ml-1.5 rounded p-0.5 align-middle text-slate-300 hover:text-rose-600 disabled:opacity-50">
-                                <Trash2 className="inline h-3.5 w-3.5" />
-                              </button>
-                            )}
+                          {/* імʼя завжди одним рядком: задовге ріжеться, повне — у тултіпі */}
+                          <td className="max-w-[15rem] px-4 py-1.5 font-medium text-red-700">
+                            <span className="flex items-center gap-1" title={w.name}>
+                              {openByWorker.has(w.workerId) && <span className="shrink-0" title={t("Є скарга на години")}><AlertTriangle className="h-3.5 w-3.5 text-amber-500" /></span>}
+                              <span className="min-w-0 truncate underline-offset-2 hover:underline">{w.name}</span>
+                              {w.unlegalized && (
+                                <span className="shrink-0 rounded bg-rose-100 px-1 py-0.5 text-[10px] font-semibold text-rose-700"
+                                  title={t("Не оформлений або не поданий (oczekuje) — потрібна легалізація")}>
+                                  {t("не оформл.")}
+                                </span>
+                              )}
+                              {canDelete && w.createdViaImport && w.shifts === 0 && (
+                                <button onClick={e => {
+                                    e.stopPropagation();
+                                    if (window.confirm(t("Видалити профіль «{name}» повністю? Це прибере його рапорти, години фабрики й документи. Дія незворотна.", { name: w.name }))) delWorker.mutate(w.workerId);
+                                  }} disabled={delWorker.isPending} title={t("Видалити профіль (випадковий дубль)")}
+                                  className="shrink-0 rounded p-0.5 text-slate-300 hover:text-rose-600 disabled:opacity-50">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </span>
                           </td>
-                          <td className="px-4 py-2.5 text-slate-400">{w.code ?? "—"}</td>
-                          {cols.map((c, ci) => <td key={c} className={`px-3 py-2.5 text-center text-slate-600 ${ci === 0 ? "border-l-2 border-slate-200" : ""}`}>{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
-                          <td className="border-l-2 border-slate-200 px-4 py-2.5 text-center font-medium text-slate-700">{w.shifts}</td>
-                          <td className="bg-emerald-50/40 px-4 py-2.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
-                          <td className={`border-l-2 border-slate-200 px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
-                          <td className={`px-4 py-2.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
-                          <td className={`px-3 py-2.5 text-center ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
-                          <td className="max-w-[16rem] border-l-2 border-slate-200 px-3 py-2.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
-                          {isOwner && <><td className="border-l-2 border-slate-200 bg-violet-50/40 px-3 py-2.5 text-right text-slate-500">{w.rate ?? "—"}</td><td className="bg-emerald-50/40 px-4 py-2.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="bg-blue-50/40 px-4 py-2.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
+                          <td className="px-4 py-1.5 text-slate-400">{w.code ?? "—"}</td>
+                          {cols.map((c, ci) => <td key={c} className={`px-3 py-1.5 text-center text-slate-600 ${ci === 0 ? "border-l-2 border-slate-200" : ""}`}>{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
+                          <td className="border-l-2 border-slate-200 px-4 py-1.5 text-center font-medium text-slate-700">{w.shifts}</td>
+                          <td className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
+                          <td className={`border-l-2 border-slate-200 px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
+                          <td className={`px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
+                          <td className={`px-3 py-1.5 text-center ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
+                          <td className="max-w-[16rem] border-l-2 border-slate-200 px-3 py-1.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
+                          {isOwner && <><td className="border-l-2 border-slate-200 bg-violet-50/40 px-3 py-1.5 text-right text-slate-500">{w.rate ?? "—"}</td><td className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="bg-blue-50/40 px-4 py-1.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
                         </tr>
                       ))}
                     </tbody>
