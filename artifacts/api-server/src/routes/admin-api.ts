@@ -1499,6 +1499,9 @@ router.post("/factories", RW, async (req, res) => {
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
+  if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
+  if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
+  if (req.body?.transportFeeMonthCap !== undefined) values.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
   if (canFinance(req)) {
     if (req.body?.clientNip !== undefined) {
       const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
@@ -1528,6 +1531,9 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (req.body?.city !== undefined) patch.city = String(req.body.city).trim() || null;
   if (req.body?.fuelCommute !== undefined) patch.fuelCommute = !!req.body.fuelCommute;
+  if (req.body?.paidTransport !== undefined) patch.paidTransport = !!req.body.paidTransport;
+  if (req.body?.transportFeePerShift !== undefined) patch.transportFeePerShift = parseRate(req.body.transportFeePerShift);
+  if (req.body?.transportFeeMonthCap !== undefined) patch.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (canFinance(req)) {
     // привʼязка клієнта для P&L: NIP (матчинг фактур KSeF) + канонічний підпис

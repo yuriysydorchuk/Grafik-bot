@@ -9,6 +9,8 @@ import { Button, Input, Label, Card, Spinner, Badge, Modal, Empty, Select } from
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
 
 const fmtPln = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const curMonth = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
@@ -19,7 +21,7 @@ type TripRow = {
   vehiclePlate: string | null; odoFrom: number | null; odoTo: number | null; km: number | null;
   people: number | null; payAmount: number | null; note: string | null;
 };
-type DeductionRow = { id: number; workerId: number | null; workerName: string | null; factoryLabel: string | null; tripsCount: number | null; amount: number; note: string | null };
+type DeductionRow = { id: number; workerId: number | null; workerName: string | null; factoryId: number | null; factoryLabel: string | null; tripsCount: number | null; amount: number; note: string | null; sourceRef?: string | null; hours?: number | null };
 type RatesData = { drivers: { id: number; name: string; tripRate: number | null }[]; overrides: { id: number; driverId: number; factoryId: number; factoryName: string | null; rate: number }[] };
 
 export default function Transport() {
@@ -180,6 +182,8 @@ function DeductionsTab() {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const me = useMe();
+  const canSvodni = can(me, "svodni"); // перенесення пише у сводну — потрібен її cap
   const [month, setMonth] = useState(curMonth());
   const { data, isLoading } = useQuery<{ months: string[]; rows: DeductionRow[] }>({
     queryKey: ["transport-deductions", month],
@@ -190,45 +194,149 @@ function DeductionsTab() {
   const inv = () => qc.invalidateQueries({ queryKey: ["transport-deductions"] });
   const remove = useMutation({ mutationFn: (id: number) => del(`/transport/deductions/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
   const total = (data?.rows ?? []).reduce((s, r) => s + r.amount, 0);
+  // авторозрахунок по фабриках з платним довозом (перетирає лише авто-рядки)
+  const generate = useMutation({
+    mutationFn: () => post<{ created: number; updated: number; deleted: number; skippedManual: number }>("/transport/deductions/generate", { month }),
+    onSuccess: (d) => {
+      inv();
+      const parts = [`${t("створено")}: ${d.created}`, `${t("оновлено")}: ${d.updated}`];
+      if (d.deleted) parts.push(`${t("знесено")}: ${d.deleted}`);
+      if (d.skippedManual) parts.push(`${t("ручних не чіпано")}: ${d.skippedManual}`);
+      toast.success(t("Розраховано"), { description: parts.join(", ") });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const applySvodni = useMutation({
+    mutationFn: (vars: { factoryId?: number | null }) =>
+      post<{ updated: number; verified: number; verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; factoryLabel: string | null; amount: number }[] }>(
+        "/svodni/apply-transport-deductions", { month, ...(vars.factoryId != null ? { factoryId: vars.factoryId } : {}) }),
+    onSuccess: (d) => {
+      const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
+      if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+      if (d.verifyMismatches.length) {
+        toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
+          description: d.verifyMismatches.slice(0, 6).map((v) => `${v.workerName}: ${v.expected ?? 0} ≠ ${v.actual ?? 0}`).join(", "),
+          duration: 15000,
+        });
+      }
+      if (d.unmatched.length) {
+        toast.warning(`${t("Без рядка сводної")}: ${d.unmatched.length}`, {
+          description: d.unmatched.slice(0, 6).map((u) => `${u.workerName ?? "—"} (${u.factoryLabel ?? "—"})`).join(", ") + (d.unmatched.length > 6 ? "…" : ""),
+          duration: 12000,
+        });
+      }
+    },
+    // 409 = зняття розійшлися з поточною сводною (повний список — у повідомленні сервера)
+    onError: (e: any) => toast.error(e.message, { duration: e.status === 409 ? 15000 : undefined }),
+  });
+  // поділ по фабриках із підсумком кожної
+  const groups = useMemo(() => {
+    const m = new Map<string, { factoryId: number | null; rows: DeductionRow[] }>();
+    for (const r of data?.rows ?? []) {
+      const k = r.factoryLabel ?? "—";
+      const g = m.get(k) ?? m.set(k, { factoryId: r.factoryId, rows: [] }).get(k)!;
+      g.rows.push(r);
+    }
+    return [...m.entries()];
+  }, [data?.rows]);
 
   return (
     <>
-      <div className="mb-3 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <MonthPicker month={month} months={data?.months ?? []} onChange={setMonth} />
-        <span className="text-sm text-slate-500">{t("Разом")}: <b>{fmtPln(total)} зл</b></span>
-        <Button variant="secondary" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+        <div className="flex items-baseline gap-2 text-sm text-slate-500">
+          <span>{t("Разом")}:</span>
+          <span className="text-base font-semibold tabular-nums text-slate-800">{fmtPln(total)} зл</span>
+          {(data?.rows.length ?? 0) > 0 && (
+            <span className="text-xs text-slate-400">{data!.rows.length} {t("людей")} · {groups.length} {t("фабрик")}</span>
+          )}
+        </div>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+          <Button variant="secondary" loading={generate.isPending}
+            onClick={async () => { if (await confirm({ title: t("Розрахувати зняття за довіз?"), message: t("Зміни = години сводної місяця ÷ тривалість зміни фабрики (округлення вгору), по фабриках з платним довозом; спершу заповни сводну. Рядки, правлені вручну, не чіпаються."), confirmText: t("Розрахувати") })) generate.mutate(); }}>
+            🔄 {t("Розрахувати")}
+          </Button>
+          {canSvodni && (
+            <Button loading={applySvodni.isPending}
+              onClick={async () => { if (await confirm({ title: t("Перенести суми до сводної?"), message: t("Суми з цієї таблиці ляжуть у колонку Dojazd сводної місяця (затверджені вкладки пропускаються)."), confirmText: t("Перенести") })) applySvodni.mutate({}); }}>
+              → {t("Перенести до сводної")}
+            </Button>
+          )}
+        </div>
       </div>
-      <Card className="overflow-x-auto">
-        {isLoading ? <Spinner /> : !data?.rows.length ? <Empty>{t("Немає знять за цей місяць")}</Empty> : (
-          <table className="w-full min-w-120 text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr>
-                <th className="px-3 py-2.5">{t("Працівник")}</th><th className="px-3 py-2.5">{t("Фабрика")}</th>
-                <th className="px-3 py-2.5 text-right">{t("Виїздів")}</th><th className="px-3 py-2.5 text-right">{t("Сума")}</th>
-                <th className="px-3 py-2.5">{t("Нотатка")}</th><th className="px-3 py-2.5"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {data.rows.map((r) => (
-                <tr key={r.id} className="hover:bg-slate-50">
-                  <td className="px-3 py-2 font-medium text-slate-700">{r.workerName ?? "—"}{r.workerId == null && <Badge color="amber">{t("не привʼязано")}</Badge>}</td>
-                  <td className="px-3 py-2 text-slate-500">{r.factoryLabel ?? "—"}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-slate-500">{r.tripsCount ?? "—"}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-slate-600">{fmtPln(r.amount)}</td>
-                  <td className="px-3 py-2 text-xs text-slate-400">{r.note ?? ""}</td>
-                  <td className="px-3 py-2 text-right">
-                    <div className="flex justify-end gap-1">
-                      <button onClick={() => setEditing(r)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
-                      <button onClick={async () => { if (await confirm({ title: t("Видалити зняття?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }}
-                        className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
+      {isLoading ? <Spinner /> : !data?.rows.length ? (
+        <Card>
+          <Empty>
+            {t("Немає знять за цей місяць")}
+            <p className="mt-1 text-xs text-slate-400">{t("Натисни «🔄 Розрахувати» — зніметься з годин сводної по фабриках з платним довозом.")}</p>
+          </Empty>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {groups.map(([label, { factoryId, rows }]) => (
+            <Card key={label} className="overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Bus className="h-4 w-4 text-red-600" />
+                  <span className="text-sm font-semibold text-slate-800">{label}</span>
+                  <span className="text-xs text-slate-400">{rows.length} {t("людей")}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold tabular-nums text-slate-800">{fmtPln(rows.reduce((s, r) => s + r.amount, 0))} зл</span>
+                  {canSvodni && factoryId != null && (
+                    <Button variant="secondary" className="px-2 py-1 text-xs" loading={applySvodni.isPending}
+                      onClick={async () => { if (await confirm({ title: `${t("Перенести до сводної")}: ${label}?`, message: t("Суми з цієї таблиці ляжуть у колонку Dojazd сводної місяця (затверджені вкладки пропускаються)."), confirmText: t("Перенести") })) applySvodni.mutate({ factoryId }); }}>
+                      → {t("До сводної")}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-130 text-sm">
+                  <thead className="text-left text-xs uppercase text-slate-400">
+                    <tr className="border-b border-slate-100">
+                      <th className="px-4 py-2 font-medium">{t("Працівник")}</th>
+                      <th className="px-3 py-2 text-right font-medium">{t("Годин")}</th>
+                      <th className="px-3 py-2 text-right font-medium">{t("Змін")}</th>
+                      <th className="px-3 py-2 text-right font-medium">{t("Сума")}</th>
+                      <th className="px-4 py-2 font-medium">{t("Нотатка")}</th>
+                      <th className="px-2 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {rows.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2">
+                          <span className="font-medium text-slate-700">{r.workerName ?? "—"}</span>
+                          {r.workerId == null && <span className="ml-1.5 align-middle"><Badge color="amber">{t("не привʼязано")}</Badge></span>}
+                          {r.sourceRef === "auto" && <span className="ml-1.5 align-middle"><Badge>{t("авто")}</Badge></span>}
+                          {r.sourceRef === "manual-edit" && <span className="ml-1.5 align-middle"><Badge color="blue">{t("правлено")}</Badge></span>}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap text-right tabular-nums text-slate-500">
+                          {r.hours != null ? <>{r.hours} <span className="text-xs text-slate-400">{t("год")}</span></> : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium tabular-nums text-slate-700">{r.tripsCount ?? "—"}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">{fmtPln(r.amount)} <span className="text-xs font-normal text-slate-400">зл</span></td>
+                        <td className="max-w-50 truncate px-4 py-2 text-xs text-slate-400" title={r.note ?? undefined}>{r.note ?? ""}</td>
+                        <td className="px-2 py-2 text-right">
+                          <div className="flex justify-end gap-0.5">
+                            <button onClick={() => setEditing(r)} title={t("Редагувати")}
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
+                            <button onClick={async () => { if (await confirm({ title: t("Видалити зняття?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }}
+                              title={t("Видалити")} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
       {(adding || editing) && <DeductionModal deduction={editing ?? undefined} month={month} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
     </>
   );

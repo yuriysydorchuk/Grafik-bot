@@ -15,6 +15,9 @@ import { can } from "../lib/roles";
 type FactoryX = Omit<Factory, "positions"> & {
   city?: string | null;
   fuelCommute?: boolean;
+  paidTransport?: boolean;
+  transportFeePerShift?: number | null;
+  transportFeeMonthCap?: number | null;
   rateBrutto?: number | null; rateNetto?: number | null; nightAddon?: number | null;
   clientNip?: string | null; pnlLabel?: string | null;
   positions: (FactoryPositionConf & { rateNetto?: number | null })[];
@@ -120,6 +123,9 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
     usesGender: factory?.usesGender ?? false,
     usesTransport: factory?.usesTransport ?? true,
     fuelCommute: factory?.fuelCommute ?? false,
+    paidTransport: factory?.paidTransport ?? false,
+    transportFeePerShift: factory?.transportFeePerShift != null ? String(factory.transportFeePerShift) : "",
+    transportFeeMonthCap: factory?.transportFeeMonthCap != null ? String(factory.transportFeeMonthCap) : "",
     usesScheduling: factory?.usesScheduling ?? true,
     showWorkerHours: factory?.showWorkerHours ?? true,
     showCode: factory?.showCode ?? true,
@@ -160,6 +166,7 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
+    paidTransport: v.paidTransport, transportFeePerShift: num(v.transportFeePerShift), transportFeeMonthCap: num(v.transportFeeMonthCap),
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
       positionId: r.positionId,
@@ -274,6 +281,25 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
             <input type="checkbox" checked={v.fuelCommute} onChange={e => setV({ ...v, fuelCommute: e.target.checked })} />
             {t("Доїзд нашим транспортом — паливо ділиться на це місто (P&L)")}
           </label>
+          <label className="flex items-center gap-2 pl-6 text-sm text-slate-600">
+            <input type="checkbox" checked={v.paidTransport} onChange={e => setV({ ...v, paidTransport: e.target.checked })} />
+            {t("Платний довіз (зняття з ЗП)")}
+          </label>
+          {v.paidTransport && (
+            <div className="space-y-1.5 pl-12">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>{t("Ціна за зміну, zł")}</Label>
+                  <Input value={v.transportFeePerShift} onChange={set("transportFeePerShift")} placeholder="20" inputMode="decimal" />
+                </div>
+                <div>
+                  <Label>{t("Макс. за місяць, zł")}</Label>
+                  <Input value={v.transportFeeMonthCap} onChange={set("transportFeeMonthCap")} placeholder="150" inputMode="decimal" />
+                </div>
+              </div>
+              <p className="text-xs text-slate-400">{t("Зняття = зміни × ціна, але не більше максимуму. Зміни = години сводної місяця ÷ тривалість зміни фабрики, округлення вгору. Рахується кнопкою «Розрахувати» у Транспорт → Зняття за довіз.")}</p>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
             <input type="checkbox" checked={v.showWorkerHours} onChange={e => setV({ ...v, showWorkerHours: e.target.checked })} />
             {t("Показувати кнопку «Мої години та зміни»")}

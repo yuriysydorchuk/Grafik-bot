@@ -9,6 +9,7 @@ import {
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
+  transportDeductionsTable, svodniLocksTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -26,6 +27,7 @@ export {
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
+  transportDeductionsTable, svodniLocksTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -44,7 +46,8 @@ export async function resetDb(): Promise<void> {
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
     "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
-    "svodni_rows, svodni_tab_checks, svodni_tab_meta, monthly_reports, factory_hours, hours_notes, " +
+    "svodni_rows, svodni_tab_checks, svodni_tab_meta, svodni_locks, monthly_reports, factory_hours, hours_notes, " +
+    "transport_deductions, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +
     "expense_categories, counterparty_rules, " +

@@ -267,6 +267,11 @@ export const factoriesTable = pgTable("factories", {
   usesPositions: boolean("uses_positions").notNull().default(false), // does this factory differentiate work positions?
   usesGender: boolean("uses_gender").notNull().default(false),        // does this factory split orders by gender?
   usesTransport: boolean("uses_transport").notNull().default(true),   // agency provides pickup → show stops/pickup to workers
+  // Платний довіз: зняття з ЗП працівників за довіз (вкладка Транспорт → Зняття
+  // за довіз, авторозрахунок по змінах місяця; сума = min(зміни × ціна, ліміт))
+  paidTransport: boolean("paid_transport").notNull().default(false),
+  transportFeePerShift: real("transport_fee_per_shift"), // ціна за зміну, zł
+  transportFeeMonthCap: real("transport_fee_month_cap"), // максимум за місяць, zł (NULL = без ліміту)
   usesScheduling: boolean("uses_scheduling").notNull().default(true),  // false = фабрика лише зарплатна (Лодзь/Познань): без замовлень/графіків/доступності
   showWorkerHours: boolean("show_worker_hours").notNull().default(true), // show the "My hours" button to workers
   showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule

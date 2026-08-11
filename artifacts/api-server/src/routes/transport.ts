@@ -8,9 +8,12 @@ import { db } from "@workspace/db";
 import {
   driverTripLogTable, driverTripRatesTable, transportDeductionsTable,
   driversTable, factoriesTable, workersTable, driverShiftAssignmentsTable, scheduleWeeksTable,
+  scheduleEntriesTable, shiftCancellationsTable, svodniRowsTable,
 } from "@workspace/db";
-import { and, asc, desc, eq, gte, like, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap } from "../lib/auth";
+import { weekFromForMonth, entryDateStr } from "../lib/dates";
+import { factoryShiftHours } from "../bot/time";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -168,15 +171,27 @@ router.get("/transport/deductions", async (req, res) => {
     .leftJoin(workersTable, eq(transportDeductionsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(transportDeductionsTable.factoryId, factoriesTable.id))
     .where(eq(transportDeductionsTable.periodMonth, month));
+  // місяці для вибору: наявні зняття ∪ місяці сводних (розрахунок іде з годин
+  // сводної, тож будь-який її місяць — валідна ціль ще ДО перших рядків знять)
   const months = await db.selectDistinct({ m: transportDeductionsTable.periodMonth }).from(transportDeductionsTable);
+  const svodniMonths = await db.selectDistinct({ m: svodniRowsTable.periodMonth }).from(svodniRowsTable);
+  // години сводної пари (довідково поруч зі змінами — з них зміни й рахуються)
+  const svodniHours = await db.select({
+    workerId: svodniRowsTable.workerId, factoryId: svodniRowsTable.factoryId,
+    hours: sql<number>`coalesce(sum(${svodniRowsTable.hours}), 0)`,
+  }).from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), sql`${svodniRowsTable.segmentOf} IS NULL`))
+    .groupBy(svodniRowsTable.workerId, svodniRowsTable.factoryId);
+  const hoursByPair = new Map(svodniHours.map((r) => [`${r.workerId}|${r.factoryId}`, Number(r.hours)]));
   ok(res, {
     month,
-    months: months.map((x) => x.m).sort().reverse(),
+    months: [...new Set([...months.map((x) => x.m), ...svodniMonths.map((x) => x.m)])].sort().reverse(),
     rows: rows.map(({ d, workerName, factoryName }) => ({
       id: d.id, workerId: d.workerId, workerName: workerName ?? d.workerName,
       factoryId: d.factoryId, factoryLabel: factoryName ?? d.factoryLabel,
-      tripsCount: d.tripsCount, amount: d.amount, note: d.note,
-    })).sort((a, b) => (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
+      tripsCount: d.tripsCount, amount: d.amount, note: d.note, sourceRef: d.sourceRef,
+      hours: hoursByPair.get(`${d.workerId}|${d.factoryId}`) ?? null,
+    })).sort((a, b) => (a.factoryLabel ?? "").localeCompare(b.factoryLabel ?? "", "pl") || (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
   });
 });
 
@@ -209,6 +224,12 @@ router.patch("/transport/deductions/:id", RW, async (req, res) => {
   if (req.body?.tripsCount !== undefined) patch.tripsCount = req.body.tripsCount === null || req.body.tripsCount === "" ? null : Math.floor(Number(req.body.tripsCount));
   if (req.body?.note !== undefined) patch.note = String(req.body.note).trim() || null;
   if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
+  // правка суми/змін на авто-рядку робить його ручним: повторний «Розрахувати»
+  // такий рядок більше не перетирає (замітка ручним не робить)
+  if (patch.amount !== undefined || patch.tripsCount !== undefined) {
+    const [cur] = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.id, id));
+    if (cur?.sourceRef === "auto") patch.sourceRef = "manual-edit";
+  }
   const [u] = await db.update(transportDeductionsTable).set(patch).where(eq(transportDeductionsTable.id, id)).returning();
   if (!u) return fail(res, 404, "Не знайдено");
   ok(res, u);
@@ -219,6 +240,143 @@ router.delete("/transport/deductions/:id", RW, async (req, res) => {
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   await db.delete(transportDeductionsTable).where(eq(transportDeductionsTable.id, id));
   ok(res, { ok: true });
+});
+
+// ─── Авторозрахунок знять за місяць ──────────────────────────────────────────
+// Фабрики з «платним довозом» (paid_transport + ціна за зміну): кожному
+// працівнику сума = min(зміни × ціна, місячний ліміт). Кількість змін —
+// ЗАВЖДИ з годин, перенесених до сводної (svodni_rows.hours пари працівник+
+// фабрика за місяць): ceil(години ÷ тривалість 1-ї зміни фабрики, 8/12 год).
+// Тож флоу: заповнити сводну (from-hours) → розрахувати → перенести.
+// self_transport (доїжджають самі) — виняток: тарифікуються лише зміни, де
+// водій позначив посадку (picked_up_by у затверджених тижнях місяця, без
+// скасованих клітинок).
+// Повторний запуск перезаписує ЛИШЕ авто-рядки (source_ref='auto'); рядки,
+// створені чи правлені вручну, не чіпаються. Авто-рядки пар, яких більше не
+// нарахувалось, зносяться.
+router.post("/transport/deductions/generate", RW, async (req, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = `${month}-01`;
+  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+
+  const paidFactories = (await db.select().from(factoriesTable))
+    .filter(f => f.paidTransport && (f.transportFeePerShift ?? 0) > 0);
+  if (!paidFactories.length) return fail(res, 400, "немає фабрик з платним довозом (увімкни в налаштуваннях фабрики і вкажи ціну за зміну)");
+  const paidIds = paidFactories.map(f => f.id);
+  const facById = new Map(paidFactories.map(f => [f.id, f]));
+
+  // 1) години пар із сводної місяця (сегменти не дублюємо — лише батьківські
+  // рядки; кілька рядків пари, напр. фірмові вкладки multi_firm — сумуються)
+  const svodniRows = await db.select({
+    workerId: svodniRowsTable.workerId, factoryId: svodniRowsTable.factoryId, hours: svodniRowsTable.hours,
+  }).from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
+    inArray(svodniRowsTable.factoryId, paidIds),
+  ));
+  const hoursByPair = new Map<string, number>();
+  for (const r of svodniRows) {
+    if (r.workerId == null || !(r.hours != null && r.hours > 0)) continue;
+    const k = `${r.workerId}|${r.factoryId}`;
+    hoursByPair.set(k, (hoursByPair.get(k) ?? 0) + r.hours);
+  }
+  const workerIds = new Set<number>([...hoursByPair.keys()].map(k => Number(k.split("|")[0])));
+  const shiftsByPair = new Map<string, number>(); // workerId|factoryId → зміни
+  for (const [k, hours] of hoursByPair) {
+    const factoryId = Number(k.split("|")[1]);
+    const shiftLen = factoryShiftHours(facById.get(factoryId), "1" as any) || 8;
+    shiftsByPair.set(k, Math.ceil(hours / shiftLen));
+  }
+
+  // 2) self_transport: години сводної не тарифікуємо — лише зміни з посадкою
+  // водієм (затверджені тижні, дата в місяці, без скасованих клітинок)
+  const workers = workerIds.size
+    ? await db.select().from(workersTable).where(inArray(workersTable.id, [...workerIds]))
+    : [];
+  const selfIds = new Set(workers.filter(w => w.selfTransport).map(w => w.id));
+  for (const k of [...shiftsByPair.keys()]) {
+    if (selfIds.has(Number(k.split("|")[0]))) shiftsByPair.delete(k);
+  }
+  {
+    const weeks = await db.select().from(scheduleWeeksTable).where(and(
+      eq(scheduleWeeksTable.status, "approved"),
+      gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)),
+      lte(scheduleWeeksTable.weekStart, monthEnd),
+    ));
+    const weekById = new Map(weeks.map(w => [w.id, w.weekStart]));
+    const weekIds = weeks.map(w => w.id);
+    const picked = weekIds.length
+      ? await db.select().from(scheduleEntriesTable).where(and(
+          inArray(scheduleEntriesTable.weekId, weekIds), inArray(scheduleEntriesTable.factoryId, paidIds),
+          isNotNull(scheduleEntriesTable.pickedUpBy)))
+      : [];
+    const cancels = weekIds.length
+      ? await db.select().from(shiftCancellationsTable).where(and(
+          inArray(shiftCancellationsTable.weekId, weekIds), inArray(shiftCancellationsTable.factoryId, paidIds)))
+      : [];
+    const cancelled = new Set(cancels.map(c => `${c.weekId}|${c.factoryId}|${c.dayOfWeek}|${c.shift}`));
+    const selfWorkerIds = new Set<number>(picked.map(e => e.workerId));
+    const selfWorkers = selfWorkerIds.size
+      ? await db.select().from(workersTable).where(inArray(workersTable.id, [...selfWorkerIds]))
+      : [];
+    for (const w of selfWorkers) if (w.selfTransport) selfIds.add(w.id);
+    for (const e of picked) {
+      if (!selfIds.has(e.workerId)) continue;
+      const ws = weekById.get(e.weekId);
+      if (!ws) continue;
+      const date = entryDateStr(String(ws), e.dayOfWeek);
+      if (date < monthStart || date >= monthEnd) continue;
+      if (cancelled.has(`${e.weekId}|${e.factoryId}|${e.dayOfWeek}|${e.shift}`)) continue;
+      const k = `${e.workerId}|${e.factoryId}`;
+      shiftsByPair.set(k, (shiftsByPair.get(k) ?? 0) + 1);
+    }
+  }
+
+  // 3) суми + upsert (ручні рядки пари не чіпаємо, авто — оновлюємо/зносимо)
+  const existing = await db.select().from(transportDeductionsTable)
+    .where(eq(transportDeductionsTable.periodMonth, month));
+  const existingByPair = new Map(existing.filter(r => r.workerId != null && r.factoryId != null)
+    .map(r => [`${r.workerId}|${r.factoryId}`, r]));
+  let created = 0, updated = 0, deleted = 0, skippedManual = 0;
+  const seen = new Set<string>();
+  for (const [k, shifts] of shiftsByPair) {
+    if (!(shifts > 0)) continue;
+    const [workerId, factoryId] = k.split("|").map(Number);
+    const fac = facById.get(factoryId!)!;
+    const fee = fac.transportFeePerShift!;
+    const cap = fac.transportFeeMonthCap;
+    const amount = r2(Math.min(shifts * fee, cap != null && cap > 0 ? cap : Infinity));
+    seen.add(k);
+    const prev = existingByPair.get(k);
+    if (prev) {
+      if (prev.sourceRef !== "auto") { skippedManual++; continue; }
+      if (prev.amount !== amount || prev.tripsCount !== shifts) {
+        await db.update(transportDeductionsTable)
+          .set({ amount, tripsCount: shifts, factoryLabel: fac.name })
+          .where(eq(transportDeductionsTable.id, prev.id));
+        updated++;
+      }
+    } else {
+      await db.insert(transportDeductionsTable).values({
+        periodMonth: month, workerId, factoryId, factoryLabel: fac.name,
+        tripsCount: shifts, amount, sourceRef: "auto",
+      });
+      created++;
+    }
+  }
+  // авто-рядки платних фабрик, яких більше не нарахувалось (людину прибрали з
+  // графіку, ціну змінили) — зносимо, щоб не висіли стейлом
+  for (const [k, prev] of existingByPair) {
+    if (prev.sourceRef !== "auto" || seen.has(k)) continue;
+    if (!paidIds.includes(prev.factoryId!)) continue;
+    await db.delete(transportDeductionsTable).where(eq(transportDeductionsTable.id, prev.id));
+    deleted++;
+  }
+  ok(res, {
+    month, created, updated, deleted, skippedManual,
+    factories: paidFactories.map(f => f.name).sort(),
+  });
 });
 
 export default router;
