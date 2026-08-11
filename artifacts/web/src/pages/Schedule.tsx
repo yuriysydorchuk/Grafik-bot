@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy } from "lucide-react";
+import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy, Eraser } from "lucide-react";
 import { toast } from "sonner";
 import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
@@ -171,6 +171,12 @@ export default function Schedule() {
   };
   const hasContent = entries.length > 0 || Object.keys(reserve).length > 0 || Object.values(available).some(a => a.length > 0);
 
+  // Очистка майбутнього графіку фабрики (зміни, що ще не почались) — минулі лишаються
+  const clearWeek = useMutation({
+    mutationFn: () => post("/schedule/clear", { weekStart, factoryId: Number(factoryId) }),
+    onSuccess: (r: any) => { reload(); toast.success(t("Видалено записів: {n}", { n: r.cleared ?? 0 })); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const generate = useMutation({ mutationFn: (augment: boolean) => post("/schedule/generate", { weekStart, factoryId: Number(factoryId), augment }),
     onSuccess: (r: any) => { reload(); setGenOpen(false); toast.success(t("Згенеровано: {n} призначень", { n: r.totalAssigned }), { description: (r.shortages ?? []).length ? t("Є нестачі ({n})", { n: r.shortages.length }) : t("Усі замовлення виконані") }); },
     onError: (e: any) => toast.error(e.message) });
@@ -273,6 +279,21 @@ export default function Schedule() {
             onClick={() => { entries.length ? setGenOpen(true) : generate.mutate(false); }}>
             {entries.length ? <RefreshCw className="h-4 w-4" /> : <Zap className="h-4 w-4" />} {entries.length ? t("Перегенерувати") : t("Згенерувати")}
           </Button>
+          {(() => {
+            const clearable = entries.filter(e => !shiftStarted(DAYS.indexOf(e.day as DayCode), e.shift as ShiftCode)).length;
+            return (
+              <Button variant="secondary" loading={clearWeek.isPending} disabled={!clearable}
+                onClick={async () => {
+                  if (await confirm({
+                    title: t("Очистити графік?"),
+                    message: t("Буде видалено {n} записів майбутніх змін фабрики «{name}» на цьому тижні. Минулі зміни і призначення водіїв не чіпаються.", { n: clearable, name: facName }),
+                    danger: true, confirmText: t("Очистити"),
+                  })) clearWeek.mutate();
+                }}>
+                <Eraser className="h-4 w-4" /> {t("Очистити")}
+              </Button>
+            );
+          })()}
           <a href={`/api/schedule/excel?weekStart=${weekStart}&factoryId=${factoryId}`}
             className={`inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 ${entries.length ? "" : "pointer-events-none opacity-50"}`}>
             <Download className="h-4 w-4" /> Excel
@@ -321,7 +342,7 @@ export default function Schedule() {
                       {editable && (
                         <button
                           className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-sky-600 hover:bg-sky-50"
-                          title={t("Розставити людей цього дня на інші дні тижня — з перевіркою диспозиційності")}
+                          title={t("Скопіювати людей цього дня в ті самі зміни інших днів тижня")}
                           onClick={() => setCopyFrom(day)}>
                           <Copy className="h-3 w-3" /> {t("На тиждень")}
                         </button>
@@ -604,7 +625,7 @@ export default function Schedule() {
           weekStart={weekStart}
           factoryId={Number(factoryId)}
           onClose={() => setCopyFrom(null)}
-          onDone={(created) => { setCopyFrom(null); reload(); toast.success(t("Поставлено: {n}", { n: created })); }}
+          onDone={(created) => { setCopyFrom(null); reload(); toast.success(t("Скопійовано: {n}", { n: created })); }}
         />
       )}
 
@@ -736,9 +757,10 @@ function GenerateModal({ loading, onClose, onGenerate }: {
   );
 }
 
-// «Заповнити тиждень як цей день»: превʼю з сервера (хто проходить по диспозиційності,
-// хто ні, хто відпросився), вибір цільових днів, поіменне і масове підтвердження
-// попереджених. Ставить кожного у ту саму зміну, що в джерельний день.
+// «Заповнити тиждень як цей день»: ТОЧНА копія списку людей джерельного дня в ті
+// самі зміни вибраних днів — диспозиційність і відпрошення не фільтрують (графіковий
+// потім сам додасть/прибере). Пропускаються лише жорсткі випадки: людина вже має
+// зміну того дня або клітинка скасована. Обсяг — до кінця тижня або вибрані дні.
 type CopyPerson = { workerId: number; name: string; shift: ShiftCode; note?: string | null };
 type CopyPlanDay = {
   day: DayCode; ok: CopyPerson[]; noAvail: CopyPerson[]; absence: CopyPerson[];
@@ -751,26 +773,27 @@ function CopyWeekModal({ sourceDay, sourceLabel, weekStart, factoryId, onClose, 
 }) {
   const t = useT();
   const allTargets = DAYS.filter(d => d !== sourceDay);
-  // типово вибрані дні після джерельного — «далі так само»
-  const [selDays, setSelDays] = useState<Set<DayCode>>(new Set(DAYS.slice(DAYS.indexOf(sourceDay) + 1)));
-  const [forced, setForced] = useState<Set<string>>(new Set()); // "day-workerId" — підтверджені з попереджених
+  const restDays = DAYS.slice(DAYS.indexOf(sourceDay) + 1);
+  const [scope, setScope] = useState<"rest" | "custom">("rest");
+  const [selDays, setSelDays] = useState<Set<DayCode>>(new Set(restDays));
   const { data: preview, isLoading, error } = useQuery<{ usesAvailability: boolean; people: number; days: CopyPlanDay[] }>({
     queryKey: ["copy-day", factoryId, weekStart, sourceDay],
     queryFn: () => post("/schedule/copy-day", { weekStart, factoryId, sourceDay, targetDays: allTargets, mode: "preview" }),
   });
   const toggleDay = (d: DayCode) => setSelDays(prev => { const n = new Set(prev); n.has(d) ? n.delete(d) : n.add(d); return n; });
-  const toggleForce = (k: string) => setForced(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
 
-  const dayPlans = (preview?.days ?? []).filter(d => selDays.has(d.day));
-  const warnKeys = dayPlans.flatMap(d => [...d.noAvail, ...d.absence].map(p => `${d.day}-${p.workerId}`));
-  const total = dayPlans.reduce((s, d) => s + d.ok.length + [...d.noAvail, ...d.absence].filter(p => forced.has(`${d.day}-${p.workerId}`)).length, 0);
+  const activeDays = scope === "rest" ? restDays : allTargets.filter(d => selDays.has(d));
+  const dayPlans = (preview?.days ?? []).filter(d => activeDays.includes(d.day));
+  // копіюються ВСІ, крім жорстких пропусків — попереджені (noAvail/absence) теж
+  const toCopy = (d: CopyPlanDay) => d.ok.length + d.noAvail.length + d.absence.length;
+  const total = dayPlans.reduce((s, d) => s + toCopy(d), 0);
+  const warnNoAvail = dayPlans.reduce((s, d) => s + d.noAvail.length, 0);
+  const warnAbsence = dayPlans.reduce((s, d) => s + d.absence.length, 0);
 
   const apply = useMutation({
     mutationFn: () => post("/schedule/copy-day", {
-      weekStart, factoryId, sourceDay, targetDays: [...selDays], mode: "apply",
-      force: [...forced]
-        .filter(k => selDays.has(k.slice(0, k.indexOf("-")) as DayCode))
-        .map(k => ({ day: k.slice(0, k.indexOf("-")), workerId: Number(k.slice(k.indexOf("-") + 1)) })),
+      weekStart, factoryId, sourceDay, targetDays: activeDays, mode: "apply",
+      force: dayPlans.flatMap(d => [...d.noAvail, ...d.absence].map(p => ({ day: d.day, workerId: p.workerId }))),
     }),
     onSuccess: (r: any) => onDone(r.created ?? 0),
     onError: (e: any) => toast.error(e.message),
@@ -786,88 +809,64 @@ function CopyWeekModal({ sourceDay, sourceLabel, weekStart, factoryId, onClose, 
         ) : (
           <>
             <p className="text-xs text-slate-500">
-              {t("У джерельному дні: {n} людей. Кожен буде поставлений у ту саму зміну у вибрані дні.", { n: preview.people })}
-              {!preview.usesAvailability && <> {t("Фабрика не використовує диспозиційність — перевірки немає, ставляться всі.")}</>}
+              {t("Скопіюється точно цей список ({n} людей) у ті самі зміни. Зайвих потім приберіть у сітці, потрібних — додайте.", { n: preview.people })}
             </p>
-            <div className="flex flex-wrap gap-1.5">
-              {allTargets.map(d => {
-                const p = preview.days.find(x => x.day === d);
-                const warnN = p ? p.noAvail.length + p.absence.length : 0;
-                const on = selDays.has(d);
-                return (
-                  <button key={d} onClick={() => toggleDay(d)}
-                    className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
-                    {DAY_UK[d]}{p && <span className="opacity-70"> · {p.ok.length}✓{warnN > 0 ? ` ${warnN}⚠` : ""}</span>}
-                  </button>
-                );
-              })}
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 p-2.5 text-sm">
+                <input type="radio" name="copy-scope" checked={scope === "rest"} onChange={() => setScope("rest")} />
+                <span className="font-medium text-slate-700">{t("До кінця тижня")}</span>
+                {restDays.length > 0 && (
+                  <span className="text-xs text-slate-400">
+                    {DAY_UK[restDays[0]!]}{restDays.length > 1 ? `–${DAY_UK[restDays[restDays.length - 1]!]}` : ""}
+                  </span>
+                )}
+              </label>
+              <label className="flex cursor-pointer flex-wrap items-center gap-2 rounded-lg border border-slate-200 p-2.5 text-sm">
+                <input type="radio" name="copy-scope" checked={scope === "custom"} onChange={() => setScope("custom")} />
+                <span className="font-medium text-slate-700">{t("Вибрані дні")}</span>
+                {scope === "custom" && (
+                  <span className="flex flex-wrap gap-1.5">
+                    {allTargets.map(d => (
+                      <button key={d} type="button" onClick={() => toggleDay(d)}
+                        className={`rounded-lg border px-2 py-1 text-xs font-medium transition ${selDays.has(d) ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>
+                        {DAY_UK[d]}
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </label>
             </div>
-            <div className="max-h-[45vh] space-y-2 overflow-y-auto">
-              {dayPlans.map(d => {
-                const warn = [
-                  ...d.noAvail.map(p => ({ ...p, kind: "noAvail" as const })),
-                  ...d.absence.map(p => ({ ...p, kind: "absence" as const })),
-                ];
-                const forcedCount = warn.filter(p => forced.has(`${d.day}-${p.workerId}`)).length;
-                return (
-                  <div key={d.day} className="rounded-lg border border-slate-200 p-3">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-sm font-semibold text-slate-700">
-                        {DAY_FULL[d.day]} <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, DAYS.indexOf(d.day))}</span>
-                      </span>
-                      <span className="shrink-0 text-xs text-slate-500">
-                        {t("буде поставлено")}: <b className="text-emerald-600">{d.ok.length + forcedCount}</b>
-                        {d.skipped.length > 0 && <> · {t("пропущено")}: {d.skipped.length}</>}
-                      </span>
-                    </div>
-                    {warn.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {warn.map(p => {
-                          const k = `${d.day}-${p.workerId}`;
-                          return (
-                            <label key={k} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-slate-50">
-                              <input type="checkbox" checked={forced.has(k)} onChange={() => toggleForce(k)} />
-                              <span className="min-w-0 flex-1 truncate text-slate-700">{p.name}</span>
-                              <span className="shrink-0 text-[11px] text-slate-400">{SHIFT_UK[p.shift]}</span>
-                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${p.kind === "absence" ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-700"}`}>
-                                {p.kind === "absence"
-                                  ? `🙋 ${t("відпросився")}${p.note ? ` — ${p.note}` : ""}`
-                                  : p.note === "other_shift" ? t("диспозиційність на іншу зміну") : t("без диспозиційності")}
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {d.skipped.length > 0 && (
-                      <p className="mt-1.5 text-[11px] text-slate-400">
-                        ⏭ {d.skipped.map(p => `${p.name} (${p.reason === "busy" ? t("вже має зміну") : t("зміну скасовано")})`).join(", ")}
-                      </p>
-                    )}
+            <div className="max-h-[40vh] space-y-1.5 overflow-y-auto">
+              {dayPlans.map(d => (
+                <div key={d.day} className="rounded-lg border border-slate-200 px-3 py-2">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-700">
+                      {DAY_FULL[d.day]} <span className="text-xs font-medium text-slate-400">{dayDate(weekStart, DAYS.indexOf(d.day))}</span>
+                    </span>
+                    <span className="shrink-0 text-xs text-slate-500">
+                      {t("скопіюється")}: <b className="text-emerald-600">{toCopy(d)}</b>
+                      {d.skipped.length > 0 && <> · {t("пропущено")}: {d.skipped.length}</>}
+                    </span>
                   </div>
-                );
-              })}
+                  {d.skipped.length > 0 && (
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      ⏭ {d.skipped.map(p => `${p.name} (${p.reason === "busy" ? t("вже має зміну") : t("зміну скасовано")})`).join(", ")}
+                    </p>
+                  )}
+                </div>
+              ))}
               {dayPlans.length === 0 && <Empty>{t("Виберіть хоча б один день")}</Empty>}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              {warnKeys.length > 0 ? (
-                <div className="flex gap-1.5">
-                  <button onClick={() => setForced(new Set(warnKeys))}
-                    className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
-                    {t("Поставити всіх")}
-                  </button>
-                  <button onClick={() => setForced(new Set())}
-                    className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
-                    {t("Лише з диспозиційністю")}
-                  </button>
-                </div>
-              ) : <span />}
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-                <Button loading={apply.isPending} disabled={total === 0} onClick={() => apply.mutate()}>
-                  {t("Поставити")} ({total})
-                </Button>
-              </div>
+            {(warnNoAvail > 0 || warnAbsence > 0) && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                ⚠️ {t("Серед них без диспозиційності: {a}, відпрошених: {b} — вони теж стануть.", { a: warnNoAvail, b: warnAbsence })}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+              <Button loading={apply.isPending} disabled={total === 0} onClick={() => apply.mutate()}>
+                <Copy className="h-4 w-4" /> {t("Скопіювати")} ({total})
+              </Button>
             </div>
           </>
         )}
