@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, upload } from "../lib/api";
 import { monthOptions } from "../lib/dates";
@@ -55,6 +55,17 @@ function diffState(w: HourRow): DiffState {
 const DIFF_CELL: Record<DiffState, string> = {
   match: "bg-emerald-50", mismatch: "bg-red-50", partial: "bg-amber-50/60", none: "bg-sky-50/40",
 };
+
+// Каталог колонок таблиці в дефолтному порядку (drag за заголовок переставляє,
+// «×» ховає — суто відображення: суми, редагування і Excel-експорт не залежать).
+// shiftBlock = колонки «1/2/3 зм» одним цілим (їх кількість різна по фабриках).
+const HOURS_COLS: [string, string][] = [
+  ["code", "Код"], ["shiftBlock", "Розбивка по змінах"], ["totalShifts", "Усього змін"], ["hours", "Години"],
+  ["report", "Години з рапорту"], ["factory", "Години з фабрики"], ["ack", "Підтв. працівника"], ["note", "Замітки"],
+  ["rate", "Ставка"], ["net", "ЗП нетто"], ["reportNet", "ЗП по рапорту"],
+];
+const HOURS_COL_KEYS = HOURS_COLS.map(([k]) => k);
+const OWNER_COL_KEYS = new Set(["rate", "net", "reportNet"]);
 
 export default function Hours() {
   const t = useT();
@@ -213,6 +224,17 @@ export default function Hours() {
   // Персональний порядок вкладок (drag-and-drop, живе в admins.web_prefs)
   const [cityOrder, saveCityOrder] = useOrderPref("order.hours.cities");
   const [facOrder, saveFacOrder] = useOrderPref("order.hours.factories");
+  // Персональний порядок і видимість колонок таблиці (той самий механізм, що
+  // для вкладок — живе в admins.web_prefs, їде за користувачем між пристроями)
+  const [colOrder, saveColOrder] = useOrderPref("order.hours.cols");
+  const [hiddenColsArr, saveHiddenCols] = useOrderPref("hidden.hours.cols");
+  const hiddenCols = useMemo(() => new Set(hiddenColsArr), [hiddenColsArr]);
+  const toggleCol = (k: string) => saveHiddenCols(hiddenCols.has(k) ? hiddenColsArr.filter(x => x !== k) : [...hiddenColsArr, k]);
+  const [showCols, setShowCols] = useState(false); // панель чипсів «Колонки»
+  const colKeys = useMemo(
+    () => orderBy(HOURS_COL_KEYS.filter(k => isOwner || !OWNER_COL_KEYS.has(k)), k => k, colOrder).filter(k => !hiddenCols.has(k)),
+    [colOrder, isOwner, hiddenCols]);
+  const colDrag = useDragOrder(colKeys, saveColOrder);
   // місто → його фабрики (для заголовків і кнопки «місто → до сводної»)
   const cityGroups = useMemo(() => {
     const map = new Map<string, Group[]>();
@@ -323,6 +345,35 @@ export default function Hours() {
               );
             })}
           </div>
+          {/* видимість колонок таблиць — персональна, як і порядок (× на заголовку теж ховає) */}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <button onClick={() => setShowCols(v => !v)}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${showCols ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              <Columns3 className="h-3.5 w-3.5" /> {t("Колонки")}
+              {hiddenCols.size > 0 && (
+                <span className="rounded-full bg-rose-100 px-1.5 text-[10px] font-semibold text-rose-700" title={t("Приховано колонок — клікни, щоб показати список")}>
+                  −{hiddenCols.size}
+                </span>
+              )}
+            </button>
+            {showCols && (
+              <>
+                {HOURS_COLS.filter(([k]) => isOwner || !OWNER_COL_KEYS.has(k)).map(([k, label]) => {
+                  const off = hiddenCols.has(k);
+                  return (
+                    <button key={k} onClick={() => toggleCol(k)}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+                        off ? "bg-slate-100 text-slate-400 line-through hover:text-slate-600" : "bg-red-50 text-red-700 ring-1 ring-red-200"}`}>
+                      {t(label)}
+                    </button>
+                  );
+                })}
+                {hiddenCols.size > 0 && (
+                  <button className="text-[11px] text-red-600 hover:underline" onClick={() => saveHiddenCols([])}>{t("показати всі")}</button>
+                )}
+              </>
+            )}
+          </div>
         </>
       )}
       </div>{/* /sticky header */}
@@ -357,6 +408,80 @@ export default function Hours() {
             <div className="space-y-8">
           {cityGs.map(g => {
             const cols = Array.from({ length: g.n }, (_, i) => String(i + 1));
+            // Заголовок колонки: drag переставляє, «×» (на ховері) ховає; reactKey —
+            // для клітинок shiftBlock, де кілька th належать одній логічній колонці
+            const colTh = (key: string, className: string, label: ReactNode, opts?: { title?: string; reactKey?: string }) => (
+              <th key={opts?.reactKey ?? key} {...colDrag(key)} title={opts?.title ?? t("Перетягни, щоб змінити порядок")}
+                className={`group/th cursor-grab ${className}`}>
+                <span className="inline-flex items-center gap-1">
+                  {label}
+                  <button type="button" onClick={() => toggleCol(key)} title={t("Сховати колонку")}
+                    className="invisible rounded px-0.5 text-slate-300 hover:bg-slate-200 hover:text-slate-600 group-hover/th:visible">×</button>
+                </span>
+              </th>
+            );
+            // Опис колонок: порядок задає colKeys (drag за заголовок), рендер клітинок — 1:1 як раніше
+            const colDefs: Record<string, { th: () => ReactNode; td: (w: HourRow) => ReactNode; foot: () => ReactNode }> = {
+              code: {
+                th: () => colTh("code", "px-4 py-2.5", t("Код")),
+                td: w => <td key="code" className="px-4 py-1.5 text-slate-400">{w.code ?? "—"}</td>,
+                foot: () => <td key="code" />,
+              },
+              shiftBlock: {
+                th: () => <Fragment key="shiftBlock">{cols.map((c, ci) => colTh("shiftBlock", `px-3 py-2.5 text-center ${ci === 0 ? "border-l-2 border-slate-300" : ""}`, `${c} ${t("зм")}`, { reactKey: c }))}</Fragment>,
+                td: w => <Fragment key="shiftBlock">{cols.map((c, ci) => <td key={c} className={`px-3 py-1.5 text-center text-slate-600 ${ci === 0 ? "border-l-2 border-slate-200" : ""}`}>{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}</Fragment>,
+                foot: () => <Fragment key="shiftBlock">{cols.map(c => <td key={c} />)}</Fragment>,
+              },
+              totalShifts: {
+                th: () => colTh("totalShifts", "border-l-2 border-slate-300 px-4 py-2.5 text-center", t("Усього змін")),
+                td: w => <td key="totalShifts" className="border-l-2 border-slate-200 px-4 py-1.5 text-center font-medium text-slate-700">{w.shifts}</td>,
+                foot: () => <td key="totalShifts" className="px-4 py-2.5 text-center">{g.shifts}</td>,
+              },
+              hours: {
+                th: () => colTh("hours", "bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800", t("Години")),
+                td: w => <td key="hours" className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>,
+                foot: () => <td key="hours" className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>,
+              },
+              report: {
+                th: () => colTh("report", "border-l-2 border-slate-300 bg-sky-100/70 px-4 py-2.5 text-right text-sky-800", t("Години з рапорту")),
+                td: w => <td key="report" className={`border-l-2 border-slate-200 px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>,
+                foot: () => <td key="report" className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>,
+              },
+              factory: {
+                th: () => colTh("factory", "bg-sky-100/70 px-4 py-2.5 text-right text-sky-800", t("Години з фабрики")),
+                td: w => <td key="factory" className={`px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>,
+                foot: () => <td key="factory" className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.factoryHours ?? 0), 0))} {t("год")}</td>,
+              },
+              ack: {
+                th: () => colTh("ack", "bg-sky-100/70 px-3 py-2.5 text-center text-sky-800", t("Підтв. працівника"), { title: t("Відповідь працівника на запит підтвердження годин у боті") }),
+                td: w => <td key="ack" className={`px-3 py-1.5 text-center ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>,
+                foot: () => (
+                  <td key="ack" className="px-3 py-2.5 text-center text-xs text-slate-500">
+                    {g.rows.some(w => w.askSentAt) && `${g.rows.filter(w => w.workerResponse === "confirmed").length}/${g.rows.filter(w => w.askSentAt).length}`}
+                  </td>
+                ),
+              },
+              note: {
+                th: () => colTh("note", "border-l-2 border-slate-300 px-3 py-2.5", t("Замітки")),
+                td: w => <td key="note" className="max-w-[16rem] border-l-2 border-slate-200 px-3 py-1.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>,
+                foot: () => <td key="note" />,
+              },
+              rate: {
+                th: () => colTh("rate", "border-l-2 border-slate-300 bg-violet-100/60 px-3 py-2.5 text-right text-violet-800", t("Ставка")),
+                td: w => <td key="rate" className="border-l-2 border-slate-200 bg-violet-50/40 px-3 py-1.5 text-right text-slate-500">{w.rate ?? "—"}</td>,
+                foot: () => <td key="rate" />,
+              },
+              net: {
+                th: () => colTh("net", "bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800", t("ЗП нетто")),
+                td: w => <td key="net" className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td>,
+                foot: () => <td key="net" className="px-4 py-2.5 text-right text-emerald-700">{round(g.net)} zł</td>,
+              },
+              reportNet: {
+                th: () => colTh("reportNet", "bg-blue-100/60 px-4 py-2.5 text-right text-blue-800", t("ЗП по рапорту")),
+                td: w => <td key="reportNet" className="bg-blue-50/40 px-4 py-1.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td>,
+                foot: () => <td key="reportNet" className="px-4 py-2.5 text-right text-blue-700">{round(g.rows.reduce((s, w) => s + (w.reportNet ?? 0), 0))} zł</td>,
+              },
+            };
             return (
               <Card key={g.key} className="overflow-hidden">
                 {/* хедер фабрики — всередині картки, щоб таблиці сусідніх фабрик не зливались */}
@@ -433,14 +558,8 @@ export default function Hours() {
                     <thead className="border-b-2 border-slate-200 bg-slate-100/80 text-left text-xs uppercase tracking-wide text-slate-500">
                       <tr>
                         {canEdit && <th className="w-8 px-2 py-2.5" />}
-                        <th className="px-4 py-2.5">{t("Працівник")}</th><th className="px-4 py-2.5">{t("Код")}</th>
-                        {cols.map((c, ci) => <th key={c} className={`px-3 py-2.5 text-center ${ci === 0 ? "border-l-2 border-slate-300" : ""}`}>{c} {t("зм")}</th>)}
-                        <th className="border-l-2 border-slate-300 px-4 py-2.5 text-center">{t("Усього змін")}</th><th className="bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800">{t("Години")}</th>
-                        <th className="border-l-2 border-slate-300 bg-sky-100/70 px-4 py-2.5 text-right text-sky-800">{t("Години з рапорту")}</th>
-                        <th className="bg-sky-100/70 px-4 py-2.5 text-right text-sky-800">{t("Години з фабрики")}</th>
-                        <th className="bg-sky-100/70 px-3 py-2.5 text-center text-sky-800" title={t("Відповідь працівника на запит підтвердження годин у боті")}>{t("Підтв. працівника")}</th>
-                        <th className="border-l-2 border-slate-300 px-3 py-2.5">{t("Замітки")}</th>
-                        {isOwner && <><th className="border-l-2 border-slate-300 bg-violet-100/60 px-3 py-2.5 text-right text-violet-800">{t("Ставка")}</th><th className="bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800">{t("ЗП нетто")}</th><th className="bg-blue-100/60 px-4 py-2.5 text-right text-blue-800">{t("ЗП по рапорту")}</th></>}
+                        <th className="px-4 py-2.5">{t("Працівник")}</th>
+                        {colKeys.map(k => colDefs[k]!.th())}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -475,29 +594,15 @@ export default function Hours() {
                               )}
                             </span>
                           </td>
-                          <td className="px-4 py-1.5 text-slate-400">{w.code ?? "—"}</td>
-                          {cols.map((c, ci) => <td key={c} className={`px-3 py-1.5 text-center text-slate-600 ${ci === 0 ? "border-l-2 border-slate-200" : ""}`}>{w.byShift[c] || <span className="text-slate-300">0</span>}</td>)}
-                          <td className="border-l-2 border-slate-200 px-4 py-1.5 text-center font-medium text-slate-700">{w.shifts}</td>
-                          <td className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-emerald-700">{round(w.hours)} {t("год")}</td>
-                          <td className={`border-l-2 border-slate-200 px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><ReportHoursCell w={w} month={month} canEdit={canEdit} /></td>
-                          <td className={`px-4 py-1.5 text-right ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><FactoryHoursCell w={w} month={month} canEdit={canEdit} /></td>
-                          <td className={`px-3 py-1.5 text-center ${DIFF_CELL[diffState(w)]}`} onClick={e => e.stopPropagation()}><WorkerAckCell w={w} /></td>
-                          <td className="max-w-[16rem] border-l-2 border-slate-200 px-3 py-1.5" onClick={e => e.stopPropagation()}><NoteCell w={w} month={month} canEdit={canEdit} /></td>
-                          {isOwner && <><td className="border-l-2 border-slate-200 bg-violet-50/40 px-3 py-1.5 text-right text-slate-500">{w.rate ?? "—"}</td><td className="bg-emerald-50/40 px-4 py-1.5 text-right font-semibold text-slate-700">{round(w.net ?? 0)} zł</td><td className="bg-blue-50/40 px-4 py-1.5 text-right font-semibold text-blue-700">{w.reportNet != null ? `${round(w.reportNet)} zł` : "—"}</td></>}
+                          {colKeys.map(k => colDefs[k]!.td(w))}
                         </tr>
                       ))}
                     </tbody>
                     <tfoot>
                       <tr className="border-t-2 border-slate-300 bg-slate-100 font-semibold text-slate-800">
-                        <td className="px-4 py-2.5" colSpan={(canEdit ? 3 : 2) + cols.length}>{t("Разом по фабриці")}</td>
-                        <td className="px-4 py-2.5 text-center">{g.shifts}</td>
-                        <td className="px-4 py-2.5 text-right text-emerald-700">{round(g.hours)} {t("год")}</td>
-                        <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.reportHours ?? 0), 0))} {t("год")}</td>
-                        <td className="px-4 py-2.5 text-right text-slate-600">{round(g.rows.reduce((s, w) => s + (w.factoryHours ?? 0), 0))} {t("год")}</td>
-                        <td className="px-3 py-2.5 text-center text-xs text-slate-500">
-                          {g.rows.some(w => w.askSentAt) && `${g.rows.filter(w => w.workerResponse === "confirmed").length}/${g.rows.filter(w => w.askSentAt).length}`}
-                        </td>
-                        {isOwner && <><td /><td className="px-4 py-2.5 text-right text-emerald-700">{round(g.net)} zł</td><td className="px-4 py-2.5 text-right text-blue-700">{round(g.rows.reduce((s, w) => s + (w.reportNet ?? 0), 0))} zł</td></>}
+                        {canEdit && <td className="px-2 py-2.5" />}
+                        <td className="whitespace-nowrap px-4 py-2.5">{t("Разом по фабриці")}</td>
+                        {colKeys.map(k => colDefs[k]!.foot())}
                       </tr>
                     </tfoot>
                   </table>

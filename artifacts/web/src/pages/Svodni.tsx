@@ -629,14 +629,16 @@ export default function Svodni() {
   );
 }
 
-// Заголовок колонки з кнопкою «сховати» (зʼявляється при наведенні)
-function Th({ label, onHide, left, amber, strong, divider, tint, onSort, sortDir }: {
+// Заголовок колонки з кнопкою «сховати» (зʼявляється при наведенні);
+// dragProps (з useDragOrder) робить колонку перетягуваною — порядок персональний
+function Th({ label, onHide, left, amber, strong, divider, tint, onSort, sortDir, dragProps }: {
   label: string; onHide: () => void; left?: boolean; amber?: boolean; strong?: boolean; divider?: boolean; tint?: string;
-  onSort?: () => void; sortDir?: "asc" | "desc" | null;
+  onSort?: () => void; sortDir?: "asc" | "desc" | null; dragProps?: ReturnType<ReturnType<typeof useDragOrder>>;
 }) {
   const t = useT();
   return (
-    <th className={`group/th px-1.5 py-2.5 whitespace-nowrap text-xs font-semibold uppercase tracking-wide ${
+    <th {...dragProps} title={dragProps ? t("Перетягни, щоб змінити порядок") : undefined}
+      className={`group/th px-1.5 py-2.5 whitespace-nowrap text-xs font-semibold uppercase tracking-wide ${dragProps ? "cursor-grab " : ""}${
       left ? "text-left" : "text-right"} ${divider ? (amber ? "border-l-2 border-amber-300 " : "border-l-2 border-slate-300 ") : ""}${amber ? "bg-amber-100/80 text-amber-700" : strong ? "border-x-2 border-red-200 bg-red-100/70 text-red-700" : tint ?? "text-slate-500"}`}>
       <span className="inline-flex items-center gap-0.5">
         {onSort ? (
@@ -749,6 +751,10 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   const [adding, setAdding] = useState(false);
   // сортування кліком по заголовку: none → desc → asc; дефолт — секції+алфавіт
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(null);
+  // Персональний порядок колонок (drag за заголовок; per-місто, бо словник колонок
+  // і дефолтний порядок з Google-вкладки різняться між містами). Суто відображення.
+  const [colOrder, saveColOrder] = useOrderPref(`order.svodni.cols.${city}`);
+  const [sensOrder, saveSensOrder] = useOrderPref(`order.svodni.colsSens.${city}`);
   const cycleSort = (key: string) => setSort(s => s?.key !== key ? { key, dir: "desc" } : s.dir === "desc" ? { key, dir: "asc" } : null);
   // скрол-позиція: зберігається при переході в профіль, відновлюється «назад»
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -833,12 +839,15 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
       ...cityHrCols.map(([k, h]) => ({ key: k, label: h, kind: "hr" as const })),
     ];
     const orderIdx = new Map((meta?.colOrder ?? []).map((k, i) => [k, i]));
-    return defs
+    // поверх порядку Google-вкладки — персональний порядок користувача (drag)
+    return orderBy(defs
       .map((d, i) => ({ ...d, ord: orderIdx.get(d.key) ?? 1000 + i }))
-      .sort((a, b) => a.ord - b.ord);
-  }, [cityExtraKeys, cityHrCols, meta]);
+      .sort((a, b) => a.ord - b.ord), d => d.key, colOrder);
+  }, [cityExtraKeys, cityHrCols, meta, colOrder]);
   const shownCols = cols.filter(d => show(d.key));
-  const sensCols = sensitive ? SENS_COLS.filter(([k]) => show(k)) : [];
+  const sensCols = orderBy(sensitive ? SENS_COLS.filter(([k]) => show(k)) : [], ([k]) => k, sensOrder);
+  const colDrag = useDragOrder(shownCols.map(d => d.key), saveColOrder);
+  const sensDrag = useDragOrder(sensCols.map(([k]) => k), saveSensOrder);
   const colCount = 2 + shownCols.length + sensCols.length; // +імʼя +замітки
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
@@ -916,8 +925,10 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                 label={d.key === "dojazd" && city === "Лодзь" ? t("Dojazd (доплата)") : t(d.label)}
                 strong={d.key === "doWyplaty"} left={d.kind === "hr"} divider={ci > 0 && (shownCols[ci - 1].kind === "hr") !== (d.kind === "hr")}
                 tint={COL_TINT[d.key] ? TINT[COL_TINT[d.key]].th : undefined}
-                onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null} />)}
-              {sensCols.map(([k, h], ci) => <Th key={k} label={t(h)} amber divider={ci === 0} onHide={() => onHideCol(k)} onSort={() => cycleSort(k)} sortDir={sort?.key === k ? sort.dir : null} />)}
+                onHide={() => onHideCol(d.key)} onSort={() => cycleSort(d.key)} sortDir={sort?.key === d.key ? sort.dir : null}
+                dragProps={colDrag(d.key)} />)}
+              {sensCols.map(([k, h], ci) => <Th key={k} label={t(h)} amber divider={ci === 0} onHide={() => onHideCol(k)} onSort={() => cycleSort(k)} sortDir={sort?.key === k ? sort.dir : null}
+                dragProps={sensDrag(k)} />)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">

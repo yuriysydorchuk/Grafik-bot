@@ -1201,6 +1201,7 @@ const EN: Record<string, string> = {
   "год": "h",
   "zł нетто": "zł net",
   "Усього змін": "Total shifts",
+  "Розбивка по змінах": "Per-shift breakdown",
   "Ставка": "Rate",
   "ЗП нетто": "Net pay",
   "Є скарга на години": "There is an hours complaint",
