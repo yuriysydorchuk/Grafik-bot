@@ -1227,6 +1227,33 @@ export function splitTotalByWindows(
   return out;
 }
 
+// ── from-hours: пошук наявного рядка вкладки для пари (працівник, фабрика) ───
+// Вкладка ідентифікується назвою (спадок Google-таблиці, де id не існує), але
+// первинний матч наявного рядка — по factory_id: назва фабрики могла змінитися
+// після створення вкладки, і матч лише по label плодив поруч другу вкладку з
+// новою назвою (Scandic Food → SCANDIC FOOD, 08.2026). Оновлений рядок лишає
+// свій label — вкладка не «переїжджає» за перейменуванням. Для multi_firm одна
+// фабрика легально дає кілька вкладок («… KLINEX» / «… EURO SUPORT»), тож
+// id-матч додатково вимагає суфікс СВОЄЇ фірми в назві вкладки; фірма невідома —
+// не матчимо (краще нова фірмова вкладка, ніж злиті фірми). Нормалізований
+// label — фолбек для рядків без factory_id (несматчені вкладки Google-синку).
+export function findSvodniRowForPair<T extends { workerId: number | null; factoryId: number | null; factoryLabel: string }>(
+  rows: T[],
+  pair: { workerId: number; factoryId: number | null; label: string; firmSuffix: string; multiFirm: boolean },
+): T | undefined {
+  const norm = (s: string) => s.toLocaleUpperCase("pl-PL").replace(/[^\p{L}\p{N}]/gu, "");
+  const mine = rows.filter(r => r.workerId === pair.workerId);
+  const exact = mine.find(r => r.factoryLabel === pair.label);
+  if (exact) return exact;
+  if (pair.factoryId != null && (!pair.multiFirm || pair.firmSuffix)) {
+    const suffix = pair.multiFirm ? norm(pair.firmSuffix) : "";
+    const byId = mine.find(r => r.factoryId === pair.factoryId && (!suffix || norm(r.factoryLabel).endsWith(suffix)));
+    if (byId) return byId;
+  }
+  const n = norm(pair.label);
+  return n ? mine.find(r => r.factoryId == null && norm(r.factoryLabel) === n) : undefined;
+}
+
 export function computeMismatch(row: SvodniParsedRow, city: "Люблін" | "Познань" | "Лодзь"): void {
   const sheet = row.doWyplaty;
   if (sheet == null) return;

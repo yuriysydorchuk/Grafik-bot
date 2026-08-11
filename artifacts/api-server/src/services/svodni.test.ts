@@ -811,3 +811,45 @@ test("factoryBonusPerHour: LST — лише готівковий +1, Agram — �
   assert.equal(factoryBonusPerHour(w({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01" }), 12, "2026-06", 180), 2.5, "Agram: нал 1 + стаж 1.5");
   assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), 5, "2026-06", 180), 0, "звичайна фабрика — без бонусів");
 });
+
+// ── from-hours: матч наявного рядка вкладки для пари (працівник, фабрика) ────
+test("findSvodniRowForPair: точний label — як досі; чужий працівник не матчиться", async () => {
+  const { findSvodniRowForPair } = await import("./svodni.ts");
+  const rows = [
+    { workerId: 1, factoryId: 4, factoryLabel: "ALMIZ" },
+    { workerId: 2, factoryId: 4, factoryLabel: "ALMIZ" },
+  ];
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 4, label: "ALMIZ", firmSuffix: "", multiFirm: false }), rows[0]);
+  assert.equal(findSvodniRowForPair(rows, { workerId: 3, factoryId: 4, label: "ALMIZ", firmSuffix: "", multiFirm: false }), undefined);
+});
+
+test("findSvodniRowForPair: фабрику перейменували — матч по factory_id, вкладка стара", async () => {
+  const { findSvodniRowForPair } = await import("./svodni.ts");
+  const rows = [{ workerId: 1, factoryId: 25, factoryLabel: "Scandic Food" }];
+  // зміна регістру (інцидент 08.2026) і повне перейменування — обидва знаходять рядок
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "SCANDIC FOOD", firmSuffix: "", multiFirm: false }), rows[0]);
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "SKANDYNAWIA", firmSuffix: "", multiFirm: false }), rows[0]);
+  // інша фабрика з таким самим label — не матчиться по id
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 7, label: "NOWA", firmSuffix: "", multiFirm: false }), undefined);
+});
+
+test("findSvodniRowForPair: multi_firm — id-матч лише зі своїм фірмовим суфіксом", async () => {
+  const { findSvodniRowForPair } = await import("./svodni.ts");
+  const rows = [
+    { workerId: 1, factoryId: 7, factoryLabel: "Sushi&Food KLINEX" },
+    { workerId: 1, factoryId: 7, factoryLabel: "Sushi&Food EURO SUPORT" },
+  ];
+  const es = findSvodniRowForPair(rows, { workerId: 1, factoryId: 7, label: "Sushi Factory EURO SUPORT", firmSuffix: "EURO SUPORT", multiFirm: true });
+  assert.equal(es, rows[1], "перейменована multi_firm вкладка — рядок своєї фірми");
+  const kl = findSvodniRowForPair(rows, { workerId: 1, factoryId: 7, label: "Sushi Factory KLINEX", firmSuffix: "KLINEX", multiFirm: true });
+  assert.equal(kl, rows[0]);
+  // фірма невідома — по id не матчимо (краще нова вкладка, ніж злиті фірми)
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 7, label: "Sushi Factory", firmSuffix: "", multiFirm: true }), undefined);
+});
+
+test("findSvodniRowForPair: рядок без factory_id — фолбек по нормалізованій назві", async () => {
+  const { findSvodniRowForPair } = await import("./svodni.ts");
+  const rows = [{ workerId: 1, factoryId: null, factoryLabel: "SCANDIC FOOD" }];
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "Scandic Food", firmSuffix: "", multiFirm: false }), rows[0]);
+  assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "INNA", firmSuffix: "", multiFirm: false }), undefined);
+});

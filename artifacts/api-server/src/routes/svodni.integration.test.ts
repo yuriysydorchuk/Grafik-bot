@@ -269,6 +269,60 @@ test("«Години підтверджені → до сводної»: ряд�
   assert.equal(rows[0]!.doWyplaty, 3768);
 });
 
+test("from-hours після перейменування фабрики оновлює стару вкладку, не плодить дублікат", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Nowak Piotr", workerCode: "00002", hourlyRate: 31.4, hourlyRateNetto: 25.35,
+  }).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "Scandic Food" } as any).returning();
+  await seedPayrollRegion("Scandic Food", "Люблін");
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 12 });
+
+  const r1 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r1.body.created, 1);
+
+  // фабрику перейменували (КАПС) уже ПІСЛЯ заповнення сводної — кейс Scandic
+  // Food → SCANDIC FOOD (08.2026): матч лише по label плодив другу вкладку
+  await db.update(factoriesTable).set({ name: "SCANDIC FOOD" }).where(eq(factoriesTable.id, fac!.id));
+  await db.update(monthlyReportsTable).set({ hoursReported: 20 }).where(eq(monthlyReportsTable.workerId, w!.id));
+  const r2 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r2.body.updated, 1);
+  assert.equal(r2.body.created, 0, "дублю вкладки немає");
+  assert.equal(r2.body.verifyMismatches.length, 0, "самозвірка знаходить рядок під фактичним label");
+  const rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.hours, 20);
+  assert.equal(rows[0]!.factoryLabel, "Scandic Food", "вкладка лишається під своєю назвою");
+});
+
+test("from-hours: лок вкладки під СТАРОЮ назвою фабрики теж блокує оновлення", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Wojcik Adam", workerCode: "00003", hourlyRate: 31.4, hourlyRateNetto: 25.35,
+  }).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "Stara Nazwa" } as any).returning();
+  await seedPayrollRegion("Stara Nazwa", "Люблін");
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 12 });
+  await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+
+  // лок вкладки, потім повне перейменування фабрики (не лише регістр) —
+  // лок-фільтр по поточній назві його не бачить, гард у циклі мусить
+  const lock = await request(app).post("/api/svodni/lock").set("Cookie", full).set(H)
+    .send({ month: "2026-05", city: "Люблін", factoryLabel: "Stara Nazwa" });
+  assert.equal(lock.body.locked, true);
+  await db.update(factoriesTable).set({ name: "CALKIEM NOWA" }).where(eq(factoriesTable.id, fac!.id));
+  await db.update(monthlyReportsTable).set({ hoursReported: 20 }).where(eq(monthlyReportsTable.workerId, w!.id));
+  const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r.body.updated, 0, "залочений рядок не оновлюється");
+  assert.equal(r.body.created, 0, "і дубль поруч не створюється");
+  assert.equal(r.body.skippedLocked, 1);
+  const rows = await db.select().from(svodniRowsTable);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.hours, 12, "години під локом недоторкані");
+});
+
 test("правка «Год. повід.» розписує конто/готівку правилом oświadczenia", opts, async () => {
   // зі статусом Powiadomienie: notify-години йдуть на конто, решта готівкою
   await seedRow({ hoursDeclared: null, ksiegBrutto: null, ksiegNetto: null, gotowka: null, konto: null, isStudent: false, under26: false, extras: { zusStatus: "Zgłoszony, Powiadomienie, Wyżej 26" } });
