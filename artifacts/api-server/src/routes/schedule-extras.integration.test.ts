@@ -131,6 +131,39 @@ test("POST /schedule/entry без згенерованого тижня ство
   assert.equal((await db.select().from(scheduleWeeksTable)).length, 1);
 });
 
+// ─── Очистка майбутнього графіку (POST /schedule/clear) ───────────────────────
+
+test("POST /schedule/clear видаляє лише майбутні зміни цієї фабрики; минулі і чужі лишаються", opts, async () => {
+  const f = await mkFactory(), f2 = await mkFactory();
+  const w1 = await mkWorker(f, "Future A"), w2 = await mkWorker(f, "Future B"), w3 = await mkWorker(f2, "Other Fac");
+  const wk = await mkApprovedWeek(); // WEEK у 2099 — всі зміни майбутні
+  await mkEntry(wk, w1, f, "1");
+  await mkEntry(wk, w2, f, "3"); // зміна без налаштованого часу — теж «не відбулась»
+  const other = await mkEntry(wk, w3, f2, "1");
+
+  const res = await request(app).post("/api/schedule/clear").set("Cookie", cookie).set(H)
+    .send({ weekStart: WEEK, factoryId: f });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.cleared, 2);
+  assert.equal(res.body.keptStarted, 0);
+  const left = await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, wk));
+  assert.deepEqual(left.map(e => e.id), [other], "чужа фабрика недоторкана");
+
+  // минулий тиждень: зміни вже почались → нічого не видаляється
+  const [pastWk] = await db.insert(scheduleWeeksTable).values({ weekStart: "2020-01-06", status: "approved" }).returning({ id: scheduleWeeksTable.id });
+  const pe = await mkEntry(pastWk!.id, w1, f, "1");
+  const past = await request(app).post("/api/schedule/clear").set("Cookie", cookie).set(H)
+    .send({ weekStart: "2020-01-06", factoryId: f });
+  assert.equal(past.status, 200);
+  assert.equal(past.body.cleared, 0);
+  assert.equal(past.body.keptStarted, 1);
+  assert.equal((await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, pe))).length, 1);
+
+  const bad = await request(app).post("/api/schedule/clear").set("Cookie", cookie).set(H)
+    .send({ weekStart: "nope", factoryId: f });
+  assert.equal(bad.status, 400);
+});
+
 // ─── Excel обліку годин: вибір колонок + errorsOnly ───────────────────────────
 
 async function excelHeaderAndRows(buf: Buffer): Promise<{ header: string[]; dataRows: any[][] }> {
