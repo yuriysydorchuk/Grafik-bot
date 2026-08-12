@@ -8,32 +8,35 @@
 -- сводна); старіші місяці з суфіксом — артефакти розробки, історію не чіпаємо
 -- (мердж у місяць, де вже є несуфіксована вкладка, плодив би дублі людей).
 
+-- NB: назва фабрики різниться між базами (лок. «Sushi&Food Factory», прод
+-- «SUSHI&FOOD FACTOR») — матчимо по SUSHI + суфіксу, без регістру.
+
 BEGIN;
 
 UPDATE svodni_rows SET
   firm = CASE
-    WHEN factory_label ~ ' EURO SUPORT$' THEN 'ES'
-    WHEN factory_label ~ ' ESO$'         THEN 'ESO'
-    WHEN factory_label ~ ' KLINEX$'      THEN 'Klinex'
+    WHEN factory_label ~* ' EURO SUPORT$' THEN 'ES'
+    WHEN factory_label ~* ' ESO$'         THEN 'ESO'
+    WHEN factory_label ~* ' KLINEX$'      THEN 'Klinex'
   END,
-  factory_label = regexp_replace(factory_label, ' (EURO SUPORT|ESO|KLINEX)$', '')
-WHERE factory_label ~ '^Sushi&Food Factory (EURO SUPORT|ESO|KLINEX)$'
+  factory_label = regexp_replace(factory_label, ' (EURO SUPORT|ESO|KLINEX)$', '', 'i')
+WHERE factory_label ~* '^SUSHI.+ (EURO SUPORT|ESO|KLINEX)$'
   AND period_month >= '2026-07';
 
 -- локи фірмових вкладок → один лок обʼєднаної вкладки
 INSERT INTO svodni_locks (period_month, city, factory_label, locked_by, locked_at)
 SELECT DISTINCT ON (period_month, city)
   period_month, city,
-  regexp_replace(factory_label, ' (EURO SUPORT|ESO|KLINEX)$', ''),
+  regexp_replace(factory_label, ' (EURO SUPORT|ESO|KLINEX)$', '', 'i'),
   locked_by, locked_at
 FROM svodni_locks
-WHERE factory_label ~ '^Sushi&Food Factory (EURO SUPORT|ESO|KLINEX)$'
+WHERE factory_label ~* '^SUSHI.+ (EURO SUPORT|ESO|KLINEX)$'
   AND period_month >= '2026-07'
 ORDER BY period_month, city, locked_at
 ON CONFLICT (period_month, city, factory_label) DO NOTHING;
 
 DELETE FROM svodni_locks
-WHERE factory_label ~ '^Sushi&Food Factory (EURO SUPORT|ESO|KLINEX)$'
+WHERE factory_label ~* '^SUSHI.+ (EURO SUPORT|ESO|KLINEX)$'
   AND period_month >= '2026-07';
 
 COMMIT;
