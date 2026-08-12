@@ -19,8 +19,11 @@ DATABASE_URL="$(grep -E '^DATABASE_URL=' "$APP_DIR/.env" | head -1 | cut -d= -f2
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%F)"
 
-# .tmp + mv: обірваний дамп ніколи не виглядає як готовий бекап
-pg_dump "$DATABASE_URL" | gzip > "$BACKUP_DIR/db-$STAMP.sql.gz.tmp"
+# .tmp + mv: обірваний дамп ніколи не виглядає як готовий бекап.
+# --exclude-table: разові бекап-таблиці, створені суперюзером (напр.
+# workers_rate_backup_20260807) — app-юзер не може їх LOCK-нути, і без
+# виключення pg_dump падає цілком (бекапи мовчки не робились 07–12.08.2026).
+pg_dump "$DATABASE_URL" --exclude-table='*_backup_*' --exclude-table='*fixbak*' | gzip > "$BACKUP_DIR/db-$STAMP.sql.gz.tmp"
 mv "$BACKUP_DIR/db-$STAMP.sql.gz.tmp" "$BACKUP_DIR/db-$STAMP.sql.gz"
 
 UPLOADS_DIR="${UPLOADS_DIR:-$APP_DIR/uploads}"
