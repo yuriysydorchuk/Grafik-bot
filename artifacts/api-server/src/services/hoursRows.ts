@@ -217,7 +217,8 @@ export async function buildHoursMergedRows(month: string): Promise<{
 
   // Облік годин НЕ ділиться по фірмі працівника: фабрика шле одну евіденцію на
   // всіх, вкладка одна (рішення 06.08.2026, Sushi&Food). factories.multi_firm
-  // керує лише сводною — from-hours ділить вкладки по фірмі (routes/svodni.ts).
+  // керує лише сводною — from-hours пише фірму працівника в svodni_rows.firm,
+  // вкладка одна з групами фірм (routes/svodni.ts, рішення 12.08.2026).
   const rowWorkerIds = [...new Set([...byKey.values()].map(w => w.workerId))];
   const workerCos = rowWorkerIds.length ? await db.select({
     id: workersTable.id, createdSource: workersTable.createdSource,

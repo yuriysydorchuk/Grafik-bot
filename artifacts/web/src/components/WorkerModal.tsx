@@ -32,6 +32,11 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const [isStudent, setIsStudent] = useState(!!worker?.isStudent);
   const [under26, setUnder26] = useState(!!worker?.under26);
   const [selfTransport, setSelfTransport] = useState(!!worker?.selfTransport);
+  // «діє з»: дата чинності поточного значення прапорця; при перемиканні
+  // підставляється сьогодні (можна виправити) — генерація знять за довіз
+  // вирішує режим людини помісячно саме за цією датою
+  const [selfSince, setSelfSince] = useState(worker?.selfTransportSince ?? "");
+  const selfToggled = !!worker?.selfTransport !== selfTransport;
   // порожня ставка = NULL («авто» за правилами фабрики: пара посади → базова
   // пара фабрики); явне очищення поля знімає профільний override
   const finance = isOwner
@@ -46,7 +51,8 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const base = {
     fullName, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
     positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null,
-    telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport, ...finance,
+    telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport,
+    selfTransportSince: selfSince || null, ...finance,
   };
   const save = useMutation({
     mutationFn: (force?: boolean) => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, force ? { ...base, force: true } : base),
@@ -108,7 +114,17 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
         </div>
         <div><Label>{t("Telegram ID (необов'язково)")}</Label><Input value={telegramId} onChange={e => setTelegramId(e.target.value)} /></div>
         <div className="rounded-xl border border-slate-200 p-3">
-          <label className="flex items-center gap-1.5 text-sm text-slate-600"><input type="checkbox" checked={selfTransport} onChange={e => setSelfTransport(e.target.checked)} /> {t("Доїжджає сам")}</label>
+          <label className="flex items-center gap-1.5 text-sm text-slate-600">
+            <input type="checkbox" checked={selfTransport}
+              onChange={e => { setSelfTransport(e.target.checked); setSelfSince(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" })); }} />
+            {t("Доїжджає сам")}
+          </label>
+          {(selfToggled || selfSince) && (
+            <div className="mt-2">
+              <Label>{t("Діє з")}</Label>
+              <Input type="date" value={selfSince} onChange={e => setSelfSince(e.target.value)} className="w-44" />
+            </div>
+          )}
           <p className="mt-1.5 text-xs text-slate-400">{t("Не показується водіям і не рахується до забрання. Явку/відсутність відмічає графікова вручну у графіку.")}</p>
         </div>
         {isOwner && (

@@ -53,11 +53,14 @@ export interface Me { id: number; name: string; username: string; isMain: boolea
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
+  factoryId: number | null; factoryFromRequest: boolean; // фабрика ЗАПИТУ (false = фолбек на фабрику профілю)
   city: string; company: string | null; iban: string | null;
   amount: number; comment: string | null; status: "pending" | "approved" | "rejected" | "paid";
   adminNote: string | null; decidedAt: string | null; decidedByName: string | null;
   payoutMonth: string | null; payoutGroup: "15" | "30" | null;
-  paidAt: string | null; paidMethod: "transfer" | "cash" | null; paidTxnId: number | null; createdAt: string;
+  paidAt: string | null; paidMethod: "transfer" | "cash" | null; paidTxnId: number | null;
+  paidByName: string | null; // хто вручну позначив «виплачено» (сайт; бот-кнопка теж пише)
+  createdAt: string;
 }
 export interface Company { id: number; name: string; workerCount?: number }
 export type Gender = "male" | "female";
@@ -76,6 +79,7 @@ export interface Worker {
   companyId?: number | null; companyName?: string | null;
   positionId?: number | null; positionName?: string | null; positionColor?: string | null;
   gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
+  selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   status: string; isActive: boolean; language?: string | null;
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }

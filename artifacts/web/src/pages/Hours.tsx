@@ -206,7 +206,8 @@ export default function Hours() {
 
   const groups = useMemo<Group[]>(() => {
     // Одна вкладка на фабрику: фабрика шле одну евіденцію на всіх, незалежно
-    // від фірм працівників. multi_firm ділить лише сводну (from-hours).
+    // від фірм працівників. multi_firm стосується лише сводної (from-hours
+    // пише фірму в рядок — групи фірм усередині однієї вкладки).
     const map = new Map<string, Group>();
     for (const r of data?.workers ?? []) {
       const key = r.factoryId != null ? `f${r.factoryId}` : "none";

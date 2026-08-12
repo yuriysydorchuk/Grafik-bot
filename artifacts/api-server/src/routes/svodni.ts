@@ -233,9 +233,12 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
 
   // Фірма рядка: явна (книги Лодзі / заголовок вкладки при синку) → з фабрики
   // рядка (factories.company_id). svodni_rows.firm у більшості міст порожня,
-  // а веб фарбує вкладки фабрик за фірмою саме з цього поля.
-  const facFirm = new Map((await db.select({ id: factoriesTable.id, name: companiesTable.name })
-    .from(factoriesTable).innerJoin(companiesTable, eq(factoriesTable.companyId, companiesTable.id))).map(x => [x.id, x.name]));
+  // а веб фарбує вкладки фабрик за фірмою саме з цього поля. Мульти-контрактні
+  // фабрики (multi_firm) — виняток: фірма там ідентифікує ГРУПУ рядка всередині
+  // вкладки, порожню не вгадуємо з фабрики (рядок чесно йде в «без фірми»).
+  const facFirm = new Map((await db.select({ id: factoriesTable.id, name: companiesTable.name, multiFirm: factoriesTable.multiFirm })
+    .from(factoriesTable).innerJoin(companiesTable, eq(factoriesTable.companyId, companiesTable.id)))
+    .filter(x => !x.multiFirm).map(x => [x.id, x.name]));
   for (const r of rows) if (!r.firm && r.factoryId != null) r.firm = facFirm.get(r.factoryId as number) ?? null;
 
   const checks = (await db.select().from(svodniTabChecksTable).where(
@@ -419,7 +422,6 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
   const factory = factories.find(f => norm(f.name) === norm(factoryLabel))
     ?? factories.find(f => norm(f.name).startsWith(norm(factoryLabel)) || norm(factoryLabel).startsWith(norm(f.name)));
   const companies = await db.select().from(companiesTable);
-  const firm = factory?.companyId ? companies.find(c => c.id === factory.companyId)?.name ?? null : null;
 
   let worker: typeof workersTable.$inferSelect | undefined;
   if (workerId) {
@@ -449,6 +451,12 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     .from(svodniRowsTable).where(and(
       eq(svodniRowsTable.periodMonth, periodMonth), eq(svodniRowsTable.city, city),
       eq(svodniRowsTable.factoryLabel, factoryLabel)));
+
+  // фірма рядка: мульти-контрактна вкладка (Sushi&Food) — з профілю працівника
+  // (групи фірм усередині таблиці), інакше — фірма фабрики
+  const firm = factory?.multiFirm
+    ? (worker!.companyId != null ? companies.find(c => c.id === worker!.companyId)?.name ?? null : null)
+    : factory?.companyId ? companies.find(c => c.id === factory.companyId)?.name ?? null : null;
 
   // префіл із профілю — властивості людини «їдуть» за нею між місяцями
   const under26 = worker!.birthDate ? isUnder26(worker!.birthDate) : worker!.under26;
@@ -493,7 +501,7 @@ router.post("/svodni/rows/:id/unsplit", requireCap("svodni"), async (req: Authed
   if (row.workerId != null) [w] = await db.select().from(workersTable).where(eq(workersTable.id, row.workerId));
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
-      profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city,
+      profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
       payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
   }
@@ -675,7 +683,7 @@ function oldStateAt(parent: SegRow, existingSegs: SegRow[], oldProfileLegal: str
 // вхід computeSegmented з батьківського рядка БД
 function segParentInput(row: SegRow) {
   return {
-    city: row.city, factoryLabel: row.factoryLabel, hoursNotified: row.hoursNotified,
+    city: row.city, factoryLabel: row.factoryLabel, firm: row.firm, hoursNotified: row.hoursNotified,
     premia: row.premia, zaliczka: row.zaliczka, zaliczkaBd: row.zaliczkaBd, hostel: row.hostel,
     odziez: row.odziez, dojazd: row.dojazd, kara: row.kara, komornik: row.komornik,
     kaucja: row.kaucja, potracenia: row.potracenia,
@@ -868,7 +876,7 @@ function rowSetFromProfile(
   if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
-      profileLegal: (w.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city,
+      profileLegal: (w.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
       payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
   }
@@ -1004,7 +1012,7 @@ async function profileChangeContext(workerId: number, body: Record<string, unkno
         if (m3.hours != null && m3.rateBrutto != null) m3.brutto = Math.round(m3.hours * m3.rateBrutto * 100) / 100;
         if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
           applyLegalDefaults(m3, true, {
-            profileLegal: (uniform.legal ?? null) as any, factoryLabel: row.factoryLabel, city: row.city,
+            profileLegal: (uniform.legal ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
             payoutPref: nextW.payoutPrefKind ? { kind: nextW.payoutPrefKind as any, value: nextW.payoutPrefValue ?? null } : null,
           });
         }
@@ -1276,7 +1284,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
           profileLegal = pw?.ls ?? null;
           payoutPref = pw?.pk ? { kind: pw.pk as any, value: pw.pv ?? null } : null;
         }
-        applyLegalDefaults(mergedZ, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city });
+        applyLegalDefaults(mergedZ, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
         for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           if (mergedZ[k] !== row[k]) set[k] = mergedZ[k];
         }
@@ -1332,7 +1340,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       profileLegal = pw?.ls ?? null;
       payoutPref = pw?.pk ? { kind: pw.pk as any, value: pw.pv ?? null } : null;
     }
-    applyLegalDefaults(merged, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city });
+    applyLegalDefaults(merged, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
     for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
       if (merged[k] !== row[k]) set[k] = merged[k];
     }
@@ -1493,23 +1501,22 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     return lastAct != null && fired < lastAct;
   };
   // Мульти-контрактні фабрики — ЛИШЕ явний прапорець factories.multi_firm
-  // (Sushi&Food: Klinex + аутсорсинг). Вивід з фірм працівників був багом:
-  // разова підміна/помилка профілю ділила вкладки одноконтрактних клієнтів
-  // (BIMIZ, PREMIUM FRUITS — 08.2026). Вкладка ділиться по фірмі працівника,
-  // дзеркально вкладкам таблиці.
+  // (Sushi&Food: ES + ESO). Вивід з фірм працівників був багом: разова
+  // підміна/помилка профілю ділила вкладки одноконтрактних клієнтів
+  // (BIMIZ, PREMIUM FRUITS — 08.2026). Вкладка ОДНА (рішення 08.2026 — раніше
+  // ділилась суфіксами «… ESO» / «… EURO SUPORT»), фірма працівника пишеться
+  // в svodni_rows.firm — веб/Excel малюють розділові рядки груп усередині
+  // таблиці. firmSuffixFor лишився для матчингу legacy-рядків під старими
+  // назвами вкладок (findSvodniRowForPair).
   const companiesAll = await db.select().from(companiesTable);
   const coNameById = new Map(companiesAll.map(c => [c.id, c.name]));
+  const firmOf = (w0: typeof workers[number]): string | null => coNameById.get(w0.companyId ?? -1) ?? null;
   const firmSuffixFor = (fac: typeof facRows[number] | undefined, w0: typeof workers[number]): string => {
     if (!fac?.multiFirm) return "";
-    const cn = coNameById.get(w0.companyId ?? -1) ?? "";
+    const cn = firmOf(w0) ?? "";
     return cn === "ES" ? "EURO SUPORT" : cn.toUpperCase(); // як вкладки таблиці
   };
-  const tabLabelFor = (fac: typeof facRows[number] | undefined, w0: typeof workers[number]): string => {
-    if (!fac) return "Без фабрики";
-    if (!fac.multiFirm) return fac.name;
-    const suffix = firmSuffixFor(fac, w0);
-    return suffix ? `${fac.name} ${suffix}` : fac.name;
-  };
+  const tabLabelFor = (fac: typeof facRows[number] | undefined): string => fac ? fac.name : "Без фабрики";
   // становіска: назва позиції працівника → секція рядка (для фабрик з посадами)
   const positions = await db.select().from(positionsTable);
   const posById = new Map(positions.map(p => [p.id, p.name]));
@@ -1548,8 +1555,19 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     inArray(advanceRequestsTable.workerId, workerIds), eq(advanceRequestsTable.status, "paid"),
     sql`${advanceRequestsTable.paidAt} >= ${monthStart}`, sql`${advanceRequestsTable.paidAt} < ${monthEnd}`,
   ));
-  const advByWorker = new Map<number, number>();
-  for (const a of advances) advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
+  // Аванс із фабрикою запиту (factory_id) лягає в рядок САМЕ цієї пари — якщо
+  // в місяці є її години; інакше (і для історії без привʼязки) — фолбек у рядок
+  // «основної» фабрики (найбільше годин). Чужі рядки не чіпаємо (ручні правки).
+  const advByPair = new Map<string, number>();   // key2(worker, factory) → сума
+  const advByWorker = new Map<number, number>(); // фолбек: у main-пару
+  for (const a of advances) {
+    if (a.factoryId != null && hoursByPair.has(key2(a.workerId, a.factoryId))) {
+      const k = key2(a.workerId, a.factoryId);
+      advByPair.set(k, (advByPair.get(k) ?? 0) + a.amount);
+    } else {
+      advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
+    }
+  }
   const hostels = await db.select().from(hostelDeductionsTable).where(and(
     eq(hostelDeductionsTable.periodMonth, month), inArray(hostelDeductionsTable.workerId, workerIds),
   ));
@@ -1567,6 +1585,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     }
   }
   const isMainPair = (p: { workerId: number; factoryId: number | null }) => mainFactoryOf.get(p.workerId) === p.factoryId;
+  // залічка пари: привʼязані до цієї фабрики аванси + (для main-пари) фолбек-суми
+  const zalForPair = (p: { workerId: number; factoryId: number | null }): number | undefined => {
+    const direct = advByPair.get(key2(p.workerId, p.factoryId));
+    const main = isMainPair(p) ? advByWorker.get(p.workerId) : undefined;
+    return direct == null && main == null ? undefined : (direct ?? 0) + (main ?? 0);
+  };
 
   const existing = await db.select().from(svodniRowsTable)
     .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
@@ -1578,7 +1602,8 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const w = wById.get(pair.workerId);
     if (!w) continue;
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
-    const factoryLabel = tabLabelFor(fac, w);
+    const factoryLabel = tabLabelFor(fac);
+    const rowFirm = fac?.multiFirm ? firmOf(w) : null; // фірма — лише на мульти-контрактних вкладках
     const city = cityOf(pair.factoryId)!; // пари без міста відфільтровані вище
     // становіско (секція): позиція з профілю — для фабрик, що ведуть посади;
     // без посади в профілі — найдешевша посада фабрики (ставку вона й так задає),
@@ -1674,11 +1699,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
             brutto: s.rateBrutto != null ? r2(h * s.rateBrutto) : null,
           }).where(eq(svodniRowsTable.id, s.id));
         }
-        const zalS = isMainPair(pair) ? advByWorker.get(pair.workerId) : undefined;
+        const zalS = zalForPair(pair);
         const hosS = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
         await db.update(svodniRowsTable).set({
           zaliczka: zalS != null ? r2(zalS) : prev.zaliczka,
           hostel: hosS != null ? r2(hosS) : prev.hostel,
+          ...(fac?.multiFirm ? { firm: rowFirm } : {}),
         }).where(eq(svodniRowsTable.id, prev.id));
         await recomputeSegmentedParent(prev.id);
         updated++;
@@ -1689,7 +1715,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       // інші ручні правки (кари, odzież…) не затираються.
       // Бонусні фабрики (Agram/LST): ставка перечитується (галочки/дата могли змінитися)
       // Eurocash: файл фабрики авторитетний — ставки/нічні/потроненя перекриваються
-      const zal = isMainPair(pair) ? advByWorker.get(pair.workerId) : undefined;
+      const zal = zalForPair(pair);
       const hos = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
       const mergedExtras: Record<string, number | string> = { ...((prev.extras as Record<string, number | string>) ?? {}) };
       if (ec) {
@@ -1698,6 +1724,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       }
       const merged: any = {
         ...prev, hours: r2(pair.hours),
+        firm: fac?.multiFirm ? rowFirm : prev.firm,
         rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() ?? prev.rateNetto : prev.rateNetto,
         rateBrutto: ec ? ec.rateBrutto : prev.rateBrutto,
         potracenia: ec ? ec.potracenia : prev.potracenia,
@@ -1708,11 +1735,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
+      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: merged.firm });
       const unregU = isUnregistered(w, r2(pair.hours));
       if (unregU) merged.extras = { ...merged.extras, zusStatus: "не оформлений" };
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
+        firm: merged.firm,
         ...(ec || unregU ? { extras: merged.extras } : {}),
         ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia } : {}),
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
@@ -1727,7 +1755,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const hr: Record<string, string> = {};
     if (w.birthDate) { const [yy, mm, dd] = w.birthDate.split("-"); hr.dataUrodzenia = `${dd}.${mm}.${yy}`; }
     const row: any = {
-      periodMonth: month, city, firm: null, factoryLabel, factoryId: pair.factoryId,
+      periodMonth: month, city, firm: rowFirm, factoryLabel, factoryId: pair.factoryId,
       section, sortIdx: created, rawName: w.fullName, workerId: w.id, linkStatus: "confirmed",
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
       hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
@@ -1737,7 +1765,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       rateBrutto: ec ? ec.rateBrutto : base.brutto ?? (w.legalStatus == null || (isBonusFac && !stud26) ? KSIEG_STD_BRUTTO() : null),
       rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() : base.netto ?? (w.legalStatus == null ? KSIEG_STD_NETTO() : null),
       potracenia: ec ? ec.potracenia : null,
-      zaliczka: isMainPair(pair) && advByWorker.has(pair.workerId) ? r2(advByWorker.get(pair.workerId)!) : null,
+      zaliczka: zalForPair(pair) != null ? r2(zalForPair(pair)!) : null,
       hostel: isMainPair(pair) && hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
       extras: ec && ec.nocneH != null ? { nocneH: ec.nocneH, doplataNocna: ec.doplataNocna } : {},
@@ -1747,7 +1775,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (row.rateNetto == null) skippedNoRate++;
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref });
+    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: rowFirm });
     if (isUnregistered(w, r2(pair.hours))) row.extras = { ...row.extras, zusStatus: "не оформлений" };
     await db.insert(svodniRowsTable).values(row);
     created++;
@@ -1923,9 +1951,9 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
   for (const pair of byPair.values()) {
     const w = wById.get(pair.workerId);
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
-    const label = fac
-      ? (fac.multiFirm && w && firmSuffixFor(fac, w) ? `${fac.name} ${firmSuffixFor(fac, w)}` : fac.name)
-      : pair.label ?? "";
+    // вкладка мульти-контрактної фабрики ОДНА (фірма — в рядку); firmSuffix
+    // нижче — лише матчинг legacy-рядків під старими суфіксованими назвами
+    const label = fac ? fac.name : pair.label ?? "";
     const row = w ? findSvodniRowForPair(rows, {
       workerId: pair.workerId, factoryId: pair.factoryId, label,
       firmSuffix: w && fac ? firmSuffixFor(fac, w) : "", multiFirm: !!fac?.multiFirm,
@@ -1955,7 +1983,7 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
     if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
     if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
       const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
-      applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city });
+      applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
       for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
         if (merged[k] !== row[k]) set[k] = merged[k];
       }
@@ -1982,6 +2010,103 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
     }
   }
   ok(res, { month, updated, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched });
+});
+
+// Перенесення знять за одяг у колонку Odzież сводної місяця. Джерело — реєстр
+// одягу «до зняття» (price>0, не знято, не списано, не повернуто). Одяг не
+// привʼязаний до фабрики, тож сума людини лягає в рядок її фабрики з
+// НАЙБІЛЬШИМИ годинами місяця; залочені вкладки пропускаються. Після запису
+// позиції позначаються deducted + deducted_month/amount (архів «що знято»).
+router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const { clothingItemsTable } = await import("@workspace/db");
+  const items = await db.select().from(clothingItemsTable).where(and(
+    eq(clothingItemsTable.deducted, false), eq(clothingItemsTable.writtenOff, false),
+    isNull(clothingItemsTable.returnedAt), sql`${clothingItemsTable.price} is not null and ${clothingItemsTable.price} > 0`,
+  ));
+  if (!items.length) return fail(res, 400, "немає одягу до зняття");
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const unmatched: { workerName: string | null; amount: number }[] = [];
+  const byWorker = new Map<number, { amount: number; itemIds: number[] }>();
+  for (const it of items) {
+    if (it.workerId == null) { unmatched.push({ workerName: it.workerName, amount: it.price! }); continue; }
+    const cur = byWorker.get(it.workerId) ?? byWorker.set(it.workerId, { amount: 0, itemIds: [] }).get(it.workerId)!;
+    cur.amount = r2(cur.amount + it.price!);
+    cur.itemIds.push(it.id);
+  }
+
+  const rows = await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const locks = await monthLocks(month);
+  const workerIds = [...byWorker.keys()];
+  const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
+  const wById = new Map(workers.map(w => [w.id, w]));
+
+  let updated = 0, skippedLocked = 0;
+  const markedItemIds: number[] = [];
+  const expectedRows: { rowId: number; workerName: string; factoryLabel: string; amount: number | null }[] = [];
+  for (const [workerId, agg] of byWorker) {
+    const w = wById.get(workerId);
+    // рядок «основної» фабрики: серед батьківських рядків людини в місяці —
+    // з найбільшими годинами (нульові теж валідні, аби існував рядок)
+    const mine = rows.filter(r => r.workerId === workerId);
+    const row = mine.sort((a, b) => (b.hours ?? 0) - (a.hours ?? 0))[0];
+    if (!row) { unmatched.push({ workerName: w?.fullName ?? null, amount: agg.amount }); continue; }
+    if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
+    const amount = agg.amount !== 0 ? agg.amount : null;
+
+    // порізаний на сегменти рядок: Odzież — місячний ввід на батькові
+    const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
+      .where(eq(svodniRowsTable.segmentOf, row.id)).limit(1);
+    if (segMark) {
+      await db.update(svodniRowsTable).set({ odziez: amount, manual: true, mismatch: null })
+        .where(eq(svodniRowsTable.id, row.id));
+      await recomputeSegmentedParent(row.id);
+    } else {
+      // та сама послідовність, що й ручна правка клітинки Odzież:
+      // перерахунок до виплати → статусні правила księgowości → готівка
+      const merged: any = { ...row, odziez: amount };
+      const set: Record<string, unknown> = { odziez: amount, manual: true, mismatch: null };
+      const payout = computePayout(merged, row.city as any);
+      if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
+      if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+        const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+          if (merged[k] !== row[k]) set[k] = merged[k];
+        }
+      }
+      if (merged.ksiegNetto != null && merged.doWyplaty != null) {
+        const doplata = typeof merged.extras?.doplataEs === "number" ? merged.extras.doplataEs : 0;
+        set.gotowka = r2(merged.doWyplaty - merged.ksiegNetto + doplata);
+      }
+      await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, row.id));
+    }
+    expectedRows.push({ rowId: row.id, workerName: w?.fullName ?? row.rawName, factoryLabel: row.factoryLabel, amount });
+    markedItemIds.push(...agg.itemIds);
+    updated++;
+  }
+  // архів: перенесені позиції позначаються «знято» з місяцем і фактичною сумою
+  if (markedItemIds.length) {
+    await db.update(clothingItemsTable)
+      .set({ deducted: true, deductedMonth: month, deductedAmount: sql`${clothingItemsTable.price}` })
+      .where(inArray(clothingItemsTable.id, markedItemIds));
+  }
+  // САМОЗВІРКА: перечитуємо записані рядки і порівнюємо Odzież з переданим
+  const verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[] = [];
+  if (expectedRows.length) {
+    const fresh = await db.select({ id: svodniRowsTable.id, odziez: svodniRowsTable.odziez })
+      .from(svodniRowsTable).where(inArray(svodniRowsTable.id, expectedRows.map(e => e.rowId)));
+    const freshById = new Map(fresh.map(f => [f.id, f.odziez]));
+    for (const e of expectedRows) {
+      const actual = freshById.get(e.rowId) ?? null;
+      if ((actual ?? 0) !== (e.amount ?? 0)) {
+        verifyMismatches.push({ workerName: e.workerName, factoryLabel: e.factoryLabel, expected: e.amount, actual });
+      }
+    }
+  }
+  ok(res, { month, updated, itemsMarked: markedItemIds.length, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched });
 });
 
 router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {
@@ -2070,23 +2195,39 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
     (byFactory.get(k) ?? byFactory.set(k, []).get(k)!).push(r);
   }
   const collator = new Intl.Collator("pl");
+  // мульти-контрактна вкладка (Sushi&Food): рядки різних фірм в одному аркуші,
+  // розділені жирним рядком фірми (як старі суфіксовані вкладки, лише разом)
+  const firmDisplay = (f: string) => (f === "ES" ? "EURO SUPORT" : f.toLocaleUpperCase("pl-PL"));
   for (const [label, list] of byFactory) {
     // назва вкладки: обрізаємо заборонені символи Excel і 31 символ ліміту
     const ws = wb.addWorksheet(label.replace(/[\\/?*[\]:]/g, " ").slice(0, 31));
     ws.addRow(["Lp", ...cols.map(c => c.header)]).font = { bold: true };
-    // секції-становіска, всередині — за алфавітом; без секції — в кінець
-    const sections = new Map<string, typeof list>();
-    for (const r of list) (sections.get(r.section ?? "") ?? sections.set(r.section ?? "", []).get(r.section ?? "")!).push(r);
-    const sectionKeys = [...sections.keys()].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : collator.compare(a, b)));
+    const firms = new Map<string, typeof list>();
+    for (const r of list) (firms.get(r.firm ?? "") ?? firms.set(r.firm ?? "", []).get(r.firm ?? "")!).push(r);
+    const firmKeys = [...firms.keys()]
+      .sort((a, b) => (a === "" ? 1 : b === "" ? -1 : collator.compare(firmDisplay(a), firmDisplay(b))));
+    const splitByFirm = firmKeys.filter(f => f !== "").length > 1;
     let lp = 1;
-    for (const sec of sectionKeys) {
-      if (sec && sections.size > 1) {
-        const row = ws.addRow([sec]);
-        row.font = { bold: true };
+    for (const fk of splitByFirm ? firmKeys : [""]) {
+      const firmList = splitByFirm ? firms.get(fk)! : list;
+      if (splitByFirm && fk) {
+        const row = ws.addRow([firmDisplay(fk)]);
+        row.font = { bold: true, size: 12 };
         ws.mergeCells(row.number, 1, row.number, cols.length + 1);
       }
-      const people = sections.get(sec)!.sort((a, b) => collator.compare(String(a.workerName ?? a.rawName), String(b.workerName ?? b.rawName)));
-      for (const r of people) ws.addRow([lp++, ...cols.map(c => c.get(r) ?? "")]);
+      // секції-становіска, всередині — за алфавітом; без секції — в кінець
+      const sections = new Map<string, typeof firmList>();
+      for (const r of firmList) (sections.get(r.section ?? "") ?? sections.set(r.section ?? "", []).get(r.section ?? "")!).push(r);
+      const sectionKeys = [...sections.keys()].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : collator.compare(a, b)));
+      for (const sec of sectionKeys) {
+        if (sec && sections.size > 1) {
+          const row = ws.addRow([sec]);
+          row.font = { bold: true };
+          ws.mergeCells(row.number, 1, row.number, cols.length + 1);
+        }
+        const people = sections.get(sec)!.sort((a, b) => collator.compare(String(a.workerName ?? a.rawName), String(b.workerName ?? b.rawName)));
+        for (const r of people) ws.addRow([lp++, ...cols.map(c => c.get(r) ?? "")]);
+      }
     }
     // сумарний рядок по числових колонках
     const sums = cols.map(c => list.reduce((a, r) => {

@@ -1,8 +1,9 @@
 // Транспортні гроші: виплати водіям за виїзди (журнал 2022–2026 або авторозрахунок
 // з призначень × ставки), архівний журнал поїздок, зняття з ЗП за довіз, ставки.
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Bus } from "lucide-react";
+import { Plus, Pencil, Trash2, Bus, Car } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, put } from "../lib/api";
 import { Button, Input, Label, Card, Spinner, Badge, Modal, Empty, Select } from "../components/ui";
@@ -21,7 +22,11 @@ type TripRow = {
   vehiclePlate: string | null; odoFrom: number | null; odoTo: number | null; km: number | null;
   people: number | null; payAmount: number | null; note: string | null;
 };
-type DeductionRow = { id: number; workerId: number | null; workerName: string | null; factoryId: number | null; factoryLabel: string | null; tripsCount: number | null; amount: number; note: string | null; sourceRef?: string | null; hours?: number | null };
+type DeductionRow = {
+  id: number | null; workerId: number | null; workerName: string | null; factoryId: number | null; factoryLabel: string | null;
+  tripsCount: number | null; amount: number | null; note: string | null; sourceRef?: string | null; hours?: number | null;
+  selfTransport?: boolean; selfTransportSince?: string | null;
+};
 type RatesData = { drivers: { id: number; name: string; tripRate: number | null }[]; overrides: { id: number; driverId: number; factoryId: number; factoryName: string | null; rate: number }[] };
 
 export default function Transport() {
@@ -193,7 +198,7 @@ function DeductionsTab() {
   const [editing, setEditing] = useState<DeductionRow | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["transport-deductions"] });
   const remove = useMutation({ mutationFn: (id: number) => del(`/transport/deductions/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
-  const total = (data?.rows ?? []).reduce((s, r) => s + r.amount, 0);
+  const total = (data?.rows ?? []).reduce((s, r) => s + (r.amount ?? 0), 0);
   // авторозрахунок по фабриках з платним довозом (перетирає лише авто-рядки)
   const generate = useMutation({
     mutationFn: () => post<{ created: number; updated: number; deleted: number; skippedManual: number }>("/transport/deductions/generate", { month }),
@@ -284,7 +289,7 @@ function DeductionsTab() {
                   <span className="text-xs text-slate-400">{rows.length} {t("людей")}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold tabular-nums text-slate-800">{fmtPln(rows.reduce((s, r) => s + r.amount, 0))} зл</span>
+                  <span className="text-sm font-semibold tabular-nums text-slate-800">{fmtPln(rows.reduce((s, r) => s + (r.amount ?? 0), 0))} зл</span>
                   {canSvodni && factoryId != null && (
                     <Button variant="secondary" className="px-2 py-1 text-xs" loading={applySvodni.isPending}
                       onClick={async () => { if (await confirm({ title: `${t("Перенести до сводної")}: ${label}?`, message: t("Суми з цієї таблиці ляжуть у колонку Dojazd сводної місяця (затверджені вкладки пропускаються)."), confirmText: t("Перенести") })) applySvodni.mutate({ factoryId }); }}>
@@ -307,9 +312,19 @@ function DeductionsTab() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {rows.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50">
+                      <tr key={r.id ?? `v${r.workerId}|${r.factoryId}`} className="hover:bg-slate-50">
                         <td className="px-4 py-2">
-                          <span className="font-medium text-slate-700">{r.workerName ?? "—"}</span>
+                          {r.workerId != null ? (
+                            <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? "—"}</Link>
+                          ) : (
+                            <span className="font-medium text-slate-700">{r.workerName ?? "—"}</span>
+                          )}
+                          {r.selfTransport && (
+                            <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle text-sky-500"
+                              title={t("Доїжджає сам") + (r.selfTransportSince ? ` · ${t("з")} ${r.selfTransportSince}` : "")}>
+                              <Car className="h-3.5 w-3.5" /><span className="text-[10px] font-medium uppercase">{t("сам")}</span>
+                            </span>
+                          )}
                           {r.workerId == null && <span className="ml-1.5 align-middle"><Badge color="amber">{t("не привʼязано")}</Badge></span>}
                           {r.sourceRef === "auto" && <span className="ml-1.5 align-middle"><Badge>{t("авто")}</Badge></span>}
                           {r.sourceRef === "manual-edit" && <span className="ml-1.5 align-middle"><Badge color="blue">{t("правлено")}</Badge></span>}
@@ -318,15 +333,20 @@ function DeductionsTab() {
                           {r.hours != null ? <>{r.hours} <span className="text-xs text-slate-400">{t("год")}</span></> : "—"}
                         </td>
                         <td className="px-3 py-2 text-right font-medium tabular-nums text-slate-700">{r.tripsCount ?? "—"}</td>
-                        <td className="px-3 py-2 whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">{fmtPln(r.amount)} <span className="text-xs font-normal text-slate-400">зл</span></td>
+                        <td className="px-3 py-2 whitespace-nowrap text-right font-semibold tabular-nums text-slate-800">
+                          {r.amount != null ? <>{fmtPln(r.amount)} <span className="text-xs font-normal text-slate-400">зл</span></>
+                            : <span className="text-xs font-normal text-slate-400">{t("не знімається")}</span>}
+                        </td>
                         <td className="max-w-50 truncate px-4 py-2 text-xs text-slate-400" title={r.note ?? undefined}>{r.note ?? ""}</td>
                         <td className="px-2 py-2 text-right">
-                          <div className="flex justify-end gap-0.5">
-                            <button onClick={() => setEditing(r)} title={t("Редагувати")}
-                              className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
-                            <button onClick={async () => { if (await confirm({ title: t("Видалити зняття?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }}
-                              title={t("Видалити")} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
-                          </div>
+                          {r.id != null && (
+                            <div className="flex justify-end gap-0.5">
+                              <button onClick={() => setEditing(r)} title={t("Редагувати")}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
+                              <button onClick={async () => { if (await confirm({ title: t("Видалити зняття?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id!); }}
+                                title={t("Видалити")} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -347,7 +367,7 @@ function DeductionModal({ deduction, month, onClose, onSaved }: { deduction?: De
   const isEdit = !!deduction;
   const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({ queryKey: ["workers-light"], queryFn: () => get("/workers") });
   const [workerId, setWorkerId] = useState(deduction?.workerId != null ? String(deduction.workerId) : "");
-  const [amount, setAmount] = useState(deduction != null ? String(deduction.amount) : "");
+  const [amount, setAmount] = useState(deduction?.amount != null ? String(deduction.amount) : "");
   const [tripsCount, setTripsCount] = useState(deduction?.tripsCount != null ? String(deduction.tripsCount) : "");
   const [note, setNote] = useState(deduction?.note ?? "");
 

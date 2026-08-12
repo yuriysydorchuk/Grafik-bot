@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, payrollSourcesTable, payrollFactoryMonthsTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -269,6 +269,36 @@ test("«Години підтверджені → до сводної»: ряд�
   assert.equal(rows[0]!.doWyplaty, 3768);
 });
 
+test("from-hours: залічка лягає у рядок фабрики ЗАПИТУ; без привʼязки — у «основну» (найбільше годин)", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [w] = await db.insert(workersTable).values({ fullName: "Dwie Fabryki", hourlyRate: 25, hourlyRateNetto: 25 }).returning();
+  const [facA] = await db.insert(factoriesTable).values({ name: "FAB A" } as any).returning();
+  const [facB] = await db.insert(factoriesTable).values({ name: "FAB B" } as any).returning();
+  await seedPayrollRegion("FAB A", "Люблін");
+  await seedPayrollRegion("FAB B", "Люблін");
+  // A — основна (більше годин), B — друга
+  await db.insert(monthlyReportsTable).values([
+    { workerId: w!.id, month: "2026-05", factoryId: facA!.id, hoursReported: 120 },
+    { workerId: w!.id, month: "2026-05", factoryId: facB!.id, hoursReported: 40 },
+  ] as any);
+  // виплачені аванси місяця: 400 просили з FAB B (factory_id), 100 — легасі без привʼязки
+  await db.insert(advanceRequestsTable).values([
+    { workerId: w!.id, factoryId: facB!.id, amount: 400, status: "paid", paidAt: new Date("2026-05-20T12:00:00Z") },
+    { workerId: w!.id, amount: 100, status: "paid", paidAt: new Date("2026-05-22T12:00:00Z") },
+  ] as any);
+
+  const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.created, 2);
+
+  const rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  const rowA = rows.find(x => x.factoryLabel === "FAB A");
+  const rowB = rows.find(x => x.factoryLabel === "FAB B");
+  assert.equal(rowB?.zaliczka, 400, "аванс із фабрикою запиту — у її рядок");
+  assert.equal(rowA?.zaliczka, 100, "легасі-аванс без привʼязки — у основну фабрику");
+});
+
 test("from-hours після перейменування фабрики оновлює стару вкладку, не плодить дублікат", opts, async () => {
   await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
   const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
@@ -294,6 +324,64 @@ test("from-hours після перейменування фабрики онов
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.hours, 20);
   assert.equal(rows[0]!.factoryLabel, "Scandic Food", "вкладка лишається під своєю назвою");
+});
+
+test("from-hours: multi_firm — ОДНА вкладка, фірма в рядку; Sushi ES — конто максимум 80 год", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [es] = await db.insert(companiesTable).values({ name: "ES" } as any).returning();
+  const [eso] = await db.insert(companiesTable).values({ name: "ESO" } as any).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "Sushi&Food Factory", multiFirm: true, usesPositions: true } as any).returning();
+  await seedPayrollRegion("Sushi&Food Factory", "Познань");
+  // три посади з ОДНАКОВОЮ мінімальною ставкою (Reepack вставлений першим):
+  // секція безпосадних — «найдешевша» посада, тай-брейк — алфавіт → Pracownik
+  for (const name of ["Reepack", "Skoczek", "Pracownik"]) {
+    const [pos] = await db.insert(positionsTable).values({ name }).returning();
+    await db.insert(factoryPositionsTable).values({ factoryId: fac!.id, positionId: pos!.id, rate: 31.4, rateNetto: 25.35 });
+  }
+  const [wEs] = await db.insert(workersTable).values({
+    fullName: "Esowy Adam", workerCode: "00011", hourlyRate: 31.4, hourlyRateNetto: 25.35,
+    legalStatus: "zus", companyId: es!.id,
+  }).returning();
+  const [wEso] = await db.insert(workersTable).values({
+    fullName: "Esowa Ewa", workerCode: "00012", hourlyRate: 31.4, hourlyRateNetto: 25.35,
+    legalStatus: "zus", companyId: eso!.id,
+  }).returning();
+  await db.insert(monthlyReportsTable).values([
+    { workerId: wEs!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 227 },
+    { workerId: wEso!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 200 },
+  ]);
+
+  const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.created, 2);
+  const rows = await db.select().from(svodniRowsTable);
+  assert.deepEqual([...new Set(rows.map(x => x.factoryLabel))], ["Sushi&Food Factory"], "вкладка одна, без фірмових суфіксів");
+  const rEs = rows.find(x => x.workerId === wEs!.id)!;
+  const rEso = rows.find(x => x.workerId === wEso!.id)!;
+  assert.equal(rEs.firm, "ES");
+  assert.equal(rEso.firm, "ESO");
+  assert.equal(rEs.section, "Pracownik", "безпосадний → найдешевша посада, тай-брейк за алфавітом (не Reepack)");
+  assert.equal(rEso.section, "Pracownik");
+  // ES: конто максимум 80 год × 25.35, решта готівкою
+  assert.equal(rEs.hoursDeclared, 80);
+  assert.equal(rEs.konto, 2028);
+  assert.equal(rEs.gotowka, Math.round((227 * 25.35 - 2028) * 100) / 100);
+  // ESO: без стелі — все на конто
+  assert.equal(rEso.hoursDeclared, 200);
+  assert.equal(rEso.gotowka, 0);
+
+  // legacy-рядок під старою суфіксованою вкладкою: оновлюється, дубля немає
+  await db.update(svodniRowsTable).set({ factoryLabel: "Sushi&Food Factory EURO SUPORT" })
+    .where(eq(svodniRowsTable.id, rEs.id));
+  await db.update(monthlyReportsTable).set({ hoursReported: 100 }).where(eq(monthlyReportsTable.workerId, wEs!.id));
+  const r2 = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r2.body.created, 0, "legacy-вкладка не плодить дубль");
+  assert.equal(r2.body.updated, 2);
+  const [rEs2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, rEs.id));
+  assert.equal(rEs2!.hours, 100);
+  assert.equal(rEs2!.factoryLabel, "Sushi&Food Factory EURO SUPORT", "рядок лишає свій label (переносить міграція)");
+  assert.equal(rEs2!.hoursDeclared, 80, "стеля діє й під legacy-назвою (фірма з рядка)");
 });
 
 test("from-hours: лок вкладки під СТАРОЮ назвою фабрики теж блокує оновлення", opts, async () => {

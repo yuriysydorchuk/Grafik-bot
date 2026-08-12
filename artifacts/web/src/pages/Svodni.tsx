@@ -449,7 +449,9 @@ export default function Svodni() {
     for (const f of factories) {
       const fr = cityRows.filter(r => r.factoryLabel === f);
       const cnt = filterActive ? fr.filter(matchesFilters).length : fr.length;
-      m.set(f, { count: cnt, mismatch: fr.some(r => r.mismatch), manual: fr.some(r => r.manual), firm: labelFirm(f) ?? fr.find(r => r.firm)?.firm ?? null });
+      // мульти-контрактна вкладка (кілька фірм у рядках) — без фірмового бейджа
+      const rowFirms = new Set(fr.map(r => r.firm).filter(Boolean));
+      m.set(f, { count: cnt, mismatch: fr.some(r => r.mismatch), manual: fr.some(r => r.manual), firm: labelFirm(f) ?? (rowFirms.size === 1 ? [...rowFirms][0]! : null) });
     }
     return m;
   }, [factories, cityRows, filterActive, matchesFilters]);
@@ -791,9 +793,12 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   });
   const segRange = (s: Seg) => (s.from && s.to ? `${s.from.slice(8, 10)}.${s.from.slice(5, 7)}–${s.to.slice(8, 10)}.${s.to.slice(5, 7)}` : "—");
   const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
-  // порядок рядків: явне сортування користувача > секції-становіска (алфавіт
-  // всередині, pl) > порядок таблиці (sortIdx)
+  // порядок рядків: явне сортування користувача > групи фірм (мульти-контрактна
+  // вкладка, напр. Sushi&Food) > секції-становіска (алфавіт всередині, pl) >
+  // порядок таблиці (sortIdx)
   const collator = useMemo(() => new Intl.Collator("pl"), []);
+  const firmDisplay = (f: string | null) => (f === "ES" ? "EURO SUPORT" : (f ?? "").toLocaleUpperCase("pl-PL"));
+  const multiFirmTab = useMemo(() => new Set(rows.map(r => r.firm ?? "")).size > 1, [rows]);
   const cellVal = (r: Row, k: string): unknown =>
     k.startsWith("extras.") ? r.extras[k.slice(7)] : k.startsWith("hr.") ? r.hr[k.slice(3)] : (r as any)[k];
   const sortedRows = useMemo(() => {
@@ -814,13 +819,14 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
       });
       return list;
     }
-    if (list.some(r => r.section)) {
+    if (multiFirmTab || list.some(r => r.section)) {
       list.sort((a, b) =>
-        collator.compare(a.section ?? "￿", b.section ?? "￿")
+        (multiFirmTab ? collator.compare(a.firm ? firmDisplay(a.firm) : "￿", b.firm ? firmDisplay(b.firm) : "￿") : 0)
+        || collator.compare(a.section ?? "￿", b.section ?? "￿")
         || collator.compare(a.workerName ?? a.rawName, b.workerName ?? b.rawName));
     }
     return list;
-  }, [rows, sort, collator]);
+  }, [rows, sort, collator, multiFirmTab]);
   // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху);
   // рахуємо по ВСІХ рядках фабрики — інакше колонки стрибають під час пошуку
   const allFactoryRows = useMemo(() => cityRows.filter(r => r.factoryLabel === label), [cityRows, label]);
@@ -936,8 +942,17 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
               <tr><td colSpan={colCount} className="px-3 py-6 text-center text-sm text-slate-400">{t("У цій фабриці немає людей цього місяця")}</td></tr>
             )}
             {sortedRows.map((r, i) => {
-              const sectionChanged = !sort && r.section && r.section !== sortedRows[i - 1]?.section;
+              // мульти-контрактна вкладка: жирний розділовий рядок фірми (ES/ESO)
+              const firmChanged = !sort && multiFirmTab && (i === 0 || (r.firm ?? "") !== (sortedRows[i - 1]!.firm ?? ""));
+              const sectionChanged = !sort && r.section && (firmChanged || r.section !== sortedRows[i - 1]?.section);
               return [
+                firmChanged ? (
+                  <tr key={`firm-${r.id}`} className="border-y-2 border-slate-300 bg-slate-200/80">
+                    <td colSpan={colCount} className="px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-slate-600">
+                      {r.firm ? firmDisplay(r.firm) : t("Без фірми")}
+                    </td>
+                  </tr>
+                ) : null,
                 sectionChanged ? (
                   <tr key={`sec-${r.id}`} className="border-y border-slate-200 bg-slate-100">
                     <td colSpan={colCount} className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{r.section}</td>

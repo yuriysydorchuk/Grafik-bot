@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock, Home, KeyRound
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Lock, Home, KeyRound, Shirt
 } from "lucide-react";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
@@ -21,6 +21,8 @@ interface WorkerProfile {
   factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
+  selfTransportSince?: string | null;
+  badaniaZaliczka?: number | null; badaniaDeducted?: boolean;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
@@ -75,6 +77,7 @@ export default function WorkerDetail() {
     factoryId: w.factoryId, factoryName: w.factoryName, companyId: w.companyId, companyName: w.companyName,
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
     gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
+    selfTransportSince: w.selfTransportSince ?? null,
     status: w.status, isActive: w.isActive, language: w.language,
     hourlyRate: w.hourlyRate, isStudent: w.isStudent, under26: w.under26,
   };
@@ -117,7 +120,11 @@ export default function WorkerDetail() {
           <Info icon={Briefcase} label={t("Посада")} value={w.positionName ?? "—"} />
           <Info icon={Users} label={t("Стать")} value={w.gender === "male" ? t("Чоловік") : w.gender === "female" ? t("Жінка") : "—"} />
           {w.fixedShift && <Info icon={CalendarCheck} label={t("Закріплена зміна")} value={t("{n} зміна", { n: w.fixedShift })} />}
-          {w.selfTransport && <Info icon={Car} label={t("Транспорт")} value={t("Доїжджає сам")} />}
+          {(w.selfTransport || w.selfTransportSince) && (
+            <Info icon={Car} label={t("Транспорт")}
+              value={`${w.selfTransport ? t("Доїжджає сам") : t("Возить фірма")}${w.selfTransportSince ? ` · ${t("з")} ${new Date(w.selfTransportSince + "T00:00:00").toLocaleDateString("uk-UA")}` : ""}`} />
+          )}
+          <BadaniaRow workerId={w.id} amount={w.badaniaZaliczka ?? null} deducted={!!w.badaniaDeducted} />
           {(w.factoryCodes ?? []).length > 0 && (
             <Info icon={KeyRound} label={t("Ключі фабрики")}
               value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
@@ -188,6 +195,10 @@ export default function WorkerDetail() {
 
       {/* Хостел: де живе і скільки платить (довідник — сторінка /hostels) */}
       {canSvodni && <WorkerHostel workerId={w.id} />}
+
+      {/* Одяг: видане зі складу магазину, вартість/зняття, повернення */}
+      <WorkerClothing workerId={w.id} />
+
 
       {/* Recent shifts */}
       <Card className="mt-5 overflow-hidden">
@@ -589,6 +600,46 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
   );
 }
 
+// Залічка за бадання (медогляд): сума + позначка «знято з ЗП» (ручний облік)
+function BadaniaRow({ workerId, amount, deducted }: { workerId: number; amount: number | null; deducted: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const save = useMutation({
+    mutationFn: (body: { badaniaZaliczka?: number | null; badaniaDeducted?: boolean }) => patch(`/workers/${workerId}`, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="text-slate-400">{t("Залічка за бадання")}:</span>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600"
+            onClick={() => save.mutate({ badaniaZaliczka: draft === "" ? null : Number(draft) })}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : (
+        <>
+          <button className="font-medium text-slate-700 hover:text-red-600"
+            onClick={() => { setDraft(amount == null ? "" : String(amount)); setEditing(true); }}>
+            {amount != null ? `${amount} зл` : t("вказати")}
+          </button>
+          {amount != null && (
+            <button title={t("Клікни, щоб перемкнути")} onClick={() => save.mutate({ badaniaDeducted: !deducted })}>
+              {deducted ? <Badge color="green">{t("знято")}</Badge> : <Badge color="rose">{t("ще ні")}</Badge>}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function BirthDateRow({ workerId, birthDate, under26Fallback }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null }) {
   const t = useT();
   const qc = useQueryClient();
@@ -954,6 +1005,147 @@ function WorkerHostel({ workerId }: { workerId: number }) {
         </tbody>
       </table>
     </Card>
+  );
+}
+
+// Одяг: видане (з магазину або вручну), вартість «маємо зняти» / фактично
+// знято (місяць сводної), повернення на склад. Магазин і склад — сторінка /clothing.
+const CLOTHING_TYPE_LABEL: Record<string, string> = { boots: "Взуття", coverall: "Комбінезон", jacket: "Куртка", hat: "Шапка", tshirt: "Футболка", set: "Комплект", other: "Інше" };
+type WorkerClothingItem = {
+  id: number; itemType: string; size: string | null; condition: string | null; ownership: string | null;
+  price: number | null; deducted: boolean; deductedAmount: number | null; deductedMonth: string | null;
+  writtenOff: boolean; issuedAt: string | null; returnedAt: string | null; periodMonth: string | null; note: string | null;
+};
+type ClothingStockRow = { id: number; itemType: string; name: string | null; size: string | null; condition: string; price: number | null; qty: number; isActive: boolean };
+
+function WorkerClothing({ workerId }: { workerId: number }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [issuing, setIssuing] = useState(false);
+  const { data } = useQuery<{ rows: WorkerClothingItem[] }>({
+    queryKey: ["worker-clothing", workerId], queryFn: () => get(`/clothing?workerId=${workerId}`),
+  });
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-clothing", workerId] }); qc.invalidateQueries({ queryKey: ["clothing-stock"] }); };
+  const ret = useMutation({
+    mutationFn: (id: number) => post(`/clothing/${id}/return`, {}),
+    onSuccess: () => { inv(); toast.success(t("Повернуто на склад")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const rows = data?.rows ?? [];
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  return (
+    <Card className="mt-5 overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
+        <Shirt className="h-4 w-4 text-slate-400" />
+        <h3 className="text-sm font-semibold text-slate-700">{t("Одяг")}</h3>
+        <div className="ml-auto flex items-center gap-3">
+          <Link href="/clothing" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до магазину")} →</Link>
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setIssuing(true)}><Plus className="h-3.5 w-3.5" /> {t("Видати")}</Button>
+        </div>
+      </div>
+      {!rows.length ? <Empty>{t("Одяг не видавався")}</Empty> : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-130 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="px-4 py-2">{t("Що")}</th><th className="px-3 py-2">{t("Видано")}</th>
+                <th className="px-3 py-2">{t("Повернуто")}</th><th className="px-3 py-2 text-right">{t("Маємо зняти")}</th>
+                <th className="px-3 py-2">{t("Фактично знято")}</th><th className="px-2 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(i => (
+                <tr key={i.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-2 font-medium text-slate-700">
+                    {t(CLOTHING_TYPE_LABEL[i.itemType] ?? i.itemType)}
+                    {i.size && <span className="ml-1 text-slate-400">· {i.size}</span>}
+                    {i.condition && <span className="ml-1.5 align-middle">{i.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : <Badge color="slate">{t("БУ")}</Badge>}</span>}
+                    {i.writtenOff && <span className="ml-1.5 align-middle"><Badge color="slate">{t("списано")}</Badge></span>}
+                  </td>
+                  <td className="px-3 py-2 text-slate-500">{i.issuedAt ? fmtD(i.issuedAt) : i.periodMonth ?? "—"}</td>
+                  <td className="px-3 py-2 text-slate-500">{i.returnedAt ? fmtD(i.returnedAt) : "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-slate-600">{i.price != null ? `${i.price.toFixed(2)} зл` : "—"}</td>
+                  <td className="px-3 py-2">
+                    {i.deducted
+                      ? <Badge color="green">{(i.deductedAmount ?? i.price)?.toFixed(2)} зл{i.deductedMonth ? ` · ${i.deductedMonth}` : ""}</Badge>
+                      : i.returnedAt ? <span className="text-xs text-slate-400">{t("повернуто без зняття")}</span>
+                      : i.price != null ? <Badge color="rose">{t("ще ні")}</Badge> : "—"}
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    {!i.returnedAt && (
+                      <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        onClick={async () => { if (await confirm({ title: t("Прийняти повернення?"), message: t("Річ повернеться на склад; нова після носіння стане БУ. Незняту вартість більше не буде видно у «до зняття»."), confirmText: t("Повернути") })) ret.mutate(i.id); }}>
+                        ↩ {t("Повернення")}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {issuing && <IssueClothingModal workerId={workerId} onClose={() => setIssuing(false)} onSaved={() => { inv(); setIssuing(false); }} />}
+    </Card>
+  );
+}
+
+// Видача зі складу: з фіксованим працівником (профіль) або з вибором (сторінка «Одяг»)
+export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: number; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const { data: stock = [] } = useQuery<ClothingStockRow[]>({ queryKey: ["clothing-stock"], queryFn: () => get("/clothing/stock") });
+  const available = stock.filter(s => s.isActive && s.qty > 0);
+  const [stockId, setStockId] = useState("");
+  const [price, setPrice] = useState("");
+  const [date, setDate] = useState(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }));
+  const [note, setNote] = useState("");
+  const [pickedWorker, setPickedWorker] = useState("");
+  const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({
+    queryKey: ["workers-light"], queryFn: () => get("/workers"), enabled: workerId == null,
+  });
+  const targetWorkerId = workerId ?? (pickedWorker ? Number(pickedWorker) : null);
+  const sel = available.find(s => String(s.id) === stockId);
+  const stockLabel = (s: ClothingStockRow) =>
+    `${t(CLOTHING_TYPE_LABEL[s.itemType] ?? s.itemType)}${s.name ? ` ${s.name}` : ""}${s.size ? ` · ${s.size}` : ""} · ${s.condition === "new" ? t("новий") : t("БУ")}${s.price != null ? ` · ${s.price.toFixed(2)} зл` : ""} · ${s.qty} ${t("шт")}`;
+  const save = useMutation({
+    mutationFn: () => post("/clothing/issue", {
+      stockId: Number(stockId), workerId: targetWorkerId,
+      ...(price.trim() !== "" ? { price: Number(price) } : {}), date, note,
+    }),
+    onSuccess: () => { toast.success(t("Видано")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Видати одяг зі складу")}>
+      <div className="space-y-3">
+        {workerId == null && (
+          <div><Label>{t("Працівник")}</Label>
+            <Select value={pickedWorker} onChange={e => setPickedWorker(e.target.value)}>
+              <option value="">—</option>
+              {workers.map(w => <option key={w.id} value={w.id}>{w.fullName}</option>)}
+            </Select></div>
+        )}
+        <div><Label>{t("Позиція складу")}</Label>
+          <Select value={stockId} onChange={e => { setStockId(e.target.value); setPrice(""); }}>
+            <option value="">—</option>
+            {available.map(s => <option key={s.id} value={s.id}>{stockLabel(s)}</option>)}
+          </Select>
+          {!available.length && <p className="mt-1 text-xs text-amber-600">{t("Склад порожній — додай позиції на сторінці «Одяг» → «Магазин».")}</p>}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t("Ціна зняття, зл")}</Label>
+            <Input type="number" value={price} onChange={e => setPrice(e.target.value)} placeholder={sel?.price != null ? String(sel.price) : "0"} />
+          </div>
+          <div><Label>{t("Дата видачі")}</Label><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></div>
+        </div>
+        <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} onClick={() => stockId && targetWorkerId != null && save.mutate()}>{t("Видати")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

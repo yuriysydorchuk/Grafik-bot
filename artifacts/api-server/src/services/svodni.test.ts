@@ -388,6 +388,48 @@ test("фабрична стеля księgowych годин: DEZYNFEKCJA/LST — 70
   assert.equal(d.hoursDeclared, 202);
 });
 
+test("Sushi&Food, фірма ES: максимум 80 год на конто, решта готівкою", () => {
+  const mk = (hours) => parseLublinTab("Sushi&Food Factory", [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["SUSHI OSOBA", "", hours, 31.4, 25.35, hours * 25.35, "Zgłoszony, Wyżej 26"],
+  ])!.rows[0]!;
+  // ES: 227 год → konto 80 × 25.35, решта готівкою
+  const a = mk(227);
+  applyLegalDefaults(a, true, { factoryLabel: "Sushi&Food Factory", firm: "ES" });
+  assert.equal(a.hoursDeclared, 80);
+  assert.equal(a.ksiegNetto, 2028);
+  near(a.gotowka, 227 * 25.35 - 2028);
+  // відпрацював менше стелі → реальні години (все на конто)
+  const b = mk(60);
+  applyLegalDefaults(b, true, { factoryLabel: "Sushi&Food Factory", firm: "ES" });
+  assert.equal(b.hoursDeclared, 60);
+  near(b.gotowka, 0);
+  // ESO і «без фірми» того ж клієнта — без стелі
+  const c = mk(227);
+  applyLegalDefaults(c, true, { factoryLabel: "Sushi&Food Factory", firm: "ESO" });
+  assert.equal(c.hoursDeclared, 227);
+  const d = mk(227);
+  applyLegalDefaults(d, true, { factoryLabel: "Sushi&Food Factory" });
+  assert.equal(d.hoursDeclared, 227);
+  // ES на іншій фабриці — без стелі
+  const e = mk(227);
+  applyLegalDefaults(e, true, { factoryLabel: "PREMIUM FRUITS", firm: "ES" });
+  assert.equal(e.hoursDeclared, 227);
+  // oświadczenie-години ріжуться і повідомленням, і стелею
+  const f = mk(227);
+  f.hoursNotified = 100;
+  applyLegalDefaults(f, true, { factoryLabel: "Sushi&Food Factory", firm: "ES" });
+  assert.equal(f.hoursDeclared, 80, "min(повід. 100, год 227, стеля 80)");
+  // студента до 26 стеля не стосується — все на конто
+  const st = parseLublinTab("Sushi&Food Factory", [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["STUDENTKA SUSHI", "STUD", 220, 31.4, 31.4, 6908, "Zgłoszony, do 26, student"],
+  ])!.rows[0]!;
+  applyLegalDefaults(st, true, { factoryLabel: "Sushi&Food Factory", firm: "ES" });
+  assert.equal(st.konto, 6908);
+  near(st.gotowka, 0);
+});
+
 test("Офіс: людина без сум, але з умовою/ставкою — лишається в списку", () => {
   const rows = [
     [46174],
@@ -731,6 +773,32 @@ test("сегменти: місячний ліміт повідомлення н�
   assert.equal(c.segs[0]!.konto, null);
   assert.equal(c.segs[1]!.konto, null);
   near(c.parent.konto!, c.parent.doWyplaty!, "all_konto — усе на карту на рівні місяця");
+});
+
+test("сегменти: фабрична стеля (Sushi ES 80) — місячна, не на кожен сегмент", () => {
+  const parent = {
+    city: "Познань", factoryLabel: "Sushi&Food Factory", firm: "ES", hoursNotified: null,
+    premia: null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {},
+  };
+  const { segs, parent: p } = computeSegmented(parent, [
+    { hours: 100, rateNetto: 25.35, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus" },
+    { hours: 127, rateNetto: 26.35, rateBrutto: 32.4, isStudent: false, under26: false, legal: "zus" },
+  ], null);
+  near(segs[0]!.hoursDeclared!, 80, "перший сегмент з'їв усю місячну стелю");
+  near(segs[0]!.konto!, 2028);
+  near(segs[1]!.hoursDeclared!, 0, "другому стелі не лишилось — усе готівкою");
+  near(segs[1]!.konto!, 0);
+  near(p.hoursDeclared!, 80, "разом по місяцю — не більше 80");
+  near(p.konto!, 2028);
+  near(p.gotowka!, p.doWyplaty! - 2028);
+  // студент до 26 стелю не споживає і не ріжеться нею
+  const st = computeSegmented(parent, [
+    { hours: 90, rateNetto: 31.4, rateBrutto: 31.4, isStudent: true, under26: true, legal: "student" },
+    { hours: 100, rateNetto: 25.35, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus" },
+  ], null);
+  near(st.segs[0]!.konto!, st.segs[0]!.doWyplaty!, "студент: усе на конто попри стелю");
+  near(st.segs[1]!.hoursDeclared!, 80, "нестудентський сегмент має повну стелю");
 });
 
 test("стаж-бонус: найм 29–31-го числа «доживає» місяць в останній день коротшого місяця", () => {

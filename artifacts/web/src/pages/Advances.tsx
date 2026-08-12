@@ -130,6 +130,9 @@ export default function Advances() {
             {r.paidTxnId != null ? <span title={t("позначено автоматично за банківським переказом")}> · {t("авто")}</span>
               : r.paidMethod === "cash" ? <span> · {t("готівка")}</span>
               : r.paidMethod === "transfer" ? <span> · {t("переказ")}</span> : null}
+            {r.paidTxnId == null && (
+              <span className="text-slate-400" title={t("хто позначив виплату")}> · {r.paidByName ?? t("вручну (не зафіксовано ким)")}</span>
+            )}
           </div>
         )}
       </td>
@@ -321,19 +324,25 @@ export default function Advances() {
   );
 }
 
-// Перенесення авансу в іншу групу виплат (місяць + 15/30).
+// Перенесення авансу в іншу групу виплат (місяць + 15/30) + зміна фабрики
+// запиту (з якої ЗП знімається залічка; from-hours кладе суму в її рядок).
 function MoveModal({ row, onClose, onSaved }: { row: AdvanceRequest; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const cur = row.payoutMonth ?? monthOptions()[0]!.value;
   const [m, setM] = useState(cur);
   const [g, setG] = useState<"15" | "30">(row.payoutGroup === "30" ? "30" : "15");
+  const [facId, setFacId] = useState(row.factoryId != null ? String(row.factoryId) : "");
+  const { data: factories = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   // місяці на вибір: поточна група, місяць подачі та ±1 від них
   const opts = useMemo(() => {
     const set = new Set([cur, addMonths(cur, 1), addMonths(cur, -1), row.createdAt.slice(0, 7), monthOptions()[0]!.value]);
     return [...set].sort().reverse();
   }, [cur, row.createdAt]);
   const save = useMutation({
-    mutationFn: () => patch(`/advances/${row.id}`, { payoutMonth: m, payoutGroup: g }),
+    mutationFn: () => patch(`/advances/${row.id}`, {
+      payoutMonth: m, payoutGroup: g,
+      ...(String(row.factoryId ?? "") !== facId ? { factoryId: facId ? Number(facId) : null } : {}),
+    }),
     onSuccess: () => { toast.success(t("Перенесено")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -356,6 +365,13 @@ function MoveModal({ row, onClose, onSaved }: { row: AdvanceRequest; onClose: ()
             </Select>
           </div>
         </div>
+        <div>
+          <Label>{t("Фабрика запиту (з якої ЗП зняти)")}</Label>
+          <Select value={facId} onChange={e => setFacId(e.target.value)}>
+            <option value="">{t("— авто (основна фабрика місяця) —")}</option>
+            {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </Select>
+        </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} onClick={() => save.mutate()}>{t("Перенести")}</Button>
@@ -372,11 +388,16 @@ function SubmitModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
   const [workerId, setWorkerId] = useState<number | null>(null);
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
-  const { data: workers } = useQuery<{ id: number; fullName: string; factoryName?: string | null; isActive?: boolean }[]>({
+  const [facId, setFacId] = useState("");
+  const { data: workers } = useQuery<{ id: number; fullName: string; factoryId?: number | null; factoryName?: string | null; isActive?: boolean }[]>({
     queryKey: ["workers"], queryFn: () => get("/workers"),
   });
+  const { data: factories = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const save = useMutation({
-    mutationFn: () => post("/advances", { workerId, amount: Number(amount.replace(",", ".")), comment: comment.trim() || undefined }),
+    mutationFn: () => post("/advances", {
+      workerId, amount: Number(amount.replace(",", ".")), comment: comment.trim() || undefined,
+      ...(facId ? { factoryId: Number(facId) } : {}),
+    }),
     onSuccess: () => { toast.success(t("Передано до виплати")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -401,7 +422,8 @@ function SubmitModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
               {found.length > 0 && (
                 <div className="mt-1 divide-y divide-slate-100 rounded-lg border border-slate-200">
                   {found.map(w => (
-                    <button key={w.id} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-red-50" onClick={() => setWorkerId(w.id)}>
+                    <button key={w.id} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-red-50"
+                      onClick={() => { setWorkerId(w.id); setFacId(w.factoryId != null ? String(w.factoryId) : ""); }}>
                       {w.fullName}
                       {w.factoryName && <span className="text-xs text-slate-400">{w.factoryName}</span>}
                       {w.isActive === false && <Badge color="rose">{t("звільнений")}</Badge>}
@@ -411,6 +433,13 @@ function SubmitModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
               )}
             </>
           )}
+        </div>
+        <div>
+          <Label>{t("Фабрика запиту (з якої ЗП зняти)")}</Label>
+          <Select value={facId} onChange={e => setFacId(e.target.value)}>
+            <option value="">{t("— авто (основна фабрика місяця) —")}</option>
+            {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </Select>
         </div>
         <div><Label>{t("Сума, zł")}</Label><Input value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" placeholder="200" /></div>
         <div><Label>{t("Коментар (необов'язково)")}</Label><Input value={comment} onChange={e => setComment(e.target.value)} /></div>

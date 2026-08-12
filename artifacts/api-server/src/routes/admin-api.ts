@@ -308,7 +308,8 @@ router.get("/workers", RW, async (req, res) => {
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
-      selfTransport: workersTable.selfTransport, language: workersTable.language,
+      selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
+      language: workersTable.language,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -355,6 +356,8 @@ router.post("/workers", RW, async (req, res) => {
     positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
     telegramId: telegramId?.trim() || null, workerCode: code,
     selfTransport: !!selfTransport,
+    selfTransportSince: typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
+      ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -417,7 +420,26 @@ router.patch("/workers/:id", RW, async (req, res) => {
     } else patch.workerCode = null;
   }
   if (language !== undefined) patch.language = strOrNull(language);
-  if (selfTransport !== undefined) patch.selfTransport = !!selfTransport;
+  if (selfTransport !== undefined) {
+    patch.selfTransport = !!selfTransport;
+    // «діє з»: дата чинності поточного значення прапорця; зміна без явної дати
+    // штампується сьогоднішнім днем (генерація знять за довіз вирішує помісячно)
+    if (before && !!selfTransport !== before.selfTransport && req.body?.selfTransportSince === undefined) {
+      patch.selfTransportSince = warsawToday();
+    }
+  }
+  if (req.body?.selfTransportSince !== undefined) {
+    const d = strOrNull(req.body.selfTransportSince);
+    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Дата «діє з» — формат YYYY-MM-DD");
+    patch.selfTransportSince = d;
+  }
+  // залічка за бадання: сума + позначка «знято з ЗП» (операційні поля)
+  if (req.body?.badaniaZaliczka !== undefined) {
+    const v = req.body.badaniaZaliczka == null || req.body.badaniaZaliczka === "" ? null : Number(req.body.badaniaZaliczka);
+    if (v != null && (!Number.isFinite(v) || v < 0)) return fail(res, 400, "Залічка за бадання — сума ≥ 0");
+    patch.badaniaZaliczka = v;
+  }
+  if (req.body?.badaniaDeducted !== undefined) patch.badaniaDeducted = !!req.body.badaniaDeducted;
   const { birthDate } = req.body ?? {};
   if (birthDate !== undefined) {
     const bd = strOrNull(birthDate);
@@ -667,6 +689,8 @@ router.get("/workers/:id", RW, async (req, res) => {
     companyId: w.companyId, companyName: coName,
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
+    selfTransportSince: w.selfTransportSince,
+    badaniaZaliczka: w.badaniaZaliczka, badaniaDeducted: w.badaniaDeducted,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
     birthDate: w.birthDate,
@@ -3962,24 +3986,31 @@ router.get("/advances", RW, async (_req, res) => {
   const rows = await db
     .select({
       id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
-      name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
-      factoryId: workersTable.factoryId, company: companiesTable.name,
+      name: workersTable.fullName, code: workersTable.workerCode,
+      // фабрика ЗАПИТУ (advance_requests.factory_id); історія без привʼязки —
+      // фолбек на поточну фабрику профілю (як було)
+      reqFactoryId: advanceRequestsTable.factoryId,
+      profileFactoryId: workersTable.factoryId,
+      company: companiesTable.name,
       amount: advanceRequestsTable.amount, comment: advanceRequestsTable.comment,
       status: advanceRequestsTable.status, adminNote: advanceRequestsTable.adminNote,
       decidedAt: advanceRequestsTable.decidedAt, decidedByName: adminsTable.name,
       payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
       paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
-      paidTxnId: advanceRequestsTable.paidTxnId,
+      paidTxnId: advanceRequestsTable.paidTxnId, paidBy: advanceRequestsTable.paidBy,
       createdAt: advanceRequestsTable.createdAt,
     })
     .from(advanceRequestsTable)
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
-    .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
     .leftJoin(adminsTable, eq(advanceRequestsTable.decidedBy, adminsTable.id))
     .orderBy(desc(advanceRequestsTable.id));
   // місто фабрики — історія сводних + регіони «Зарплат» (той самий словник, що у from-hours)
   const cityByFactory = await factoryCityMap();
+  const facAll = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facNameById = new Map(facAll.map(f => [f.id, f.name]));
+  const adminsAll = await db.select({ id: adminsTable.id, name: adminsTable.name }).from(adminsTable);
+  const adminNameById = new Map(adminsAll.map(a => [a.id, a.name]));
   // IBAN для показу/копіювання: основний → найновіший ручний → найновіший авто
   const accts = await db.select().from(workerBankAccountsTable);
   const bestIban = new Map<number, { score: number; id: number; iban: string }>();
@@ -3989,11 +4020,17 @@ router.get("/advances", RW, async (_req, res) => {
     if (!cur || score > cur.score || (score === cur.score && a.id > cur.id))
       bestIban.set(a.workerId, { score, id: a.id, iban: a.iban });
   }
-  ok(res, rows.map(({ factoryId, ...r }) => ({
-    ...r,
-    city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
-    iban: bestIban.get(r.workerId)?.iban ?? null,
-  })));
+  ok(res, rows.map(({ reqFactoryId, profileFactoryId, paidBy, ...r }) => {
+    const factoryId = reqFactoryId ?? profileFactoryId;
+    return {
+      ...r,
+      factoryId, factory: factoryId != null ? facNameById.get(factoryId) ?? null : null,
+      factoryFromRequest: reqFactoryId != null,
+      city: (factoryId != null ? cityByFactory.get(factoryId) : null) ?? "Без міста",
+      paidByName: paidBy != null ? adminNameById.get(paidBy) ?? null : null,
+      iban: bestIban.get(r.workerId)?.iban ?? null,
+    };
+  }));
 });
 
 // Офісна подача залічки: одразу «передано до виплати» від імені того, хто подав
@@ -4003,10 +4040,13 @@ router.post("/advances", RW, async (req, res) => {
   const amount = Math.round(Number(req.body?.amount) * 100) / 100;
   if (!workerId || !isFinite(amount) || amount <= 0) return fail(res, 400, "Вкажіть працівника і суму");
   const comment = String(req.body?.comment ?? "").trim() || null;
-  const w = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
+  const w = (await db.select({ id: workersTable.id, factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId)))[0];
   if (!w) return fail(res, 404, "Працівника не знайдено");
+  // фабрика запиту: явна з форми, інакше поточна фабрика профілю
+  const factoryId = req.body?.factoryId != null && Number.isFinite(Number(req.body.factoryId))
+    ? Number(req.body.factoryId) : w.factoryId;
   const [row] = await db.insert(advanceRequestsTable).values({
-    workerId, amount, comment, status: "approved",
+    workerId, factoryId, amount, comment, status: "approved",
     decidedBy: (req as AuthedRequest).admin?.adminId ?? null, decidedAt: new Date(),
     ...payoutFor(warsawDateStr()),
   }).returning();
@@ -4014,16 +4054,27 @@ router.post("/advances", RW, async (req, res) => {
   ok(res, row);
 });
 
-// Перенесення авансу в іншу групу виплат (лише поки не виплачений).
+// Перенесення авансу в іншу групу виплат і/або зміна фабрики запиту
+// (лише поки не виплачений).
 router.patch("/advances/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const month = String(req.body?.payoutMonth ?? "");
-  const group = String(req.body?.payoutGroup ?? "");
-  if (!/^\d{4}-\d{2}$/.test(month) || !["15", "30"].includes(group)) return fail(res, 400, "Вкажіть місяць (YYYY-MM) і групу (15 або 30)");
   const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
+  const patch: Record<string, unknown> = {};
+  if (req.body?.payoutMonth !== undefined || req.body?.payoutGroup !== undefined) {
+    const month = String(req.body?.payoutMonth ?? "");
+    const group = String(req.body?.payoutGroup ?? "");
+    if (!/^\d{4}-\d{2}$/.test(month) || !["15", "30"].includes(group)) return fail(res, 400, "Вкажіть місяць (YYYY-MM) і групу (15 або 30)");
+    patch.payoutMonth = month; patch.payoutGroup = group;
+  }
+  if (req.body?.factoryId !== undefined) {
+    const fid = req.body.factoryId == null || req.body.factoryId === "" ? null : Number(req.body.factoryId);
+    if (fid != null && !Number.isFinite(fid)) return fail(res, 400, "bad factoryId");
+    patch.factoryId = fid;
+  }
+  if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
   if (r.status !== "approved") return fail(res, 400, "Переносити можна лише аванс у статусі «передано до виплати»");
-  await db.update(advanceRequestsTable).set({ payoutMonth: month, payoutGroup: group as "15" | "30" }).where(eq(advanceRequestsTable.id, id));
+  await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
   ok(res, { ok: true });
 });
 
@@ -4040,6 +4091,8 @@ async function decideAdvance(req: any, res: any, target: "approved" | "rejected"
     patch.paidAt = new Date();
     const method = String(req.body?.method ?? "");
     patch.paidMethod = method === "cash" ? "cash" : method === "transfer" ? "transfer" : null;
+    // хто ВРУЧНУ позначив виплату (авто-помітка по переказу цього не чіпає)
+    patch.paidBy = (req as AuthedRequest).admin?.adminId ?? null;
   } else {
     patch.decidedBy = (req as AuthedRequest).admin?.adminId ?? null; patch.decidedAt = new Date();
     if (req.body?.note) patch.adminNote = String(req.body.note).trim() || null;

@@ -176,9 +176,12 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
 // Фабричні стелі księgowych годин (діють на всіх, КРІМ студентів до 26):
 // DEZYNFEKCJA/SERWIS PLUS і LST — максимум 70 год, якщо реально відпрацьовано
 // 200+, інакше максимум 60; відпрацював менше стелі — реальні години.
-export function factoryDeclaredCap(factoryLabel: string | null | undefined, hours: number | null): number | null {
+// Sushi&Food, фірма ES: максимум 80 год на конто, решта готівкою (рішення
+// власника 08.2026); ESO/Klinex того ж клієнта стелі не мають.
+export function factoryDeclaredCap(factoryLabel: string | null | undefined, hours: number | null, firm?: string | null): number | null {
   if (!factoryLabel || hours == null) return null;
   if (/DEZYNFEKCJA|SERWIS\s*PLUS|^LST\b/i.test(norm(factoryLabel))) return hours >= 200 ? 70 : 60;
+  if (/SUSHI/i.test(norm(factoryLabel)) && firm === "ES") return 80;
   return null;
 }
 
@@ -375,6 +378,10 @@ export interface LegalCtx {
   payoutPref?: { kind: "all_konto" | "hours" | "amount"; value: number | null } | null;
   /** місто рядка: у Любліні/Познані Dopłata ES вже сидить у doWyplaty, у Лодзі — поверх */
   city?: string | null;
+  /** фірма рядка (svodni_rows.firm) — фірмо-залежні стелі (Sushi ES → 80 год) */
+  firm?: string | null;
+  /** явна стеля księgowych годин (сегменти: місячний ліміт ділиться між ними) — перекриває factoryDeclaredCap */
+  declaredCapH?: number | null;
 }
 
 // Księgowa пара ставок рядка: студентська неоподаткована (netto = brutto)
@@ -402,7 +409,7 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   // RAZEM її не містить — там доплата йде поверх, готівкою (формула таблиці).
   const doplataInPayout = ctx.city !== "Лодзь";
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? normalizeProfileLegal(ctx.profileLegal) ?? null;
-  const capH = factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null);
+  const capH = ctx.declaredCapH !== undefined ? ctx.declaredCapH : factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null, ctx.firm ?? null);
   const { netto: ksiegNettoRate, brutto: ksiegBruttoRate } = ksiegRatesOf(row, ls);
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)]
@@ -1070,7 +1077,7 @@ const SEG_HOUR_EXTRAS = new Set(["nocneH"]);                   // годино-�
 
 export function computeSegmented(
   parent: {
-    city: string; factoryLabel: string;
+    city: string; factoryLabel: string; firm?: string | null;
     hoursNotified: number | null;
     premia: number | null; zaliczka: number | null; zaliczkaBd: number | null; hostel: number | null;
     odziez: number | null; dojazd: number | null; kara: number | null; komornik: number | null;
@@ -1129,6 +1136,11 @@ export function computeSegmented(
   // ліміту; «не зголошений»/oczekuje/без статусу — все готівкою, ліміт не палять).
   const notifyLimited = parent.hoursNotified != null && parent.hoursNotified > 0;
   let notifyLeft = parent.hoursNotified;
+  // Фабрична стеля księgowych годин — теж МІСЯЧНИЙ ліміт (бракет — від сумарних
+  // годин): ділиться між сегментами послідовно, студент до 26 її не споживає
+  // (його гілка стелю ігнорує). Без стелі — undefined, applyLegalDefaults сам
+  // зверне до factoryDeclaredCap (той усе одно поверне null).
+  let capLeft = factoryDeclaredCap(parent.factoryLabel, hoursSum > 0 ? hoursSum : null, parent.firm ?? null);
   const outSegs: SegmentCalcOut[] = segs.map((s, i) => {
     const legalNorm = normalizeProfileLegal(s.legal) ?? null;
     const stud26 = (s.isStudent === true || legalNorm === "student") && s.under26 === true;
@@ -1150,7 +1162,13 @@ export function computeSegmented(
     };
     row.doWyplaty = computePayout(row, parent.city as any);
     row.brutto = s.hours != null && s.rateBrutto != null ? r2(s.hours * s.rateBrutto) : null;
-    applyLegalDefaults(row, true, { profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: null, city: parent.city });
+    applyLegalDefaults(row, true, {
+      profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: null,
+      city: parent.city, firm: parent.firm ?? null,
+      // сегмент отримує залишок місячної стелі; спожите — по факту hoursDeclared
+      ...(capLeft != null ? { declaredCapH: r2(Math.max(capLeft, 0)) } : {}),
+    });
+    if (capLeft != null && !stud26 && row.hoursDeclared != null) capLeft = r2(capLeft - row.hoursDeclared);
     // особа обмежена повідомленням, а сегменту ліміту не лишилось → konto 0
     // (інакше applyLegalDefaults трактує «0 годин» як «без oświadczenia — все на карту»)
     if (notifyLimited && usesNotify && (segNotify ?? 0) <= 0 && row.doWyplaty != null) {
@@ -1197,7 +1215,7 @@ export function computeSegmented(
       hoursNotified: parent.hoursNotified, doWyplaty: parentOut.doWyplaty,
       extras: parent.extras, hr: {}, sheetValues: {},
     };
-    applyLegalDefaults(prow, true, { profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref, city: parent.city });
+    applyLegalDefaults(prow, true, { profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref, city: parent.city, firm: parent.firm ?? null });
     parentOut.hoursDeclared = prow.hoursDeclared ?? null;
     parentOut.ksiegBrutto = prow.ksiegBrutto ?? null;
     parentOut.ksiegNetto = prow.ksiegNetto ?? null;
@@ -1232,11 +1250,13 @@ export function splitTotalByWindows(
 // первинний матч наявного рядка — по factory_id: назва фабрики могла змінитися
 // після створення вкладки, і матч лише по label плодив поруч другу вкладку з
 // новою назвою (Scandic Food → SCANDIC FOOD, 08.2026). Оновлений рядок лишає
-// свій label — вкладка не «переїжджає» за перейменуванням. Для multi_firm одна
-// фабрика легально дає кілька вкладок («… KLINEX» / «… EURO SUPORT»), тож
-// id-матч додатково вимагає суфікс СВОЄЇ фірми в назві вкладки; фірма невідома —
-// не матчимо (краще нова фірмова вкладка, ніж злиті фірми). Нормалізований
-// label — фолбек для рядків без factory_id (несматчені вкладки Google-синку).
+// свій label — вкладка не «переїжджає» за перейменуванням. multi_firm тепер
+// живе на ОДНІЙ вкладці (фірма — у svodni_rows.firm), але legacy-рядки під
+// старими суфіксованими назвами («… ESO» / «… EURO SUPORT») ще можливі, тож
+// id-матч для multi_firm додатково приймає лише вкладку з суфіксом СВОЄЇ фірми
+// (обʼєднана назва ловиться exact-матчем вище); фірма невідома — не матчимо.
+// Нормалізований label — фолбек для рядків без factory_id (несматчені вкладки
+// Google-синку).
 export function findSvodniRowForPair<T extends { workerId: number | null; factoryId: number | null; factoryLabel: string }>(
   rows: T[],
   pair: { workerId: number; factoryId: number | null; label: string; firmSuffix: string; multiFirm: boolean },

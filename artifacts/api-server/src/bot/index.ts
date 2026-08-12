@@ -938,6 +938,21 @@ bot.action("adv:new", async (ctx) => {
   return ctx.reply(t(lang, "adv.askAmount"), cancelKb(lang));
 });
 
+// Вибір фабрики запиту залічки (людина на кількох фабриках): кнопка → далі коментар
+bot.action(/^advfac:(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "advance:choose_factory") { await ctx.answerCbQuery(); return; }
+  const factoryId = Number((ctx as any).match[1]);
+  const lang = asLang(state.data.lang);
+  if (!Array.isArray(state.data.factoryIds) || !state.data.factoryIds.includes(factoryId)) { await ctx.answerCbQuery(); return; }
+  await ctx.answerCbQuery("✅");
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  const { factoryIds: _drop, ...rest } = state.data;
+  setState(tid, "advance:enter_comment", { ...rest, factoryId });
+  return ctx.reply(t(lang, "adv.askComment"));
+});
+
 // Відповідь працівника на запит «підтверди свої години фабрики» (розсилка з
 // /hours): ✅ — фіксуємо підтвердження; ❌ — фіксуємо помилку і просимо описати.
 bot.action(/^fh:(ok|no):(\d+)$/, async (ctx) => {
@@ -1013,7 +1028,8 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   if (target === "paid" && r.status !== "approved") { await ctx.answerCbQuery("Спершу затвердіть"); return; }
   const admin = await getAdmin(tid);
   const patch: any = { status: target };
-  if (target === "paid") patch.paidAt = new Date();
+  // paid_by = хто вручну позначив виплату (питання «хто натиснув» без цього не відповідалось)
+  if (target === "paid") { patch.paidAt = new Date(); patch.paidBy = admin?.id ?? null; }
   // затвердження = «передано до виплати»: група 15-го/30-го за датою рішення (lib/advancePayout.ts)
   else { patch.decidedBy = admin?.id ?? null; patch.decidedAt = new Date(); Object.assign(patch, payoutFor(warsawDateStr())); }
   await db.update(advanceRequestsTable).set(patch).where(eq(advanceRequestsTable.id, id));
@@ -4337,8 +4353,34 @@ bot.on("text", async (ctx) => {
     const amount = parseFloat(text.replace(",", ".").replace(/[^\d.]/g, ""));
     if (!isFinite(amount) || amount <= 0) return ctx.reply(t(lang, "adv.badAmount"));
     if (amount > 500) return ctx.reply(t(lang, "adv.maxAmount"));
-    setState(tid, "advance:enter_comment", { ...state.data, amount: Math.round(amount * 100) / 100 });
+    const rounded = Math.round(amount * 100) / 100;
+    // Фабрика запиту: людина на кількох фабриках (графік останніх ~5 тижнів +
+    // фабрика профілю) обирає, з якої ЗП зняти залічку — from-hours кладе суму
+    // саме в цей рядок сводної. Одна фабрика — привʼязується мовчки.
+    const sinceStr = new Date(Date.now() - 35 * 86400000).toISOString().slice(0, 10);
+    const recentWeeks = await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable)
+      .where(gte(scheduleWeeksTable.weekStart, sinceStr));
+    const entryFacs = recentWeeks.length
+      ? await db.selectDistinct({ factoryId: scheduleEntriesTable.factoryId }).from(scheduleEntriesTable)
+          .where(and(eq(scheduleEntriesTable.workerId, state.data.workerId), inArray(scheduleEntriesTable.weekId, recentWeeks.map(w => w.id))))
+      : [];
+    const worker0 = await getWorker(tid);
+    const facIds = [...new Set([...entryFacs.map(f => f.factoryId), ...(worker0?.factoryId != null ? [worker0.factoryId] : [])])];
+    if (facIds.length > 1) {
+      const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name })
+        .from(factoriesTable).where(inArray(factoriesTable.id, facIds));
+      setState(tid, "advance:choose_factory", { ...state.data, amount: rounded, factoryIds: facs.map(f => f.id) });
+      return ctx.reply(t(lang, "adv.askFactory"), { reply_markup: { inline_keyboard: facs
+        .sort((a, b) => a.name.localeCompare(b.name, "pl"))
+        .map(f => [{ text: `🏭 ${f.name}`, callback_data: `advfac:${f.id}` }]) } });
+    }
+    setState(tid, "advance:enter_comment", { ...state.data, amount: rounded, factoryId: facIds[0] ?? null });
     return ctx.reply(t(lang, "adv.askComment"));
+  }
+
+  // текст під час вибору фабрики — мʼяко повторюємо прохання натиснути кнопку
+  if (state?.action === "advance:choose_factory") {
+    return ctx.reply(t(asLang(state.data.lang), "adv.askFactory"));
   }
 
   if (state?.action === "advance:enter_comment") {
@@ -4347,13 +4389,16 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     const comment = text.trim() === "-" ? null : text.trim();
     const ins = await db.insert(advanceRequestsTable)
-      .values({ workerId: data.workerId, amount: data.amount, comment, status: "pending" })
+      .values({ workerId: data.workerId, factoryId: data.factoryId ?? null, amount: data.amount, comment, status: "pending" })
       .returning({ id: advanceRequestsTable.id });
     const reqId = ins[0]!.id;
     const worker = await getWorker(tid);
     const wname = worker?.fullName ?? "—";
+    const facName = data.factoryId != null
+      ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, data.factoryId)))[0]?.name ?? null
+      : null;
     await notifyAdmins(
-      `💰 *Запит на аванс*\n\n👷 *${wname}*\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${comment}` : ""}`,
+      `💰 *Запит на аванс*\n\n👷 *${wname}*${facName ? `\n🏭 ${mdSafe(facName)}` : ""}\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${comment}` : ""}`,
       { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
         [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
         [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],

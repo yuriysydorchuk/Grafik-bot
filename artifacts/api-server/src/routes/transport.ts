@@ -183,15 +183,45 @@ router.get("/transport/deductions", async (req, res) => {
     .where(and(eq(svodniRowsTable.periodMonth, month), sql`${svodniRowsTable.segmentOf} IS NULL`))
     .groupBy(svodniRowsTable.workerId, svodniRowsTable.factoryId);
   const hoursByPair = new Map(svodniHours.map((r) => [`${r.workerId}|${r.factoryId}`, Number(r.hours)]));
+  // Вкладка показує ВСІХ людей платних фабрик місяця (за годинами сводної),
+  // навіть без нарахування (self_transport без посадок, ліміти) — такі рядки
+  // «віртуальні»: без id/суми, лише довідково. Плюс маркер «доїжджає сам».
+  const paidFacs = (await db.select().from(factoriesTable)).filter(f => f.paidTransport);
+  const paidFacById = new Map(paidFacs.map(f => [f.id, f]));
+  const dedPairs = new Set(rows.filter(r => r.d.workerId != null && r.d.factoryId != null).map(r => `${r.d.workerId}|${r.d.factoryId}`));
+  const extraPairs = svodniHours.filter(p =>
+    p.workerId != null && p.factoryId != null && Number(p.hours) > 0 &&
+    paidFacById.has(p.factoryId) && !dedPairs.has(`${p.workerId}|${p.factoryId}`));
+  const wIds = [...new Set([...rows.map(r => r.d.workerId), ...extraPairs.map(p => p.workerId!)].filter((x): x is number => x != null))];
+  const workers = wIds.length ? await db.select({
+    id: workersTable.id, fullName: workersTable.fullName,
+    selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
+  }).from(workersTable).where(inArray(workersTable.id, wIds)) : [];
+  const wById = new Map(workers.map(w => [w.id, w]));
+  const selfOf = (workerId: number | null) => {
+    const w = workerId != null ? wById.get(workerId) : undefined;
+    return { selfTransport: w?.selfTransport ?? false, selfTransportSince: w?.selfTransportSince ?? null };
+  };
+  const listed = [
+    ...rows.map(({ d, workerName, factoryName }) => ({
+      id: d.id as number | null, workerId: d.workerId, workerName: workerName ?? d.workerName,
+      factoryId: d.factoryId, factoryLabel: factoryName ?? d.factoryLabel,
+      tripsCount: d.tripsCount, amount: d.amount as number | null, note: d.note, sourceRef: d.sourceRef,
+      hours: hoursByPair.get(`${d.workerId}|${d.factoryId}`) ?? null,
+      ...selfOf(d.workerId),
+    })),
+    ...extraPairs.map((p) => ({
+      id: null, workerId: p.workerId!, workerName: wById.get(p.workerId!)?.fullName ?? null,
+      factoryId: p.factoryId!, factoryLabel: paidFacById.get(p.factoryId!)?.name ?? null,
+      tripsCount: null, amount: null, note: null, sourceRef: null,
+      hours: Number(p.hours),
+      ...selfOf(p.workerId),
+    })),
+  ];
   ok(res, {
     month,
     months: [...new Set([...months.map((x) => x.m), ...svodniMonths.map((x) => x.m)])].sort().reverse(),
-    rows: rows.map(({ d, workerName, factoryName }) => ({
-      id: d.id, workerId: d.workerId, workerName: workerName ?? d.workerName,
-      factoryId: d.factoryId, factoryLabel: factoryName ?? d.factoryLabel,
-      tripsCount: d.tripsCount, amount: d.amount, note: d.note, sourceRef: d.sourceRef,
-      hours: hoursByPair.get(`${d.workerId}|${d.factoryId}`) ?? null,
-    })).sort((a, b) => (a.factoryLabel ?? "").localeCompare(b.factoryLabel ?? "", "pl") || (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
+    rows: listed.sort((a, b) => (a.factoryLabel ?? "").localeCompare(b.factoryLabel ?? "", "pl") || (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
   });
 });
 
@@ -290,11 +320,19 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
   }
 
   // 2) self_transport: години сводної не тарифікуємо — лише зміни з посадкою
-  // водієм (затверджені тижні, дата в місяці, без скасованих клітинок)
+  // водієм (затверджені тижні, дата в місяці, без скасованих клітинок).
+  // Режим вирішується ПОМІСЯЧНО через self_transport_since («діє з»): прапорець
+  // увімкнули з датою після кінця місяця → у цьому місяці людина ще «звичайна»;
+  // вимкнули з датою після кінця місяця → у цьому місяці ще була self. Без дати
+  // (легасі) — за поточним прапорцем. Перехід усередині місяця не ламається:
+  // посадки водія поденні й тарифікуються самі собою.
+  const isSelfForMonth = (w: { selfTransport: boolean; selfTransportSince: string | null }): boolean =>
+    w.selfTransport ? (w.selfTransportSince == null || w.selfTransportSince < monthEnd)
+      : (w.selfTransportSince != null && w.selfTransportSince >= monthEnd);
   const workers = workerIds.size
     ? await db.select().from(workersTable).where(inArray(workersTable.id, [...workerIds]))
     : [];
-  const selfIds = new Set(workers.filter(w => w.selfTransport).map(w => w.id));
+  const selfIds = new Set(workers.filter(isSelfForMonth).map(w => w.id));
   for (const k of [...shiftsByPair.keys()]) {
     if (selfIds.has(Number(k.split("|")[0]))) shiftsByPair.delete(k);
   }
@@ -320,7 +358,7 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
     const selfWorkers = selfWorkerIds.size
       ? await db.select().from(workersTable).where(inArray(workersTable.id, [...selfWorkerIds]))
       : [];
-    for (const w of selfWorkers) if (w.selfTransport) selfIds.add(w.id);
+    for (const w of selfWorkers) if (isSelfForMonth(w)) selfIds.add(w.id);
     for (const e of picked) {
       if (!selfIds.has(e.workerId)) continue;
       const ws = weekById.get(e.weekId);

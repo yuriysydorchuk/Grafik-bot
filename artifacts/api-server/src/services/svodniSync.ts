@@ -220,6 +220,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         }
         applyLegalDefaults(row, false, {
           factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any, city,
+          firm: firm ?? parsed.firmGuess,
           payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
         });
         // нормалізація księgowego конто зі «зменшеними годинами»: konto завжди

@@ -60,6 +60,7 @@ export const workersTable = pgTable("workers", {
   status: text("status").notNull().default("active"), // active | fired
   isActive: boolean("is_active").notNull().default(true),
   selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler
+  selfTransportSince: date("self_transport_since"), // «діє з»: від якої дати чинне ПОТОЧНЕ значення selfTransport (генерація знять за довіз вирішує режим помісячно)
   createdSource: text("created_source"), // походження профілю: null = звичайне створення, "hours_import" = створений з імпорту годин фабрики (/hours) — таких можна швидко видалити зі списку обліку
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
@@ -79,6 +80,9 @@ export const workersTable = pgTable("workers", {
   // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)
+  // Залічка за бадання (медогляд): сума + чи вже знята з ЗП (ручна позначка в профілі)
+  badaniaZaliczka: real("badania_zaliczka"),
+  badaniaDeducted: boolean("badania_deducted").notNull().default(false),
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -279,7 +283,7 @@ export const factoriesTable = pgTable("factories", {
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
-  multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (ANDROS: Klinex + ES) — Облік годин ділить вкладку по фірмі працівника
+  multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (Sushi&Food: ES + ESO) — сводна пише фірму працівника в svodni_rows.firm (групи в одній вкладці)
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
   nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)
@@ -609,6 +613,7 @@ export const hoursDisputesTable = pgTable("hours_disputes", {
 export const advanceRequestsTable = pgTable("advance_requests", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  factoryId: integer("factory_id").references(() => factoriesTable.id), // з якої фабрики просили залічку; from-hours кладе суму в рядок сводної саме цієї пари (NULL = історія → «основна» фабрика місяця)
   amount: real("amount").notNull(),                       // requested amount (PLN)
   comment: text("comment"),                               // worker's optional note
   status: text("status").notNull().default("pending"),   // pending | approved (= передано до виплати) | rejected | paid
@@ -619,6 +624,7 @@ export const advanceRequestsTable = pgTable("advance_requests", {
   payoutGroup: text("payout_group"),                      // "15" | "30" — payout on the 15th / 30th
   paidMethod: text("paid_method"),                        // transfer | cash (NULL = не вказано / стара історія)
   paidAt: timestamp("paid_at"),
+  paidBy: integer("paid_by").references(() => adminsTable.id), // хто ВРУЧНУ позначив «виплачено» (сайт/бот); авто-помітка по переказу лишає NULL (її ознака — paid_txn_id)
   // авто-помітка «виплачено» по банківському переказу (services/advances.ts);
   // set null — MT940-імпорт заміщає api-рядки, статус авансу при цьому лишається
   paidTxnId: integer("paid_txn_id").references(() => bankTransactionsTable.id, { onDelete: "set null" }),
@@ -1253,18 +1259,41 @@ export const hostelStaysTable = pgTable("hostel_stays", {
 
 // Облік спецодягу: видача працівникам (наш/свій/на продаж), ціна зняття з ЗП.
 // Джерело — таблиці водія «Учёт рабочей одежды» / «Forma» (мігровано 07.2026).
+// Склад магазину одягу: позиція = тип+назва+розмір+стан; видача мінусує qty,
+// повернення плюсує (новий після повернення стає БУ — окремий рядок used).
+export const clothingStockTable = pgTable("clothing_stock", {
+  id: serial("id").primaryKey(),
+  itemType: text("item_type").notNull(),           // boots | coverall | jacket | hat | tshirt | set | other
+  name: text("name"),                              // уточнення назви (опційно)
+  size: text("size"),
+  condition: text("condition").notNull().default("new"), // new | used
+  price: real("price"),                            // ціна зняття з ЗП при видачі
+  qty: integer("qty").notNull().default(0),
+  note: text("note"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const clothingItemsTable = pgTable("clothing_items", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").references(() => workersTable.id),
   workerName: text("worker_name"), // сире імʼя, коли не заматчилось (історія)
   itemType: text("item_type").notNull(), // boots | coverall | jacket | hat | tshirt | set | other
   ownership: text("ownership"),          // ours (видано наш) | own (своє) | sold (продано — зняти з ЗП)
-  price: real("price"),                  // ціна зняття з ЗП
+  price: real("price"),                  // ціна зняття з ЗП («маємо зняти»)
   deducted: boolean("deducted").notNull().default(false), // «вже знято»
   writtenOff: boolean("written_off").notNull().default(false), // списано (не входить у «до зняття»)
   periodMonth: text("period_month"),     // YYYY-MM, де відомий
   note: text("note"),
   sourceRef: text("source_ref"),
+  // Магазин одягу (08.2026): видача зі складу і життєвий цикл
+  stockId: integer("stock_id").references(() => clothingStockTable.id), // з якої позиції складу видано
+  size: text("size"),
+  condition: text("condition"),          // new | used на момент видачі
+  issuedAt: date("issued_at"),           // коли видано
+  returnedAt: date("returned_at"),       // коли повернуто (повернене до зняття не входить; новий → на склад як БУ)
+  deductedAmount: real("deducted_amount"), // скільки ФАКТИЧНО зняли (може відрізнятись від price)
+  deductedMonth: text("deducted_month"), // YYYY-MM сводної, з якої зняли
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("clothing_items_worker_idx").on(t.workerId)]);
 
