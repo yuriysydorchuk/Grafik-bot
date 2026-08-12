@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { post, patch, type Worker, type Factory, type Company } from "../lib/api";
 import { Button, Input, Select, Label, Modal } from "./ui";
 import { useT } from "../lib/i18n";
+import { NATIONALITIES } from "../lib/nationality";
 
 // Bot UI languages a worker can have (mirrors bot/i18n.ts).
 const LANGUAGES: { value: string; label: string }[] = [
@@ -37,6 +38,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   // вирішує режим людини помісячно саме за цією датою
   const [selfSince, setSelfSince] = useState(worker?.selfTransportSince ?? "");
   const selfToggled = !!worker?.selfTransport !== selfTransport;
+  const [nationality, setNationality] = useState(worker?.nationality ?? "");
   // порожня ставка = NULL («авто» за правилами фабрики: пара посади → базова
   // пара фабрики); явне очищення поля знімає профільний override
   const finance = isOwner
@@ -52,7 +54,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
     fullName, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
     positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null,
     telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport,
-    selfTransportSince: selfSince || null, ...finance,
+    selfTransportSince: selfSince || null, nationality: nationality || null, ...finance,
   };
   const save = useMutation({
     mutationFn: (force?: boolean) => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, force ? { ...base, force: true } : base),
@@ -111,6 +113,12 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
               {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
             </Select>
           </div>
+        </div>
+        <div><Label>{t("Національність")}</Label>
+          <Select value={nationality} onChange={e => setNationality(e.target.value)}>
+            <option value="">{t("— не вказано —")}</option>
+            {NATIONALITIES.map(n => <option key={n.value} value={n.value}>{n.flag} {t(n.label)}</option>)}
+          </Select>
         </div>
         <div><Label>{t("Telegram ID (необов'язково)")}</Label><Input value={telegramId} onChange={e => setTelegramId(e.target.value)} /></div>
         <div className="rounded-xl border border-slate-200 p-3">

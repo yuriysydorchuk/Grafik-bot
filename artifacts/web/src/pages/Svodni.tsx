@@ -23,11 +23,12 @@ import { useT } from "../lib/i18n";
 import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
+import { NatFlag } from "../lib/nationality";
 
 type Row = {
   id: number; city: string; firm: string | null; factoryLabel: string; factoryId: number | null;
   section: string | null; rawName: string; workerId: number | null; workerName: string | null;
-  linkStatus: string; manual: boolean;
+  linkStatus: string; manual: boolean; nationality?: string | null;
   hoursNotified: number | null; hours: number | null; shifts: number | null;
   rateBrutto: number | null; rateNetto: number | null; premia: number | null;
   zaliczka: number | null; zaliczkaBd: number | null; hostel: number | null; odziez: number | null;
@@ -966,6 +967,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       {r.workerId
                         ? <Link href={`/workers/${r.workerId}`} onClick={saveScroll} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
                         : <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></span>}
+                      <NatFlag value={r.nationality} className="shrink-0 cursor-default text-xs" />
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {(r.isStudent || r.legalStatus === "student") && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700" title={t(LEGAL_LABEL.student)}>STUD</span>}
                       {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}

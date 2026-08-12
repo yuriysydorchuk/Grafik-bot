@@ -12,6 +12,7 @@ import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
+import { NatFlag } from "../lib/nationality";
 
 const fmtPln = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const curMonth = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
@@ -25,9 +26,11 @@ type TripRow = {
 type DeductionRow = {
   id: number | null; workerId: number | null; workerName: string | null; factoryId: number | null; factoryLabel: string | null;
   tripsCount: number | null; amount: number | null; note: string | null; sourceRef?: string | null; hours?: number | null;
-  selfTransport?: boolean; selfTransportSince?: string | null;
+  selfTransport?: boolean; selfTransportSince?: string | null; nationality?: string | null;
 };
 type RatesData = { drivers: { id: number; name: string; tripRate: number | null }[]; overrides: { id: number; driverId: number; factoryId: number; factoryName: string | null; rate: number }[] };
+type FeeFactory = { factoryId: number; name: string; feePerShift: number | null; monthCap: number | null; members: { workerId: number; name: string }[] };
+type FeeCandidate = { workerId: number; name: string; isActive: boolean; hasHours: boolean; member: boolean };
 
 export default function Transport() {
   const t = useT();
@@ -245,6 +248,13 @@ function DeductionsTab() {
     }
     return [...m.entries()];
   }, [data?.rows]);
+  // вибірковий платний довіз: фабрики з paid_transport + списки «хто платить»
+  const { data: feeConfig } = useQuery<{ factories: FeeFactory[] }>({
+    queryKey: ["transport-fee-members"],
+    queryFn: () => get("/transport/fee-members"),
+  });
+  const [membersFor, setMembersFor] = useState<FeeFactory | null>(null);
+  const feeByFactoryId = useMemo(() => new Map((feeConfig?.factories ?? []).map(f => [f.factoryId, f])), [feeConfig]);
 
   return (
     <>
@@ -271,6 +281,30 @@ function DeductionsTab() {
           )}
         </div>
       </div>
+      {(feeConfig?.factories.length ?? 0) > 0 && (
+        <Card className="mb-4 p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <Bus className="h-4 w-4 text-red-600" /> {t("Платний довіз")}
+            <span className="text-xs font-normal text-slate-400">{t("хто платить — вибірково або вся фабрика")}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {feeConfig!.factories.map((f) => (
+              <button key={f.factoryId} onClick={() => setMembersFor(f)}
+                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm transition hover:border-red-300 hover:bg-red-50/40"
+                title={t("Змінити, хто платить")}>
+                <span className="font-medium text-slate-700">{f.name}</span>
+                <span className="text-xs tabular-nums text-slate-400">
+                  {f.feePerShift != null ? `${fmtPln(f.feePerShift)} ${t("зл/зміну")}` : "—"}
+                  {f.monthCap != null ? ` · ${t("макс")} ${fmtPln(f.monthCap)}` : ""}
+                </span>
+                {f.members.length
+                  ? <Badge color="blue">👥 {t("вибрані")}: {f.members.length}</Badge>
+                  : <Badge>{t("уся фабрика")}</Badge>}
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
       {isLoading ? <Spinner /> : !data?.rows.length ? (
         <Card>
           <Empty>
@@ -287,6 +321,11 @@ function DeductionsTab() {
                   <Bus className="h-4 w-4 text-red-600" />
                   <span className="text-sm font-semibold text-slate-800">{label}</span>
                   <span className="text-xs text-slate-400">{rows.length} {t("людей")}</span>
+                  {factoryId != null && (feeByFactoryId.get(factoryId)?.members.length ?? 0) > 0 && (
+                    <span title={t("Платний довіз лише для вибраних")}>
+                      <Badge color="blue">👥 {t("вибрані")}: {feeByFactoryId.get(factoryId)!.members.length}</Badge>
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-semibold tabular-nums text-slate-800">{fmtPln(rows.reduce((s, r) => s + (r.amount ?? 0), 0))} зл</span>
@@ -319,6 +358,7 @@ function DeductionsTab() {
                           ) : (
                             <span className="font-medium text-slate-700">{r.workerName ?? "—"}</span>
                           )}
+                          <NatFlag value={r.nationality} className="ml-1 cursor-default align-middle" />
                           {r.selfTransport && (
                             <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle text-sky-500"
                               title={t("Доїжджає сам") + (r.selfTransportSince ? ` · ${t("з")} ${r.selfTransportSince}` : "")}>
@@ -358,6 +398,8 @@ function DeductionsTab() {
         </div>
       )}
       {(adding || editing) && <DeductionModal deduction={editing ?? undefined} month={month} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
+      {membersFor && <FeeMembersModal factory={membersFor} month={month} onClose={() => setMembersFor(null)}
+        onSaved={() => { qc.invalidateQueries({ queryKey: ["transport-fee-members"] }); setMembersFor(null); }} />}
     </>
   );
 }
@@ -398,6 +440,65 @@ function DeductionModal({ deduction, month, onClose, onSaved }: { deduction?: De
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} onClick={() => (isEdit || workerId) && Number(amount) >= 0 && save.mutate()}>{isEdit ? t("Зберегти") : t("Створити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Вибірковий платний довіз: чекбокс-список «хто платить» на фабриці.
+// Нікого не вибрано = платить уся фабрика (поведінка за замовчуванням).
+function FeeMembersModal({ factory, month, onClose, onSaved }: { factory: FeeFactory; month: string; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const { data, isLoading } = useQuery<{ candidates: FeeCandidate[] }>({
+    queryKey: ["transport-fee-candidates", factory.factoryId, month],
+    queryFn: () => get(`/transport/fee-members/candidates?factoryId=${factory.factoryId}&month=${month}`),
+  });
+  const [selected, setSelected] = useState<Set<number> | null>(null);
+  const [q, setQ] = useState("");
+  // початковий стан — з сервера (member); ініціалізується після завантаження
+  const sel = selected ?? new Set((data?.candidates ?? []).filter(c => c.member).map(c => c.workerId));
+  const toggle = (id: number) => {
+    const n = new Set(sel);
+    n.has(id) ? n.delete(id) : n.add(id);
+    setSelected(n);
+  };
+  const list = (data?.candidates ?? []).filter(c => !q.trim() || c.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const save = useMutation({
+    mutationFn: () => put("/transport/fee-members", { factoryId: factory.factoryId, workerIds: [...sel] }),
+    onSuccess: () => { toast.success(t("Збережено")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={`${t("Хто платить за довіз")} — ${factory.name}`}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-400">
+          {t("Вибрані платять за довіз при авторозрахунку знять; нікого не вибрано — платить уся фабрика.")}
+          {factory.feePerShift != null && <> {fmtPln(factory.feePerShift)} {t("зл/зміну")}{factory.monthCap != null ? `, ${t("макс")} ${fmtPln(factory.monthCap)} ${t("зл/міс")}` : ""}.</>}
+        </p>
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("Пошук…")} autoFocus />
+        {isLoading ? <Spinner /> : (
+          <div className="max-h-80 space-y-0.5 overflow-y-auto rounded-lg border border-slate-200 p-1.5">
+            {list.map((c) => (
+              <label key={c.workerId} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-slate-50">
+                <input type="checkbox" checked={sel.has(c.workerId)} onChange={() => toggle(c.workerId)} />
+                <span className={`min-w-0 flex-1 truncate ${c.isActive ? "text-slate-700" : "text-slate-400 line-through"}`}>{c.name}</span>
+                {c.hasHours && <span className="text-[10px] font-medium text-emerald-600" title={t("має години сводної цього місяця")}>{t("год")} ✓</span>}
+                {!c.isActive && <Badge color="amber">{t("звільнений")}</Badge>}
+              </label>
+            ))}
+            {!list.length && <div className="px-2 py-3 text-center text-sm text-slate-400">{t("Нікого не знайдено")}</div>}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <span className="text-xs text-slate-400">
+            {sel.size ? `${t("вибрані")}: ${sel.size}` : t("уся фабрика")}
+            {sel.size > 0 && <button onClick={() => setSelected(new Set())} className="ml-2 text-red-600 hover:underline">{t("зняти всіх")}</button>}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+            <Button loading={save.isPending} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+          </div>
         </div>
       </div>
     </Modal>

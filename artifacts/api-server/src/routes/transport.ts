@@ -6,7 +6,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
-  driverTripLogTable, driverTripRatesTable, transportDeductionsTable,
+  driverTripLogTable, driverTripRatesTable, transportDeductionsTable, transportFeeMembersTable,
   driversTable, factoriesTable, workersTable, driverShiftAssignmentsTable, scheduleWeeksTable,
   scheduleEntriesTable, shiftCancellationsTable, svodniRowsTable,
 } from "@workspace/db";
@@ -196,11 +196,12 @@ router.get("/transport/deductions", async (req, res) => {
   const workers = wIds.length ? await db.select({
     id: workersTable.id, fullName: workersTable.fullName,
     selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
+    nationality: workersTable.nationality,
   }).from(workersTable).where(inArray(workersTable.id, wIds)) : [];
   const wById = new Map(workers.map(w => [w.id, w]));
   const selfOf = (workerId: number | null) => {
     const w = workerId != null ? wById.get(workerId) : undefined;
-    return { selfTransport: w?.selfTransport ?? false, selfTransportSince: w?.selfTransportSince ?? null };
+    return { selfTransport: w?.selfTransport ?? false, selfTransportSince: w?.selfTransportSince ?? null, nationality: w?.nationality ?? null };
   };
   const listed = [
     ...rows.map(({ d, workerName, factoryName }) => ({
@@ -272,6 +273,80 @@ router.delete("/transport/deductions/:id", RW, async (req, res) => {
   ok(res, { ok: true });
 });
 
+// ─── Вибірковий платний довіз: хто платить на фабриці ────────────────────────
+// Порожній список фабрики = платить уся фабрика (як досі); є вибрані —
+// авторозрахунок тарифікує лише їх. Ціна/ліміт — завжди фабричні.
+router.get("/transport/fee-members", async (_req, res) => {
+  const facs = (await db.select().from(factoriesTable)).filter(f => f.paidTransport);
+  const ids = facs.map(f => f.id);
+  const members = ids.length
+    ? await db.select({
+        factoryId: transportFeeMembersTable.factoryId,
+        workerId: transportFeeMembersTable.workerId,
+        name: workersTable.fullName,
+      }).from(transportFeeMembersTable)
+        .innerJoin(workersTable, eq(transportFeeMembersTable.workerId, workersTable.id))
+        .where(inArray(transportFeeMembersTable.factoryId, ids))
+    : [];
+  ok(res, {
+    factories: facs.map(f => ({
+      factoryId: f.id, name: f.name,
+      feePerShift: f.transportFeePerShift, monthCap: f.transportFeeMonthCap,
+      members: members.filter(m => m.factoryId === f.id)
+        .map(m => ({ workerId: m.workerId, name: m.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, "pl")),
+    })).sort((a, b) => a.name.localeCompare(b.name, "pl")),
+  });
+});
+
+// кандидати для модалки вибору: активні працівники фабрики (профіль) ∪ люди з
+// рядками сводної цієї фабрики за місяць (реально їздили) ∪ уже вибрані
+router.get("/transport/fee-members/candidates", async (req, res) => {
+  const factoryId = Number(req.query.factoryId);
+  if (!Number.isFinite(factoryId)) return fail(res, 400, "factoryId required");
+  const month = validMonth(req.query.month) ? String(req.query.month) : null;
+  const svodniWorkers = month
+    ? await db.select({ workerId: svodniRowsTable.workerId }).from(svodniRowsTable).where(and(
+        eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.factoryId, factoryId),
+        isNull(svodniRowsTable.segmentOf), isNotNull(svodniRowsTable.workerId)))
+    : [];
+  const hasHours = new Set(svodniWorkers.map(r => r.workerId!));
+  const memberIds = new Set((await db.select({ workerId: transportFeeMembersTable.workerId })
+    .from(transportFeeMembersTable).where(eq(transportFeeMembersTable.factoryId, factoryId))).map(r => r.workerId));
+  const profileWorkers = await db.select().from(workersTable).where(and(
+    eq(workersTable.factoryId, factoryId), eq(workersTable.isActive, true)));
+  const extraIds = [...new Set([...hasHours, ...memberIds])].filter(id => !profileWorkers.some(w => w.id === id));
+  const extra = extraIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, extraIds)) : [];
+  ok(res, {
+    candidates: [...profileWorkers, ...extra].map(w => ({
+      workerId: w.id, name: w.fullName, isActive: w.isActive,
+      hasHours: hasHours.has(w.id), member: memberIds.has(w.id),
+    })).sort((a, b) => a.name.localeCompare(b.name, "pl")),
+  });
+});
+
+// повна заміна складу вибраних фабрики
+router.put("/transport/fee-members", RW, async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const workerIds = Array.isArray(req.body?.workerIds)
+    ? [...new Set((req.body.workerIds as unknown[]).map(Number).filter(Number.isFinite))]
+    : null;
+  if (!Number.isFinite(factoryId) || !workerIds) return fail(res, 400, "factoryId і workerIds[] обовʼязкові");
+  const [fac] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) return fail(res, 404, "фабрику не знайдено");
+  if (workerIds.length) {
+    const found = await db.select({ id: workersTable.id }).from(workersTable).where(inArray(workersTable.id, workerIds));
+    if (found.length !== workerIds.length) return fail(res, 400, "невідомі workerIds");
+  }
+  await db.transaction(async (tx) => {
+    await tx.delete(transportFeeMembersTable).where(eq(transportFeeMembersTable.factoryId, factoryId));
+    if (workerIds.length) {
+      await tx.insert(transportFeeMembersTable).values(workerIds.map(w => ({ factoryId, workerId: w })));
+    }
+  });
+  ok(res, { ok: true, members: workerIds.length });
+});
+
 // ─── Авторозрахунок знять за місяць ──────────────────────────────────────────
 // Фабрики з «платним довозом» (paid_transport + ціна за зміну): кожному
 // працівнику сума = min(зміни × ціна, місячний ліміт). Кількість змін —
@@ -281,6 +356,8 @@ router.delete("/transport/deductions/:id", RW, async (req, res) => {
 // self_transport (доїжджають самі) — виняток: тарифікуються лише зміни, де
 // водій позначив посадку (picked_up_by у затверджених тижнях місяця, без
 // скасованих клітинок).
+// Вибірковість: фабрика зі списком transport_fee_members тарифікує ЛИШЕ
+// вибраних (порожній список = уся фабрика).
 // Повторний запуск перезаписує ЛИШЕ авто-рядки (source_ref='auto'); рядки,
 // створені чи правлені вручну, не чіпаються. Авто-рядки пар, яких більше не
 // нарахувалось, зносяться.
@@ -369,6 +446,21 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
       const k = `${e.workerId}|${e.factoryId}`;
       shiftsByPair.set(k, (shiftsByPair.get(k) ?? 0) + 1);
     }
+  }
+
+  // 2b) вибірковий платний довіз: фабрика зі списком «хто платить» тарифікує
+  // лише вибраних — стосується і звичайних пар (години сводної), і
+  // self_transport-посадок
+  const feeMembers = await db.select().from(transportFeeMembersTable)
+    .where(inArray(transportFeeMembersTable.factoryId, paidIds));
+  const membersByFactory = new Map<number, Set<number>>();
+  for (const m of feeMembers) {
+    (membersByFactory.get(m.factoryId) ?? membersByFactory.set(m.factoryId, new Set()).get(m.factoryId)!).add(m.workerId);
+  }
+  for (const k of [...shiftsByPair.keys()]) {
+    const [wId, fId] = k.split("|").map(Number);
+    const mem = membersByFactory.get(fId!);
+    if (mem?.size && !mem.has(wId!)) shiftsByPair.delete(k);
   }
 
   // 3) суми + upsert (ручні рядки пари не чіпаємо, авто — оновлюємо/зносимо)

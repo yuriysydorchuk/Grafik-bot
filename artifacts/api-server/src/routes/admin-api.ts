@@ -11,7 +11,7 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -309,7 +309,7 @@ router.get("/workers", RW, async (req, res) => {
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
       selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
-      language: workersTable.language,
+      nationality: workersTable.nationality, language: workersTable.language,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -332,6 +332,8 @@ router.get("/workers", RW, async (req, res) => {
 
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
+// національність — прапорець біля імені (профіль, довози, сводна); дзеркало веб-каталогу lib/nationality.ts
+const NATIONALITIES = ["ukraine", "belarus", "africa", "latin_america", "central_asia", "south_asia"];
 
 router.post("/workers", RW, async (req, res) => {
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport, force } = req.body ?? {};
@@ -358,6 +360,7 @@ router.post("/workers", RW, async (req, res) => {
     selfTransport: !!selfTransport,
     selfTransportSince: typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
       ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
+    nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -381,6 +384,7 @@ const JOURNALED_FIELDS = [
   "factoryId", "positionId", "legalStatus", "birthDate", "notifyHours", "employmentStartDate",
   "agramStazBonus", "agramCashBonus", "hourlyRate", "hourlyRateNetto", "isStudent",
   "payoutPrefKind", "payoutPrefValue",
+  "nationality", // прапорець біля імені: історія зміни — в журналі
 ] as const;
 const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 async function journalWorkerChanges(workerId: number, before: Record<string, unknown>, patch: Record<string, unknown>, adminId: number | null, effectiveDate?: string) {
@@ -433,13 +437,11 @@ router.patch("/workers/:id", RW, async (req, res) => {
     if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Дата «діє з» — формат YYYY-MM-DD");
     patch.selfTransportSince = d;
   }
-  // залічка за бадання: сума + позначка «знято з ЗП» (операційні поля)
-  if (req.body?.badaniaZaliczka !== undefined) {
-    const v = req.body.badaniaZaliczka == null || req.body.badaniaZaliczka === "" ? null : Number(req.body.badaniaZaliczka);
-    if (v != null && (!Number.isFinite(v) || v < 0)) return fail(res, 400, "Залічка за бадання — сума ≥ 0");
-    patch.badaniaZaliczka = v;
+  if (req.body?.nationality !== undefined) {
+    const n = strOrNull(req.body.nationality);
+    if (n && !NATIONALITIES.includes(n)) return fail(res, 400, "Невідома національність");
+    patch.nationality = n;
   }
-  if (req.body?.badaniaDeducted !== undefined) patch.badaniaDeducted = !!req.body.badaniaDeducted;
   const { birthDate } = req.body ?? {};
   if (birthDate !== undefined) {
     const bd = strOrNull(birthDate);
@@ -548,6 +550,66 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
     effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
   }).catch(err => logger.error({ err }, "worker change journal failed"));
   ok(res, stripWorkerEcho(w, req));
+});
+
+// ─── Залічки за бадання: список записів у профілі (додати/позначити/видалити) ─
+router.post("/workers/:id/badania", RW, async (req, res) => {
+  const workerId = Number(req.params.id);
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return fail(res, 400, "Сума залічки > 0");
+  const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w) return fail(res, 404, "Працівника не знайдено");
+  const enteredAt = typeof req.body?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date) ? req.body.date : warsawToday();
+  const [created] = await db.insert(workerBadaniaTable).values({
+    workerId, amount: Math.round(amount * 100) / 100, enteredAt,
+    note: strOrNull(req.body?.note),
+  }).returning();
+  ok(res, created);
+});
+
+router.patch("/worker-badania/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const patch: Record<string, unknown> = {};
+  if (req.body?.amount !== undefined) {
+    const amount = Number(req.body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return fail(res, 400, "Сума залічки > 0");
+    patch.amount = Math.round(amount * 100) / 100;
+  }
+  if (req.body?.deducted !== undefined) {
+    const d = !!req.body.deducted;
+    patch.deducted = d;
+    patch.deductedAt = d ? warsawToday() : null; // дата «знято» живе разом зі статусом
+  }
+  if (req.body?.note !== undefined) patch.note = strOrNull(req.body.note);
+  if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
+  const [u] = await db.update(workerBadaniaTable).set(patch).where(eq(workerBadaniaTable.id, id)).returning();
+  if (!u) return fail(res, 404, "Не знайдено");
+  ok(res, u);
+});
+
+router.delete("/worker-badania/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  await db.delete(workerBadaniaTable).where(eq(workerBadaniaTable.id, id));
+  ok(res, { ok: true });
+});
+
+// Всі незняті залічки за бадання (вкладка «Бадання» на /advances): список для
+// вибіркового перенесення у сводну (POST /svodni/apply-badania-deductions)
+router.get("/badania/pending", RW, async (_req, res) => {
+  const rows = await db.select({ b: workerBadaniaTable, workerName: workersTable.fullName, nationality: workersTable.nationality })
+    .from(workerBadaniaTable)
+    .innerJoin(workersTable, eq(workerBadaniaTable.workerId, workersTable.id))
+    .where(eq(workerBadaniaTable.deducted, false))
+    .orderBy(workersTable.fullName, desc(workerBadaniaTable.enteredAt));
+  ok(res, {
+    rows: rows.map(({ b, workerName, nationality }) => ({
+      id: b.id, workerId: b.workerId, workerName, nationality,
+      amount: b.amount, enteredAt: b.enteredAt, note: b.note,
+    })),
+    total: Math.round(rows.reduce((s, { b }) => s + b.amount, 0) * 100) / 100,
+  });
 });
 
 // Історія змін профілю (журнал worker_changes) — таймлайн у профілі
@@ -690,7 +752,10 @@ router.get("/workers/:id", RW, async (req, res) => {
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     selfTransportSince: w.selfTransportSince,
-    badaniaZaliczka: w.badaniaZaliczka, badaniaDeducted: w.badaniaDeducted,
+    // залічки за бадання — список записів (окрема таблиця, CRUD нижче)
+    badania: await db.select().from(workerBadaniaTable)
+      .where(eq(workerBadaniaTable.workerId, id)).orderBy(desc(workerBadaniaTable.enteredAt), desc(workerBadaniaTable.id)),
+    nationality: w.nationality,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     language: w.language,
     birthDate: w.birthDate,

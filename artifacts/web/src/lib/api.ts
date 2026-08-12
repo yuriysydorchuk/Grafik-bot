@@ -80,6 +80,7 @@ export interface Worker {
   positionId?: number | null; positionName?: string | null; positionColor?: string | null;
   gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
+  nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   status: string; isActive: boolean; language?: string | null;
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }

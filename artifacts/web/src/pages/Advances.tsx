@@ -4,15 +4,20 @@
 // затвердження) або офіс з цієї сторінки (одразу «передано до виплати»).
 // Виплата: авто по банківському переказу (services/advances.ts) або вручну
 // з вибором переказ/готівка. IBAN працівника — з профілю, клік = копіювання.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, X, Banknote, Landmark, Plus, Copy, ArrowLeftRight, Building2, CalendarClock } from "lucide-react";
+import { Check, X, Banknote, Landmark, Plus, Copy, ArrowLeftRight, Building2, CalendarClock, Stethoscope } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, type AdvanceRequest } from "../lib/api";
 import { Card, Spinner, Select, Empty, Badge, Modal, Button, Input, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { useConfirm } from "../components/confirm";
 import { monthOptions } from "../lib/dates";
 import { useT } from "../lib/i18n";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
+import { NatFlag } from "../lib/nationality";
 
 const STATUS_COLOR: Record<string, "amber" | "blue" | "rose" | "green"> = {
   pending: "amber", approved: "blue", rejected: "rose", paid: "green",
@@ -160,9 +165,19 @@ export default function Advances() {
     </tr>
   );
 
+  const [tab, setTab] = useState<"adv" | "badania">("adv");
   return (
     <>
       <PageHeader title={t("Аванси")} subtitle={t("Залічки: подача, групи виплат 15-го/30-го, виплата переказом чи готівкою")} />
+      <div className="mb-4 flex w-fit gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
+        {([["adv", t("Залічки")], ["badania", t("Бадання до зняття")]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`rounded-lg px-3 py-1.5 ${tab === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "badania" ? <BadaniaTab /> : <>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -320,6 +335,110 @@ export default function Advances() {
 
       {moving && <MoveModal row={moving} onClose={() => setMoving(null)} onSaved={() => { setMoving(null); inv(); }} />}
       {submitting && <SubmitModal onClose={() => setSubmitting(false)} onSaved={() => { setSubmitting(false); inv(); }} />}
+      </>}
+    </>
+  );
+}
+
+// ─── Бадання до зняття: незняті залічки за медогляд → Zaliczka BD сводної ────
+type BadaniaPendingRow = { id: number; workerId: number; workerName: string; nationality: string | null; amount: number; enteredAt: string; note: string | null };
+const curMonthWarsaw = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
+
+function BadaniaTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const me = useMe();
+  const canSvodni = can(me, "svodni");
+  const [month, setMonth] = useState(curMonthWarsaw());
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const { data, isLoading } = useQuery<{ rows: BadaniaPendingRow[]; total: number }>({
+    queryKey: ["badania-pending"], queryFn: () => get("/badania/pending"),
+  });
+  // типово вибрані всі — «перенести всі» це просто кнопка без зняття галочок
+  useEffect(() => { if (data) setSel(new Set(data.rows.map(r => r.id))); }, [data]);
+  const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = (data?.rows.length ?? 0) > 0 && sel.size === data!.rows.length;
+  const selSum = r2((data?.rows ?? []).filter(r => sel.has(r.id)).reduce((a, r) => a + r.amount, 0));
+  const months = useMemo(() => {
+    const cur = curMonthWarsaw();
+    const [y, m] = cur.split("-").map(Number);
+    return [0, 1, 2, 3].map(d => { const dt = new Date(y!, m! - 1 - d, 1); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`; });
+  }, []);
+  const apply = useMutation({
+    mutationFn: () => post<{ updated: number; itemsMarked: number; verified: number; verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; amount: number }[] }>(
+      "/svodni/apply-badania-deductions", { month, ids: [...sel] }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["badania-pending"] });
+      const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("позицій знято")}: ${d.itemsMarked}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
+      if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+      if (d.verifyMismatches.length) {
+        toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
+          description: d.verifyMismatches.slice(0, 6).map(v => `${v.workerName}: ${v.expected ?? 0} ≠ ${v.actual ?? 0}`).join(", "), duration: 15000,
+        });
+      }
+      if (d.unmatched.length) {
+        toast.warning(`${t("Без рядка сводної")}: ${d.unmatched.length}`, {
+          description: d.unmatched.slice(0, 6).map(u => u.workerName ?? "—").join(", ") + (d.unmatched.length > 6 ? "…" : ""), duration: 12000,
+        });
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <span className="text-sm text-slate-500">
+          <Stethoscope className="mr-1 inline h-4 w-4 text-red-600" />
+          {t("до зняття")}: <b>{(data?.total ?? 0).toFixed(2)} zł</b> · {data?.rows.length ?? 0} {t("людей")}
+        </span>
+        {canSvodni && (
+          <div className="ml-auto flex items-center gap-2">
+            <Select value={month} onChange={e => setMonth(e.target.value)} className="w-36">
+              {months.map(m => <option key={m} value={m}>{m}</option>)}
+            </Select>
+            <Button loading={apply.isPending} disabled={!sel.size}
+              onClick={async () => { if (await confirm({ title: t("Перенести залічки за бадання до сводної?"), message: t("Суми вибраних ляжуть у колонку Zaliczka BD рядка основної фабрики людини за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються."), confirmText: t("Перенести") })) apply.mutate(); }}>
+              → {allSelected ? t("Перенести всі") : `${t("Перенести вибрані")} (${sel.size})`} · {selSum.toFixed(2)} zł
+            </Button>
+          </div>
+        )}
+      </div>
+      <Card className="overflow-x-auto">
+        {isLoading ? <Spinner /> : !data?.rows.length ? <Empty>{t("Немає незнятих залічок за бадання")}</Empty> : (
+          <table className="w-full min-w-120 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="w-8 px-3 py-2.5">
+                  <input type="checkbox" className="accent-red-600" checked={allSelected}
+                    onChange={() => setSel(allSelected ? new Set() : new Set(data.rows.map(r => r.id)))} />
+                </th>
+                <th className="px-3 py-2.5">{t("Працівник")}</th>
+                <th className="px-3 py-2.5 text-right">{t("Сума")}</th>
+                <th className="px-3 py-2.5">{t("вписано")}</th>
+                <th className="px-3 py-2.5">{t("Нотатка")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {data.rows.map(r => (
+                <tr key={r.id} className="cursor-pointer hover:bg-slate-50" onClick={() => toggle(r.id)}>
+                  <td className="px-3 py-2"><input type="checkbox" className="accent-red-600" checked={sel.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} /></td>
+                  <td className="px-3 py-2">
+                    <Link href={`/workers/${r.workerId}`} onClick={e => e.stopPropagation()}
+                      className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName}</Link>
+                    <NatFlag value={r.nationality} className="ml-1 cursor-default" />
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+                  <td className="px-3 py-2 tabular-nums text-slate-500">{fmtD(r.enteredAt)}</td>
+                  <td className="max-w-50 truncate px-3 py-2 text-xs text-slate-400" title={r.note ?? undefined}>{r.note ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
     </>
   );
 }

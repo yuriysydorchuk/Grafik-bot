@@ -4,7 +4,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Shirt, Store, Banknote, Archive } from "lucide-react";
+import { Plus, Pencil, Trash2, Shirt, Store, Banknote, Archive, Tags } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del } from "../lib/api";
 import { Button, Input, Label, Card, Spinner, Badge, Modal, Empty, Select } from "../components/ui";
@@ -13,7 +13,8 @@ import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
-import { IssueClothingModal } from "./WorkerDetail";
+import { IssueClothingModal, ReturnClothingModal } from "./WorkerDetail";
+import { useClothingTypes, type ClothingType } from "../lib/clothingTypes";
 
 type Item = {
   id: number; workerId: number | null; workerName: string | null; itemType: string;
@@ -27,7 +28,6 @@ type StockRow = {
 };
 type PendingGroup = { workerId: number | null; workerName: string | null; total: number; items: { id: number; itemType: string; size: string | null; condition: string | null; price: number | null; issuedAt: string | null; note: string | null }[] };
 
-const TYPE_LABEL: Record<string, string> = { boots: "Взуття", coverall: "Комбінезон", jacket: "Куртка", hat: "Шапка", tshirt: "Футболка", set: "Комплект", other: "Інше" };
 const fmtPln = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
 const curMonth = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
@@ -67,6 +67,7 @@ function IssuedTab() {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const { labelOf } = useClothingTypes();
   const [q, setQ] = useState("");
   const { data, isLoading } = useQuery<{ rows: Item[]; pendingTotal: number; totalItems: number }>({
     queryKey: ["clothing", q],
@@ -75,12 +76,9 @@ function IssuedTab() {
   const [issuing, setIssuing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
+  const [returning, setReturning] = useState<Item | null>(null);
   const inv = () => { qc.invalidateQueries({ queryKey: ["clothing"] }); qc.invalidateQueries({ queryKey: ["clothing-stock"] }); qc.invalidateQueries({ queryKey: ["clothing-pending"] }); };
   const remove = useMutation({ mutationFn: (id: number) => del(`/clothing/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
-  const ret = useMutation({
-    mutationFn: (id: number) => post(`/clothing/${id}/return`, {}),
-    onSuccess: () => { inv(); toast.success(t("Повернуто на склад")); }, onError: (e: any) => toast.error(e.message),
-  });
   const toggleDeducted = useMutation({
     mutationFn: (i: Item) => patch(`/clothing/${i.id}`, { deducted: !i.deducted }),
     onSuccess: () => inv(), onError: (e: any) => toast.error(e.message),
@@ -119,7 +117,7 @@ function IssuedTab() {
                     <WorkerCell workerId={i.workerId} workerName={i.workerName} />
                     {i.workerId == null && <span className="ml-1"><Badge color="amber">{t("не привʼязано")}</Badge></span>}
                   </td>
-                  <td className="px-3 py-2 text-slate-600">{t(TYPE_LABEL[i.itemType] ?? i.itemType)}{i.size && <span className="text-slate-400"> · {i.size}</span>}</td>
+                  <td className="px-3 py-2 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}</td>
                   <td className="px-3 py-2">{i.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : i.condition === "used" ? <Badge color="slate">{t("БУ")}</Badge> : "—"}</td>
                   <td className="px-3 py-2">
                     {i.ownership === "ours" ? <Badge color="blue">{t("наш")}</Badge>
@@ -145,8 +143,8 @@ function IssuedTab() {
                   <td className="max-w-40 truncate px-3 py-2 text-xs text-slate-400" title={i.note ?? undefined}>{i.note ?? ""}</td>
                   <td className="px-3 py-2 text-right">
                     <div className="flex justify-end gap-1">
-                      {!i.returnedAt && i.stockId != null && (
-                        <button title={t("Повернення")} onClick={async () => { if (await confirm({ title: t("Прийняти повернення?"), message: t("Річ повернеться на склад; нова після носіння стане БУ. Незняту вартість більше не буде видно у «до зняття»."), confirmText: t("Повернути") })) ret.mutate(i.id); }}
+                      {!i.returnedAt && (
+                        <button title={t("Повернення")} onClick={() => setReturning(i)}
                           className="rounded-lg px-1.5 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700">↩</button>
                       )}
                       <button onClick={() => setEditing(i)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
@@ -161,6 +159,11 @@ function IssuedTab() {
         )}
       </Card>
       {issuing && <IssueClothingModal onClose={() => setIssuing(false)} onSaved={() => { inv(); setIssuing(false); }} />}
+      {returning && (
+        <ReturnClothingModal itemId={returning.id}
+          label={`${returning.workerName ?? "—"} · ${t(labelOf(returning.itemType))}${returning.size ? ` · ${returning.size}` : ""}`}
+          onClose={() => setReturning(null)} onSaved={() => { inv(); setReturning(null); }} />
+      )}
       {(adding || editing) && <ItemModal item={editing ?? undefined} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
     </>
   );
@@ -171,9 +174,11 @@ function ShopTab() {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const { labelOf } = useClothingTypes();
   const { data: stock = [], isLoading } = useQuery<StockRow[]>({ queryKey: ["clothing-stock"], queryFn: () => get("/clothing/stock") });
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<StockRow | null>(null);
+  const [managingTypes, setManagingTypes] = useState(false);
   const inv = () => qc.invalidateQueries({ queryKey: ["clothing-stock"] });
   const remove = useMutation({
     mutationFn: (id: number) => del(`/clothing/stock/${id}`),
@@ -185,7 +190,10 @@ function ShopTab() {
     <>
       <div className="mb-3 flex items-center gap-3">
         <span className="text-sm text-slate-500"><Store className="mr-1 inline h-4 w-4 text-red-600" /> {t("на складі")}: <b>{totalQty} {t("шт")}</b></span>
-        <Button className="ml-auto" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати позицію")}</Button>
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={() => setManagingTypes(true)}><Tags className="h-4 w-4" /> {t("Типи")}</Button>
+          <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати позицію")}</Button>
+        </div>
       </div>
       <Card className="overflow-x-auto">
         {isLoading ? <Spinner /> : !stock.length ? <Empty>{t("Склад порожній")}</Empty> : (
@@ -201,7 +209,7 @@ function ShopTab() {
             <tbody className="divide-y divide-slate-100">
               {stock.map(s => (
                 <tr key={s.id} className={`hover:bg-slate-50 ${!s.isActive ? "opacity-50" : ""}`}>
-                  <td className="px-3 py-2 font-medium text-slate-700">{t(TYPE_LABEL[s.itemType] ?? s.itemType)}{!s.isActive && <span className="ml-1.5"><Badge color="slate">{t("неактивна")}</Badge></span>}</td>
+                  <td className="px-3 py-2 font-medium text-slate-700">{t(labelOf(s.itemType))}{!s.isActive && <span className="ml-1.5"><Badge color="slate">{t("неактивна")}</Badge></span>}</td>
                   <td className="px-3 py-2 text-slate-600">{s.name ?? "—"}</td>
                   <td className="px-3 py-2 text-slate-600">{s.size ?? "—"}</td>
                   <td className="px-3 py-2">{s.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : <Badge color="slate">{t("БУ")}</Badge>}</td>
@@ -222,12 +230,94 @@ function ShopTab() {
         )}
       </Card>
       {(adding || editing) && <StockModal row={editing ?? undefined} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
+      {managingTypes && <TypesModal onClose={() => setManagingTypes(false)} />}
     </>
   );
 }
 
+// Довідник типів одягу: додати новий, перейменувати, сховати невживаний.
+// key лишається в записах складу/видач — перейменування міняє підпис скрізь.
+function TypesModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { types } = useClothingTypes();
+  const [newLabel, setNewLabel] = useState("");
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const inv = () => qc.invalidateQueries({ queryKey: ["clothing-types"] });
+  const add = useMutation({
+    mutationFn: () => post<ClothingType>("/clothing/types", { label: newLabel.trim() }),
+    onSuccess: () => { inv(); setNewLabel(""); toast.success(t("Тип додано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const save = useMutation({
+    mutationFn: (v: { id: number; label?: string; isActive?: boolean }) => patch(`/clothing/types/${v.id}`, v),
+    onSuccess: () => { inv(); setEditId(null); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/clothing/types/${id}`),
+    onSuccess: (r: any) => { inv(); toast.success(r?.deactivated ? t("Тип має записи — деактивовано") : t("Видалено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Типи одягу")}>
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder={t("Новий тип (напр. Рукавиці)")} autoFocus
+            onKeyDown={e => { if (e.key === "Enter" && newLabel.trim()) add.mutate(); }} />
+          <Button loading={add.isPending} onClick={() => newLabel.trim() && add.mutate()}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+        </div>
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          {types.map(ty => (
+            <div key={ty.id} className={`flex items-center gap-2 px-3 py-2 text-sm ${!ty.isActive ? "opacity-50" : ""}`}>
+              {editId === ty.id ? (
+                <>
+                  <Input value={editLabel} onChange={e => setEditLabel(e.target.value)} className="h-8"
+                    onKeyDown={e => { if (e.key === "Enter" && editLabel.trim()) save.mutate({ id: ty.id, label: editLabel.trim() }); }} />
+                  <button className="text-xs font-medium text-emerald-600" onClick={() => editLabel.trim() && save.mutate({ id: ty.id, label: editLabel.trim() })}>{t("Зберегти")}</button>
+                  <button className="text-xs text-slate-400" onClick={() => setEditId(null)}>{t("Скасувати")}</button>
+                </>
+              ) : (
+                <>
+                  <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{t(ty.label)}</span>
+                  {!ty.isActive && <Badge color="slate">{t("неактивна")}</Badge>}
+                  <button title={t("Перейменувати")} onClick={() => { setEditId(ty.id); setEditLabel(ty.label); }}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
+                  <button title={ty.isActive ? t("Сховати") : t("Активувати")}
+                    onClick={() => save.mutate({ id: ty.id, isActive: !ty.isActive })}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">{ty.isActive ? "👁" : "🚫"}</button>
+                  <button title={t("Видалити")}
+                    onClick={async () => { if (await confirm({ title: t("Видалити тип?"), message: t("Тип із записами складу чи видач не видаляється — лише деактивується."), danger: true, confirmText: t("Видалити") })) remove.mutate(ty.id); }}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// опції типів для селектів: активні з довідника + поточне значення рядка
+// (легасі/деактивований тип не має зникати з форми редагування)
+function useTypeOptions(current?: string | null): { key: string; label: string }[] {
+  const { types, active, labelOf } = useClothingTypes();
+  const opts = active.map(x => ({ key: x.key, label: x.label }));
+  if (current && !opts.some(o => o.key === current) && (types.length || current))
+    opts.push({ key: current, label: labelOf(current) });
+  return opts;
+}
+
 function StockModal({ row, onClose, onSaved }: { row?: StockRow; onClose: () => void; onSaved: () => void }) {
   const t = useT();
+  const typeOptions = useTypeOptions(row?.itemType);
   const isEdit = !!row;
   const [f, setF] = useState({
     itemType: row?.itemType ?? "boots", name: row?.name ?? "", size: row?.size ?? "",
@@ -252,7 +342,7 @@ function StockModal({ row, onClose, onSaved }: { row?: StockRow; onClose: () => 
         <div className="grid grid-cols-2 gap-3">
           <div><Label>{t("Тип")}</Label>
             <Select value={f.itemType} onChange={set("itemType")}>
-              {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{t(v)}</option>)}
+              {typeOptions.map(o => <option key={o.key} value={o.key}>{t(o.label)}</option>)}
             </Select></div>
           <div><Label>{t("Назва (уточнення)")}</Label><Input value={f.name} onChange={set("name")} placeholder={t("напр. Lahti Pro")} /></div>
         </div>
@@ -285,6 +375,7 @@ function PendingTab() {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const { labelOf } = useClothingTypes();
   const me = useMe();
   const canSvodni = can(me, "svodni");
   const [month, setMonth] = useState(curMonth());
@@ -349,7 +440,7 @@ function PendingTab() {
                 <tbody className="divide-y divide-slate-100">
                   {g.items.map(i => (
                     <tr key={i.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-1.5 text-slate-600">{t(TYPE_LABEL[i.itemType] ?? i.itemType)}{i.size && <span className="text-slate-400"> · {i.size}</span>}{i.condition === "used" && <span className="ml-1.5 align-middle"><Badge color="slate">{t("БУ")}</Badge></span>}</td>
+                      <td className="px-4 py-1.5 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}{i.condition === "used" && <span className="ml-1.5 align-middle"><Badge color="slate">{t("БУ")}</Badge></span>}</td>
                       <td className="px-4 py-1.5 tabular-nums text-slate-500">{i.issuedAt ? fmtD(i.issuedAt) : "—"}</td>
                       <td className="px-4 py-1.5 text-right tabular-nums text-slate-700">{i.price != null ? fmtPln(i.price) : "—"} зл</td>
                     </tr>
@@ -367,6 +458,7 @@ function PendingTab() {
 // ─── Архів знять: що вже знято, з якої сводної ───────────────────────────────
 function ArchiveTab() {
   const t = useT();
+  const { labelOf } = useClothingTypes();
   const { data, isLoading } = useQuery<{ rows: Item[] }>({ queryKey: ["clothing", ""], queryFn: () => get("/clothing") });
   const deducted = (data?.rows ?? []).filter(i => i.deducted);
   const byMonth = useMemo(() => {
@@ -392,7 +484,7 @@ function ArchiveTab() {
               {items.map(i => (
                 <tr key={i.id} className="hover:bg-slate-50">
                   <td className="px-4 py-1.5"><WorkerCell workerId={i.workerId} workerName={i.workerName} /></td>
-                  <td className="px-4 py-1.5 text-slate-600">{t(TYPE_LABEL[i.itemType] ?? i.itemType)}{i.size && <span className="text-slate-400"> · {i.size}</span>}</td>
+                  <td className="px-4 py-1.5 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}</td>
                   <td className="px-4 py-1.5 tabular-nums text-slate-500">{i.issuedAt ? fmtD(i.issuedAt) : i.periodMonth ?? "—"}</td>
                   <td className="px-4 py-1.5 text-right tabular-nums text-slate-700">{fmtPln(i.deductedAmount ?? i.price ?? 0)} зл</td>
                 </tr>
@@ -408,6 +500,7 @@ function ArchiveTab() {
 // ─── Ручний запис реєстру (історія / одяг не зі складу) ──────────────────────
 function ItemModal({ item, onClose, onSaved }: { item?: Item; onClose: () => void; onSaved: () => void }) {
   const t = useT();
+  const typeOptions = useTypeOptions(item?.itemType);
   const isEdit = !!item;
   const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({ queryKey: ["workers-light"], queryFn: () => get("/workers") });
   const [f, setF] = useState({
@@ -447,7 +540,7 @@ function ItemModal({ item, onClose, onSaved }: { item?: Item; onClose: () => voi
         <div className="grid grid-cols-2 gap-3">
           <div><Label>{t("Тип")}</Label>
             <Select value={f.itemType} onChange={set("itemType")}>
-              {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{t(v)}</option>)}
+              {typeOptions.map(o => <option key={o.key} value={o.key}>{t(o.label)}</option>)}
             </Select></div>
           <div><Label>{t("Належність")}</Label>
             <Select value={f.ownership} onChange={set("ownership")}>

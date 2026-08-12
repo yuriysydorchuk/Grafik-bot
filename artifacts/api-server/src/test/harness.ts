@@ -10,7 +10,7 @@ import {
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable,
-  clothingItemsTable, clothingStockTable,
+  clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -29,7 +29,7 @@ export {
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable,
-  clothingItemsTable, clothingStockTable,
+  clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -49,7 +49,7 @@ export async function resetDb(): Promise<void> {
     "factories, positions, factory_orders, availability, absence_requests, " +
     "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, svodni_locks, monthly_reports, factory_hours, hours_notes, " +
-    "transport_deductions, clothing_items, clothing_stock, " +
+    "transport_deductions, clothing_items, clothing_stock, clothing_types, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +
     "expense_categories, counterparty_rules, " +
@@ -60,6 +60,13 @@ export async function resetDb(): Promise<void> {
     DEFAULT_EXPENSE_CATS.map((c, i) => ({ ...c, sortOrder: (i + 1) * 10 })),
   );
   invalidateExpenseCats();
+  // базові типи одягу — дзеркало сіду міграції (валідація itemType іде по довіднику)
+  await db.insert(clothingTypesTable).values([
+    { key: "boots", label: "Взуття", sortOrder: 10 }, { key: "coverall", label: "Комбінезон", sortOrder: 20 },
+    { key: "jacket", label: "Куртка", sortOrder: 30 }, { key: "hat", label: "Шапка", sortOrder: 40 },
+    { key: "tshirt", label: "Футболка", sortOrder: 50 }, { key: "set", label: "Комплект", sortOrder: 60 },
+    { key: "other", label: "Інше", sortOrder: 70 },
+  ]);
 }
 
 // Insert a role with the given capabilities/pages, then invalidate the auth role cache so

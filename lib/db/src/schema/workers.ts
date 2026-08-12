@@ -80,12 +80,26 @@ export const workersTable = pgTable("workers", {
   // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)
-  // Залічка за бадання (медогляд): сума + чи вже знята з ЗП (ручна позначка в профілі)
-  badaniaZaliczka: real("badania_zaliczka"),
-  badaniaDeducted: boolean("badania_deducted").notNull().default(false),
+  // національність: ukraine | belarus | africa | latin_america | central_asia | south_asia
+  // (показ прапорцем біля імені: профіль, довози, сводна)
+  nationality: text("nationality"),
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Залічки за бадання (медогляд): список записів на працівника — своя сума,
+// дата «вписано» і статус/дата «знято з ЗП». Ведеться вручну в профілі.
+export const workerBadaniaTable = pgTable("worker_badania", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  amount: real("amount").notNull(),
+  enteredAt: date("entered_at").notNull(),
+  deducted: boolean("deducted").notNull().default(false),
+  deductedAt: date("deducted_at"),
+  deductedMonth: text("deducted_month"), // YYYY-MM сводної, з якої знято (перенесення в Zaliczka BD)
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("worker_badania_worker_idx").on(t.workerId)]);
 
 // Особисті номери працівників у системах фабрик (Nr Osobowy: Agram, Poznań…).
 // Імпорт годин матчить рядок спершу по цьому ключу, потім fuzzy по імені.
@@ -183,6 +197,17 @@ export const transportDeductionsTable = pgTable("transport_deductions", {
   index("transport_deductions_month_idx").on(t.periodMonth),
   index("transport_deductions_worker_idx").on(t.workerId),
 ]);
+
+// Вибірковий платний довіз: список «хто платить» на фабриці з paid_transport.
+// Порожній список = платить уся фабрика (як досі); є рядки — генерація знять
+// (/transport/deductions/generate) тарифікує ЛИШЕ вибраних. Ціна/ліміт — завжди
+// фабричні (transport_fee_per_shift / transport_fee_month_cap).
+export const transportFeeMembersTable = pgTable("transport_fee_members", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("transport_fee_members_uq").on(t.factoryId, t.workerId)]);
 
 // Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
 // starting a workday; the plate shows up in the mileage report.
@@ -1259,6 +1284,17 @@ export const hostelStaysTable = pgTable("hostel_stays", {
 
 // Облік спецодягу: видача працівникам (наш/свій/на продаж), ціна зняття з ЗП.
 // Джерело — таблиці водія «Учёт рабочей одежды» / «Forma» (мігровано 07.2026).
+// Довідник типів одягу: key живе в item_type складу/видач (сумісно з міграцією
+// таблиць водія), label редагується; нові типи додаються з веб-панелі.
+export const clothingTypesTable = pgTable("clothing_types", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Склад магазину одягу: позиція = тип+назва+розмір+стан; видача мінусує qty,
 // повернення плюсує (новий після повернення стає БУ — окремий рядок used).
 export const clothingStockTable = pgTable("clothing_stock", {

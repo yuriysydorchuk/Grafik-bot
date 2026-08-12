@@ -200,7 +200,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const where = city
     ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city))
     : eq(svodniRowsTable.periodMonth, month);
-  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue })
+  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue, workerNationality: workersTable.nationality })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(where)
@@ -215,8 +215,9 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     const l = segsOf.get(x.r.segmentOf) ?? []; l.push(x); segsOf.set(x.r.segmentOf, l);
   }
   const rows = raw.filter(({ r }) => r.segmentOf == null && tabAllowed(r.factoryLabel))
-    .map(({ r, workerName, workerLegal, prefKind, prefValue }) => {
+    .map(({ r, workerName, workerLegal, prefKind, prefValue, workerNationality }) => {
       const base = serializeRow(r, workerName, sensitive, workerLegal, prefKind ? { kind: prefKind, value: prefValue ?? null } : null);
+      base.nationality = workerNationality; // прапорець біля імені у веб-таблиці
       const segs = segsOf.get(r.id);
       if (segs?.length) {
         // сегмент — повний рядок (усі колонки: до виплати, konto, готівка, частки
@@ -2099,6 +2100,102 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
     const fresh = await db.select({ id: svodniRowsTable.id, odziez: svodniRowsTable.odziez })
       .from(svodniRowsTable).where(inArray(svodniRowsTable.id, expectedRows.map(e => e.rowId)));
     const freshById = new Map(fresh.map(f => [f.id, f.odziez]));
+    for (const e of expectedRows) {
+      const actual = freshById.get(e.rowId) ?? null;
+      if ((actual ?? 0) !== (e.amount ?? 0)) {
+        verifyMismatches.push({ workerName: e.workerName, factoryLabel: e.factoryLabel, expected: e.amount, actual });
+      }
+    }
+  }
+  ok(res, { month, updated, itemsMarked: markedItemIds.length, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched });
+});
+
+// Перенесення залічок за бадання у колонку Zaliczka BD сводної місяця.
+// Джерело — worker_badania з deducted=false; body.ids — вибіркове перенесення
+// (без ids — усі незняті). Сума людини лягає в рядок її фабрики з найбільшими
+// годинами місяця; після запису записи позначаються deducted+дата+місяць.
+router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const onlyIds: number[] | null = Array.isArray(req.body?.ids)
+    ? req.body.ids.map(Number).filter(Number.isFinite) : null;
+  const { workerBadaniaTable } = await import("@workspace/db");
+  const items = (await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.deducted, false)))
+    .filter(b => onlyIds == null || onlyIds.includes(b.id));
+  if (!items.length) return fail(res, 400, "немає залічок за бадання до зняття");
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const byWorker = new Map<number, { amount: number; itemIds: number[] }>();
+  for (const it of items) {
+    const cur = byWorker.get(it.workerId) ?? byWorker.set(it.workerId, { amount: 0, itemIds: [] }).get(it.workerId)!;
+    cur.amount = r2(cur.amount + it.amount);
+    cur.itemIds.push(it.id);
+  }
+
+  const rows = await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const locks = await monthLocks(month);
+  const workerIds = [...byWorker.keys()];
+  const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
+  const wById = new Map(workers.map(w => [w.id, w]));
+
+  let updated = 0, skippedLocked = 0;
+  const markedItemIds: number[] = [];
+  const unmatched: { workerName: string | null; amount: number }[] = [];
+  const expectedRows: { rowId: number; workerName: string; factoryLabel: string; amount: number | null }[] = [];
+  for (const [workerId, agg] of byWorker) {
+    const w = wById.get(workerId);
+    // рядок «основної» фабрики: серед батьківських рядків людини в місяці —
+    // з найбільшими годинами (як одяг: залічка не привʼязана до фабрики)
+    const mine = rows.filter(r => r.workerId === workerId);
+    const row = mine.sort((a, b) => (b.hours ?? 0) - (a.hours ?? 0))[0];
+    if (!row) { unmatched.push({ workerName: w?.fullName ?? null, amount: agg.amount }); continue; }
+    if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
+    // ДОДАЄМО до наявного Zaliczka BD (там можуть жити старі ручні суми),
+    // на відміну від системних колонок, які система переписує повністю
+    const amount = r2((row.zaliczkaBd ?? 0) + agg.amount);
+
+    // порізаний на сегменти рядок: місячний ввід на батькові
+    const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
+      .where(eq(svodniRowsTable.segmentOf, row.id)).limit(1);
+    if (segMark) {
+      await db.update(svodniRowsTable).set({ zaliczkaBd: amount, manual: true, mismatch: null })
+        .where(eq(svodniRowsTable.id, row.id));
+      await recomputeSegmentedParent(row.id);
+    } else {
+      // та сама послідовність, що й ручна правка клітинки Zaliczka BD
+      const merged: any = { ...row, zaliczkaBd: amount };
+      const set: Record<string, unknown> = { zaliczkaBd: amount, manual: true, mismatch: null };
+      const payout = computePayout(merged, row.city as any);
+      if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
+      if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+        const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+          if (merged[k] !== row[k]) set[k] = merged[k];
+        }
+      }
+      if (merged.ksiegNetto != null && merged.doWyplaty != null) {
+        const doplata = typeof merged.extras?.doplataEs === "number" ? merged.extras.doplataEs : 0;
+        set.gotowka = r2(merged.doWyplaty - merged.ksiegNetto + doplata);
+      }
+      await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, row.id));
+    }
+    expectedRows.push({ rowId: row.id, workerName: w?.fullName ?? row.rawName, factoryLabel: row.factoryLabel, amount });
+    markedItemIds.push(...agg.itemIds);
+    updated++;
+  }
+  // перенесені записи — «знято» з датою і місяцем сводної
+  if (markedItemIds.length) {
+    await db.update(workerBadaniaTable)
+      .set({ deducted: true, deductedAt: sql`CURRENT_DATE`, deductedMonth: month })
+      .where(inArray(workerBadaniaTable.id, markedItemIds));
+  }
+  // САМОЗВІРКА: перечитуємо записані рядки і порівнюємо Zaliczka BD
+  const verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[] = [];
+  if (expectedRows.length) {
+    const fresh = await db.select({ id: svodniRowsTable.id, zaliczkaBd: svodniRowsTable.zaliczkaBd })
+      .from(svodniRowsTable).where(inArray(svodniRowsTable.id, expectedRows.map(e => e.rowId)));
+    const freshById = new Map(fresh.map(f => [f.id, f.zaliczkaBd]));
     for (const e of expectedRows) {
       const actual = freshById.get(e.rowId) ?? null;
       if ((actual ?? 0) !== (e.amount ?? 0)) {

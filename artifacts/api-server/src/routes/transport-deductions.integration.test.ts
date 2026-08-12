@@ -71,6 +71,53 @@ test("генерація з годин сводної: 40г/8г=5×20=100; 80г=
   assert.equal(byWorker.get(w1.id)?.sourceRef, "auto");
 });
 
+test("вибірковий платний довіз: список «хто платить» тарифікує лише вибраних; порожній = усі", opts, async () => {
+  const fab = await seedPaidFactory();
+  const w1 = await seedWorker("PLACI ADAM");
+  const w2 = await seedWorker("NIE PLACI EWA");
+  await seedSvodniHours(w1.id, fab, 40); // 5 змін
+  await seedSvodniHours(w2.id, fab, 40);
+  const cookie = await opsCookie();
+
+  // вибрані: лише w1 → w2 не тарифікується
+  const putRes = await request(app).put("/api/transport/fee-members").set("Cookie", cookie).set(H)
+    .send({ factoryId: fab.id, workerIds: [w1.id] });
+  assert.equal(putRes.status, 200);
+  const cfg = await request(app).get("/api/transport/fee-members").set("Cookie", cookie);
+  assert.deepEqual(cfg.body.factories.find((f: any) => f.factoryId === fab.id).members.map((m: any) => m.workerId), [w1.id]);
+
+  let res = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.created, 1);
+  let rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.periodMonth, MONTH));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.workerId, w1.id);
+  assert.equal(rows[0]!.amount, 100);
+
+  // кандидати модалки: обидва з годинами, w1 позначений членом
+  const cand = await request(app).get(`/api/transport/fee-members/candidates?factoryId=${fab.id}&month=${MONTH}`).set("Cookie", cookie);
+  const byId = new Map(cand.body.candidates.map((c: any) => [c.workerId, c]));
+  assert.equal((byId.get(w1.id) as any).member, true);
+  assert.equal((byId.get(w2.id) as any).member, false);
+  assert.equal((byId.get(w2.id) as any).hasHours, true);
+
+  // очистили список → платить уся фабрика, w2 зʼявляється
+  await request(app).put("/api/transport/fee-members").set("Cookie", cookie).set(H)
+    .send({ factoryId: fab.id, workerIds: [] });
+  res = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
+  assert.equal(res.status, 200);
+  rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.periodMonth, MONTH));
+  assert.equal(rows.length, 2);
+
+  // знову лише w1 → авто-рядок w2 зноситься при перерахунку
+  await request(app).put("/api/transport/fee-members").set("Cookie", cookie).set(H)
+    .send({ factoryId: fab.id, workerIds: [w1.id] });
+  res = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
+  assert.equal(res.body.deleted, 1);
+  rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.periodMonth, MONTH));
+  assert.deepEqual(rows.map(r => r.workerId), [w1.id]);
+});
+
 test("генерація: неціле ділення — округлення вгору; 12-годинна зміна", opts, async () => {
   const fab = await seedPaidFactory({
     name: "FAB B", transportFeePerShift: 10, transportFeeMonthCap: null,

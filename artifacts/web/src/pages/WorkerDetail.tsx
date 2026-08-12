@@ -15,6 +15,10 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
+import { NatFlag } from "../lib/nationality";
+import { useClothingTypes } from "../lib/clothingTypes";
+
+type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null };
 
 interface WorkerProfile {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
@@ -22,7 +26,8 @@ interface WorkerProfile {
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   selfTransportSince?: string | null;
-  badaniaZaliczka?: number | null; badaniaDeducted?: boolean;
+  badania?: BadaniaEntry[];
+  nationality?: string | null;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
@@ -77,7 +82,7 @@ export default function WorkerDetail() {
     factoryId: w.factoryId, factoryName: w.factoryName, companyId: w.companyId, companyName: w.companyName,
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
     gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
-    selfTransportSince: w.selfTransportSince ?? null,
+    selfTransportSince: w.selfTransportSince ?? null, nationality: w.nationality ?? null,
     status: w.status, isActive: w.isActive, language: w.language,
     hourlyRate: w.hourlyRate, isStudent: w.isStudent, under26: w.under26,
   };
@@ -99,6 +104,7 @@ export default function WorkerDetail() {
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-slate-800">
             {w.fullName}
+            <NatFlag value={w.nationality} className="cursor-default text-lg" />
             {w.gender && <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
             {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
           </h1>
@@ -124,7 +130,7 @@ export default function WorkerDetail() {
             <Info icon={Car} label={t("Транспорт")}
               value={`${w.selfTransport ? t("Доїжджає сам") : t("Возить фірма")}${w.selfTransportSince ? ` · ${t("з")} ${new Date(w.selfTransportSince + "T00:00:00").toLocaleDateString("uk-UA")}` : ""}`} />
           )}
-          <BadaniaRow workerId={w.id} amount={w.badaniaZaliczka ?? null} deducted={!!w.badaniaDeducted} />
+          <BadaniaRow workerId={w.id} entries={w.badania ?? []} />
           {(w.factoryCodes ?? []).length > 0 && (
             <Info icon={KeyRound} label={t("Ключі фабрики")}
               value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
@@ -600,41 +606,57 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
   );
 }
 
-// Залічка за бадання (медогляд): сума + позначка «знято з ЗП» (ручний облік)
-function BadaniaRow({ workerId, amount, deducted }: { workerId: number; amount: number | null; deducted: boolean }) {
+// Залічки за бадання (медогляд): СПИСОК записів — кожен зі своєю сумою,
+// датою «вписано» і статусом/датою «знято з ЗП». Додається нова, стара
+// видаляється; позначка зняття перемикається кліком по бейджу.
+function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaEntry[] }) {
   const t = useT();
   const qc = useQueryClient();
-  const [editing, setEditing] = useState(false);
+  const confirm = useConfirm();
+  const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
-  const save = useMutation({
-    mutationFn: (body: { badaniaZaliczka?: number | null; badaniaDeducted?: boolean }) => patch(`/workers/${workerId}`, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); setEditing(false); },
+  const inv = () => qc.invalidateQueries({ queryKey: ["worker"] });
+  const add = useMutation({
+    mutationFn: () => post(`/workers/${workerId}/badania`, { amount: Number(draft) }),
+    onSuccess: () => { inv(); setAdding(false); setDraft(""); },
     onError: (e: any) => toast.error(e.message),
   });
+  const toggle = useMutation({
+    mutationFn: (b: BadaniaEntry) => patch(`/worker-badania/${b.id}`, { deducted: !b.deducted }),
+    onSuccess: inv, onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/worker-badania/${id}`),
+    onSuccess: inv, onError: (e: any) => toast.error(e.message),
+  });
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Залічка за бадання")}:</span>
-      {editing ? (
+      <span className="text-slate-400">{t("Залічки за бадання")}:</span>
+      {entries.map(b => (
+        <span key={b.id} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-1.5 py-0.5">
+          <span className="font-medium text-slate-700">{b.amount} зл</span>
+          <span className="text-xs text-slate-400" title={`${t("вписано")} ${b.enteredAt}`}>{fmtD(b.enteredAt)}</span>
+          <button title={t("Клікни, щоб перемкнути")} onClick={() => toggle.mutate(b)}>
+            {b.deducted
+              ? <Badge color="green">{t("знято")}{b.deductedAt ? ` ${fmtD(b.deductedAt)}` : ""}</Badge>
+              : <Badge color="rose">{t("ще ні")}</Badge>}
+          </button>
+          <button title={t("Видалити")} className="text-slate-300 hover:text-rose-500"
+            onClick={async () => { if (await confirm({ title: t("Видалити залічку за бадання?"), message: `${b.amount} зл · ${b.enteredAt}`, danger: true, confirmText: t("Видалити") })) remove.mutate(b.id); }}>✕</button>
+        </span>
+      ))}
+      {adding ? (
         <span className="flex items-center gap-1">
-          <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
-            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          <button className="text-xs font-medium text-emerald-600"
-            onClick={() => save.mutate({ badaniaZaliczka: draft === "" ? null : Number(draft) })}>{t("Зберегти")}</button>
-          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+          <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)} autoFocus
+            onKeyDown={e => { if (e.key === "Enter" && Number(draft) > 0) add.mutate(); }}
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" placeholder={t("сума")} />
+          <button className="text-xs font-medium text-emerald-600" onClick={() => Number(draft) > 0 && add.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => { setAdding(false); setDraft(""); }}>{t("Скасувати")}</button>
         </span>
       ) : (
-        <>
-          <button className="font-medium text-slate-700 hover:text-red-600"
-            onClick={() => { setDraft(amount == null ? "" : String(amount)); setEditing(true); }}>
-            {amount != null ? `${amount} зл` : t("вказати")}
-          </button>
-          {amount != null && (
-            <button title={t("Клікни, щоб перемкнути")} onClick={() => save.mutate({ badaniaDeducted: !deducted })}>
-              {deducted ? <Badge color="green">{t("знято")}</Badge> : <Badge color="rose">{t("ще ні")}</Badge>}
-            </button>
-          )}
-        </>
+        <button className="text-xs font-medium text-slate-400 hover:text-red-600" onClick={() => setAdding(true)}>+ {t("додати")}</button>
       )}
     </div>
   );
@@ -1010,7 +1032,6 @@ function WorkerHostel({ workerId }: { workerId: number }) {
 
 // Одяг: видане (з магазину або вручну), вартість «маємо зняти» / фактично
 // знято (місяць сводної), повернення на склад. Магазин і склад — сторінка /clothing.
-const CLOTHING_TYPE_LABEL: Record<string, string> = { boots: "Взуття", coverall: "Комбінезон", jacket: "Куртка", hat: "Шапка", tshirt: "Футболка", set: "Комплект", other: "Інше" };
 type WorkerClothingItem = {
   id: number; itemType: string; size: string | null; condition: string | null; ownership: string | null;
   price: number | null; deducted: boolean; deductedAmount: number | null; deductedMonth: string | null;
@@ -1021,17 +1042,13 @@ type ClothingStockRow = { id: number; itemType: string; name: string | null; siz
 function WorkerClothing({ workerId }: { workerId: number }) {
   const t = useT();
   const qc = useQueryClient();
-  const confirm = useConfirm();
+  const { labelOf } = useClothingTypes();
   const [issuing, setIssuing] = useState(false);
+  const [returning, setReturning] = useState<WorkerClothingItem | null>(null);
   const { data } = useQuery<{ rows: WorkerClothingItem[] }>({
     queryKey: ["worker-clothing", workerId], queryFn: () => get(`/clothing?workerId=${workerId}`),
   });
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-clothing", workerId] }); qc.invalidateQueries({ queryKey: ["clothing-stock"] }); };
-  const ret = useMutation({
-    mutationFn: (id: number) => post(`/clothing/${id}/return`, {}),
-    onSuccess: () => { inv(); toast.success(t("Повернуто на склад")); },
-    onError: (e: any) => toast.error(e.message),
-  });
   const rows = data?.rows ?? [];
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
   return (
@@ -1058,7 +1075,7 @@ function WorkerClothing({ workerId }: { workerId: number }) {
               {rows.map(i => (
                 <tr key={i.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2 font-medium text-slate-700">
-                    {t(CLOTHING_TYPE_LABEL[i.itemType] ?? i.itemType)}
+                    {t(labelOf(i.itemType))}
                     {i.size && <span className="ml-1 text-slate-400">· {i.size}</span>}
                     {i.condition && <span className="ml-1.5 align-middle">{i.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : <Badge color="slate">{t("БУ")}</Badge>}</span>}
                     {i.writtenOff && <span className="ml-1.5 align-middle"><Badge color="slate">{t("списано")}</Badge></span>}
@@ -1075,7 +1092,7 @@ function WorkerClothing({ workerId }: { workerId: number }) {
                   <td className="px-2 py-2 text-right">
                     {!i.returnedAt && (
                       <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                        onClick={async () => { if (await confirm({ title: t("Прийняти повернення?"), message: t("Річ повернеться на склад; нова після носіння стане БУ. Незняту вартість більше не буде видно у «до зняття»."), confirmText: t("Повернути") })) ret.mutate(i.id); }}>
+                        onClick={() => setReturning(i)}>
                         ↩ {t("Повернення")}
                       </button>
                     )}
@@ -1087,7 +1104,47 @@ function WorkerClothing({ workerId }: { workerId: number }) {
         </div>
       )}
       {issuing && <IssueClothingModal workerId={workerId} onClose={() => setIssuing(false)} onSaved={() => { inv(); setIssuing(false); }} />}
+      {returning && (
+        <ReturnClothingModal itemId={returning.id} label={`${t(labelOf(returning.itemType))}${returning.size ? ` · ${returning.size}` : ""}`}
+          onClose={() => setReturning(null)} onSaved={() => { inv(); setReturning(null); }} />
+      )}
     </Card>
+  );
+}
+
+// Повернення на склад: дата + стан, у якому річ вертається (нове чи БУ).
+// Типово БУ — ношене нове стає вживаним; нерозпаковане можна повернути новим.
+export function ReturnClothingModal({ itemId, label, onClose, onSaved }: {
+  itemId: number; label: string; onClose: () => void; onSaved: () => void;
+}) {
+  const t = useT();
+  const [date, setDate] = useState(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }));
+  const [condition, setCondition] = useState<"used" | "new">("used");
+  const save = useMutation({
+    mutationFn: () => post(`/clothing/${itemId}/return`, { date, condition }),
+    onSuccess: () => { toast.success(t("Повернуто на склад")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Прийняти повернення?")}>
+      <div className="space-y-3">
+        <div className="text-sm text-slate-600">{label}</div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t("Дата повернення")}</Label><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></div>
+          <div><Label>{t("Повертається як")}</Label>
+            <Select value={condition} onChange={e => setCondition(e.target.value as "used" | "new")}>
+              <option value="used">{t("БУ")}</option>
+              <option value="new">{t("новий")}</option>
+            </Select>
+          </div>
+        </div>
+        <p className="text-xs text-slate-400">{t("Річ додасться на склад у вибраному стані. Незняту вартість більше не буде видно у «до зняття».")}</p>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} onClick={() => save.mutate()}>{t("Повернути")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1105,9 +1162,10 @@ export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: 
     queryKey: ["workers-light"], queryFn: () => get("/workers"), enabled: workerId == null,
   });
   const targetWorkerId = workerId ?? (pickedWorker ? Number(pickedWorker) : null);
+  const { labelOf } = useClothingTypes();
   const sel = available.find(s => String(s.id) === stockId);
   const stockLabel = (s: ClothingStockRow) =>
-    `${t(CLOTHING_TYPE_LABEL[s.itemType] ?? s.itemType)}${s.name ? ` ${s.name}` : ""}${s.size ? ` · ${s.size}` : ""} · ${s.condition === "new" ? t("новий") : t("БУ")}${s.price != null ? ` · ${s.price.toFixed(2)} зл` : ""} · ${s.qty} ${t("шт")}`;
+    `${t(labelOf(s.itemType))}${s.name ? ` ${s.name}` : ""}${s.size ? ` · ${s.size}` : ""} · ${s.condition === "new" ? t("новий") : t("БУ")}${s.price != null ? ` · ${s.price.toFixed(2)} зл` : ""} · ${s.qty} ${t("шт")}`;
   const save = useMutation({
     mutationFn: () => post("/clothing/issue", {
       stockId: Number(stockId), workerId: targetWorkerId,

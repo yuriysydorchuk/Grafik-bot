@@ -26,6 +26,33 @@ async function opsCookie() {
   return (await seedAdmin({ role: "ops", name: "Ops" })).cookie;
 }
 
+test("типи: власний тип додається і працює на складі; вживаний — не видаляється, а деактивується; перейменування міняє label", opts, async () => {
+  const cookie = await opsCookie();
+  // новий тип «Рукавиці» → склад приймає його key
+  const created = await request(app).post("/api/clothing/types").set("Cookie", cookie).set(H).send({ label: "Рукавиці" });
+  assert.equal(created.status, 200);
+  assert.ok(created.body.key);
+  const stock = await request(app).post("/api/clothing/stock").set("Cookie", cookie).set(H)
+    .send({ itemType: created.body.key, qty: 3, price: 15 });
+  assert.equal(stock.status, 200);
+  // невідомий тип — відмова
+  assert.equal((await request(app).post("/api/clothing/stock").set("Cookie", cookie).set(H)
+    .send({ itemType: "nope", qty: 1 })).status, 400);
+  // перейменування
+  const renamed = await request(app).patch(`/api/clothing/types/${created.body.id}`).set("Cookie", cookie).set(H).send({ label: "Рукавиці робочі" });
+  assert.equal(renamed.body.label, "Рукавиці робочі");
+  // тип із записами складу не видаляється — деактивується
+  const del1 = await request(app).delete(`/api/clothing/types/${created.body.id}`).set("Cookie", cookie).set(H);
+  assert.equal(del1.body.deactivated, true);
+  // невживаний тип видаляється насправді
+  const spare = await request(app).post("/api/clothing/types").set("Cookie", cookie).set(H).send({ label: "Тимчасовий" });
+  const del2 = await request(app).delete(`/api/clothing/types/${spare.body.id}`).set("Cookie", cookie).set(H);
+  assert.equal(del2.body.deactivated, undefined);
+  const list = (await request(app).get("/api/clothing/types").set("Cookie", cookie)).body;
+  assert.ok(!list.some((x: any) => x.label === "Тимчасовий"));
+  assert.equal(list.find((x: any) => x.id === created.body.id)?.isActive, false);
+});
+
 test("склад → видача: qty-1, запис із ціною/станом; видача з порожнього складу — 400", opts, async () => {
   const cookie = await opsCookie();
   const [w] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();
@@ -51,35 +78,74 @@ test("склад → видача: qty-1, запис із ціною/стано�
   assert.equal(again.status, 400);
 });
 
-test("повернення: нова річ вертається на склад БУ-позицією; пропадає з «до зняття»", opts, async () => {
+test("повернення: типово стає БУ-позицією, а з condition=new вертається в оригінал; пропадає з «до зняття»", opts, async () => {
   const cookie = await opsCookie();
   const [w] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();
   const stock = (await request(app).post("/api/clothing/stock").set("Cookie", cookie).set(H)
     .send({ itemType: "jacket", size: "L", condition: "new", price: 80, qty: 2 })).body;
-  const item = (await request(app).post("/api/clothing/issue").set("Cookie", cookie).set(H)
+  const item1 = (await request(app).post("/api/clothing/issue").set("Cookie", cookie).set(H)
+    .send({ stockId: stock.id, workerId: w!.id })).body;
+  const item2 = (await request(app).post("/api/clothing/issue").set("Cookie", cookie).set(H)
     .send({ stockId: stock.id, workerId: w!.id })).body;
 
   const pendingBefore = (await request(app).get("/api/clothing/pending").set("Cookie", cookie)).body;
-  assert.equal(pendingBefore.total, 80);
+  assert.equal(pendingBefore.total, 160);
 
-  const ret = await request(app).post(`/api/clothing/${item.id}/return`).set("Cookie", cookie).set(H)
+  // 1) повернення без стану → БУ (ношене нове стає вживаним)
+  const ret = await request(app).post(`/api/clothing/${item1.id}/return`).set("Cookie", cookie).set(H)
     .send({ date: "2026-06-20" });
   assert.equal(ret.status, 200);
   assert.equal(ret.body.returnedAt, "2026-06-20");
   assert.equal(ret.body.restocked.condition, "used");
-
-  // нова позиція БУ з qty 1; оригінальна лишилась із qty 1 (2−1 видача)
-  const rows = await db.select().from(clothingStockTable);
+  let rows = await db.select().from(clothingStockTable);
   const used = rows.find(r => r.condition === "used");
   assert.ok(used, "створено БУ-позицію");
   assert.equal(used!.qty, 1);
   assert.equal(used!.itemType, "jacket");
+  assert.equal(rows.find(r => r.id === stock.id)?.qty, 0); // 2 − 2 видачі
+
+  // 2) повернення з condition=new → плюс у оригінальну НОВУ позицію
+  const retNew = await request(app).post(`/api/clothing/${item2.id}/return`).set("Cookie", cookie).set(H)
+    .send({ condition: "new" });
+  assert.equal(retNew.body.restocked.condition, "new");
+  assert.equal(retNew.body.restocked.stockId, stock.id);
+  rows = await db.select().from(clothingStockTable);
   assert.equal(rows.find(r => r.id === stock.id)?.qty, 1);
+
   // повторне повернення — 400
-  assert.equal((await request(app).post(`/api/clothing/${item.id}/return`).set("Cookie", cookie).set(H).send({})).status, 400);
+  assert.equal((await request(app).post(`/api/clothing/${item1.id}/return`).set("Cookie", cookie).set(H).send({})).status, 400);
   // повернене зникло з «до зняття»
   const pendingAfter = (await request(app).get("/api/clothing/pending").set("Cookie", cookie)).body;
   assert.equal(pendingAfter.total, 0);
+});
+
+test("бадання: список залічок — додати/позначити зняття/видалити, кожна зі своїми датами", opts, async () => {
+  await seedRole("ops2", ["editData"], ["/workers"]);
+  const cookie = (await seedAdmin({ role: "ops2", name: "Ops2" })).cookie;
+  const [w] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();
+
+  const b1 = await request(app).post(`/api/workers/${w!.id}/badania`).set("Cookie", cookie).set(H)
+    .send({ amount: 150, date: "2026-06-01" });
+  assert.equal(b1.status, 200);
+  assert.equal(b1.body.enteredAt, "2026-06-01");
+  const b2 = await request(app).post(`/api/workers/${w!.id}/badania`).set("Cookie", cookie).set(H)
+    .send({ amount: 200 });
+  assert.equal(b2.status, 200);
+
+  // позначка «знято» ставить дату; відміна — прибирає
+  const marked = await request(app).patch(`/api/worker-badania/${b1.body.id}`).set("Cookie", cookie).set(H)
+    .send({ deducted: true });
+  assert.equal(marked.body.deducted, true);
+  assert.ok(marked.body.deductedAt, "дата зняття проставлена");
+  const unmarked = await request(app).patch(`/api/worker-badania/${b1.body.id}`).set("Cookie", cookie).set(H)
+    .send({ deducted: false });
+  assert.equal(unmarked.body.deductedAt, null);
+
+  // видалення другої: у профілі лишається одна
+  await request(app).delete(`/api/worker-badania/${b2.body.id}`).set("Cookie", cookie).set(H);
+  const profile = (await request(app).get(`/api/workers/${w!.id}`).set("Cookie", cookie)).body;
+  assert.equal(profile.badania.length, 1);
+  assert.equal(profile.badania[0].amount, 150);
 });
 
 test("перенесення до сводної: Odzież у рядок фабрики з найбільшими годинами; позиції → архів; лок/без-рядка — у звіт", opts, async () => {
@@ -134,6 +200,50 @@ test("перенесення до сводної: Odzież у рядок фабр
   // w3 не позначено (вкладка залочена)
   const [w3item] = await db.select().from(clothingItemsTable).where(eq(clothingItemsTable.workerId, w3!.id));
   assert.equal(w3item!.deducted, false);
+});
+
+test("бадання → сводна: вибіркове перенесення в Zaliczka BD (додається до наявного), решта лишається в pending", opts, async () => {
+  const { workerBadaniaTable } = await import("../test/harness.ts");
+  const [w1] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();
+  const [w2] = await db.insert(workersTable).values({ fullName: "Nowak Adam" }).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "FAB A" } as any).returning();
+  const seedRow = (workerId: number, over: Record<string, unknown> = {}) => db.insert(svodniRowsTable).values({
+    periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A", factoryId: fac!.id,
+    rawName: `W${workerId}`, workerId, linkStatus: "confirmed",
+    hours: 100, rateNetto: 25, doWyplaty: 2500, extras: {}, hr: {}, sheetValues: {},
+    ...over,
+  } as any);
+  await seedRow(w1!.id, { zaliczkaBd: 50 }); // наявна ручна сума — нове ДОДАЄТЬСЯ
+  await seedRow(w2!.id);
+  const [b1] = await db.insert(workerBadaniaTable).values({ workerId: w1!.id, amount: 150, enteredAt: "2026-06-01" }).returning();
+  const [b2] = await db.insert(workerBadaniaTable).values({ workerId: w2!.id, amount: 200, enteredAt: "2026-06-02" }).returning();
+
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const cookie = (await seedAdmin({ role: "svodniBase", name: "Svod" })).cookie;
+  // вибірково: лише b1
+  const res = await request(app).post("/api/svodni/apply-badania-deductions").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, ids: [b1!.id] });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.updated, 1);
+  assert.equal(res.body.itemsMarked, 1);
+  assert.deepEqual(res.body.verifyMismatches, []);
+
+  const [row1] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w1!.id));
+  assert.equal(row1?.zaliczkaBd, 200, "50 наявних + 150 перенесених");
+  assert.equal(row1?.doWyplaty, 2500 - 200);
+  const [row2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w2!.id));
+  assert.equal(row2?.zaliczkaBd, null, "невибране не чіпалось");
+  const [b1r] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, b1!.id));
+  assert.equal(b1r!.deducted, true);
+  assert.equal(b1r!.deductedMonth, MONTH);
+  const [b2r] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, b2!.id));
+  assert.equal(b2r!.deducted, false);
+  // pending лишає тільки b2
+  await seedRole("ops3", ["editData"], ["/workers"]);
+  const ops = (await seedAdmin({ role: "ops3", name: "O3" })).cookie;
+  const pending = (await request(app).get("/api/badania/pending").set("Cookie", ops)).body;
+  assert.equal(pending.rows.length, 1);
+  assert.equal(pending.rows[0].id, b2!.id);
 });
 
 test("зняття за довіз: віртуальні рядки всіх людей платної фабрики + маркер self_transport", opts, async () => {
