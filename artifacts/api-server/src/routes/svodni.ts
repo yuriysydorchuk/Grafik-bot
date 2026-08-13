@@ -33,7 +33,7 @@ const SENSITIVE_HR = new Set(["kontoNr"]); // номер банківськог�
 function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string | null, sensitive: boolean, workerLegal?: string | null, workerPref?: { kind: string; value: number | null } | null) {
   const base: Record<string, unknown> = {
     id: r.id, city: r.city, firm: r.firm, factoryLabel: r.factoryLabel, factoryId: r.factoryId,
-    sortIdx: r.sortIdx, section: r.section, rawName: r.rawName,
+    sortIdx: r.sortIdx, sourceId: r.sourceId, section: r.section, rawName: r.rawName,
     workerId: r.workerId, workerName, linkStatus: r.linkStatus, manual: r.manual,
     hoursNotified: r.hoursNotified, hours: r.hours, shifts: r.shifts,
     rateBrutto: r.rateBrutto, rateNetto: r.rateNetto, premia: r.premia,
@@ -72,6 +72,22 @@ async function withSegments(base: Record<string, unknown>, rowId: number, sensit
     }));
   }
   return base;
+}
+
+// Фірма рядка: явна (книги Лодзі / заголовок вкладки при синку) → з фабрики
+// рядка (factories.company_id). svodni_rows.firm у більшості міст порожня,
+// а веб фарбує вкладки фабрик за фірмою саме з цього поля. Мульти-контрактні
+// фабрики (multi_firm) — виняток: фірма там ідентифікує ГРУПУ рядка всередині
+// вкладки, порожню не вгадуємо з фабрики (рядок чесно йде в «без фірми»).
+// Збагачувати МУСЯТЬ і відповіді PATCH: веб замінює рядок у кеші відповіддю
+// цілком, і рядок без фірми серед збагачених GET-ом стрибав у групу «Без фірми»
+// до перезавантаження сторінки (баг 13.08.2026).
+async function enrichFirms(rows: Record<string, unknown>[]): Promise<void> {
+  if (!rows.some(r => !r.firm && r.factoryId != null)) return;
+  const facFirm = new Map((await db.select({ id: factoriesTable.id, name: companiesTable.name, multiFirm: factoriesTable.multiFirm })
+    .from(factoriesTable).innerJoin(companiesTable, eq(factoriesTable.companyId, companiesTable.id)))
+    .filter(x => !x.multiFirm).map(x => [x.id, x.name]));
+  for (const r of rows) if (!r.firm && r.factoryId != null) r.firm = facFirm.get(r.factoryId as number) ?? null;
 }
 
 // ── Затвердження: локи на фабрику або ціле місто (factoryLabel = "") ─────────
@@ -232,15 +248,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       return base;
     });
 
-  // Фірма рядка: явна (книги Лодзі / заголовок вкладки при синку) → з фабрики
-  // рядка (factories.company_id). svodni_rows.firm у більшості міст порожня,
-  // а веб фарбує вкладки фабрик за фірмою саме з цього поля. Мульти-контрактні
-  // фабрики (multi_firm) — виняток: фірма там ідентифікує ГРУПУ рядка всередині
-  // вкладки, порожню не вгадуємо з фабрики (рядок чесно йде в «без фірми»).
-  const facFirm = new Map((await db.select({ id: factoriesTable.id, name: companiesTable.name, multiFirm: factoriesTable.multiFirm })
-    .from(factoriesTable).innerJoin(companiesTable, eq(factoriesTable.companyId, companiesTable.id)))
-    .filter(x => !x.multiFirm).map(x => [x.id, x.name]));
-  for (const r of rows) if (!r.firm && r.factoryId != null) r.firm = facFirm.get(r.factoryId as number) ?? null;
+  await enrichFirms(rows);
 
   const checks = (await db.select().from(svodniTabChecksTable).where(
     city
@@ -1221,9 +1229,11 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       .from(svodniRowsTable)
       .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
       .where(eq(svodniRowsTable.id, id));
-    return ok(res, await withSegments(
+    const noteOut = await withSegments(
       serializeRow(u!.r, u!.workerName, canSensitive(req), u!.workerLegal, u!.prefKind ? { kind: u!.prefKind, value: u!.prefValue ?? null } : null),
-      id, canSensitive(req), u!.workerLegal));
+      id, canSensitive(req), u!.workerLegal);
+    await enrichFirms([noteOut]);
+    return ok(res, noteOut);
   }
   if (isLocked(await monthLocks(row.periodMonth), row.city, row.factoryLabel))
     return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
@@ -1246,11 +1256,12 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
     const [parent] = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue })
       .from(svodniRowsTable).leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
       .where(eq(svodniRowsTable.id, row.segmentOf));
-    return ok(res, parent
-      ? await withSegments(
-          serializeRow(parent.r, parent.workerName, canSensitive(req), parent.workerLegal, parent.prefKind ? { kind: parent.prefKind, value: parent.prefValue ?? null } : null),
-          parent.r.id, canSensitive(req), parent.workerLegal)
-      : { ok: true });
+    if (!parent) return ok(res, { ok: true });
+    const parentOut = await withSegments(
+      serializeRow(parent.r, parent.workerName, canSensitive(req), parent.workerLegal, parent.prefKind ? { kind: parent.prefKind, value: parent.prefValue ?? null } : null),
+      parent.r.id, canSensitive(req), parent.workerLegal);
+    await enrichFirms([parentOut]);
+    return ok(res, parentOut);
   }
   // батьківський рядок порізки: години/ставки/похідні рахуються З сегментів —
   // напряму правляться лише місячні вводи (премія, аванси, кари, extras, hr…),
@@ -1371,9 +1382,11 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(eq(svodniRowsTable.id, id));
-  ok(res, await withSegments(
+  const out = await withSegments(
     serializeRow(updated!.r, updated!.workerName, canSensitive(req), updated!.workerLegal, updated!.prefKind ? { kind: updated!.prefKind, value: updated!.prefValue ?? null } : null),
-    id, canSensitive(req), updated!.workerLegal));
+    id, canSensitive(req), updated!.workerLegal);
+  await enrichFirms([out]);
+  ok(res, out);
 });
 
 // «Години підтверджені → до сводної»: створює/оновлює сводну місяця з обліку

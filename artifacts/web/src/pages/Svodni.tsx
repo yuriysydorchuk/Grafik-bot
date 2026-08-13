@@ -27,6 +27,7 @@ import { NatFlag } from "../lib/nationality";
 
 type Row = {
   id: number; city: string; firm: string | null; factoryLabel: string; factoryId: number | null;
+  sourceId: number | null; // рядок прийшов Google-синком (Лодзь) — вкладка тримає порядок аркуша
   section: string | null; rawName: string; workerId: number | null; workerName: string | null;
   linkStatus: string; manual: boolean; nationality?: string | null;
   hoursNotified: number | null; hours: number | null; shifts: number | null;
@@ -795,8 +796,9 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   const segRange = (s: Seg) => (s.from && s.to ? `${s.from.slice(8, 10)}.${s.from.slice(5, 7)}–${s.to.slice(8, 10)}.${s.to.slice(5, 7)}` : "—");
   const hrVal = (r: Row, k: string) => k.startsWith("hr.") ? r.hr[k.slice(3)] : (r.extras as any)[k.slice(7)];
   // порядок рядків: явне сортування користувача > групи фірм (мульти-контрактна
-  // вкладка, напр. Sushi&Food) > секції-становіска (алфавіт всередині, pl) >
-  // порядок таблиці (sortIdx)
+  // вкладка, напр. Sushi&Food) > секції-становіска > алфавіт (pl). Виняток —
+  // синкована з Google вкладка без секцій (Лодзь, рядки несуть sourceId):
+  // тримає порядок аркуша (sortIdx), щоб не розходитись із таблицею-джерелом
   const collator = useMemo(() => new Intl.Collator("pl"), []);
   const firmDisplay = (f: string | null) => (f === "ES" ? "EURO SUPORT" : (f ?? "").toLocaleUpperCase("pl-PL"));
   const multiFirmTab = useMemo(() => new Set(rows.map(r => r.firm ?? "")).size > 1, [rows]);
@@ -820,7 +822,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
       });
       return list;
     }
-    if (multiFirmTab || list.some(r => r.section)) {
+    if (multiFirmTab || list.some(r => r.section) || !list.some(r => r.sourceId != null)) {
       list.sort((a, b) =>
         (multiFirmTab ? collator.compare(a.firm ? firmDisplay(a.firm) : "￿", b.firm ? firmDisplay(b.firm) : "￿") : 0)
         || collator.compare(a.section ?? "￿", b.section ?? "￿")
