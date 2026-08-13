@@ -342,7 +342,76 @@ export default function Advances() {
 
 // ─── Бадання до зняття: незняті залічки за медогляд → Zaliczka BD сводної ────
 type BadaniaPendingRow = { id: number; workerId: number; workerName: string; nationality: string | null; amount: number; enteredAt: string; note: string | null };
+type BadaniaDeductedRow = BadaniaPendingRow & { deductedAt: string | null; deductedMonth: string | null };
 const curMonthWarsaw = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
+const fmtDateStr = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+
+// Історія знятих: місяць сводної, дата, кнопка «↩ Відмінити» — віднімає суму
+// з клітинки Zaliczka BD тієї сводної (залочена вкладка — відмова) і повертає
+// запис у «до зняття». Зняте вручну (без місяця) відміняється в профілі.
+function BadaniaDeductedList() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const me = useMe();
+  const canSvodni = can(me, "svodni");
+  const { data, isLoading } = useQuery<{ rows: BadaniaDeductedRow[]; total: number }>({
+    queryKey: ["badania-deducted"], queryFn: () => get("/badania/deducted"),
+  });
+  const undo = useMutation({
+    mutationFn: (id: number) => post<{ month: string; subtracted: { factoryLabel: string; newValue: number | null } | null; warning: string | null }>("/svodni/undo-badania-deduction", { id }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["badania-deducted"] });
+      qc.invalidateQueries({ queryKey: ["badania-pending"] });
+      if (d.warning) toast.warning(d.warning, { duration: 10000 });
+      else toast.success(t("Відмінено"), { description: `${d.subtracted!.factoryLabel} (${d.month}): Zaliczka BD → ${d.subtracted!.newValue ?? 0} zł` });
+    },
+    onError: (e: any) => toast.error(e.message, { duration: e.status === 409 ? 12000 : undefined }),
+  });
+  if (isLoading) return <Spinner />;
+  if (!data?.rows.length) return <Card><Empty>{t("Ще нічого не знято")}</Empty></Card>;
+  return (
+    <Card className="overflow-x-auto">
+      <table className="w-full min-w-130 text-sm">
+        <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+          <tr>
+            <th className="px-3 py-2.5">{t("Працівник")}</th>
+            <th className="px-3 py-2.5 text-right">{t("Сума")}</th>
+            <th className="px-3 py-2.5">{t("вписано")}</th>
+            <th className="px-3 py-2.5">{t("Знято")}</th>
+            <th className="px-3 py-2.5"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {data.rows.map(r => (
+            <tr key={r.id} className="hover:bg-slate-50">
+              <td className="px-3 py-2">
+                <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName}</Link>
+                <NatFlag value={r.nationality} className="ml-1 cursor-default" />
+              </td>
+              <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+              <td className="px-3 py-2 tabular-nums text-slate-500">{fmtDateStr(r.enteredAt)}</td>
+              <td className="px-3 py-2 text-slate-600">
+                {r.deductedAt ? fmtDateStr(r.deductedAt) : "—"}
+                {r.deductedMonth
+                  ? <Badge color="green">{t("сводна")} {r.deductedMonth}</Badge>
+                  : <span className="ml-1.5 text-xs text-slate-400">{t("вручну")}</span>}
+              </td>
+              <td className="px-3 py-2 text-right">
+                {r.deductedMonth != null && canSvodni && (
+                  <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                    onClick={async () => { if (await confirm({ title: t("Відмінити зняття?"), message: `${r.workerName} · ${r.amount} zł — ${t("сума віднімається з клітинки Zaliczka BD сводної")} ${r.deductedMonth}. ${t("Запис повернеться у «до зняття».")}`, danger: true, confirmText: t("Відмінити") })) undo.mutate(r.id); }}>
+                    ↩ {t("Відмінити")}
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
 
 function BadaniaTab() {
   const t = useT();
@@ -360,11 +429,14 @@ function BadaniaTab() {
   const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allSelected = (data?.rows.length ?? 0) > 0 && sel.size === data!.rows.length;
   const selSum = r2((data?.rows ?? []).filter(r => sel.has(r.id)).reduce((a, r) => a + r.amount, 0));
-  const months = useMemo(() => {
-    const cur = curMonthWarsaw();
-    const [y, m] = cur.split("-").map(Number);
-    return [0, 1, 2, 3].map(d => { const dt = new Date(y!, m! - 1 - d, 1); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`; });
-  }, []);
+  // місяці на вибір — РЕАЛЬНІ місяці сводних (щоб перенесення цілило в наявну
+  // вкладку); поточний місяць завжди в списку як фолбек
+  const { data: svodniMonths } = useQuery<{ months: string[] }>({
+    queryKey: ["svodni-months"], queryFn: () => get("/svodni/months"), enabled: canSvodni,
+  });
+  const months = useMemo(
+    () => [...new Set([curMonthWarsaw(), ...(svodniMonths?.months ?? [])])].sort().reverse(),
+    [svodniMonths]);
   const apply = useMutation({
     mutationFn: () => post<{ updated: number; itemsMarked: number; verified: number; verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; amount: number }[] }>(
       "/svodni/apply-badania-deductions", { month, ids: [...sel] }),
@@ -386,10 +458,30 @@ function BadaniaTab() {
     },
     onError: (e: any) => toast.error(e.message),
   });
-  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  const fmtD = fmtDateStr;
+  const [view, setView] = useState<"pending" | "deducted">("pending");
+  const viewSwitch = (
+    <div className="flex w-fit gap-1 rounded-lg bg-slate-100 p-0.5 text-xs font-medium">
+      {([["pending", t("До зняття")], ["deducted", t("Зняті")]] as const).map(([k, label]) => (
+        <button key={k} onClick={() => setView(k)}
+          className={`rounded-md px-2.5 py-1 ${view === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  if (view === "deducted") {
+    return (
+      <>
+        <div className="mb-3 flex flex-wrap items-center gap-3">{viewSwitch}</div>
+        <BadaniaDeductedList />
+      </>
+    );
+  }
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center gap-3">
+        {viewSwitch}
         <span className="text-sm text-slate-500">
           <Stethoscope className="mr-1 inline h-4 w-4 text-red-600" />
           {t("до зняття")}: <b>{(data?.total ?? 0).toFixed(2)} zł</b> · {data?.rows.length ?? 0} {t("людей")}

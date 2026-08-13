@@ -2347,6 +2347,7 @@ const EN: Record<string, string> = {
   "з": "since",
   "сам": "self",
   "не знімається": "not charged",
+  "Вписати суму зняття": "Set deduction amount",
   "Возить фірма": "Company transport",
   "Залічка за бадання": "Medical exam advance",
   "Залічки за бадання": "Medical exam advances",
@@ -2378,6 +2379,16 @@ const EN: Record<string, string> = {
   "Активувати": "Activate",
   "Видалити тип?": "Delete type?",
   "Тип із записами складу чи видач не видаляється — лише деактивується.": "A type with stock or issue records can't be deleted — it gets deactivated instead.",
+
+  // ── бадання: історія знятих + відміна перенесення ──
+  "Зняті": "Deducted",
+  "Знято": "Deducted",
+  "сводна": "payroll sheet",
+  "Відмінити": "Undo",
+  "Відмінено": "Undone",
+  "Відмінити зняття?": "Undo this deduction?",
+  "сума віднімається з клітинки Zaliczka BD сводної": "the amount is subtracted from the Zaliczka BD cell of the payroll sheet for",
+  "Запис повернеться у «до зняття».": "The record goes back to “to deduct”.",
 
   // ── бадання «до зняття» → Zaliczka BD сводної ──
   "Залічки": "Advances",
@@ -2766,6 +2777,7 @@ const RU: Record<string, string> = {
   "з": "с",
   "сам": "сам",
   "не знімається": "не снимается",
+  "Вписати суму зняття": "Вписать сумму снятия",
   "Видалити зняття?": "Удалить снятие?",
   "Редагувати зняття": "Редактировать снятие",
   "Нове зняття за довіз": "Новое снятие за довоз",

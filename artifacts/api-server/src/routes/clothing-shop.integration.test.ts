@@ -244,6 +244,29 @@ test("бадання → сводна: вибіркове перенесення
   const pending = (await request(app).get("/api/badania/pending").set("Cookie", ops)).body;
   assert.equal(pending.rows.length, 1);
   assert.equal(pending.rows[0].id, b2!.id);
+
+  // зняте перенесенням НЕ відміняється простим PATCH (сума лишилась би в сводній)
+  const patchTry = await request(app).patch(`/api/worker-badania/${b1!.id}`).set("Cookie", ops).set(H).send({ deducted: false });
+  assert.equal(patchTry.status, 400);
+
+  // «Зняті» показує b1 з місяцем сводної
+  const deducted = (await request(app).get("/api/badania/deducted").set("Cookie", ops)).body;
+  assert.equal(deducted.rows.length, 1);
+  assert.equal(deducted.rows[0].deductedMonth, MONTH);
+
+  // ↩ Відміна: сума віднімається з клітинки (200 − 150 = 50, як було до переносу),
+  // до виплати відновлюється, запис повертається у pending
+  const undo = await request(app).post("/api/svodni/undo-badania-deduction").set("Cookie", cookie).set(H).send({ id: b1!.id });
+  assert.equal(undo.status, 200);
+  assert.equal(undo.body.subtracted.newValue, 50);
+  const [row1After] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w1!.id));
+  assert.equal(row1After?.zaliczkaBd, 50);
+  assert.equal(row1After?.doWyplaty, 2500 - 50);
+  const [b1After] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, b1!.id));
+  assert.equal(b1After!.deducted, false);
+  assert.equal(b1After!.deductedMonth, null);
+  const pending2 = (await request(app).get("/api/badania/pending").set("Cookie", ops)).body;
+  assert.equal(pending2.rows.length, 2);
 });
 
 test("зняття за довіз: віртуальні рядки всіх людей платної фабрики + маркер self_transport", opts, async () => {
@@ -278,6 +301,41 @@ test("зняття за довіз: віртуальні рядки всіх л�
   const regRow = res.body.rows.find((r: any) => r.workerId === wReg!.id);
   assert.equal(regRow.amount, 100);
   assert.equal(regRow.selfTransport, false);
+});
+
+test("ручне зняття для self-пари: POST з явним factoryId, авторозрахунок його не перетирає", opts, async () => {
+  const [fab] = await db.insert(factoriesTable).values({
+    name: "FAB A", paidTransport: true, transportFeePerShift: 20,
+    shifts: [{ start: "06:00", end: "14:00" }], shiftCount: 1,
+  } as any).returning();
+  // self-людина з годинами сводної, профільна фабрика ІНША — пара має взятись з body
+  const [otherFab] = await db.insert(factoriesTable).values({ name: "INNA" } as any).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Sam Dojezdza", selfTransport: true, factoryId: otherFab!.id } as any).returning();
+  await db.insert(svodniRowsTable).values({
+    periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A", factoryId: fab!.id,
+    rawName: "W", workerId: w!.id, linkStatus: "confirmed", hours: 80, extras: {}, hr: {}, sheetValues: {},
+  } as any);
+
+  const cookie = await opsCookie();
+  const created = await request(app).post("/api/transport/deductions").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, workerId: w!.id, factoryId: fab!.id, amount: 60, tripsCount: 3 });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.factoryId, fab!.id, "фабрика з тіла, не з профілю");
+  assert.equal(created.body.sourceRef, null, "ручний рядок");
+
+  // авторозрахунок: self без посадок → 0 нараховано, але ручний рядок НЕ чіпається
+  const gen = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
+  assert.equal(gen.status, 200);
+  const rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.workerId, w!.id));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.amount, 60);
+  // у вкладці рядок уже реальний (з id), не віртуальний
+  const list = (await request(app).get(`/api/transport/deductions?month=${MONTH}`).set("Cookie", cookie)).body;
+  const mine = list.rows.filter((r: any) => r.workerId === w!.id);
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].id, created.body.id);
+  assert.equal(mine[0].amount, 60);
+  assert.equal(mine[0].selfTransport, true);
 });
 
 test("self_transport_since: прапорець увімкнули ПІСЛЯ місяця → місяць рахується як звичайний (з годин)", opts, async () => {

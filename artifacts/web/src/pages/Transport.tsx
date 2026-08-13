@@ -199,6 +199,7 @@ function DeductionsTab() {
   });
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<DeductionRow | null>(null);
+  const [creatingFor, setCreatingFor] = useState<DeductionRow | null>(null); // віртуальний рядок → ручне зняття пари
   const inv = () => qc.invalidateQueries({ queryKey: ["transport-deductions"] });
   const remove = useMutation({ mutationFn: (id: number) => del(`/transport/deductions/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
   const total = (data?.rows ?? []).reduce((s, r) => s + (r.amount ?? 0), 0);
@@ -379,14 +380,19 @@ function DeductionsTab() {
                         </td>
                         <td className="max-w-50 truncate px-4 py-2 text-xs text-slate-400" title={r.note ?? undefined}>{r.note ?? ""}</td>
                         <td className="px-2 py-2 text-right">
-                          {r.id != null && (
+                          {r.id != null ? (
                             <div className="flex justify-end gap-0.5">
                               <button onClick={() => setEditing(r)} title={t("Редагувати")}
                                 className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
                               <button onClick={async () => { if (await confirm({ title: t("Видалити зняття?"), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id!); }}
                                 title={t("Видалити")} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
                             </div>
-                          )}
+                          ) : r.workerId != null ? (
+                            // віртуальний рядок (нічого не нараховано, зокрема self): ✎ створює
+                            // РУЧНЕ зняття цієї пари — авторозрахунок його не перетирає
+                            <button onClick={() => setCreatingFor(r)} title={t("Вписати суму зняття")}
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"><Pencil className="h-4 w-4" /></button>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -398,24 +404,33 @@ function DeductionsTab() {
         </div>
       )}
       {(adding || editing) && <DeductionModal deduction={editing ?? undefined} month={month} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { inv(); setAdding(false); setEditing(null); }} />}
+      {creatingFor && <DeductionModal preset={creatingFor} month={month} onClose={() => setCreatingFor(null)} onSaved={() => { inv(); setCreatingFor(null); }} />}
       {membersFor && <FeeMembersModal factory={membersFor} month={month} onClose={() => setMembersFor(null)}
         onSaved={() => { qc.invalidateQueries({ queryKey: ["transport-fee-members"] }); setMembersFor(null); }} />}
     </>
   );
 }
 
-function DeductionModal({ deduction, month, onClose, onSaved }: { deduction?: DeductionRow; month: string; onClose: () => void; onSaved: () => void }) {
+// preset — створення зняття для конкретної пари з віртуального рядка вкладки
+// (зокрема self_transport, яким авторозрахунок нічого не нараховує): працівник і
+// фабрика зафіксовані, вводиться лише сума/виїзди. Такий рядок — ручний
+// (source_ref null), повторний «Розрахувати» його не перетирає.
+function DeductionModal({ deduction, preset, month, onClose, onSaved }: { deduction?: DeductionRow; preset?: DeductionRow; month: string; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const isEdit = !!deduction;
-  const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({ queryKey: ["workers-light"], queryFn: () => get("/workers") });
-  const [workerId, setWorkerId] = useState(deduction?.workerId != null ? String(deduction.workerId) : "");
+  const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({ queryKey: ["workers-light"], queryFn: () => get("/workers"), enabled: !isEdit && !preset });
+  const [workerId, setWorkerId] = useState(deduction?.workerId != null ? String(deduction.workerId) : preset?.workerId != null ? String(preset.workerId) : "");
   const [amount, setAmount] = useState(deduction?.amount != null ? String(deduction.amount) : "");
   const [tripsCount, setTripsCount] = useState(deduction?.tripsCount != null ? String(deduction.tripsCount) : "");
   const [note, setNote] = useState(deduction?.note ?? "");
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { month, workerId: Number(workerId), amount: Number(amount), tripsCount: tripsCount.trim() ? Number(tripsCount) : null, note };
+      const body = {
+        month, workerId: Number(workerId), amount: Number(amount),
+        tripsCount: tripsCount.trim() ? Number(tripsCount) : null, note,
+        ...(preset?.factoryId != null ? { factoryId: preset.factoryId } : {}),
+      };
       return isEdit ? patch(`/transport/deductions/${deduction!.id}`, body) : post("/transport/deductions", body);
     },
     onSuccess: () => { toast.success(t("Збережено")); onSaved(); },
@@ -425,7 +440,14 @@ function DeductionModal({ deduction, month, onClose, onSaved }: { deduction?: De
   return (
     <Modal open onClose={onClose} title={isEdit ? t("Редагувати зняття") : t("Нове зняття за довіз")}>
       <div className="space-y-3">
-        {!isEdit && (
+        {preset && (
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <span className="font-medium text-slate-700">{preset.workerName ?? "—"}</span>
+            {preset.factoryLabel && <span className="text-xs text-slate-400">{preset.factoryLabel}</span>}
+            {preset.selfTransport && <span className="text-xs text-sky-500">🚗 {t("сам")}</span>}
+          </div>
+        )}
+        {!isEdit && !preset && (
           <div><Label>{t("Працівник")}</Label>
             <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
               <option value="">—</option>

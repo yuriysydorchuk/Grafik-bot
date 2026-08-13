@@ -233,11 +233,15 @@ router.post("/transport/deductions", RW, async (req, res) => {
   if (!month || !Number.isFinite(workerId) || !Number.isFinite(amount) || amount < 0) return fail(res, 400, "month, workerId, сума ≥ 0");
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return fail(res, 404, "працівника не знайдено");
-  const [fac] = w.factoryId != null ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [];
+  // фабрика пари: явна з тіла (кнопка ✎ на віртуальному рядку вкладки — зокрема
+  // self_transport, яким авторозрахунок нічого не нараховує) або фабрика профілю
+  const factoryId = req.body?.factoryId != null && Number.isFinite(Number(req.body.factoryId))
+    ? Number(req.body.factoryId) : w.factoryId;
+  const [fac] = factoryId != null ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)) : [];
   const [created] = await db.insert(transportDeductionsTable).values({
     periodMonth: month, workerId, amount: r2(amount),
     tripsCount: Number.isFinite(Number(req.body?.tripsCount)) && req.body?.tripsCount !== "" && req.body?.tripsCount != null ? Math.floor(Number(req.body.tripsCount)) : null,
-    factoryId: w.factoryId, factoryLabel: fac?.name ?? null,
+    factoryId, factoryLabel: fac?.name ?? null,
     note: String(req.body?.note ?? "").trim() || null,
   }).returning();
   ok(res, created);

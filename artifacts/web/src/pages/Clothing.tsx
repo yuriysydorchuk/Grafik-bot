@@ -404,11 +404,13 @@ function PendingTab() {
     },
     onError: (e: any) => toast.error(e.message),
   });
-  const months = useMemo(() => {
-    const cur = curMonth();
-    const [y, m] = cur.split("-").map(Number);
-    return [0, 1, 2, 3].map(d => { const dt = new Date(y!, m! - 1 - d, 1); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`; });
-  }, []);
+  // місяці на вибір — реальні місяці сводних (перенесення цілить у наявну вкладку)
+  const { data: svodniMonths } = useQuery<{ months: string[] }>({
+    queryKey: ["svodni-months"], queryFn: () => get("/svodni/months"), enabled: canSvodni,
+  });
+  const months = useMemo(
+    () => [...new Set([curMonth(), ...(svodniMonths?.months ?? [])])].sort().reverse(),
+    [svodniMonths]);
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center gap-3">

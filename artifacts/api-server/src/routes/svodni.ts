@@ -2219,6 +2219,72 @@ router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req
   ok(res, { month, updated, itemsMarked: markedItemIds.length, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched });
 });
 
+// Відміна перенесеної залічки за бадання: віднімає суму з клітинки Zaliczka BD
+// сводної місяця перенесення (рядок людини з найбільшими годинами, де є Zaliczka
+// BD) з перерахунком до виплати, і повертає запис у «до зняття». Залочена
+// вкладка — відмова (спершу зніми лок). Якщо рядка сводної вже нема (видалили) —
+// лише знімається позначка, з чесним попередженням у відповіді.
+router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.body?.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "id обовʼязковий");
+  const { workerBadaniaTable } = await import("@workspace/db");
+  const [b] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, id));
+  if (!b) return fail(res, 404, "Не знайдено");
+  if (!b.deducted) return fail(res, 400, "Запис і так не знятий");
+  if (!b.deductedMonth) return fail(res, 400, "Знято вручну (без перенесення) — зніми позначку в профілі");
+  const month = b.deductedMonth;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+
+  const rows = await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
+    eq(svodniRowsTable.workerId, b.workerId),
+  ));
+  // куди переносили: рядок з найбільшими годинами серед тих, де є Zaliczka BD
+  const row = rows.filter(r => (r.zaliczkaBd ?? 0) > 0).sort((a, x) => (x.hours ?? 0) - (a.hours ?? 0))[0];
+  let subtracted: { factoryLabel: string; newValue: number | null } | null = null;
+  if (row) {
+    const locks = await monthLocks(month);
+    if (isLocked(locks, row.city, row.factoryLabel)) {
+      return fail(res, 409, `Вкладка «${row.factoryLabel}» (${month}) затверджена — спершу зніми лок, потім відміняй`);
+    }
+    const newBd = r2(Math.max(0, (row.zaliczkaBd ?? 0) - b.amount));
+    const amount = newBd > 0 ? newBd : null;
+    const [w] = await db.select().from(workersTable).where(eq(workersTable.id, b.workerId));
+    const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
+      .where(eq(svodniRowsTable.segmentOf, row.id)).limit(1);
+    if (segMark) {
+      await db.update(svodniRowsTable).set({ zaliczkaBd: amount, manual: true, mismatch: null })
+        .where(eq(svodniRowsTable.id, row.id));
+      await recomputeSegmentedParent(row.id);
+    } else {
+      const merged: any = { ...row, zaliczkaBd: amount };
+      const set: Record<string, unknown> = { zaliczkaBd: amount, manual: true, mismatch: null };
+      const payout = computePayout(merged, row.city as any);
+      if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
+      if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+        const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+          if (merged[k] !== row[k]) set[k] = merged[k];
+        }
+      }
+      if (merged.ksiegNetto != null && merged.doWyplaty != null) {
+        const doplata = typeof merged.extras?.doplataEs === "number" ? merged.extras.doplataEs : 0;
+        set.gotowka = r2(merged.doWyplaty - merged.ksiegNetto + doplata);
+      }
+      await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, row.id));
+    }
+    subtracted = { factoryLabel: row.factoryLabel, newValue: amount };
+  }
+  await db.update(workerBadaniaTable)
+    .set({ deducted: false, deductedAt: null, deductedMonth: null })
+    .where(eq(workerBadaniaTable.id, id));
+  ok(res, {
+    ok: true, month, subtracted,
+    warning: subtracted ? null : "рядка сводної з Zaliczka BD не знайдено — позначку знято, суму віднімати нема звідки",
+  });
+});
+
 router.post("/svodni/rematch", requireCap("svodni"), async (_req, res) => {
   ok(res, await rematchSvodni());
 });

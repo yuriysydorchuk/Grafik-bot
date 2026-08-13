@@ -570,6 +570,8 @@ router.post("/workers/:id/badania", RW, async (req, res) => {
 router.patch("/worker-badania/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [cur] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, id));
+  if (!cur) return fail(res, 404, "Не знайдено");
   const patch: Record<string, unknown> = {};
   if (req.body?.amount !== undefined) {
     const amount = Number(req.body.amount);
@@ -578,13 +580,17 @@ router.patch("/worker-badania/:id", RW, async (req, res) => {
   }
   if (req.body?.deducted !== undefined) {
     const d = !!req.body.deducted;
+    // знято ПЕРЕНЕСЕННЯМ у сводну (deducted_month) — простим кліком не відміняється,
+    // інакше сума залишиться в Zaliczka BD; шлях відміни — «Бадання → Зняті → ↩»
+    if (!d && cur.deducted && cur.deductedMonth != null) {
+      return fail(res, 400, "Знято перенесенням у сводну — відміняй з вкладки «Бадання → Зняті» (сума віднімається зі сводної)");
+    }
     patch.deducted = d;
     patch.deductedAt = d ? warsawToday() : null; // дата «знято» живе разом зі статусом
   }
   if (req.body?.note !== undefined) patch.note = strOrNull(req.body.note);
   if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
   const [u] = await db.update(workerBadaniaTable).set(patch).where(eq(workerBadaniaTable.id, id)).returning();
-  if (!u) return fail(res, 404, "Не знайдено");
   ok(res, u);
 });
 
@@ -607,6 +613,24 @@ router.get("/badania/pending", RW, async (_req, res) => {
     rows: rows.map(({ b, workerName, nationality }) => ({
       id: b.id, workerId: b.workerId, workerName, nationality,
       amount: b.amount, enteredAt: b.enteredAt, note: b.note,
+    })),
+    total: Math.round(rows.reduce((s, { b }) => s + b.amount, 0) * 100) / 100,
+  });
+});
+
+// Зняті залічки за бадання — історія перенесень (з місяцем сводної) і ручних
+// позначок; відміна перенесеного — POST /svodni/undo-badania-deduction
+router.get("/badania/deducted", RW, async (_req, res) => {
+  const rows = await db.select({ b: workerBadaniaTable, workerName: workersTable.fullName, nationality: workersTable.nationality })
+    .from(workerBadaniaTable)
+    .innerJoin(workersTable, eq(workerBadaniaTable.workerId, workersTable.id))
+    .where(eq(workerBadaniaTable.deducted, true))
+    .orderBy(desc(workerBadaniaTable.deductedAt), desc(workerBadaniaTable.id))
+    .limit(300);
+  ok(res, {
+    rows: rows.map(({ b, workerName, nationality }) => ({
+      id: b.id, workerId: b.workerId, workerName, nationality,
+      amount: b.amount, enteredAt: b.enteredAt, deductedAt: b.deductedAt, deductedMonth: b.deductedMonth, note: b.note,
     })),
     total: Math.round(rows.reduce((s, { b }) => s + b.amount, 0) * 100) / 100,
   });
