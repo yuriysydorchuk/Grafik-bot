@@ -468,9 +468,12 @@ function PayoutPrefRow({ workerId, kind, value, onRequest }: { workerId: number;
   const t = useT();
   const qc = useQueryClient();
   const [draft, setDraft] = useState(value == null ? "" : String(value));
+  // вибір типу з сумою (год/сума на конто) НЕ сабмітиться одразу: чекаємо суму
+  // і шлемо тип+суму ОДНІЄЮ зміною (одна модалка «від коли», не дві)
+  const [kindDraft, setKindDraft] = useState<string | null>(null);
   // ресинк із пропом: після скасування модалки/збереження інпут не має
   // показувати незастосоване значення як «збережене»
-  useEffect(() => { setDraft(value == null ? "" : String(value)); }, [value]);
+  useEffect(() => { setDraft(value == null ? "" : String(value)); setKindDraft(null); }, [value, kind]);
   const save = useMutation({
     mutationFn: (p: { payoutPrefKind?: string | null; payoutPrefValue?: number | null }) => patch(`/workers/${workerId}`, p),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
@@ -478,28 +481,47 @@ function PayoutPrefRow({ workerId, kind, value, onRequest }: { workerId: number;
   });
   const submit = (p: { payoutPrefKind?: string | null; payoutPrefValue?: number | null }) =>
     onRequest ? onRequest(p, t("Побажання по виплаті")) : save.mutate(p);
+  const effKind = kindDraft ?? kind ?? "";
+  const pickKind = (v: string) => {
+    if (v === "hours" || v === "amount") {
+      if (v === kind) { setKindDraft(null); return; } // без зміни
+      setKindDraft(v); setDraft(""); // сума обовʼязкова — модалка після її вводу
+    } else {
+      setKindDraft(null);
+      submit({ payoutPrefKind: v || null });
+    }
+  };
+  const commitValue = () => {
+    const v = draft === "" ? null : Number(draft);
+    if (kindDraft) {
+      // новий тип чекає суму: порожньо/розфокус без суми = скасування вибору
+      if (v == null) { setKindDraft(null); setDraft(value == null ? "" : String(value)); return; }
+      submit({ payoutPrefKind: kindDraft, payoutPrefValue: v });
+      setKindDraft(null);
+      if (onRequest) setDraft(value == null ? "" : String(value));
+    } else if (v !== value) {
+      submit({ payoutPrefValue: v });
+      if (onRequest) setDraft(value == null ? "" : String(value));
+    }
+  };
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Wallet className="h-4 w-4 shrink-0 text-slate-400" />
       <span className="text-slate-400">{t("Побажання по виплаті")}:</span>
-      <select value={kind ?? ""} onChange={e => submit({ payoutPrefKind: e.target.value || null })}
+      <select value={effKind} onChange={e => pickKind(e.target.value)}
         className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">{t("— за правилами —")}</option>
         {Object.entries(PAYOUT_PREF_LABEL).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
       </select>
-      {(kind === "hours" || kind === "amount") && (
-        <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
-          onBlur={() => {
-            const v = draft === "" ? null : Number(draft);
-            if (v !== value) {
-              submit({ payoutPrefValue: v });
-              // модалковий шлях: інпут не має показувати незастосоване як збережене
-              if (onRequest) setDraft(value == null ? "" : String(value));
-            }
-          }}
-          placeholder={kind === "hours" ? t("год") : "zł"}
+      {(effKind === "hours" || effKind === "amount") && (
+        <input type="number" min={0} value={draft} autoFocus={!!kindDraft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") commitValue(); }}
+          onBlur={commitValue}
+          placeholder={effKind === "hours" ? t("год") : "zł"}
           className="w-24 rounded border border-slate-300 px-1 py-0.5 text-sm" />
       )}
+      {kindDraft && <span className="text-xs text-slate-400">{t("впиши суму — далі одне підтвердження")}</span>}
     </div>
   );
 }

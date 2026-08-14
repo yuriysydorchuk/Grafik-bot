@@ -980,6 +980,7 @@ const EN: Record<string, string> = {
   "Скасувати (лишити затвердженим)": "Cancel (keep approved)",
   "Розблокувати без змін": "Unlock without changes",
   "Розблокувати і застосувати ({n})": "Unlock and apply ({n})",
+  "впиши суму — далі одне підтвердження": "enter the amount — then a single confirmation",
   "Розклад konto/готівка у сводних": "Konto/cash split in summaries",
   "Księgowa ставка (нижча зі ставок)": "Declared rate (lower of the rates)",
   "Фінанси: розрахунок ЗП": "Finance: payroll calculation",
