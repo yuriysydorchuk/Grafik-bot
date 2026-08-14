@@ -24,6 +24,7 @@ import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
 import { NatFlag } from "../lib/nationality";
+import { CHANGE_FIELD_LABEL, DIFF_KEY_LABEL, fmtVal, type ImpactItem } from "../components/ProfileChangeModal";
 
 type Row = {
   id: number; city: string; firm: string | null; factoryLabel: string; factoryId: number | null;
@@ -70,6 +71,13 @@ const hrEditableKey = (key: string) => key === "extras.zusStatus" || HR_LABEL[ke
 type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
 type TabMeta = { city: string; factoryLabel: string; colOrder: string[]; info: { stawkaEurocash?: (string | number)[][] } };
 type Lock = { city: string; factoryLabel: string }; // factoryLabel "" = усе місто
+// ревʼю при розблокуванні: зміни профілів, зроблені поки область була затверджена
+type PendingChange = {
+  id: number; workerId: number; workerName: string; field: string;
+  oldValue: string | null; newValue: string | null; effectiveDate: string;
+  createdAt: string; adminName: string | null; propagatable: boolean; items?: ImpactItem[];
+};
+type LockPending = { lockedAt: string; changes: PendingChange[]; hidden: number };
 type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[]; staleLocks?: Lock[]; ksiegMin?: { netto: number; brutto: number } };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
@@ -370,10 +378,32 @@ export default function Svodni() {
   const isCityLocked = (c: string) => locks.some(l => l.city === c && l.factoryLabel === "");
   const isFactoryLocked = (c: string, f: string) => isCityLocked(c) || locks.some(l => l.city === c && l.factoryLabel === f);
   const lockToggle = useMutation({
-    mutationFn: (v: { city: string; factoryLabel: string }) => post<{ locked: boolean }>("/svodni/lock", { month: effMonth, ...v }),
-    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["svodni"] }); toast.success(r.locked ? t("Затверджено 🔒") : t("Розблоковано")); },
+    mutationFn: (v: { city: string; factoryLabel: string; applyChangeIds?: number[] }) =>
+      post<{ locked: boolean; applied?: number }>("/svodni/lock", { month: effMonth, ...v }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      setUnlockReview(null);
+      toast.success(r.locked ? t("Затверджено 🔒")
+        : r.applied ? t("Розблоковано; застосовано змін до рядків: {n}", { n: r.applied }) : t("Розблоковано"));
+    },
     onError: (e: any) => toast.error(e.message),
   });
+  // Розблокування — двоетапне: спершу питаємо, чи були зміни профілів під локом
+  // (журнал worker_changes після lockedAt). Якщо були — модалка ревʼю: кожну
+  // зміну можна прийняти (застосувати до рядків області) або відхилити.
+  const [unlockReview, setUnlockReview] = useState<{ city: string; factoryLabel: string; data: LockPending } | null>(null);
+  const fetchPending = useMutation({
+    mutationFn: (v: { city: string; factoryLabel: string }) =>
+      post<LockPending>("/svodni/lock-pending", { month: effMonth, ...v }),
+    onSuccess: (r, v) => {
+      if (!r.changes.length && !r.hidden) lockToggle.mutate(v); // нічого не мінялось — розблокувати одразу
+      else setUnlockReview({ ...v, data: r });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const lockBusy = lockToggle.isPending || fetchPending.isPending;
+  const smartToggleLock = (city: string, factoryLabel: string, locked: boolean) =>
+    locked ? fetchPending.mutate({ city, factoryLabel }) : lockToggle.mutate({ city, factoryLabel });
   const checks = useMemo(() => (data?.checks ?? []).filter(c => c.factoryLabel.split(" + ").includes(effFactory)), [data, effFactory]);
   // extras-колонки міста: каталожні (для ручного вводу — нічні, migawka, кари…)
   // ЗАВЖДИ доступні, навіть порожні (тумблер «Без порожніх колонок» їх ховає);
@@ -530,7 +560,7 @@ export default function Svodni() {
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50">
                 <RefreshCw className="h-3.5 w-3.5" /> {t("Підтягнути з таблиць")}: {t(effCity)}
               </button>
-              <button onClick={() => lockToggle.mutate({ city: effCity, factoryLabel: "" })} disabled={lockToggle.isPending}
+              <button onClick={() => smartToggleLock(effCity, "", isCityLocked(effCity))} disabled={lockBusy}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
                   isCityLocked(effCity) ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"}`}>
                 {isCityLocked(effCity) ? <><LockOpen className="h-3.5 w-3.5" /> {t("Розблокувати місто")}</> : <><Lock className="h-3.5 w-3.5" /> {t("Затвердити місто")}</>}
@@ -621,7 +651,7 @@ export default function Svodni() {
             visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows}
             meta={data?.tabMeta?.find(m => m.factoryLabel === effFactory && (effCity === OFFICE_CITY || m.city === effCity))}
             locked={isFactoryLocked(effCity, effFactory)} cityLocked={isCityLocked(effCity)}
-            onToggleLock={() => lockToggle.mutate({ city: effCity, factoryLabel: effFactory })} lockPending={lockToggle.isPending} />
+            onToggleLock={() => smartToggleLock(effCity, effFactory, isFactoryLocked(effCity, effFactory))} lockPending={lockBusy} />
           <SummaryBlock rows={rows} sensitive={!!data?.sensitive} />
         </div>
       )}
@@ -629,7 +659,89 @@ export default function Svodni() {
         <ExcelModal month={effMonth} city={effCity !== TOTAL_CITY && effCity !== OFFICE_CITY ? effCity : null}
           factory={effFactory && !isSpecial(effFactory) ? effFactory : null} sensitive={!!data?.sensitive} onClose={() => setExcelOpen(false)} />
       )}
+      {unlockReview && (
+        <LockReviewModal data={unlockReview.data}
+          scopeLabel={unlockReview.factoryLabel || `${t(unlockReview.city)} (${t("усе місто")})`}
+          pending={lockToggle.isPending}
+          onCancel={() => setUnlockReview(null)}
+          onConfirm={ids => lockToggle.mutate({ city: unlockReview.city, factoryLabel: unlockReview.factoryLabel, applyChangeIds: ids })} />
+      )}
     </>
+  );
+}
+
+// Модалка ревʼю при розблокуванні: список змін профілів, зроблених поки область
+// була затверджена (тому в рядки не потрапили). Кожну можна прийняти —
+// застосувати до рядків області тим самим двигуном, що «зміна з датою» — або
+// відхилити (рядки лишаються як затверджували). «Скасувати» = лок лишається.
+function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
+  data: LockPending; scopeLabel: string; pending: boolean;
+  onCancel: () => void; onConfirm: (ids: number[]) => void;
+}) {
+  const t = useT();
+  const hasEffect = (c: PendingChange) => !!c.items?.some(it => it.diffs.length || it.split || it.merge);
+  const selectable = data.changes.filter(c => c.propagatable && hasEffect(c));
+  // типово прийняті всі, що реально міняють цифри — відхилення свідоме
+  const [selected, setSelected] = useState<Set<number>>(new Set(selectable.map(c => c.id)));
+  const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  return (
+    <Modal open title={t("Розблокування: {what}", { what: scopeLabel })} onClose={onCancel}>
+      <div className="space-y-3 text-sm">
+        <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {t("Поки сводна була затверджена, у профілях людей були зміни, які в неї не потрапили. Прийми потрібні — рядки перерахуються, відхилені лишаться як є.")}
+        </div>
+        <div className="max-h-80 space-y-1.5 overflow-y-auto">
+          {data.changes.map(c => {
+            const canPick = c.propagatable && hasEffect(c);
+            return (
+              <label key={c.id} className={`flex items-start gap-2 rounded-lg border px-2.5 py-1.5 ${canPick ? "cursor-pointer border-slate-200 hover:bg-slate-50" : "border-slate-100 bg-slate-50 opacity-80"}`}>
+                <input type="checkbox" className="mt-0.5" disabled={!canPick}
+                  checked={canPick && selected.has(c.id)}
+                  onChange={e => setSelected(prev => {
+                    const n = new Set(prev);
+                    e.target.checked ? n.add(c.id) : n.delete(c.id);
+                    return n;
+                  })} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-700">
+                    {c.workerName}
+                    <span className="text-slate-500">· {t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}: {fmtVal(c.oldValue, t)} → <span className="font-semibold">{fmtVal(c.newValue, t)}</span></span>
+                    <span className="rounded bg-sky-50 px-1.5 text-[10px] font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-slate-400">
+                    {c.adminName ?? "—"} · {fmtD(String(c.createdAt).slice(0, 10))}
+                  </span>
+                  {c.propagatable && !hasEffect(c) && (
+                    <span className="mt-0.5 block text-xs text-slate-400">{t("цифр цієї сводної не міняє (значення й так збігаються)")}</span>
+                  )}
+                  {!c.propagatable && (
+                    <span className="mt-0.5 block text-xs text-slate-400">{t("інформаційно — у рядки сводної автоматично не переноситься")}</span>
+                  )}
+                  {(c.items ?? []).filter(it => it.diffs.length || it.split).map(it => (
+                    <span key={it.rowId} className="mt-0.5 block text-xs text-slate-500">
+                      {it.split && <span className="font-semibold text-violet-700">🧩 {t("місяць поріжеться на сегменти")} · </span>}
+                      {it.diffs.map(d => `${t(DIFF_KEY_LABEL[d.key] ?? d.key)}: ${fmtVal(d.from, t)} → ${fmtVal(d.to, t)}`).join(" · ")}
+                    </span>
+                  ))}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {data.hidden > 0 && (
+          <div className="text-xs text-slate-400">{t("Ще змін приховано (немає доступу до цих полів): {n}", { n: data.hidden })}</div>
+        )}
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+          <Button variant="secondary" onClick={onCancel}>{t("Скасувати (лишити затвердженим)")}</Button>
+          <Button variant="secondary" loading={pending} onClick={() => onConfirm([])}>{t("Розблокувати без змін")}</Button>
+          {selected.size > 0 && (
+            <Button loading={pending} onClick={() => onConfirm([...selected])}>
+              {t("Розблокувати і застосувати ({n})", { n: selected.size })}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

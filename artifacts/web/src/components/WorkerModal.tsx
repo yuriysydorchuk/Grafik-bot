@@ -5,6 +5,9 @@ import { post, patch, type Worker, type Factory, type Company } from "../lib/api
 import { Button, Input, Select, Label, Modal } from "./ui";
 import { useT } from "../lib/i18n";
 import { NATIONALITIES } from "../lib/nationality";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
+import { ProfileChangeModal, CHANGE_FIELD_LABEL } from "./ProfileChangeModal";
 
 // Bot UI languages a worker can have (mirrors bot/i18n.ts).
 const LANGUAGES: { value: string; label: string }[] = [
@@ -65,6 +68,51 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
       else if (e.status !== 409) toast.error(e.message);
     },
   });
+  // ── Свод-релевантні поля (посада/ставка/студент) — через модалку «Діє з» ──
+  // При редагуванні користувачем з cap svodni ці зміни не пишуться голим PATCH:
+  // решта полів зберігається одразу, а для них відкривається превʼю впливу на
+  // сводні (profile-impact → profile-apply з датою набуття). Без капи — як досі.
+  const me = useMe();
+  const canSvodni = can(me, "svodni");
+  const [pendingTracked, setPendingTracked] = useState<Record<string, unknown> | null>(null);
+  const trackedDiff = (): Record<string, unknown> => {
+    if (!worker) return {};
+    const d: Record<string, unknown> = {};
+    const posNew = positionId ? Number(positionId) : null;
+    if (posNew !== (worker.positionId ?? null)) d.positionId = posNew;
+    if (isOwner) {
+      const rateNew = hourlyRate.trim() === "" ? null : Number(hourlyRate.replace(",", "."));
+      // очищення ставки (→ «авто») двигун пропагації не приймає — лишається в PATCH
+      if (rateNew != null && rateNew !== (worker.hourlyRate ?? null)) d.hourlyRate = rateNew;
+      if (isStudent !== !!worker.isStudent) d.isStudent = isStudent;
+    }
+    return d;
+  };
+  const saveRest = useMutation({
+    mutationFn: (v: { rest: Record<string, unknown>; tracked: Record<string, unknown> }) =>
+      patch(`/workers/${worker!.id}`, v.rest),
+    onSuccess: (_r, v) => setPendingTracked(v.tracked),
+    onError: (e: any) => toast.error(e.message),
+  });
+  const submit = () => {
+    if (worker && canSvodni) {
+      const tracked = trackedDiff();
+      if (Object.keys(tracked).length) {
+        const rest: Record<string, unknown> = { ...base };
+        for (const k of Object.keys(tracked)) delete rest[k];
+        saveRest.mutate({ rest, tracked });
+        return;
+      }
+    }
+    save.mutate(false);
+  };
+  if (pendingTracked) {
+    return (
+      <ProfileChangeModal workerId={worker!.id} changes={pendingTracked}
+        title={Object.keys(pendingTracked).map(k => t(CHANGE_FIELD_LABEL[k] ?? k)).join(" + ")}
+        onClose={() => { setPendingTracked(null); onSaved(); }} />
+    );
+  }
   return (
     <Modal open onClose={onClose} title={worker ? t("Редагувати працівника") : t("Новий працівник")}>
       <div className="space-y-3">
@@ -148,7 +196,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
         )}
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} onClick={() => fullName.trim() && save.mutate(false)}>{t("Зберегти")}</Button>
+          <Button loading={save.isPending || saveRest.isPending} onClick={() => fullName.trim() && submit()}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>

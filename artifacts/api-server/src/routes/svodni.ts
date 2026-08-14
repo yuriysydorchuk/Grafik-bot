@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -160,7 +160,9 @@ async function freezeUnder26AtLock(month: string, lock: Pick<LockRow, "city" | "
   for (const pid of toRecalc) await recomputeSegmentedParent(pid);
 }
 
-// toggle: перший виклик ставить лок, повторний — знімає
+// toggle: перший виклик ставить лок, повторний — знімає. При знятті приймає
+// applyChangeIds — прийняті з ревʼю зміни профілів (див. /svodni/lock-pending)
+// застосовуються до рядків щойно розлоченої області тим самим двигуном
 router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   const city = String(req.body?.city ?? "").trim();
@@ -169,13 +171,144 @@ router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res
   const locks = await monthLocks(month);
   const existing = locks.find(l => l.city === city && l.factoryLabel === factoryLabel);
   if (existing) {
+    const applyIds = Array.isArray(req.body?.applyChangeIds)
+      ? (req.body.applyChangeIds as unknown[]).map(Number).filter(Number.isFinite) : [];
     await db.delete(svodniLocksTable).where(eq(svodniLocksTable.id, existing.id));
-    return ok(res, { locked: false });
+    const applied = applyIds.length ? await applyReviewedChanges(month, existing, applyIds, req) : 0;
+    return ok(res, { locked: false, applied });
   }
   await freezeUnder26AtLock(month, { city, factoryLabel }, locks);
   await db.insert(svodniLocksTable).values({ periodMonth: month, city, factoryLabel, lockedBy: req.admin!.adminId });
   ok(res, { locked: true });
 });
+
+// ── Ревʼю змін профілів під локом ────────────────────────────────────────────
+// Поки область затверджена, зміни профілів у її рядки не пропагуються
+// (profile-apply пропускає залочені, голий PATCH сводну взагалі не чіпає).
+// Перед розблокуванням веб питає цей список — зміни журналу після lockedAt,
+// що діють у місяці (критерій той самий, що ❗ staleLocks) — і показує ревʼю:
+// кожну можна прийняти (застосувати до рядків області) або відхилити.
+// Поля, які двигун пропагації вміє застосувати (ключі normTrackedChanges);
+// решта (фабрика, звільнення, національність) — у списку інформаційно.
+const PROPAGATABLE_FIELDS = new Set([
+  "legalStatus", "birthDate", "employmentStartDate", "notifyHours", "hourlyRate",
+  "hourlyRateNetto", "agramStazBonus", "agramCashBonus", "isStudent", "positionId",
+  "payoutPrefKind", "payoutPrefValue",
+]);
+// строго ДО першого числа наступного місяця: "-31" валить date-каст Postgres
+// у коротких місяцях (30/28 днів)
+function nextMonthStart(month: string): string {
+  const [sy, sm] = month.split("-").map(Number);
+  return sm === 12 ? `${sy! + 1}-01-01` : `${sy}-${String(sm! + 1).padStart(2, "0")}-01`;
+}
+
+router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  const city = String(req.body?.city ?? "").trim();
+  const factoryLabel = String(req.body?.factoryLabel ?? "").trim();
+  if (!month || !city) return fail(res, 400, "month і city обовʼязкові");
+  const lock = (await monthLocks(month)).find(l => l.city === city && l.factoryLabel === factoryLabel);
+  if (!lock) return fail(res, 400, "область не залочена");
+  const sensitive = canSensitive(req);
+  const fin = hasCap(req.admin!.role, req.admin!.caps, "viewFinance");
+  // люди з рядками залоченої області цього місяця
+  const monthRows = await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
+    isNotNull(svodniRowsTable.workerId)));
+  const workerIds = [...new Set(monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel)).map(r => r.workerId!))];
+  if (!workerIds.length) return ok(res, { lockedAt: lock.lockedAt, changes: [], hidden: 0 });
+  const raw = await db.select({ c: workerChangesTable, adminName: adminsTable.name, workerName: workersTable.fullName })
+    .from(workerChangesTable)
+    .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
+    .innerJoin(workersTable, eq(workerChangesTable.workerId, workersTable.id))
+    .where(and(
+      inArray(workerChangesTable.workerId, workerIds),
+      sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`))
+    .orderBy(asc(workerChangesTable.createdAt));
+  const pending = raw.filter(({ c }) => c.createdAt > lock.lockedAt);
+  const ws = await db.select().from(workersTable).where(inArray(workersTable.id, [...new Set(pending.map(x => x.c.workerId))]));
+  const wById = new Map(ws.map(w => [w.id, w]));
+  let hidden = 0;
+  const out: Record<string, unknown>[] = [];
+  for (const { c, adminName, workerName } of pending) {
+    // гейти полів — дзеркало profile-impact: без капи зміну не показуємо
+    if ((FINANCE_TRACKED.has(c.field) && !fin) || (SENSITIVE_TRACKED.has(c.field) && !sensitive)) { hidden++; continue; }
+    const entry: Record<string, unknown> = {
+      id: c.id, workerId: c.workerId, workerName, field: c.field,
+      oldValue: c.oldValue, newValue: c.newValue, effectiveDate: c.effectiveDate,
+      createdAt: c.createdAt, adminName, propagatable: PROPAGATABLE_FIELDS.has(c.field),
+    };
+    if (entry.propagatable) {
+      // превʼю: «прийняти» = привести рядки області до ПОТОЧНОГО профілю по
+      // цьому полю (кілька змін одного поля колапсують в один підсумковий диф)
+      const w = wById.get(c.workerId);
+      const ctx = w ? await profileChangeContext(c.workerId, { changes: { [c.field]: (w as any)[c.field] } }, c.effectiveDate, sensitive) : null;
+      entry.items = ctx && !("err" in ctx)
+        ? serializeImpact(ctx.items.filter(it => it.row.periodMonth === month && isLocked([lock], it.row.city, it.row.factoryLabel)), sensitive)
+        : [];
+    }
+    out.push(entry);
+  }
+  ok(res, { lockedAt: lock.lockedAt, changes: out, hidden });
+});
+
+// Прийняті при розблокуванні зміни: групуємо по людині (union полів, значення —
+// з ПОТОЧНОГО профілю, from = найраніша дата серед прийнятих), рахуємо тим самим
+// двигуном, що profile-apply, і пишемо ЛИШЕ рядки щойно розлоченої області
+// (інші локи, напр. міський поверх фабричного, поважаються). Журналу прийнятих
+// змін дописується appliedRows, скоуп зникає зі skippedLocked.
+async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" | "factoryLabel" | "lockedAt">, changeIds: number[], req: AuthedRequest): Promise<number> {
+  const sensitive = canSensitive(req);
+  const fin = hasCap(req.admin!.role, req.admin!.caps, "viewFinance");
+  const entries = changeIds.length
+    ? await db.select().from(workerChangesTable).where(inArray(workerChangesTable.id, changeIds)) : [];
+  const eligible = entries.filter(c => c.createdAt > scope.lockedAt
+    && PROPAGATABLE_FIELDS.has(c.field)
+    && !(FINANCE_TRACKED.has(c.field) && !fin)
+    && !(SENSITIVE_TRACKED.has(c.field) && !sensitive));
+  const byWorker = new Map<number, typeof eligible>();
+  for (const c of eligible) { const l = byWorker.get(c.workerId) ?? []; l.push(c); byWorker.set(c.workerId, l); }
+  let appliedTotal = 0;
+  for (const [workerId, list] of byWorker) {
+    const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+    if (!w) continue;
+    const changes: Record<string, unknown> = {};
+    for (const c of list) {
+      // ставка, очищена в профілі пізніше (NULL = «авто»), двигуном не
+      // приймається — таку зміну пропускаємо, рядок і так рахує from-hours
+      if (c.field === "hourlyRate" && (w as any).hourlyRate == null) continue;
+      changes[c.field] = (w as any)[c.field];
+    }
+    if (!Object.keys(changes).length) continue;
+    const from = list.map(c => String(c.effectiveDate)).sort()[0]!;
+    const ctx = await profileChangeContext(workerId, { changes }, from, sensitive);
+    if ("err" in ctx) continue;
+    const toApply = ctx.items.filter(it => !it.locked
+      && it.row.periodMonth === month
+      && isLocked([scope as LockRow], it.row.city, it.row.factoryLabel));
+    if (!toApply.length) continue;
+    for (const it of toApply) {
+      if (it.plan) {
+        await writeSegments(it.row, it.plan);
+      } else {
+        if (it.unsplit) await db.delete(svodniRowsTable).where(eq(svodniRowsTable.segmentOf, it.row.id));
+        await db.update(svodniRowsTable).set({ ...it.set, manual: true, mismatch: null } as any).where(eq(svodniRowsTable.id, it.row.id));
+      }
+    }
+    appliedTotal += toApply.length;
+    const appliedScope = toApply.map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
+    for (const c of list) {
+      const prevApplied = Array.isArray(c.appliedRows) ? c.appliedRows as { month: string; city: string; factoryLabel: string }[] : [];
+      const prevSkipped = (Array.isArray(c.skippedLocked) ? c.skippedLocked as { month: string; city: string; factoryLabel: string }[] : [])
+        .filter(s => !appliedScope.some(a => a.month === s.month && a.city === s.city && a.factoryLabel === s.factoryLabel));
+      await db.update(workerChangesTable).set({
+        appliedRows: [...prevApplied, ...appliedScope],
+        skippedLocked: prevSkipped.length ? prevSkipped : null,
+      }).where(eq(workerChangesTable.id, c.id));
+    }
+  }
+  return appliedTotal;
+}
 
 // ── Налаштування сводних: мінімальна ставка року (księgowa пара) ─────────────
 router.get("/svodni/settings", requireCap("svodni"), async (_req, res) => {
@@ -797,7 +930,9 @@ function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typ
     const bd = s(body.birthDate);
     if (bd && !DATE_RE.test(bd)) return { patch, err: "Дата народження — YYYY-MM-DD" };
     patch.birthDate = bd;
-    if (bd) patch.under26 = isUnder26(bd);
+    // очищення дати скидає прапорець (дзеркало PATCH /workers): без дати
+    // не вважаємо пільговиком «до 26»
+    patch.under26 = bd ? isUnder26(bd) : false;
   }
   if (has("employmentStartDate")) {
     const d = s(body.employmentStartDate);

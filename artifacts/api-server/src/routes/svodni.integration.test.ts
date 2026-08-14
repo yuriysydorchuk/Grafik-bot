@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable, workerChangesTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -476,6 +476,81 @@ test("затвердження (лок): фабрика і місто блоку
   r = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
     .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", newWorkerName: "Nowak Piotr", force: true });
   assert.equal(r.status, 409);
+});
+
+test("ревʼю при розблокуванні: lock-pending бачить зміни під локом, unlock застосовує прийняті", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Kowalski Jan", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false,
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false });
+
+  // затвердили вкладку → зміна профілю (студент + дата народження) в неї не потрапляє
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  const ap = await request(app).post("/api/svodni/profile-apply").set("Cookie", owner).set(H)
+    .send({ workerId: w!.id, from: "2026-06-01", rowIds: [], changes: { legalStatus: "student", birthDate: "2004-05-05" } });
+  assert.equal(ap.status, 200);
+  assert.equal(ap.body.skippedLocked.length, 1, "залочена область зафіксована в журналі");
+  const [rowBefore] = await db.select().from(svodniRowsTable);
+  assert.equal(rowBefore!.isStudent, false, "залочений рядок не змінився");
+
+  // lock-pending: обидві зміни в списку, з дифами по нашому рядку
+  const p = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  assert.equal(p.status, 200);
+  assert.deepEqual(p.body.changes.map((c: any) => c.field).sort(), ["birthDate", "legalStatus"]);
+  assert.ok(p.body.changes.every((c: any) => c.propagatable && c.workerName === "Kowalski Jan"));
+  assert.ok(p.body.changes.some((c: any) => c.items?.some((it: any) => it.diffs.length)), "превʼю має дифи рядка");
+
+  // розблокування з прийняттям обох змін → рядок перерахований як студент до 26
+  const ids = p.body.changes.map((c: any) => c.id);
+  const un = await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", applyChangeIds: ids });
+  assert.equal(un.status, 200);
+  assert.equal(un.body.locked, false);
+  assert.equal(un.body.applied, 1, "один рядок області оновлено");
+  const [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.isStudent, true);
+  assert.equal(row!.under26, true);
+  assert.equal(row!.rateNetto, 31.4, "студент до 26: нетто = брутто");
+  assert.equal(row!.doWyplaty, 5024, "160 × 31.4");
+  assert.equal(row!.konto, 5024, "студент до 26 → все на конто");
+  assert.equal(row!.gotowka, 0);
+  // журнал: прийнята зміна отримала appliedRows, скоуп зник зі skippedLocked
+  const changes = await db.select().from(workerChangesTable);
+  assert.ok(changes.every(c => (c.appliedRows as any[])?.length === 1 && c.skippedLocked == null));
+});
+
+test("ревʼю при розблокуванні: відхилення лишає рядок як є; повторний лок не докучає старими змінами", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Nowak Anna", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false,
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false });
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  await request(app).post("/api/svodni/profile-apply").set("Cookie", owner).set(H)
+    .send({ workerId: w!.id, from: "2026-06-01", rowIds: [], changes: { legalStatus: "student", birthDate: "2004-05-05" } });
+
+  // розблокування БЕЗ прийняття (усі відхилені) → рядок недоторканий
+  const un = await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", applyChangeIds: [] });
+  assert.equal(un.body.applied, 0);
+  const [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.isStudent, false, "відхилена зміна рядок не чіпає");
+  assert.equal(row!.rateNetto, 25.35);
+
+  // повторний лок → у ревʼю лише зміни ПІСЛЯ нового локу (старі відхилені не вертаються)
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  const p2 = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  assert.equal(p2.body.changes.length, 0, "старі відхилені зміни не показуються знову");
+  // незалочена область — 400
+  const bad = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "INNA" });
+  assert.equal(bad.status, 400);
 });
 
 test("from-hours пропускає залочену фабрику і рахує skippedLocked", opts, async () => {

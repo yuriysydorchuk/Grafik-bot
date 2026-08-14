@@ -447,8 +447,9 @@ router.patch("/workers/:id", RW, async (req, res) => {
     const bd = strOrNull(birthDate);
     if (bd && !/^\d{4}-\d{2}-\d{2}$/.test(bd)) return fail(res, 400, "Дата народження — формат YYYY-MM-DD");
     patch.birthDate = bd;
-    // «до 26» — податкова властивість, виводиться з дати народження
-    if (bd) patch.under26 = new Date(bd).getTime() > Date.now() - 26 * 365.25 * 86400000;
+    // «до 26» — податкова властивість, виводиться з дати народження; очищення
+    // дати скидає прапорець (безпечний бік: без дати не вважаємо пільговиком)
+    patch.under26 = bd ? new Date(bd).getTime() > Date.now() - 26 * 365.25 * 86400000 : false;
   }
   // форма легалізації (student|dyplom|do26|zus|oczekuje|karta_pobytu|staly_pobyt|polak) + години в повідомленні
   const { legalStatus, notifyHours } = req.body ?? {};
