@@ -127,6 +127,9 @@ const CATALOG_HIDDEN = new Set([
   "oplataKierowcy", "badania", "nakladki", "zadluzenie", "dokumenty", "zwrotKosztow",
 ]);
 const EXTRA_ORDER = Object.keys(EXTRA_LABEL).filter(k => !CATALOG_HIDDEN.has(k));
+// «Разом» виплатних колонок: мінусовий рядок — борг людини (переноситься в
+// наступний місяць), суму до виплати/готівки/конто не зменшує
+const SUM_POS_ONLY = new Set(["doWyplaty", "gotowka", "konto", "ksiegNetto"]);
 
 // кольорове кодування колонок за змістом: години — блакитні, ставки — фіолетові,
 // нарахування — зелені, утримання — помаранчеві («До виплати» і księgowe мають
@@ -164,6 +167,15 @@ const isSpecial = (label: string) => OFFICE_RE.test(label) || label === EXTRA_ST
 const labelFirm = (label: string): string | null =>
   /OUTS/i.test(label) ? "ESO" : /KLINEX/i.test(label) ? "Klinex" : /EURO ?SUP|(^|\s)ES(\s|$)/i.test(label) ? "ES" : null;
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : "";
+// перенесений борг (мінусова виплата минулого місяця, extras.debtIn/debtOut):
+// підпис колонки-цілі та примітка в тултіпі клітинки
+const debtColLabel = (k: string, t: (s: string) => string) =>
+  k.startsWith("extras.") ? t(extraLabel(k.slice(7))) : t(new Map<string, string>(OPEN_COLS).get(k) ?? k);
+const debtInNote = (r: Row, key: string, t: (s: string, v?: Record<string, unknown>) => string): string | null => {
+  const d = (r.extras as any)?.debtIn;
+  const v = d?.cols?.[key];
+  return typeof v === "number" ? t("у т.ч. борг з {m}: {v} zł", { m: d.from, v: fmt(v) }) : null;
+};
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const STD_RATIO = 31.4 / 25.35;
 
@@ -281,6 +293,7 @@ export default function Svodni() {
   const [search, setSearch] = useState("");
   const [legalFilter, setLegalFilter] = useState("");
   const [excelOpen, setExcelOpen] = useState(false);
+  const [gratyfikantOpen, setGratyfikantOpen] = useState(false);
   // «Без порожніх колонок» — типово УВІМКНЕНО (показуємо лише стовпчики з даними)
   const [hideEmptyCols, setHideEmptyCols] = useState(() => localStorage.getItem("svodni.hideEmptyCols") !== "0");
   const [hideKsieg, setHideKsieg] = useState(() => localStorage.getItem("svodni.hideKsieg") === "1");
@@ -343,23 +356,26 @@ export default function Svodni() {
   useEffect(() => {
     try { localStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
   }, [effMonth, effCity, effFactory]);
-  // ключ набору прихованих колонок: конкретна фабрика конкретного місяця
+  // ключі наборів колонок: конкретна фабрика конкретного місяця.
+  // hiddenCols — сховані вручну; shownCols — показані ТОЧКОВО всупереч
+  // тумблерам («Без порожніх колонок» / «Księgowe: сховано»): клік по чіпу
+  // схованої тумблером колонки показує лише її, не вимикаючи тумблер
   const colsScopeKey = `svodni.hiddenCols.${effMonth}.${effCity}.${effFactory}`;
+  const shownScopeKey = `svodni.shownCols.${effMonth}.${effCity}.${effFactory}`;
   // синхронно з localStorage: useEffect-варіант давав кадр зі списком
   // прихованих колонок ПОПЕРЕДНЬОЇ фабрики після перемикання вкладки
-  const hiddenCols = useMemo<Set<string>>(() => {
-    void colsVer;
-    try { return new Set(JSON.parse(localStorage.getItem(colsScopeKey) ?? "[]")); }
+  const readSet = (key: string): Set<string> => {
+    try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); }
     catch { return new Set(); }
-  }, [colsScopeKey, colsVer]);
-  const setHidden = (n: Set<string>) => {
-    try { localStorage.setItem(colsScopeKey, JSON.stringify([...n])); } catch { /* ignore */ }
-    setColsVer(v => v + 1);
   };
-  const toggleCol = (k: string) => {
-    const n = new Set(hiddenCols);
-    n.has(k) ? n.delete(k) : n.add(k);
-    setHidden(n);
+  const hiddenCols = useMemo<Set<string>>(() => { void colsVer; return readSet(colsScopeKey); }, [colsScopeKey, colsVer]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownCols = useMemo<Set<string>>(() => { void colsVer; return readSet(shownScopeKey); }, [shownScopeKey, colsVer]); // eslint-disable-line react-hooks/exhaustive-deps
+  const writeSets = (hidden: Set<string>, shown: Set<string>) => {
+    try {
+      localStorage.setItem(colsScopeKey, JSON.stringify([...hidden]));
+      localStorage.setItem(shownScopeKey, JSON.stringify([...shown]));
+    } catch { /* ignore */ }
+    setColsVer(v => v + 1);
   };
   // пошук по імені + фільтр форми легалізації (застосовуються до рядків міста)
   const matchesFilters = useMemo(() => {
@@ -411,8 +427,9 @@ export default function Svodni() {
   const cityExtraKeys = useMemo(() => {
     const SENSITIVE = new Set(["kontoH", "gotowkaH", "doplataEs", "godzFaktBlock", "zaliczkaBlock"]);
     const keys = new Set<string>(EXTRA_ORDER.filter(k => data?.sensitive || !SENSITIVE.has(k)));
+    // blockOnly і facBonus (вшитий бонус ставки — службове поле розкладу) — не колонки
     for (const r of cityRows) for (const [k, v] of Object.entries(r.extras)) {
-      if (typeof v === "number" && k !== "blockOnly") keys.add(k);
+      if (typeof v === "number" && k !== "blockOnly" && k !== "facBonus") keys.add(k);
     }
     const idx = (k: string) => { const i = EXTRA_ORDER.indexOf(k); return i < 0 ? EXTRA_ORDER.length : i; };
     return [...keys].sort((a, b) => idx(a) - idx(b) || a.localeCompare(b));
@@ -434,14 +451,6 @@ export default function Svodni() {
     ...cityHrCols,
     ...(data?.sensitive ? SENS_COLS as [string, string][] : []),
   ], [cityExtraKeys, cityHrCols, data?.sensitive]);
-  const visible = useMemo(() => {
-    const v = new Set(allColumns.map(([k]) => k).filter(k => !hiddenCols.has(k)));
-    if (hideKsieg) for (const [k] of SENS_COLS) v.delete(k);
-    return v;
-  }, [allColumns, hiddenCols, hideKsieg]);
-  // колонки, приховані не вручну, а тумблерами («Без порожніх колонок» /
-  // «Księgowe: сховано») — чіпси в панелі показують їх окремим станом,
-  // інакше чіп виглядає активним, а колонки в таблиці нема
   // порожність рахуємо по ВСІХ рядках фабрики (без пошуку/фільтрів) — інакше
   // колонки «стрибають» під час набору в пошуку
   const factoryAllRows = useMemo(() => cityRows.filter(r => r.factoryLabel === effFactory), [cityRows, effFactory]);
@@ -449,11 +458,38 @@ export default function Svodni() {
     k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
     k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
     (r as any)[k] != null);
-  const emptyHiddenCol = (k: string) => hideEmptyCols && factoryAllRows.length > 0 && !colHasVal(k);
-  const ksiegHiddenCol = (k: string) => hideKsieg && SENS_COLS.some(([s]) => s === k);
+  // «тумблер її ховає» — без урахування точкових винятків (shownCols)
+  const emptyByToggle = (k: string) => hideEmptyCols && factoryAllRows.length > 0 && !colHasVal(k);
+  const ksiegByToggle = (k: string) => hideKsieg && SENS_COLS.some(([s]) => s === k);
+  // підсумкова видимість (єдине місце, ним же живе таблиця): не схована
+  // вручну І (показана точково АБО тумблери її не ховають)
+  const visible = useMemo(() => {
+    const v = new Set<string>();
+    for (const [k] of allColumns) {
+      if (hiddenCols.has(k)) continue;
+      if (!shownCols.has(k) && (emptyByToggle(k) || ksiegByToggle(k))) continue;
+      v.add(k);
+    }
+    return v;
+  }, [allColumns, hiddenCols, shownCols, hideEmptyCols, hideKsieg, factoryAllRows]); // eslint-disable-line react-hooks/exhaustive-deps
+  // клік по чіпу/хрестику заголовка: видима → сховати вручну; схована →
+  // показати (точково, якщо її ховає тумблер) — тумблери не чіпаємо, тож
+  // решта схованих ними колонок лишається схованою
+  const toggleCol = (k: string) => {
+    const hidden = new Set(hiddenCols), shown = new Set(shownCols);
+    if (visible.has(k)) { hidden.add(k); shown.delete(k); }
+    else {
+      hidden.delete(k);
+      if (emptyByToggle(k) || ksiegByToggle(k)) shown.add(k);
+    }
+    writeSets(hidden, shown);
+  };
+  // стани чіпів панелі «Колонки»: жовтий = схована тумблером (без винятку)
+  const emptyHiddenCol = (k: string) => emptyByToggle(k) && !shownCols.has(k);
+  const ksiegHiddenCol = (k: string) => ksiegByToggle(k) && !shownCols.has(k);
   const autoHiddenCount = allColumns.filter(([k]) => !hiddenCols.has(k) && (emptyHiddenCol(k) || ksiegHiddenCol(k))).length;
   const showAllCols = () => {
-    setHidden(new Set());
+    writeSets(new Set(), new Set());
     if (hideEmptyCols) toggleEmptyCols();
     if (hideKsieg) toggleKsieg();
   };
@@ -531,6 +567,11 @@ export default function Svodni() {
           )}
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={() => setExcelOpen(true)} title={t("Скачати Excel")}><Download className="h-4 w-4" /> Excel</Button>
+            {data?.sensitive && (
+              <Button variant="secondary" onClick={() => setGratyfikantOpen(true)} title={t("Файл для імпорту naliczeń у Gratyfikant nexo")}>
+                <Download className="h-4 w-4" /> Gratyfikant
+              </Button>
+            )}
             <Button variant="secondary" onClick={() => setShowLinks(v => !v)}><Users className="h-4 w-4" /> {t("Привʼязки")}</Button>
             <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()} title={t("Пробує підвʼязати нерозпізнаних людей до працівників")}><Link2 className="h-4 w-4" /></Button>
             <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate(undefined)} title={t("Синк із Google (всі міста)")}><RefreshCw className="h-4 w-4" /></Button>
@@ -582,20 +623,20 @@ export default function Svodni() {
                 const h = k === "dojazd" && effCity === "Лодзь" ? "Dojazd (доплата)" : hRaw;
                 const manualOff = hiddenCols.has(k);
                 const autoOff = !manualOff && (emptyHiddenCol(k) || ksiegHiddenCol(k));
+                const forced = !manualOff && shownCols.has(k) && (emptyByToggle(k) || ksiegByToggle(k));
                 return (
                   <button key={k}
-                    title={!autoOff ? undefined : emptyHiddenCol(k)
-                      ? t("Порожня — схована тумблером «Без порожніх колонок»; клік вимкне тумблер")
-                      : t("Схована тумблером «Księgowe: сховано»; клік поверне księgowe")}
-                    onClick={() => {
-                      if (!autoOff) return toggleCol(k);
-                      if (emptyHiddenCol(k)) toggleEmptyCols(); else toggleKsieg();
-                    }}
+                    title={autoOff
+                      ? (emptyHiddenCol(k)
+                        ? t("Порожня — схована тумблером «Без порожніх колонок»; клік покаже лише цю колонку")
+                        : t("Схована тумблером «Księgowe: сховано»; клік покаже лише цю колонку"))
+                      : forced ? t("Показана точково всупереч тумблеру; клік сховає") : undefined}
+                    onClick={() => toggleCol(k)}
                     className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
                       autoOff ? "bg-amber-50 text-amber-600 ring-1 ring-amber-200"
                       : !manualOff ? "bg-red-50 text-red-700 ring-1 ring-red-200"
                       : "bg-slate-50 text-slate-400 ring-1 ring-slate-200 line-through"}`}>
-                    {t(h)}{autoOff && emptyHiddenCol(k) ? ` · ${t("порожня")}` : ""}
+                    {t(h)}{autoOff && emptyHiddenCol(k) ? ` · ${t("порожня")}` : ""}{forced ? " ✦" : ""}
                   </button>
                 );
               })}
@@ -648,7 +689,7 @@ export default function Svodni() {
       ) : (
         <div className="space-y-4">
           <FactoryTable month={effMonth} city={effCity} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
-            visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} hideEmptyCols={hideEmptyCols} onHideCol={toggleCol} cityRows={cityRows}
+            visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} onHideCol={toggleCol} cityRows={cityRows}
             meta={data?.tabMeta?.find(m => m.factoryLabel === effFactory && (effCity === OFFICE_CITY || m.city === effCity))}
             locked={isFactoryLocked(effCity, effFactory)} cityLocked={isCityLocked(effCity)}
             onToggleLock={() => smartToggleLock(effCity, effFactory, isFactoryLocked(effCity, effFactory))} lockPending={lockBusy} />
@@ -658,6 +699,10 @@ export default function Svodni() {
       {excelOpen && (
         <ExcelModal month={effMonth} city={effCity !== TOTAL_CITY && effCity !== OFFICE_CITY ? effCity : null}
           factory={effFactory && !isSpecial(effFactory) ? effFactory : null} sensitive={!!data?.sensitive} onClose={() => setExcelOpen(false)} />
+      )}
+      {gratyfikantOpen && (
+        <GratyfikantModal month={effMonth} rows={data?.rows ?? []}
+          factory={effFactory && !isSpecial(effFactory) ? effFactory : null} onClose={() => setGratyfikantOpen(false)} />
       )}
       {unlockReview && (
         <LockReviewModal data={unlockReview.data}
@@ -855,9 +900,9 @@ function EditableCell({ row, field, value, month, text, strong, options, formula
   );
 }
 
-function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, cityHrCols, hideEmptyCols, onHideCol, cityRows, meta, locked, cityLocked, onToggleLock, lockPending }: {
+function FactoryTable({ month, city, label, rows, checks, sensitive, visible, cityExtraKeys, cityHrCols, onHideCol, cityRows, meta, locked, cityLocked, onToggleLock, lockPending }: {
   month: string; city: string; label: string; rows: Row[]; checks: Check[]; sensitive: boolean;
-  visible: Set<string>; cityExtraKeys: string[]; cityHrCols: [string, string][]; hideEmptyCols: boolean;
+  visible: Set<string>; cityExtraKeys: string[]; cityHrCols: [string, string][];
   onHideCol: (key: string) => void; cityRows: Row[]; meta?: TabMeta;
   locked: boolean; cityLocked: boolean; onToggleLock: () => void; lockPending: boolean;
 }) {
@@ -942,15 +987,9 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
     }
     return list;
   }, [rows, sort, collator, multiFirmTab]);
-  // «порожня колонка» = жодного значення в поточній фабриці (тумблер зверху);
-  // рахуємо по ВСІХ рядках фабрики — інакше колонки стрибають під час пошуку
-  const allFactoryRows = useMemo(() => cityRows.filter(r => r.factoryLabel === label), [cityRows, label]);
-  const hasVal = (k: string) => allFactoryRows.some(r =>
-    k.startsWith("extras.") ? r.extras[k.slice(7)] != null :
-    k.startsWith("hr.") ? !!r.hr[k.slice(3)] :
-    (r as any)[k] != null);
-  // у порожній фабриці колонки показуються всі (інакше не було б чого бачити)
-  const show = (k: string) => visible.has(k) && (!hideEmptyCols || allFactoryRows.length === 0 || hasVal(k));
+  // видимість повністю порахована в батьку (ручні + тумблери + точкові
+  // винятки) — тут лише читаємо готовий набір
+  const show = (k: string) => visible.has(k);
   // єдиний список колонок у порядку таблиці Google (colOrder вкладки);
   // колонки поза colOrder — у каталожному порядку в кінці, закритий шар — окремо
   const cols = useMemo(() => {
@@ -1104,6 +1143,20 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                           ⚠
                         </span>
                       )}
+                      {(r.extras as any).debtIn && (
+                        <span className="shrink-0 cursor-help rounded bg-amber-100 px-1 text-[10px] font-semibold text-amber-700"
+                          title={`${t("Містить борг з {m} (мінусова виплата минулого місяця)", { m: (r.extras as any).debtIn.from })}\n`
+                            + Object.entries(((r.extras as any).debtIn.cols ?? {}) as Record<string, number>)
+                              .map(([k, v]) => `${debtColLabel(k, t)}: ${fmt(v)} zł`).join("\n")}>
+                          ⤵
+                        </span>
+                      )}
+                      {(r.extras as any).debtOut && (
+                        <span className="shrink-0 cursor-help rounded bg-slate-100 px-1 text-[10px] font-semibold text-slate-500"
+                          title={t("Мінус місяця перенесено в {m}: {v} zł", { m: (r.extras as any).debtOut.to, v: fmt((r.extras as any).debtOut.amount) })}>
+                          ⤴
+                        </span>
+                      )}
                       {(r.segments?.length ?? 0) > 0 && (
                         <button type="button" onClick={() => toggleSegs(r.id)}
                           className="shrink-0 rounded bg-violet-50 px-1 text-[10px] font-semibold text-violet-700 hover:bg-violet-100"
@@ -1133,7 +1186,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     </td>
                   ) : (
                     <td key={d.key} className={`px-1 py-0.5 text-right ${divider}${tint}${d.key === "doWyplaty" ? "border-x-2 border-red-100 bg-red-50/70 font-medium" : ""} text-slate-600`}
-                      title={cellLockTitle(r, d.key, t)}>
+                      title={[cellLockTitle(r, d.key, t), debtInNote(r, d.key, t)].filter(Boolean).join("\n") || undefined}>
                       <EditableCell row={r} field={d.key} value={d.kind === "extra" ? r.extras[d.key.slice(7)] : r[d.key as keyof Row & string]} month={month} strong={d.key === "doWyplaty"} formula={cellFormula(r, d.key, t)}
                         locked={locked || cellIsSegLocked(r, d.key) || (d.kind === "extra" && !EXTRA_LABEL[d.key.slice(7)])} />
                     </td>
@@ -1211,13 +1264,22 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
               <td className="sticky left-0 z-30 bg-slate-100 px-3 py-2.5">{t("Разом")}</td>
               <td />
               {shownCols.map(d => d.kind === "hr" || ["rateBrutto", "rateNetto"].includes(d.key) ? <td key={d.key} /> : (
-                <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "border-x-2 border-red-200 bg-red-100/60 text-red-700" : ""}`}>
-                  {fmt(sum(r => d.kind === "extra"
-                    ? (typeof r.extras[d.key.slice(7)] === "number" ? r.extras[d.key.slice(7)] as number : 0)
-                    : r[d.key as keyof Row & string] as number | null))}
+                <td key={d.key} className={`px-1.5 py-2.5 text-right tabular-nums ${d.key === "doWyplaty" ? "border-x-2 border-red-200 bg-red-100/60 text-red-700" : ""}`}
+                  title={SUM_POS_ONLY.has(d.key) ? t("Мінусові рядки (борг — переноситься в наступний місяць) у суму не входять") : undefined}>
+                  {fmt(sum(r => {
+                    const v = d.kind === "extra"
+                      ? (typeof r.extras[d.key.slice(7)] === "number" ? r.extras[d.key.slice(7)] as number : 0)
+                      : r[d.key as keyof Row & string] as number | null;
+                    return SUM_POS_ONLY.has(d.key) ? Math.max(0, v ?? 0) : v;
+                  }))}
                 </td>
               ))}
-              {sensCols.map(([k], ci) => <td key={k} className={`bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}>{fmt(sum(r => r[k] as number | null))}</td>)}
+              {sensCols.map(([k], ci) => (
+                <td key={k} className={`bg-amber-100/70 px-1.5 py-2.5 text-right tabular-nums ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}
+                  title={SUM_POS_ONLY.has(k) ? t("Мінусові рядки (борг — переноситься в наступний місяць) у суму не входять") : undefined}>
+                  {fmt(sum(r => SUM_POS_ONLY.has(k) ? Math.max(0, (r[k] as number | null) ?? 0) : r[k] as number | null))}
+                </td>
+              ))}
             </tr>
           </tfoot>
         </table>
@@ -1713,6 +1775,90 @@ function ExcelModal({ month, city, factory, sensitive, onClose }: {
           ) : (
             <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400"
               title={t("Вибери хоча б один стовпчик")}>
+              <Download className="h-4 w-4" /> {t("Скачати")}
+            </span>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Експорт для Gratyfikant nexo PRO: файл під вбудований імпорт «Naliczenia
+// i potrącenia» (одна фірма-podmiot за раз, лише księg. brutto — деталі в
+// services/gratyfikantExport.ts бекенду). Кнопка видима лише з sensitive.
+function GratyfikantModal({ month, factory, rows, onClose }: {
+  month: string; factory: string | null; rows: Row[]; onClose: () => void;
+}) {
+  const t = useT();
+  const now = new Date();
+  const [date, setDate] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`);
+  // ті самі критерії, що на бекенді: не-офісні вкладки, є księg. brutto
+  const eligible = useMemo(() => rows.filter(r => !isSpecial(r.factoryLabel) && (r.ksiegBrutto ?? 0) > 0), [rows]);
+  const firms = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of eligible) if (r.firm) m.set(r.firm, (m.get(r.firm) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [eligible]);
+  const noFirm = eligible.filter(r => !r.firm).length;
+  const [firm, setFirm] = useState<string>(() => firms[0]?.[0] ?? "");
+  const [scope, setScope] = useState<"firm" | "factory">(factory ? "factory" : "firm");
+  const count = eligible.filter(r => r.firm === firm && (scope !== "factory" || r.factoryLabel === factory)).length;
+  const params = new URLSearchParams({ month, firm, date });
+  if (scope === "factory" && factory) params.set("factory", factory);
+  return (
+    <Modal open onClose={onClose} title={t("Експорт у Gratyfikant")}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">
+          {t("Файл для вбудованого імпорту «Naliczenia i potrącenia» (Laboratorium → Eksport/import danych).")}{" "}
+          {t("Один запис = księg. brutto рядка; людина на кількох фабриках — окремі записи.")}
+        </p>
+        <div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фірма (podmiot)")}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {firms.map(([f, n]) => (
+              <button key={f} onClick={() => setFirm(f)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${firm === f ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                {f} · {n}
+              </button>
+            ))}
+          </div>
+          {noFirm > 0 && (
+            <p className="mt-1.5 text-[11px] text-amber-600">⚠︎ {t("Без фірми (не потраплять у файл)")}: {noFirm}</p>
+          )}
+        </div>
+        <div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Що скачати")}</div>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setScope("firm")}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "firm" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              {t("Вся фірма")} · {month}
+            </button>
+            {factory && (
+              <button onClick={() => setScope("factory")}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "factory" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                {factory}
+              </button>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Дата запису")}</div>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
+        </div>
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <span className="mr-auto text-xs text-slate-400">{t("Записів у файлі")}: {count}</span>
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          {firm && count > 0 ? (
+            <a href={`/api/svodni/gratyfikant?${params.toString()}`} onClick={onClose}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">
+              <Download className="h-4 w-4" /> {t("Скачати")}
+            </a>
+          ) : (
+            <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400"
+              title={t("Немає рядків із księg. brutto за вибором")}>
               <Download className="h-4 w-4" /> {t("Скачати")}
             </span>
           )}

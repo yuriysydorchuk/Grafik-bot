@@ -148,6 +148,9 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
 
   const tabs: SvodniParsedTab[] = [];
   const tabColors = new Map<SvodniParsedTab, (string | null)[][]>();
+  // id фабрики за назвою вкладки — потрібен уже в розкладі конто/готівки
+  // (фабрико-залежні правила: премія Agram завжди готівкою)
+  const facIdOf = await factoryIdByLabel();
   for (const [t, rows] of grids) {
     if (SKIP_TABS.test(t.trim())) continue;
     const parsed = OFFICE_TAB_RE.test(t.trim())
@@ -220,7 +223,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         }
         applyLegalDefaults(row, false, {
           factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any, city,
-          firm: firm ?? parsed.firmGuess,
+          firm: firm ?? parsed.firmGuess, factoryId: facIdOf(t.trim()),
           payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
         });
         // нормалізація księgowego конто зі «зменшеними годинами»: konto завжди
@@ -259,7 +262,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     tabs.push(parsed);
   }
 
-  const facId = await factoryIdByLabel();
+  const facId = facIdOf;
 
   const rowsToInsert: (typeof svodniRowsTable.$inferInsert)[] = [];
   const checksToInsert: (typeof svodniTabChecksTable.$inferInsert)[] = [];

@@ -199,11 +199,18 @@ export function setKsiegStd(netto: number, brutto: number): void {
   if (Number.isFinite(brutto) && brutto > 0) ksiegStdBrutto = brutto;
 }
 
-// ── Бонуси Agram: додаються до ставки нетто (księgowa частина все одно ріжеться
-// стандартною парою, тож бонус іде готівкою; студенту до 26 — разом з усім).
+// ── Бонуси Agram: додаються до ставки нетто. Вшитий у ставку бонус — ЗАВЖДИ
+// готівкою: рядок несе його в extras.facBonus (зл/год), applyLegalDefaults
+// віднімає його від księgowої ставки і від стелі конто (правило 20.08.2026 —
+// раніше бонус різався лише стандартною парою 25,35 і протікав у конто, коли
+// база нижча за стандартну або при побажанні «все на конто»). Студенту до 26
+// бонуси не нараховуються — його виплата вся на конто.
 // Прапорці — у профілі працівника; детекція фабрик — по id (побажання власника).
 export const AGRAM_FACTORY_IDS = new Set([12, 13]); // 12=AGRAM MOTYCZ, 13=AGRAM LUBLIN
 export const AGRAM_CASH_PER_HOUR = 1; // готівковий бонус (частина ЗП налом): +1 зл/год
+// Колонка Premia на Agram — теж завжди готівкою (на конто лише студентам до 26):
+// стеля конто зменшується на премію в усіх гілках розкладу, вкл. «все на конто»
+export const PREMIA_CASH_FACTORY_IDS = AGRAM_FACTORY_IDS;
 
 /** Повних місяців між датами (YYYY-MM-DD, рядкова арифметика — без таймзон). */
 export function monthsBetween(fromDate: string, toDate: string): number {
@@ -382,19 +389,29 @@ export interface LegalCtx {
   firm?: string | null;
   /** явна стеля księgowych годин (сегменти: місячний ліміт ділиться між ними) — перекриває factoryDeclaredCap */
   declaredCapH?: number | null;
+  /** id фабрики рядка — фабрико-залежні правила (премія Agram завжди готівкою) */
+  factoryId?: number | null;
+  /** сума вшитого бонусу за місяць, зл (сегментований батько: Σ по сегментах) — перекриває facBonus × години */
+  bonusTotal?: number | null;
 }
 
 // Księgowa пара ставок рядка: студентська неоподаткована (netto = brutto)
 // декларується як є; всі інші — по нижчій зі ставок (фабрична LST 26,35 →
-// стандартна 25,35; ANDROS wózkowy 36/36 — теж стандартна пара).
+// стандартна 25,35; ANDROS wózkowy 36/36 — теж стандартна пара). Вшитий у
+// ставку фабричний бонус (extras.facBonus) — не księgowa частина: віднімається
+// ДО клампу, інакше рядок з базою нижче стандартної декларував би бонус у
+// конто (а «студентоподібна» перевірка брутто ≤ нетто хибно спрацьовувала б
+// на бонусній нетто вище брутто).
 export function ksiegRatesOf(
-  row: Pick<SvodniParsedRow, "rateBrutto" | "rateNetto" | "isStudent">,
+  row: Pick<SvodniParsedRow, "rateBrutto" | "rateNetto" | "isStudent"> & { extras?: Record<string, unknown> },
   ls: LegalStatus | null,
 ): { netto: number | null; brutto: number | null } {
+  const facBonus = typeof row.extras?.facBonus === "number" ? (row.extras.facBonus as number) : 0;
+  const netto = row.rateNetto != null ? r2(row.rateNetto - facBonus) : null;
   const untaxed = (row.isStudent === true || ls === "student")
-    && row.rateBrutto != null && row.rateNetto != null && row.rateBrutto <= row.rateNetto + 0.001;
+    && row.rateBrutto != null && netto != null && row.rateBrutto <= netto + 0.001;
   return {
-    netto: row.rateNetto != null ? (untaxed ? row.rateNetto : Math.min(row.rateNetto, KSIEG_STD_NETTO())) : null,
+    netto: netto != null ? (untaxed ? netto : Math.min(netto, KSIEG_STD_NETTO())) : null,
     brutto: row.rateBrutto != null ? (untaxed ? row.rateBrutto : Math.min(row.rateBrutto, KSIEG_STD_BRUTTO())) : null,
   };
 }
@@ -411,11 +428,22 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? normalizeProfileLegal(ctx.profileLegal) ?? null;
   const capH = ctx.declaredCapH !== undefined ? ctx.declaredCapH : factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null, ctx.firm ?? null);
   const { netto: ksiegNettoRate, brutto: ksiegBruttoRate } = ksiegRatesOf(row, ls);
+  // Готівкові складові, які конто НЕ може зʼїсти в жодній гілці (вкл. побажання
+  // «все на конто»); виняток — студент до 26: його виплата вся на конто.
+  const stud26 = !!(row.isStudent && row.under26);
+  // вшитий у ставку фабричний бонус (Agram нал/стаж, LST нал) — завжди готівкою
+  const facBonus = !stud26 && typeof row.extras.facBonus === "number" ? (row.extras.facBonus as number) : 0;
+  const bonusSum = !stud26 && ctx.bonusTotal != null ? ctx.bonusTotal
+    : facBonus > 0 && row.hours != null ? r2(facBonus * row.hours) : 0;
+  // колонка Premia на Agram — завжди готівкою (на конто лише студентам до 26)
+  const premiaCash = !stud26 && ctx.factoryId != null && PREMIA_CASH_FACTORY_IDS.has(ctx.factoryId)
+    ? (row.premia ?? 0) : 0;
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)]
-  // мінус готівкова доплата (якщо вона всередині doWyplaty).
+  // мінус готівкова доплата (якщо вона всередині doWyplaty), мінус готівкові
+  // бонус і премія Agram.
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
-  const cap = Math.max(row.doWyplaty - (doplataInPayout ? doplata : 0), 0);
+  const cap = Math.max(row.doWyplaty - (doplataInPayout ? doplata : 0) - bonusSum - premiaCash, 0);
   const finish = (targetKonto: number, declaredHours: number | null, studentBrutto = false) => {
     const konto = r2(Math.max(0, Math.min(targetKonto, cap)));
     const cut = konto !== r2(targetKonto);
@@ -1030,6 +1058,39 @@ export function computePayout(row: PayoutLike, city: "Люблін" | "Позн�
   return r2(ours);
 }
 
+// ── Перенесення боргу (мінусова виплата) в наступний місяць ──────────────────
+// Якщо відрахування з'їли більше, ніж людина заробила (doWyplaty < 0), борг
+// автоматом переноситься в ту ж колонку наступного місяця (from-hours).
+// «Черга знять»: реально знятим вважається з ПОЧАТКУ списку (аванси перші),
+// тож недознятий залишок (|мінус|) розкладається по колонках З КІНЦЯ.
+// У Лодзі dojazd — доплата (не зняття) і в черзі участі не бере.
+export const DEBT_DEDUCTION_ORDER: string[] = [
+  "zaliczka", "zaliczkaBd", "hostel", "dojazd", "kara", "komornik", "kaucja", "potracenia", "odziez",
+  "extras.badania", "extras.kartaPobytu", "extras.karaKlient", "extras.karaEs", "extras.dokumenty", "extras.zadluzenie",
+];
+export function debtCarryFromRow(
+  row: Pick<SvodniParsedRow, "doWyplaty" | "zaliczka" | "zaliczkaBd" | "hostel" | "odziez" | "dojazd"
+    | "kara" | "komornik" | "kaucja" | "potracenia" | "extras">,
+  city: string | null,
+): Record<string, number> | null {
+  if (row.doWyplaty == null || row.doWyplaty >= -0.005) return null;
+  let shortfall = r2(-row.doWyplaty);
+  const valOf = (k: string): number => {
+    const v = k.startsWith("extras.") ? row.extras[k.slice(7)] : (row as any)[k];
+    return typeof v === "number" && v > 0 ? v : 0;
+  };
+  const order = DEBT_DEDUCTION_ORDER.filter(k => !(city === "Лодзь" && k === "dojazd"));
+  const carry: Record<string, number> = {};
+  for (let i = order.length - 1; i >= 0 && shortfall > 0.005; i--) {
+    const k = order[i]!;
+    const take = Math.min(shortfall, valOf(k));
+    if (take > 0) { carry[k] = r2(take); shortfall = r2(shortfall - take); }
+  }
+  // теоретично неможливий залишок (мінус більший за всі зняття) — чесно в аванс
+  if (shortfall > 0.005) carry.zaliczka = r2((carry.zaliczka ?? 0) + shortfall);
+  return Object.keys(carry).length ? carry : null;
+}
+
 // ── Сегменти всередині місяця ────────────────────────────────────────────────
 // Людина з різними умовами в різні періоди місяця: база = Σ(год × ставка
 // сегмента); księgowa пара декларується по НИЖЧІЙ зі ставок сегментів
@@ -1062,6 +1123,8 @@ export function segmentsBase(parts: SegmentPart[]): {
 export type SegmentCalcIn = {
   hours: number | null; rateNetto: number | null; rateBrutto: number | null;
   isStudent: boolean | null; under26: boolean | null; legal: string | null;
+  /** вшитий у ставку фабричний бонус СВОГО вікна, зл/год (Agram/LST) — завжди готівкою */
+  facBonus?: number | null;
 };
 export type SegmentCalcOut = SegmentCalcIn & {
   alloc: Record<string, number | null>;
@@ -1077,7 +1140,7 @@ const SEG_HOUR_EXTRAS = new Set(["nocneH"]);                   // годино-�
 
 export function computeSegmented(
   parent: {
-    city: string; factoryLabel: string; firm?: string | null;
+    city: string; factoryLabel: string; firm?: string | null; factoryId?: number | null;
     hoursNotified: number | null;
     premia: number | null; zaliczka: number | null; zaliczkaBd: number | null; hostel: number | null;
     odziez: number | null; dojazd: number | null; kara: number | null; komornik: number | null;
@@ -1120,6 +1183,7 @@ export function computeSegmented(
   // extras: ставко-подібні копіюються, годино-подібні — по годинах, грошові — по базі
   const extrasAlloc: Record<string, number[]> = {};
   for (const [k, v] of Object.entries(parent.extras)) {
+    if (k === "facBonus") continue; // вшитий бонус — свій у кожного сегмента (SegmentCalcIn), не ділиться як гроші
     if (!isMoney(v)) continue;
     if (SEG_RATE_EXTRAS.has(k)) extrasAlloc[k] = segs.map(() => v);
     else if (SEG_HOUR_EXTRAS.has(k)) {
@@ -1154,6 +1218,10 @@ export function computeSegmented(
     for (const k of SEG_SHARE_COLS) alloc[k] = colAlloc.get(k)?.[i] ?? null;
     const extras: Record<string, number> = {};
     for (const [k, arr] of Object.entries(extrasAlloc)) extras[k] = arr[i]!;
+    // вшитий бонус сегмента (свій у кожному вікні — стаж-поріг/галочки могли
+    // змінитись усередині місяця) — в extras: applyLegalDefaults тримає його
+    // готівкою, а recompute зберігає в рядку сегмента
+    if (s.facBonus != null && s.facBonus > 0 && !stud26) extras.facBonus = s.facBonus;
     const row: any = {
       hours: s.hours, rateNetto: s.rateNetto, rateBrutto: s.rateBrutto,
       isStudent: s.isStudent, under26: s.under26, hoursNotified: segNotify,
@@ -1164,7 +1232,7 @@ export function computeSegmented(
     row.brutto = s.hours != null && s.rateBrutto != null ? r2(s.hours * s.rateBrutto) : null;
     applyLegalDefaults(row, true, {
       profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: null,
-      city: parent.city, firm: parent.firm ?? null,
+      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null,
       // сегмент отримує залишок місячної стелі; спожите — по факту hoursDeclared
       ...(capLeft != null ? { declaredCapH: r2(Math.max(capLeft, 0)) } : {}),
     });
@@ -1209,13 +1277,25 @@ export function computeSegmented(
   // побажання по виплаті — місячне: перерозкладає konto/готівку на рівні батька
   if (payoutPref && (payoutPref.kind === "all_konto" || payoutPref.value != null) && parentOut.doWyplaty != null) {
     const last = outSegs[outSegs.length - 1];
+    // готівкові складові місяця: Σ вшитих бонусів сегментів (точна сума — через
+    // ctx.bonusTotal; в extras — середній бонус/год для księgowої ставки) + премія
+    const bonusTotal = r2(outSegs.reduce((a, s) =>
+      a + ((s.isStudent && s.under26) ? 0 : (s.facBonus ?? 0) * (s.hours ?? 0)), 0));
+    const prowExtras: Record<string, unknown> = { ...(parent.extras as Record<string, unknown>) };
+    delete prowExtras.facBonus;
+    if (bonusTotal > 0 && parentOut.hours) prowExtras.facBonus = r2(bonusTotal / parentOut.hours);
     const prow: any = {
       hours: parentOut.hours, rateNetto: parentOut.rateNetto, rateBrutto: parentOut.rateBrutto,
       isStudent: last?.isStudent ?? null, under26: last?.under26 ?? null,
       hoursNotified: parent.hoursNotified, doWyplaty: parentOut.doWyplaty,
-      extras: parent.extras, hr: {}, sheetValues: {},
+      premia: parent.premia ?? null,
+      extras: prowExtras, hr: {}, sheetValues: {},
     };
-    applyLegalDefaults(prow, true, { profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref, city: parent.city, firm: parent.firm ?? null });
+    applyLegalDefaults(prow, true, {
+      profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref,
+      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null,
+      ...(bonusTotal > 0 ? { bonusTotal } : {}),
+    });
     parentOut.hoursDeclared = prow.hoursDeclared ?? null;
     parentOut.ksiegBrutto = prow.ksiegBrutto ?? null;
     parentOut.ksiegNetto = prow.ksiegNetto ?? null;

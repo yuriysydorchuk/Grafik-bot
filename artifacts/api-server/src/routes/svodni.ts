@@ -13,10 +13,11 @@ import { logger } from "../lib/logger";
 import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
-import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
+import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr } from "../lib/dates";
+import { gratyfikantRecords, type GratyfikantSource } from "../services/gratyfikantExport";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -145,13 +146,18 @@ async function freezeUnder26AtLock(month: string, lock: Pick<LockRow, "city" | "
         set.rateNetto = stud26now
           ? (resolved.brutto ?? row.rateBrutto ?? row.rateNetto)
           : resolved.netto != null ? Math.round((resolved.netto + bonus) * 100) / 100 : row.rateNetto;
+        // вшитий бонус сегмента (завжди готівковий) — синхронно зі ставкою
+        const segExtras = { ...(row.extras as Record<string, unknown>) };
+        if (bonus > 0) segExtras.facBonus = bonus; else delete segExtras.facBonus;
+        set.extras = segExtras;
       }
       await db.update(svodniRowsTable).set(set).where(eq(svodniRowsTable.id, row.id));
       toRecalc.add(row.segmentOf);
     } else {
       // звичайний рядок: та сама машинерія, що й зміна дати народження у профілі
+      // (extras лишаємо в set — там живе вшитий бонус facBonus, який міняється
+      // разом зі студентством; hr рядок цей шлях не чіпає)
       const { set } = rowSetFromProfile(row, w, new Set(["birthDate"]), undefined, ruleOf(row.factoryId, w.positionId));
-      delete set.extras; // hr/extras не чіпаємо — міняється лише вік і похідні
       if (Object.keys(set).length) {
         await db.update(svodniRowsTable).set({ ...set, manual: true }).where(eq(svodniRowsTable.id, row.id));
       }
@@ -607,8 +613,11 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     const [y, m, d] = worker!.birthDate.split("-");
     hr.dataUrodzenia = `${d}.${m}.${y}`;
   }
-  // бонусні фабрики (Agram нал+стаж, LST нал): до профільної ставки додається бонус
-  const facBonus = factory != null ? factoryBonusPerHour(worker!, factory.id, periodMonth, null) : 0;
+  // бонусні фабрики (Agram нал+стаж, LST нал): до профільної ставки додається
+  // бонус (він же в extras.facBonus — розклад тримає його готівкою);
+  // студенту до 26 бонуси не нараховуються
+  const stud26Add = (worker!.isStudent || worker!.legalStatus === "student") && !!under26;
+  const facBonus = !stud26Add && factory != null ? factoryBonusPerHour(worker!, factory.id, periodMonth, null) : 0;
   const prefillNetto = worker!.hourlyRateNetto != null
     ? Math.round((worker!.hourlyRateNetto + facBonus) * 100) / 100
     : null;
@@ -619,7 +628,7 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     rateBrutto: worker!.hourlyRate ?? null, rateNetto: prefillNetto,
     hoursNotified: worker!.notifyHours ?? null,
     isStudent: worker!.isStudent, under26,
-    extras: {}, hr, sheetValues: {},
+    extras: facBonus > 0 && prefillNetto != null ? { facBonus } : {}, hr, sheetValues: {},
   }).returning();
   ok(res, serializeRow(created!, worker!.fullName, canSensitive(req), worker!.legalStatus, worker!.payoutPrefKind ? { kind: worker!.payoutPrefKind, value: worker!.payoutPrefValue ?? null } : null));
 });
@@ -635,20 +644,28 @@ router.post("/svodni/rows/:id/unsplit", requireCap("svodni"), async (req: Authed
     return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
   await db.delete(svodniRowsTable).where(eq(svodniRowsTable.segmentOf, id));
   const rnd2 = (n: number) => Math.round(n * 100) / 100;
-  const merged: any = { ...row };
+  const merged: any = { ...row, extras: { ...(row.extras as Record<string, unknown>) } };
+  let w: typeof workersTable.$inferSelect | undefined;
+  if (row.workerId != null) [w] = await db.select().from(workersTable).where(eq(workersTable.id, row.workerId));
+  // вшитий бонус (Agram/LST) після зшивання — від поточного профілю: сегментні
+  // значення знесено разом із сегментами, а батько тримає min-ставки
+  if (w && row.factoryId != null && CASH_BONUS_FACTORY_IDS.has(row.factoryId)) {
+    const stud26U = !!(row.isStudent && row.under26);
+    const bonusU = stud26U ? 0 : factoryBonusPerHour(w, row.factoryId, row.periodMonth, row.hours);
+    if (bonusU > 0) merged.extras.facBonus = bonusU; else delete merged.extras.facBonus;
+  }
   const payout = computePayout(merged, row.city as any);
   if (payout != null) merged.doWyplaty = payout;
   if (merged.hours != null && merged.rateBrutto != null) merged.brutto = rnd2(merged.hours * merged.rateBrutto);
-  let w: typeof workersTable.$inferSelect | undefined;
-  if (row.workerId != null) [w] = await db.select().from(workersTable).where(eq(workersTable.id, row.workerId));
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
       profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
+      factoryId: row.factoryId,
       payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
   }
   await db.update(svodniRowsTable).set({
-    doWyplaty: merged.doWyplaty, brutto: merged.brutto,
+    doWyplaty: merged.doWyplaty, brutto: merged.brutto, extras: merged.extras,
     hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
     ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
     manual: true, mismatch: null,
@@ -707,7 +724,7 @@ async function syncWorkerProfile(workerId: number, field: string, merged: any) {
 // рядки-сегменти — свої години/ставки/base. Порізка годин — по датах явок;
 // рапортна сума ділиться пропорційно явкам у вікнах (без явок — по днях).
 type SegRow = typeof svodniRowsTable.$inferSelect;
-type SegState = { rateNetto: number | null; rateBrutto: number | null; section: string | null; isStudent: boolean | null; under26: boolean | null; label: string | null; legal: string | null };
+type SegState = { rateNetto: number | null; rateBrutto: number | null; section: string | null; isStudent: boolean | null; under26: boolean | null; label: string | null; legal: string | null; facBonus: number | null };
 
 function windowsBetween(month: string, boundaries: string[]): { from: string; to: string }[] {
   const start = `${month}-01`, end = monthEndStr(month);
@@ -789,7 +806,10 @@ async function planSegments(
   const same = (a: SegState, b: SegState) =>
     a.rateNetto === b.rateNetto && a.rateBrutto === b.rateBrutto && a.section === b.section
     && a.isStudent === b.isStudent && a.under26 === b.under26
-    && sameLegal(a.legal, b.legal) && (a.label ?? null) === (b.label ?? null);
+    && sameLegal(a.legal, b.legal) && (a.label ?? null) === (b.label ?? null)
+    // однакова ставка може складатися з різних бонусів (25.35+1 vs 26.35+0) —
+    // готівкова частина різна, такі вікна не зшиваємо
+    && (a.facBonus ?? null) === (b.facBonus ?? null);
   const mWindows: { from: string; to: string }[] = [];
   const mParts: (SegState & { hours: number; manualHours?: boolean })[] = [];
   windows.forEach((wn, i) => {
@@ -818,14 +838,20 @@ function oldStateAt(parent: SegRow, existingSegs: SegRow[], oldProfileLegal: str
     const legal = seg && raw !== undefined
       ? (raw || null) // "" = явно без статусу
       : legalStatusOf(String((parent.extras as any)?.zusStatus ?? "")) ?? oldProfileLegal;
-    return { rateNetto: src.rateNetto, rateBrutto: src.rateBrutto, section: src.section, isStudent: src.isStudent, under26: src.under26, label: seg?.segmentLabel ?? null, legal: legal ?? null };
+    const fbRaw = (src.extras as any)?.facBonus;
+    return {
+      rateNetto: src.rateNetto, rateBrutto: src.rateBrutto, section: src.section,
+      isStudent: src.isStudent, under26: src.under26, label: seg?.segmentLabel ?? null, legal: legal ?? null,
+      facBonus: typeof fbRaw === "number" ? fbRaw : null,
+    };
   };
 }
 
 // вхід computeSegmented з батьківського рядка БД
 function segParentInput(row: SegRow) {
   return {
-    city: row.city, factoryLabel: row.factoryLabel, firm: row.firm, hoursNotified: row.hoursNotified,
+    city: row.city, factoryLabel: row.factoryLabel, firm: row.firm, factoryId: row.factoryId,
+    hoursNotified: row.hoursNotified,
     premia: row.premia, zaliczka: row.zaliczka, zaliczkaBd: row.zaliczkaBd, hostel: row.hostel,
     odziez: row.odziez, dojazd: row.dojazd, kara: row.kara, komornik: row.komornik,
     kaucja: row.kaucja, potracenia: row.potracenia,
@@ -844,6 +870,16 @@ async function recomputeSegmentedParent(parentId: number): Promise<void> {
   if (!segs.length) return;
   let w: typeof workersTable.$inferSelect | undefined;
   if (parent.workerId != null) [w] = await db.select().from(workersTable).where(eq(workersTable.id, parent.workerId));
+  // вшитий бонус сегмента: збережений у extras; легасі-сегменти без нього —
+  // від поточного профілю (160-годинний гейт стажу — від місячної суми годин)
+  const monthHours = Math.round(segs.reduce((a, s) => a + (s.hours ?? 0), 0) * 100) / 100;
+  const segFacBonus = (s: SegRow): number | null => {
+    const raw = (s.extras as any)?.facBonus;
+    if (typeof raw === "number") return raw;
+    if (!w || parent.factoryId == null || !CASH_BONUS_FACTORY_IDS.has(parent.factoryId)) return null;
+    const stud26 = !!(s.isStudent && s.under26);
+    return stud26 ? 0 : factoryBonusPerHour(w, parent.factoryId, parent.periodMonth, monthHours);
+  };
   const calc = computeSegmented(
     segParentInput(parent),
     segs.map((s): SegmentCalcIn => {
@@ -853,6 +889,7 @@ async function recomputeSegmentedParent(parentId: number): Promise<void> {
         isStudent: s.isStudent, under26: s.under26,
         // "" = явно без статусу; відсутній ключ (старі рядки) — поточний профіль
         legal: raw !== undefined ? (raw || null) : (w?.legalStatus ?? null),
+        facBonus: segFacBonus(s),
       };
     }),
     w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
@@ -899,8 +936,13 @@ async function writeSegments(parent: SegRow, plan: NonNullable<Awaited<ReturnTyp
       hours: p.hours, rateNetto: p.rateNetto, rateBrutto: p.rateBrutto,
       isStudent: p.isStudent, under26: p.under26,
       // segLegal завжди явний: "" = «без статусу» (не плутати з відсутнім,
-      // який означав би «взяти поточний профіль»); manualHours — «липкі» години
-      extras: { segLegal: p.legal ?? "", ...(p.manualHours ? { manualHours: true } : {}) },
+      // який означав би «взяти поточний профіль»); manualHours — «липкі» години;
+      // facBonus — вшитий бонус СВОГО вікна (завжди готівковий)
+      extras: {
+        segLegal: p.legal ?? "",
+        ...(p.manualHours ? { manualHours: true } : {}),
+        ...(p.facBonus != null && p.facBonus > 0 ? { facBonus: p.facBonus } : {}),
+      },
       hr: {}, sheetValues: {}, mismatch: null,
       segmentOf: parent.id, segmentFrom: win.from, segmentTo: win.to, segmentLabel: p.label,
     });
@@ -999,10 +1041,15 @@ function rowSetFromProfile(
     if (changed.has("hourlyRate")) merged.rateBrutto = w.hourlyRate ?? base.brutto;
     const statusTouched = changed.has("legalStatus") || changed.has("isStudent") || changed.has("birthDate");
     if (isBonusFac) {
-      // бонусні фабрики (Agram нал+стаж, LST нал): бонус поверх бази;
+      // бонусні фабрики (Agram нал+стаж, LST нал): бонус поверх бази і в
+      // extras.facBonus (розклад тримає його готівкою);
       // студент до 26 неоподаткований — нетто = брутто БЕЗ бонусів
       const b = stud26 ? (base.brutto ?? merged.rateBrutto ?? null) : (base.netto ?? KSIEG_STD_NETTO());
-      if (b != null) merged.rateNetto = r2(b + (stud26 ? 0 : factoryBonusPerHour(w, row.factoryId, row.periodMonth, row.hours)));
+      const bonus = stud26 ? 0 : factoryBonusPerHour(w, row.factoryId, row.periodMonth, row.hours);
+      if (b != null) {
+        merged.rateNetto = r2(b + bonus);
+        if (bonus > 0) merged.extras.facBonus = bonus; else delete merged.extras.facBonus;
+      }
     } else if (stud26 && statusTouched) {
       // студент до 26 неоподаткований: нетто = брутто («як є»)
       if (merged.rateBrutto ?? base.brutto) merged.rateNetto = merged.rateBrutto ?? base.brutto;
@@ -1021,6 +1068,7 @@ function rowSetFromProfile(
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
       profileLegal: (w.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
+      factoryId: row.factoryId,
       payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
   }
@@ -1131,7 +1179,11 @@ async function profileChangeContext(workerId: number, body: Record<string, unkno
         if (rateTouched) {
           if (isBonusRow) {
             const b = stud26w ? (resolved.brutto ?? st.rateBrutto ?? null) : (resolved.netto ?? KSIEG_STD_NETTO());
-            if (b != null) st.rateNetto = r2o(b + (stud26w ? 0 : factoryBonusPerHour(nextW, row.factoryId, row.periodMonth, row.hours)));
+            const bonusW = stud26w ? 0 : factoryBonusPerHour(nextW, row.factoryId, row.periodMonth, row.hours);
+            if (b != null) {
+              st.rateNetto = r2o(b + bonusW);
+              st.facBonus = bonusW > 0 ? bonusW : null;
+            }
           } else if (stud26w) {
             st.rateNetto = st.rateBrutto ?? resolved.brutto ?? st.rateNetto; // неоподаткований: нетто = брутто
           } else if ((nextW.hourlyRateNetto ?? resolved.netto) != null) {
@@ -1150,18 +1202,24 @@ async function profileChangeContext(workerId: number, body: Record<string, unkno
         const m3: any = {
           ...row, rateNetto: uniform.rateNetto, rateBrutto: uniform.rateBrutto,
           section: uniform.section ?? row.section, isStudent: uniform.isStudent, under26: uniform.under26,
+          extras: { ...(row.extras as Record<string, unknown>) },
         };
+        // вшитий бонус зшитого місяця — з єдиного вікна плану
+        if (uniform.facBonus != null && uniform.facBonus > 0) m3.extras.facBonus = uniform.facBonus;
+        else delete m3.extras.facBonus;
         const payout3 = computePayout(m3, row.city as any);
         if (payout3 != null) m3.doWyplaty = payout3;
         if (m3.hours != null && m3.rateBrutto != null) m3.brutto = Math.round(m3.hours * m3.rateBrutto * 100) / 100;
         if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
           applyLegalDefaults(m3, true, {
             profileLegal: (uniform.legal ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
+            factoryId: row.factoryId,
             payoutPref: nextW.payoutPrefKind ? { kind: nextW.payoutPrefKind as any, value: nextW.payoutPrefValue ?? null } : null,
           });
         }
         const uSet: Record<string, unknown> = {};
         const uDiffs: RowDiff[] = [];
+        if (JSON.stringify(m3.extras) !== JSON.stringify(row.extras)) uSet.extras = m3.extras;
         for (const k of ["rateBrutto", "rateNetto", "isStudent", "under26", "section", "doWyplaty", "brutto", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           uSet[k] = m3[k] ?? null;
           const nv = typeof m3[k] === "number" ? Math.round(m3[k] * 100) / 100 : m3[k] ?? null;
@@ -1178,7 +1236,7 @@ async function profileChangeContext(workerId: number, body: Record<string, unkno
           segParentInput(row),
           plan.parts.map((p): SegmentCalcIn => ({
             hours: p.hours, rateNetto: p.rateNetto, rateBrutto: p.rateBrutto,
-            isStudent: p.isStudent, under26: p.under26, legal: p.legal,
+            isStudent: p.isStudent, under26: p.under26, legal: p.legal, facBonus: p.facBonus,
           })),
           nextW.payoutPrefKind ? { kind: nextW.payoutPrefKind as any, value: nextW.payoutPrefValue ?? null } : null,
         );
@@ -1431,7 +1489,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
           profileLegal = pw?.ls ?? null;
           payoutPref = pw?.pk ? { kind: pw.pk as any, value: pw.pv ?? null } : null;
         }
-        applyLegalDefaults(mergedZ, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        applyLegalDefaults(mergedZ, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
         for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           if (mergedZ[k] !== row[k]) set[k] = mergedZ[k];
         }
@@ -1487,7 +1545,7 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
       profileLegal = pw?.ls ?? null;
       payoutPref = pw?.pk ? { kind: pw.pk as any, value: pw.pv ?? null } : null;
     }
-    applyLegalDefaults(merged, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+    applyLegalDefaults(merged, true, { profileLegal: profileLegal as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
     for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
       if (merged[k] !== row[k]) set[k] = merged[k];
     }
@@ -1747,6 +1805,50 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   let created = 0, updated = 0, skippedNoRate = 0;
   // самозвірка після запису: що передали ↔ що реально лежить у сводній
   const expectedRows: { workerId: number; label: string; hours: number; name: string }[] = [];
+
+  // 4) борги минулого місяця: рядок M−1 з мінусовою виплатою (зняли більше, ніж
+  // зароблено) авто-переноситься В ТУ Ж колонку рядка M цієї пари — «черга
+  // знять» DEBT_DEDUCTION_ORDER (недознятими вважаються останні). Повторний
+  // прогін ідемпотентний: старий debtIn спершу віднімається, борг перечитується
+  // з актуального рядка M−1. Джерело не змінюється (тільки маркер debtOut).
+  const prevMonth = m! === 1 ? `${y! - 1}-12` : `${y}-${String(m! - 1).padStart(2, "0")}`;
+  const prevDebtRows = await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, prevMonth), isNull(svodniRowsTable.segmentOf),
+    sql`(${svodniRowsTable.doWyplaty} < 0 or jsonb_exists(${svodniRowsTable.extras}, 'debtOut'))`,
+  ));
+  const debtByPair = new Map<string, { row: typeof prevDebtRows[number]; carry: Record<string, number> | null; total: number }>();
+  for (const prow of prevDebtRows) {
+    if (prow.workerId == null || prow.factoryId == null) continue;
+    const carry = debtCarryFromRow(prow as any, prow.city);
+    const total = carry ? r2(Object.values(carry).reduce((a, b) => a + b, 0)) : 0;
+    debtByPair.set(key2(prow.workerId, prow.factoryId), { row: prow, carry, total });
+  }
+  const debtCarried: { name: string; factoryLabel: string; amount: number }[] = [];
+  const debtSettled = new Set<string>(); // пари, чий борг цим прогоном перенесено/знято в цілі
+  // застосувати борг до колонок цілі: fresh-колонки (свіжі системні значення —
+  // аванси/хостел) старого боргу не містять, тож віднімається він лише з решти
+  const applyDebtCols = (
+    cols: Record<string, number | null>, extrasObj: Record<string, unknown>,
+    carry: Record<string, number> | null, fresh: Set<string>,
+  ) => {
+    const old = ((extrasObj.debtIn as { cols?: Record<string, number> } | undefined)?.cols) ?? {};
+    for (const k of new Set([...Object.keys(old), ...Object.keys(carry ?? {})])) {
+      const oldV = fresh.has(k) ? 0 : typeof old[k] === "number" ? old[k]! : 0;
+      const newV = carry?.[k] ?? 0;
+      if (k.startsWith("extras.")) {
+        const ek = k.slice(7);
+        const cur = typeof extrasObj[ek] === "number" ? (extrasObj[ek] as number) : 0;
+        const next = r2(cur - oldV + newV);
+        if (next !== 0) extrasObj[ek] = next; else delete extrasObj[ek];
+      } else {
+        const cur = typeof cols[k] === "number" ? (cols[k] as number) : 0;
+        const next = r2(cur - oldV + newV);
+        cols[k] = next !== 0 ? next : null;
+      }
+    }
+    if (carry) extrasObj.debtIn = { from: prevMonth, cols: carry };
+    else delete extrasObj.debtIn;
+  };
   for (const pair of hoursByPair.values()) {
     const w = wById.get(pair.workerId);
     if (!w) continue;
@@ -1823,6 +1925,12 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     if (prev && prev.factoryLabel !== factoryLabel && isLocked(locks, city, prev.factoryLabel)) { skippedLocked++; continue; }
     // самозвірка читає рядок під його фактичним label (вкладка не «переїжджає»)
     expectedRows.push({ workerId: pair.workerId, label: prev?.factoryLabel ?? factoryLabel, hours: r2(pair.hours), name: w.fullName });
+    // борг цієї пари з минулого місяця (мінусова виплата M−1)
+    const debtSrc = debtByPair.get(key2(pair.workerId, pair.factoryId));
+    const markDebt = () => {
+      debtSettled.add(key2(pair.workerId, pair.factoryId));
+      if (debtSrc?.carry) debtCarried.push({ name: w.fullName, factoryLabel, amount: debtSrc.total });
+    };
     if (prev) {
       // порізаний на сегменти рядок: нові сумарні години розкладаються по тих
       // самих межах (пропорційно явкам у вікнах), ставки сегментів не чіпаються
@@ -1850,12 +1958,23 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         }
         const zalS = zalForPair(pair);
         const hosS = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
-        await db.update(svodniRowsTable).set({
+        // борг M−1 — місячний ввід на батькові (перерозкладе сегментний двигун)
+        const segCols: Record<string, number | null> = {
           zaliczka: zalS != null ? r2(zalS) : prev.zaliczka,
+          zaliczkaBd: prev.zaliczkaBd,
           hostel: hosS != null ? r2(hosS) : prev.hostel,
+          odziez: prev.odziez, dojazd: prev.dojazd, kara: prev.kara,
+          komornik: prev.komornik, kaucja: prev.kaucja, potracenia: prev.potracenia,
+        };
+        const segExtras = { ...(prev.extras as Record<string, unknown>) };
+        applyDebtCols(segCols, segExtras, debtSrc?.carry ?? null,
+          new Set([...(zalS != null ? ["zaliczka"] : []), ...(hosS != null ? ["hostel"] : [])]));
+        await db.update(svodniRowsTable).set({
+          ...segCols, extras: segExtras,
           ...(fac?.multiFirm ? { firm: rowFirm } : {}),
         }).where(eq(svodniRowsTable.id, prev.id));
         await recomputeSegmentedParent(prev.id);
+        if (debtSrc) markDebt();
         updated++;
         continue;
       }
@@ -1871,33 +1990,53 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         if (ec.nocneH != null) { mergedExtras.nocneH = ec.nocneH; mergedExtras.doplataNocna = ec.doplataNocna; }
         else { delete mergedExtras.nocneH; delete mergedExtras.doplataNocna; }
       }
+      // бонусна фабрика: вшитий бонус синхронно зі свіжоперечитаною ставкою
+      if (isBonusFac) {
+        if (bonus > 0) mergedExtras.facBonus = bonus; else delete mergedExtras.facBonus;
+      }
+      // борг M−1 в ті ж колонки: свіжі системні значення (аванси/хостел,
+      // Eurocash-потроненя) старого боргу не містять — віднімається він з решти
+      const debtCols: Record<string, number | null> = {
+        zaliczka: zal != null ? r2(zal) : prev.zaliczka,
+        zaliczkaBd: prev.zaliczkaBd,
+        hostel: hos != null ? r2(hos) : prev.hostel,
+        odziez: prev.odziez, dojazd: prev.dojazd, kara: prev.kara,
+        komornik: prev.komornik, kaucja: prev.kaucja,
+        potracenia: ec ? ec.potracenia : prev.potracenia,
+      };
+      const debtTouched = !!debtSrc?.carry || (prev.extras as any)?.debtIn != null;
+      applyDebtCols(debtCols, mergedExtras as Record<string, unknown>, debtSrc?.carry ?? null,
+        new Set([...(zal != null ? ["zaliczka"] : []), ...(hos != null ? ["hostel"] : []), ...(ec ? ["potracenia"] : [])]));
       const merged: any = {
         ...prev, hours: r2(pair.hours),
         firm: fac?.multiFirm ? rowFirm : prev.firm,
         rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() ?? prev.rateNetto : prev.rateNetto,
         rateBrutto: ec ? ec.rateBrutto : prev.rateBrutto,
-        potracenia: ec ? ec.potracenia : prev.potracenia,
         extras: mergedExtras,
-        zaliczka: zal != null ? r2(zal) : prev.zaliczka,
-        hostel: hos != null ? r2(hos) : prev.hostel,
+        ...debtCols,
       };
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: merged.firm });
+      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: merged.firm, factoryId: pair.factoryId });
       const unregU = isUnregistered(w, r2(pair.hours));
       if (unregU) merged.extras = { ...merged.extras, zusStatus: "не оформлений" };
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
         firm: merged.firm,
-        ...(ec || unregU ? { extras: merged.extras } : {}),
+        ...(ec || unregU || isBonusFac || debtTouched ? { extras: merged.extras } : {}),
         ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia } : {}),
+        ...(debtTouched ? {
+          zaliczkaBd: merged.zaliczkaBd, odziez: merged.odziez, dojazd: merged.dojazd,
+          kara: merged.kara, komornik: merged.komornik, kaucja: merged.kaucja, potracenia: merged.potracenia,
+        } : {}),
         doWyplaty: merged.doWyplaty, brutto: merged.brutto,
         hoursDeclared: merged.hoursDeclared, ksiegBrutto: merged.ksiegBrutto,
         ksiegNetto: merged.ksiegNetto, konto: merged.konto, gotowka: merged.gotowka,
         section: section ?? prev.section,
         manual: true, mismatch: null,
       }).where(eq(svodniRowsTable.id, prev.id));
+      if (debtSrc) markDebt();
       updated++;
       continue;
     }
@@ -1917,17 +2056,55 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       zaliczka: zalForPair(pair) != null ? r2(zalForPair(pair)!) : null,
       hostel: isMainPair(pair) && hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
-      extras: ec && ec.nocneH != null ? { nocneH: ec.nocneH, doplataNocna: ec.doplataNocna } : {},
+      extras: {
+        ...(ec && ec.nocneH != null ? { nocneH: ec.nocneH, doplataNocna: ec.doplataNocna } : {}),
+        // вшитий бонус (Agram/LST) — розклад тримає його готівкою
+        ...(bonus > 0 ? { facBonus: bonus } : {}),
+      },
       hr, sheetValues: {}, mismatch: null,
       doWyplaty: null, brutto: null,
     };
     if (row.rateNetto == null) skippedNoRate++;
+    // борг M−1 — у ті ж колонки нового рядка
+    if (debtSrc?.carry) {
+      for (const [k, v] of Object.entries(debtSrc.carry)) {
+        if (k.startsWith("extras.")) {
+          const ek = k.slice(7);
+          row.extras[ek] = r2((typeof row.extras[ek] === "number" ? row.extras[ek] : 0) + v);
+        } else row[k] = r2((row[k] ?? 0) + v);
+      }
+      row.extras.debtIn = { from: prevMonth, cols: debtSrc.carry };
+    }
     row.doWyplaty = computePayout(row, city as any);
     if (row.hours != null && row.rateBrutto != null) row.brutto = r2(row.hours * row.rateBrutto);
-    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: rowFirm });
+    applyLegalDefaults(row, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: rowFirm, factoryId: pair.factoryId });
     if (isUnregistered(w, r2(pair.hours))) row.extras = { ...row.extras, zusStatus: "не оформлений" };
     await db.insert(svodniRowsTable).values(row);
+    if (debtSrc) markDebt();
     created++;
+  }
+  // Маркери на джерелах боргу (M−1, best-effort: залочені не чіпаємо) + звіт
+  // про борги в скоупі прогону, які перенести не вдалося (нема рядка пари в M)
+  const prevLocks = await monthLocks(prevMonth);
+  const debtUnmatched: { name: string; factoryLabel: string; amount: number }[] = [];
+  for (const [k, d] of debtByPair) {
+    const inScope = (onlyFactoryId == null || d.row.factoryId === onlyFactoryId)
+      && (!onlyCity || d.row.city === onlyCity)
+      && (!onlyWorkerIds || onlyWorkerIds.has(d.row.workerId!));
+    if (!inScope) continue;
+    const settled = debtSettled.has(k);
+    if (!settled && d.carry) debtUnmatched.push({ name: d.row.rawName, factoryLabel: d.row.factoryLabel, amount: d.total });
+    if (isLocked(prevLocks, d.row.city, d.row.factoryLabel)) continue;
+    const ex = { ...(d.row.extras as Record<string, unknown>) };
+    const curOut = ex.debtOut as { to?: string; amount?: number } | undefined;
+    if (settled && d.carry) {
+      if (curOut?.to === month && curOut?.amount === d.total) continue;
+      ex.debtOut = { to: month, amount: d.total };
+    } else if (!d.carry) {
+      if (curOut === undefined) continue; // мінус зник — прибираємо застарілий маркер
+      delete ex.debtOut;
+    } else continue; // борг є, але не перенесено цим прогоном — маркер не чіпаємо
+    await db.update(svodniRowsTable).set({ extras: ex }).where(eq(svodniRowsTable.id, d.row.id));
   }
   // Самозвірка: перечитуємо сводну і порівнюємо години кожної пари з тим, що
   // реально записалось (батьківські рядки, сегменти вже перераховані в суму).
@@ -1947,7 +2124,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
   ok(res, {
     month, created, updated, workers: workerIds.length, noNettoRate: skippedNoRate, skippedLocked, noCity: [...noCity],
-    verified: expectedRows.length, verifyMismatches, eurocashUnmatched,
+    verified: expectedRows.length, verifyMismatches, eurocashUnmatched, debtCarried, debtUnmatched,
   });
 });
 
@@ -2109,7 +2286,9 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
     }) : undefined;
     if (!row) { unmatched.push({ workerName: w?.fullName ?? null, factoryLabel: label || null, amount: pair.amount }); continue; }
     if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
-    const amount = pair.amount !== 0 ? pair.amount : null;
+    // перенесений з M−1 борг у Dojazd (extras.debtIn) — не затирається авто-переносом
+    const dojazdDebt = typeof (row.extras as any)?.debtIn?.cols?.dojazd === "number" ? (row.extras as any).debtIn.cols.dojazd as number : 0;
+    const amount = pair.amount + dojazdDebt !== 0 ? r2(pair.amount + dojazdDebt) : null;
 
     // порізаний на сегменти рядок: Dojazd — місячний ввід на батькові,
     // гроші перерозкладе сегментний двигун
@@ -2132,7 +2311,7 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
     if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
     if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
       const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
-      applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+      applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
       for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
         if (merged[k] !== row[k]) set[k] = merged[k];
       }
@@ -2203,7 +2382,9 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
     const row = mine.sort((a, b) => (b.hours ?? 0) - (a.hours ?? 0))[0];
     if (!row) { unmatched.push({ workerName: w?.fullName ?? null, amount: agg.amount }); continue; }
     if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
-    const amount = agg.amount !== 0 ? agg.amount : null;
+    // перенесений з M−1 борг в Odzież (extras.debtIn) — не затирається авто-переносом
+    const odziezDebt = typeof (row.extras as any)?.debtIn?.cols?.odziez === "number" ? (row.extras as any).debtIn.cols.odziez as number : 0;
+    const amount = agg.amount + odziezDebt !== 0 ? r2(agg.amount + odziezDebt) : null;
 
     // порізаний на сегменти рядок: Odzież — місячний ввід на батькові
     const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
@@ -2221,7 +2402,7 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
       if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
       if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
         const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
-        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
         for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           if (merged[k] !== row[k]) set[k] = merged[k];
         }
@@ -2317,7 +2498,7 @@ router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req
       if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
       if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
         const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
-        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
         for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           if (merged[k] !== row[k]) set[k] = merged[k];
         }
@@ -2398,7 +2579,7 @@ router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: 
       if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
       if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
         const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
-        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm });
+        applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
         for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           if (merged[k] !== row[k]) set[k] = merged[k];
         }
@@ -2540,10 +2721,13 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
         for (const r of people) ws.addRow([lp++, ...cols.map(c => c.get(r) ?? "")]);
       }
     }
-    // сумарний рядок по числових колонках
+    // сумарний рядок по числових колонках; мінусова виплата — борг людини
+    // (переноситься в наступний місяць), виплатні колонки Razem не зменшує
+    const XLS_POS_ONLY = new Set(["doWyplaty", "gotowka", "konto", "ksiegNetto"]);
     const sums = cols.map(c => list.reduce((a, r) => {
       const v = c.get(r);
-      return typeof v === "number" ? a + v : a;
+      if (typeof v !== "number") return a;
+      return a + (XLS_POS_ONLY.has(c.key) ? Math.max(0, v) : v);
     }, 0));
     const totalRow = ws.addRow(["", ...cols.map((c, i) => ["name", "section", "legalStatus", "kontoNr", "rateBrutto", "rateNetto"].includes(c.key) ? "" : Math.round(sums[i]! * 100) / 100)]);
     totalRow.font = { bold: true };
@@ -2554,6 +2738,44 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
   const namePart = factory ?? city ?? "wszystkie";
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Zestawienie ${namePart} ${month}.xlsx`)}"`);
+  res.send(Buffer.from(buffer));
+});
+
+// Експорт для Gratyfikant nexo PRO: XLSX під вбудований імпорт «Naliczenia
+// i potrącenia» (Laboratorium → Eksport/import danych) — одна фірма
+// (підмiot nexo) за раз. Їде лише księg. brutto (закритий шар) → гейт
+// svodniSensitive; формат і рішення — services/gratyfikantExport.ts.
+router.get("/svodni/gratyfikant", requireCap("svodniSensitive"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.query.month) ? String(req.query.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const firm = String(req.query.firm ?? "").trim();
+  if (!firm) return fail(res, 400, "firm required");
+  const factory = String(req.query.factory ?? "").trim() || null;
+  const now = new Date();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date ?? ""))
+    ? String(req.query.date)
+    : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+  const rows: Record<string, unknown>[] = await db.select({
+    rawName: svodniRowsTable.rawName, factoryLabel: svodniRowsTable.factoryLabel,
+    factoryId: svodniRowsTable.factoryId, firm: svodniRowsTable.firm,
+    ksiegBrutto: svodniRowsTable.ksiegBrutto, segmentOf: svodniRowsTable.segmentOf,
+  }).from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  await enrichFirms(rows);
+  const records = gratyfikantRecords(rows as GratyfikantSource[], { firm, date, factoryLabel: factory });
+  if (!records.length) return fail(res, 404, "немає рядків за вибором");
+
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Arkusz1");
+  ws.addRow(["Pracownik", "Data", "Rodzaj", "Składnik płacowy", "Wartość"]).font = { bold: true };
+  for (const r of records) ws.addRow([r.pracownik, new Date(r.data + "T00:00:00"), r.rodzaj, r.skladnik, r.wartosc]);
+  ws.getColumn(2).numFmt = "yyyy-mm-dd";
+  ws.columns.forEach((col, i) => { col.width = i === 0 || i === 3 ? 28 : 14; });
+  const buffer = await wb.xlsx.writeBuffer();
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Naliczenia ${firm}${factory ? ` ${factory}` : ""} ${month}.xlsx`)}"`);
   res.send(Buffer.from(buffer));
 });
 

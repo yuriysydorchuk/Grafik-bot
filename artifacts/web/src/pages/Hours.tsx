@@ -173,7 +173,7 @@ export default function Hours() {
   const [svodniSource, setSvodniSource] = useState<"reports" | "factory" | "attendance">("reports");
   const toSvodni = useMutation({
     mutationFn: (v: { factoryId?: number; city?: string; source: string; workerIds?: number[] }) =>
-      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[]; verified: number; verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[]; eurocashUnmatched?: { name: string; reason: string }[] }>("/svodni/from-hours", { month, ...v }),
+      post<{ created: number; updated: number; workers: number; noNettoRate: number; skippedLocked: number; noCity: string[]; verified: number; verifyMismatches: { name: string; label: string; expected: number; actual: number | null }[]; eurocashUnmatched?: { name: string; reason: string }[]; debtCarried?: { name: string; factoryLabel: string; amount: number }[]; debtUnmatched?: { name: string; factoryLabel: string; amount: number }[] }>("/svodni/from-hours", { month, ...v }),
     onSuccess: (r) => {
       // самозвірка бекенду: передані години ↔ що реально видно в сводній
       if (r.verifyMismatches?.length) {
@@ -189,9 +189,18 @@ export default function Hours() {
           list: r.eurocashUnmatched.slice(0, 5).map(m => `${m.name} — ${m.reason}`).join("; "),
         }));
       }
+      // борги минулого місяця (мінусові виплати), які не вдалося перенести
+      if (r.debtUnmatched?.length) {
+        toast.warning(t("⚠️ Борг минулого місяця не перенесено ({n}): {list}", {
+          n: r.debtUnmatched.length,
+          list: r.debtUnmatched.slice(0, 5).map(m => `${m.name} ${m.amount} zł (${m.factoryLabel})`).join("; "),
+        }));
+      }
+      const debtSum = (r.debtCarried ?? []).reduce((a, d) => a + d.amount, 0);
       toast.success(t("Сводна {month}: створено {c}, оновлено {u}", { month, c: r.created, u: r.updated }), {
         description: [
           r.verified && !r.verifyMismatches?.length ? t("Перевірка: {n} рядків — години в сводній збігаються", { n: r.verified }) : null,
+          r.debtCarried?.length ? t("Перенесено боргів з минулого місяця: {n} (разом {sum} zł)", { n: r.debtCarried.length, sum: Math.round(debtSum * 100) / 100 }) : null,
           r.noNettoRate ? t("Без ставки нетто (виплата не порахована): {n} — заповни в профілі чи сводній", { n: r.noNettoRate }) : null,
           r.skippedLocked ? t("Пропущено затверджених фабрик: {n}", { n: r.skippedLocked }) : null,
           r.noCity?.length ? t("Місто фабрики невідоме (пропущено): {list} — фабрика ще не зустрічалась ні в сводних, ні в Зарплатах", { list: r.noCity.join(", ") }) : null,

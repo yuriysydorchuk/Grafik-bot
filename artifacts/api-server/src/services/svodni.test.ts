@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka, computeMismatch, parseOfficeTab,
-  legalStatusOf, applyLegalDefaults, computePayout, agramBonusPerHour, monthsBetween, monthEndStr,
-  segmentsBase, splitTotalByWindows, computeSegmented,
+  legalStatusOf, applyLegalDefaults, computePayout, agramBonusPerHour, monthsBetween, monthEndStr, ksiegRatesOf,
+  segmentsBase, splitTotalByWindows, computeSegmented, debtCarryFromRow,
   eurocashRatesFromBlock, eurocashBracketIndex,
 } from "./svodni.ts";
 
@@ -528,7 +528,8 @@ test("Premia ES (бонус/год): входить у виплату, конт�
   assert.equal(p.ksiegNetto, 3447.6, "конто = 136 × 25,35 (без бонусу)");
   near(p.gotowka, 204, "бонус 136 × 1,5 — готівкою");
   near(p.ksiegBrutto, 3447.6 / 25.35 * 31.4, "księg. brutto = konto ÷ нетто × брутто");
-  // «все на конто» з премією: brutto теж від конто, не від фактичних годин
+  // без factoryId (легасі-рядок поза Agram-правилом): «все на конто» разом із
+  // премією, brutto теж від конто, не від фактичних годин
   const k = parseLublinTab("AGRAM", [
     [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Premia Agram", "Do wypłaty Netto", "Księgowość"],
     ["Z PREMIA ADAM", "", 80, 31.4, 25.35, 100, 80 * 25.35 + 100, "Zgłoszony, Decyzja Karty Pobytu"],
@@ -536,6 +537,123 @@ test("Premia ES (бонус/год): входить у виплату, конт�
   applyLegalDefaults(k, true, { factoryLabel: "AGRAM" });
   assert.equal(k.konto, 2128, "все на конто разом із премією");
   near(k.ksiegBrutto, 2128 / 25.35 * 31.4, "brutto від конто (83,94 год × 31,4), не 80 × 31,4");
+});
+
+// ── Премія Agram (колонка Premia) — завжди готівкою; на конто лише студентам до 26
+test("премія Agram (factoryId 12/13): готівкою в усіх гілках, студенту до 26 — на конто", () => {
+  const mk = () => parseLublinTab("AGRAM LUBLIN", [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Premia Agram", "Do wypłaty Netto", "Księgowość"],
+    ["PREMIOWY ADAM", "", 80, 31.4, 25.35, 100, 80 * 25.35 + 100, "Zgłoszony, Decyzja Karty Pobytu"],
+  ])!.rows[0]!;
+  // оформлений без oświadczenia: конто = год × ставка, премія готівкою
+  const a = mk();
+  applyLegalDefaults(a, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13 });
+  assert.equal(a.konto, 2028, "конто = 80 × 25,35 — без премії");
+  assert.equal(a.gotowka, 100, "премія — готівкою");
+  near(a.hoursDeclared!, 80);
+  // побажання «все на конто» премію на карту не тягне
+  const b = mk();
+  applyLegalDefaults(b, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13, payoutPref: { kind: "all_konto", value: null } });
+  assert.equal(b.konto, 2028);
+  assert.equal(b.gotowka, 100);
+  // ручна сума понад належне — теж ріжеться премією
+  const c = mk();
+  applyLegalDefaults(c, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13, payoutPref: { kind: "amount", value: 5000 } });
+  assert.equal(c.konto, 2028);
+  // з oświadczeniem: конто по годинах повідомлення, премія в готівковій решті
+  const o = mk();
+  o.hoursNotified = 40;
+  (o.extras as Record<string, unknown>).zusStatus = "Zgłoszony, Powiadomienie, Wyżej 26";
+  applyLegalDefaults(o, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13 });
+  assert.equal(o.konto, 1014, "40 × 25,35");
+  assert.equal(o.gotowka, 1114, "решта з премією — готівкою");
+  // студент до 26 — виняток: премія разом з усім на конто
+  const st = mk();
+  st.isStudent = true; st.under26 = true; st.rateNetto = 31.4; st.rateBrutto = 31.4;
+  st.doWyplaty = computePayout(st, "Люблін");
+  applyLegalDefaults(st, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13 });
+  assert.equal(st.konto, st.doWyplaty, "студент: усе, включно з премією, на конто");
+  assert.equal(st.gotowka, 0);
+});
+
+// ── Вшитий бонус ставки (extras.facBonus) — завжди готівкою ──────────────────
+test("facBonus: не протікає в конто при базі нижче 25,35 і при «все на конто»", () => {
+  // база 24 (нижча за стандартну) + бонус 1,5 → ставка рядка 25,5:
+  // старий кламп min(25,5; 25,35) декларував би 25,35 — частину бонусу в конто
+  const mk = () => {
+    const p = parseLublinTab("AGRAM LUBLIN", [
+      [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+      ["BAZOWY NISKI", 100, 100, 30, 25.5, 100 * 25.5, "Zgłoszony, Powiadomienie, Wyżej 26"],
+    ])!.rows[0]!;
+    p.extras.facBonus = 1.5;
+    return p;
+  };
+  const a = mk();
+  applyLegalDefaults(a, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13 });
+  assert.equal(a.konto, 2400, "100 год × база 24 (без бонусу)");
+  assert.equal(a.gotowka, 150, "бонус 100 × 1,5 — готівкою");
+  // «все на конто»: стеля конто = все мінус бонус
+  const b = mk();
+  applyLegalDefaults(b, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13, payoutPref: { kind: "all_konto", value: null } });
+  assert.equal(b.konto, 2400);
+  assert.equal(b.gotowka, 150);
+  // оформлений без oświadczenia: бонусна ставка веде в декларовану гілку по базі
+  const c = mk();
+  c.hoursNotified = null;
+  (c.extras as Record<string, unknown>).zusStatus = "Zgłoszony, Decyzja Karty Pobytu";
+  applyLegalDefaults(c, true, { factoryLabel: "AGRAM LUBLIN", factoryId: 13 });
+  assert.equal(c.konto, 2400);
+  assert.equal(c.gotowka, 150);
+});
+
+test("ksiegRatesOf: facBonus віднімається ДО клампу — бонусна нетто вище брутто не «студентська»", () => {
+  // старший студент (wyżej 26) на бонусній фабриці: 25,35 + 1,5 = 26,85 нетто
+  // при брутто 26,35 — стара перевірка брутто ≤ нетто хибно бачила неоподатковану
+  // пару і декларувала 26,85 (бонус у конто)
+  const kr = ksiegRatesOf({ rateNetto: 26.85, rateBrutto: 26.35, isStudent: true, extras: { facBonus: 1.5 } }, null);
+  assert.equal(kr.netto, 25.35, "26,85 − 1,5 = 25,35 — стандартний кламп");
+  // справжня неоподаткована студентська пара (без бонусу) — як і була, «як є»
+  const pure = ksiegRatesOf({ rateNetto: 26.35, rateBrutto: 26.35, isStudent: true, extras: {} }, null);
+  assert.equal(pure.netto, 26.35);
+});
+
+// ── Перенесення боргу (мінусова виплата) в наступний місяць ──────────────────
+test("debtCarryFromRow: борг лягає в колонки з КІНЦЯ черги знять", () => {
+  const base = {
+    doWyplaty: null as number | null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {} as Record<string, number | string>,
+  };
+  // одне зняття: аванс 800 при заробітку 500 → борг 300 в Zaliczka
+  const single = debtCarryFromRow({ ...base, doWyplaty: -300, zaliczka: 800 }, "Люблін");
+  assert.deepEqual(single, { zaliczka: 300 });
+  // кілька знять: аванс 600 + одяг 200, заробив 500 → мінус 300; одяг у черзі
+  // ПІЗНІШЕ авансу — «недознятими» вважаються останні: 200 з одягу + 100 з авансу
+  const multi = debtCarryFromRow({ ...base, doWyplaty: -300, zaliczka: 600, odziez: 200 }, "Люблін");
+  assert.deepEqual(multi, { odziez: 200, zaliczka: 100 });
+  // extras-зняття (бадання) — ще пізніше за одяг
+  const withExtra = debtCarryFromRow({ ...base, doWyplaty: -150, zaliczka: 600, extras: { badania: 100 } }, "Люблін");
+  assert.deepEqual(withExtra, { "extras.badania": 100, zaliczka: 50 });
+  // Лодзь: dojazd — доплата, не зняття — у черзі участі не бере
+  const lodz = debtCarryFromRow({ ...base, doWyplaty: -100, zaliczka: 300, dojazd: 250 }, "Лодзь");
+  assert.deepEqual(lodz, { zaliczka: 100 });
+  // без мінуса — нема чого переносити
+  assert.equal(debtCarryFromRow({ ...base, doWyplaty: 120, zaliczka: 500 }, "Люблін"), null);
+  assert.equal(debtCarryFromRow({ ...base, doWyplaty: 0, zaliczka: 500 }, "Люблін"), null);
+});
+
+test("сегменти з facBonus: «все на конто» лишає бонус готівкою на батькові", () => {
+  const parent = {
+    city: "Люблін", factoryLabel: "AGRAM LUBLIN", factoryId: 13, hoursNotified: null,
+    premia: null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {},
+  };
+  const { parent: p } = computeSegmented(parent, [
+    { hours: 60, rateNetto: 26.35, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus", facBonus: 1 },
+    { hours: 40, rateNetto: 26.85, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus", facBonus: 1.5 },
+  ], { kind: "all_konto", value: null });
+  near(p.doWyplaty!, 60 * 26.35 + 40 * 26.85);
+  near(p.gotowka!, 120, "бонус 60×1 + 40×1,5 — готівкою навіть при «все на конто»");
+  near(p.konto!, p.doWyplaty! - 120);
 });
 
 test("ставка «на руки» (netto=brutto) у НЕ-студента → księgowo стандартна пара", () => {

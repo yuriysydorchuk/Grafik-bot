@@ -299,6 +299,46 @@ test("from-hours: залічка лягає у рядок фабрики ЗАП�
   assert.equal(rowA?.zaliczka, 100, "легасі-аванс без привʼязки — у основну фабрику");
 });
 
+test("from-hours: мінусова виплата M−1 авто-переноситься в ту ж колонку M; ідемпотентно; мінус зник — борг знято", opts, async () => {
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [w] = await db.insert(workersTable).values({ fullName: "Minusowy Adam", hourlyRate: 31.4, hourlyRateNetto: 25.35, legalStatus: "zus" }).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "FAB MINUS" } as any).returning();
+  await seedPayrollRegion("FAB MINUS", "Люблін");
+  // квітень: заробив 20 × 25,35 = 507, аванс 800 → до виплати −293
+  const [apr] = await db.insert(svodniRowsTable).values({
+    periodMonth: "2026-04", city: "Люблін", factoryLabel: "FAB MINUS", factoryId: fac!.id,
+    sortIdx: 0, rawName: "Minusowy Adam", workerId: w!.id, linkStatus: "confirmed", manual: true,
+    hours: 20, rateNetto: 25.35, zaliczka: 800, doWyplaty: -293,
+    extras: {}, hr: {}, sheetValues: {},
+  } as any).returning();
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-05", factoryId: fac!.id, hoursReported: 100 });
+
+  const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.debtCarried?.length, 1, "борг у звіті перенесених");
+  const may1 = (await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.periodMonth, "2026-05")))[0]!;
+  assert.equal(may1.zaliczka, 293, "борг — у ту ж колонку (Zaliczka)");
+  assert.equal(may1.doWyplaty, 100 * 25.35 - 293);
+  assert.deepEqual((may1.extras as any).debtIn, { from: "2026-04", cols: { zaliczka: 293 } });
+  const aprAfter = (await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, apr!.id)))[0]!;
+  assert.deepEqual((aprAfter.extras as any).debtOut, { to: "2026-05", amount: 293 }, "маркер на джерелі");
+
+  // повторний прогін — не задвоює
+  await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  const may2 = (await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.periodMonth, "2026-05")))[0]!;
+  assert.equal(may2.zaliczka, 293, "ідемпотентність: борг не задвоївся");
+
+  // мінус джерела виправили → наступний прогін знімає борг і маркери
+  await db.update(svodniRowsTable).set({ zaliczka: 300, doWyplaty: 207 }).where(eq(svodniRowsTable.id, apr!.id));
+  await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
+  const may3 = (await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.periodMonth, "2026-05")))[0]!;
+  assert.equal(may3.zaliczka, null, "борг знято разом із маркером");
+  assert.equal((may3.extras as any).debtIn, undefined);
+  const apr3 = (await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, apr!.id)))[0]!;
+  assert.equal((apr3.extras as any).debtOut, undefined, "маркер джерела знято");
+});
+
 test("from-hours після перейменування фабрики оновлює стару вкладку, не плодить дублікат", opts, async () => {
   await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
   const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
