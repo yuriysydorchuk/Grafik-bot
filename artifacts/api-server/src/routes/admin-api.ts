@@ -3872,7 +3872,7 @@ router.get("/absences", RW, async (req, res) => {
   const rows = await db
     .select({
       entryId: scheduleEntriesTable.id, workerId: scheduleEntriesTable.workerId,
-      name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
+      name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name, city: factoriesTable.city,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, reason: scheduleEntriesTable.absenceReason,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
@@ -3885,7 +3885,7 @@ router.get("/absences", RW, async (req, res) => {
     .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent")));
   const absences = rows
     .map(r => ({
-      entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory,
+      entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory, city: r.city,
       date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason,
       excused: !!r.reason,
       justified: !!r.excusedFlag, // «виправдано» адміном: не рахується в кількість/штраф

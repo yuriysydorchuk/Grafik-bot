@@ -35,6 +35,15 @@ export default function Penalties() {
   const [month, setMonth] = useState(months[0]!.value);
   const [adding, setAdding] = useState(false);
   const { data, isFetching } = useQuery<Data>({ queryKey: ["penalties", month], queryFn: () => get(`/penalties?month=${month}`) });
+  // Фільтри «зверху»: місто/фабрика звужують картки, підсумки і перенесення в сводну
+  const [cityF, setCityF] = useState("");  // "" = всі міста
+  const [facF, setFacF] = useState("");    // "" = всі фабрики
+  const cities = useMemo(() =>
+    [...new Set((data?.rows ?? []).map(r => r.city).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, "pl")), [data]);
+  const factoryOpts = useMemo(() =>
+    [...new Set((data?.rows ?? []).filter(r => !cityF || r.city === cityF).map(r => r.factoryLabel).filter((f): f is string => !!f))].sort((a, b) => a.localeCompare(b, "pl")), [data, cityF]);
+  const rows = useMemo(() => (data?.rows ?? []).filter(r =>
+    (!cityF || r.city === cityF) && (!facF || r.factoryLabel === facF)), [data, cityF, facF]);
   const remove = useMutation({
     mutationFn: (id: number) => del(`/penalties/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["penalties"] }),
@@ -47,7 +56,7 @@ export default function Penalties() {
   });
 
   // ── Перенесення у Kara сводної ─────────────────────────────────────────────
-  const pending = useMemo(() => (data?.rows ?? []).filter(r => !r.deducted), [data]);
+  const pending = useMemo(() => rows.filter(r => !r.deducted), [rows]);
   const [sel, setSel] = useState<Set<number>>(new Set());
   // типово вибрані всі незняті — «перенести всі» це просто кнопка без зняття галочок
   useEffect(() => { setSel(new Set(pending.map(r => r.id))); }, [pending]);
@@ -97,15 +106,15 @@ export default function Penalties() {
   // місто → фабрика → рядки
   const groups = useMemo(() => {
     const byCity = new Map<string, Map<string, PenaltyRow[]>>();
-    for (const r of data?.rows ?? []) {
+    for (const r of rows) {
       const c = r.city ?? "—";
       const f = r.factoryLabel ?? t("Без фабрики");
       const m = byCity.get(c) ?? byCity.set(c, new Map()).get(c)!;
       (m.get(f) ?? m.set(f, []).get(f)!).push(r);
     }
     return [...byCity.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [data, t]);
-  const total = r2((data?.rows ?? []).reduce((a, r) => a + r.amount, 0));
+  }, [rows, t]);
+  const total = r2(rows.reduce((a, r) => a + r.amount, 0));
 
   return (
     <>
@@ -114,8 +123,16 @@ export default function Penalties() {
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </Select>
+        <Select value={cityF} onChange={e => { setCityF(e.target.value); setFacF(""); }} className="w-40">
+          <option value="">{t("Всі міста")}</option>
+          {cities.map(c => <option key={c} value={c}>{c}</option>)}
+        </Select>
+        <Select value={facF} onChange={e => setFacF(e.target.value)} className="w-48">
+          <option value="">{t("Всі фабрики")}</option>
+          {factoryOpts.map(f => <option key={f} value={f}>{f}</option>)}
+        </Select>
         {data && <Badge color="green">{t("Знято разом:")} {total.toFixed(2)} zł</Badge>}
-        {data && <Badge color="slate">{data.rows.length} {t("ос.")}</Badge>}
+        {data && <Badge color="slate">{rows.length} {t("ос.")}</Badge>}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {pending.length > 0 && (
             <>

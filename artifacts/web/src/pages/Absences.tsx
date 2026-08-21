@@ -13,6 +13,7 @@ import { useT, useLang } from "../lib/i18n";
 
 interface Absence {
   entryId: number; workerId: number; name: string; code: string | null; factory: string | null;
+  city: string | null;
   date: string; day: DayCode; shift: ShiftCode; reason: string | null;
   excused: boolean;             // відпросився (є причина)
   justified: boolean;           // виправдано адміном — не рахується в кількість/штраф
@@ -63,6 +64,8 @@ export default function Absences() {
   const canEdit = can(me, "editData");
   const [month, setMonth] = useState(months[0]!.value);
   const [filter, setFilter] = useState<"all" | "excused" | "noshow" | "justified">("all");
+  const [cityF, setCityF] = useState("");  // "" = всі міста
+  const [facF, setFacF] = useState("");    // "" = всі фабрики
   const { data, isFetching } = useQuery<AbsencesResp>({
     queryKey: ["absences", month], queryFn: () => get(`/absences?month=${month}`),
   });
@@ -137,12 +140,28 @@ export default function Absences() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  // Фільтри «зверху»: місто/фабрика звужують таблиці, підсумки і перенесення в сводну
+  const scoped = useMemo(() => (data?.absences ?? []).filter(a =>
+    (!cityF || a.city === cityF) && (!facF || a.factory === facF)), [data, cityF, facF]);
+  const cities = useMemo(() =>
+    [...new Set((data?.absences ?? []).map(a => a.city).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, "pl")), [data]);
+  const factoryOpts = useMemo(() =>
+    [...new Set((data?.absences ?? []).filter(a => !cityF || a.city === cityF).map(a => a.factory).filter((f): f is string => !!f))].sort((a, b) => a.localeCompare(b, "pl")), [data, cityF]);
+  // Бейджі-підсумки рахуються по відфільтрованому набору (дзеркало серверної логіки)
+  const sums = useMemo(() => {
+    const counted = scoped.filter(a => !a.justified);
+    const noShow = counted.filter(a => !a.excused).length;
+    return {
+      total: counted.length, excused: counted.length - noShow, noShow,
+      justified: scoped.length - counted.length,
+      penaltyTotal: Math.round(scoped.reduce((s, a) => s + a.penalty, 0) * 100) / 100,
+    };
+  }, [scoped]);
   const rows = useMemo(() => {
-    const all = data?.absences ?? [];
-    if (filter === "all") return all;
-    if (filter === "justified") return all.filter(a => a.justified);
-    return all.filter(a => !a.justified && (filter === "excused" ? a.excused : !a.excused));
-  }, [data, filter]);
+    if (filter === "all") return scoped;
+    if (filter === "justified") return scoped.filter(a => a.justified);
+    return scoped.filter(a => !a.justified && (filter === "excused" ? a.excused : !a.excused));
+  }, [scoped, filter]);
 
   // Зведення по кожному працівнику (поважає фільтр вище); клік по рядку розкриває деталі.
   // Виправдані пропуски НЕ рахуються в кількість/штраф — показуються окремою колонкою.
@@ -202,13 +221,21 @@ export default function Absences() {
           <option value="noshow">{t("Тільки нез'явлення")}</option>
           <option value="justified">{t("Тільки виправдані")}</option>
         </Select>
+        <Select value={cityF} onChange={e => { setCityF(e.target.value); setFacF(""); }} className="w-40">
+          <option value="">{t("Всі міста")}</option>
+          {cities.map(c => <option key={c} value={c}>{c}</option>)}
+        </Select>
+        <Select value={facF} onChange={e => setFacF(e.target.value)} className="w-48">
+          <option value="">{t("Всі фабрики")}</option>
+          {factoryOpts.map(f => <option key={f} value={f}>{f}</option>)}
+        </Select>
         {data && (
           <div className="flex flex-wrap gap-2">
-            <Badge color="slate">{t("Усього:")} {data.total}</Badge>
-            <Badge color="amber">{t("Відпросились:")} {data.excused}</Badge>
-            <Badge color="rose">{t("Нез'явлення:")} {data.noShow}</Badge>
-            {data.justified > 0 && <Badge color="green">{t("Виправдано:")} {data.justified}</Badge>}
-            <Badge color="red">{t("Штрафи:")} {zl(data.penaltyTotal)}</Badge>
+            <Badge color="slate">{t("Усього:")} {sums.total}</Badge>
+            <Badge color="amber">{t("Відпросились:")} {sums.excused}</Badge>
+            <Badge color="rose">{t("Нез'явлення:")} {sums.noShow}</Badge>
+            {sums.justified > 0 && <Badge color="green">{t("Виправдано:")} {sums.justified}</Badge>}
+            <Badge color="red">{t("Штрафи:")} {zl(sums.penaltyTotal)}</Badge>
           </div>
         )}
       </div>
