@@ -2460,6 +2460,15 @@ const EN: Record<string, string> = {
   "Перенести залічки за бадання до сводної?": "Transfer medical exam advances to the payroll sheet?",
   "Суми вибраних ляжуть у колонку Zaliczka BD рядка основної фабрики людини за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються.": "Selected amounts go to the Zaliczka BD column of each person's main-factory row for the chosen month (added to existing values). Locked tabs are skipped.",
 
+  // ── штрафи (/penalties) і пропуски (/absences) → Kara сводної ──
+  "Місяць сводної": "Payroll sheet month",
+  "Відмінено з попередженням": "Undone with a warning",
+  "сума віднімається з клітинки Kara сводної": "the amount is subtracted from the Kara cell of the payroll sheet for",
+  "Перенести штрафи до сводної?": "Transfer penalties to the payroll sheet?",
+  "Суми вибраних ляжуть у колонку Kara рядка фабрики штрафу (нема рядка пари — основної фабрики людини) за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються.": "Selected amounts go to the Kara column of the penalty's factory row (no pair row — the person's main factory) for the chosen month (added to existing values). Locked tabs are skipped.",
+  "Перенести штрафи за пропуски до сводної?": "Transfer absence fines to the payroll sheet?",
+  "Суми вибраних ляжуть у колонку Kara рядка фабрики пропуску (нема рядка пари — основної фабрики людини) за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються.": "Selected amounts go to the Kara column of the absence's factory row (no pair row — the person's main factory) for the chosen month (added to existing values). Locked tabs are skipped.",
+
   // ── аванси: фабрика запиту + хто позначив виплату ──
   "хто позначив виплату": "who marked it paid",
   "вручну (не зафіксовано ким)": "manually (person not recorded)",

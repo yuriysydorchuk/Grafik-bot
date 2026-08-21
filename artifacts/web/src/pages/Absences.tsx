@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X, ArrowUp, ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, DAY_UK, SHIFT_UK, type DayCode, type ShiftCode } from "../lib/api";
 import { monthOptions } from "../lib/dates";
-import { Card, Spinner, Select, Empty, Badge } from "../components/ui";
+import { Card, Spinner, Select, Empty, Badge, Button } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
@@ -17,6 +18,8 @@ interface Absence {
   justified: boolean;           // виправдано адміном — не рахується в кількість/штраф
   penalty: number;              // ефективний штраф, zł
   penaltyOverride: number | null; // NULL = стандарт
+  deductedMonth: string | null; // YYYY-MM сводної, куди перенесено штраф (NULL = ні)
+  deductedAmount: number | null;
 }
 interface AbsenceRequest {
   id: number; workerId: number; name: string | null; factory: string | null;
@@ -87,6 +90,53 @@ export default function Absences() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  // ── Перенесення штрафів у Kara сводної (формат — як бадання в Авансах) ─────
+  const canSvodni = can(me, "svodni");
+  const confirm = useConfirm();
+  const eligible = (a: Absence) => !a.justified && a.penalty > 0 && !a.deductedMonth;
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const { data: svodniMonths } = useQuery<{ months: string[] }>({
+    queryKey: ["svodni-months"], queryFn: () => get("/svodni/months"), enabled: canSvodni,
+  });
+  const [target, setTarget] = useState(month);
+  useEffect(() => { setTarget(month); }, [month]);
+  const targetMonths = useMemo(
+    () => [...new Set([month, ...(svodniMonths?.months ?? [])])].sort().reverse(),
+    [month, svodniMonths]);
+  const apply = useMutation({
+    mutationFn: (entryIds: number[]) => post<{
+      updated: number; itemsMarked: number; verified: number;
+      verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[];
+      skippedLocked: number; unmatched: { workerName: string | null; amount: number }[];
+    }>("/svodni/apply-absence-deductions", { month: target, entryIds }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["absences", month] });
+      const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("позицій знято")}: ${d.itemsMarked}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
+      if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+      if (d.verifyMismatches.length) {
+        toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
+          description: d.verifyMismatches.slice(0, 6).map(v => `${v.workerName}: ${v.expected ?? 0} ≠ ${v.actual ?? 0}`).join(", "), duration: 15000,
+        });
+      }
+      if (d.unmatched.length) {
+        toast.warning(`${t("Без рядка сводної")}: ${d.unmatched.length}`, {
+          description: d.unmatched.slice(0, 6).map(u => u.workerName ?? "—").join(", ") + (d.unmatched.length > 6 ? "…" : ""), duration: 12000,
+        });
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const undo = useMutation({
+    mutationFn: (entryId: number) => post<{ month: string; subtracted: { factoryLabel: string; newValue: number | null } | null; warning: string | null }>("/svodni/undo-absence-deduction", { entryId }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["absences", month] });
+      if (d.warning) toast.warning(t("Відмінено з попередженням"), { description: d.warning, duration: 12000 });
+      else toast.success(t("Відмінено"), { description: `${d.subtracted!.factoryLabel} (${d.month}): Kara → ${d.subtracted!.newValue ?? 0} zł` });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
   const rows = useMemo(() => {
     const all = data?.absences ?? [];
     if (filter === "all") return all;
@@ -119,6 +169,25 @@ export default function Absences() {
       return c !== 0 ? c * dir : a.name.localeCompare(b.name, "pl");
     });
   }, [rows, sort]);
+
+  // Незняті штрафи по працівниках (для перенесення); типово вибрані всі
+  const eligByWorker = useMemo(() => {
+    const m = new Map<string, { entryIds: number[]; sum: number }>();
+    for (const a of rows) {
+      if (!eligible(a)) continue;
+      const key = String(a.workerId ?? a.code ?? a.name);
+      const e = m.get(key) ?? m.set(key, { entryIds: [], sum: 0 }).get(key)!;
+      e.entryIds.push(a.entryId);
+      e.sum = Math.round((e.sum + a.penalty) * 100) / 100;
+    }
+    return m;
+  }, [rows]);
+  useEffect(() => { setSel(new Set(eligByWorker.keys())); }, [eligByWorker]);
+  const toggleSel = (key: string) => setSel(s => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const selKeys = [...eligByWorker.keys()].filter(k => sel.has(k));
+  const allSelected = eligByWorker.size > 0 && selKeys.length === eligByWorker.size;
+  const selSum = Math.round(selKeys.reduce((s, k) => s + eligByWorker.get(k)!.sum, 0) * 100) / 100;
+  const selEntryIds = selKeys.flatMap(k => eligByWorker.get(k)!.entryIds);
 
   return (
     <>
@@ -194,13 +263,30 @@ export default function Absences() {
 
       {rows.length > 0 && (
         <Card className="mb-5 overflow-x-auto">
-          <div className="border-b border-slate-100 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
             <span className="text-sm font-semibold text-slate-700">👤 {t("По працівниках")}</span>
             <span className="ml-2 text-xs text-slate-400">{t("Клікніть на працівника, щоб побачити деталі. Виправдані пропуски не рахуються.")}</span>
+            {canSvodni && eligByWorker.size > 0 && (
+              <div className="ml-auto flex items-center gap-2">
+                <Select value={target} onChange={e => setTarget(e.target.value)} className="w-36" title={t("Місяць сводної")}>
+                  {targetMonths.map(m => <option key={m} value={m}>{m}</option>)}
+                </Select>
+                <Button loading={apply.isPending} disabled={!selEntryIds.length}
+                  onClick={async () => { if (await confirm({ title: t("Перенести штрафи за пропуски до сводної?"), message: t("Суми вибраних ляжуть у колонку Kara рядка фабрики пропуску (нема рядка пари — основної фабрики людини) за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються."), confirmText: t("Перенести") })) apply.mutate(selEntryIds); }}>
+                  → {allSelected ? t("Перенести всі") : `${t("Перенести вибрані")} (${selKeys.length})`} · {selSum.toFixed(2)} zł
+                </Button>
+              </div>
+            )}
           </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
               <tr>
+                {canSvodni && (
+                  <th className="w-8 px-3 py-2.5">
+                    <input type="checkbox" className="accent-red-600" checked={allSelected} disabled={!eligByWorker.size}
+                      onChange={() => setSel(allSelected ? new Set() : new Set(eligByWorker.keys()))} />
+                  </th>
+                )}
                 <SortTh label={t("Працівник")} k="name" sort={sort} onSort={onSort} />
                 <th className="px-4 py-2.5">{t("Код")}</th>
                 <SortTh label={t("Фабрика")} k="factory" sort={sort} onSort={onSort} />
@@ -215,13 +301,15 @@ export default function Absences() {
               {byWorker.map(w => (
                 <WorkerRows key={w.key} w={w} open={openWorker === w.key} canEdit={canEdit}
                   defaultPenalty={data?.defaultPenalty ?? 200}
+                  canSvodni={canSvodni} selectable={eligByWorker.has(w.key)} selected={sel.has(w.key)}
+                  onSelToggle={() => toggleSel(w.key)} onUndo={(entryId) => undo.mutate(entryId)} undoing={undo.isPending}
                   onToggle={() => setOpenWorker(k => (k === w.key ? null : w.key))}
                   onPatch={(v) => patchAbs.mutate(v)} patching={patchAbs.isPending} />
               ))}
             </tbody>
             <tfoot>
               <tr className="border-t border-slate-200 bg-slate-50 font-semibold text-slate-700">
-                <td className="px-4 py-2.5" colSpan={3}>{t("Разом")}</td>
+                <td className="px-4 py-2.5" colSpan={canSvodni ? 4 : 3}>{t("Разом")}</td>
                 <td className="px-4 py-2.5 text-center">{byWorker.reduce((s, w) => s + w.total, 0)}</td>
                 <td className="px-4 py-2.5 text-center">{byWorker.reduce((s, w) => s + w.excused, 0)}</td>
                 <td className="px-4 py-2.5 text-center">{byWorker.reduce((s, w) => s + w.noShow, 0)}</td>
@@ -260,7 +348,12 @@ export default function Absences() {
                   </td>
                   <td className="px-4 py-2.5 text-slate-600">{a.reason || <span className="text-slate-300">{t("— без причини —")}</span>}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums">
-                    {a.justified || a.penalty === 0 ? <span className="text-slate-300">—</span> : <span className="font-medium text-slate-700">{zl(a.penalty)}</span>}
+                    {a.justified || a.penalty === 0 ? <span className="text-slate-300">—</span> : (
+                      <span className="font-medium text-slate-700">
+                        {zl(a.penalty)}
+                        {a.deductedMonth && <Badge color="green">{t("сводна")} {a.deductedMonth}</Badge>}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -273,17 +366,25 @@ export default function Absences() {
 }
 
 // Рядок зведення по працівнику + розкриття його пропусків із діями
-// («виправдати», редагування/анулювання штрафу)
-function WorkerRows({ w, open, canEdit, defaultPenalty, onToggle, onPatch, patching }: {
+// («виправдати», редагування/анулювання штрафу, відміна перенесення в сводну)
+function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, selected, onSelToggle, onUndo, undoing, onToggle, onPatch, patching }: {
   w: WorkerSum; open: boolean; canEdit: boolean; defaultPenalty: number;
+  canSvodni: boolean; selectable: boolean; selected: boolean;
+  onSelToggle: () => void; onUndo: (entryId: number) => void; undoing: boolean;
   onToggle: () => void;
   onPatch: (v: { entryId: number; justified?: boolean; penalty?: number | null }) => void;
   patching: boolean;
 }) {
   const t = useT();
+  const confirm = useConfirm();
   return (
     <>
       <tr onClick={onToggle} className={`cursor-pointer ${open ? "bg-slate-50" : "hover:bg-slate-50"}`}>
+        {canSvodni && (
+          <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+            {selectable && <input type="checkbox" className="accent-red-600" checked={selected} onChange={onSelToggle} />}
+          </td>
+        )}
         <td className="px-4 py-2.5 font-medium text-slate-700">
           <span className={`mr-1.5 inline-block text-[10px] text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
           {w.name}
@@ -298,7 +399,7 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, onToggle, onPatch, patch
       </tr>
       {open && (
         <tr>
-          <td colSpan={8} className="bg-slate-50/60 px-4 py-2">
+          <td colSpan={canSvodni ? 9 : 8} className="bg-slate-50/60 px-4 py-2">
             <div className="space-y-1">
               {w.items.map(a => (
                 <div key={a.entryId} className={`flex flex-wrap items-center gap-2 rounded-lg border bg-white px-3 py-1.5 text-sm ${a.justified ? "border-emerald-200" : "border-slate-200"}`}>
@@ -311,15 +412,31 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, onToggle, onPatch, patch
                     : <Badge color="rose">{t("Нез'явлення")}</Badge>}
                   {a.reason && <span className="text-slate-500">📝 {a.reason}</span>}
                   <span className="ml-auto inline-flex items-center gap-1.5">
-                    {!a.justified && <PenaltyEditor a={a} canEdit={canEdit} defaultPenalty={defaultPenalty} onPatch={onPatch} patching={patching} />}
-                    {canEdit && (
-                      <button onClick={() => onPatch({ entryId: a.entryId, justified: !a.justified })} disabled={patching}
-                        title={a.justified ? t("Пропуск знову рахуватиметься і матиме штраф") : t("Виправданий пропуск не рахується в кількість і не має штрафу")}
-                        className={`rounded-md border px-2 py-1 text-xs font-medium disabled:opacity-50 ${a.justified
-                          ? "border-slate-200 text-slate-500 hover:bg-slate-50"
-                          : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"}`}>
-                        {a.justified ? t("Зняти виправдання") : `✔ ${t("Виправдати")}`}
-                      </button>
+                    {a.deductedMonth ? (
+                      <>
+                        <span className="tabular-nums text-xs font-medium text-slate-600">{zl(a.deductedAmount ?? a.penalty)}</span>
+                        <Badge color="green">{t("сводна")} {a.deductedMonth}</Badge>
+                        {canSvodni && (
+                          <button disabled={undoing}
+                            onClick={async () => { if (await confirm({ title: t("Відмінити зняття?"), message: `${w.name} · ${zl(a.deductedAmount ?? a.penalty)} — ${t("сума віднімається з клітинки Kara сводної")} ${a.deductedMonth}. ${t("Запис повернеться у «до зняття».")}`, danger: true, confirmText: t("Відмінити") })) onUndo(a.entryId); }}
+                            className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50">
+                            ↩ {t("Відмінити")}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {!a.justified && <PenaltyEditor a={a} canEdit={canEdit} defaultPenalty={defaultPenalty} onPatch={onPatch} patching={patching} />}
+                        {canEdit && (
+                          <button onClick={() => onPatch({ entryId: a.entryId, justified: !a.justified })} disabled={patching}
+                            title={a.justified ? t("Пропуск знову рахуватиметься і матиме штраф") : t("Виправданий пропуск не рахується в кількість і не має штрафу")}
+                            className={`rounded-md border px-2 py-1 text-xs font-medium disabled:opacity-50 ${a.justified
+                              ? "border-slate-200 text-slate-500 hover:bg-slate-50"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"}`}>
+                            {a.justified ? t("Зняти виправдання") : `✔ ${t("Виправдати")}`}
+                          </button>
+                        )}
+                      </>
                     )}
                   </span>
                 </div>

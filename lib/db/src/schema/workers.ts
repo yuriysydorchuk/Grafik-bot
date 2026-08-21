@@ -372,6 +372,11 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   absenceExcused: boolean("absence_excused").notNull().default(false),
   // Штраф за пропуск, zł: NULL = стандартний (200), число = override (0 = анульовано).
   absencePenalty: real("absence_penalty"),
+  // Перенесення штрафу в Kara сводної: місяць/дата + сума на момент переносу
+  // (undo віднімає саме зафіксоване, навіть якби штраф потім змінили).
+  absenceDeductedMonth: text("absence_deducted_month"), // YYYY-MM, NULL = не перенесено
+  absenceDeductedAt: date("absence_deducted_at"),
+  absenceDeductedAmount: real("absence_deducted_amount"),
   pickedUpBy: integer("picked_up_by").references(() => driversTable.id), // driver who boarded this worker
   hoursOverride: real("hours_override"), // manual hours for this shift (overrides computed shift duration)
   sentAt: timestamp("sent_at"), // when this entry was sent to the worker — they only see sent entries
@@ -1420,6 +1425,10 @@ export const penaltiesTable = pgTable("penalties", {
   factoryLabel: text("factory_label"),
   amount: real("amount").notNull(),
   note: text("note"),
+  // Перенесення в Kara сводної (дзеркало worker_badania.deducted)
+  deducted: boolean("deducted").notNull().default(false),
+  deductedAt: date("deducted_at"),
+  deductedMonth: text("deducted_month"), // YYYY-MM сводної, з якої знято
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

@@ -31,6 +31,7 @@ router.get("/penalties", requireCap("svodni"), async (req, res) => {
       id: p.id, workerId: p.workerId, workerName, city: p.city,
       factoryId: p.factoryId, factoryLabel: factoryName ?? p.factoryLabel,
       amount: p.amount, note: p.note,
+      deducted: p.deducted, deductedAt: p.deductedAt, deductedMonth: p.deductedMonth,
     })).sort((a, b) => (a.city ?? "").localeCompare(b.city ?? "")
       || (a.factoryLabel ?? "").localeCompare(b.factoryLabel ?? "")
       || (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
@@ -59,6 +60,10 @@ router.patch("/penalties/:id", requireCap("svodni"), async (req, res) => {
   const id = Number(req.params.id);
   const amount = Number(req.body?.amount);
   if (!Number.isFinite(id) || !Number.isFinite(amount) || amount <= 0) return fail(res, 400, "сума > 0");
+  const [p] = await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, id));
+  if (!p) return fail(res, 404, "штраф не знайдено");
+  // Перенесений у сводну штраф не правиться — інакше суми розсинхронізуються
+  if (p.deducted) return fail(res, 409, `Штраф перенесено у сводну ${p.deductedMonth ?? ""} — спершу відміни перенесення`);
   const patch: Record<string, unknown> = { amount: r2(amount) };
   if (req.body?.note !== undefined) patch.note = String(req.body.note).trim() || null;
   const [u] = await db.update(penaltiesTable).set(patch).where(eq(penaltiesTable.id, id)).returning();
@@ -68,6 +73,9 @@ router.patch("/penalties/:id", requireCap("svodni"), async (req, res) => {
 router.delete("/penalties/:id", requireCap("svodni"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [p] = await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, id));
+  if (!p) return ok(res, { ok: true });
+  if (p.deducted) return fail(res, 409, `Штраф перенесено у сводну ${p.deductedMonth ?? ""} — спершу відміни перенесення`);
   await db.delete(penaltiesTable).where(eq(penaltiesTable.id, id));
   ok(res, { ok: true });
 });

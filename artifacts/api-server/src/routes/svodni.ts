@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -17,6 +17,7 @@ import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr } from "../lib/dates";
+import { absencePenaltyOf } from "../lib/absences";
 import { gratyfikantRecords, type GratyfikantSource } from "../services/gratyfikantExport";
 
 const router: IRouter = Router();
@@ -2598,6 +2599,235 @@ router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: 
   ok(res, {
     ok: true, month, subtracted,
     warning: subtracted ? null : "рядка сводної з Zaliczka BD не знайдено — позначку знято, суму віднімати нема звідки",
+  });
+});
+
+// ─── Перенесення штрафів у колонку Kara сводної ──────────────────────────────
+// Два джерела: ручний реєстр /penalties і штрафи за пропуски /absences
+// (schedule_entries). Формат — як у бадань (Zaliczka BD): сума ДОДАЄТЬСЯ до
+// наявної Kara (там можуть жити ручні/синковані суми), відміна віднімає своє.
+
+// Запис клітинки Kara тим самим ланцюжком, що й ручна правка: сегментований
+// рядок — місячний ввід на батькові з перерахунком сегментів; інакше
+// computePayout → статусні правила księgowości → готівка.
+async function writeKaraCell(
+  row: typeof svodniRowsTable.$inferSelect,
+  w: typeof workersTable.$inferSelect | undefined,
+  amount: number | null,
+): Promise<void> {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
+    .where(eq(svodniRowsTable.segmentOf, row.id)).limit(1);
+  if (segMark) {
+    await db.update(svodniRowsTable).set({ kara: amount, manual: true, mismatch: null })
+      .where(eq(svodniRowsTable.id, row.id));
+    await recomputeSegmentedParent(row.id);
+    return;
+  }
+  const merged: any = { ...row, kara: amount };
+  const set: Record<string, unknown> = { kara: amount, manual: true, mismatch: null };
+  const payout = computePayout(merged, row.city as any);
+  if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
+  if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
+    const payoutPref = w?.payoutPrefKind ? { kind: w.payoutPrefKind as "all_konto" | "hours" | "amount", value: w.payoutPrefValue ?? null } : null;
+    applyLegalDefaults(merged, true, { profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, payoutPref, city: row.city, firm: row.firm, factoryId: row.factoryId });
+    for (const k of ["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+      if (merged[k] !== row[k]) set[k] = merged[k];
+    }
+  }
+  if (merged.ksiegNetto != null && merged.doWyplaty != null) {
+    const doplata = typeof merged.extras?.doplataEs === "number" ? merged.extras.doplataEs : 0;
+    set.gotowka = r2(merged.doWyplaty - merged.ksiegNetto + doplata);
+  }
+  await db.update(svodniRowsTable).set(set as any).where(eq(svodniRowsTable.id, row.id));
+}
+
+// Групи «працівник(+фабрика джерела) → сума» лягають у рядки сводної місяця:
+// спершу рядок САМЕ цієї пари, нема — фолбек у рядок «основної» фабрики
+// (найбільше годин), як аванси з factory_id. Групи обробляються послідовно
+// (дві групи людини можуть влучити в той самий рядок — додаємо на свіже
+// значення), локи пропускаються, наприкінці — самозвірка перечитуванням.
+type KaraGroup = { workerId: number; factoryId: number | null; amount: number; refs: { id: number; amount: number }[] };
+async function applyKaraDeductions(month: string, groups: KaraGroup[]): Promise<{
+  updated: number; skippedLocked: number;
+  unmatched: { workerName: string | null; amount: number }[];
+  landedRefs: { id: number; amount: number }[];
+  verified: number;
+  verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[];
+}> {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const rows = await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const locks = await monthLocks(month);
+  const workerIds = [...new Set(groups.map(g => g.workerId))];
+  const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
+  const wById = new Map(workers.map(w => [w.id, w]));
+  const byHours = (a: typeof rows[number], b: typeof rows[number]) => (b.hours ?? 0) - (a.hours ?? 0);
+
+  let updated = 0, skippedLocked = 0;
+  const unmatched: { workerName: string | null; amount: number }[] = [];
+  const landedRefs: { id: number; amount: number }[] = [];
+  const expected = new Map<number, { workerName: string; factoryLabel: string; amount: number | null }>();
+  for (const g of groups) {
+    const w = wById.get(g.workerId);
+    const mine = rows.filter(r => r.workerId === g.workerId);
+    const row = (g.factoryId != null ? mine.filter(r => r.factoryId === g.factoryId).sort(byHours)[0] : undefined)
+      ?? mine.sort(byHours)[0];
+    if (!row) { unmatched.push({ workerName: w?.fullName ?? null, amount: g.amount }); continue; }
+    if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
+    const amount = r2((row.kara ?? 0) + g.amount);
+    await writeKaraCell(row, w, amount);
+    row.kara = amount; // свіже значення для наступних груп у той самий рядок
+    expected.set(row.id, { workerName: w?.fullName ?? row.rawName, factoryLabel: row.factoryLabel, amount });
+    landedRefs.push(...g.refs);
+    updated++;
+  }
+  // САМОЗВІРКА: перечитуємо записані рядки і порівнюємо Kara з очікуваним
+  const verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[] = [];
+  if (expected.size) {
+    const fresh = await db.select({ id: svodniRowsTable.id, kara: svodniRowsTable.kara })
+      .from(svodniRowsTable).where(inArray(svodniRowsTable.id, [...expected.keys()]));
+    const freshById = new Map(fresh.map(f => [f.id, f.kara]));
+    for (const [rowId, e] of expected) {
+      const actual = freshById.get(rowId) ?? null;
+      if ((actual ?? 0) !== (e.amount ?? 0)) {
+        verifyMismatches.push({ workerName: e.workerName, factoryLabel: e.factoryLabel, expected: e.amount, actual });
+      }
+    }
+  }
+  return { updated, skippedLocked, unmatched, landedRefs, verified: expected.size, verifyMismatches };
+}
+
+// Відміна одного перенесення: віднімає суму з Kara рядка місяця перенесення
+// (рядок пари, фолбек — з найбільшими годинами серед тих, де є Kara).
+// Залочена вкладка — 409; рядка вже нема — чесний warning.
+async function subtractKara(month: string, workerId: number, factoryId: number | null, amount: number): Promise<
+  { error: string } | { subtracted: { factoryLabel: string; newValue: number | null } | null }
+> {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const rows = await db.select().from(svodniRowsTable).where(and(
+    eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
+    eq(svodniRowsTable.workerId, workerId),
+  ));
+  const byHours = (a: typeof rows[number], b: typeof rows[number]) => (b.hours ?? 0) - (a.hours ?? 0);
+  const withKara = rows.filter(r => (r.kara ?? 0) > 0);
+  const row = (factoryId != null ? withKara.filter(r => r.factoryId === factoryId).sort(byHours)[0] : undefined)
+    ?? withKara.sort(byHours)[0];
+  if (!row) return { subtracted: null };
+  const locks = await monthLocks(month);
+  if (isLocked(locks, row.city, row.factoryLabel)) {
+    return { error: `Вкладка «${row.factoryLabel}» (${month}) затверджена — спершу зніми лок, потім відміняй` };
+  }
+  const newKara = r2(Math.max(0, (row.kara ?? 0) - amount));
+  const value = newKara > 0 ? newKara : null;
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  await writeKaraCell(row, w, value);
+  return { subtracted: { factoryLabel: row.factoryLabel, newValue: value } };
+}
+
+// Перенесення штрафів реєстру /penalties у Kara сводної місяця body.month.
+// body.ids — вибіркове перенесення (без ids — усі незняті).
+router.post("/svodni/apply-penalty-deductions", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const onlyIds: number[] | null = Array.isArray(req.body?.ids)
+    ? req.body.ids.map(Number).filter(Number.isFinite) : null;
+  const items = (await db.select().from(penaltiesTable).where(eq(penaltiesTable.deducted, false)))
+    .filter(p => onlyIds == null || onlyIds.includes(p.id));
+  if (!items.length) return fail(res, 400, "немає штрафів до зняття");
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
+  const byPair = new Map<string, KaraGroup>();
+  for (const p of items) {
+    const k = key2(p.workerId, p.factoryId);
+    const g = byPair.get(k) ?? byPair.set(k, { workerId: p.workerId, factoryId: p.factoryId, amount: 0, refs: [] }).get(k)!;
+    g.amount = r2(g.amount + p.amount);
+    g.refs.push({ id: p.id, amount: p.amount });
+  }
+  const result = await applyKaraDeductions(month, [...byPair.values()]);
+  if (result.landedRefs.length) {
+    await db.update(penaltiesTable)
+      .set({ deducted: true, deductedAt: sql`CURRENT_DATE`, deductedMonth: month })
+      .where(inArray(penaltiesTable.id, result.landedRefs.map(x => x.id)));
+  }
+  ok(res, {
+    month, updated: result.updated, itemsMarked: result.landedRefs.length, verified: result.verified,
+    verifyMismatches: result.verifyMismatches, skippedLocked: result.skippedLocked, unmatched: result.unmatched,
+  });
+});
+
+// Відміна перенесеного штрафу реєстру: сума віднімається з Kara сводної
+// місяця перенесення, запис повертається у «до зняття».
+router.post("/svodni/undo-penalty-deduction", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.body?.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "id обовʼязковий");
+  const [p] = await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, id));
+  if (!p) return fail(res, 404, "Не знайдено");
+  if (!p.deducted || !p.deductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
+  const r = await subtractKara(p.deductedMonth, p.workerId, p.factoryId, p.amount);
+  if ("error" in r) return fail(res, 409, r.error);
+  await db.update(penaltiesTable)
+    .set({ deducted: false, deductedAt: null, deductedMonth: null })
+    .where(eq(penaltiesTable.id, id));
+  ok(res, {
+    ok: true, month: p.deductedMonth, subtracted: r.subtracted,
+    warning: r.subtracted ? null : "рядка сводної з Kara не знайдено — позначку знято, суму віднімати нема звідки",
+  });
+});
+
+// Перенесення штрафів за пропуски (/absences) у Kara сводної body.month.
+// body.entryIds — обовʼязковий явний список пропусків (веб шле вибрані);
+// беруться лише невиправдані незняті з ефективним штрафом > 0. Сума кожного
+// пропуску фіксується в absence_deducted_amount — undo віднімає саме її.
+router.post("/svodni/apply-absence-deductions", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const entryIds: number[] = Array.isArray(req.body?.entryIds)
+    ? req.body.entryIds.map(Number).filter(Number.isFinite) : [];
+  if (!entryIds.length) return fail(res, 400, "entryIds=[…] обовʼязково");
+  const entries = (await db.select().from(scheduleEntriesTable).where(inArray(scheduleEntriesTable.id, entryIds)))
+    .filter(e => e.status === "absent" && !e.absenceExcused && e.absenceDeductedMonth == null)
+    .map(e => ({ ...e, penalty: absencePenaltyOf(e) }))
+    .filter(e => e.penalty > 0);
+  if (!entries.length) return fail(res, 400, "немає штрафів за пропуски до зняття");
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
+  const byPair = new Map<string, KaraGroup>();
+  for (const e of entries) {
+    const k = key2(e.workerId, e.factoryId);
+    const g = byPair.get(k) ?? byPair.set(k, { workerId: e.workerId, factoryId: e.factoryId, amount: 0, refs: [] }).get(k)!;
+    g.amount = r2(g.amount + e.penalty);
+    g.refs.push({ id: e.id, amount: e.penalty });
+  }
+  const result = await applyKaraDeductions(month, [...byPair.values()]);
+  for (const ref of result.landedRefs) {
+    await db.update(scheduleEntriesTable)
+      .set({ absenceDeductedMonth: month, absenceDeductedAt: sql`CURRENT_DATE`, absenceDeductedAmount: ref.amount })
+      .where(eq(scheduleEntriesTable.id, ref.id));
+  }
+  ok(res, {
+    month, updated: result.updated, itemsMarked: result.landedRefs.length, verified: result.verified,
+    verifyMismatches: result.verifyMismatches, skippedLocked: result.skippedLocked, unmatched: result.unmatched,
+  });
+});
+
+// Відміна перенесеного штрафу за пропуск: віднімає зафіксовану суму з Kara
+// сводної місяця перенесення, пропуск повертається у «до зняття».
+router.post("/svodni/undo-absence-deduction", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const entryId = Number(req.body?.entryId);
+  if (!Number.isFinite(entryId)) return fail(res, 400, "entryId обовʼязковий");
+  const [e] = await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, entryId));
+  if (!e) return fail(res, 404, "Не знайдено");
+  if (!e.absenceDeductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
+  const amount = e.absenceDeductedAmount ?? absencePenaltyOf(e);
+  const r = await subtractKara(e.absenceDeductedMonth, e.workerId, e.factoryId, amount);
+  if ("error" in r) return fail(res, 409, r.error);
+  await db.update(scheduleEntriesTable)
+    .set({ absenceDeductedMonth: null, absenceDeductedAt: null, absenceDeductedAmount: null })
+    .where(eq(scheduleEntriesTable.id, entryId));
+  ok(res, {
+    ok: true, month: e.absenceDeductedMonth, subtracted: r.subtracted,
+    warning: r.subtracted ? null : "рядка сводної з Kara не знайдено — позначку знято, суму віднімати нема звідки",
   });
 });
 

@@ -11,7 +11,7 @@ import {
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable,
   clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
-  workerChangesTable,
+  workerChangesTable, penaltiesTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -31,7 +31,7 @@ export {
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable,
   clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
-  workerChangesTable,
+  workerChangesTable, penaltiesTable,
 };
 export { hashPassword, SESSION_COOKIE };
 

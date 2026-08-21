@@ -31,6 +31,7 @@ import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
+import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode } from "../lib/invite";
 import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
@@ -3861,11 +3862,7 @@ router.get("/finance/compare", requireCap("viewFinance"), async (req, res) => {
 });
 
 // ─── Absences with reasons for a month (from approved schedule) ──────────────────
-// Стандартний штраф за пропуск, zł (override per-пропуск — schedule_entries.absence_penalty)
-const DEFAULT_ABSENCE_PENALTY = 200;
-// Ефективний штраф пропуску: виправданий = 0, інакше override ?? стандарт.
-const absencePenaltyOf = (e: { absenceExcused: boolean | null; absencePenalty: number | null }) =>
-  e.absenceExcused ? 0 : (e.absencePenalty ?? DEFAULT_ABSENCE_PENALTY);
+// Стандарт/ефективний штраф — спільний канон з перенесенням у сводну (lib/absences.ts)
 
 router.get("/absences", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
@@ -3878,6 +3875,7 @@ router.get("/absences", RW, async (req, res) => {
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, reason: scheduleEntriesTable.absenceReason,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
+      deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
       weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
@@ -3893,6 +3891,8 @@ router.get("/absences", RW, async (req, res) => {
       justified: !!r.excusedFlag, // «виправдано» адміном: не рахується в кількість/штраф
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
       penaltyOverride: r.penaltyOverride, // NULL = стандарт (для UI-редактора)
+      deductedMonth: r.deductedMonth, // YYYY-MM сводної, куди перенесено штраф (NULL = ні)
+      deductedAmount: r.deductedAmount,
     }))
     .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
@@ -3911,10 +3911,12 @@ router.get("/absences", RW, async (req, res) => {
 router.patch("/absences/:entryId", RW, async (req, res) => {
   const id = Number(req.params.entryId);
   if (!Number.isInteger(id)) return fail(res, 400, "Невірний id");
-  const [entry] = await db.select({ id: scheduleEntriesTable.id, status: scheduleEntriesTable.status })
+  const [entry] = await db.select({ id: scheduleEntriesTable.id, status: scheduleEntriesTable.status, deductedMonth: scheduleEntriesTable.absenceDeductedMonth })
     .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, id));
   if (!entry) return fail(res, 404, "Запис не знайдено");
   if (entry.status !== "absent") return fail(res, 400, "Запис не є пропуском");
+  // Штраф уже перенесено в Kara сводної — редагування розсинхронізувало б суми
+  if (entry.deductedMonth) return fail(res, 409, `Штраф перенесено у сводну ${entry.deductedMonth} — спершу відміни перенесення`);
   const body = req.body ?? {};
   const patch: Partial<{ absenceExcused: boolean; absencePenalty: number | null }> = {};
   if (typeof body.justified === "boolean") patch.absenceExcused = body.justified;

@@ -1,24 +1,36 @@
 // «Штрафи» — штрафи з ЗП за місяць: місто → фабрика → працівники і суми.
-// Ручний реєстр штрафів з зарплати («Години підтверджені → до сводної»
-// підтягує суму по людині). Поки лише таблиця «знято з ЗП» + ручний CRUD.
-import { useMemo, useState } from "react";
+// Ручний реєстр штрафів з зарплати + перенесення у колонку Kara сводної
+// (формат як «Бадання до зняття» в Авансах: чекбокси → вибір місяця →
+// перенести; перенесений рядок — бейдж «сводна YYYY-MM» + відміна).
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Gavel, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Badge, Button, Input, Modal, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { useConfirm } from "../components/confirm";
 import { monthOptions } from "../lib/dates";
 import { useT } from "../lib/i18n";
 
-type PenaltyRow = { id: number; workerId: number; workerName: string | null; city: string | null; factoryId: number | null; factoryLabel: string | null; amount: number; note: string | null };
+type PenaltyRow = {
+  id: number; workerId: number; workerName: string | null; city: string | null;
+  factoryId: number | null; factoryLabel: string | null; amount: number; note: string | null;
+  deducted: boolean; deductedAt: string | null; deductedMonth: string | null;
+};
 type Data = { month: string; months: string[]; rows: PenaltyRow[] };
+type ApplyResp = {
+  updated: number; itemsMarked: number; verified: number;
+  verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[];
+  skippedLocked: number; unmatched: { workerName: string | null; amount: number }[];
+};
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 export default function Penalties() {
   const t = useT();
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const months = useMemo(() => monthOptions(), []);
   const [month, setMonth] = useState(months[0]!.value);
   const [adding, setAdding] = useState(false);
@@ -31,6 +43,54 @@ export default function Penalties() {
   const edit = useMutation({
     mutationFn: (p: { id: number; amount: number }) => patch(`/penalties/${p.id}`, { amount: p.amount }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["penalties"] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── Перенесення у Kara сводної ─────────────────────────────────────────────
+  const pending = useMemo(() => (data?.rows ?? []).filter(r => !r.deducted), [data]);
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  // типово вибрані всі незняті — «перенести всі» це просто кнопка без зняття галочок
+  useEffect(() => { setSel(new Set(pending.map(r => r.id))); }, [pending]);
+  const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = pending.length > 0 && sel.size === pending.length;
+  const selSum = r2(pending.filter(r => sel.has(r.id)).reduce((a, r) => a + r.amount, 0));
+  // місяці на вибір — РЕАЛЬНІ місяці сводних (щоб перенесення цілило в наявну
+  // вкладку); місяць сторінки завжди в списку як фолбек і є дефолтом
+  const { data: svodniMonths } = useQuery<{ months: string[] }>({
+    queryKey: ["svodni-months"], queryFn: () => get("/svodni/months"),
+  });
+  const [target, setTarget] = useState(month);
+  useEffect(() => { setTarget(month); }, [month]);
+  const targetMonths = useMemo(
+    () => [...new Set([month, ...(svodniMonths?.months ?? [])])].sort().reverse(),
+    [month, svodniMonths]);
+  const apply = useMutation({
+    mutationFn: () => post<ApplyResp>("/svodni/apply-penalty-deductions", { month: target, ids: [...sel] }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["penalties"] });
+      const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("позицій знято")}: ${d.itemsMarked}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
+      if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+      if (d.verifyMismatches.length) {
+        toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
+          description: d.verifyMismatches.slice(0, 6).map(v => `${v.workerName}: ${v.expected ?? 0} ≠ ${v.actual ?? 0}`).join(", "), duration: 15000,
+        });
+      }
+      if (d.unmatched.length) {
+        toast.warning(`${t("Без рядка сводної")}: ${d.unmatched.length}`, {
+          description: d.unmatched.slice(0, 6).map(u => u.workerName ?? "—").join(", ") + (d.unmatched.length > 6 ? "…" : ""), duration: 12000,
+        });
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const undo = useMutation({
+    mutationFn: (id: number) => post<{ month: string; subtracted: { factoryLabel: string; newValue: number | null } | null; warning: string | null }>("/svodni/undo-penalty-deduction", { id }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["penalties"] });
+      if (d.warning) toast.warning(t("Відмінено з попередженням"), { description: d.warning, duration: 12000 });
+      else toast.success(t("Відмінено"), { description: `${d.subtracted!.factoryLabel} (${d.month}): Kara → ${d.subtracted!.newValue ?? 0} zł` });
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -56,7 +116,20 @@ export default function Penalties() {
         </Select>
         {data && <Badge color="green">{t("Знято разом:")} {total.toFixed(2)} zł</Badge>}
         {data && <Badge color="slate">{data.rows.length} {t("ос.")}</Badge>}
-        <Button className="ml-auto" onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати штраф")}</Button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {pending.length > 0 && (
+            <>
+              <Select value={target} onChange={e => setTarget(e.target.value)} className="w-36" title={t("Місяць сводної")}>
+                {targetMonths.map(m => <option key={m} value={m}>{m}</option>)}
+              </Select>
+              <Button loading={apply.isPending} disabled={!sel.size}
+                onClick={async () => { if (await confirm({ title: t("Перенести штрафи до сводної?"), message: t("Суми вибраних ляжуть у колонку Kara рядка фабрики штрафу (нема рядка пари — основної фабрики людини) за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються."), confirmText: t("Перенести") })) apply.mutate(); }}>
+                → {allSelected ? t("Перенести всі") : `${t("Перенести вибрані")} (${sel.size})`} · {selSum.toFixed(2)} zł
+              </Button>
+            </>
+          )}
+          <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати штраф")}</Button>
+        </div>
       </div>
       {adding && <AddPenaltyModal month={month} onClose={() => setAdding(false)} />}
       {isFetching && !data ? <Spinner /> : !groups.length ? (
@@ -77,7 +150,7 @@ export default function Penalties() {
                 <tbody className="divide-y divide-slate-100">
                   {[...byFactory.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([factory, rows]) => [
                     <tr key={`f-${factory}`} className="bg-slate-50/80">
-                      <td className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">{factory}</td>
+                      <td colSpan={2} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">{factory}</td>
                       <td className="px-4 py-1.5 text-right text-[11px] font-semibold tabular-nums text-slate-500">
                         {r2(rows.reduce((a, r) => a + r.amount, 0)).toFixed(2)} zł
                       </td>
@@ -85,19 +158,34 @@ export default function Penalties() {
                     </tr>,
                     ...rows.map(r => (
                       <tr key={r.id} className="group hover:bg-red-50/30">
-                        <td className="px-4 py-1.5 pl-8 text-slate-700">
+                        <td className="w-8 px-3 py-1.5 pl-4">
+                          {!r.deducted && (
+                            <input type="checkbox" className="accent-red-600" checked={sel.has(r.id)} onChange={() => toggle(r.id)} />
+                          )}
+                        </td>
+                        <td className="px-4 py-1.5 text-slate-700">
                           {r.workerName ?? `#${r.workerId}`}
                           {r.note && <span className="ml-2 text-xs text-slate-400">{r.note}</span>}
+                          {r.deducted && <Badge color="green">{t("сводна")} {r.deductedMonth ?? ""}</Badge>}
                         </td>
                         <td className="px-4 py-1.5 text-right tabular-nums">
-                          <AmountCell value={r.amount} onSave={(v) => edit.mutate({ id: r.id, amount: v })} />
+                          {r.deducted
+                            ? <span className="tabular-nums text-slate-500">{r.amount.toFixed(2)}</span>
+                            : <AmountCell value={r.amount} onSave={(v) => edit.mutate({ id: r.id, amount: v })} />}
                         </td>
-                        <td className="w-10 px-2 text-right">
-                          <button type="button" title={t("Видалити")}
-                            onClick={() => window.confirm(`${r.workerName ?? r.workerId}: ${t("видалити штраф?")}`) && remove.mutate(r.id)}
-                            className="invisible rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-500 group-hover:visible">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                        <td className="w-24 px-2 text-right">
+                          {r.deducted ? (
+                            <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                              onClick={async () => { if (await confirm({ title: t("Відмінити зняття?"), message: `${r.workerName ?? r.workerId} · ${r.amount} zł — ${t("сума віднімається з клітинки Kara сводної")} ${r.deductedMonth}. ${t("Запис повернеться у «до зняття».")}`, danger: true, confirmText: t("Відмінити") })) undo.mutate(r.id); }}>
+                              ↩ {t("Відмінити")}
+                            </button>
+                          ) : (
+                            <button type="button" title={t("Видалити")}
+                              onClick={() => window.confirm(`${r.workerName ?? r.workerId}: ${t("видалити штраф?")}`) && remove.mutate(r.id)}
+                              className="invisible rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-500 group-hover:visible">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     )),
