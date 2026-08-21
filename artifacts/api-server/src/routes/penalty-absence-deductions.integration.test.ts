@@ -178,13 +178,25 @@ test("lock-pending: незняті штрафи області в ревʼю р�
   assert.equal(res.status, 200);
   const k = res.body.pendingKara;
   assert.equal(k.absences.length, 1);
-  assert.equal(k.absences[0].entryId, e1!.id);
+  assert.deepEqual(k.absences[0].entryIds, [e1!.id]);
   assert.equal(k.absences[0].amount, 200);
   assert.equal(k.absences[0].targetFactoryLabel, "FAB A");
   assert.equal(k.penalties.length, 1);
   assert.equal(k.penalties[0].id, p1!.id);
   assert.equal(k.unrowed.length, 1);
   assert.equal(k.unrowed[0].workerName, "Bez Wiersza");
+  assert.equal(k.unrowed[0].count, 1);
+
+  // другий пропуск w1 НЕ плодить другий рядок ревʼю — та сама група, сума росте
+  const [e1b] = await entry(w1!.id, facA!.id, { dayOfWeek: "fri" });
+  const grouped = await request(app).post("/api/svodni/lock-pending").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, city: "Люблін", factoryLabel: "FAB A" });
+  const gk = grouped.body.pendingKara;
+  assert.equal(gk.absences.length, 1, "одна група на людину, не рядок на дату");
+  assert.deepEqual([...gk.absences[0].entryIds].sort(), [e1!.id, e1b!.id].sort());
+  assert.equal(gk.absences[0].amount, 400);
+  assert.equal(gk.absences[0].dates.length, 2);
+  await db.delete(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, e1b!.id));
 
   // міський лок (factoryLabel "") накриває ВСІ вкладки міста: у ревʼю тепер
   // і штраф w3 з FAB B, unrowed w2 матчиться по місту фабрики джерела

@@ -2463,6 +2463,7 @@ const EN: Record<string, string> = {
   // ── штрафи (/penalties) і пропуски (/absences) → Kara сводної ──
   "Є незняті штрафи, що цілять у рядки цієї області (поки затверджено — переноси їх пропускали). Прийняті перенесуться в колонку Kara одразу після розблокування.": "There are pending fines targeting rows in this scope (transfers skipped them while it was locked). Accepted ones go to the Kara column right after unlocking.",
   "пропуск": "absence",
+  "пропусків": "absences",
   "штраф (реєстр)": "fine (registry)",
   "нема рядка сводної цього місяця — нема з чого зняти": "no payroll sheet row this month — nothing to deduct from",
   "До перенесення в Kara:": "To transfer to Kara:",

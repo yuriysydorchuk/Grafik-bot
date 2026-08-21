@@ -78,11 +78,12 @@ type PendingChange = {
   createdAt: string; adminName: string | null; propagatable: boolean; items?: ImpactItem[];
 };
 // незняті штрафи (пропуски + реєстр /penalties), що цілять у рядки області —
-// поки вона була затверджена, перенесення їх пропускало
+// поки вона була затверджена, перенесення їх пропускало; пропуски згруповані
+// по людині+цільовому рядку (один рядок ревʼю на людину, не по рядку на дату)
 type PendingKara = {
-  absences: { entryId: number; workerId: number; workerName: string | null; date: string; sourceFactory: string | null; targetFactoryLabel: string; amount: number }[];
+  absences: { workerId: number; workerName: string | null; dates: string[]; sourceFactories: string[]; targetFactoryLabel: string; entryIds: number[]; amount: number }[];
   penalties: { id: number; workerId: number; workerName: string | null; sourceFactory: string | null; targetFactoryLabel: string; amount: number; note: string | null }[];
-  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; amount: number }[];
+  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; count: number; amount: number }[];
 };
 type LockPending = { lockedAt: string; changes: PendingChange[]; hidden: number; pendingKara: PendingKara };
 type ApplyKaraResp = {
@@ -786,20 +787,22 @@ function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
   // типово прийняті всі, що реально міняють цифри — відхилення свідоме
   const [selected, setSelected] = useState<Set<number>>(new Set(selectable.map(c => c.id)));
   const kara = data.pendingKara;
-  // штрафи: ключі a<entryId> / p<id>, типово вибрані всі
+  // штрафи: ключі a<workerId>|<ціль> (група пропусків людини) / p<id>, типово вибрані всі
+  const absKey = (a: PendingKara["absences"][number]) => `a${a.workerId}|${a.targetFactoryLabel}`;
   const [karaSel, setKaraSel] = useState<Set<string>>(new Set([
-    ...kara.absences.map(a => `a${a.entryId}`), ...kara.penalties.map(p => `p${p.id}`),
+    ...kara.absences.map(absKey), ...kara.penalties.map(p => `p${p.id}`),
   ]));
   const toggleKara = (key: string) => setKaraSel(prev => {
     const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
   });
+  const pickedAbs = kara.absences.filter(a => karaSel.has(absKey(a)));
+  const pickedPen = kara.penalties.filter(p => karaSel.has(`p${p.id}`));
   const karaPicked = {
-    entryIds: kara.absences.filter(a => karaSel.has(`a${a.entryId}`)).map(a => a.entryId),
-    penaltyIds: kara.penalties.filter(p => karaSel.has(`p${p.id}`)).map(p => p.id),
+    entryIds: pickedAbs.flatMap(a => a.entryIds),
+    penaltyIds: pickedPen.map(p => p.id),
   };
-  const karaPickedCount = karaPicked.entryIds.length + karaPicked.penaltyIds.length;
-  const karaPickedSum = r2(kara.absences.filter(a => karaSel.has(`a${a.entryId}`)).reduce((s, a) => s + a.amount, 0)
-    + kara.penalties.filter(p => karaSel.has(`p${p.id}`)).reduce((s, p) => s + p.amount, 0));
+  const karaPickedCount = pickedAbs.length + pickedPen.length;
+  const karaPickedSum = r2(pickedAbs.reduce((s, a) => s + a.amount, 0) + pickedPen.reduce((s, p) => s + p.amount, 0));
   const totalPicked = selected.size + karaPickedCount;
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
   return (
@@ -858,15 +861,20 @@ function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
             </div>
             <div className="max-h-60 space-y-1.5 overflow-y-auto">
               {kara.absences.map(a => (
-                <label key={`a${a.entryId}`} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 hover:bg-slate-50">
-                  <input type="checkbox" className="mt-0.5 accent-red-600" checked={karaSel.has(`a${a.entryId}`)} onChange={() => toggleKara(`a${a.entryId}`)} />
+                <label key={absKey(a)} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 hover:bg-slate-50">
+                  <input type="checkbox" className="mt-0.5 accent-red-600" checked={karaSel.has(absKey(a))} onChange={() => toggleKara(absKey(a))} />
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-700">
                       {a.workerName ?? "—"}
-                      <span className="text-slate-500">· {t("пропуск")} {fmtD(a.date)}{a.sourceFactory ? ` · ${a.sourceFactory}` : ""}</span>
+                      <span className="text-slate-500">
+                        · {a.entryIds.length === 1 ? t("пропуск") : `${t("пропусків")}: ${a.entryIds.length}`}
+                        {a.sourceFactories.length ? ` · ${a.sourceFactories.join(", ")}` : ""}
+                      </span>
                       <span className="font-semibold tabular-nums text-rose-700">{a.amount} zł</span>
                     </span>
-                    <span className="mt-0.5 block text-[11px] text-slate-400">→ Kara: {a.targetFactoryLabel}</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">
+                      {a.dates.map(d => `${d.slice(8, 10)}.${d.slice(5, 7)}`).join(", ")} · → Kara: {a.targetFactoryLabel}
+                    </span>
                   </span>
                 </label>
               ))}
@@ -887,7 +895,12 @@ function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
                 <div key={`u${i}`} className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-1.5 opacity-80">
                   <span className="flex flex-wrap items-center gap-1.5 text-slate-600">
                     {u.workerName ?? "—"}
-                    <span className="text-slate-500">· {u.kind === "absence" ? t("пропуск") : t("штраф (реєстр)")}{u.factory ? ` · ${u.factory}` : ""}</span>
+                    <span className="text-slate-500">
+                      · {u.kind === "absence"
+                        ? (u.count === 1 ? t("пропуск") : `${t("пропусків")}: ${u.count}`)
+                        : t("штраф (реєстр)")}
+                      {u.factory ? ` · ${u.factory}` : ""}
+                    </span>
                     <span className="tabular-nums">{u.amount} zł</span>
                   </span>
                   <span className="mt-0.5 block text-xs text-slate-400">{t("нема рядка сводної цього місяця — нема з чого зняти")}</span>

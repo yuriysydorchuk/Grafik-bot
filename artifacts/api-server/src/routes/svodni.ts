@@ -220,9 +220,11 @@ function nextMonthStart(month: string): string {
 async function pendingKaraForScope(
   month: string, lock: LockRow, monthRows: (typeof svodniRowsTable.$inferSelect)[],
 ): Promise<{
-  absences: { entryId: number; workerId: number; workerName: string | null; date: string; sourceFactory: string | null; targetFactoryLabel: string; amount: number }[];
+  // пропуски ЗГРУПОВАНІ по людині+цільовому рядку (людина з 5 пропусками —
+  // один рядок ревʼю з датами і сумою, не 5 «дублів»)
+  absences: { workerId: number; workerName: string | null; dates: string[]; sourceFactories: string[]; targetFactoryLabel: string; entryIds: number[]; amount: number }[];
   penalties: { id: number; workerId: number; workerName: string | null; sourceFactory: string | null; targetFactoryLabel: string; amount: number; note: string | null }[];
-  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; amount: number }[];
+  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; count: number; amount: number }[];
 }> {
   const monthStart = `${month}-01`;
   const monthEnd = nextMonthStart(month);
@@ -261,31 +263,48 @@ async function pendingKaraForScope(
   const names = new Map((wIds.length ? await db.select({ id: workersTable.id, name: workersTable.fullName })
     .from(workersTable).where(inArray(workersTable.id, wIds)) : []).map(w => [w.id, w.name]));
 
-  const absences: Awaited<ReturnType<typeof pendingKaraForScope>>["absences"] = [];
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const absGroups = new Map<string, Awaited<ReturnType<typeof pendingKaraForScope>>["absences"][number]>();
   const penalties: Awaited<ReturnType<typeof pendingKaraForScope>>["penalties"] = [];
-  const unrowed: Awaited<ReturnType<typeof pendingKaraForScope>>["unrowed"] = [];
+  const unrowedGroups = new Map<string, Awaited<ReturnType<typeof pendingKaraForScope>>["unrowed"][number]>();
+  const unrowedAdd = (workerId: number, kind: "absence" | "penalty", factory: string | null, amount: number) => {
+    const key = `${workerId}|${kind}|${factory ?? ""}`;
+    const g = unrowedGroups.get(key) ?? unrowedGroups.set(key, { workerName: names.get(workerId) ?? null, kind, factory, count: 0, amount: 0 }).get(key)!;
+    g.count++;
+    g.amount = r2(g.amount + amount);
+  };
   for (const a of absItems) {
     const target = targetRowFor(a.e.workerId, a.e.factoryId);
     if (!target) {
-      if (inScopeBySource(a.facName, a.facCity)) unrowed.push({ workerName: names.get(a.e.workerId) ?? null, kind: "absence", factory: a.facName, amount: a.amount });
+      if (inScopeBySource(a.facName, a.facCity)) unrowedAdd(a.e.workerId, "absence", a.facName, a.amount);
       continue;
     }
     if (!isLocked([lock], target.city, target.factoryLabel)) continue;
-    absences.push({ entryId: a.e.id, workerId: a.e.workerId, workerName: names.get(a.e.workerId) ?? null, date: a.date, sourceFactory: a.facName, targetFactoryLabel: target.factoryLabel, amount: a.amount });
+    const key = `${a.e.workerId}|${target.factoryLabel}`;
+    const g = absGroups.get(key) ?? absGroups.set(key, {
+      workerId: a.e.workerId, workerName: names.get(a.e.workerId) ?? null,
+      dates: [], sourceFactories: [], targetFactoryLabel: target.factoryLabel, entryIds: [], amount: 0,
+    }).get(key)!;
+    g.entryIds.push(a.e.id);
+    g.dates.push(a.date);
+    if (a.facName && !g.sourceFactories.includes(a.facName)) g.sourceFactories.push(a.facName);
+    g.amount = r2(g.amount + a.amount);
   }
   for (const p of penItems) {
     const target = targetRowFor(p.p.workerId, p.p.factoryId);
     if (!target) {
-      if (inScopeBySource(p.facName, p.facCity ?? null)) unrowed.push({ workerName: names.get(p.p.workerId) ?? null, kind: "penalty", factory: p.facName, amount: p.p.amount });
+      if (inScopeBySource(p.facName, p.facCity ?? null)) unrowedAdd(p.p.workerId, "penalty", p.facName, p.p.amount);
       continue;
     }
     if (!isLocked([lock], target.city, target.factoryLabel)) continue;
     penalties.push({ id: p.p.id, workerId: p.p.workerId, workerName: names.get(p.p.workerId) ?? null, sourceFactory: p.facName, targetFactoryLabel: target.factoryLabel, amount: p.p.amount, note: p.p.note });
   }
   const byName = (a: { workerName: string | null }, b: { workerName: string | null }) => (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl");
-  absences.sort((a, b) => byName(a, b) || a.date.localeCompare(b.date));
+  const absences = [...absGroups.values()];
+  for (const g of absences) g.dates.sort();
+  absences.sort(byName);
   penalties.sort(byName);
-  unrowed.sort(byName);
+  const unrowed = [...unrowedGroups.values()].sort(byName);
   return { absences, penalties, unrowed };
 }
 
