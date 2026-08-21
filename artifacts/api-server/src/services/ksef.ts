@@ -8,7 +8,7 @@
 // transfer title of the same firm; plus manual override from the UI.
 import crypto from "node:crypto";
 import { db } from "@workspace/db";
-import { ksefInvoicesTable, companiesTable, pnlEntriesTable, factoriesTable } from "@workspace/db";
+import { ksefInvoicesTable, companiesTable, pnlEntriesTable, factoriesTable, settingsTable } from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
@@ -98,6 +98,35 @@ export function revenueMonthFor(issueDate: string): string {
   return m === 1 ? `${y! - 1}-12` : `${y}-${String(m! - 1).padStart(2, "0")}`;
 }
 
+// ── XML фактури (FA(2)/FA(3)) — термін і форма оплати ──────────────────────────
+// Метадані KSeF не віддають terminu płatności — тягнемо з XML самої фактури.
+// Регекси толерантні до namespace-префіксів; кілька термінів (оплата частинами)
+// зводяться до найпізнішого. FormaPlatnosci: 1 = gotówka, 6 = przelew (решта — null).
+export function parseKsefXmlMeta(xml: string): { dueDate: string | null; paymentMethod: "przelew" | "gotowka" | null } {
+  let dueDate: string | null = null;
+  for (const m of xml.matchAll(/<(?:\w+:)?Termin>\s*(\d{4}-\d{2}-\d{2})\s*<\/(?:\w+:)?Termin>/g)) {
+    if (!dueDate || m[1]! > dueDate) dueDate = m[1]!;
+  }
+  const forma = xml.match(/<(?:\w+:)?FormaPlatnosci>\s*(\d+)\s*<\/(?:\w+:)?FormaPlatnosci>/)?.[1];
+  const paymentMethod = forma === "1" ? "gotowka" as const : forma === "6" ? "przelew" as const : null;
+  return { dueDate, paymentMethod };
+}
+
+// ── Статус останнього синку (крон і ручний пишуть однаково) ────────────────────
+export const KSEF_SYNC_SETTING = "ksef_last_sync";
+
+async function saveSyncStatus(result: KsefSyncResult): Promise<void> {
+  const value = JSON.stringify({ at: new Date().toISOString(), ok: result.errors.length === 0, ...result });
+  await db.insert(settingsTable).values({ key: KSEF_SYNC_SETTING, value })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+}
+
+export async function lastSyncStatus(): Promise<{ at: string; ok: boolean; companies: number; fetched: number; inserted: number; errors: string[] } | null> {
+  const [row] = await db.select().from(settingsTable).where(eq(settingsTable.key, KSEF_SYNC_SETTING));
+  if (!row?.value) return null;
+  try { return JSON.parse(row.value); } catch { return null; }
+}
+
 function companyTokens(): Map<string, string> {
   const out = new Map<string, string>();
   for (const [name, env] of [["ES", "KSEF_TOKEN_ES"], ["ESO", "KSEF_TOKEN_ESO"], ["Klinex", "KSEF_TOKEN_KLINEX"]] as const) {
@@ -176,6 +205,25 @@ async function authenticate(nip: string, token: string): Promise<string> {
   const redeem = await jfetch("/auth/token/redeem", { method: "POST", headers: { Authorization: `Bearer ${authToken}` } });
   if (redeem.status !== 200) throw new Error(`redeem: HTTP ${redeem.status}`);
   return redeem.body.accessToken.token;
+}
+
+// Доступ до KSeF для фірми на ім'я (для архіву фактур поза syncKsef).
+// null = для фірми немає токена в env — не помилка, просто пропускаємо.
+export async function ksefAccessFor(company: { name: string; nip: string | null }): Promise<string | null> {
+  const token = companyTokens().get(company.name);
+  if (!token) return null;
+  if (!company.nip) throw new Error(`${company.name}: немає NIP у довіднику фірм`);
+  return authenticate(company.nip, token);
+}
+
+// XML фактури за її KSeF-номером (стандартний формат — так і зберігаємо в архів)
+export async function downloadKsefInvoiceXml(access: string, ksefNumber: string): Promise<string> {
+  const res = await fetch(`${KSEF_BASE}/invoices/ksef/${encodeURIComponent(ksefNumber)}`, {
+    headers: { Authorization: `Bearer ${access}` },
+  });
+  const text = await res.text();
+  if (res.status !== 200) throw new Error(`download: HTTP ${res.status} ${text.slice(0, 150)}`);
+  return text;
 }
 
 // ── sync ───────────────────────────────────────────────────────────────────────
@@ -258,6 +306,7 @@ export async function syncKsef(): Promise<KsefSyncResult> {
   // rebuild every month present — cheap, and it picks up re-labeling/segmenting
   const all: any = await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices`);
   for (const row of (all.rows ?? all) as any[]) await feedPnlRevenue(String(row.m));
+  await saveSyncStatus(result).catch(e => logger.warn({ err: String(e) }, "ksef sync status save failed"));
   return result;
 }
 

@@ -83,7 +83,7 @@ const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
 import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
-import { isAdmin, getAdmin, getWorker, getDriver } from "./roles";
+import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
@@ -280,7 +280,7 @@ bot.start(async (ctx) => {
   }
 
   const admin = await getAdmin(tid);
-  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "👋 Привіт, *{name}*! Ви адміністратор.", { name }), { parse_mode: "Markdown", ...adminMenu(al) }); }
+  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "👋 Привіт, *{name}*! Ви адміністратор.", { name }), { parse_mode: "Markdown", ...(await adminMenuFor(admin, al)) }); }
   const driver = await getDriver(tid);
   if (driver) {
     const dl = olang(driver);
@@ -332,7 +332,7 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
   const tid = String(ctx.from.id);
   clearState(tid);
   const admin = await getAdmin(tid);
-  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), adminMenu(al)); }
+  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), await adminMenuFor(admin, al)); }
   const driver = await getDriver(tid);
   if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
@@ -380,7 +380,7 @@ bot.hears(trAll("hr.cancel"), async (ctx) => {
   const tid = String(ctx.from.id);
   clearState(tid);
   const admin = await getAdmin(tid);
-  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), adminMenu(al)); }
+  if (admin) { const al = olang(admin); return ctx.reply(tb(al, "Головне меню:"), await adminMenuFor(admin, al)); }
   const driver = await getDriver(tid);
   if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
@@ -403,7 +403,7 @@ bot.action(/^olang:(uk|en|ru)$/, async (ctx) => {
     await db.update(adminsTable).set({ language: lang }).where(eq(adminsTable.id, admin.id));
     await ctx.answerCbQuery();
     try { await ctx.deleteMessage(); } catch { /* ignore */ }
-    return ctx.reply(tb(lang, "✅ Мову змінено."), adminMenu(lang));
+    return ctx.reply(tb(lang, "✅ Мову змінено."), await adminMenuFor(admin, lang));
   }
   const driver = await getDriver(tid);
   if (driver) {

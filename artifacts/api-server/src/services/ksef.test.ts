@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { revenueMonthFor, mapBuyerToClient, segmentForBuyer } from "./ksef.ts";
+import { revenueMonthFor, mapBuyerToClient, segmentForBuyer, parseKsefXmlMeta } from "./ksef.ts";
 
 test("revenueMonthFor: фактура за попередній місяць (акруал M−1)", () => {
   assert.equal(revenueMonthFor("2026-06-08"), "2026-05");
@@ -30,4 +30,34 @@ test("segmentForBuyer: wspólnoty і Galej — прибирання, решта 
   assert.equal(segmentForBuyer("GALEY KRZYSZTOF GALEJ"), "cleaning");
   assert.equal(segmentForBuyer("AGRAM SPÓŁKA AKCYJNA"), "main");
   assert.equal(segmentForBuyer(null), "main");
+});
+
+test("parseKsefXmlMeta: термін оплати і форма з XML FA", () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Faktura xmlns="http://crd.gov.pl/wzor/2023/06/29/12648/">
+  <Fa><P_1>2026-08-03</P_1><P_2>FV 12/08/2026</P_2>
+    <Platnosc>
+      <FormaPlatnosci>6</FormaPlatnosci>
+      <TerminPlatnosci><Termin>2026-08-17</Termin></TerminPlatnosci>
+    </Platnosc>
+  </Fa>
+</Faktura>`;
+  assert.deepEqual(parseKsefXmlMeta(xml), { dueDate: "2026-08-17", paymentMethod: "przelew" });
+});
+
+test("parseKsefXmlMeta: кілька термінів → найпізніший; готівка; namespace-префікси", () => {
+  const xml = `<ns:Faktura xmlns:ns="urn:x"><ns:Fa><ns:Platnosc>
+    <ns:FormaPlatnosci>1</ns:FormaPlatnosci>
+    <ns:TerminPlatnosci><ns:Termin>2026-09-01</ns:Termin></ns:TerminPlatnosci>
+    <ns:TerminPlatnosci><ns:Termin>2026-08-15</ns:Termin></ns:TerminPlatnosci>
+  </ns:Platnosc></ns:Fa></ns:Faktura>`;
+  assert.deepEqual(parseKsefXmlMeta(xml), { dueDate: "2026-09-01", paymentMethod: "gotowka" });
+});
+
+test("parseKsefXmlMeta: без блоку оплати — нулі; невідома форма — null", () => {
+  assert.deepEqual(parseKsefXmlMeta("<Faktura><Fa><P_2>X</P_2></Fa></Faktura>"), { dueDate: null, paymentMethod: null });
+  assert.deepEqual(
+    parseKsefXmlMeta("<Fa><Platnosc><FormaPlatnosci>2</FormaPlatnosci></Platnosc></Fa>"),
+    { dueDate: null, paymentMethod: null },
+  );
 });

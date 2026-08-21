@@ -3,13 +3,14 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { ksefInvoicesTable, companiesTable } from "@workspace/db";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { archiveInvoicesToDrive } from "../services/invoiceArchive";
 import { authRequired, requireCap } from "../lib/auth";
 import { syncKsef, matchKsefPayments, feedPnlRevenue } from "../services/ksef";
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireCap("viewFinance"));
+router.use("/ksef", requireCap("viewFinance")); // скоуп по префіксу
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
@@ -96,6 +97,36 @@ router.patch("/ksef/invoices/:id", async (req, res) => {
 
 router.post("/ksef/sync", async (_req, res) => {
   ok(res, await syncKsef());
+});
+
+// Разовий пуш однієї фактури в архів на Drive (кнопка в рядку /ksef);
+// заодно з XML підтягуються термін оплати і форма оплати
+router.post("/ksef/invoices/:id/drive", async (req, res) => {
+  const id = Number(req.params.id);
+  const [inv] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
+  if (!inv) return fail(res, 404, "not found");
+  const r = await archiveInvoicesToDrive({ ksefIds: [id], force: true });
+  if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
+  if (r.errors.length) return fail(res, 502, r.errors[0]!);
+  const [updated] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
+  ok(res, { driveFileId: updated?.driveFileId ?? null, driveError: updated?.driveError ?? null });
+});
+
+// Залити на Drive всі фактури місяця вкладки (sale АБО purchase), крім уже
+// залитих. Місяць — той, яким групує сторінка (revenue_month: для продажів це
+// «місяць роботи», папка на Диску все одно за датою виставлення).
+router.post("/ksef/drive-month", async (req, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const kind = validKind(req.body?.kind);
+  const ids = (await db.select({ id: ksefInvoicesTable.id }).from(ksefInvoicesTable)
+    .where(and(eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind),
+      or(isNull(ksefInvoicesTable.driveFileId), isNull(ksefInvoicesTable.drivePdfId))!)))
+    .map(r => r.id);
+  if (!ids.length) return ok(res, { processed: 0, uploaded: 0, failed: 0, errors: [] });
+  const r = await archiveInvoicesToDrive({ ksefIds: ids });
+  if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
+  ok(res, r);
 });
 
 router.post("/ksef/rematch", async (_req, res) => {

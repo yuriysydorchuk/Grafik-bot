@@ -1004,6 +1004,11 @@ export const invoicesTable = pgTable("invoices", {
   note: text("note"),
   filePath: text("file_path"),                 // скан/фото фактури на диску (uploads/invoices/)
   createdBy: integer("created_by").references(() => adminsTable.id), // хто вніс (site/бот)
+  paymentMethod: text("payment_method"),       // przelew | gotowka | NULL = авто (реєстр/банк)
+  cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий» — нотатка кшєнгової
+  driveFileId: text("drive_file_id"),          // файл фактури на Google Drive (Faktury kosztowe)
+  driveError: text("drive_error"),             // чому файла нема на Drive
+  driveSyncedAt: timestamp("drive_synced_at"),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 });
 
@@ -1466,6 +1471,15 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   paidVia: text("paid_via"),                    // bank | register | korekta (how auto-paid was decided)
   manualStatus: text("manual_status"),          // paid | unpaid | NULL (auto)
   manualPaidDate: date("manual_paid_date"),
+  dueDate: date("due_date"),                    // термін оплати (з XML фактури; можна правити вручну)
+  paymentMethod: text("payment_method"),        // przelew | gotowka | NULL = авто (банк/XML)
+  paymentMethodXml: text("payment_method_xml"), // метод з XML (FormaPlatnosci) — авто-фолбек
+  cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий»
+  xmlPath: text("xml_path"),                    // локальна копія XML (uploads/ksef-xml/)
+  driveFileId: text("drive_file_id"),           // XML на Google Drive (Faktury kosztowe/sprzedażowe)
+  drivePdfId: text("drive_pdf_id"),             // PDF-візуалізація поряд з XML (лінк веб-панелі веде сюди)
+  driveError: text("drive_error"),              // чому файла нема на Drive
+  driveSyncedAt: timestamp("drive_synced_at"),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 }, t => [
   uniqueIndex("ksef_invoices_number_kind_uniq").on(t.ksefNumber, t.kind),

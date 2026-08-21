@@ -159,7 +159,8 @@ export function startScheduler() {
       try {
         const { syncBankTransactions } = await import("./bankStatements");
         const r = await syncBankTransactions();
-        logger.info({ files: r.files, imported: r.imported, skipped: r.skipped }, "Daily bank statement import");
+        if (r.unmatched.length) logger.warn({ files: r.files, imported: r.imported, skipped: r.skipped, unmatched: r.unmatched }, "Daily bank statement import: unmatched folders skipped");
+        else logger.info({ files: r.files, imported: r.imported, skipped: r.skipped }, "Daily bank statement import");
       } catch (e: any) { logger.warn({ err: e?.message }, "Daily bank import failed"); }
       // Каса більше не синкається зі STAN KASY (таблиця виведена з експлуатації
       // 08.2026): записи ведуться на /cash, історія таблиці лишилась read-only.
@@ -178,6 +179,16 @@ export function startScheduler() {
         const k = await syncKsef();
         logger.info({ companies: k.companies, inserted: k.inserted, paidMatched: k.paidMatched, errors: k.errors.length }, "Daily KSeF sync");
       } catch (e: any) { logger.warn({ err: e?.message }, "Daily KSeF sync failed"); }
+      try {
+        // архів фактур на Drive (Faktury kosztowe/sprzedażowe): KSeF-XML + скани,
+        // яких ще немає на Диску; принагідно тягне due_date/FormaPlatnosci з XML.
+        // Авто-запуск НЕ чіпає минулі місяці (рішення 13.08.2026) — старе доганяється
+        // вручну кнопкою місяця на /cost-invoices
+        const { archiveInvoicesToDrive } = await import("./invoiceArchive");
+        const fromMonth = new Date().toLocaleDateString("sv-SE", { timeZone: TZ }).slice(0, 7);
+        const a = await archiveInvoicesToDrive({ fromMonth });
+        logger.info({ processed: a.processed, uploaded: a.uploaded, failed: a.failed, errors: a.errors.length, fromMonth }, "Daily invoice drive archive");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily invoice drive archive failed"); }
       try {
         const { consentExpiryWarnings } = await import("./bankApi");
         await sendFinanceAlerts(await consentExpiryWarnings());

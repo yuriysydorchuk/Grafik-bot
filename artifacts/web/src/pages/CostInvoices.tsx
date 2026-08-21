@@ -4,12 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine } from "lucide-react";
+import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud } from "lucide-react";
 import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 
+type PayMethod = "przelew" | "gotowka" | null;
 interface Row {
   key: string; origin: "ksef" | "local"; id: number;
   source: "ksef" | "manual" | "scan" | "sheet";
@@ -20,11 +21,20 @@ interface Row {
   paid: boolean; paidDate: string | null; paidSource: string | null;
   note: string | null; hasFile: boolean; dupOfKsefId: number | null;
   hostelId: number | null; vehicleId: number | null; city: string | null;
+  paymentMethod: PayMethod; paymentMethodSource: "manual" | "auto" | null;
+  cashReport: boolean; overdue: boolean;
+  driveFileId: string | null; drivePdfId: string | null; driveError: string | null;
+  addedBy: string | null; addedAt: string | null;
 }
 interface Resp {
   month: string; rows: Row[]; cities: string[];
-  totals: { count: number; gross: number; paidGross: number; unpaidGross: number; unpaidCount: number };
+  totals: {
+    count: number; gross: number; paidGross: number; unpaidGross: number; unpaidCount: number;
+    przelewGross: number; przelewCount: number; gotowkaGross: number; gotowkaCount: number;
+    overdueGross: number; overdueCount: number;
+  };
   companies: { id: number; name: string }[];
+  ksefSync: { at: string; ok: boolean; companies: number; fetched: number; inserted: number; errors: string[] } | null;
 }
 
 const zl = (n: number) => `${(n ?? 0).toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
@@ -72,10 +82,13 @@ export default function CostInvoices() {
     finally { setScanning(false); if (fileInput.current) fileInput.current.value = ""; }
   };
 
+  const [monthPushing, setMonthPushing] = useState(false);
   const months = useQuery<{ months: string[] }>({ queryKey: ["ci-months"], queryFn: () => get("/cost-invoices/months") });
   const data = useQuery<Resp>({
     queryKey: ["cost-invoices", month, companyId],
     queryFn: () => get(`/cost-invoices?month=${month}${companyId ? `&companyId=${companyId}` : ""}`),
+    // поки йде заливка місяця на Drive — рядки зеленіють поступово
+    refetchInterval: monthPushing ? 4000 : false,
   });
   const d = data.data;
   const invalidate = () => qc.invalidateQueries({ queryKey: ["cost-invoices"] });
@@ -91,17 +104,78 @@ export default function CostInvoices() {
     return r;
   }, [d, status, source, q]);
 
-  const togglePaid = async (r: Row) => {
+  const patchRow = async (r: Row, body: Record<string, unknown>) => {
     try {
-      if (r.origin === "ksef") await patch(`/cost-invoices/ksef/${r.id}`, { paid: !r.paid });
-      else await patch(`/cost-invoices/${r.id}`, { paid: !r.paid });
+      await patch(r.origin === "ksef" ? `/cost-invoices/ksef/${r.id}` : `/cost-invoices/${r.id}`, body);
       invalidate();
     } catch (e: any) { toast.error(e?.message || "error"); }
+  };
+  const togglePaid = (r: Row) => patchRow(r, { paid: !r.paid });
+  // клік по способу оплати: авто → переказ → готівка → назад на авто
+  const cycleMethod = (r: Row) => {
+    const next: PayMethod = r.paymentMethodSource !== "manual"
+      ? (r.paymentMethod === "przelew" ? "gotowka" : "przelew")
+      : r.paymentMethod === "przelew" ? "gotowka" : null;
+    void patchRow(r, { paymentMethod: next });
+  };
+
+  // разовий пуш однієї фактури на Drive (хмарка в рядку) — KSeF-рядку заодно
+  // підтягує термін оплати з XML
+  const [pushing, setPushing] = useState<string | null>(null);
+  const pushDrive = async (r: Row) => {
+    setPushing(r.key);
+    try {
+      const res = await post(r.origin === "ksef" ? `/cost-invoices/ksef/${r.id}/drive` : `/cost-invoices/${r.id}/drive`, {});
+      if (res?.driveFileId) toast.success(t("Фактура на Drive"));
+      else toast.error(res?.driveError || t("Не вдалося залити на Drive"));
+      invalidate();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setPushing(null); }
+  };
+
+  // «Місяць на Drive»: підтягнути всі фактури вибраного місяця, крім уже залитих
+  const missingOnDrive = useMemo(() => (d?.rows ?? []).filter(r => !r.driveFileId).length, [d]);
+  const runMonthDrive = async () => {
+    setMonthPushing(true);
+    try {
+      const r = await post("/cost-invoices/drive-month", { month });
+      if (r?.failed || r?.errors?.length) {
+        toast.warning(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: (r?.failed ?? 0) + (r?.errors?.length ?? 0) }) + (r?.errors?.[0] ? ` — ${r.errors[0]}` : ""));
+      } else toast.success(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: 0 }));
+      invalidate();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setMonthPushing(false); }
+  };
+
+  // ручний синк: KSeF + довантаження архіву на Drive у фоні
+  const [syncing, setSyncing] = useState(false);
+  const runSync = async () => {
+    setSyncing(true);
+    try {
+      const r = await post("/cost-invoices/sync", {});
+      const errs = r?.sync?.errors?.length ?? 0;
+      if (errs) toast.warning(t("Синк KSeF: {n} нових, помилок: {e}", { n: r.sync.inserted, e: errs }));
+      else toast.success(t("Синк KSeF: {n} нових. Архів на Drive оновлюється у фоні.", { n: r?.sync?.inserted ?? 0 }));
+      invalidate();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setSyncing(false); }
   };
 
   return (
     <>
       <PageHeader title={t("Фактури коштові")} subtitle={t("KSeF-закупівлі + внесені вручну і скани з бота — оплати в одному місці")} />
+
+      {d && (
+        <div className="-mt-2 mb-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-400">{t("Останній синк KSeF:")}</span>
+          {d.ksefSync ? (
+            <span className={d.ksefSync.ok ? "text-emerald-600" : "text-amber-600"} title={(d.ksefSync.errors ?? []).join("\n")}>
+              {new Date(d.ksefSync.at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              {d.ksefSync.ok ? " ✅" : ` ⚠️ ${t("помилки")}: ${d.ksefSync.errors.length}`}
+            </span>
+          ) : <span className="text-slate-400">{t("ще не запускався")}</span>}
+        </div>
+      )}
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div>
@@ -141,6 +215,16 @@ export default function CostInvoices() {
         </div>
         <input ref={fileInput} type="file" accept=".pdf,image/*" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) void scanPick(f); }} />
+        {missingOnDrive > 0 && (
+          <Button variant="secondary" disabled={monthPushing} onClick={runMonthDrive}
+            title={t("Залити на Drive всі фактури цього місяця, крім уже залитих")}>
+            <UploadCloud className={`mr-1 h-4 w-4 ${monthPushing ? "animate-pulse" : ""}`} />
+            {monthPushing ? t("Заливаю…") : t("Місяць на Drive ({n})", { n: missingOnDrive })}
+          </Button>
+        )}
+        <Button variant="secondary" disabled={syncing} onClick={runSync} title={t("Підтягнути свіже з KSeF і довантажити архів фактур на Google Drive")}>
+          <RefreshCw className={`mr-1 h-4 w-4 ${syncing ? "animate-spin" : ""}`} />{syncing ? t("Синкую…") : t("Синк KSeF")}
+        </Button>
         <Button variant="secondary" disabled={scanning} onClick={() => fileInput.current?.click()}>
           <ScanLine className={`mr-1 h-4 w-4 ${scanning ? "animate-pulse" : ""}`} />{scanning ? t("Розпізнаю…") : t("Скан")}
         </Button>
@@ -153,30 +237,47 @@ export default function CostInvoices() {
             <Tile icon={<Receipt className="h-5 w-5 text-slate-400" />} label={t("Разом (без дублів)")} value={zl(d.totals.gross)} sub={t("{n} фактур", { n: d.totals.count })} />
             <Tile icon={<CheckCircle2 className="h-5 w-5 text-emerald-500" />} label={t("Оплачено")} value={zl(d.totals.paidGross)} />
             <Tile icon={<AlertCircle className="h-5 w-5 text-amber-500" />} label={t("Не оплачено")} value={zl(d.totals.unpaidGross)} sub={t("{n} фактур", { n: d.totals.unpaidCount })} tone={d.totals.unpaidGross > 0 ? "text-amber-600" : undefined} />
+            <Tile icon={<Clock className="h-5 w-5 text-orange-500" />} label={t("Протерміновано")} value={zl(d.totals.overdueGross)} sub={t("{n} фактур", { n: d.totals.overdueCount })} tone={d.totals.overdueCount > 0 ? "text-orange-600" : undefined} />
+            <Tile icon={<Landmark className="h-5 w-5 text-sky-500" />} label={t("Переказ")} value={zl(d.totals.przelewGross)} sub={t("{n} фактур", { n: d.totals.przelewCount })} />
+            <Tile icon={<Banknote className="h-5 w-5 text-emerald-500" />} label={t("Готівка")} value={zl(d.totals.gotowkaGross)} sub={t("{n} фактур", { n: d.totals.gotowkaCount })} />
             <Tile icon={<FileText className="h-5 w-5 text-slate-400" />} label={t("Показано")} value={String(rows.length)} sub={t("з {n}", { n: d.rows.length })} />
           </div>
 
           <Card className="overflow-x-auto p-0">
             {!rows.length ? <Empty>{t("Нічого не знайдено")}</Empty> : (
-              <table className="w-full min-w-[880px] text-sm">
+              <table className="w-full min-w-[1000px] text-sm">
                 <thead><tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
                   <th className="px-4 py-2.5">{t("Дата")}</th>
                   <th className="px-3 py-2.5">{t("Номер")}</th>
                   <th className="px-3 py-2.5">{t("Постачальник")}</th>
                   {!companyId && <th className="px-3 py-2.5">{t("Фірма")}</th>}
                   <th className="px-3 py-2.5 text-right">{t("Брутто")}</th>
+                  <th className="px-3 py-2.5">{t("Спосіб")}</th>
                   <th className="px-3 py-2.5">{t("Термін")}</th>
                   <th className="px-3 py-2.5">{t("Оплата")}</th>
                   <th className="px-3 py-2.5" />
                 </tr></thead>
                 <tbody>
                   {rows.map(r => (
-                    <tr key={r.key} className={`border-b border-slate-100 hover:bg-slate-50/60 ${r.dupOfKsefId ? "opacity-50" : ""}`}>
+                    <tr key={r.key} className={`border-b border-slate-100 hover:bg-slate-50/60 ${r.dupOfKsefId ? "opacity-50" : ""} ${!r.driveFileId ? "bg-rose-50/60" : r.overdue ? "bg-orange-50/60" : ""}`}>
                       <td className="whitespace-nowrap px-4 py-2 text-slate-500">{r.issueDate ?? "—"}</td>
                       <td className="px-3 py-2">
-                        <div className="max-w-[190px] truncate font-medium text-slate-700" title={r.number ?? ""}>{r.number ?? "—"}</div>
+                        {r.driveFileId ? (
+                          <a href={`https://drive.google.com/file/d/${r.drivePdfId ?? r.driveFileId}/view`} target="_blank" rel="noreferrer"
+                            className="block max-w-[190px] truncate font-medium text-sky-700 hover:underline" title={t("відкрити фактуру на Google Drive")}>
+                            {r.number ?? "—"}
+                          </a>
+                        ) : (
+                          <div className="max-w-[190px] truncate font-medium text-slate-700" title={r.number ?? ""}>{r.number ?? "—"}</div>
+                        )}
                         <div className="mt-0.5 flex items-center gap-1">
                           <span className={`rounded px-1 py-0.5 text-[10px] font-semibold ${SOURCE_BADGE[r.source]!.cls}`}>{t(SOURCE_BADGE[r.source]!.label)}</span>
+                          {!r.driveFileId && (
+                            <span className="rounded bg-rose-100 px-1 py-0.5 text-[10px] font-semibold text-rose-700"
+                              title={r.driveError ? r.driveError : t("ще не синковано з Drive (крон 06:00 або кнопка «Синк KSeF»)")}>
+                              {t("нема на Drive")}{r.driveError ? `: ${r.driveError}` : ""}
+                            </span>
+                          )}
                           {r.dupOfKsefId && <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t("та сама фактура вже є з KSeF — цей рядок не рахується в підсумках")}>{t("дубль KSeF")}</span>}
                           {r.hasFile && (
                             <a href={`/api/cost-invoices/${r.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center text-[10px] text-red-600 hover:underline">
@@ -184,6 +285,11 @@ export default function CostInvoices() {
                             </a>
                           )}
                         </div>
+                        {r.addedBy && (
+                          <div className="mt-0.5 text-[10px] text-slate-400" title={r.addedAt ? new Date(r.addedAt).toLocaleString("uk-UA") : ""}>
+                            {t("додав(-ла)")} {r.addedBy}{r.addedAt ? ` · ${new Date(r.addedAt).toLocaleDateString("uk-UA")}` : ""}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <div className="max-w-[260px] truncate text-slate-700" title={r.seller ?? ""}>{r.seller ?? "—"}</div>
@@ -191,9 +297,30 @@ export default function CostInvoices() {
                       </td>
                       {!companyId && <td className="px-3 py-2 text-slate-500">{r.firm ?? "—"}</td>}
                       <td className="whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums">{zl(r.gross)}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">
-                        {r.dueDate ?? "—"}
-                        {!r.paid && r.dueDate && r.dueDate < new Date().toISOString().slice(0, 10) && <span className="ml-1 font-semibold text-rose-600">{t("прострочено")}</span>}
+                      <td className="whitespace-nowrap px-3 py-2">
+                        <button onClick={() => cycleMethod(r)}
+                          className={`rounded px-1.5 py-0.5 text-xs font-medium ${r.paymentMethod === "gotowka" ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : r.paymentMethod === "przelew" ? "bg-sky-50 text-sky-700 hover:bg-sky-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"}`}
+                          title={t("клік — змінити: переказ → готівка → авто")}>
+                          {r.paymentMethod === "gotowka" ? `💵 ${t("готівка")}` : r.paymentMethod === "przelew" ? `🏦 ${t("переказ")}` : "—"}
+                        </button>
+                        {r.paymentMethod && r.paymentMethodSource === "auto" && <span className="ml-1 text-[10px] text-slate-400">{t("авто")}</span>}
+                        {r.paymentMethod === "gotowka" && (
+                          <label className="mt-0.5 flex cursor-pointer items-center gap-1 text-[11px] text-slate-500" title={t("відмітка кшєнгової: фактура внесена в готівковий рапорт")}>
+                            <input type="checkbox" className="h-3.5 w-3.5 rounded border-slate-300" checked={r.cashReport}
+                              onChange={() => void patchRow(r, { cashReport: !r.cashReport })} />
+                            {t("рапорт готівковий")}
+                          </label>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-xs">
+                        {r.origin === "ksef" ? (
+                          <input type="date" value={r.dueDate ?? ""} onChange={e => void patchRow(r, { dueDate: e.target.value || null })}
+                            title={t("термін оплати (з XML фактури; можна виправити)")}
+                            className={`w-32 rounded border border-transparent bg-transparent p-0 text-xs hover:border-slate-300 ${r.overdue ? "font-semibold text-orange-600" : "text-slate-500"}`} />
+                        ) : (
+                          <span className={r.overdue ? "font-semibold text-orange-600" : "text-slate-500"}>{r.dueDate ?? "—"}</span>
+                        )}
+                        {r.overdue && <span className="ml-1 font-semibold text-orange-600">{t("прострочено")}</span>}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2">
                         <button onClick={() => togglePaid(r)}
@@ -206,6 +333,13 @@ export default function CostInvoices() {
                         {r.paid && r.paidSource === "manual" && <span className="ml-1 text-[10px] text-violet-500">{t("вручну")}</span>}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2 text-right">
+                        {!r.driveFileId && (
+                          <button className="p-1 text-slate-300 hover:text-sky-600 disabled:animate-pulse" disabled={pushing === r.key}
+                            title={t("Залити на Drive зараз (KSeF-рядку заодно підтягне термін оплати)")}
+                            onClick={() => void pushDrive(r)}>
+                            <UploadCloud className="h-4 w-4" />
+                          </button>
+                        )}
                         {r.origin === "local" && (r.source === "manual" || r.source === "scan") && (
                           <>
                             <button className="p-1 text-slate-300 hover:text-slate-600" onClick={() => setEditing(r)}><Pencil className="h-4 w-4" /></button>
@@ -224,6 +358,7 @@ export default function CostInvoices() {
           </Card>
           <p className="mt-3 text-xs text-slate-400">
             {t("KSeF-фактури приходять автоматично; «вручну» — внесені тут; «скан» — з бота (кнопка «📄 Фактура») або кнопкою «Скан». Оплата «витяг» проставляється банківським матчингом сама.")}
+            {" "}{t("Усі фактури архівуються на Google Drive (Faktury kosztowe → рік → місяць → фірма): KSeF — стандартним XML, скани — PDF. Червоний рядок = файла ще немає на Drive (причина — в бейджі).")}
           </p>
         </>
       )}

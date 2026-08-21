@@ -3,7 +3,8 @@
 // manual override). Feeds P&L revenue (netto per client).
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, TrendingUp, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { RefreshCw, TrendingUp, FileText, CheckCircle2, AlertCircle, UploadCloud } from "lucide-react";
 import { get, post, patch } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
@@ -14,6 +15,38 @@ interface Inv {
   sellerName: string | null;
   net: number; vat: number; gross: number; currency: string; revenueMonth: string;
   paid: boolean; effPaidDate: string | null; paidSource: "bank" | "manual" | "register" | "korekta" | null;
+  driveFileId: string | null; drivePdfId: string | null; driveError: string | null;
+}
+
+// номер → файл в архіві на Google Drive (стандартний XML з KSeF)
+function InvNumber({ inv }: { inv: Inv }) {
+  const t = useT();
+  if (!inv.driveFileId) return <span title={inv.driveError ?? undefined}>{inv.invoiceNumber}</span>;
+  return (
+    <a href={`https://drive.google.com/file/d/${inv.drivePdfId ?? inv.driveFileId}/view`} target="_blank" rel="noreferrer"
+      className="text-sky-700 hover:underline" title={t("відкрити фактуру на Google Drive")}>
+      {inv.invoiceNumber}
+    </a>
+  );
+}
+
+// маркер «перенесена на Drive / ні»; без onPush — лише індикатор (модалка)
+function DriveCell({ inv, pushing, onPush }: { inv: Inv; pushing?: boolean; onPush?: () => void }) {
+  const t = useT();
+  if (inv.driveFileId) return (
+    <a href={`https://drive.google.com/file/d/${inv.drivePdfId ?? inv.driveFileId}/view`} target="_blank" rel="noreferrer"
+      className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:underline" title={t("на Drive — відкрити")}>
+      <CheckCircle2 className="h-3.5 w-3.5" />Drive
+    </a>
+  );
+  if (!onPush) return <span className="text-xs font-medium text-rose-600" title={inv.driveError ?? undefined}>{t("нема на Drive")}</span>;
+  return (
+    <button onClick={onPush} disabled={pushing}
+      className="inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:animate-pulse"
+      title={inv.driveError ? `${t("нема на Drive")}: ${inv.driveError}` : t("ще не на Drive — клік, щоб залити зараз")}>
+      <UploadCloud className="h-3.5 w-3.5" />{t("залити")}
+    </button>
+  );
 }
 interface Data {
   month: string;
@@ -38,8 +71,14 @@ export default function Ksef() {
   const [search, setSearch] = useState("");
   const [party, setParty] = useState(""); // counterparty picked in the by-client/by-supplier table
   const [busy, setBusy] = useState(false);
+  const [monthPushing, setMonthPushing] = useState(false);
+  const [pushingId, setPushingId] = useState<number | null>(null);
   const active = month || months.data?.months[0] || "";
-  const q = useQuery<Data>({ queryKey: ["ksef", kind, active], queryFn: () => get(`/ksef?month=${active}&kind=${kind}`), enabled: !!active });
+  const q = useQuery<Data>({
+    queryKey: ["ksef", kind, active], queryFn: () => get(`/ksef?month=${active}&kind=${kind}`), enabled: !!active,
+    // поки місяць заливається на Drive — рядки зеленіють поступово
+    refetchInterval: monthPushing ? 4000 : false,
+  });
   const d = q.data;
   const invalidate = () => ["ksef", "ksef-months", "pnl", "pnl-months"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
   const switchKind = (k: "sale" | "purchase") => { setKind(k); setMonth(""); setFirm(""); setSearch(""); setParty(""); };
@@ -47,6 +86,30 @@ export default function Ksef() {
 
   const syncNow = async () => { setBusy(true); try { await post("/ksef/sync", {}); invalidate(); } finally { setBusy(false); } };
   const togglePaid = async (inv: Inv) => { await patch(`/ksef/invoices/${inv.id}`, { paid: !inv.paid }); invalidate(); };
+
+  // архів на Drive: одна фактура (кнопка в рядку) або весь місяць вкладки
+  const missingOnDrive = (d?.invoices ?? []).filter(i => !i.driveFileId).length;
+  const pushOne = async (inv: Inv) => {
+    setPushingId(inv.id);
+    try {
+      const r = await post(`/ksef/invoices/${inv.id}/drive`, {});
+      if (r?.driveFileId) toast.success(t("Фактура на Drive"));
+      else toast.error(r?.driveError || t("Не вдалося залити на Drive"));
+      invalidate();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setPushingId(null); }
+  };
+  const pushMonth = async () => {
+    setMonthPushing(true);
+    try {
+      const r = await post("/ksef/drive-month", { month: active, kind });
+      if (r?.failed || r?.errors?.length) {
+        toast.warning(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: (r?.failed ?? 0) + (r?.errors?.length ?? 0) }) + (r?.errors?.[0] ? ` — ${r.errors[0]}` : ""));
+      } else toast.success(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: 0 }));
+      invalidate();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setMonthPushing(false); }
+  };
 
   const s = search.trim().toUpperCase();
   const shown = (d?.invoices ?? []).filter(i =>
@@ -96,7 +159,14 @@ export default function Ksef() {
           </div>
         )}
         <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={isPurchase ? t("Пошук: номер, постачальник…") : t("Пошук: номер, покупець…")} className="h-9 w-56" />
-        <div className="ml-auto">
+        <div className="ml-auto flex items-end gap-2">
+          {missingOnDrive > 0 && (
+            <Button variant="secondary" onClick={pushMonth} disabled={monthPushing}
+              title={t("Залити на Drive всі фактури цього місяця, крім уже залитих")}>
+              <UploadCloud className={`mr-1 h-4 w-4 ${monthPushing ? "animate-pulse" : ""}`} />
+              {monthPushing ? t("Заливаю…") : t("Місяць на Drive ({n})", { n: missingOnDrive })}
+            </Button>
+          )}
           <Button variant="ghost" onClick={syncNow} disabled={busy}>
             <RefreshCw className={`mr-1 h-4 w-4 ${busy ? "animate-spin" : ""}`} />{t("Синк з KSeF")}
           </Button>
@@ -173,12 +243,13 @@ export default function Ksef() {
                   <th className="px-3 py-2 text-right">Netto</th>
                   <th className="px-3 py-2 text-right">VAT</th>
                   <th className="px-3 py-2 text-right">Brutto</th>
+                  <th className="px-3 py-2 text-left">Drive</th>
                   <th className="px-4 py-2 text-left">{t("Оплата")}</th>
                 </tr></thead>
                 <tbody>
                   {shown.map(inv => (
                     <tr key={inv.id} className="border-b border-slate-100 last:border-0">
-                      <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700">{inv.invoiceNumber}</td>
+                      <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700"><InvNumber inv={inv} /></td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">{inv.issueDate}</td>
                       <td className="px-3 py-1.5 text-slate-600">{inv.firm}</td>
                       <td className="px-3 py-1.5 text-slate-600" title={(isPurchase ? inv.sellerName : inv.buyerName) ?? undefined}>
@@ -187,6 +258,7 @@ export default function Ksef() {
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.net)}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-500">{zl(inv.vat)}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.gross)}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5"><DriveCell inv={inv} pushing={pushingId === inv.id} onPush={() => void pushOne(inv)} /></td>
                       <td className="whitespace-nowrap px-4 py-1.5">
                         <button onClick={() => togglePaid(inv)} title={inv.paidSource === "bank" ? t("знайдено у витягу — клік, щоб перекрити вручну") : t("клік — змінити вручну")}
                           className={`rounded px-1.5 py-0.5 text-xs font-medium ${inv.paid ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>
@@ -206,7 +278,7 @@ export default function Ksef() {
                   <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.net))}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.vat))}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.gross))}</td>
-                  <td className="px-4 py-2" />
+                  <td className="px-3 py-2" /><td className="px-4 py-2" />
                 </tr></tfoot>
               </table>
             </div>
@@ -241,16 +313,18 @@ function PartyModal({ party, invoices, onToggle, onClose }: { party: string; inv
             <th className="px-3 py-2 text-left">{t("Фірма")}</th>
             <th className="px-3 py-2 text-right">Netto</th>
             <th className="px-3 py-2 text-right">Brutto</th>
+            <th className="px-3 py-2 text-left">Drive</th>
             <th className="px-3 py-2 text-left">{t("Оплата")}</th>
           </tr></thead>
           <tbody>
             {invoices.map(inv => (
               <tr key={inv.id} className="border-b border-slate-100 last:border-0">
-                <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-700">{inv.invoiceNumber}</td>
+                <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-700"><InvNumber inv={inv} /></td>
                 <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">{inv.issueDate}</td>
                 <td className="px-3 py-1.5 text-slate-600">{inv.firm}</td>
                 <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.net)}</td>
                 <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.gross)}</td>
+                <td className="whitespace-nowrap px-3 py-1.5"><DriveCell inv={inv} /></td>
                 <td className="whitespace-nowrap px-3 py-1.5">
                   <button onClick={() => onToggle(inv)} title={inv.paidSource === "bank" ? t("знайдено у витягу — клік, щоб перекрити вручну") : t("клік — змінити вручну")}
                     className={`rounded px-1.5 py-0.5 text-xs font-medium ${inv.paid ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>
@@ -268,7 +342,7 @@ function PartyModal({ party, invoices, onToggle, onClose }: { party: string; inv
             <td colSpan={3} className="px-3 py-2">{t("Разом")} ({invoices.length})</td>
             <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.net))}</td>
             <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.gross))}</td>
-            <td className="px-3 py-2" />
+            <td className="px-3 py-2" /><td className="px-3 py-2" />
           </tr></tfoot>
         </table>
       </div>

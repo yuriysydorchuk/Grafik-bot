@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "fuel", "hostelOps"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -17,6 +17,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",
   svodniSensitive: "Сводні — закритий шар (księgowość, готівка)",
   costInvoices: "Фактури коштові (внесення і оплати — для бухгалтерії)",
+  invoiceScan: "Сканування фактур у боті (кнопка «📄 Фактура»)",
   fuel: "Пальне (фактури Orlen, аналітика по містах/водіях/авто)",
   hostelOps: "Хостели — операційне ведення (кімнати, проживання, платежі мешканців)",
 };

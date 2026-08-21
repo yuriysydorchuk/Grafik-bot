@@ -1,14 +1,18 @@
 import { Markup } from "telegraf";
 import { t, tb, type Lang } from "./i18n";
 
-export const adminMenu = (lang: Lang = "uk") => Markup.keyboard([
+// «📄 Фактура» (бот-сканер) — лише ролям з капою invoiceScan (opts.invoice).
+// Дефолт true: рендери меню всередині флоу не знають капи — реальний гейт стоїть
+// у самому флоу (bot/handlers/invoiceScan.ts), а головні входи в меню (start,
+// «Головне меню», зміна мови) передають точне значення через adminMenuFor.
+export const adminMenu = (lang: Lang = "uk", opts: { invoice?: boolean } = {}) => Markup.keyboard([
   // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
   // (prod keeps it head-driver-only per owner's decision).
   ...(process.env.WEB_APP_ADMIN === "1" && webAppUrl() ? [[Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]] : []),
   [tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")],
   [tb(lang, "✅ Перегляд графіків")],
   [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
-  [tb(lang, "📢 Розсилки"), tb(lang, "📄 Фактура")],
+  opts.invoice === false ? [tb(lang, "📢 Розсилки")] : [tb(lang, "📢 Розсилки"), tb(lang, "📄 Фактура")],
   [tb(lang, "🌐 Мова / Language")],
 ]).resize();
 

@@ -12,7 +12,7 @@ import { eq } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { INVOICES_DIR, makeStoredName } from "../../lib/uploads";
 import { setState, getState, clearState } from "../state";
-import { getAdmin } from "../roles";
+import { getAdmin, adminHasCap, adminMenuFor } from "../roles";
 import { t, tb, bhears, oLang, type Lang } from "../i18n";
 import { docaiConfigured, processInvoice, detectOurCompany, normDate, sanitizeAmount } from "../../services/docai";
 import { createScannedInvoice } from "../../routes/costInvoices";
@@ -68,12 +68,16 @@ const dropTmpFile = (rel: string | undefined) => {
 };
 
 export function registerInvoiceScan(bot: Telegraf<any>) {
-  // старт флоу
+  // старт флоу — лише ролям з капою invoiceScan (вмикається в налаштуваннях ролей)
   bot.hears(bhears("📄 Фактура"), async (ctx, next) => {
     const tid = String(ctx.from.id);
     const admin = await getAdmin(tid);
     if (!admin) return next();
     const al = oLang(admin);
+    if (!(await adminHasCap(admin, "invoiceScan"))) {
+      // заодно перерендерюємо меню — кнопка зникає з клавіатури
+      return ctx.reply(tb(al, "⛔️ Сканування фактур недоступне для твоєї ролі. Доступ вмикає головний адмін у налаштуваннях ролей."), await adminMenuFor(admin, al));
+    }
     if (!docaiConfigured()) return ctx.reply(tb(al, "Сканер не налаштований на цьому сервері."));
     setState(tid, S_FILE, {});
     return ctx.reply(tb(al, "Надішли фото або PDF фактури — розпізнаю і покажу чернетку."), cancelKb(al));

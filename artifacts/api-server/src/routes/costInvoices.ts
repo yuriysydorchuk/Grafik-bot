@@ -9,15 +9,18 @@ import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import { db , vehiclesTable } from "@workspace/db";
-import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable } from "@workspace/db";
+import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable } from "@workspace/db";
 import { and, eq, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { lastSyncStatus, syncKsef } from "../services/ksef";
+import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile } from "../services/invoiceArchive";
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireAnyCap("viewFinance", "costInvoices"));
+// скоуп по префіксу — роль бухгалтерії (costInvoices) не мусить проходити фін-гейти сусідніх роутерів
+router.use("/cost-invoices", requireAnyCap("viewFinance", "costInvoices"));
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
@@ -25,6 +28,19 @@ const validDate = (s: any) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.tes
 const validMonth = (s: any) => typeof s === "string" && /^\d{4}-\d{2}$/.test(s);
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const normNumber = (s: string | null | undefined) => (s ?? "").toUpperCase().replace(/\s+/g, "");
+
+// сьогодні за локальним часом сервера (Europe/Berlin) — НЕ toISOString, вона зрізає день
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+// Спосіб оплати: ручний вибір кшєнгової має пріоритет; авто — банк-матч (переказ),
+// FormaPlatnosci з XML KSeF або текст статусу старого реєстру («Gotówka»/«Przelew»)
+export type PayMethod = "przelew" | "gotowka" | null;
+const validMethod = (v: any): v is PayMethod => v === null || v === "przelew" || v === "gotowka";
+const methodFromText = (s: string | null | undefined): PayMethod =>
+  /got[óo]wk/i.test(s ?? "") ? "gotowka" : /przelew/i.test(s ?? "") ? "przelew" : null;
 
 // Уніфікований рядок списку: origin визначає, звідки правити (ksef | local)
 export type CostInvoiceRow = {
@@ -40,12 +56,23 @@ export type CostInvoiceRow = {
   hostelId: number | null;    // привʼязка до хостелу (лише local-рядки)
   vehicleId: number | null;   // привʼязка до авто (лізинг/сервіс; лише local-рядки)
   city: string | null;        // cost-center місто (P&L по містах; лише local-рядки)
+  paymentMethod: PayMethod;   // ефективний спосіб оплати (ручний ?? авто)
+  paymentMethodSource: "manual" | "auto" | null;
+  cashReport: boolean;        // «рапорт готівковий» — чекбокс кшєнгової
+  overdue: boolean;           // не оплачена і термін минув
+  driveFileId: string | null; // файл в архіві Google Drive (KSeF: XML)
+  drivePdfId: string | null;  // PDF-візуалізація KSeF-фактури (лінк веде сюди)
+  driveError: string | null;  // чому файла нема на Drive
+  addedBy: string | null;     // хто вніс (скан з бота / сайт)
+  addedAt: string | null;
 };
 
 router.get("/cost-invoices", async (req, res) => {
-  const month = validMonth(req.query.month) ? String(req.query.month) : new Date().toISOString().slice(0, 7);
+  const month = validMonth(req.query.month) ? String(req.query.month) : todayStr().slice(0, 7);
   const companyId = Number(req.query.companyId) || null;
   const companies = new Map((await db.select().from(companiesTable)).map(c => [c.id, c.name]));
+  const admins = new Map((await db.select({ id: adminsTable.id, name: adminsTable.name }).from(adminsTable)).map(a => [a.id, a.name]));
+  const today = todayStr();
 
   const kConds = [eq(ksefInvoicesTable.kind, "purchase"), eq(ksefInvoicesTable.revenueMonth, month)];
   if (companyId) kConds.push(eq(ksefInvoicesTable.companyId, companyId));
@@ -67,21 +94,29 @@ router.get("/cost-invoices", async (req, res) => {
   const rows: CostInvoiceRow[] = [];
   for (const k of ksefRows) {
     const paid = k.manualStatus ? k.manualStatus === "paid" : k.paidDate != null;
+    // авто-метод: банківський матч = переказ, інакше FormaPlatnosci з XML фактури
+    const autoMethod: PayMethod = k.paidVia === "bank" && k.paidTxnId ? "przelew" : (k.paymentMethodXml as PayMethod) ?? null;
+    const method: PayMethod = (k.paymentMethod as PayMethod) ?? autoMethod;
     rows.push({
       key: `k${k.id}`, origin: "ksef", id: k.id, source: "ksef",
       companyId: k.companyId, firm: companies.get(k.companyId) ?? null,
       issueDate: k.issueDate, number: k.invoiceNumber,
       seller: k.sellerName, sellerNip: k.sellerNip,
-      gross: k.gross, dueDate: null,
+      gross: k.gross, dueDate: k.dueDate,
       paid,
       paidDate: k.manualStatus === "paid" ? k.manualPaidDate ?? k.paidDate : k.manualStatus ? null : k.paidDate,
       paidSource: k.manualStatus ? "manual" : k.paidDate ? k.paidVia ?? "bank" : null,
       note: null, hasFile: false, dupOfKsefId: null, hostelId: null, vehicleId: null, city: null,
+      paymentMethod: method, paymentMethodSource: k.paymentMethod ? "manual" : method ? "auto" : null,
+      cashReport: k.cashReport, overdue: !paid && !!k.dueDate && k.dueDate < today,
+      driveFileId: k.driveFileId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
     });
   }
   for (const l of localRows) {
     const paid = l.manualStatus ? l.manualStatus === "paid" : !l.unpaid;
     const dup = ksefByNum.get(normNumber(l.number))?.find(x => Math.abs(x.gross - l.amount) <= 0.05) ?? null;
+    const autoMethod = methodFromText(l.statusRaw);
+    const method: PayMethod = (l.paymentMethod as PayMethod) ?? autoMethod;
     rows.push({
       key: `l${l.id}`, origin: "local", id: l.id,
       source: (l.source === "manual" || l.source === "scan" ? l.source : "sheet"),
@@ -93,6 +128,11 @@ router.get("/cost-invoices", async (req, res) => {
       paidDate: l.manualStatus === "paid" ? l.manualPaidDate ?? l.paidDate : l.manualStatus ? null : l.paidDate,
       paidSource: l.manualStatus ? "manual" : paid ? "sheet" : null,
       note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null, hostelId: l.hostelId, vehicleId: l.vehicleId, city: l.city,
+      paymentMethod: method, paymentMethodSource: l.paymentMethod ? "manual" : method ? "auto" : null,
+      cashReport: l.cashReport, overdue: !paid && !!l.dueDate && l.dueDate < today,
+      driveFileId: l.driveFileId, drivePdfId: null, driveError: l.driveError,
+      addedBy: l.createdBy ? admins.get(l.createdBy) ?? null : null,
+      addedAt: l.importedAt ? l.importedAt.toISOString() : null,
     });
   }
   rows.sort((a, b) => String(b.issueDate ?? "").localeCompare(String(a.issueDate ?? "")));
@@ -107,18 +147,73 @@ router.get("/cost-invoices", async (req, res) => {
 
   // зведення без дублів (дубльований локальний рядок не рахуємо вдруге)
   const counted = rows.filter(r => !r.dupOfKsefId);
+  const sum = (list: CostInvoiceRow[]) => r2(list.reduce((s, r) => s + r.gross, 0));
+  const przelew = counted.filter(r => r.paymentMethod === "przelew");
+  const gotowka = counted.filter(r => r.paymentMethod === "gotowka");
+  const overdue = counted.filter(r => r.overdue);
   ok(res, {
     month, rows,
     cities: ((cityRows.rows ?? cityRows) as any[]).map((r: any) => String(r.c)),
     totals: {
       count: counted.length,
-      gross: r2(counted.reduce((s, r) => s + r.gross, 0)),
-      paidGross: r2(counted.filter(r => r.paid).reduce((s, r) => s + r.gross, 0)),
-      unpaidGross: r2(counted.filter(r => !r.paid).reduce((s, r) => s + r.gross, 0)),
+      gross: sum(counted),
+      paidGross: sum(counted.filter(r => r.paid)),
+      unpaidGross: sum(counted.filter(r => !r.paid)),
       unpaidCount: counted.filter(r => !r.paid).length,
+      przelewGross: sum(przelew), przelewCount: przelew.length,
+      gotowkaGross: sum(gotowka), gotowkaCount: gotowka.length,
+      overdueGross: sum(overdue), overdueCount: overdue.length,
     },
     companies: [...companies.entries()].map(([id, name]) => ({ id, name })),
+    ksefSync: await lastSyncStatus(),
   });
+});
+
+// KSeF-синк + довантаження архіву на Drive з цієї сторінки (кшєнгова не має /ksef).
+// Синк чекаємо (він швидкий, інкрементальний), архів іде у фоні — сторінка
+// перечитає стан за хвилину-другу.
+router.post("/cost-invoices/sync", async (_req, res) => {
+  const sync = await syncKsef();
+  // фоновий архів — лише з поточного місяця (минуле власник доганяє кнопкою місяця)
+  const fromMonth = todayStr().slice(0, 7);
+  setImmediate(() => {
+    archiveInvoicesToDrive({ fromMonth }).catch(e => logger.warn({ err: String(e) }, "invoice archive after sync failed"));
+  });
+  ok(res, { sync, archiveStarted: true });
+});
+
+// Підтягнути на Drive ВСІ фактури вибраного місяця (KSeF-закупівлі + продажі +
+// скани/ручні), пропускаючи вже залиті (зелені). Синхронно — кнопка чекає з
+// прогрес-спінером; місяць обмежений, тож це десятки секунд, не години.
+router.post("/cost-invoices/drive-month", async (req, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const r = await archiveInvoicesToDrive({ month });
+  if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
+  ok(res, r);
+});
+
+// Разовий пуш ОДНІЄЇ фактури на Drive (кнопка-хмарка в рядку) — не чекаючи крону.
+// Для KSeF-рядка заодно скачується XML → підтягуються термін оплати і форма оплати.
+router.post("/cost-invoices/ksef/:id/drive", async (req, res) => {
+  const id = Number(req.params.id);
+  const [row] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  const r = await archiveInvoicesToDrive({ ksefIds: [id], force: true });
+  if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
+  if (r.errors.length) return fail(res, 502, r.errors[0]!);
+  const [updated] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
+  ok(res, { driveFileId: updated?.driveFileId ?? null, driveError: updated?.driveError ?? null, dueDate: updated?.dueDate ?? null });
+});
+
+router.post("/cost-invoices/:id/drive", async (req, res) => {
+  const id = Number(req.params.id);
+  const [row] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  const r = await archiveInvoicesToDrive({ localIds: [id], force: true, skipKsef: true });
+  if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
+  const [updated] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, id));
+  ok(res, { driveFileId: updated?.driveFileId ?? null, driveError: updated?.driveError ?? null });
 });
 
 router.get("/cost-invoices/months", async (_req, res) => {
@@ -195,6 +290,7 @@ router.post("/cost-invoices", async (req, res) => {
     statusRaw: paid ? "Opłacona (панель)" : "Nie oplacona", unpaid: !paid, paidDate,
     createdBy: (req as AuthedRequest).admin?.adminId ?? null,
   }).returning();
+  archiveLocalInvoiceLater(row!.id); // файл долетить окремим POST /:id/file — той перезалиє
   ok(res, row);
 });
 
@@ -221,6 +317,12 @@ router.patch("/cost-invoices/:id", async (req, res) => {
   if (vehicleErr) return fail(res, 400, vehicleErr);
     if (hostelErr) return fail(res, 400, hostelErr);
   }
+  // спосіб оплати (переказ/готівка/назад на авто) і «рапорт готівковий» — кшєнгова
+  if (b.paymentMethod !== undefined) {
+    if (!validMethod(b.paymentMethod)) return fail(res, 400, "paymentMethod: przelew | gotowka | null");
+    patch.paymentMethod = b.paymentMethod;
+  }
+  if (b.cashReport !== undefined) patch.cashReport = !!b.cashReport;
   if (b.paid !== undefined) {
     if (row.source === "manual" || row.source === "scan") {
       patch.unpaid = !b.paid;
@@ -233,22 +335,45 @@ router.patch("/cost-invoices/:id", async (req, res) => {
     }
   }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
+  // зміна реквізитів, що визначають місце/імʼя файла в архіві → старий файл у
+  // кошик, рядок перезаливається у фоні
+  const identityChanged =
+    (patch.number !== undefined && patch.number !== row.number) ||
+    (patch.issueDate !== undefined && patch.issueDate !== row.issueDate) ||
+    (patch.companyId !== undefined && patch.companyId !== row.companyId);
+  if (identityChanged && row.driveFileId) {
+    await retireDriveFile(row.driveFileId);
+    patch.driveFileId = null; patch.driveError = null; patch.driveSyncedAt = null;
+  }
   const [updated] = await db.update(invoicesTable).set(patch).where(eq(invoicesTable.id, id)).returning();
+  if (identityChanged) archiveLocalInvoiceLater(id);
   ok(res, updated);
 });
 
-// оплата KSeF-рядка з цієї ж сторінки (дзеркало PATCH /ksef/invoices/:id, але під
-// гейтом costInvoices — бухгалтерія не має доступу до /ksef)
+// KSeF-рядок з цієї ж сторінки (дзеркало PATCH /ksef/invoices/:id, але під гейтом
+// costInvoices — бухгалтерія не має доступу до /ksef): оплата + спосіб оплати +
+// «рапорт готівковий» + термін оплати (виправлення, якщо XML не мав/мав хибний)
 router.patch("/cost-invoices/ksef/:id", async (req, res) => {
   const id = Number(req.params.id);
   const [inv] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
   if (!inv) return fail(res, 404, "not found");
   const b = req.body ?? {};
-  if (b.paid === undefined) return fail(res, 400, "paid required");
-  const autoPaid = inv.paidDate != null;
-  const patch: Record<string, unknown> = Boolean(b.paid) === autoPaid
-    ? { manualStatus: null, manualPaidDate: null }
-    : { manualStatus: b.paid ? "paid" : "unpaid", manualPaidDate: b.paid && validDate(b.paidDate) ? b.paidDate : null };
+  const patch: Record<string, unknown> = {};
+  if (b.paid !== undefined) {
+    const autoPaid = inv.paidDate != null;
+    if (Boolean(b.paid) === autoPaid) { patch.manualStatus = null; patch.manualPaidDate = null; }
+    else { patch.manualStatus = b.paid ? "paid" : "unpaid"; patch.manualPaidDate = b.paid && validDate(b.paidDate) ? b.paidDate : null; }
+  }
+  if (b.paymentMethod !== undefined) {
+    if (!validMethod(b.paymentMethod)) return fail(res, 400, "paymentMethod: przelew | gotowka | null");
+    patch.paymentMethod = b.paymentMethod;
+  }
+  if (b.cashReport !== undefined) patch.cashReport = !!b.cashReport;
+  if (b.dueDate !== undefined) {
+    if (b.dueDate !== null && !validDate(b.dueDate)) return fail(res, 400, "dueDate: YYYY-MM-DD");
+    patch.dueDate = b.dueDate;
+  }
+  if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();
   ok(res, updated);
 });
@@ -259,6 +384,7 @@ router.delete("/cost-invoices/:id", async (req, res) => {
   if (!row) return fail(res, 404, "not found");
   if (row.source !== "manual" && row.source !== "scan") return fail(res, 400, "sheet-рядки не видаляються звідси");
   deleteStoredFile(row.filePath);
+  await retireDriveFile(row.driveFileId); // архівна копія — у кошик Drive
   await db.delete(invoicesTable).where(eq(invoicesTable.id, id));
   ok(res, { ok: true });
 });
@@ -294,7 +420,10 @@ router.post("/cost-invoices/:id/file", uploadScan.single("file"), async (req, re
   fs.writeFileSync(path.join(INVOICES_DIR, stored), req.file.buffer);
   deleteStoredFile(row.filePath);
   const rel = path.join("invoices", stored);
-  await db.update(invoicesTable).set({ filePath: rel }).where(eq(invoicesTable.id, id));
+  // новий файл = нова архівна копія: стару — в кошик, перезалив у фоні
+  await retireDriveFile(row.driveFileId);
+  await db.update(invoicesTable).set({ filePath: rel, driveFileId: null, driveError: null, driveSyncedAt: null }).where(eq(invoicesTable.id, id));
+  archiveLocalInvoiceLater(id);
   ok(res, { ok: true, filePath: rel });
 });
 
@@ -330,5 +459,6 @@ export async function createScannedInvoice(data: {
     filePath: data.fileRel, createdBy: data.createdBy,
   }).returning({ id: invoicesTable.id });
   logger.info({ id: row!.id, number: data.number }, "scanned invoice stored");
+  archiveLocalInvoiceLater(row!.id); // скан одразу їде в архів на Drive
   return row!.id;
 }

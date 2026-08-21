@@ -281,6 +281,8 @@ const BOT_EN: Record<string, string> = {
     "⚠️ A similar worker already exists: *{name}* (code {code}{fired}). If it's the same person — press “✖️ Cancel”.",
   // ── invoice scan (📄 Фактура) ──
   "📄 Фактура": "📄 Invoice",
+  "⛔️ Сканування фактур недоступне для твоєї ролі. Доступ вмикає головний адмін у налаштуваннях ролей.":
+    "⛔️ Invoice scanning is not available for your role. The main admin can enable it in role settings.",
   "Сканер не налаштований на цьому сервері.": "The scanner is not configured on this server.",
   "Надішли фото або PDF фактури — розпізнаю і покажу чернетку.": "Send an invoice photo or PDF — I'll recognize it and show a draft.",
   "🔎 Розпізнаю…": "🔎 Recognizing…",
