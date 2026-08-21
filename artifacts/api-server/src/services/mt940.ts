@@ -124,6 +124,7 @@ export function matchCompanyName(folder: string): string | null {
   if (u.includes("KOKOS")) return null;
   if (u.includes("ESO") || u.includes("OUTSOURCING")) return "ESO";
   if (u.includes("ESG") || u.includes("GROUP")) return "ES";
-  if (u.includes("KLINEX")) return "Klinex";
+  // KLIN, не KLINEX: одрук у назві папки («Klinekx 07.2026», 08.2026) ховав витяги від синку
+  if (u.includes("KLIN")) return "Klinex";
   return null;
 }

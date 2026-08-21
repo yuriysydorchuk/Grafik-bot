@@ -111,6 +111,8 @@ test("matchCompanyName maps entity folders; Kokos and unknowns → null", () => 
   assert.equal(matchCompanyName("esg"), "ES");
   assert.equal(matchCompanyName("Euro Support GROUP"), "ES");
   assert.equal(matchCompanyName("Klinex sp. z o.o."), "Klinex");
+  // одрук з Drive 08.2026 — папку з липневими витягами було названо «Klinekx»
+  assert.equal(matchCompanyName("Klinekx 07.2026"), "Klinex");
   assert.equal(matchCompanyName("KOKOS"), null);
   assert.equal(matchCompanyName("Nieznana Firma"), null);
 });

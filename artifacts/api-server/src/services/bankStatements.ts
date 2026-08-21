@@ -40,15 +40,21 @@ export async function syncBankTransactions(filter?: (monthFolder: string) => boo
   const result: StatementSyncResult = { files: 0, imported: 0, skipped: 0, byCompany: {}, unmatched: [] };
   const unmatched = new Set<string>();
 
-  // month folder → entity subfolders (one extra nesting level tolerated), Kokos skipped
+  // month folder → entity subfolders (one extra nesting level tolerated), Kokos skipped.
+  // Усе, що синк НЕ читатиме, мусить потрапити в unmatched: і нерозпізнані папки фірм,
+  // і .mt940-розсип прямо в проміжній папці (файли читаються лише з папок фірм) —
+  // інакше одрук у назві («Klinekx 07.2026») місяцями лишається непоміченим
   async function entityDirs(parentId: string, depth: number): Promise<{ folder: string; companyId: number | null; id: string }[]> {
     const acc: { folder: string; companyId: number | null; id: string }[] = [];
     for (const child of (await listFolder(drive, parentId)).filter(isFolder)) {
       const coName = matchCompanyName(child.name);
       if (coName) acc.push({ folder: child.name, companyId: coId.get(coName) ?? null, id: child.id });
       else if (child.name.toUpperCase().includes("KOKOS")) { /* separate business — skip */ }
-      else if (depth > 0) acc.push(...await entityDirs(child.id, depth - 1));
-      else unmatched.add(child.name);
+      else if (depth > 0) {
+        acc.push(...await entityDirs(child.id, depth - 1));
+        const loose = (await listFolder(drive, child.id)).filter(f => !isFolder(f) && f.name.toLowerCase().endsWith(".mt940")).length;
+        if (loose) unmatched.add(`${child.name}: ${loose} .mt940 поза папками фірм`);
+      } else unmatched.add(child.name);
     }
     return acc;
   }

@@ -18,7 +18,10 @@ import { syncCounterparties, resolveBankCounterparties, normAlias, normIban } fr
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireCap("viewFinance"));
+// Гейт скоуплено по префіксу: неупакований router.use() в Express зачіпає і ПРОХІДНІ
+// запити до роутерів, змонтованих далі (роль без viewFinance не діставалась до
+// /cash, /cost-invoices, /fuel — латентний баг порядку монтування, виправлено 12.08.2026)
+router.use("/bank", requireCap("viewFinance"));
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
@@ -36,20 +39,25 @@ export async function balanceAt(dateStr: string, companyId: number | null, exclu
   const excl = excludeAccountKeys.length
     ? sql`AND NOT (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ANY(ARRAY[${sql.join(excludeAccountKeys.map(k => sql`${"%" + k + "%"}`), sql`, `)}]))`
     : sql``;
+  // ідентичність рахунку — цифрове ядро NRB (як у supersedeApiRows): MT940 «:25:»
+  // пише «/PL…», API-рядки — голий IBAN; точний збіг рядків губив API-докидку
   const r = await db.execute<{ bal: number }>(sql`
     WITH last_close AS (
-      SELECT DISTINCT ON (account) account, closing_date, closing_balance FROM bank_statements
+      SELECT DISTINCT ON (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g'))
+        regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') AS acct_key, closing_date, closing_balance
+      FROM bank_statements
       WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)} ${co} ${excl}
       -- a file may hold several statement sections closing on the SAME day
       -- (e.g. 2026/001/2 and /3 both close 27.01) — the later section must win,
       -- otherwise the tie is broken arbitrarily and balances drift by the gap
-      ORDER BY account, closing_date DESC, opening_date DESC, statement_no DESC
+      ORDER BY regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g'), closing_date DESC, opening_date DESC, statement_no DESC
     )
     SELECT coalesce(sum(
       lc.closing_balance + coalesce((
         SELECT sum(CASE WHEN t.direction='in' THEN t.amount ELSE -t.amount END)
         FROM bank_transactions t
-        WHERE t.account = lc.account AND t.value_date > lc.closing_date AND t.value_date <= ${dateStr}
+        WHERE regexp_replace(coalesce(t.account, ''), '[^0-9]', '', 'g') = lc.acct_key
+          AND t.value_date > lc.closing_date AND t.value_date <= ${dateStr}
       ), 0)
     ), 0) AS bal FROM last_close lc`);
   return Number(rowsOf(r)[0]?.bal ?? 0);
@@ -102,18 +110,22 @@ export async function balanceAccountsAt(dateStr: string, companyId: number): Pro
   const excl = liveKeys.length
     ? sql`AND NOT (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') LIKE ANY(ARRAY[${sql.join(liveKeys.map(k => sql`${"%" + k + "%"}`), sql`, `)}]))`
     : sql``;
+  // та сама ідентичність по цифровому ядру, що й у balanceAt; account лишаємо для показу
   const computed = rowsOf(await db.execute(sql`
     WITH last_close AS (
-      SELECT DISTINCT ON (account) account, closing_date, closing_balance FROM bank_statements
+      SELECT DISTINCT ON (regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g'))
+        account, regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g') AS acct_key, closing_date, closing_balance
+      FROM bank_statements
       WHERE closing_date <= ${dateStr} AND closing_balance IS NOT NULL AND ${sql.raw(OPER)}
         AND company_id = ${companyId} ${excl}
-      ORDER BY account, closing_date DESC, opening_date DESC, statement_no DESC
+      ORDER BY regexp_replace(coalesce(account, ''), '[^0-9]', '', 'g'), closing_date DESC, opening_date DESC, statement_no DESC
     )
     SELECT lc.account,
       lc.closing_balance + coalesce((
         SELECT sum(CASE WHEN t.direction='in' THEN t.amount ELSE -t.amount END)
         FROM bank_transactions t
-        WHERE t.account = lc.account AND t.value_date > lc.closing_date AND t.value_date <= ${dateStr}
+        WHERE regexp_replace(coalesce(t.account, ''), '[^0-9]', '', 'g') = lc.acct_key
+          AND t.value_date > lc.closing_date AND t.value_date <= ${dateStr}
       ), 0) AS bal
     FROM last_close lc ORDER BY bal DESC`));
   for (const r of computed) {

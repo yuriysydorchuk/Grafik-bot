@@ -144,7 +144,12 @@ export default function BankStatements() {
         </div>
         <Button variant="secondary" loading={syncing} onClick={async () => {
           setSyncing(true);
-          try { await post("/bank/sync"); qc.invalidateQueries({ queryKey: ["bank-summary"] }); qc.invalidateQueries({ queryKey: ["bank-txns"] }); }
+          try {
+            const r = await post("/bank/sync");
+            // папки/файли, які синк не читає (одрук у назві, розсип поза папками фірм), — не мовчати
+            if (r?.unmatched?.length) toast.warning(t("Поза синком: {v}", { v: r.unmatched.join("; ") }));
+            qc.invalidateQueries({ queryKey: ["bank-summary"] }); qc.invalidateQueries({ queryKey: ["bank-txns"] });
+          }
           finally { setSyncing(false); }
         }}><RefreshCw className="mr-1 h-4 w-4" />{t("Синхронізувати")}</Button>
         <Button variant="ghost" onClick={() => setShowCats(true)}>{t("Категорії")}</Button>
