@@ -1398,6 +1398,10 @@ export const workerChangesTable = pgTable("worker_changes", {
   effectiveDate: date("effective_date").notNull(), // від якої дати діє зміна
   appliedRows: jsonb("applied_rows"),      // куди пропагували: [{month, city, factoryLabel}]
   skippedLocked: jsonb("skipped_locked"),  // залочені місця, які зміна зачіпає, але не оновила
+  // явне відхилення в ревʼю розблокування: показана, але не прийнята зміна.
+  // Раніше відхилення детектилось «createdAt < нового lockedAt» — це ховало
+  // незастосовані зміни, зроблені під старішим (заміненим) локом, назавжди.
+  reviewDismissedAt: timestamp("review_dismissed_at"),
   adminId: integer("admin_id").references(() => adminsTable.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("worker_changes_worker_idx").on(t.workerId, t.effectiveDate)]);

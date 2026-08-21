@@ -593,6 +593,46 @@ test("ревʼю при розблокуванні: відхилення лиш�
   assert.equal(bad.status, 400);
 });
 
+test("ревʼю при розблокуванні: незастосовані зміни, зроблені ДО поточного лока, теж у списку (дірка перелочування)", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Sadovyi Kyryl", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false,
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false });
+
+  // зміна профілю БЕЗ застосування до рядків, поки область ще НЕ залочена
+  // (аналог бекфілу: журнал є, appliedRows порожній) → потім область лочать
+  await request(app).post("/api/svodni/profile-apply").set("Cookie", owner).set(H)
+    .send({ workerId: w!.id, from: "2026-06-01", rowIds: [], changes: { legalStatus: "student", birthDate: "2004-05-05" } });
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+
+  // старий критерій (createdAt > lockedAt) дав би 0 — зміни старіші за лок.
+  // birthDate у списку НЕМАЄ свідомо: freezeUnder26AtLock при встановленні
+  // лока вже проставив рядку under26 — залишкового ефекту нуль, показувати
+  // нічого; весь грошовий ефект (студентська ставка) несе legalStatus.
+  const p = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  assert.deepEqual(p.body.changes.map((c: any) => c.field), ["legalStatus"],
+    "незастосована до-локова зміна з реальним дифом показується");
+  assert.ok(p.body.changes.every((c: any) => c.items?.some((it: any) => it.diffs.length)), "лише з реальними дифами");
+
+  // прийняття при розлоку → рядок студентський, журнал накритий appliedRows
+  const un = await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", applyChangeIds: p.body.changes.map((c: any) => c.id) });
+  assert.equal(un.body.applied, 1);
+  const [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.isStudent, true);
+  assert.equal(row!.rateNetto, 31.4, "студент до 26: нетто = брутто");
+
+  // повторний цикл лок→ревʼю: застосоване в цю область більше не вертається
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  const p2 = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H)
+    .send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  assert.equal(p2.body.changes.length, 0);
+});
+
 test("from-hours пропускає залочену фабрику і рахує skippedLocked", opts, async () => {
   const owner = (await seedAdmin({ role: "owner" })).cookie;
   // працівник з рапортом за місяць — джерело годин для from-hours

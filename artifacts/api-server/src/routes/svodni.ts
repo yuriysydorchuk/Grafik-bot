@@ -182,6 +182,24 @@ router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res
       ? (req.body.applyChangeIds as unknown[]).map(Number).filter(Number.isFinite) : [];
     await db.delete(svodniLocksTable).where(eq(svodniLocksTable.id, existing.id));
     const applied = applyIds.length ? await applyReviewedChanges(month, existing, applyIds, req) : 0;
+    // показані в ревʼю, але не прийняті зміни — явно відхилені (маркер, а не
+    // «випали з вікна часу» — інакше вертались би після закриття дірки
+    // перелочування). Гейтнуті капами поля адмін не бачив — не чіпаємо.
+    const fin = hasCap(req.admin!.role, req.admin!.caps, "viewFinance");
+    const sens = canSensitive(req);
+    const scopeRows = await db.select({ workerId: svodniRowsTable.workerId, city: svodniRowsTable.city, factoryLabel: svodniRowsTable.factoryLabel })
+      .from(svodniRowsTable).where(and(
+        eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf), isNotNull(svodniRowsTable.workerId)));
+    const scopeWorkerIds = [...new Set(scopeRows.filter(r => isLocked([existing], r.city, r.factoryLabel)).map(r => r.workerId!))];
+    const shown = await pendingJournalForScope(month, existing, scopeWorkerIds);
+    const dismissIds = shown
+      .filter(({ c }) => !applyIds.includes(c.id)
+        && !(FINANCE_TRACKED.has(c.field) && !fin) && !(SENSITIVE_TRACKED.has(c.field) && !sens))
+      .map(({ c }) => c.id);
+    if (dismissIds.length) {
+      await db.update(workerChangesTable).set({ reviewDismissedAt: sql`now()` })
+        .where(inArray(workerChangesTable.id, dismissIds));
+    }
     return ok(res, { locked: false, applied });
   }
   await freezeUnder26AtLock(month, { city, factoryLabel }, locks);
@@ -207,6 +225,31 @@ const PROPAGATABLE_FIELDS = new Set([
 function nextMonthStart(month: string): string {
   const [sy, sm] = month.split("-").map(Number);
   return sm === 12 ? `${sy! + 1}-01-01` : `${sy}-${String(sm! + 1).padStart(2, "0")}-01`;
+}
+
+// Зміна вже пропагована в рядки цієї області? (запис appliedRows накриває скоуп)
+function appliedCoversScope(c: typeof workerChangesTable.$inferSelect, month: string, lock: LockRow): boolean {
+  return Array.isArray(c.appliedRows) && (c.appliedRows as { month: string; city: string; factoryLabel: string }[])
+    .some(a => a.month === month && isLocked([lock], a.city, a.factoryLabel));
+}
+
+// Журнальні зміни-кандидати для ревʼю області: зроблені ПІСЛЯ поточного лока
+// АБО старіші, але ніде не застосовані до цієї області і не відхилені явно.
+// Друга гілка закриває дірку перелочування: зміна під старішим (заміненим)
+// локом випадала з вікна «createdAt > lockedAt» назавжди (кейс бекфілу
+// легалізацій 21.08 — Sadovyi лишився без студентської ставки).
+async function pendingJournalForScope(month: string, lock: LockRow, workerIds: number[]) {
+  if (!workerIds.length) return [];
+  const raw = await db.select({ c: workerChangesTable, adminName: adminsTable.name, workerName: workersTable.fullName })
+    .from(workerChangesTable)
+    .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
+    .innerJoin(workersTable, eq(workerChangesTable.workerId, workersTable.id))
+    .where(and(
+      inArray(workerChangesTable.workerId, workerIds),
+      sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`))
+    .orderBy(asc(workerChangesTable.createdAt));
+  return raw.filter(({ c }) => c.createdAt > lock.lockedAt
+    || (c.reviewDismissedAt == null && !appliedCoversScope(c, month, lock)));
 }
 
 // ── Kara до зняття по області, що розблоковується ────────────────────────────
@@ -324,22 +367,22 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
   const workerIds = [...new Set(monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel)).map(r => r.workerId!))];
   const pendingKara = await pendingKaraForScope(month, lock, monthRows);
   if (!workerIds.length) return ok(res, { lockedAt: lock.lockedAt, changes: [], hidden: 0, pendingKara });
-  const raw = await db.select({ c: workerChangesTable, adminName: adminsTable.name, workerName: workersTable.fullName })
-    .from(workerChangesTable)
-    .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
-    .innerJoin(workersTable, eq(workerChangesTable.workerId, workersTable.id))
-    .where(and(
-      inArray(workerChangesTable.workerId, workerIds),
-      sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`))
-    .orderBy(asc(workerChangesTable.createdAt));
-  const pending = raw.filter(({ c }) => c.createdAt > lock.lockedAt);
+  const pending = await pendingJournalForScope(month, lock, workerIds);
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, [...new Set(pending.map(x => x.c.workerId))]));
   const wById = new Map(ws.map(w => [w.id, w]));
   let hidden = 0;
   const out: Record<string, unknown>[] = [];
   for (const { c, adminName, workerName } of pending) {
+    // «старі» = зроблені до поточного лока (дірка перелочування): показуємо
+    // лише ті, що реально міняють цифри області — решта вже відображена в
+    // рядках пізнішими перерахунками, докучати ними не треба
+    const resurfaced = !(c.createdAt > lock.lockedAt);
     // гейти полів — дзеркало profile-impact: без капи зміну не показуємо
-    if ((FINANCE_TRACKED.has(c.field) && !fin) || (SENSITIVE_TRACKED.has(c.field) && !sensitive)) { hidden++; continue; }
+    // (старі гейтнуті не рахуємо і в hidden — їх уже показували в свій цикл)
+    if ((FINANCE_TRACKED.has(c.field) && !fin) || (SENSITIVE_TRACKED.has(c.field) && !sensitive)) {
+      if (!resurfaced) hidden++;
+      continue;
+    }
     const entry: Record<string, unknown> = {
       id: c.id, workerId: c.workerId, workerName, field: c.field,
       oldValue: c.oldValue, newValue: c.newValue, effectiveDate: c.effectiveDate,
@@ -353,6 +396,10 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
       entry.items = ctx && !("err" in ctx)
         ? serializeImpact(ctx.items.filter(it => it.row.periodMonth === month && isLocked([lock], it.row.city, it.row.factoryLabel)), sensitive)
         : [];
+    }
+    if (resurfaced) {
+      const items = (entry.items as { diffs: unknown[]; split?: unknown; merge?: unknown }[] | undefined) ?? [];
+      if (!entry.propagatable || !items.some(it => it.diffs.length || it.split || it.merge)) continue;
     }
     out.push(entry);
   }
@@ -369,7 +416,10 @@ async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" |
   const fin = hasCap(req.admin!.role, req.admin!.caps, "viewFinance");
   const entries = changeIds.length
     ? await db.select().from(workerChangesTable).where(inArray(workerChangesTable.id, changeIds)) : [];
-  const eligible = entries.filter(c => c.createdAt > scope.lockedAt
+  // критерій прийнятності — дзеркало pendingJournalForScope: зміни під поточним
+  // локом АБО старіші незастосовані/невідхилені (дірка перелочування)
+  const eligible = entries.filter(c => (c.createdAt > scope.lockedAt
+      || (c.reviewDismissedAt == null && !appliedCoversScope(c, month, scope as LockRow)))
     && PROPAGATABLE_FIELDS.has(c.field)
     && !(FINANCE_TRACKED.has(c.field) && !fin)
     && !(SENSITIVE_TRACKED.has(c.field) && !sensitive));
@@ -1022,7 +1072,7 @@ async function recomputeSegmentedParent(parentId: number): Promise<void> {
 }
 
 // записати сегменти за планом (зносить старі) і перерахувати батька
-async function writeSegments(parent: SegRow, plan: NonNullable<Awaited<ReturnType<typeof planSegments>>>): Promise<void> {
+export async function writeSegments(parent: SegRow, plan: NonNullable<Awaited<ReturnType<typeof planSegments>>>): Promise<void> {
   // атомарно: конкурентний виклик/збій не має лишити рядок без сегментів
   // або з задубльованими
   await db.transaction(async (tx) => {
@@ -1194,7 +1244,7 @@ function rowSetFromProfile(
 }
 
 // Спільна частина impact/apply: рядки людини від місяця дати + дифи по кожному
-async function profileChangeContext(workerId: number, body: Record<string, unknown>, from: string, sensitive: boolean) {
+export async function profileChangeContext(workerId: number, body: Record<string, unknown>, from: string, sensitive: boolean) {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return { err: "працівника не знайдено" } as const;
   const { patch, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
