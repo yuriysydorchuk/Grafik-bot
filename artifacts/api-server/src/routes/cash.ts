@@ -25,7 +25,7 @@ const OFFICE_TAB_RE = /офис|офіс|office/i;
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requirePage("/cash"));
+router.use("/cash", requirePage("/cash")); // скоуп по префіксу — не гейтити прохідні запити
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });

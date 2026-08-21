@@ -8,7 +8,7 @@ import { authRequired, requireMainAdmin, type AuthedRequest } from "../lib/auth"
 // plus per-session revocation. Gated to the single main admin, like user/role management.
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireMainAdmin);
+router.use("/security", requireMainAdmin); // скоуп по префіксу
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, code: number, msg: string) => res.status(code).json({ error: msg });

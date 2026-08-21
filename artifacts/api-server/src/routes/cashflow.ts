@@ -19,7 +19,7 @@ import { ksefReceivablesAt } from "../services/ksef";
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireCap("viewFinance"));
+router.use(["/cashflow", "/balance"], requireCap("viewFinance")); // скоуп по префіксах
 
 const ok = (res: any, data: any) => res.json(data);
 const rowsOf = (r: any): any[] => r?.rows ?? r ?? [];

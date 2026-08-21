@@ -10,7 +10,7 @@ import {
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireCap("viewFinance"));
+router.use("/cfo", requireCap("viewFinance")); // скоуп по префіксу
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });

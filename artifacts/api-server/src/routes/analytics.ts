@@ -9,7 +9,7 @@ import { authRequired, requireCap } from "../lib/auth";
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use(requireCap("viewFinance"));
+router.use("/analytics", requireCap("viewFinance")); // скоуп по префіксу
 
 const rowsOf = (r: any): any[] => r?.rows ?? r ?? [];
 const r2 = (n: number) => Math.round(n * 100) / 100;

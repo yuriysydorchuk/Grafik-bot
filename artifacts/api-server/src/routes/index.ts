@@ -30,8 +30,10 @@ router.use(adminApiRouter);
 router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);
-// ВАЖЛИВО: до фінансових роутерів — ті вішають глобальні use-гейти (viewFinance/owner),
-// які в Express зачепили б і всі наступні роутери
+// Авторизаційні use-гейти фінансових роутерів скоуплені по префіксах шляхів
+// (напр. router.use("/bank", requireCap(...))) — неупакований router.use() в Express
+// зачіпав би і прохідні запити до всіх роутерів, змонтованих нижче (латентний баг
+// до 12.08.2026: роль без viewFinance не діставалась до /cash, /cost-invoices, /fuel)
 router.use(svodniRouter);
 router.use(hostelsRouter);
 router.use(penaltiesRouter);
