@@ -2461,6 +2461,11 @@ const EN: Record<string, string> = {
   "Суми вибраних ляжуть у колонку Zaliczka BD рядка основної фабрики людини за вибраний місяць (додаються до наявних). Затверджені вкладки пропускаються.": "Selected amounts go to the Zaliczka BD column of each person's main-factory row for the chosen month (added to existing values). Locked tabs are skipped.",
 
   // ── штрафи (/penalties) і пропуски (/absences) → Kara сводної ──
+  "Є незняті штрафи, що цілять у рядки цієї області (поки затверджено — переноси їх пропускали). Прийняті перенесуться в колонку Kara одразу після розблокування.": "There are pending fines targeting rows in this scope (transfers skipped them while it was locked). Accepted ones go to the Kara column right after unlocking.",
+  "пропуск": "absence",
+  "штраф (реєстр)": "fine (registry)",
+  "нема рядка сводної цього місяця — нема з чого зняти": "no payroll sheet row this month — nothing to deduct from",
+  "До перенесення в Kara:": "To transfer to Kara:",
   "Місяць сводної": "Payroll sheet month",
   "Відмінено з попередженням": "Undone with a warning",
   "сума віднімається з клітинки Kara сводної": "the amount is subtracted from the Kara cell of the payroll sheet for",

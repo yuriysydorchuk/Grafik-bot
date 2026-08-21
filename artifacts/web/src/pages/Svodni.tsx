@@ -77,7 +77,19 @@ type PendingChange = {
   oldValue: string | null; newValue: string | null; effectiveDate: string;
   createdAt: string; adminName: string | null; propagatable: boolean; items?: ImpactItem[];
 };
-type LockPending = { lockedAt: string; changes: PendingChange[]; hidden: number };
+// незняті штрафи (пропуски + реєстр /penalties), що цілять у рядки області —
+// поки вона була затверджена, перенесення їх пропускало
+type PendingKara = {
+  absences: { entryId: number; workerId: number; workerName: string | null; date: string; sourceFactory: string | null; targetFactoryLabel: string; amount: number }[];
+  penalties: { id: number; workerId: number; workerName: string | null; sourceFactory: string | null; targetFactoryLabel: string; amount: number; note: string | null }[];
+  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; amount: number }[];
+};
+type LockPending = { lockedAt: string; changes: PendingChange[]; hidden: number; pendingKara: PendingKara };
+type ApplyKaraResp = {
+  updated: number; itemsMarked: number; verified: number;
+  verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[];
+  skippedLocked: number; unmatched: { workerName: string | null; amount: number }[];
+};
 type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[]; staleLocks?: Lock[]; ksiegMin?: { netto: number; brutto: number } };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
@@ -405,19 +417,60 @@ export default function Svodni() {
     onError: (e: any) => toast.error(e.message),
   });
   // Розблокування — двоетапне: спершу питаємо, чи були зміни профілів під локом
-  // (журнал worker_changes після lockedAt). Якщо були — модалка ревʼю: кожну
-  // зміну можна прийняти (застосувати до рядків області) або відхилити.
+  // (журнал worker_changes після lockedAt) і чи є незняті штрафи, що цілять у
+  // рядки області. Якщо є — модалка ревʼю: зміни/штрафи можна прийняти або ні.
   const [unlockReview, setUnlockReview] = useState<{ city: string; factoryLabel: string; data: LockPending } | null>(null);
   const fetchPending = useMutation({
     mutationFn: (v: { city: string; factoryLabel: string }) =>
       post<LockPending>("/svodni/lock-pending", { month: effMonth, ...v }),
     onSuccess: (r, v) => {
-      if (!r.changes.length && !r.hidden) lockToggle.mutate(v); // нічого не мінялось — розблокувати одразу
+      const k = r.pendingKara;
+      const anyKara = k.absences.length || k.penalties.length || k.unrowed.length;
+      if (!r.changes.length && !r.hidden && !anyKara) lockToggle.mutate(v); // нічого не мінялось — розблокувати одразу
       else setUnlockReview({ ...v, data: r });
     },
     onError: (e: any) => toast.error(e.message),
   });
-  const lockBusy = lockToggle.isPending || fetchPending.isPending;
+  // Розлок із модалки ревʼю: unlock (+прийняті зміни профілів), потім прийняті
+  // штрафи переносяться в Kara тими ж apply-ендпойнтами, що й кнопки на
+  // /absences та /penalties. Якщо перенос упав після розлоку — штрафи лишились
+  // у «до зняття», їх видно на тих сторінках (нічого не губиться).
+  const unlockApply = useMutation({
+    mutationFn: async (v: { city: string; factoryLabel: string; applyChangeIds: number[]; karaEntryIds: number[]; karaPenaltyIds: number[] }) => {
+      const unlock = await post<{ locked: boolean; applied?: number }>("/svodni/lock",
+        { month: effMonth, city: v.city, factoryLabel: v.factoryLabel, applyChangeIds: v.applyChangeIds });
+      const kara: ApplyKaraResp[] = [];
+      if (v.karaEntryIds.length) kara.push(await post<ApplyKaraResp>("/svodni/apply-absence-deductions", { month: effMonth, entryIds: v.karaEntryIds }));
+      if (v.karaPenaltyIds.length) kara.push(await post<ApplyKaraResp>("/svodni/apply-penalty-deductions", { month: effMonth, ids: v.karaPenaltyIds }));
+      return { unlock, kara };
+    },
+    onSuccess: ({ unlock, kara }) => {
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      setUnlockReview(null);
+      toast.success(unlock.applied ? t("Розблоковано; застосовано змін до рядків: {n}", { n: unlock.applied }) : t("Розблоковано"));
+      const sum = (f: (d: ApplyKaraResp) => number) => kara.reduce((a, d) => a + f(d), 0);
+      if (kara.length) {
+        const parts = [`${t("оновлено рядків")}: ${sum(d => d.updated)}`, `${t("позицій знято")}: ${sum(d => d.itemsMarked)}`,
+          `${t("звірено")}: ${sum(d => d.verified - d.verifyMismatches.length)}/${sum(d => d.verified)} ✓`];
+        if (sum(d => d.skippedLocked)) parts.push(`${t("пропущено затверджених")}: ${sum(d => d.skippedLocked)}`);
+        toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+        const mismatches = kara.flatMap(d => d.verifyMismatches);
+        if (mismatches.length) {
+          toast.error(`${t("Самозвірка не зійшлася")}: ${mismatches.length}`, {
+            description: mismatches.slice(0, 6).map(m => `${m.workerName}: ${m.expected ?? 0} ≠ ${m.actual ?? 0}`).join(", "), duration: 15000,
+          });
+        }
+        const unmatched = kara.flatMap(d => d.unmatched);
+        if (unmatched.length) {
+          toast.warning(`${t("Без рядка сводної")}: ${unmatched.length}`, {
+            description: unmatched.slice(0, 6).map(u => u.workerName ?? "—").join(", ") + (unmatched.length > 6 ? "…" : ""), duration: 12000,
+          });
+        }
+      }
+    },
+    onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["svodni"] }); },
+  });
+  const lockBusy = lockToggle.isPending || fetchPending.isPending || unlockApply.isPending;
   const smartToggleLock = (city: string, factoryLabel: string, locked: boolean) =>
     locked ? fetchPending.mutate({ city, factoryLabel }) : lockToggle.mutate({ city, factoryLabel });
   const checks = useMemo(() => (data?.checks ?? []).filter(c => c.factoryLabel.split(" + ").includes(effFactory)), [data, effFactory]);
@@ -707,34 +760,56 @@ export default function Svodni() {
       {unlockReview && (
         <LockReviewModal data={unlockReview.data}
           scopeLabel={unlockReview.factoryLabel || `${t(unlockReview.city)} (${t("усе місто")})`}
-          pending={lockToggle.isPending}
+          pending={lockBusy}
           onCancel={() => setUnlockReview(null)}
-          onConfirm={ids => lockToggle.mutate({ city: unlockReview.city, factoryLabel: unlockReview.factoryLabel, applyChangeIds: ids })} />
+          onConfirm={(ids, kara) => unlockApply.mutate({
+            city: unlockReview.city, factoryLabel: unlockReview.factoryLabel,
+            applyChangeIds: ids, karaEntryIds: kara.entryIds, karaPenaltyIds: kara.penaltyIds,
+          })} />
       )}
     </>
   );
 }
 
 // Модалка ревʼю при розблокуванні: список змін профілів, зроблених поки область
-// була затверджена (тому в рядки не потрапили). Кожну можна прийняти —
-// застосувати до рядків області тим самим двигуном, що «зміна з датою» — або
-// відхилити (рядки лишаються як затверджували). «Скасувати» = лок лишається.
+// була затверджена (тому в рядки не потрапили), плюс незняті штрафи (пропуски
+// і реєстр /penalties), що цілять у рядки області. Кожну позицію можна
+// прийняти — зміни застосуються до рядків, штрафи перенесуться в Kara одразу
+// після розлоку — або відхилити. «Скасувати» = лок лишається.
 function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
   data: LockPending; scopeLabel: string; pending: boolean;
-  onCancel: () => void; onConfirm: (ids: number[]) => void;
+  onCancel: () => void; onConfirm: (ids: number[], kara: { entryIds: number[]; penaltyIds: number[] }) => void;
 }) {
   const t = useT();
   const hasEffect = (c: PendingChange) => !!c.items?.some(it => it.diffs.length || it.split || it.merge);
   const selectable = data.changes.filter(c => c.propagatable && hasEffect(c));
   // типово прийняті всі, що реально міняють цифри — відхилення свідоме
   const [selected, setSelected] = useState<Set<number>>(new Set(selectable.map(c => c.id)));
+  const kara = data.pendingKara;
+  // штрафи: ключі a<entryId> / p<id>, типово вибрані всі
+  const [karaSel, setKaraSel] = useState<Set<string>>(new Set([
+    ...kara.absences.map(a => `a${a.entryId}`), ...kara.penalties.map(p => `p${p.id}`),
+  ]));
+  const toggleKara = (key: string) => setKaraSel(prev => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
+  });
+  const karaPicked = {
+    entryIds: kara.absences.filter(a => karaSel.has(`a${a.entryId}`)).map(a => a.entryId),
+    penaltyIds: kara.penalties.filter(p => karaSel.has(`p${p.id}`)).map(p => p.id),
+  };
+  const karaPickedCount = karaPicked.entryIds.length + karaPicked.penaltyIds.length;
+  const karaPickedSum = r2(kara.absences.filter(a => karaSel.has(`a${a.entryId}`)).reduce((s, a) => s + a.amount, 0)
+    + kara.penalties.filter(p => karaSel.has(`p${p.id}`)).reduce((s, p) => s + p.amount, 0));
+  const totalPicked = selected.size + karaPickedCount;
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
   return (
     <Modal open title={t("Розблокування: {what}", { what: scopeLabel })} onClose={onCancel}>
       <div className="space-y-3 text-sm">
-        <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {t("Поки сводна була затверджена, у профілях людей були зміни, які в неї не потрапили. Прийми потрібні — рядки перерахуються, відхилені лишаться як є.")}
-        </div>
+        {data.changes.length > 0 && (
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {t("Поки сводна була затверджена, у профілях людей були зміни, які в неї не потрапили. Прийми потрібні — рядки перерахуються, відхилені лишаться як є.")}
+          </div>
+        )}
         <div className="max-h-80 space-y-1.5 overflow-y-auto">
           {data.changes.map(c => {
             const canPick = c.propagatable && hasEffect(c);
@@ -776,12 +851,60 @@ function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
         {data.hidden > 0 && (
           <div className="text-xs text-slate-400">{t("Ще змін приховано (немає доступу до цих полів): {n}", { n: data.hidden })}</div>
         )}
+        {(kara.absences.length > 0 || kara.penalties.length > 0 || kara.unrowed.length > 0) && (
+          <div className="space-y-1.5">
+            <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">
+              {t("Є незняті штрафи, що цілять у рядки цієї області (поки затверджено — переноси їх пропускали). Прийняті перенесуться в колонку Kara одразу після розблокування.")}
+            </div>
+            <div className="max-h-60 space-y-1.5 overflow-y-auto">
+              {kara.absences.map(a => (
+                <label key={`a${a.entryId}`} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 hover:bg-slate-50">
+                  <input type="checkbox" className="mt-0.5 accent-red-600" checked={karaSel.has(`a${a.entryId}`)} onChange={() => toggleKara(`a${a.entryId}`)} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-700">
+                      {a.workerName ?? "—"}
+                      <span className="text-slate-500">· {t("пропуск")} {fmtD(a.date)}{a.sourceFactory ? ` · ${a.sourceFactory}` : ""}</span>
+                      <span className="font-semibold tabular-nums text-rose-700">{a.amount} zł</span>
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">→ Kara: {a.targetFactoryLabel}</span>
+                  </span>
+                </label>
+              ))}
+              {kara.penalties.map(p => (
+                <label key={`p${p.id}`} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 hover:bg-slate-50">
+                  <input type="checkbox" className="mt-0.5 accent-red-600" checked={karaSel.has(`p${p.id}`)} onChange={() => toggleKara(`p${p.id}`)} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-700">
+                      {p.workerName ?? "—"}
+                      <span className="text-slate-500">· {t("штраф (реєстр)")}{p.note ? ` · ${p.note}` : ""}</span>
+                      <span className="font-semibold tabular-nums text-rose-700">{p.amount} zł</span>
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">→ Kara: {p.targetFactoryLabel}</span>
+                  </span>
+                </label>
+              ))}
+              {kara.unrowed.map((u, i) => (
+                <div key={`u${i}`} className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-1.5 opacity-80">
+                  <span className="flex flex-wrap items-center gap-1.5 text-slate-600">
+                    {u.workerName ?? "—"}
+                    <span className="text-slate-500">· {u.kind === "absence" ? t("пропуск") : t("штраф (реєстр)")}{u.factory ? ` · ${u.factory}` : ""}</span>
+                    <span className="tabular-nums">{u.amount} zł</span>
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-400">{t("нема рядка сводної цього місяця — нема з чого зняти")}</span>
+                </div>
+              ))}
+            </div>
+            {karaPickedCount > 0 && (
+              <div className="text-xs text-slate-500">{t("До перенесення в Kara:")} <b>{karaPickedSum.toFixed(2)} zł</b> · {karaPickedCount}</div>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
           <Button variant="secondary" onClick={onCancel}>{t("Скасувати (лишити затвердженим)")}</Button>
-          <Button variant="secondary" loading={pending} onClick={() => onConfirm([])}>{t("Розблокувати без змін")}</Button>
-          {selected.size > 0 && (
-            <Button loading={pending} onClick={() => onConfirm([...selected])}>
-              {t("Розблокувати і застосувати ({n})", { n: selected.size })}
+          <Button variant="secondary" loading={pending} onClick={() => onConfirm([], { entryIds: [], penaltyIds: [] })}>{t("Розблокувати без змін")}</Button>
+          {totalPicked > 0 && (
+            <Button loading={pending} onClick={() => onConfirm([...selected], karaPicked)}>
+              {t("Розблокувати і застосувати ({n})", { n: totalPicked })}
             </Button>
           )}
         </div>

@@ -152,6 +152,67 @@ test("пропуски → Kara: сума ефективних штрафів п
   assert.equal((await request(app).patch(`/api/absences/${e2!.id}`).set("Cookie", cookie).set(H).send({ justified: true })).status, 200);
 });
 
+test("lock-pending: незняті штрафи області в ревʼю розлоку (пропуск + реєстр), чужа фабрика — ні, без рядка — в unrowed; після розлоку переносяться", opts, async () => {
+  const { svodniLocksTable: locksT } = await import("../test/harness.ts");
+  const cookie = await svodniCookie();
+  const [w1] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();
+  const [w2] = await db.insert(workersTable).values({ fullName: "Bez Wiersza" }).returning();
+  const [w3] = await db.insert(workersTable).values({ fullName: "Cudza Fabryka" }).returning();
+  const [facA] = await db.insert(factoriesTable).values({ name: "FAB A", city: "Люблін" } as any).returning();
+  const [facB] = await db.insert(factoriesTable).values({ name: "FAB B", city: "Люблін" } as any).returning();
+  await seedRow(w1!.id, facA!, 100);
+  await seedRow(w3!.id, facB!, 100);
+  await db.insert(locksT).values({ periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A" } as any);
+
+  const [week] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-01", status: "approved" } as any).returning();
+  const entry = (workerId: number, factoryId: number, over: Record<string, unknown> = {}) => db.insert(scheduleEntriesTable).values({
+    weekId: week!.id, workerId, factoryId, dayOfWeek: "mon", shift: "1", status: "absent", ...over,
+  } as any).returning();
+  const [e1] = await entry(w1!.id, facA!.id);                      // → ревʼю FAB A
+  await entry(w2!.id, facA!.id, { dayOfWeek: "tue" });             // без рядка → unrowed
+  await entry(w3!.id, facB!.id, { dayOfWeek: "wed" });             // ціль FAB B (не залочена) → не в ревʼю
+  const [p1] = await db.insert(penaltiesTable).values({ periodMonth: MONTH, workerId: w1!.id, factoryId: facA!.id, factoryLabel: "FAB A", amount: 150 }).returning();
+
+  const res = await request(app).post("/api/svodni/lock-pending").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, city: "Люблін", factoryLabel: "FAB A" });
+  assert.equal(res.status, 200);
+  const k = res.body.pendingKara;
+  assert.equal(k.absences.length, 1);
+  assert.equal(k.absences[0].entryId, e1!.id);
+  assert.equal(k.absences[0].amount, 200);
+  assert.equal(k.absences[0].targetFactoryLabel, "FAB A");
+  assert.equal(k.penalties.length, 1);
+  assert.equal(k.penalties[0].id, p1!.id);
+  assert.equal(k.unrowed.length, 1);
+  assert.equal(k.unrowed[0].workerName, "Bez Wiersza");
+
+  // міський лок (factoryLabel "") накриває ВСІ вкладки міста: у ревʼю тепер
+  // і штраф w3 з FAB B, unrowed w2 матчиться по місту фабрики джерела
+  await db.insert(locksT).values({ periodMonth: MONTH, city: "Люблін", factoryLabel: "" } as any);
+  const cityRes = await request(app).post("/api/svodni/lock-pending").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, city: "Люблін", factoryLabel: "" });
+  assert.equal(cityRes.status, 200);
+  const ck = cityRes.body.pendingKara;
+  assert.equal(ck.absences.length, 2, "пропуски w1 (FAB A) і w3 (FAB B)");
+  assert.deepEqual(ck.absences.map((a: any) => a.targetFactoryLabel).sort(), ["FAB A", "FAB B"]);
+  assert.equal(ck.penalties.length, 1);
+  assert.equal(ck.unrowed.length, 1);
+  await db.delete(locksT).where(eq(locksT.factoryLabel, ""));
+
+  // флоу модалки: розлок → прийняті штрафи переносяться apply-ендпойнтами
+  const unlock = await request(app).post("/api/svodni/lock").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, city: "Люблін", factoryLabel: "FAB A" });
+  assert.equal(unlock.body.locked, false);
+  const applyAbs = await request(app).post("/api/svodni/apply-absence-deductions").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, entryIds: [e1!.id] });
+  assert.equal(applyAbs.body.updated, 1);
+  const applyPen = await request(app).post("/api/svodni/apply-penalty-deductions").set("Cookie", cookie).set(H)
+    .send({ month: MONTH, ids: [p1!.id] });
+  assert.equal(applyPen.body.updated, 1);
+  const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w1!.id));
+  assert.equal(row?.kara, 350, "200 пропуск + 150 реєстр");
+});
+
 test("фолбек без фабрики штрафу: сума лягає в рядок фабрики з найбільшими годинами; дві групи людини складаються в той самий рядок", opts, async () => {
   const cookie = await svodniCookie();
   const [w1] = await db.insert(workersTable).values({ fullName: "Kowalski Jan" }).returning();

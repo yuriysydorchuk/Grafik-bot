@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -16,7 +16,7 @@ import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorke
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, agramBonusPerHour, factoryBonusPerHour, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
-import { addDaysStr } from "../lib/dates";
+import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
 import { gratyfikantRecords, type GratyfikantSource } from "../services/gratyfikantExport";
 
@@ -209,6 +209,86 @@ function nextMonthStart(month: string): string {
   return sm === 12 ? `${sy! + 1}-01-01` : `${sy}-${String(sm! + 1).padStart(2, "0")}-01`;
 }
 
+// ── Kara до зняття по області, що розблоковується ────────────────────────────
+// Незняті штрафи за пропуски місяця сводної (+ штрафи реєстру /penalties цього
+// місяця), чий цільовий рядок (пара джерела або фолбек-основна фабрика — та
+// сама логіка, що applyKaraDeductions) лежить у розлочуваній області. Поки
+// вкладка затверджена, перенесення їх пропускає — при розлоку веб показує їх
+// у ревʼю, прийняті переносяться apply-*-deductions одразу після розлоку.
+// Люди без жодного рядка місяця — окремим інфо-списком «нема з чого зняти»
+// (best-effort скоуп по фабриці джерела штрафу).
+async function pendingKaraForScope(
+  month: string, lock: LockRow, monthRows: (typeof svodniRowsTable.$inferSelect)[],
+): Promise<{
+  absences: { entryId: number; workerId: number; workerName: string | null; date: string; sourceFactory: string | null; targetFactoryLabel: string; amount: number }[];
+  penalties: { id: number; workerId: number; workerName: string | null; sourceFactory: string | null; targetFactoryLabel: string; amount: number; note: string | null }[];
+  unrowed: { workerName: string | null; kind: "absence" | "penalty"; factory: string | null; amount: number }[];
+}> {
+  const monthStart = `${month}-01`;
+  const monthEnd = nextMonthStart(month);
+  const byHours = (a: typeof monthRows[number], b: typeof monthRows[number]) => (b.hours ?? 0) - (a.hours ?? 0);
+  const targetRowFor = (workerId: number, factoryId: number | null) => {
+    const mine = monthRows.filter(r => r.workerId === workerId);
+    return (factoryId != null ? mine.filter(r => r.factoryId === factoryId).sort(byHours)[0] : undefined)
+      ?? mine.sort(byHours)[0];
+  };
+  // скоуп для «безрядкових»: фабрика джерела збігається з розлочуваною вкладкою
+  // або (міський лок) лежить у цьому місті сводної
+  const scopeLabels = new Set(monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel)).map(r => r.factoryLabel));
+  const inScopeBySource = (facName: string | null, facCity: string | null) =>
+    facName != null && (facName === lock.factoryLabel || scopeLabels.has(facName)
+      || (lock.factoryLabel === "" && facCity === lock.city));
+
+  const absRows = await db.select({ e: scheduleEntriesTable, weekStart: scheduleWeeksTable.weekStart, facName: factoriesTable.name, facCity: factoriesTable.city })
+    .from(scheduleEntriesTable)
+    .innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
+    .where(and(
+      eq(scheduleWeeksTable.status, "approved"),
+      sql`${scheduleWeeksTable.weekStart} >= ${weekFromForMonth(monthStart)}`,
+      sql`${scheduleWeeksTable.weekStart} < ${monthEnd}`,
+      eq(scheduleEntriesTable.status, "absent"), eq(scheduleEntriesTable.absenceExcused, false),
+      isNull(scheduleEntriesTable.absenceDeductedMonth)));
+  const absItems = absRows
+    .map(r => ({ ...r, date: entryDateStr(String(r.weekStart), r.e.dayOfWeek), amount: absencePenaltyOf(r.e) }))
+    .filter(r => r.date >= monthStart && r.date < monthEnd && r.amount > 0);
+  const penItems = (await db.select({ p: penaltiesTable, facName: factoriesTable.name, facCity: factoriesTable.city })
+    .from(penaltiesTable).leftJoin(factoriesTable, eq(penaltiesTable.factoryId, factoriesTable.id))
+    .where(and(eq(penaltiesTable.periodMonth, month), eq(penaltiesTable.deducted, false))))
+    .map(x => ({ ...x, facName: x.facName ?? x.p.factoryLabel }));
+
+  const wIds = [...new Set([...absItems.map(a => a.e.workerId), ...penItems.map(p => p.p.workerId)])];
+  const names = new Map((wIds.length ? await db.select({ id: workersTable.id, name: workersTable.fullName })
+    .from(workersTable).where(inArray(workersTable.id, wIds)) : []).map(w => [w.id, w.name]));
+
+  const absences: Awaited<ReturnType<typeof pendingKaraForScope>>["absences"] = [];
+  const penalties: Awaited<ReturnType<typeof pendingKaraForScope>>["penalties"] = [];
+  const unrowed: Awaited<ReturnType<typeof pendingKaraForScope>>["unrowed"] = [];
+  for (const a of absItems) {
+    const target = targetRowFor(a.e.workerId, a.e.factoryId);
+    if (!target) {
+      if (inScopeBySource(a.facName, a.facCity)) unrowed.push({ workerName: names.get(a.e.workerId) ?? null, kind: "absence", factory: a.facName, amount: a.amount });
+      continue;
+    }
+    if (!isLocked([lock], target.city, target.factoryLabel)) continue;
+    absences.push({ entryId: a.e.id, workerId: a.e.workerId, workerName: names.get(a.e.workerId) ?? null, date: a.date, sourceFactory: a.facName, targetFactoryLabel: target.factoryLabel, amount: a.amount });
+  }
+  for (const p of penItems) {
+    const target = targetRowFor(p.p.workerId, p.p.factoryId);
+    if (!target) {
+      if (inScopeBySource(p.facName, p.facCity ?? null)) unrowed.push({ workerName: names.get(p.p.workerId) ?? null, kind: "penalty", factory: p.facName, amount: p.p.amount });
+      continue;
+    }
+    if (!isLocked([lock], target.city, target.factoryLabel)) continue;
+    penalties.push({ id: p.p.id, workerId: p.p.workerId, workerName: names.get(p.p.workerId) ?? null, sourceFactory: p.facName, targetFactoryLabel: target.factoryLabel, amount: p.p.amount, note: p.p.note });
+  }
+  const byName = (a: { workerName: string | null }, b: { workerName: string | null }) => (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl");
+  absences.sort((a, b) => byName(a, b) || a.date.localeCompare(b.date));
+  penalties.sort(byName);
+  unrowed.sort(byName);
+  return { absences, penalties, unrowed };
+}
+
 router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   const city = String(req.body?.city ?? "").trim();
@@ -223,7 +303,8 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
     eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
     isNotNull(svodniRowsTable.workerId)));
   const workerIds = [...new Set(monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel)).map(r => r.workerId!))];
-  if (!workerIds.length) return ok(res, { lockedAt: lock.lockedAt, changes: [], hidden: 0 });
+  const pendingKara = await pendingKaraForScope(month, lock, monthRows);
+  if (!workerIds.length) return ok(res, { lockedAt: lock.lockedAt, changes: [], hidden: 0, pendingKara });
   const raw = await db.select({ c: workerChangesTable, adminName: adminsTable.name, workerName: workersTable.fullName })
     .from(workerChangesTable)
     .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
@@ -256,7 +337,7 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
     }
     out.push(entry);
   }
-  ok(res, { lockedAt: lock.lockedAt, changes: out, hidden });
+  ok(res, { lockedAt: lock.lockedAt, changes: out, hidden, pendingKara });
 });
 
 // Прийняті при розблокуванні зміни: групуємо по людині (union полів, значення —
