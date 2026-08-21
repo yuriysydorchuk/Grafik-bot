@@ -54,6 +54,48 @@ test("editData admin cannot change hourlyRate on patch, but CAN change a non-fin
   assert.equal(w!.hourlyRate, 40, "the finance field must be untouched by a non-finance admin");
 });
 
+// telegram_id у схемі unique: без явної перевірки конфлікт падав 500-кою з БД
+// (інцидент 19.08.2026, PATCH /workers/363) — тепер це людське 400 з іменем власника.
+test("patch with another worker's telegram id → 400 with the holder's name, row untouched", opts, async () => {
+  const { cookie } = await seedAdmin({ role: "editor" });
+  const holder = await request(app).post("/api/workers").set("Cookie", cookie).set(H)
+    .send({ fullName: "Marek Wisniewski", telegramId: "111222333", workerCode: "901" });
+  const victim = await request(app).post("/api/workers").set("Cookie", cookie).set(H)
+    .send({ fullName: "Tomasz Kaczmarek", workerCode: "902" });
+  const res = await request(app).patch(`/api/workers/${victim.body.id}`).set("Cookie", cookie).set(H)
+    .send({ telegramId: "111222333" });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /Telegram ID вже привʼязаний до Marek Wisniewski/);
+  assert.match(res.body.error, /№901/);
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, victim.body.id));
+  assert.equal(w!.telegramId, null);
+  assert.equal(holder.status, 200);
+});
+
+test("patch re-sending the worker's own telegram id is not a conflict", opts, async () => {
+  const { cookie } = await seedAdmin({ role: "editor" });
+  const created = await request(app).post("/api/workers").set("Cookie", cookie).set(H)
+    .send({ fullName: "Adam Mazur", telegramId: "444555666" });
+  const res = await request(app).patch(`/api/workers/${created.body.id}`).set("Cookie", cookie).set(H)
+    .send({ fullName: "Adam M.", telegramId: "444555666" });
+  assert.equal(res.status, 200);
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, created.body.id));
+  assert.equal(w!.fullName, "Adam M.");
+  assert.equal(w!.telegramId, "444555666");
+});
+
+test("create with an already-bound telegram id → 400, no row inserted", opts, async () => {
+  const { cookie } = await seedAdmin({ role: "editor" });
+  await request(app).post("/api/workers").set("Cookie", cookie).set(H)
+    .send({ fullName: "Pawel Lewandowski", telegramId: "777888999" });
+  const res = await request(app).post("/api/workers").set("Cookie", cookie).set(H)
+    .send({ fullName: "Krzysztof Wojcik", telegramId: "777888999" });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /Telegram ID вже привʼязаний до Pawel Lewandowski/);
+  const rows = await db.select().from(workersTable).where(eq(workersTable.fullName, "Krzysztof Wojcik"));
+  assert.equal(rows.length, 0);
+});
+
 test("worker create still requires the editData capability", opts, async () => {
   await seedRole("viewer", [], ["/"]);
   const { cookie } = await seedAdmin({ role: "viewer" });

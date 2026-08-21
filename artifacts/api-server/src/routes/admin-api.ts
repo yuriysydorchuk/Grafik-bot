@@ -353,10 +353,16 @@ router.post("/workers", RW, async (req, res) => {
   if (!code) code = await nextWorkerCode();
   const dup = await db.select().from(workersTable).where(eq(workersTable.workerCode, code));
   if (dup.length) return fail(res, 400, `Код ${code} вже зайнятий`);
+  // telegram_id у схемі unique — без перевірки конфлікт падав би 500-кою з БД
+  const tgId = telegramId?.trim() || null;
+  if (tgId) {
+    const [holder] = await db.select().from(workersTable).where(eq(workersTable.telegramId, tgId));
+    if (holder) return fail(res, 400, `Telegram ID вже привʼязаний до ${holder.fullName} (№${holder.workerCode ?? holder.id}${holder.isActive ? "" : ", звільнений"})`);
+  }
   const values: any = {
     fullName: fullName.trim(), factoryId: factoryId ?? null, companyId: companyId ?? null,
     positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
-    telegramId: telegramId?.trim() || null, workerCode: code,
+    telegramId: tgId, workerCode: code,
     selfTransport: !!selfTransport,
     selfTransportSince: typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
       ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
@@ -413,7 +419,15 @@ router.patch("/workers/:id", RW, async (req, res) => {
   if (positionId !== undefined) patch.positionId = positionId ?? null;
   if (gender !== undefined) patch.gender = normGender(gender);
   if (fixedShift !== undefined) patch.fixedShift = normFixedShift(fixedShift);
-  if (telegramId !== undefined) patch.telegramId = strOrNull(telegramId);
+  if (telegramId !== undefined) {
+    // telegram_id unique: чужа привʼязка → людське 400 замість 500 з БД
+    const tgId = strOrNull(telegramId);
+    if (tgId) {
+      const [holder] = await db.select().from(workersTable).where(eq(workersTable.telegramId, tgId));
+      if (holder && holder.id !== id) return fail(res, 400, `Telegram ID вже привʼязаний до ${holder.fullName} (№${holder.workerCode ?? holder.id}${holder.isActive ? "" : ", звільнений"})`);
+    }
+    patch.telegramId = tgId;
+  }
   if (workerCode !== undefined) {
     const code = strOrNull(workerCode);
     if (code) {
