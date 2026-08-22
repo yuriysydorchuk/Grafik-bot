@@ -1,4 +1,4 @@
-import { type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, useEffect } from "react";
+import { type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { X, Loader2, Inbox } from "lucide-react";
@@ -91,13 +91,21 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
     if (open) window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
+  // Закриття по бекдропу — лише коли і mousedown, і click лягли на сам бекдроп.
+  // Модалка, відкрита з onChange нативного <select> (побажання по виплаті, форма
+  // легалізації), інакше вмирає від click-through: браузер досилає click по
+  // координатах курсора після закриття списку, а там уже бекдроп. Заодно не
+  // закриваємось, коли виділення тексту з панелі відпустили поза нею.
+  const downOnBackdrop = useRef(false);
   if (!open) return null;
   const maxW = size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md";
   // xl modals are real "work surfaces" (e.g. driver assignments) — go full-screen on phones
   const overlay = size === "xl" ? "p-0 sm:p-4 sm:pt-20" : "p-4 pt-20";
   const panel = size === "xl" ? "min-h-dvh rounded-none sm:min-h-0 sm:rounded-2xl" : "rounded-2xl";
   return (
-    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`} onClick={onClose}>
+    <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`}
+      onMouseDown={e => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={e => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}>
       <div className={`w-full ${maxW} ${panel} bg-white shadow-xl ring-1 ring-slate-900/5 animate-pop-in`} onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-5 py-3.5">
           <h3 className="text-base font-semibold text-slate-800">{title}</h3>
