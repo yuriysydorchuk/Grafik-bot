@@ -1,4 +1,5 @@
 import { type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { X, Loader2, Inbox } from "lucide-react";
@@ -102,7 +103,11 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
   // xl modals are real "work surfaces" (e.g. driver assignments) — go full-screen on phones
   const overlay = size === "xl" ? "p-0 sm:p-4 sm:pt-20" : "p-4 pt-20";
   const panel = size === "xl" ? "min-h-dvh rounded-none sm:min-h-0 sm:rounded-2xl" : "rounded-2xl";
-  return (
+  // Портал у body: модалка, відкрита ЗСЕРЕДИНИ іншої модалки (превʼю впливу
+  // правил у модалці фабрики), інакше невидима — backdrop-blur батьківського
+  // оверлея робить його containing block для fixed-нащадків, і вкладене
+  // fixed inset-0 «їде» разом зі скролом батьківської панелі за межі екрана.
+  return createPortal(
     <div className={`fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 ${overlay} backdrop-blur-[2px] animate-fade-in`}
       onMouseDown={e => { downOnBackdrop.current = e.target === e.currentTarget; }}
       onClick={e => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}>
@@ -113,6 +118,7 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
         </div>
         <div className="px-4 py-4 sm:px-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
