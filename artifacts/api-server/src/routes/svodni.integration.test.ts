@@ -480,6 +480,35 @@ test("«Год. повід.» БЕЗ статусу легалізації ко�
   assert.equal(r.body.gotowka, 4056, "усе готівкою");
 });
 
+test("зміна легалізації оживляє рядок без ставки: нетто з бази фабрики, до виплати і розклад перераховано", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [fac] = await db.insert(factoriesTable).values({ name: "TESTOWA", rateBrutto: 31.4, rateNetto: 25.35 } as any).returning();
+  // профіль без ставок і без форми легалізації; рядок доданий вручну, поки
+  // людина була «не оформлена» — нетто-ставки і «до виплати» в ньому нема
+  const [w] = await db.insert(workersTable).values({ fullName: "Songe Oscar", isStudent: false, under26: false }).returning();
+  await seedRow({
+    workerId: w!.id, linkStatus: "confirmed", factoryId: fac!.id,
+    hours: 30, rateBrutto: 31.4, rateNetto: null, brutto: 942, doWyplaty: null,
+    hoursDeclared: null, ksiegBrutto: null, ksiegNetto: null, gotowka: null, konto: null,
+  });
+  const [row] = await db.select().from(svodniRowsTable);
+
+  const ap = await request(app).post("/api/svodni/profile-apply").set("Cookie", owner).set(H)
+    .send({ workerId: w!.id, from: "2026-06-01", rowIds: [row!.id], changes: { legalStatus: "dyplom" } });
+  assert.equal(ap.status, 200);
+  assert.equal(ap.body.applied, 1);
+
+  const [r] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row!.id));
+  assert.equal(r!.rateNetto, 25.35, "нетто підставлено з базової пари фабрики");
+  assert.equal(r!.doWyplaty, 760.5, "30 × 25.35");
+  // dyplom без powiadomienia-годин → усе на конто
+  assert.equal(r!.konto, 760.5);
+  assert.equal(r!.ksiegNetto, 760.5);
+  assert.equal(r!.ksiegBrutto, 942, "конто ÷ нетто × брутто");
+  assert.equal(r!.hoursDeclared, 30);
+  assert.equal(r!.gotowka, 0);
+});
+
 test("затвердження (лок): фабрика і місто блокують правки, toggle знімає", opts, async () => {
   await seedRow();
   const owner = (await seedAdmin({ role: "owner" })).cookie;

@@ -1507,6 +1507,11 @@ function rowSetFromProfile(
     } else if (changed.has("hourlyRateNetto") && (w.hourlyRateNetto ?? base.netto) != null) {
       merged.rateNetto = w.hourlyRateNetto ?? base.netto;
     }
+    // рядок без ставок (доданий вручну, поки людина була «не оформлена»):
+    // статусна зміна підставляє базову пару — без нетто computePayout лишає
+    // «до виплати» порожнім і рядок після легалізації не оживає
+    if (statusTouched && merged.rateBrutto == null && base.brutto != null) merged.rateBrutto = base.brutto;
+    if (statusTouched && !stud26 && merged.rateNetto == null && base.netto != null) merged.rateNetto = base.netto;
   }
   // похідні: до виплати/брутто + місячний розклад konto/готівки за правилами
   const payout = computePayout(merged, row.city as any);
@@ -1638,6 +1643,12 @@ export async function profileChangeContext(workerId: number, body: Record<string
           } else if ((nextW.hourlyRateNetto ?? resolved.netto) != null) {
             st.rateNetto = nextW.hourlyRateNetto ?? resolved.netto;
           }
+        }
+        // вікно без ставок (рядок був «не оформлений»): статусна зміна
+        // підставляє базову пару — інакше сегмент лишається без «до виплати»
+        if (legalChanged || changed.has("birthDate")) {
+          if (st.rateBrutto == null && resolved.brutto != null) st.rateBrutto = resolved.brutto;
+          if (!stud26w && st.rateNetto == null && resolved.netto != null) st.rateNetto = resolved.netto;
         }
         return st;
       };
