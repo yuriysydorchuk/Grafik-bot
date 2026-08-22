@@ -312,6 +312,7 @@ router.get("/workers", RW, async (req, res) => {
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
       selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
       nationality: workersTable.nationality, language: workersTable.language,
+      gratyfikantName: workersTable.gratyfikantName,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -369,6 +370,7 @@ router.post("/workers", RW, async (req, res) => {
     selfTransportSince: typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
       ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
     nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
+    gratyfikantName: strOrNull(req.body?.gratyfikantName),
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -416,6 +418,8 @@ router.patch("/workers/:id", RW, async (req, res) => {
   const [before] = await db.select().from(workersTable).where(eq(workersTable.id, id));
   const patch: any = {};
   if (fullName !== undefined) patch.fullName = String(fullName).trim();
+  // точне написання в Gratyfikant nexo — живе лише в експорті naliczeń
+  if (req.body?.gratyfikantName !== undefined) patch.gratyfikantName = strOrNull(req.body.gratyfikantName);
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (positionId !== undefined) patch.positionId = positionId ?? null;

@@ -3440,7 +3440,9 @@ router.get("/svodni/gratyfikant", requireCap("svodniSensitive"), async (req: Aut
     rawName: svodniRowsTable.rawName, factoryLabel: svodniRowsTable.factoryLabel,
     factoryId: svodniRowsTable.factoryId, firm: svodniRowsTable.firm,
     ksiegBrutto: svodniRowsTable.ksiegBrutto, segmentOf: svodniRowsTable.segmentOf,
+    workerName: workersTable.fullName, gratyfikantName: workersTable.gratyfikantName,
   }).from(svodniRowsTable)
+    .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
   await enrichFirms(rows);
   const records = gratyfikantRecords(rows as GratyfikantSource[], { firm, date, factoryLabel: factory });

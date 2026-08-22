@@ -82,6 +82,7 @@ export interface Worker {
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   status: string; isActive: boolean; language?: string | null;
+  gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }
 export interface Driver {

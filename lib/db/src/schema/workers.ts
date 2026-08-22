@@ -49,6 +49,10 @@ export const factoryPositionsTable = pgTable("factory_positions", {
 export const workersTable = pgTable("workers", {
   id: serial("id").primaryKey(),
   fullName: text("full_name").notNull(),
+  // точне написання «Nazwisko Imię» з Gratyfikant nexo (кадрова система księgowej);
+  // використовується ЛИШЕ в експорті naliczeń для Gratyfikanta (пріоритет над full_name);
+  // NULL = імʼя профілю збігається з nexo або людини там ще нема
+  gratyfikantName: text("gratyfikant_name"),
   telegramId: text("telegram_id").unique(),
   workerCode: text("worker_code").unique(), // public sequential id (shown in lists/reports) — NOT a binding secret
   inviteCode: text("invite_code").unique(), // unguessable token for ?start=emp<code> Telegram binding

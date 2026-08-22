@@ -10,15 +10,17 @@
 // лісту кожної фабрики). Години/ставки/потронення не возимо: komornik
 // nexo рахує сам, решта знімається поза офіційним контуром.
 //
-// Імена — rawName як є (mixed case «Nazwisko Imię», формат збігається з
-// nexo). Свідомо БЕЗ nameCaps: файл машинний, точний збіг рядка імені
-// критичний для матчингу працівника в майстрі імпорту.
+// Імʼя запису: workers.gratyfikant_name (точне написання в nexo, якщо задане)
+// → повне імʼя профілю → rawName рядка. Свідомо БЕЗ nameCaps: файл машинний,
+// точний збіг рядка імені критичний для матчингу працівника в майстрі імпорту.
 import { OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "./svodniSync";
 
 export const GRATYFIKANT_SKLADNIK = "Rachunki - kwota rachunku";
 
 export type GratyfikantSource = {
   rawName: string;
+  workerName?: string | null;      // workers.full_name (привʼязаний профіль)
+  gratyfikantName?: string | null; // workers.gratyfikant_name — пріоритетне
   factoryLabel: string;
   firm: string | null;
   ksiegBrutto: number | null;
@@ -45,6 +47,7 @@ export function gratyfikantRecords(
 ): GratyfikantRecord[] {
   const collator = new Intl.Collator("pl");
   const wantFactory = opts.factoryLabel ? normLabel(opts.factoryLabel) : null;
+  const nameOf = (r: GratyfikantSource) => r.gratyfikantName ?? r.workerName ?? r.rawName;
   return rows
     .filter(r => r.segmentOf == null)
     .filter(r => !OFFICE_TAB_RE.test(r.factoryLabel) && r.factoryLabel !== EXTRA_STUDENTS_LABEL)
@@ -52,9 +55,9 @@ export function gratyfikantRecords(
     .filter(r => !wantFactory || normLabel(r.factoryLabel) === wantFactory)
     .filter(r => (r.ksiegBrutto ?? 0) > 0)
     .sort((a, b) => collator.compare(a.factoryLabel, b.factoryLabel)
-      || collator.compare(a.rawName, b.rawName))
+      || collator.compare(nameOf(a), nameOf(b)))
     .map(r => ({
-      pracownik: r.rawName.trim().replace(/\s+/g, " "),
+      pracownik: (r.gratyfikantName ?? r.workerName ?? r.rawName).trim().replace(/\s+/g, " "),
       data: opts.date,
       rodzaj: "naliczenie" as const,
       skladnik: GRATYFIKANT_SKLADNIK,

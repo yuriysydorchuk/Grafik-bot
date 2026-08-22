@@ -62,6 +62,15 @@ test("gratyfikant: фільтр фабрики нечутливий до рег�
   assert.deepEqual(recs.map(r => r.pracownik), ["Kowalski Jan"]);
 });
 
+test("gratyfikant: пріоритет імені — gratyfikant_name → профіль → raw_name", () => {
+  const recs = gratyfikantRecords([
+    row({ rawName: "Dongo Tichatonga Blessing", workerName: "Dongo Tichatonga Blessing", gratyfikantName: "DONGO TICHATONGA" }),
+    row({ rawName: "Buntu Coly (аркуш)", workerName: "Buntu Coly Lemerre", gratyfikantName: null, factoryLabel: "AGRAM" }),
+    row({ rawName: "Gadza Louis", factoryLabel: "LST" }), // непривʼязаний рядок — лишається raw
+  ], { firm: "ES", date: "2026-08-22" });
+  assert.deepEqual(recs.map(r => r.pracownik), ["Buntu Coly Lemerre", "DONGO TICHATONGA", "Gadza Louis"]);
+});
+
 test("gratyfikant: копійки округлюються, зайві пробіли в імені колапсують", () => {
   const recs = gratyfikantRecords(
     [row({ ksiegBrutto: 1234.5678, rawName: "  Kowalski   Jan " })],
