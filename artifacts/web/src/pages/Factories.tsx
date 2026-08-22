@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Link2, Trash2, X } from "lucide-react";
+import { Plus, Pencil, Link2, Trash2, X, Eye } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, patch, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode } from "../lib/api";
+import { get, post, patch, del, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode } from "../lib/api";
 import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
@@ -37,6 +37,9 @@ export default function Factories() {
   // NIP/P&L-підпис — лише viewFinance (canRates ⊇ canInvoice)
   const canRates = can(me, "viewFinance") || can(me, "factoryRates");
   const canInvoice = can(me, "viewFinance");
+  // правила konto/готівки сводної: перегляд — svodniSensitive, редагування — viewFinance
+  const canPayoutView = can(me, "svodniSensitive");
+  const canPayoutEdit = can(me, "viewFinance");
   const { data: factories, isLoading } = useQuery<FactoryX[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const [edit, setEdit] = useState<FactoryX | null>(null);
   const [adding, setAdding] = useState(false);
@@ -91,7 +94,7 @@ export default function Factories() {
           </Card>
         ))}
       </div>
-      {(adding || edit) && <FactoryModal factory={edit} canRates={canRates} canInvoice={canInvoice} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { inv(); setAdding(false); setEdit(null); }} />}
+      {(adding || edit) && <FactoryModal factory={edit} canRates={canRates} canInvoice={canInvoice} canPayoutView={canPayoutView} canPayoutEdit={canPayoutEdit} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { inv(); setAdding(false); setEdit(null); }} />}
     </>
   );
 }
@@ -109,7 +112,7 @@ const initialShifts = (f: FactoryX | null): ShiftTime[] => {
 };
 
 type PosRow = { positionId: number; rate: string; rateNetto: string; invoiceRate: string };
-function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { factory: FactoryX | null; canRates: boolean; canInvoice: boolean; onClose: () => void; onSaved: () => void }) {
+function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutEdit, onClose, onSaved }: { factory: FactoryX | null; canRates: boolean; canInvoice: boolean; canPayoutView: boolean; canPayoutEdit: boolean; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: allPositions = [] } = useQuery<Position[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
@@ -384,11 +387,318 @@ function FactoryModal({ factory, canRates, canInvoice, onClose, onSaved }: { fac
             )}
           </div>
         )}
+        {factory && canPayoutView && <PayoutRulesBlock factoryId={factory.id} canEdit={canPayoutEdit} />}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} disabled={!v.name.trim() || !shiftsOk} onClick={() => v.name.trim() && shiftsOk && save.mutate()}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ── Правила сводної (konto/готівка) — версійні, «діє з» ──────────────────────
+// Перегляд — svodniSensitive, редагування — viewFinance. Фабрика без версій
+// працює за спадковими правилами з коду (legacy); перша збережена версія
+// перекриває їх зі свого місяця. Після збереження — превʼю перерахунку
+// зачеплених місяців (залочені вкладки пропускаються).
+type StazStep = { days: number; add: number };
+type PayoutRuleCore = {
+  capH: number | null; capHighH: number | null; capThresholdH: number | null; capFirm: string | null;
+  cashBonus: number; stazBonus: boolean; stazMinHours: number | null; stazSteps: StazStep[] | null;
+  premiaCash: boolean;
+};
+type PayoutRuleV = PayoutRuleCore & { id: number; factoryId: number; effectiveFrom: string; note: string | null };
+type RulesResp = {
+  factoryId: number; month: string; versions: PayoutRuleV[]; legacy: PayoutRuleCore;
+  effective: PayoutRuleCore; effectiveSource: { id: number; effectiveFrom: string } | "legacy";
+};
+type ImpactRow = {
+  id: number; month: string; city: string; factoryLabel: string; name: string;
+  locked: boolean; segmented: boolean; diffs: { key: string; from: unknown; to: unknown }[];
+};
+
+function ruleChips(r: PayoutRuleCore, t: (s: string) => string): string[] {
+  const chips: string[] = [];
+  if (r.capH != null) {
+    let cap = `${t("конто ≤")} ${r.capH} ${t("год")}`;
+    if (r.capThresholdH != null && r.capHighH != null) cap += ` (${t("від")} ${r.capThresholdH} ${t("год")} — ${r.capHighH})`;
+    if (r.capFirm) cap += ` · ${r.capFirm}`;
+    chips.push(cap);
+  }
+  if (r.cashBonus > 0) chips.push(`${t("нал")} +${r.cashBonus} ${t("zł/год")}`);
+  if (r.stazBonus) {
+    const steps = (r.stazSteps ?? []).map(s => `${s.days}${t("д")} +${s.add}`).join(" / ");
+    chips.push(`${t("стаж")} ${steps || "—"}${r.stazMinHours != null ? ` (${t("від")} ${r.stazMinHours} ${t("год/міс")})` : ""}`);
+  }
+  if (r.premiaCash) chips.push(t("Premia готівкою"));
+  if (!chips.length) chips.push(t("без особливих правил"));
+  return chips;
+}
+
+const RULE_DIFF_LABEL: Record<string, string> = {
+  rateNetto: "Ставка нетто", doWyplaty: "До виплати", hoursDeclared: "Год. księg.",
+  ksiegBrutto: "Księg. brutto", ksiegNetto: "Księg. netto", konto: "Конто", gotowka: "Готівка",
+};
+
+function PayoutRulesBlock({ factoryId, canEdit }: { factoryId: number; canEdit: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const qk = ["factory-payout-rules", factoryId];
+  const { data, isLoading } = useQuery<RulesResp>({ queryKey: qk, queryFn: () => get(`/svodni/factory-rules?factoryId=${factoryId}`) });
+  const [form, setForm] = useState<null | { id: number | null; v: Record<string, string | boolean>; steps: { days: string; add: string }[] }>(null);
+  const [impact, setImpact] = useState<null | { fromMonth: string; rows: ImpactRow[]; skippedLocked: number; done?: { updated: number } }>(null);
+  const inv = () => qc.invalidateQueries({ queryKey: qk });
+
+  const openForm = (ver: PayoutRuleV | null) => {
+    const base: PayoutRuleCore = ver ?? data?.effective ?? { capH: null, capHighH: null, capThresholdH: null, capFirm: null, cashBonus: 0, stazBonus: false, stazMinHours: null, stazSteps: [], premiaCash: false };
+    setForm({
+      id: ver?.id ?? null,
+      v: {
+        effectiveFrom: ver?.effectiveFrom ?? "",
+        capH: base.capH != null ? String(base.capH) : "",
+        capHighH: base.capHighH != null ? String(base.capHighH) : "",
+        capThresholdH: base.capThresholdH != null ? String(base.capThresholdH) : "",
+        capFirm: base.capFirm ?? "",
+        cashBonus: base.cashBonus ? String(base.cashBonus) : "",
+        stazBonus: base.stazBonus,
+        stazMinHours: base.stazMinHours != null ? String(base.stazMinHours) : "",
+        premiaCash: base.premiaCash,
+        note: (ver?.note ?? "") as string,
+      },
+      steps: (base.stazSteps ?? []).map(s => ({ days: String(s.days), add: String(s.add) })),
+    });
+  };
+
+  // превʼю впливу показуємо ЗАВЖДИ (і коли рядків 0 — явним «нічого не
+  // зміниться», а не тостом, який легко пропустити)
+  const runImpact = async (fromMonth: string) => {
+    try {
+      const r = await post<{ rows: ImpactRow[]; skippedLocked: number }>("/svodni/factory-rules/impact", { factoryId, fromMonth });
+      setImpact({ fromMonth, rows: r.rows, skippedLocked: r.skippedLocked });
+    } catch (e: any) { toast.error(e.message); }
+  };
+
+  const saveForm = useMutation({
+    mutationFn: async () => {
+      if (!form) throw new Error("no form");
+      const num = (s: unknown) => String(s ?? "").trim() === "" ? null : Number(String(s).replace(",", "."));
+      const body = {
+        factoryId,
+        effectiveFrom: String(form.v.effectiveFrom),
+        capH: num(form.v.capH), capHighH: num(form.v.capHighH), capThresholdH: num(form.v.capThresholdH),
+        capFirm: String(form.v.capFirm ?? "").trim() || null,
+        cashBonus: num(form.v.cashBonus) ?? 0,
+        stazBonus: !!form.v.stazBonus,
+        stazMinHours: num(form.v.stazMinHours),
+        stazSteps: form.steps
+          .filter(s => s.days.trim() !== "" && s.add.trim() !== "")
+          .map(s => ({ days: Number(s.days.replace(",", ".")), add: Number(s.add.replace(",", ".")) })),
+        premiaCash: !!form.v.premiaCash,
+        note: String(form.v.note ?? "").trim() || null,
+      };
+      const prev = form.id != null ? (data?.versions ?? []).find(x => x.id === form.id) : null;
+      const saved = form.id != null
+        ? await patch<PayoutRuleV>(`/svodni/factory-rules/${form.id}`, body)
+        : await post<PayoutRuleV>("/svodni/factory-rules", body);
+      // перерахунок — від найранішого зачепленого місяця (стара і нова дати версії)
+      const months = [saved.effectiveFrom, prev?.effectiveFrom].filter(Boolean) as string[];
+      return months.sort()[0]!.slice(0, 7);
+    },
+    onSuccess: (fromMonth) => { toast.success(t("Збережено")); setForm(null); inv(); runImpact(fromMonth); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: async (ver: PayoutRuleV) => { await del(`/svodni/factory-rules/${ver.id}`); return ver.effectiveFrom.slice(0, 7); },
+    onSuccess: (fromMonth) => { toast.success(t("Версію видалено")); inv(); runImpact(fromMonth); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const recompute = useMutation({
+    mutationFn: (fromMonth: string) => post<{ updated: number; skippedLocked: number }>("/svodni/factory-rules/recompute", { factoryId, fromMonth }),
+    onSuccess: (r) => {
+      toast.success(`${t("Перераховано рядків:")} ${r.updated}${r.skippedLocked ? ` · ${t("пропущено (лок):")} ${r.skippedLocked}` : ""}`);
+      setImpact(null);
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  if (isLoading || !data) return <div className="rounded-xl border border-slate-200 p-3 text-sm text-slate-400">{t("Правила сводної")}…</div>;
+  const fmtD = (d: string) => { const [y, m, dd] = d.split("-"); return `${dd}.${m}.${y}`; };
+  const effectiveLegacy = data.effectiveSource === "legacy";
+  return (
+    <div className="space-y-2 rounded-xl border border-slate-200 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Правила сводної (konto/готівка)")}</p>
+        {canEdit && !form && (
+          <button type="button" onClick={() => openForm(null)} className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50">
+            <Plus className="h-3.5 w-3.5" /> {t("Нова версія")}
+          </button>
+        )}
+      </div>
+      {/* чинне правило на поточний місяць */}
+      <div className="text-sm text-slate-600">
+        <span className="text-xs text-slate-400">{t("Зараз діє")} ({effectiveLegacy ? t("спадкове з коду") : `${t("з")} ${fmtD((data.effectiveSource as { effectiveFrom: string }).effectiveFrom)}`}):</span>
+        <div className="mt-1 flex flex-wrap gap-1">
+          {ruleChips(data.effective, t).map((c, i) => <Badge key={i} color={effectiveLegacy ? "slate" : "green"}>{c}</Badge>)}
+        </div>
+      </div>
+      {/* історія версій */}
+      {data.versions.length > 0 && (
+        <div className="space-y-1">
+          {data.versions.map(ver => (
+            <div key={ver.id} className="flex items-start justify-between gap-2 rounded-lg bg-slate-50 px-2 py-1.5">
+              <div className="min-w-0 text-xs text-slate-600">
+                <span className="font-medium text-slate-700">{t("Діє з")} {fmtD(ver.effectiveFrom)}</span>
+                <span className="ml-1 text-slate-400">({t("місяць")} {ver.effectiveFrom.slice(0, 7)} {t("цілком")})</span>
+                <div className="mt-0.5 flex flex-wrap gap-1">{ruleChips(ver, t).map((c, i) => <Badge key={i} color="blue">{c}</Badge>)}</div>
+                {ver.note && <div className="mt-0.5 text-slate-400">{ver.note}</div>}
+              </div>
+              {canEdit && (
+                <div className="flex shrink-0 gap-1">
+                  <button type="button" onClick={() => runImpact(ver.effectiveFrom.slice(0, 7))} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700" title={t("На що впливає (рядки сводних від місяця версії)")}><Eye className="h-3.5 w-3.5" /></button>
+                  <button type="button" onClick={() => openForm(ver)} className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>
+                  <button type="button" onClick={() => { if (confirm(t("Видалити цю версію правил?"))) remove.mutate(ver); }} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-3.5 w-3.5" /></button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!data.versions.length && <p className="text-xs text-slate-400">{t("Версій ще нема — діють спадкові правила з коду. Перша збережена версія перекриє їх зі свого місяця.")}</p>}
+
+      {/* форма нової/редагованої версії */}
+      {form && (
+        <div className="space-y-2 rounded-lg border border-red-200 bg-red-50/40 p-2.5">
+          <div>
+            <Label>{t("Діє з (дата)")}</Label>
+            <Input type="date" value={String(form.v.effectiveFrom)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, effectiveFrom: e.target.value } }))} />
+            <p className="mt-0.5 text-xs text-slate-400">{t("Правило діє на сводну всього місяця, в який потрапляє дата.")}</p>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <Label>{t("Стеля конто, год")}</Label>
+              <Input value={String(form.v.capH)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, capH: e.target.value } }))} placeholder={t("без стелі")} inputMode="decimal" />
+            </div>
+            <div>
+              <Label>{t("Підвищена, год")}</Label>
+              <Input value={String(form.v.capHighH)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, capHighH: e.target.value } }))} placeholder="70" inputMode="decimal" />
+            </div>
+            <div>
+              <Label>{t("…від годин")}</Label>
+              <Input value={String(form.v.capThresholdH)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, capThresholdH: e.target.value } }))} placeholder="200" inputMode="decimal" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label>{t("Стеля лише для фірми")}</Label>
+              <Input value={String(form.v.capFirm)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, capFirm: e.target.value } }))} placeholder={t("порожньо = всі")} />
+            </div>
+            <div>
+              <Label>{t("Готівковий бонус, zł/год")}</Label>
+              <Input value={String(form.v.cashBonus)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, cashBonus: e.target.value } }))} placeholder="0" inputMode="decimal" />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">{t("Стеля — скільки годин максимум декларується на конто (решта готівкою); працює «60, а від 200 відпрацьованих — 70». Готівковий бонус вмикається галочкою в профілі працівника.")}</p>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={!!form.v.stazBonus} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, stazBonus: e.target.checked } }))} />
+            {t("Стажевий бонус (сходинки за днями стажу)")}
+          </label>
+          {!!form.v.stazBonus && (
+            <div className="space-y-1.5 pl-6">
+              <div>
+                <Label>{t("Мін. годин за місяць")}</Label>
+                <Input value={String(form.v.stazMinHours)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, stazMinHours: e.target.value } }))} placeholder={t("порожньо = без порога")} inputMode="decimal" className="w-40" />
+              </div>
+              {form.steps.map((s, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm text-slate-600">
+                  <span>{t("від")}</span>
+                  <Input value={s.days} onChange={e => setForm(f => f && ({ ...f, steps: f.steps.map((x, j) => j === i ? { ...x, days: e.target.value } : x) }))} placeholder="30" inputMode="numeric" className="w-16 text-center" />
+                  <span>{t("днів")} → +</span>
+                  <Input value={s.add} onChange={e => setForm(f => f && ({ ...f, steps: f.steps.map((x, j) => j === i ? { ...x, add: e.target.value } : x) }))} placeholder="1" inputMode="decimal" className="w-16 text-center" />
+                  <span>{t("zł/год")}</span>
+                  <button type="button" onClick={() => setForm(f => f && ({ ...f, steps: f.steps.filter((_, j) => j !== i) }))} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button>
+                </div>
+              ))}
+              <button type="button" onClick={() => setForm(f => f && ({ ...f, steps: [...f.steps, { days: "", add: "" }] }))} className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50"><Plus className="h-3.5 w-3.5" /> {t("Додати сходинку")}</button>
+              <p className="text-xs text-slate-400">{t("Стаж — від дати працевлаштування на кінець місяця; галочка в профілі без дати = перша сходинка.")}</p>
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={!!form.v.premiaCash} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, premiaCash: e.target.checked } }))} />
+            {t("Колонка Premia — завжди готівкою")}
+          </label>
+          <div>
+            <Label>{t("Нотатка")}</Label>
+            <Input value={String(form.v.note)} onChange={e => setForm(f => f && ({ ...f, v: { ...f.v, note: e.target.value } }))} placeholder={t("напр. рішення власника 09.2026")} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setForm(null)}>{t("Скасувати")}</Button>
+            <Button loading={saveForm.isPending} disabled={!String(form.v.effectiveFrom)} onClick={() => saveForm.mutate()}>{form.id != null ? t("Зберегти версію") : t("Створити версію")}</Button>
+          </div>
+        </div>
+      )}
+
+      {/* превʼю перерахунку зачеплених рядків */}
+      {impact && (() => {
+        const unlockedCount = impact.rows.filter(r => !r.locked).length;
+        // підсумок по місяцях: 2026-07 — 3 рядки (1 🔒)
+        const byMonth = new Map<string, { total: number; locked: number }>();
+        for (const r of impact.rows) {
+          const m = byMonth.get(r.month) ?? byMonth.set(r.month, { total: 0, locked: 0 }).get(r.month)!;
+          m.total++;
+          if (r.locked) m.locked++;
+        }
+        return (
+          <Modal open onClose={() => setImpact(null)} title={t("На що вплине правило")}>
+            <div className="space-y-2">
+              {!impact.rows.length ? (
+                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                  {t("Від місяця")} <span className="font-medium">{impact.fromMonth}</span>: {t("наявні рядки сводних НЕ зміняться — правило збігається з тим, за чим вони вже пораховані. Воно застосується до нових розрахунків (наступний «З обліку годин»).")}
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm text-slate-600">
+                    {t("Зачеплені рядки від місяця")} <span className="font-medium">{impact.fromMonth}</span>: {impact.rows.length}
+                    {impact.skippedLocked > 0 && <span className="text-amber-600"> · {t("залочених (не зміняться):")} {impact.skippedLocked}</span>}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {[...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([m, c]) => (
+                      <Badge key={m} color={c.locked === c.total ? "amber" : "blue"}>
+                        {m}: {c.total}{c.locked > 0 ? ` (${c.locked} 🔒)` : ""}
+                      </Badge>
+                    ))}
+                  </div>
+                  <div className="max-h-80 space-y-1 overflow-y-auto">
+                    {impact.rows.map(r => (
+                      <div key={r.id} className={`rounded-lg px-2 py-1.5 text-xs ${r.locked ? "bg-amber-50 text-amber-700" : "bg-slate-50 text-slate-600"}`}>
+                        <span className="font-medium text-slate-700">{r.name}</span>
+                        <span className="ml-1 text-slate-400">{r.month} · {r.factoryLabel}{r.segmented ? " · 🧩" : ""}{r.locked ? ` · 🔒 ${t("лок")}` : ""}</span>
+                        <div className="mt-0.5 flex flex-wrap gap-x-3">
+                          {r.diffs.map((d, i) => (
+                            <span key={i}>{t(RULE_DIFF_LABEL[d.key] ?? d.key)}: {String(d.from ?? "—")} → <span className="font-medium">{String(d.to ?? "—")}</span></span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-slate-400">{t("«Перерахувати» оновить незалочені рядки. Можна і не перераховувати — наступний «З обліку годин» застосує правило сам.")}</p>
+                </>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" onClick={() => setImpact(null)}>{impact.rows.length ? t("Не зараз") : t("Зрозуміло")}</Button>
+                {unlockedCount > 0 && (
+                  <Button loading={recompute.isPending} onClick={() => recompute.mutate(impact.fromMonth)}>
+                    {t("Перерахувати незалочені")} ({unlockedCount})
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+    </div>
   );
 }

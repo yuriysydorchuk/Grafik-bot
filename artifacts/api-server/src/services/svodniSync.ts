@@ -14,9 +14,10 @@ import { norm, key, num, cell, cleanName, TAB_ALIASES } from "./payrollSummaries
 import {
   parseLublinTab, parseWorkList, parseLodzFullTab, parseGotowkaTab, overlayGotowka,
   parseOfficeTab, computeMismatch, computePayout, legalStatusOf, applyLegalDefaults, ksiegRatesOf,
-  KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, agramBonusPerHour, factoryBonusPerHour,
+  KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, factoryBonusPerHour, hasCashBonus,
   type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
+import { PayoutRules } from "./factoryRules";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -151,6 +152,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   // id фабрики за назвою вкладки — потрібен уже в розкладі конто/готівки
   // (фабрико-залежні правила: премія Agram завжди готівкою)
   const facIdOf = await factoryIdByLabel();
+  const payoutRules = await PayoutRules.load();
   for (const [t, rows] of grids) {
     if (SKIP_TABS.test(t.trim())) continue;
     const parsed = OFFICE_TAB_RE.test(t.trim())
@@ -224,6 +226,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         applyLegalDefaults(row, false, {
           factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any, city,
           firm: firm ?? parsed.firmGuess, factoryId: facIdOf(t.trim()),
+          rule: payoutRules.for(facIdOf(t.trim()), t.trim(), periodMonth),
           payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
         });
         // нормалізація księgowego конто зі «зменшеними годинами»: konto завжди
@@ -507,6 +510,7 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
   }
   const workers = await db.select().from(workersTable)
     .where(inArray(workersTable.id, [...perWorker.keys()]));
+  const payoutRules = await PayoutRules.load();
   let updated = 0, skipped = 0;
   for (const w of workers) {
     const s = perWorker.get(w.id)!;
@@ -516,8 +520,9 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
       // бонусні фабрики (Agram/LST): у рядку сводної ставка з бонусами — у профіль
       // пишемо базу. Студенту до 26 бонус не нараховувався — не віднімаємо
       const stud26Row = s.isStudent === true && s.under26 === true;
-      const netto = !stud26Row && s.factoryId != null && CASH_BONUS_FACTORY_IDS.has(s.factoryId)
-        ? r2(Math.max(0, s.rateNetto - factoryBonusPerHour(w, s.factoryId, periodMonth, s.hours)))
+      const sRule = payoutRules.for(s.factoryId, s.factoryLabel, periodMonth);
+      const netto = !stud26Row && s.factoryId != null && hasCashBonus(sRule)
+        ? r2(Math.max(0, s.rateNetto - factoryBonusPerHour(w, sRule, periodMonth, s.hours)))
         : s.rateNetto;
       if (netto > 0 && netto !== w.hourlyRateNetto) set.hourlyRateNetto = netto;
     }

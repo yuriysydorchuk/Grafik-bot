@@ -173,16 +173,67 @@ export function legalStatusOf(zusText: string | null | undefined): LegalStatus |
 // force: перерахунок після ручної правки на сайті (переписує наявний розклад);
 // без force (google-імпорт) — заповнений бухгалтерією блок сильніший, а рядки
 // без статусу лишаються нерозписаними (відсутність тексту ≠ «не оформлений»).
-// Фабричні стелі księgowych годин (діють на всіх, КРІМ студентів до 26):
+// ── Фабричне правило konto/готівки ───────────────────────────────────────────
+// Версійні правила живуть у БД (factory_payout_rules, «діє з» — місяць цілком);
+// резолюція на місяць — services/factoryRules.ts. Фабрика без записів працює за
+// legacyPayoutRule нижче (колишній хардкод). Двигун (applyLegalDefaults,
+// computeSegmented, factoryBonusPerHour) приймає готовий обʼєкт правила.
+export interface PayoutRule {
+  capH: number | null;          // стеля konto-годин (null = без стелі)
+  capHighH: number | null;      // підвищена стеля (від capThresholdH відпрацьованих)
+  capThresholdH: number | null; // поріг відпрацьованих годин для підвищеної стелі
+  capFirm: string | null;       // стеля лише для цієї фірми (ES на Sushi); null = усі
+  cashBonus: number;            // готівковий бонус до ставки, зл/год (гейт — галочка профілю)
+  stazBonus: boolean;           // стажевий бонус увімкнено (галочка профілю + дата працевлаштування)
+  stazMinHours: number | null;  // мін. годин/міс для стажевого (null = без порога)
+  stazSteps: { days: number; add: number }[]; // сходинки за днями стажу на кінець місяця
+  premiaCash: boolean;          // колонка Premia — завжди готівкою (крім студентів до 26)
+}
+
+// Legacy-правила (діяли хардкодом до 08.2026, лишаються фолбеком для фабрик без
+// записів у factory_payout_rules — сідити БД небезпечно через розʼїзд id
+// локальна/прод). Стелі księgowych годин (діють на всіх, КРІМ студентів до 26):
 // DEZYNFEKCJA/SERWIS PLUS і LST — максимум 70 год, якщо реально відпрацьовано
-// 200+, інакше максимум 60; відпрацював менше стелі — реальні години.
-// Sushi&Food, фірма ES: максимум 80 год на конто, решта готівкою (рішення
-// власника 08.2026); ESO/Klinex того ж клієнта стелі не мають.
+// 200+, інакше максимум 60; Sushi&Food, фірма ES — максимум 80 год (рішення
+// власника 08.2026), ESO/Klinex того ж клієнта стелі не мають. Бонуси —
+// Agram/LST нижче (AGRAM_FACTORY_IDS/LST_FACTORY_ID).
+export function legacyPayoutRule(factoryId: number | null | undefined, factoryLabel?: string | null): PayoutRule {
+  const label = norm(String(factoryLabel ?? ""));
+  const rule: PayoutRule = {
+    capH: null, capHighH: null, capThresholdH: null, capFirm: null,
+    cashBonus: 0, stazBonus: false, stazMinHours: null, stazSteps: [], premiaCash: false,
+  };
+  if (/DEZYNFEKCJA|SERWIS\s*PLUS|^LST\b/i.test(label)) { rule.capH = 60; rule.capHighH = 70; rule.capThresholdH = 200; }
+  else if (/SUSHI/i.test(label)) { rule.capH = 80; rule.capFirm = "ES"; }
+  if (factoryId != null && AGRAM_FACTORY_IDS.has(factoryId)) {
+    rule.cashBonus = AGRAM_CASH_PER_HOUR;
+    rule.stazBonus = true;
+    rule.stazMinHours = AGRAM_BONUS_MIN_HOURS;
+    rule.stazSteps = [{ days: 30, add: 1 }, { days: 60, add: 1.5 }];
+    rule.premiaCash = true;
+  } else if (factoryId === LST_FACTORY_ID) {
+    rule.cashBonus = AGRAM_CASH_PER_HOUR;
+  }
+  return rule;
+}
+
+/** Стеля konto-годин правила для рядка (hours = відпрацьовані за місяць). */
+export function declaredCapOf(rule: PayoutRule | null | undefined, hours: number | null, firm?: string | null): number | null {
+  if (!rule || hours == null || rule.capH == null) return null;
+  if (rule.capFirm && firm !== rule.capFirm) return null;
+  if (rule.capThresholdH != null && rule.capHighH != null && hours >= rule.capThresholdH) return rule.capHighH;
+  return rule.capH;
+}
+
+/** Чи фабрика «бонусна» (показ галочок у профілі, віднімання бонусу зі ставки). */
+export function hasCashBonus(rule: PayoutRule | null | undefined): boolean {
+  return rule != null && (rule.cashBonus > 0 || rule.stazBonus);
+}
+
+/** Legacy-обгортка: стеля по назві фабрики (без БД). Нові виклики — declaredCapOf. */
 export function factoryDeclaredCap(factoryLabel: string | null | undefined, hours: number | null, firm?: string | null): number | null {
-  if (!factoryLabel || hours == null) return null;
-  if (/DEZYNFEKCJA|SERWIS\s*PLUS|^LST\b/i.test(norm(factoryLabel))) return hours >= 200 ? 70 : 60;
-  if (/SUSHI/i.test(norm(factoryLabel)) && firm === "ES") return 80;
-  return null;
+  if (!factoryLabel) return null;
+  return declaredCapOf(legacyPayoutRule(null, factoryLabel), hours, firm);
 }
 
 // Стандартна księgowa пара ставок (umowa zlecenie): конто декларується по НИЖЧІЙ
@@ -247,38 +298,46 @@ export function daysBetween(fromDate: string, toDate: string): number {
  * Nabieva 75 днів стажу → +1.5, Petrenko 34 дні → +1.)
  */
 export const AGRAM_BONUS_MIN_HOURS = 160;
-export function agramBonusPerHour(
-  w: { agramStazBonus: boolean; agramCashBonus: boolean; employmentStartDate: string | null },
-  month: string,
-  monthHours?: number | null,
-): number {
-  let b = w.agramCashBonus ? AGRAM_CASH_PER_HOUR : 0;
-  const stazEligible = !(monthHours != null && monthHours < AGRAM_BONUS_MIN_HOURS);
-  if (w.agramStazBonus && stazEligible) {
-    if (!w.employmentStartDate) b += 1;
-    else {
-      const d = daysBetween(w.employmentStartDate, monthEndStr(month));
-      b += d >= 60 ? 1.5 : d >= 30 ? 1 : 0;
-    }
-  }
-  return r2(b);
-}
 
 // LST: той самий готівковий бонус +1 зл/год, що на Agram (частина ЗП налом),
 // але БЕЗ стажевого. Студентам до 26 не належить (нетто = брутто «як є»).
 export const LST_FACTORY_ID = 1;
 export const CASH_BONUS_FACTORY_IDS = new Set([...AGRAM_FACTORY_IDS, LST_FACTORY_ID]);
-/** Фабричний бонус до ставки нетто (не для студентів до 26 — гейтять викликачі). */
+/**
+ * Фабричний бонус до ставки нетто за правилом фабрики (не для студентів до 26 —
+ * гейтять викликачі). Нал — фіксований, від годин не залежить; стаж — по
+ * сходинках від дати працевлаштування на кінець місяця (галочка без дати =
+ * перша сходинка), лише при stazMinHours+ годинах місяця.
+ */
 export function factoryBonusPerHour(
   w: { agramStazBonus: boolean; agramCashBonus: boolean; employmentStartDate: string | null },
-  factoryId: number | null | undefined,
+  rule: PayoutRule | null | undefined,
   month: string,
   monthHours?: number | null,
 ): number {
-  if (factoryId == null) return 0;
-  if (AGRAM_FACTORY_IDS.has(factoryId)) return agramBonusPerHour(w, month, monthHours);
-  if (factoryId === LST_FACTORY_ID) return w.agramCashBonus ? AGRAM_CASH_PER_HOUR : 0;
-  return 0;
+  if (!rule) return 0;
+  let b = w.agramCashBonus ? rule.cashBonus : 0;
+  const stazEligible = !(rule.stazMinHours != null && monthHours != null && monthHours < rule.stazMinHours);
+  if (rule.stazBonus && w.agramStazBonus && stazEligible && rule.stazSteps.length) {
+    const steps = [...rule.stazSteps].sort((a, z) => a.days - z.days);
+    if (!w.employmentStartDate) b += steps[0]!.add;
+    else {
+      const d = daysBetween(w.employmentStartDate, monthEndStr(month));
+      let add = 0;
+      for (const s of steps) if (d >= s.days) add = s.add;
+      b += add;
+    }
+  }
+  return r2(b);
+}
+
+/** Legacy-обгортка бонусу Agram (правило з хардкоду). Нові виклики — factoryBonusPerHour(w, rule, …). */
+export function agramBonusPerHour(
+  w: { agramStazBonus: boolean; agramCashBonus: boolean; employmentStartDate: string | null },
+  month: string,
+  monthHours?: number | null,
+): number {
+  return factoryBonusPerHour(w, legacyPayoutRule([...AGRAM_FACTORY_IDS][0], null), month, monthHours);
 }
 
 // ── Eurocash: ставка працівника від порогів продуктивності ───────────────────
@@ -393,6 +452,12 @@ export interface LegalCtx {
   factoryId?: number | null;
   /** сума вшитого бонусу за місяць, зл (сегментований батько: Σ по сегментах) — перекриває facBonus × години */
   bonusTotal?: number | null;
+  /**
+   * правило konto/готівки фабрики на місяць рядка (services/factoryRules.ts).
+   * Не передане/undefined — legacy-фолбек по factoryId+factoryLabel (шляхи без
+   * контексту фабрики: парсери google-вкладок). null = «без правил».
+   */
+  rule?: PayoutRule | null;
 }
 
 // Księgowa пара ставок рядка: студентська неоподаткована (netto = brutto)
@@ -426,7 +491,8 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   // RAZEM її не містить — там доплата йде поверх, готівкою (формула таблиці).
   const doplataInPayout = ctx.city !== "Лодзь";
   const ls = legalStatusOf(String(row.extras.zusStatus ?? "")) ?? normalizeProfileLegal(ctx.profileLegal) ?? null;
-  const capH = ctx.declaredCapH !== undefined ? ctx.declaredCapH : factoryDeclaredCap(ctx.factoryLabel ?? null, row.hours ?? null, ctx.firm ?? null);
+  const rule = ctx.rule !== undefined ? ctx.rule : legacyPayoutRule(ctx.factoryId ?? null, ctx.factoryLabel ?? null);
+  const capH = ctx.declaredCapH !== undefined ? ctx.declaredCapH : declaredCapOf(rule, row.hours ?? null, ctx.firm ?? null);
   const { netto: ksiegNettoRate, brutto: ksiegBruttoRate } = ksiegRatesOf(row, ls);
   // Готівкові складові, які конто НЕ може зʼїсти в жодній гілці (вкл. побажання
   // «все на конто»); виняток — студент до 26: його виплата вся на конто.
@@ -435,9 +501,9 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   const facBonus = !stud26 && typeof row.extras.facBonus === "number" ? (row.extras.facBonus as number) : 0;
   const bonusSum = !stud26 && ctx.bonusTotal != null ? ctx.bonusTotal
     : facBonus > 0 && row.hours != null ? r2(facBonus * row.hours) : 0;
-  // колонка Premia на Agram — завжди готівкою (на конто лише студентам до 26)
-  const premiaCash = !stud26 && ctx.factoryId != null && PREMIA_CASH_FACTORY_IDS.has(ctx.factoryId)
-    ? (row.premia ?? 0) : 0;
+  // колонка Premia — завжди готівкою, якщо так каже правило фабрики (Agram;
+  // на конто лише студентам до 26)
+  const premiaCash = !stud26 && rule?.premiaCash ? (row.premia ?? 0) : 0;
   // На карту не можна переказати більше, ніж людині взагалі належить:
   // відрахування (аванси/хостел/кари) могли зʼїсти виплату → конто ∈ [0, max(доВиплати, 0)]
   // мінус готівкова доплата (якщо вона всередині doWyplaty), мінус готівкові
@@ -1145,6 +1211,8 @@ const SEG_HOUR_EXTRAS = new Set(["nocneH"]);                   // годино-�
 export function computeSegmented(
   parent: {
     city: string; factoryLabel: string; firm?: string | null; factoryId?: number | null;
+    /** правило konto/готівки фабрики на місяць (не передане — legacy по id+label) */
+    rule?: PayoutRule | null;
     hoursNotified: number | null;
     premia: number | null; zaliczka: number | null; zaliczkaBd: number | null; hostel: number | null;
     odziez: number | null; dojazd: number | null; kara: number | null; komornik: number | null;
@@ -1207,8 +1275,9 @@ export function computeSegmented(
   // Фабрична стеля księgowych годин — теж МІСЯЧНИЙ ліміт (бракет — від сумарних
   // годин): ділиться між сегментами послідовно, студент до 26 її не споживає
   // (його гілка стелю ігнорує). Без стелі — undefined, applyLegalDefaults сам
-  // зверне до factoryDeclaredCap (той усе одно поверне null).
-  let capLeft = factoryDeclaredCap(parent.factoryLabel, hoursSum > 0 ? hoursSum : null, parent.firm ?? null);
+  // зверне до правила (те все одно поверне null).
+  const segRule = parent.rule !== undefined ? parent.rule : legacyPayoutRule(parent.factoryId ?? null, parent.factoryLabel);
+  let capLeft = declaredCapOf(segRule, hoursSum > 0 ? hoursSum : null, parent.firm ?? null);
   const outSegs: SegmentCalcOut[] = segs.map((s, i) => {
     const legalNorm = normalizeProfileLegal(s.legal) ?? null;
     const stud26 = (s.isStudent === true || legalNorm === "student") && s.under26 === true;
@@ -1236,7 +1305,7 @@ export function computeSegmented(
     row.brutto = s.hours != null && s.rateBrutto != null ? r2(s.hours * s.rateBrutto) : null;
     applyLegalDefaults(row, true, {
       profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: null,
-      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null,
+      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null, rule: segRule,
       // сегмент отримує залишок місячної стелі; спожите — по факту hoursDeclared
       ...(capLeft != null ? { declaredCapH: r2(Math.max(capLeft, 0)) } : {}),
     });
@@ -1297,7 +1366,7 @@ export function computeSegmented(
     };
     applyLegalDefaults(prow, true, {
       profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref,
-      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null,
+      city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null, rule: segRule,
       ...(bonusTotal > 0 ? { bonusTotal } : {}),
     });
     parentOut.hoursDeclared = prow.hoursDeclared ?? null;

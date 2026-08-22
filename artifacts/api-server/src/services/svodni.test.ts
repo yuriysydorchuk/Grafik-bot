@@ -1007,14 +1007,62 @@ test("resolveBaseRates: пріоритет профілю і фабричні fa
   assert.deepEqual(resolveBaseRates({ hourlyRate: null, hourlyRateNetto: null }, rules, true), { brutto: 32.5, netto: 32.5 });
 });
 
-test("factoryBonusPerHour: LST — лише готівковий +1, Agram — нал+стаж", async () => {
-  const { factoryBonusPerHour, LST_FACTORY_ID } = await import("./svodni.ts");
+test("factoryBonusPerHour: LST — лише готівковий +1, Agram — нал+стаж (legacy-правила)", async () => {
+  const { factoryBonusPerHour, legacyPayoutRule, LST_FACTORY_ID } = await import("./svodni.ts");
   const w = (p: any) => ({ agramStazBonus: false, agramCashBonus: false, employmentStartDate: null, ...p });
-  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), LST_FACTORY_ID, "2026-06", 80), 1, "LST нал не залежить від годин");
-  assert.equal(factoryBonusPerHour(w({}), LST_FACTORY_ID, "2026-06", 180), 0, "LST без галочки — без бонусу");
-  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01" }), LST_FACTORY_ID, "2026-06", 180), 1, "стаж на LST не діє");
-  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01" }), 12, "2026-06", 180), 2.5, "Agram: нал 1 + стаж 1.5");
-  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), 5, "2026-06", 180), 0, "звичайна фабрика — без бонусів");
+  const lst = legacyPayoutRule(LST_FACTORY_ID, "LST");
+  const agram = legacyPayoutRule(12, "AGRAM MOTYCZ");
+  const plain = legacyPayoutRule(5, "ALMIZ");
+  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), lst, "2026-06", 80), 1, "LST нал не залежить від годин");
+  assert.equal(factoryBonusPerHour(w({}), lst, "2026-06", 180), 0, "LST без галочки — без бонусу");
+  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01" }), lst, "2026-06", 180), 1, "стаж на LST не діє");
+  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01" }), agram, "2026-06", 180), 2.5, "Agram: нал 1 + стаж 1.5");
+  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), plain, "2026-06", 180), 0, "звичайна фабрика — без бонусів");
+});
+
+test("PayoutRule: кастомне правило з БД — бонуси/стелі/premia від полів, не від id фабрики", async () => {
+  const { factoryBonusPerHour, declaredCapOf, hasCashBonus } = await import("./svodni.ts");
+  const w = (p: any) => ({ agramStazBonus: false, agramCashBonus: false, employmentStartDate: null, ...p });
+  const rule = {
+    capH: 60, capHighH: 70, capThresholdH: 200, capFirm: null,
+    cashBonus: 1.5, stazBonus: true, stazMinHours: 120, stazSteps: [{ days: 14, add: 0.5 }, { days: 45, add: 2 }],
+    premiaCash: true,
+  };
+  // нал з кастомною сумою + стаж по кастомних сходинках
+  assert.equal(factoryBonusPerHour(w({ agramCashBonus: true }), rule, "2026-06", 130), 1.5);
+  assert.equal(factoryBonusPerHour(w({ agramStazBonus: true, employmentStartDate: "2026-06-12" }), rule, "2026-06", 130), 0.5, "18 днів → перша сходинка");
+  assert.equal(factoryBonusPerHour(w({ agramStazBonus: true, employmentStartDate: "2026-04-01" }), rule, "2026-06", 130), 2, "91 день → друга сходинка");
+  assert.equal(factoryBonusPerHour(w({ agramStazBonus: true, employmentStartDate: "2026-04-01" }), rule, "2026-06", 100), 0, "нижче stazMinHours — стаж не діє");
+  assert.equal(factoryBonusPerHour(w({ agramStazBonus: true }), rule, "2026-06", 130), 0.5, "галочка без дати — перша сходинка");
+  // стеля: базова/підвищена/фірмова
+  assert.equal(declaredCapOf(rule, 150, null), 60);
+  assert.equal(declaredCapOf(rule, 200, null), 70);
+  assert.equal(declaredCapOf({ ...rule, capFirm: "ES" }, 150, "ES"), 60);
+  assert.equal(declaredCapOf({ ...rule, capFirm: "ES" }, 150, "ESO"), null, "стеля лише для фірми ES");
+  assert.equal(declaredCapOf({ ...rule, capH: null }, 150, null), null, "без стелі");
+  assert.equal(hasCashBonus(rule), true);
+  assert.equal(hasCashBonus({ ...rule, cashBonus: 0, stazBonus: false }), false);
+});
+
+test("applyLegalDefaults: кастомне правило перекриває legacy (premia готівкою на не-Agram, стеля з правила)", async () => {
+  const { applyLegalDefaults } = await import("./svodni.ts");
+  const mkRow = (): any => ({
+    hours: 180, rateNetto: 25.35, rateBrutto: 31.4, isStudent: false, under26: false,
+    hoursNotified: null, premia: 200, doWyplaty: 4763, // 180 × 25.35 + 200
+    extras: {}, hr: {}, sheetValues: {},
+  });
+  // фабрика БЕЗ legacy-правил (звичайна), але з БД-правилом premiaCash + стеля 50
+  const rule = { capH: 50, capHighH: null, capThresholdH: null, capFirm: null, cashBonus: 0, stazBonus: false, stazMinHours: null, stazSteps: [], premiaCash: true };
+  const row = mkRow();
+  applyLegalDefaults(row, true, { profileLegal: "zus" as any, factoryLabel: "ALMIZ", factoryId: 5, city: "Люблін", rule });
+  // стеля 50 год → konto = 50 × 25.35, премія готівкою (не в конто)
+  assert.equal(row.konto, Math.round(50 * 25.35 * 100) / 100);
+  assert.equal(row.hoursDeclared, 50);
+  assert.equal(row.gotowka, Math.round((row.doWyplaty - row.konto) * 100) / 100);
+  // без правила (legacy) той самий рядок на ALMIZ стелі не має — все на конто
+  const row2 = mkRow();
+  applyLegalDefaults(row2, true, { profileLegal: "zus" as any, factoryLabel: "ALMIZ", factoryId: 5, city: "Люблін" });
+  assert.equal(row2.konto, row2.doWyplaty, "legacy ALMIZ: без стелі, premia в конто");
 });
 
 // ── from-hours: матч наявного рядка вкладки для пари (працівник, фабрика) ────

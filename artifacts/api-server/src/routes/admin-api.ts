@@ -33,7 +33,8 @@ import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffD
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode } from "../lib/invite";
-import { LEGAL_STATUSES, AGRAM_FACTORY_IDS, CASH_BONUS_FACTORY_IDS, normalizeProfileLegal } from "../services/svodni";
+import { LEGAL_STATUSES, normalizeProfileLegal } from "../services/svodni";
+import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
@@ -803,18 +804,19 @@ router.get("/workers/:id", RW, async (req, res) => {
     // канонічних — інакше select у профілі показує порожнє
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
     employmentStartDate: w.employmentStartDate,
-    // бонуси — лише для працівників бонусних фабрик (по id: Agram нал+стаж, LST нал)
+    // бонуси — лише для працівників бонусних фабрик (правило konto/готівки
+    // фабрики на поточний місяць: стаж → обидві галочки, лише нал → одна)
     // і лише з доступом до кшєнгових даних (галочки впливають на ЗП; редагування
     // гейтиться дзеркально у PATCH)
     ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
-      ? {
-        ...(w.factoryId != null && AGRAM_FACTORY_IDS.has(w.factoryId)
-          ? { agramFactory: true, agramStazBonus: w.agramStazBonus, agramCashBonus: w.agramCashBonus }
-          : {}),
-        ...(w.factoryId != null && CASH_BONUS_FACTORY_IDS.has(w.factoryId) && !AGRAM_FACTORY_IDS.has(w.factoryId)
-          ? { cashBonusFactory: true, agramCashBonus: w.agramCashBonus }
-          : {}),
-      }
+      ? await (async () => {
+        const rule = w.factoryId != null
+          ? (await PayoutRules.load([w.factoryId])).for(w.factoryId, facMap.get(w.factoryId)?.name ?? null, thisMonth)
+          : null;
+        if (rule?.stazBonus) return { agramFactory: true, agramStazBonus: w.agramStazBonus, agramCashBonus: w.agramCashBonus };
+        if (rule && rule.cashBonus > 0) return { cashBonusFactory: true, agramCashBonus: w.agramCashBonus };
+        return {};
+      })()
       : {}),
     ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
       ? { note: w.note, payoutPrefKind: w.payoutPrefKind, payoutPrefValue: w.payoutPrefValue }

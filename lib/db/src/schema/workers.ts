@@ -1419,6 +1419,28 @@ export const svodniTabMetaTable = pgTable("svodni_tab_meta", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Фабричні правила розкладу konto/готівка сводної — версійні, «діє з» (місяць
+// цілком: правило чинне для сводної місяця, в який потрапляє effectiveFrom;
+// вибирається найсвіжіша версія з effective_from ≤ кінець місяця). Фабрика без
+// записів працює за legacy-правилами в services/svodni.ts (legacyPayoutRule).
+export const factoryPayoutRulesTable = pgTable("factory_payout_rules", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  effectiveFrom: date("effective_from").notNull(),
+  capH: real("cap_h"),                       // стеля konto-годин (NULL = без стелі)
+  capHighH: real("cap_high_h"),              // підвищена стеля (від capThresholdH відпрацьованих)
+  capThresholdH: real("cap_threshold_h"),    // поріг відпрацьованих годин для підвищеної стелі
+  capFirm: text("cap_firm"),                 // стеля лише для цієї фірми (ES на Sushi); NULL = усі
+  cashBonus: real("cash_bonus").notNull().default(0),           // готівковий бонус до ставки, зл/год (гейт — галочка профілю)
+  stazBonus: boolean("staz_bonus").notNull().default(false),    // стажевий бонус увімкнено
+  stazMinHours: real("staz_min_hours"),      // мін. годин/міс для стажевого (NULL = без порога)
+  stazSteps: jsonb("staz_steps"),            // сходинки [{days, add}] за днями стажу на кінець місяця
+  premiaCash: boolean("premia_cash").notNull().default(false),  // колонка Premia — завжди готівкою (крім студентів до 26)
+  note: text("note"),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("factory_payout_rules_uq").on(t.factoryId, t.effectiveFrom)]);
+
 // ── Штрафи (kary) ───────────────────────────────────────────────────────────
 // Рахується наживо: години з обліку (рапорт → підтверджені явки), ставки з
 // налаштувань фабрик, аванси/штрафи/хостели зі своїх вкладок. У БД живе лише
