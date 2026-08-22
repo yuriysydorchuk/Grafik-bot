@@ -446,10 +446,14 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   const cap = Math.max(row.doWyplaty - (doplataInPayout ? doplata : 0) - bonusSum - premiaCash, 0);
   const finish = (targetKonto: number, declaredHours: number | null, studentBrutto = false) => {
     const konto = r2(Math.max(0, Math.min(targetKonto, cap)));
-    const cut = konto !== r2(targetKonto);
     row.konto = konto;
     row.ksiegNetto = konto;
-    row.hoursDeclared = cut && ksiegNettoRate ? r2(konto / ksiegNettoRate) : declaredHours;
+    // Księgowe години — ЗАВЖДИ від фактичного конто (інваріант пари: год ×
+    // ставка = brutto). Раніше перераховувались лише при обрізанні стелею —
+    // у студентів до 26 (konto = виплата ПІСЛЯ знять: kara/hostel/zaliczka)
+    // і «все на конто» лишались повні години при меншій сумі, і пара рвалась
+    // рівно на суму знять (BIMIZ 07.2026, рішення 22.08.2026).
+    row.hoursDeclared = ksiegNettoRate != null && ksiegNettoRate > 0 ? r2(konto / ksiegNettoRate) : declaredHours;
     // księg. brutto — від фактичного конто: konto ÷ ставка нетто × ставка брутто
     // (не «всі години × брутто» — конто може включати премію чи бути обрізаним)
     row.ksiegBrutto = studentBrutto

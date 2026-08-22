@@ -2467,6 +2467,7 @@ const EN: Record<string, string> = {
   "штраф (реєстр)": "fine (registry)",
   "нема рядка сводної цього місяця — нема з чого зняти": "no payroll sheet row this month — nothing to deduct from",
   "До перенесення в Kara:": "To transfer to Kara:",
+  "Розрив пари: księg. brutto ≠ год. księg. × ставка брутто": "Pair mismatch: księg. brutto ≠ księg. hours × gross rate",
   "Місяць сводної": "Payroll sheet month",
   "Відмінено з попередженням": "Undone with a warning",
   "сума віднімається з клітинки Kara сводної": "the amount is subtracted from the Kara cell of the payroll sheet for",

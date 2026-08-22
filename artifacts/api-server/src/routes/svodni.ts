@@ -58,6 +58,16 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     base.ksiegNetto = r.ksiegNetto;
     base.gotowka = r.gotowka;
     base.konto = r.konto;
+    // ІНВАРІАНТ ПАРИ: księg. брутто = księg. години × księgowa ставка брутто.
+    // Розрив (ручні правки однієї клітинки, легасі до фіксу 22.08.2026) —
+    // червона підсвітка клітинки в вебі, щоб не ловити очима (інцидент BIMIZ).
+    // Батьки сегментованих рядків пропускаються: їхня ставка = min сегментів.
+    if (r.hoursDeclared != null && r.ksiegBrutto != null && r.segmentOf == null) {
+      const { brutto: kbRate } = ksiegRatesOf(
+        { rateBrutto: r.rateBrutto, rateNetto: r.rateNetto, isStudent: r.isStudent, extras: r.extras as Record<string, unknown> },
+        base.legalStatus as any);
+      if (kbRate != null && Math.abs(r.hoursDeclared * kbRate - r.ksiegBrutto) > 0.2) base.ksiegMismatch = true;
+    }
   }
   return base;
 }
@@ -68,6 +78,7 @@ async function withSegments(base: Record<string, unknown>, rowId: number, sensit
   const segs = await db.select().from(svodniRowsTable)
     .where(eq(svodniRowsTable.segmentOf, rowId)).orderBy(asc(svodniRowsTable.segmentFrom));
   if (segs.length) {
+    delete base.ksiegMismatch; // ставка батька = min сегментів — пара легально «рвана»
     base.segments = segs.map(s => ({
       ...serializeRow(s, null, sensitive, ((s.extras as Record<string, unknown>)?.segLegal as string | undefined) ?? workerLegal),
       from: s.segmentFrom, to: s.segmentTo, label: s.segmentLabel,
@@ -526,6 +537,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       base.nationality = workerNationality; // прапорець біля імені у веб-таблиці
       const segs = segsOf.get(r.id);
       if (segs?.length) {
+        delete base.ksiegMismatch; // ставка батька = min сегментів — пара легально «рвана»
         // сегмент — повний рядок (усі колонки: до виплати, konto, готівка, частки
         // відрахувань) + період; форма легалізації — своя (extras.segLegal)
         base.segments = segs

@@ -693,6 +693,10 @@ test("інваріанти: до виплати = конто + готівка у
   };
   const scenarios: { name: string; row: ReturnType<typeof mk>; ctx: Parameters<typeof applyLegalDefaults>[2] }[] = [
     { name: "студент до 26", row: mk({ isStudent: true, under26: true, rateBrutto: 31.4, rateNetto: 31.4 }), ctx: {} },
+    // зняття зменшують konto → księgowe години мусять зменшитись слідом
+    // (розрив пари «год × ставка ≠ brutto» — інцидент BIMIZ 07.2026)
+    { name: "студент до 26 зі зняттями", row: mk({ isStudent: true, under26: true, rateBrutto: 31.4, rateNetto: 31.4, kara: 200, hostel: 650 }), ctx: {} },
+    { name: "все на конто зі зняттями", row: mk({ kara: 500, extras: { zusStatus: "Zgłoszony, Powiadomienie" } }), ctx: { payoutPref: { kind: "all_konto", value: null } } },
     { name: "oświadczenie 100 год", row: mk({ hoursNotified: 100, extras: { zusStatus: "Zgłoszony, Powiadomienie, Wyżej 26" } }), ctx: {} },
     { name: "oświadczenie більше факту", row: mk({ hoursNotified: 200, extras: { zusStatus: "Zgłoszony, Powiadomienie" } }), ctx: {} },
     { name: "оформлений без oświadczenia", row: mk({ extras: { zusStatus: "Zgłoszony, Decyzja Karty Pobytu" } }), ctx: {} },
@@ -738,7 +742,22 @@ test("інваріанти: до виплати = конто + готівка у
       if (!s.row.isStudent) assert.ok(Math.abs(r2i(hoursDeclared * kn) - konto!) <= 0.2,
         `${s.name}: години ${hoursDeclared} × ${kn} ≠ konto ${konto}`);
     }
+    // 6) ІНВАРІАНТ ПАРИ: księg. brutto = księg. години × księgowa ставка брутто —
+    // у ВСІХ гілках, вкл. студентів зі зняттями (розрив був видимий лише очима,
+    // інцидент BIMIZ 07.2026); допуск 0,2 zł — зворотне ділення години ÷ ставка
+    if (hoursDeclared != null && ksiegBrutto != null && konto! > 0) {
+      const untaxed = (s.row.isStudent === true) && s.row.rateBrutto != null && s.row.rateNetto != null && s.row.rateBrutto <= s.row.rateNetto + 0.001;
+      const kb = untaxed ? s.row.rateBrutto! : Math.min(s.row.rateBrutto ?? 31.4, 31.4);
+      assert.ok(Math.abs(r2i(hoursDeclared * kb) - ksiegBrutto) <= 0.2,
+        `${s.name}: księg. години ${hoursDeclared} × ${kb} ≠ księg. brutto ${ksiegBrutto}`);
+    }
   }
+  // студент зі зняттями — конкретні числа: konto = виплата після знять,
+  // години = konto ÷ ставка (не повні 160)
+  const stud = scenarios.find(s => s.name === "студент до 26 зі зняттями")!.row;
+  assert.equal(stud.konto, 4174);            // 160 × 31.4 − 200 − 650
+  assert.equal(stud.ksiegBrutto, 4174);      // нетто = брутто
+  assert.equal(stud.hoursDeclared, 132.93);  // 4174 ÷ 31.4
 });
 
 // ── Текстові маркери в колонці «Ilość godz w powiadomieniu» ──────────────────

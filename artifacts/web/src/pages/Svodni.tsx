@@ -39,6 +39,7 @@ type Row = {
   isStudent: boolean | null; under26: boolean | null;
   hoursDeclared?: number | null; ksiegBrutto?: number | null; ksiegNetto?: number | null;
   gotowka?: number | null; konto?: number | null;
+  ksiegMismatch?: boolean; // розрив пари: brutto ≠ год. księg × ставка (сервер, лише sensitive)
   payoutPref?: { kind: string; value: number | null } | null;
   extras: Record<string, number | string>; hr: Record<string, string>;
   mismatch: Record<string, { ours: number; sheet: number }> | null;
@@ -1328,12 +1329,18 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     </td>
                   );
                   })}
-                  {sensCols.map(([k], ci) => (
-                    <td key={k} className={`bg-amber-50/50 px-1 py-0.5 text-right text-slate-700 ${ci === 0 ? "border-l-2 border-amber-300" : ""}`} title={cellLockTitle(r, k, t)}>
-                      <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)}
-                        locked={locked || cellIsSegLocked(r, k)} />
-                    </td>
-                  ))}
+                  {sensCols.map(([k], ci) => {
+                    // розрив пари księgowości (brutto ≠ год × ставка) — червона
+                    // клітинка, щоб не ловити очима (інцидент BIMIZ 07.2026)
+                    const broken = k === "ksiegBrutto" && r.ksiegMismatch;
+                    return (
+                      <td key={k} className={`px-1 py-0.5 text-right ${broken ? "bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300" : "bg-amber-50/50 text-slate-700"} ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}
+                        title={[broken ? t("Розрив пари: księg. brutto ≠ год. księg. × ставка брутто") : null, cellLockTitle(r, k, t)].filter(Boolean).join("\n") || undefined}>
+                        <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)}
+                          locked={locked || cellIsSegLocked(r, k)} />
+                      </td>
+                    );
+                  })}
                 </tr>,
                 // сегменти порізаного місяця: повноцінні рядки — кожен зі своїм
                 // «до виплати», konto/готівкою (за правилами свого статусу) і
