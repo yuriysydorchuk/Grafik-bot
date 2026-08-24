@@ -30,6 +30,7 @@ export const PAGE_LABEL: Record<string, string> = {
   "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/cfo": "CFO", "/analytics": "Аналітика", "/balance": "Баланс", "/obligations": "Належності", "/invoices": "Фактури (таблиця)", "/cost-invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/svodni": "Сводні", "/hostels": "Хостели", "/penalties": "Штрафи", "/ksef": "KSeF", "/fuel": "Пальне", "/settings": "Налаштування",
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
   "/drivers": "Водії", "/fleet": "Автопарк", "/transport": "Транспорт", "/clothing": "Одяг", "/factories": "Фабрики", "/admins": "Адміни",
+  "/sushi": "Суші (проєкт)", "/andros": "Андрос (проєкт)",
 };
 export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 

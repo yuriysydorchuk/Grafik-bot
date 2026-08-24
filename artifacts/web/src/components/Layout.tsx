@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
@@ -98,6 +98,13 @@ const NAV: NavGroup[] = [
       { href: "/penalties", label: "Штрафи", icon: Gavel },
       { href: "/ksef", label: "KSeF", icon: FileText },
       { href: "/fuel", label: "Пальне", icon: Fuel },
+    ],
+  },
+  {
+    title: "Проєкти",
+    items: [
+      { href: "/sushi", label: "Суші", icon: Fish },
+      { href: "/andros", label: "Андрос", icon: Citrus },
     ],
   },
   {

@@ -2647,6 +2647,15 @@ const EN: Record<string, string> = {
   "наявні рядки сводних НЕ зміняться — правило збігається з тим, за чим вони вже пораховані. Воно застосується до нових розрахунків (наступний «З обліку годин»).": "existing payroll rows will NOT change — the rule matches what they were already computed with. It will apply to new calculations (the next \"From hours\" run).",
   "Зрозуміло": "Got it",
 
+  // ── /sushi + /andros — вкладки окремих проєктів (заготовки) ──
+  "Проєкти": "Projects",
+  "Суші": "Sushi",
+  "Андрос": "Andros",
+  "Суші (проєкт)": "Sushi (project)",
+  "Андрос (проєкт)": "Andros (project)",
+  "Окремий проєкт — функціонал поетапно переноситься сюди": "Standalone project — functionality is being migrated here step by step",
+  "Сторінка-заготовка: розділи зʼявляться в міру перенесення функціоналу.": "Placeholder page: sections will appear as functionality is migrated.",
+
   // @i18n-append (new page translations get inserted above this line)
 };
 
