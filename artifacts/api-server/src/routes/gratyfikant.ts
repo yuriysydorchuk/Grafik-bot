@@ -49,7 +49,9 @@ router.post("/gratyfikant/import", uploadXlsx.single("file"), async (req: Authed
     id: workersTable.id, fullName: workersTable.fullName, isActive: workersTable.isActive,
     gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
   }).from(workersTable);
-  const active = workers.filter(w => w.isActive && w.fullName !== "Test");
+  // матчимо ВСІХ (і звільнених): PESEL/нексо-імʼя — ідентичність людини, а лісти
+  // за минулі місяці включають уже звільнених (липневий кейс: 65 пропущених)
+  const everyone = workers.filter(w => w.fullName !== "Test");
 
   // Схвалений список змін: превʼю віддає КОЖНУ зміну з ключем, застосування
   // приймає approved (JSON-масив ключів) — точні збіги веб відзначає одразу,
@@ -70,7 +72,7 @@ router.post("/gratyfikant/import", uploadXlsx.single("file"), async (req: Authed
     const changes: Change[] = [];
     const conflicts: string[] = [];
     const matchedKeys = new Set<string>();
-    for (const w of active) {
+    for (const w of everyone) {
       const m = matchNexo(w.gratyfikantName || w.fullName, cands);
       if (!m) continue;
       matchedKeys.add(normName(m.hit.name));
@@ -105,7 +107,7 @@ router.post("/gratyfikant/import", uploadXlsx.single("file"), async (req: Authed
   // керує ПРИВʼЯЗКАМИ (link:<нормоване імʼя>): не схвалена → умова
   // імпортується, але без workerId (можна довʼязати наступним імпортом).
   const items = parseUmowyRows(rows);
-  const cands = candidateMap(active.map(w => ({ name: w.gratyfikantName || w.fullName, id: w.id, fullName: w.fullName })));
+  const cands = candidateMap(everyone.map(w => ({ name: w.gratyfikantName || w.fullName, id: w.id, fullName: w.fullName })));
   type Link = { key: string; nexoName: string; workerId: number; workerName: string; method: string };
   const linkByName = new Map<string, Link>();
   for (const u of items) {
