@@ -19,10 +19,11 @@ type CardAgg = Agg & { city: string | null; driverName: string | null; vehiclePl
 type Invoice = { id: number; number: string; invoiceDate: string; saleDate: string | null; net: number; vat: number; gross: number; fileName: string | null };
 type StationAgg = Agg & { region: string | null };
 type NoRegAgg = Agg & { cardNumber: string };
+type VehicleAgg = Agg & { km: number | null }; // пробіг: журнал Любліна до 07.2026, далі бот-зміни
 type Summary = {
   month: string;
   totals: { liters: number; fuelNet: number; fuelGross: number; goodsNet: number; goodsGross: number; net: number; gross: number; avgPricePerLiter: number | null; txCount: number };
-  byCity: Agg[]; byDriver: Agg[]; byVehicle: Agg[]; byProduct: Agg[]; byStationCity: StationAgg[]; byMonth: Agg[];
+  byCity: Agg[]; byDriver: Agg[]; byVehicle: VehicleAgg[]; byProduct: Agg[]; byStationCity: StationAgg[]; byMonth: Agg[];
   noRegByCard: NoRegAgg[];
   byCard: CardAgg[]; unmappedCards: CardAgg[]; invoices: Invoice[];
 };
@@ -197,7 +198,7 @@ function AggTable({ title, rows, onDrill, litersCol }: { title: string; rows: Ag
 
 // «По авто» — як AggTable, але рядок «—» (заправки без номера авто) розгортається
 // у список «хто і на скільки» (по картках); клік по людині → її транзакції без номера.
-function VehicleTable({ rows, noReg, onDrill }: { rows: Agg[]; noReg: NoRegAgg[]; onDrill: (f: TxFilter) => void }) {
+function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoRegAgg[]; onDrill: (f: TxFilter) => void }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   if (!rows.length) return null;
@@ -208,6 +209,7 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: Agg[]; noReg: NoRegAgg[]
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-slate-400">
             <td className="px-4 py-1.5" />
+            <td className="px-2 py-1.5 text-right">{t("Пробіг, км")}</td>
             <td className="px-2 py-1.5 text-right">{t("Літри")}</td>
             <td className="px-2 py-1.5 text-right">{t("Паливо")}</td>
             <td className="px-2 py-1.5 text-right">{t("Інше")}</td>
@@ -230,6 +232,7 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: Agg[]; noReg: NoRegAgg[]
                     </>
                   ) : r.label}
                 </td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km != null ? r.km.toLocaleString("uk-UA") : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.liters ? r.liters.toFixed(0) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.fuelGross ? zl(r.fuelGross) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.goodsGross ? zl(r.goodsGross) : "—"}</td>
@@ -240,6 +243,7 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: Agg[]; noReg: NoRegAgg[]
               <tr key={`noreg-${s.cardNumber}`} className="cursor-pointer bg-slate-50/50 hover:bg-red-50/40"
                 onClick={() => onDrill({ vehicle: "", card: s.cardNumber })} title={t("Клікни — транзакції")}>
                 <td className="px-4 py-1 pl-10 text-slate-500">{s.label}</td>
+                <td className="px-2 py-1 text-right tabular-nums text-slate-400">—</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">{s.liters ? s.liters.toFixed(0) : "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">{s.fuelGross ? zl(s.fuelGross) : "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">{s.goodsGross ? zl(s.goodsGross) : "—"}</td>

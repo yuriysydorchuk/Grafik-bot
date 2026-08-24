@@ -134,6 +134,42 @@ router.get("/fuel/summary", requireCap("fuel"), async (req, res) => {
     aggInto(byMonth, t.txDate.slice(0, 7), t.txDate.slice(0, 7), t);
   }
 
+  // ── Пробіг авто за період ──────────────────────────────────────────────────
+  // До 07.2026 — архівний журнал Любліна (driver_trip_log, км виїздів);
+  // з 07.2026 — одометри бот-змін (driver_workdays). Ключ — номер без пробілів
+  // (у журналі й автопарку номери гуляють: "LU 318 TV" ↔ "LU318TV").
+  const BOT_KM_FROM = "2026-07-01";
+  const normPlate = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, "").toUpperCase();
+  const kmByPlate = new Map<string, number>();
+  const addKm = (plate: string | null, km: number) => {
+    const key = normPlate(plate);
+    if (key) kmByPlate.set(key, (kmByPlate.get(key) ?? 0) + km);
+  };
+  if (from < BOT_KM_FROM) {
+    const logKm = await db.execute(sql`
+      SELECT vehicle_plate AS plate, sum(km)::int AS km FROM driver_trip_log
+      WHERE km IS NOT NULL AND vehicle_plate IS NOT NULL
+        AND trip_date >= ${from} AND trip_date < ${to < BOT_KM_FROM ? to : BOT_KM_FROM}
+      GROUP BY 1`);
+    for (const r of logKm.rows as any[]) addKm(r.plate, Number(r.km));
+  }
+  if (to > BOT_KM_FROM) {
+    const botKm = await db.execute(sql`
+      SELECT v.plate AS plate, sum(w.odometer_end - w.odometer_start)::int AS km
+      FROM driver_workdays w JOIN vehicles v ON v.id = w.vehicle_id
+      WHERE w.odometer_end IS NOT NULL
+        AND w.work_date >= ${from > BOT_KM_FROM ? from : BOT_KM_FROM} AND w.work_date < ${to}
+      GROUP BY 1`);
+    for (const r of botKm.rows as any[]) addKm(r.plate, Number(r.km));
+  }
+  const byVehicleRows: (Agg & { km: number | null })[] =
+    finish(byVehicle).map(a => ({ ...a, km: kmByPlate.get(normPlate(a.key)) ?? null }));
+  // авто з пробігом, але без заправок за період (напр. Renault без своєї картки) — теж у список
+  const fueledPlates = new Set(byVehicleRows.map(a => normPlate(a.key)).filter(Boolean));
+  for (const [plate, km] of [...kmByPlate.entries()].sort((a, b) => b[1] - a[1])) {
+    if (!fueledPlates.has(plate)) byVehicleRows.push({ key: plate, label: plate, liters: 0, fuelNet: 0, fuelGross: 0, goodsNet: 0, goodsGross: 0, net: 0, gross: 0, txCount: 0, km });
+  }
+
   // збагачення розрізу карток мапінгом + невідомі картки
   const byCardRows = finish(byCard).map(a => {
     const card = cardBy.get(a.key);
@@ -160,7 +196,7 @@ router.get("/fuel/summary", requireCap("fuel"), async (req, res) => {
       net: r2(fuelNet + goodsNet), gross: r2(fuelGross + goodsGross),
       avgPricePerLiter: avgPrice, txCount: txs.length,
     },
-    byCity: finish(byCity), byDriver: finish(byDriver), byVehicle: finish(byVehicle),
+    byCity: finish(byCity), byDriver: finish(byDriver), byVehicle: byVehicleRows,
     byProduct: finish(byProduct),
     // місто станції + воєводство — веб групує у регіони з розгортанням до міст
     byStationCity: finish(byStationCity).map(a => ({ ...a, region: wojewodztwoOf(a.key) })),
