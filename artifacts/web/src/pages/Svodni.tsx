@@ -2045,6 +2045,7 @@ function GratyfikantModal({ month, city, factory, rows, onClose }: {
                         <span key={w} className="ml-1.5 rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 ring-1 ring-rose-200">{t(GRAT_WARN[w] ?? w)}</span>
                       ))}
                     </td>
+                    <td className="px-2 py-1.5 font-mono text-xs text-slate-500">{r.pesel || "—"}</td>
                     <td className="px-2 py-1.5 text-xs text-slate-400">{r.factoryLabel}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{r.kwota.toFixed(2)}</td>
                   </tr>

@@ -27,6 +27,7 @@ interface WorkerProfile {
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   selfTransportSince?: string | null;
+  gratyfikantName?: string | null; pesel?: string | null;
   badania?: BadaniaEntry[];
   nationality?: string | null;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
@@ -84,6 +85,7 @@ export default function WorkerDetail() {
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
     gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     selfTransportSince: w.selfTransportSince ?? null, nationality: w.nationality ?? null,
+    gratyfikantName: w.gratyfikantName ?? null, pesel: w.pesel ?? null,
     status: w.status, isActive: w.isActive, language: w.language,
     hourlyRate: w.hourlyRate, isStudent: w.isStudent, under26: w.under26,
   };
@@ -136,6 +138,8 @@ export default function WorkerDetail() {
             <Info icon={KeyRound} label={t("Ключі фабрики")}
               value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
           )}
+          <Info icon={KeyRound} label="PESEL" value={w.pesel ?? "—"} />
+          {w.gratyfikantName && <Info icon={Briefcase} label={t("Імʼя в Gratyfikancie")} value={w.gratyfikantName} />}
           <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
           <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />

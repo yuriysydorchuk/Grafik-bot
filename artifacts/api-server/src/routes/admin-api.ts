@@ -803,6 +803,9 @@ router.get("/workers/:id", RW, async (req, res) => {
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     selfTransportSince: w.selfTransportSince,
+    // без цих двох модалка редагування з профілю відкривалась би з порожніми
+    // полями і затирала б їх при збереженні
+    gratyfikantName: w.gratyfikantName, pesel: w.pesel,
     // залічки за бадання — список записів (окрема таблиця, CRUD нижче)
     badania: await db.select().from(workerBadaniaTable)
       .where(eq(workerBadaniaTable.workerId, id)).orderBy(desc(workerBadaniaTable.enteredAt), desc(workerBadaniaTable.id)),
