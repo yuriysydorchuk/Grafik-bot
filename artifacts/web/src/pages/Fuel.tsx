@@ -62,9 +62,9 @@ export default function Fuel() {
 
   const fileRef = useRef<HTMLInputElement>(null);
   const importMut = useMutation({
-    mutationFn: async (files: FileList) => {
+    mutationFn: async (files: File[]) => {
       const form = new FormData();
-      for (const f of Array.from(files)) form.append("files", f);
+      for (const f of files) form.append("files", f);
       return upload<{ results: { file: string; ok: boolean; number?: string; replaced?: boolean; txCount?: number; error?: string; warnings?: string[] }[] }>("/fuel/import", form);
     },
     onSuccess: (data) => {
@@ -105,7 +105,9 @@ export default function Fuel() {
           </button>
         )}
         <input ref={fileRef} type="file" accept="application/pdf" multiple className="hidden"
-          onChange={e => { if (e.target.files?.length) importMut.mutate(e.target.files); e.target.value = ""; }} />
+          // File-обʼєкти знімаємо синхронно: mutationFn виконується вже після
+          // очистки інпута, а живий FileList на той момент порожній (400 «нема файлів»)
+          onChange={e => { const files = Array.from(e.target.files ?? []); if (files.length) importMut.mutate(files); e.target.value = ""; }} />
         <Button className="ml-auto" loading={importMut.isPending} onClick={() => fileRef.current?.click()}>
           <Upload className="h-4 w-4" /> {t("Імпорт PDF")}
         </Button>
