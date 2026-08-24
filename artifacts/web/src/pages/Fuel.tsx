@@ -19,7 +19,8 @@ type CardAgg = Agg & { city: string | null; driverName: string | null; vehiclePl
 type Invoice = { id: number; number: string; invoiceDate: string; saleDate: string | null; net: number; vat: number; gross: number; fileName: string | null };
 type StationAgg = Agg & { region: string | null };
 type NoRegAgg = Agg & { cardNumber: string };
-type VehicleAgg = Agg & { km: number | null }; // пробіг: журнал Любліна до 07.2026, далі бот-зміни
+// пробіг: журнал Любліна до 07.2026, далі бот-зміни; km — ефективний (ручний ?? авто)
+type VehicleAgg = Agg & { km: number | null; kmAuto: number | null; kmManual: number | null; kmEdited: boolean };
 type Summary = {
   month: string;
   totals: { liters: number; fuelNet: number; fuelGross: number; goodsNet: number; goodsGross: number; net: number; gross: number; avgPricePerLiter: number | null; txCount: number };
@@ -152,7 +153,9 @@ function Overview({ summary, onDrill, onPickMonth }: { summary: Summary; onDrill
         )}
         <AggTable title={t("По містах (команда картки)")} rows={summary.byCity} onDrill={k => onDrill({ city: k })} />
         <AggTable title={t("По водіях")} rows={summary.byDriver} onDrill={k => onDrill({ driver: k })} />
-        <VehicleTable rows={summary.byVehicle} noReg={summary.noRegByCard} onDrill={onDrill} />
+        <div className="xl:col-span-2">
+          <VehicleTable rows={summary.byVehicle} noReg={summary.noRegByCard} month={summary.month} onDrill={onDrill} />
+        </div>
         <AggTable title={t("По продуктах")} rows={summary.byProduct.map(r => r.key === "__goods__" ? { ...r, label: t("Непаливне (дороги, товари)") } : r)}
           onDrill={(k) => onDrill(k === "__goods__" ? { kind: "goods" } : { product: k })} litersCol />
         <RegionTable rows={summary.byStationCity} onDrill={onDrill} />
@@ -198,14 +201,29 @@ function AggTable({ title, rows, onDrill, litersCol }: { title: string; rows: Ag
 
 // «По авто» — як AggTable, але рядок «—» (заправки без номера авто) розгортається
 // у список «хто і на скільки» (по картках); клік по людині → її транзакції без номера.
-function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoRegAgg[]; onDrill: (f: TxFilter) => void }) {
+function VehicleTable({ rows, noReg, month, onDrill }: { rows: VehicleAgg[]; noReg: NoRegAgg[]; month: string; onDrill: (f: TxFilter) => void }) {
   const t = useT();
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [editKey, setEditKey] = useState<string | null>(null);
+  const [editVal, setEditVal] = useState("");
+  const canEdit = /^\d{4}-\d{2}$/.test(month); // ручний км — лише в розрізі місяця
+  const saveKm = useMutation({
+    mutationFn: (p: { plate: string; km: number | null }) => post("/fuel/km-override", { ...p, month }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["fuel-summary"] }),
+    onError: (e: any) => toast.error(e.message),
+  });
   if (!rows.length) return null;
   return (
     <Card className="overflow-hidden">
-      <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3 text-sm font-bold tracking-tight text-slate-800">{t("По авто")}</div>
-      <table className="w-full text-sm">
+      <div className="flex items-baseline justify-between border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3">
+        <span className="text-sm font-bold tracking-tight text-slate-800">{t("По авто")}</span>
+        <span className="text-[11px] text-slate-400">
+          {canEdit ? t("клік по км — ввести вручну") : t("ручний км — у розрізі місяця")}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-slate-400">
             <td className="px-4 py-1.5" />
@@ -221,6 +239,30 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
         <tbody className="divide-y divide-slate-100">
           {rows.map(r => {
             const isNoReg = !r.key;
+            const editing = editKey === r.key;
+            const kmCell = isNoReg ? (
+              <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">—</td>
+            ) : editing ? (
+              <td className="px-2 py-1.5 text-right" onClick={e => e.stopPropagation()}>
+                <input autoFocus value={editVal} inputMode="numeric" placeholder={t("авто")}
+                  className="w-24 rounded border border-red-300 px-1.5 py-0.5 text-right text-sm tabular-nums outline-none focus:ring-2 focus:ring-red-200"
+                  onChange={e => setEditVal(e.target.value.replace(/[^\d]/g, ""))}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") { saveKm.mutate({ plate: r.key, km: editVal === "" ? null : Number(editVal) }); setEditKey(null); }
+                    if (e.key === "Escape") setEditKey(null);
+                  }}
+                  onBlur={() => setEditKey(null)} />
+              </td>
+            ) : (
+              <td className={`group/km px-2 py-1.5 text-right tabular-nums ${r.kmEdited ? "font-semibold text-red-700" : "text-slate-600"}`}
+                onClick={canEdit ? e => { e.stopPropagation(); setEditKey(r.key); setEditVal(r.kmManual != null ? String(r.kmManual) : ""); } : undefined}
+                title={r.kmEdited ? `${t("Введено вручну")}${r.kmAuto != null ? `; ${t("авто-розрахунок:")} ${r.kmAuto.toLocaleString("uk-UA")}` : ""}. ${t("Порожнє значення поверне авто-розрахунок")}` : canEdit ? t("Клікни — ввести пробіг вручну") : undefined}>
+                {r.km != null ? r.km.toLocaleString("uk-UA") : canEdit ? "" : "—"}
+                {r.kmEdited && <span className="ml-1 text-[10px] align-top">✎</span>}
+                {canEdit && !r.kmEdited && <span className="ml-1 hidden text-[10px] text-slate-400 group-hover/km:inline">✎</span>}
+                {r.km == null && canEdit && <span className="text-slate-400 group-hover/km:hidden">—</span>}
+              </td>
+            );
             const main = (
               <tr key={r.key || "—"} className="cursor-pointer hover:bg-red-50/40"
                 onClick={isNoReg ? () => setOpen(o => !o) : () => onDrill({ vehicle: r.key })}
@@ -234,13 +276,13 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
                     </>
                   ) : r.label}
                 </td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km != null ? r.km.toLocaleString("uk-UA") : "—"}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km && r.fuelGross ? (r.fuelGross / r.km).toFixed(2) : "—"}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km && r.liters ? (r.liters / r.km * 100).toFixed(1) : "—"}</td>
+                {kmCell}
+                <td className="px-2 py-1.5 text-right tabular-nums font-medium text-slate-700">{r.km && r.fuelGross ? (r.fuelGross / r.km).toFixed(2) : "—"}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums font-medium text-slate-700">{r.km && r.liters ? (r.liters / r.km * 100).toFixed(1) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.liters ? r.liters.toFixed(0) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.fuelGross ? zl(r.fuelGross) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.goodsGross ? zl(r.goodsGross) : "—"}</td>
-                <td className="px-4 py-1.5 text-right font-semibold tabular-nums text-slate-800">{zl(r.gross)}</td>
+                <td className="px-4 py-1.5 text-right font-semibold tabular-nums text-slate-800">{r.gross ? zl(r.gross) : "—"}</td>
               </tr>
             );
             const subs = isNoReg && open ? noReg.map(s => (
@@ -260,6 +302,7 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
           })}
         </tbody>
       </table>
+      </div>
     </Card>
   );
 }

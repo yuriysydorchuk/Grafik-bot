@@ -140,34 +140,58 @@ router.get("/fuel/summary", requireCap("fuel"), async (req, res) => {
   // (у журналі й автопарку номери гуляють: "LU 318 TV" ↔ "LU318TV").
   const BOT_KM_FROM = "2026-07-01";
   const normPlate = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, "").toUpperCase();
-  const kmByPlate = new Map<string, number>();
-  const addKm = (plate: string | null, km: number) => {
-    const key = normPlate(plate);
-    if (key) kmByPlate.set(key, (kmByPlate.get(key) ?? 0) + km);
+  // Рахуємо помісячно (`plate|YYYY-MM`), бо ручний оверрайд (fuel_km_overrides)
+  // перекриває САМЕ місяць; період-рік = сума ефективних місяців.
+  const kmAutoByPM = new Map<string, number>();
+  const addAuto = (plate: string | null, m: string, km: number) => {
+    const p = normPlate(plate);
+    if (p) kmAutoByPM.set(`${p}|${m}`, (kmAutoByPM.get(`${p}|${m}`) ?? 0) + km);
   };
   if (from < BOT_KM_FROM) {
     const logKm = await db.execute(sql`
-      SELECT vehicle_plate AS plate, sum(km)::int AS km FROM driver_trip_log
+      SELECT vehicle_plate AS plate, substr(trip_date::text, 1, 7) AS m, sum(km)::int AS km
+      FROM driver_trip_log
       WHERE km IS NOT NULL AND vehicle_plate IS NOT NULL
         AND trip_date >= ${from} AND trip_date < ${to < BOT_KM_FROM ? to : BOT_KM_FROM}
-      GROUP BY 1`);
-    for (const r of logKm.rows as any[]) addKm(r.plate, Number(r.km));
+      GROUP BY 1, 2`);
+    for (const r of logKm.rows as any[]) addAuto(r.plate, r.m, Number(r.km));
   }
   if (to > BOT_KM_FROM) {
     const botKm = await db.execute(sql`
-      SELECT v.plate AS plate, sum(w.odometer_end - w.odometer_start)::int AS km
+      SELECT v.plate AS plate, substr(w.work_date::text, 1, 7) AS m, sum(w.odometer_end - w.odometer_start)::int AS km
       FROM driver_workdays w JOIN vehicles v ON v.id = w.vehicle_id
       WHERE w.odometer_end IS NOT NULL
         AND w.work_date >= ${from > BOT_KM_FROM ? from : BOT_KM_FROM} AND w.work_date < ${to}
-      GROUP BY 1`);
-    for (const r of botKm.rows as any[]) addKm(r.plate, Number(r.km));
+      GROUP BY 1, 2`);
+    for (const r of botKm.rows as any[]) addAuto(r.plate, r.m, Number(r.km));
   }
-  const byVehicleRows: (Agg & { km: number | null })[] =
-    finish(byVehicle).map(a => ({ ...a, km: kmByPlate.get(normPlate(a.key)) ?? null }));
+  const ovr = await db.execute(sql`
+    SELECT plate, month, km FROM fuel_km_overrides
+    WHERE month >= ${from.slice(0, 7)} AND month < ${to.slice(0, 7)}`);
+  const ovrByPM = new Map((ovr.rows as any[]).map(r => [`${normPlate(r.plate)}|${r.month}`, Number(r.km)]));
+
+  type KmAcc = { auto: number; eff: number; manual: number | null; edited: boolean };
+  const kmAcc = new Map<string, KmAcc>();
+  for (const pm of new Set([...kmAutoByPM.keys(), ...ovrByPM.keys()])) {
+    const plate = pm.split("|")[0]!;
+    const a = kmAcc.get(plate) ?? { auto: 0, eff: 0, manual: null, edited: false };
+    const auto = kmAutoByPM.get(pm) ?? 0;
+    const manual = ovrByPM.get(pm);
+    a.auto += auto;
+    a.eff += manual ?? auto;
+    if (manual != null) { a.edited = true; if (month.length === 7) a.manual = manual; }
+    kmAcc.set(plate, a);
+  }
+  const kmFields = (plate: string) => {
+    const k = kmAcc.get(plate);
+    return { km: k ? k.eff : null, kmAuto: k ? k.auto : null, kmManual: k?.manual ?? null, kmEdited: k?.edited ?? false };
+  };
+  const byVehicleRows: (Agg & ReturnType<typeof kmFields>)[] =
+    finish(byVehicle).map(a => ({ ...a, ...kmFields(normPlate(a.key)) }));
   // авто з пробігом, але без заправок за період (напр. Renault без своєї картки) — теж у список
   const fueledPlates = new Set(byVehicleRows.map(a => normPlate(a.key)).filter(Boolean));
-  for (const [plate, km] of [...kmByPlate.entries()].sort((a, b) => b[1] - a[1])) {
-    if (!fueledPlates.has(plate)) byVehicleRows.push({ key: plate, label: plate, liters: 0, fuelNet: 0, fuelGross: 0, goodsNet: 0, goodsGross: 0, net: 0, gross: 0, txCount: 0, km });
+  for (const [plate, k] of [...kmAcc.entries()].sort((a, b) => b[1].eff - a[1].eff)) {
+    if (!fueledPlates.has(plate)) byVehicleRows.push({ key: plate, label: plate, liters: 0, fuelNet: 0, fuelGross: 0, goodsNet: 0, goodsGross: 0, net: 0, gross: 0, txCount: 0, km: k.eff, kmAuto: k.auto, kmManual: month.length === 7 ? k.manual : null, kmEdited: k.edited });
   }
 
   // збагачення розрізу карток мапінгом + невідомі картки
@@ -205,6 +229,25 @@ router.get("/fuel/summary", requireCap("fuel"), async (req, res) => {
     byCard: byCardRows, unmappedCards,
     invoices: invoices.filter(i => (i.saleDate ?? i.invoiceDate).startsWith(month) || i.invoiceDate.startsWith(month)),
   });
+});
+
+// ── Ручний пробіг ───────────────────────────────────────────────────────────
+// Оверрайд км пари авто × місяць (km: null/"" — прибрати, повернутись до авто-розрахунку).
+router.post("/fuel/km-override", requireCap("fuel"), async (req, res) => {
+  const plate = String(req.body?.plate ?? "").replace(/\s+/g, "").toUpperCase();
+  const m = String(req.body?.month ?? "");
+  if (!plate || !/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) return fail(res, 400, "потрібні plate і month=YYYY-MM");
+  const kmRaw = req.body?.km;
+  if (kmRaw == null || kmRaw === "") {
+    await db.execute(sql`DELETE FROM fuel_km_overrides WHERE plate = ${plate} AND month = ${m}`);
+    return ok(res, { plate, month: m, km: null });
+  }
+  const km = Math.round(Number(kmRaw));
+  if (!Number.isFinite(km) || km < 0 || km > 1_000_000) return fail(res, 400, "km — ціле число від 0");
+  await db.execute(sql`
+    INSERT INTO fuel_km_overrides (plate, month, km) VALUES (${plate}, ${m}, ${km})
+    ON CONFLICT (plate, month) DO UPDATE SET km = EXCLUDED.km`);
+  ok(res, { plate, month: m, km });
 });
 
 // ── Транзакції (дрил-даун) ──────────────────────────────────────────────────
