@@ -83,6 +83,7 @@ export interface Worker {
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   status: string; isActive: boolean; language?: string | null;
   gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
+  pesel?: string | null; // 11 цифр текстом (з картотек nexo; матчинг ліст по PESEL)
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }
 export interface Driver {

@@ -312,7 +312,7 @@ router.get("/workers", RW, async (req, res) => {
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
       selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
       nationality: workersTable.nationality, language: workersTable.language,
-      gratyfikantName: workersTable.gratyfikantName,
+      gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
     })
@@ -371,6 +371,7 @@ router.post("/workers", RW, async (req, res) => {
       ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
     nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
     gratyfikantName: strOrNull(req.body?.gratyfikantName),
+    pesel: typeof req.body?.pesel === "string" && /^\d{11}$/.test(req.body.pesel.trim()) ? req.body.pesel.trim() : null,
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -420,6 +421,11 @@ router.patch("/workers/:id", RW, async (req, res) => {
   if (fullName !== undefined) patch.fullName = String(fullName).trim();
   // точне написання в Gratyfikant nexo — живе лише в експорті naliczeń
   if (req.body?.gratyfikantName !== undefined) patch.gratyfikantName = strOrNull(req.body.gratyfikantName);
+  if (req.body?.pesel !== undefined) {
+    const p = strOrNull(req.body.pesel);
+    if (p && !/^\d{11}$/.test(p)) return fail(res, 400, "PESEL — 11 цифр");
+    patch.pesel = p;
+  }
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (positionId !== undefined) patch.positionId = positionId ?? null;

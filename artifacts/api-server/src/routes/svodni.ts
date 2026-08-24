@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -19,7 +19,8 @@ import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
-import { gratyfikantRecords, type GratyfikantSource } from "../services/gratyfikantExport";
+import { listaRecords } from "../services/gratyfikantExport";
+import { defaultPayDate, umowaStatusFor } from "../services/gratyfikantImport";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -3432,43 +3433,93 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
   res.send(Buffer.from(buffer));
 });
 
-// Експорт для Gratyfikant nexo PRO: XLSX під вбудований імпорт «Naliczenia
-// i potrącenia» (Laboratorium → Eksport/import danych) — одна фірма
-// (підмiot nexo) за раз. Їде лише księg. brutto (закритий шар) → гейт
-// svodniSensitive; формат і рішення — services/gratyfikantExport.ts.
-router.get("/svodni/gratyfikant", requireCap("svodniSensitive"), async (req: AuthedRequest, res) => {
+// ── Лісти до Gratyfikant nexo (кнопка Gratyfikant на /svodni, svodniSensitive) ──
+// Формат файлу і критерії — services/gratyfikantExport.ts. Превʼю віддає людей
+// з сумами і попередженнями (без PESEL / умова скінчилась / нема / інша фірма —
+// знімок умов живе в gratyfikant_umowy, імпорт у Налаштуваннях). Модалка дає
+// зняти галочки з непотрібних і передає вибрані row-id у GET-скачування.
+async function gratyfikantScope(req: AuthedRequest, res: any) {
   const month = validMonth(req.query.month) ? String(req.query.month) : null;
-  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  if (!month) { fail(res, 400, "month=YYYY-MM required"); return null; }
   const firm = String(req.query.firm ?? "").trim();
-  if (!firm) return fail(res, 400, "firm required");
-  const factory = String(req.query.factory ?? "").trim() || null;
-  const now = new Date();
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date ?? ""))
-    ? String(req.query.date)
-    : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (!firm) { fail(res, 400, "firm required"); return null; }
+  const factoryLabels = String(req.query.factories ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  const city = String(req.query.city ?? "").trim() || null;
 
-  const rows: Record<string, unknown>[] = await db.select({
-    rawName: svodniRowsTable.rawName, factoryLabel: svodniRowsTable.factoryLabel,
-    factoryId: svodniRowsTable.factoryId, firm: svodniRowsTable.firm,
-    ksiegBrutto: svodniRowsTable.ksiegBrutto, segmentOf: svodniRowsTable.segmentOf,
-    workerName: workersTable.fullName, gratyfikantName: workersTable.gratyfikantName,
+  const rows = await db.select({
+    id: svodniRowsTable.id, rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
+    factoryLabel: svodniRowsTable.factoryLabel, factoryId: svodniRowsTable.factoryId,
+    firm: svodniRowsTable.firm, ksiegBrutto: svodniRowsTable.ksiegBrutto,
+    konto: svodniRowsTable.konto, segmentOf: svodniRowsTable.segmentOf,
+    workerId: svodniRowsTable.workerId, workerName: workersTable.fullName,
+    gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
   }).from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
-  await enrichFirms(rows);
-  const records = gratyfikantRecords(rows as GratyfikantSource[], { firm, date, factoryLabel: factory });
+  await enrichFirms(rows as unknown as Record<string, unknown>[]);
+  const scoped = rows.filter(r => !city || r.city === city);
+  return { month, firm, factoryLabels, city, rows: scoped };
+}
+
+router.get("/svodni/gratyfikant-preview", requireCap("svodniSensitive"), async (req: AuthedRequest, res) => {
+  const scope = await gratyfikantScope(req, res);
+  if (!scope) return;
+  const { month, firm, factoryLabels, rows } = scope;
+  const records = listaRecords(rows, { firm, payDate: defaultPayDate(month), factoryLabels });
+  const byId = new Map(rows.map(r => [r.id, r]));
+  // знімок умов для попереджень (по привʼязаних працівниках скоупу)
+  const workerIds = [...new Set(records.map(r => byId.get(r.rowId)?.workerId).filter((x): x is number => x != null))];
+  const umowy = workerIds.length
+    ? await db.select().from(gratyfikantUmowyTable).where(inArray(gratyfikantUmowyTable.workerId, workerIds))
+    : [];
+  const byWorker = new Map<number, { firm: string; od: string | null; do: string | null }[]>();
+  for (const u of umowy) {
+    (byWorker.get(u.workerId!) ?? byWorker.set(u.workerId!, []).get(u.workerId!)!)
+      .push({ firm: u.firm, od: u.odDnia, do: u.doDnia });
+  }
+  const anyUmowy = (await db.select({ id: gratyfikantUmowyTable.id }).from(gratyfikantUmowyTable).limit(1)).length > 0;
+  const out = records.map(r => {
+    const row = byId.get(r.rowId)!;
+    const warnings: string[] = [];
+    if (!r.pesel) warnings.push("no_pesel");
+    if (row.workerId == null) warnings.push("unlinked");
+    else if (anyUmowy) {
+      const st = umowaStatusFor(month, firm, byWorker.get(row.workerId) ?? []);
+      if (st !== "ok") warnings.push(`umowa_${st}`);
+    }
+    return { rowId: r.rowId, name: r.name, pesel: r.pesel, factoryLabel: row.factoryLabel, kwota: r.kwota, warnings };
+  });
+  ok(res, {
+    month, firm, payDate: defaultPayDate(month), umowySnapshot: anyUmowy,
+    rows: out,
+    totals: { count: out.length, sum: Math.round(out.reduce((a, r) => a + r.kwota, 0) * 100) / 100 },
+  });
+});
+
+router.get("/svodni/gratyfikant", requireCap("svodniSensitive"), async (req: AuthedRequest, res) => {
+  const scope = await gratyfikantScope(req, res);
+  if (!scope) return;
+  const { month, firm, factoryLabels, rows } = scope;
+  const payDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.payDate ?? ""))
+    ? String(req.query.payDate) : defaultPayDate(month);
+  const wanted = String(req.query.rows ?? "").split(",").map(s => Number(s)).filter(n => Number.isFinite(n) && n > 0);
+  let records = listaRecords(rows, { firm, payDate, factoryLabels });
+  if (wanted.length) {
+    const set = new Set(wanted);
+    records = records.filter(r => set.has(r.rowId));
+  }
   if (!records.length) return fail(res, 404, "немає рядків за вибором");
 
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Arkusz1");
-  ws.addRow(["Pracownik", "Data", "Rodzaj", "Składnik płacowy", "Wartość"]).font = { bold: true };
-  for (const r of records) ws.addRow([r.pracownik, new Date(r.data + "T00:00:00"), r.rodzaj, r.skladnik, r.wartosc]);
-  ws.getColumn(2).numFmt = "yyyy-mm-dd";
-  ws.columns.forEach((col, i) => { col.width = i === 0 || i === 3 ? 28 : 14; });
+  // без заголовка — формат, відпрацьований з księgową (імʼя | PESEL | дата | сума)
+  for (const r of records) ws.addRow([r.name, r.pesel, r.data, r.kwota]);
+  ws.getColumn(1).width = 32;
+  ws.getColumn(2).width = 14;
   const buffer = await wb.xlsx.writeBuffer();
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Naliczenia ${firm}${factory ? ` ${factory}` : ""} ${month}.xlsx`)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Naliczenia ${firm} ${month}.xlsx`)}"`);
   res.send(Buffer.from(buffer));
 });
 

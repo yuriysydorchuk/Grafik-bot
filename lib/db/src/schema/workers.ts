@@ -53,6 +53,9 @@ export const workersTable = pgTable("workers", {
   // використовується ЛИШЕ в експорті naliczeń для Gratyfikanta (пріоритет над full_name);
   // NULL = імʼя профілю збігається з nexo або людини там ще нема
   gratyfikantName: text("gratyfikant_name"),
+  // PESEL (11 цифр, текстом — провідні нулі!): найнадійніший ідентифікатор для
+  // матчингу з Gratyfikant nexo (WartoscZArkusza P8="P"); джерело — картотеки nexo
+  pesel: text("pesel"),
   telegramId: text("telegram_id").unique(),
   workerCode: text("worker_code").unique(), // public sequential id (shown in lists/reports) — NOT a binding secret
   inviteCode: text("invite_code").unique(), // unguessable token for ?start=emp<code> Telegram binding
@@ -1654,6 +1657,23 @@ export type Penalty = typeof penaltiesTable.$inferSelect;
 export type FuelInvoice = typeof fuelInvoicesTable.$inferSelect;
 export type FuelTransaction = typeof fuelTransactionsTable.$inferSelect;
 export type FuelCard = typeof fuelCardsTable.$inferSelect;
+
+// Умови (umowy cywilnoprawne) з Gratyfikant nexo — знімок вивантаження по
+// підмiоту (файл зі списком умов у Налаштуваннях → Gratyfikant). Кожен імпорт
+// ЗАМІНЮЄ всі рядки своєї фірми. Живить попередження експорту ліст на /svodni:
+// «умови немає», «умова скінчилась до місяця праці», «умова в іншій фірмі».
+export const gratyfikantUmowyTable = pgTable("gratyfikant_umowy", {
+  id: serial("id").primaryKey(),
+  firm: text("firm").notNull(),                  // підмiot nexo: ES | ESO | Klinex
+  nexoName: text("nexo_name").notNull(),         // Pracownik як записаний у nexo
+  workerId: integer("worker_id").references(() => workersTable.id), // NULL = не зматчено з профілем
+  umowaNr: text("umowa_nr").notNull(),
+  odDnia: text("od_dnia"),                       // YYYY-MM-DD
+  doDnia: text("do_dnia"),
+  dzial: text("dzial"),
+  importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+export type GratyfikantUmowa = typeof gratyfikantUmowyTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

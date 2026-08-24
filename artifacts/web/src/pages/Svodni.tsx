@@ -757,6 +757,7 @@ export default function Svodni() {
       )}
       {gratyfikantOpen && (
         <GratyfikantModal month={effMonth} rows={data?.rows ?? []}
+          city={effCity !== TOTAL_CITY && effCity !== OFFICE_CITY ? effCity : null}
           factory={effFactory && !isSpecial(effFactory) ? effFactory : null} onClose={() => setGratyfikantOpen(false)} />
       )}
       {unlockReview && (
@@ -1927,82 +1928,144 @@ function ExcelModal({ month, city, factory, sensitive, onClose }: {
   );
 }
 
-// Експорт для Gratyfikant nexo PRO: файл під вбудований імпорт «Naliczenia
-// i potrącenia» (одна фірма-podmiot за раз, лише księg. brutto — деталі в
-// services/gratyfikantExport.ts бекенду). Кнопка видима лише з sensitive.
-function GratyfikantModal({ month, factory, rows, onClose }: {
-  month: string; factory: string | null; rows: Row[]; onClose: () => void;
+// Лісти до Gratyfikant nexo: превʼю людей з сумами й попередженнями
+// (без PESEL / умова скінчилась / нема / інша фірма — знімок умов вантажиться
+// в Налаштуваннях → Gratyfikant), галочки прибирають непотрібних, файл —
+// Імʼя | PESEL | Дата виплати | Сума (одна фірма за раз). Кнопка — лише sensitive.
+type GratPreviewRow = { rowId: number; name: string; pesel: string; factoryLabel: string; kwota: number; warnings: string[] };
+const GRAT_WARN: Record<string, string> = {
+  no_pesel: "без PESEL",
+  unlinked: "не привʼязаний до профілю",
+  umowa_none: "немає умови",
+  umowa_expired: "умова скінчилась",
+  umowa_other_firm: "умова в іншій фірмі",
+};
+function GratyfikantModal({ month, city, factory, rows, onClose }: {
+  month: string; city: string | null; factory: string | null; rows: Row[]; onClose: () => void;
 }) {
   const t = useT();
-  const now = new Date();
-  const [date, setDate] = useState(
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`);
-  // ті самі критерії, що на бекенді: не-офісні вкладки, є księg. brutto
-  const eligible = useMemo(() => rows.filter(r => !isSpecial(r.factoryLabel) && (r.ksiegBrutto ?? 0) > 0), [rows]);
+  const eligible = useMemo(() => rows.filter(r => !isSpecial(r.factoryLabel) && ((r.konto ?? 0) > 0)), [rows]);
   const firms = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of eligible) if (r.firm) m.set(r.firm, (m.get(r.firm) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [eligible]);
-  const noFirm = eligible.filter(r => !r.firm).length;
   const [firm, setFirm] = useState<string>(() => firms[0]?.[0] ?? "");
-  const [scope, setScope] = useState<"firm" | "factory">(factory ? "factory" : "firm");
-  const count = eligible.filter(r => r.firm === firm && (scope !== "factory" || r.factoryLabel === factory)).length;
-  const params = new URLSearchParams({ month, firm, date });
-  if (scope === "factory" && factory) params.set("factory", factory);
+  const [scope, setScope] = useState<"all" | "city" | "factories">(factory ? "factories" : "all");
+  const [selFactories, setSelFactories] = useState<Set<string>>(() => new Set(factory ? [factory] : []));
+  const firmFactories = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of eligible) if (r.firm === firm) set.add(r.factoryLabel);
+    return [...set].sort((a, b) => a.localeCompare(b, "pl"));
+  }, [eligible, firm]);
+  const params = new URLSearchParams({ month, firm });
+  if (scope === "city" && city) params.set("city", city);
+  if (scope === "factories" && selFactories.size) params.set("factories", [...selFactories].join(","));
+  const { data: preview, isLoading } = useQuery<{
+    payDate: string; umowySnapshot: boolean; rows: GratPreviewRow[]; totals: { count: number; sum: number };
+  }>({
+    queryKey: ["grat-preview", month, firm, scope, [...selFactories].join(","), city],
+    queryFn: () => get(`/svodni/gratyfikant-preview?${params.toString()}`),
+    enabled: !!firm && (scope !== "factories" || selFactories.size > 0),
+  });
+  const [payDate, setPayDate] = useState("");
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    if (!preview) return;
+    setPayDate(d => d || preview.payDate);
+    // дефолт: відзначені всі без попереджень; попереджені — зняті
+    setChecked(new Set(preview.rows.filter(r => !r.warnings.length).map(r => r.rowId)));
+  }, [preview]);
+  const toggle = (id: number) => setChecked(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const selRows = (preview?.rows ?? []).filter(r => checked.has(r.rowId));
+  const selSum = Math.round(selRows.reduce((a, r) => a + r.kwota, 0) * 100) / 100;
+  const dl = new URLSearchParams(params);
+  dl.set("payDate", payDate);
+  dl.set("rows", selRows.map(r => r.rowId).join(","));
   return (
-    <Modal open onClose={onClose} title={t("Експорт у Gratyfikant")}>
+    <Modal open onClose={onClose} title={t("Ліста до Gratyfikanta")}>
       <div className="space-y-4">
-        <p className="text-sm text-slate-500">
-          {t("Файл для вбудованого імпорту «Naliczenia i potrącenia» (Laboratorium → Eksport/import danych).")}{" "}
-          {t("Один запис = księg. brutto рядка; людина на кількох фабриках — окремі записи.")}
-        </p>
-        <div>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фірма (podmiot)")}</div>
-          <div className="flex flex-wrap gap-1.5">
-            {firms.map(([f, n]) => (
-              <button key={f} onClick={() => setFirm(f)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${firm === f ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                {f} · {n}
-              </button>
-            ))}
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фірма (podmiot)")}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {firms.map(([f, n]) => (
+                <button key={f} onClick={() => { setFirm(f); setSelFactories(new Set()); }}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ${firm === f ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                  {f} · {n}
+                </button>
+              ))}
+            </div>
           </div>
-          {noFirm > 0 && (
-            <p className="mt-1.5 text-[11px] text-amber-600">⚠︎ {t("Без фірми (не потраплять у файл)")}: {noFirm}</p>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Скоуп")}</div>
+            <div className="flex flex-wrap gap-1.5">
+              <button onClick={() => setScope("all")} className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "all" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{t("Вся фірма")}</button>
+              {city && <button onClick={() => setScope("city")} className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "city" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{t(city)}</button>}
+              <button onClick={() => setScope("factories")} className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "factories" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{t("Вибрані фабрики")}</button>
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Дата виплати")}</div>
+            <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+              className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
+          </div>
+        </div>
+        {scope === "factories" && (
+          <div className="flex flex-wrap gap-1.5">
+            {firmFactories.map(f => {
+              const on = selFactories.has(f);
+              return (
+                <button key={f} onClick={() => setSelFactories(prev => { const n = new Set(prev); on ? n.delete(f) : n.add(f); return n; })}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${on ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "bg-slate-50 text-slate-400 ring-1 ring-slate-200"}`}>
+                  {f}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {preview && !preview.umowySnapshot && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {t("Знімок умов ще не завантажено (Налаштування → Gratyfikant) — попередження про умови недоступні.")}
+          </p>
+        )}
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-200">
+          {isLoading ? <div className="p-4"><Spinner /></div> : (
+            <table className="w-full text-sm">
+              <tbody>
+                {(preview?.rows ?? []).map(r => (
+                  <tr key={r.rowId} className={`border-b border-slate-100 last:border-0 ${checked.has(r.rowId) ? "" : "opacity-50"}`}>
+                    <td className="w-8 px-2 py-1.5"><input type="checkbox" checked={checked.has(r.rowId)} onChange={() => toggle(r.rowId)} /></td>
+                    <td className="px-2 py-1.5">{r.name}
+                      {r.warnings.map(w => (
+                        <span key={w} className="ml-1.5 rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 ring-1 ring-rose-200">{t(GRAT_WARN[w] ?? w)}</span>
+                      ))}
+                    </td>
+                    <td className="px-2 py-1.5 text-xs text-slate-400">{r.factoryLabel}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{r.kwota.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
-        <div>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Що скачати")}</div>
-          <div className="flex flex-wrap gap-1.5">
-            <button onClick={() => setScope("firm")}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "firm" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-              {t("Вся фірма")} · {month}
-            </button>
-            {factory && (
-              <button onClick={() => setScope("factory")}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${scope === "factory" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                {factory}
-              </button>
-            )}
-          </div>
-        </div>
-        <div>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Дата запису")}</div>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
-        </div>
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <span className="mr-auto text-xs text-slate-400">{t("Записів у файлі")}: {count}</span>
+        <div className="flex items-center justify-end gap-2">
+          <span className="mr-auto text-sm text-slate-500">
+            {t("Вибрано")}: <b>{selRows.length}</b> / {preview?.rows.length ?? 0} · {t("разом")}: <b className="tabular-nums">{selSum.toFixed(2)}</b>
+          </span>
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          {firm && count > 0 ? (
-            <a href={`/api/svodni/gratyfikant?${params.toString()}`} onClick={onClose}
+          {selRows.length > 0 && payDate ? (
+            <a href={`/api/svodni/gratyfikant?${dl.toString()}`} onClick={onClose}
               className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">
-              <Download className="h-4 w-4" /> {t("Скачати")}
+              <Download className="h-4 w-4" /> {t("Скачати лісту")}
             </a>
           ) : (
-            <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400"
-              title={t("Немає рядків із księg. brutto за вибором")}>
-              <Download className="h-4 w-4" /> {t("Скачати")}
+            <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400">
+              <Download className="h-4 w-4" /> {t("Скачати лісту")}
             </span>
           )}
         </div>

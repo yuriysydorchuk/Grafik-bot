@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
+import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
 import { Card, Spinner, Input, Label, Button, Select, Badge, Empty } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -12,7 +12,7 @@ import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "email" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "email" | "gratyfikant" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
@@ -21,6 +21,7 @@ const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "documents", label: "Документи", show: m => can(m, "editData") },
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
   { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
+  { id: "gratyfikant", label: "Gratyfikant", show: m => can(m, "svodniSensitive") },
   { id: "users", label: "Користувачі та ролі", show: m => m.isMain },
 ];
 
@@ -55,6 +56,7 @@ export default function Settings() {
       {active === "documents" && <DocTypesSettings />}
       {active === "funnels" && <FunnelsSettings />}
       {active === "email" && <EmailTemplatesSettings />}
+      {active === "gratyfikant" && <GratyfikantSettings />}
       {active === "users" && me && <Admins me={me} />}
     </>
   );
@@ -439,5 +441,137 @@ function EmailTemplatesSettings() {
         </div>
       </div>
     </Card>
+  );
+}
+
+// ─── Gratyfikant nexo: імпорт вивантажень (умови / картотека з PESEL) ─────────
+// «Перевірити» = dry-run: бекенд віддає КОЖНУ зміну окремо (ключ + стара→нова +
+// спосіб матчу). Точні збіги відзначені одразу, нечіткі (fuzzy) — зняті й чекають
+// ручного підтвердження. «Застосувати» шле лише схвалені ключі.
+type GratChange = { key: string; kind: "pesel" | "name"; workerId: number; our: string; to: string; method: string };
+type GratLink = { key: string; nexoName: string; workerId: number; workerName: string; method: string };
+function GratyfikantSettings() {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data: status } = useQuery<{
+    firms: Record<string, { umowy: number; linked: number; importedAt: string | null }>;
+    activeWorkers: number; withPesel: number;
+  }>({ queryKey: ["gratyfikant-status"], queryFn: () => get("/gratyfikant/status") });
+  const [firm, setFirm] = useState("ES");
+  const [file, setFile] = useState<File | null>(null);
+  const [report, setReport] = useState<any>(null);
+  const [approved, setApproved] = useState<Set<string>>(new Set());
+  const items: (GratChange | GratLink)[] = report?.kind === "kartoteka" ? (report.changes ?? []) : (report?.links ?? []);
+  const run = useMutation({
+    mutationFn: async (dry: boolean) => {
+      const form = new FormData();
+      form.append("file", file!);
+      form.append("firm", firm);
+      if (dry) form.append("dry", "1");
+      else form.append("approved", JSON.stringify([...approved]));
+      return upload(`/gratyfikant/import${dry ? "?dry=1" : ""}`, form);
+    },
+    onSuccess: (r: any, dry) => {
+      setReport(r);
+      if (dry) {
+        // дефолт: точні збіги схвалені, нечіткі — ні (підтверджуєш руками)
+        const list: (GratChange | GratLink)[] = r.kind === "kartoteka" ? (r.changes ?? []) : (r.links ?? []);
+        setApproved(new Set(list.filter(i => i.method !== "fuzzy").map(i => i.key)));
+      } else {
+        toast.success(t("Імпортовано"));
+        qc.invalidateQueries({ queryKey: ["gratyfikant-status"] });
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const toggle = (key: string) => setApproved(prev => {
+    const n = new Set(prev);
+    n.has(key) ? n.delete(key) : n.add(key);
+    return n;
+  });
+  const descr = (i: GratChange | GratLink) =>
+    "our" in i
+      ? `${i.our} → ${i.kind === "pesel" ? "PESEL " : ""}${i.to}`
+      : `${i.nexoName} → ${t("профіль")} ${i.workerName}`;
+  return (
+    <div className="max-w-3xl space-y-4">
+      <Card className="p-4">
+        <h3 className="mb-1 text-sm font-semibold text-slate-700">{t("Імпорт з Gratyfikant nexo")}</h3>
+        <p className="mb-3 text-xs text-slate-500">
+          {t("Завантаж вивантаження з nexo: список умов (Pracownik / Nr umowy / Od–Do dnia) або картотеку працівників з PESEL. Тип файлу визначається автоматично; матчинг з профілями — по іменах з усіма запобіжниками. Ручні значення не перетираються.")}
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <Label>{t("Фірма (podmiot)")}</Label>
+            <Select value={firm} onChange={e => setFirm(e.target.value)}>
+              {["ES", "ESO", "Klinex"].map(f => <option key={f} value={f}>{f}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>{t("Файл (xlsx)")}</Label>
+            <input type="file" accept=".xlsx" onChange={e => { setFile(e.target.files?.[0] ?? null); setReport(null); setApproved(new Set()); }}
+              className="block text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-slate-200" />
+          </div>
+          <Button variant="secondary" disabled={!file} loading={run.isPending} onClick={() => run.mutate(true)}>{t("Перевірити")}</Button>
+          <Button disabled={!file || !report || report.applied || (items.length > 0 && approved.size === 0)}
+            loading={run.isPending} onClick={() => run.mutate(false)}>
+            {t("Застосувати")}{items.length ? ` (${approved.size})` : ""}
+          </Button>
+        </div>
+        {report && (
+          <div className="mt-4 space-y-2">
+            <div className="text-sm font-medium text-slate-700">
+              {report.kind === "umowy" ? t("Список умов") : t("Картотека з PESEL")} · {report.firm} · {report.inFile} {t("рядків")}
+              {report.applied ? ` · ✅ ${t("застосовано")}: ${report.appliedCount ?? report.linkedToWorkers}` : ` · ${t("превʼю (нічого не записано)")}`}
+            </div>
+            {report.conflicts?.length > 0 && (
+              <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{t("Конфлікти PESEL")}: {report.conflicts.join("; ")}</div>
+            )}
+            {report.kind === "umowy" && (
+              <div className="text-xs text-slate-500">{t("Знімок умов буде замінено")}: {report.inFile} {t("умов")} · {t("нижче — привʼязки до профілів (не схвалена = умова без привʼязки)")} · {t("без збігу")}: {report.unlinked}</div>
+            )}
+            {report.kind === "kartoteka" && (
+              <div className="text-xs text-slate-500">{t("Змін до запису")}: {items.length} · {t("не знайдені в наших профілях")}: {report.unmatchedInFile}</div>
+            )}
+            {!report.applied && items.length > 0 && (
+              <div className="max-h-80 overflow-y-auto rounded-lg border border-slate-200">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {items.map(i => (
+                      <tr key={i.key} className={`border-b border-slate-100 last:border-0 ${approved.has(i.key) ? "" : "opacity-60"} ${i.method === "fuzzy" ? "bg-amber-50/60" : ""}`}>
+                        <td className="w-8 px-2 py-1.5"><input type="checkbox" checked={approved.has(i.key)} onChange={() => toggle(i.key)} /></td>
+                        <td className="px-2 py-1.5">{descr(i)}</td>
+                        <td className="px-2 py-1.5 text-right">
+                          {i.method === "fuzzy"
+                            ? <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{t("нечіткий збіг — підтверди")}</span>
+                            : <span className="text-[10px] text-slate-400">{i.method === "exact" ? t("точний") : t("перестановка/скорочення")}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {!report.applied && items.length === 0 && (
+              <div className="text-sm text-slate-500">{t("Змін немає — все вже актуальне.")}</div>
+            )}
+          </div>
+        )}
+      </Card>
+      <Card className="p-4">
+        <h3 className="mb-2 text-sm font-semibold text-slate-700">{t("Стан даних")}</h3>
+        {status ? (
+          <div className="space-y-1 text-sm text-slate-600">
+            <div>{t("Активних працівників")}: {status.activeWorkers} · {t("з PESEL")}: <b>{status.withPesel}</b></div>
+            {Object.entries(status.firms).map(([f, s]) => (
+              <div key={f}>
+                {f}: {s.umowy ? `${s.umowy} ${t("умов")}, ${t("привʼязано")} ${s.linked}` : t("умови ще не завантажені")}
+                {s.importedAt ? ` · ${new Date(s.importedAt).toLocaleDateString()}` : ""}
+              </div>
+            ))}
+          </div>
+        ) : <Spinner />}
+      </Card>
+    </div>
   );
 }
