@@ -210,6 +210,8 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
           <tr className="text-[11px] uppercase tracking-wide text-slate-400">
             <td className="px-4 py-1.5" />
             <td className="px-2 py-1.5 text-right">{t("Пробіг, км")}</td>
+            <td className="px-2 py-1.5 text-right">{t("зл/км")}</td>
+            <td className="px-2 py-1.5 text-right">{t("л/100 км")}</td>
             <td className="px-2 py-1.5 text-right">{t("Літри")}</td>
             <td className="px-2 py-1.5 text-right">{t("Паливо")}</td>
             <td className="px-2 py-1.5 text-right">{t("Інше")}</td>
@@ -233,6 +235,8 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
                   ) : r.label}
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km != null ? r.km.toLocaleString("uk-UA") : "—"}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km && r.fuelGross ? (r.fuelGross / r.km).toFixed(2) : "—"}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.km && r.liters ? (r.liters / r.km * 100).toFixed(1) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.liters ? r.liters.toFixed(0) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.fuelGross ? zl(r.fuelGross) : "—"}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{r.goodsGross ? zl(r.goodsGross) : "—"}</td>
@@ -243,6 +247,8 @@ function VehicleTable({ rows, noReg, onDrill }: { rows: VehicleAgg[]; noReg: NoR
               <tr key={`noreg-${s.cardNumber}`} className="cursor-pointer bg-slate-50/50 hover:bg-red-50/40"
                 onClick={() => onDrill({ vehicle: "", card: s.cardNumber })} title={t("Клікни — транзакції")}>
                 <td className="px-4 py-1 pl-10 text-slate-500">{s.label}</td>
+                <td className="px-2 py-1 text-right tabular-nums text-slate-400">—</td>
+                <td className="px-2 py-1 text-right tabular-nums text-slate-400">—</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">—</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">{s.liters ? s.liters.toFixed(0) : "—"}</td>
                 <td className="px-2 py-1 text-right tabular-nums text-slate-400">{s.fuelGross ? zl(s.fuelGross) : "—"}</td>

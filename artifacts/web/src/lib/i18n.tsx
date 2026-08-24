@@ -2206,6 +2206,8 @@ const EN: Record<string, string> = {
   "По водіях": "By driver",
   "По авто": "By vehicle",
   "Пробіг, км": "Mileage, km",
+  "зл/км": "zł/km",
+  "л/100 км": "l/100 km",
   "По продуктах": "By product",
   "Непаливне (дороги, товари)": "Non-fuel (tolls, goods)",
   "По містах станцій (де заправлялись)": "By station city (where fueled)",
