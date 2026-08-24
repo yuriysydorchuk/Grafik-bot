@@ -33,6 +33,9 @@ async function buildAll() {
     // - use path traversal to read files (e.g. @google-cloud/secret-manager loads sibling .proto files)
     external: [
       "*.node",
+      // вшитий у бандл pdfjs не резолвить optional @napi-rs/canvas (DOMMatrix-поліфіл)
+      // → «DOMMatrix is not defined» на кожному PDF; з node_modules працює як є
+      "pdfjs-dist",
       "sharp",
       "better-sqlite3",
       "sqlite3",
