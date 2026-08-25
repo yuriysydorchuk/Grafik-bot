@@ -132,3 +132,41 @@ test("a rule with an IBAN pattern matches by counterparty account", opts, async 
   assert.equal(res.body.updated, 1, "IBAN pattern must match the account (spaces ignored)");
   assert.equal(await manualCatOf(row!.id), "services");
 });
+
+test("cost-invoice category: auto by seller pattern, manual override, counterparty rule", opts, async () => {
+  const { ksefInvoicesTable, companiesTable } = await import("@workspace/db");
+  const [co] = await db.insert(companiesTable).values({ name: "ES Test" }).returning({ id: companiesTable.id });
+  const mk = (n: string, seller: string) => ({
+    companyId: co!.id, kind: "purchase", ksefNumber: `KSEF-${n}`, invoiceNumber: n,
+    issueDate: "2026-08-05", sellerNip: "1112223344", sellerName: seller,
+    net: 100, vat: 23, gross: 123, revenueMonth: "2026-08",
+  });
+  const [fuel] = await db.insert(ksefInvoicesTable).values(mk("F1/26", "ORLEN S.A.")).returning({ id: ksefInvoicesTable.id });
+  const [plain] = await db.insert(ksefInvoicesTable).values(mk("F2/26", "JAKAS FIRMA")).returning({ id: ksefInvoicesTable.id });
+
+  const list1 = await request(app).get("/api/cost-invoices?month=2026-08").set("Cookie", owner);
+  assert.equal(list1.status, 200);
+  assert.ok(Array.isArray(list1.body.categories) && list1.body.categories.length > 0, "response carries the category dictionary");
+  const rowOf = (resp: any, id: number) => resp.body.rows.find((r: any) => r.origin === "ksef" && r.id === id);
+  assert.equal(rowOf(list1, fuel!.id).category, "fuel", "ORLEN seller auto-classifies as fuel");
+  assert.equal(rowOf(list1, fuel!.id).categorySource, "auto");
+  assert.equal(rowOf(list1, plain!.id).category, "other", "unknown seller falls to other");
+
+  // ручний override через PATCH цього ж модуля
+  const patched = await request(app).patch(`/api/cost-invoices/ksef/${plain!.id}`).set("Cookie", owner).set(H)
+    .send({ expenseCategory: "services" });
+  assert.equal(patched.status, 200);
+  const list2 = await request(app).get("/api/cost-invoices?month=2026-08").set("Cookie", owner);
+  assert.equal(rowOf(list2, plain!.id).category, "services");
+  assert.equal(rowOf(list2, plain!.id).categorySource, "manual");
+
+  // правило контрагента (по назві) перекриває патерни для авто-рядків
+  await db.insert(counterpartyRulesTable).values({ pattern: "ORLEN", category: "marketing" });
+  const list3 = await request(app).get("/api/cost-invoices?month=2026-08").set("Cookie", owner);
+  assert.equal(rowOf(list3, fuel!.id).category, "marketing", "rule wins over the fuel pattern");
+
+  // невалідний ключ відхиляється
+  const bad = await request(app).patch(`/api/cost-invoices/ksef/${plain!.id}`).set("Cookie", owner).set(H)
+    .send({ expenseCategory: "nope" });
+  assert.equal(bad.status, 400);
+});

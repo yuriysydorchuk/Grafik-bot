@@ -51,6 +51,17 @@ export function segmentForBuyer(buyerName: string | null): string {
   return /WSPOLNOT|GALEY|GALEJ/.test(n) ? "cleaning" : "main";
 }
 
+// B2B-постачальники бізнесу прибирання — їхні закупівлі авто-позначаються
+// видатком cleaning (розділ /cleaning → Видатки): PELIA Włodzimierz Nepelak
+// (директор по прибираннях, фактури B2B) і FloRyś (витратні матеріали).
+// Матч по NIP (надійніше) або нормалізованій назві. Рішення власника 24.08.2026.
+const CLEANING_SUPPLIER_NIPS = new Set(["9462635737"]); // PELIA Włodzimierz Nepelak
+export function isCleaningSupplier(name: string | null | undefined, nip?: string | null): boolean {
+  if (nip && CLEANING_SUPPLIER_NIPS.has(String(nip).replace(/\D/g, ""))) return true;
+  const n = normBuyer(name ?? "");
+  return /NEPELAK|FLORYS/.test(n);
+}
+
 // Привʼязка по ID фабрики: NIP покупця → канонічний підпис клієнта з довідника
 // фабрик (factories.client_nip / pnl_label). Це ПЕРШЕ джерело матчингу —
 // регекспи назв нижче лишаються фолбеком для клієнтів без фабрики в системі.
@@ -282,7 +293,8 @@ export async function syncKsef(): Promise<KsefSyncResult> {
                 clientLabel: kind === "sale"
                   ? (nipLabels.get(String(m.buyer?.identifier?.value ?? "").replace(/\D/g, "")) ?? mapBuyerToClient(m.buyer?.name ?? null))
                   : null,
-                segment: kind === "sale" ? segmentForBuyer(m.buyer?.name ?? null) : "main",
+                segment: kind === "sale" ? segmentForBuyer(m.buyer?.name ?? null)
+                  : isCleaningSupplier(m.seller?.name ?? null, m.seller?.nip ?? null) ? "cleaning" : "main",
                 invoiceHash: m.invoiceHash ?? null, correctedHash: m.hashOfCorrectedInvoice ?? null,
               }).onConflictDoUpdate({
                 target: [ksefInvoicesTable.ksefNumber, ksefInvoicesTable.kind],

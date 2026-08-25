@@ -8,6 +8,7 @@ import { db } from "@workspace/db";
 import { invoicesTable, companiesTable } from "@workspace/db";
 import { eq, isNull } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { isCleaningSupplier } from "./ksef";
 
 const INVOICE_SHEETS: { sheetId: string; company: string }[] = [
   { sheetId: process.env.INVOICES_ES_SHEET_ID || "1DNCJioxjJzNH0cUbAmzjoQJ6lHhcQcO_IoB06zmFkXU", company: "ES" },
@@ -85,18 +86,20 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
         });
       }
       // mirror the tab: the office keeps editing the sheet, so wipe & reinsert.
-      // manual_* overrides + hostel link are OUR metadata — carry them over by
-      // row identity (invoice number + amount), first unused match wins
+      // manual_* overrides + hostel link + позначка прибирання are OUR metadata —
+      // carry them over by row identity (invoice number + amount), first unused match wins
       const old = await db.select().from(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
-      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null }[]>();
+      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null; cleaning: boolean; cleaningProjectId: number | null }[]>();
       const rowKey = (e: { number: string | null; amount: number }) => `${(e.number ?? "").trim()}|${e.amount}`;
-      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city) {
+      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city || o.cleaning || o.cleaningProjectId) {
         const k = rowKey(o);
-        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city });
+        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city, cleaning: o.cleaning, cleaningProjectId: o.cleaningProjectId });
       }
       for (const e of entries) {
         const stack = overrides.get(rowKey(e as any));
         if (stack?.length) Object.assign(e, stack.shift()!);
+        // постачальники прибирання (PELIA Nepelak, FloRyś) — завжди cleaning, і після ресинку
+        if (isCleaningSupplier(e.counterparty)) e.cleaning = true;
       }
       await db.delete(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
       if (entries.length) await db.insert(invoicesTable).values(entries);

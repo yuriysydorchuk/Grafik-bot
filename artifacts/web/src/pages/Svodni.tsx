@@ -1440,11 +1440,17 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
   const ex = (r: Row, k: string) => (typeof r.extras[k] === "number" ? (r.extras[k] as number) : 0);
   const z = (n: number) => `${n.toFixed(2)} zł`;
 
-  const total = sum(r => r.doWyplaty);
+  const total = sum(r => r.doWyplaty); // сира сума — лише для рівняння «Не розписано»
+  // до видачі: мінусовий рядок «До виплати» — борг людини (переноситься в
+  // наступний місяць), реальну потребу виплат не зменшує — картки рахують
+  // лише додатні (як футер «Разом» вкладки і Razem в Excel)
+  const totalPay = sum(r => Math.max(0, r.doWyplaty ?? 0));
+  const totalMinus = r2(totalPay - total); // скільки боргів не увійшло (довідково)
   // офіс у сводних ведеться брутто, фабрики — нетто «до виплати» (для тултіпа)
-  const officePay = sum(r => isSpecial(r.factoryLabel) ? r.doWyplaty : 0);
-  const factoryPay = r2(total - officePay);
-  const konto = sum(r => r.konto ?? r.ksiegNetto);
+  const officePay = sum(r => isSpecial(r.factoryLabel) ? Math.max(0, r.doWyplaty ?? 0) : 0);
+  const factoryPay = r2(totalPay - officePay);
+  const konto = sum(r => r.konto ?? r.ksiegNetto); // сира — для «Не розписано»
+  const kontoPay = sum(r => Math.max(0, r.konto ?? r.ksiegNetto ?? 0));
   const ksiegBrutto = sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto) ? r.ksiegBrutto : 0);
   const workerTax = r2(ksiegBrutto - sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto) ? r.ksiegNetto : 0));
   const taxableBrutto = sum(r => (r.ksiegBrutto != null && r.ksiegNetto != null && r.ksiegBrutto > r.ksiegNetto + 0.01) ? r.ksiegBrutto : 0);
@@ -1501,12 +1507,14 @@ function SummaryBlock({ rows, sensitive }: { rows: Row[]; sensitive: boolean }) 
 
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-      <Item label={t("Загальна ЗП")} value={total} icon={Coins} tone="bg-slate-800 text-white"
-        formula={officePay > 0
-          ? `${t("Σ колонки «До виплати»")}: ${t("фабрики (нетто)")} ${z(factoryPay)} + ${t("офіс (брутто)")} ${z(officePay)} = ${z(total)}`
-          : `${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(total)}`} />
-      {sensitive && <Item label={t("ЗП на карту")} value={konto} icon={CreditCard} tone="bg-sky-50 text-sky-600"
-        formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(konto)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
+      <Item label={t("Загальна ЗП")} value={totalPay} icon={Coins} tone="bg-slate-800 text-white"
+        formula={(officePay > 0
+          ? `${t("Σ колонки «До виплати»")}: ${t("фабрики (нетто)")} ${z(factoryPay)} + ${t("офіс (брутто)")} ${z(officePay)} = ${z(totalPay)}`
+          : `${t("Σ колонки «До виплати» по рядках фабрики")} = ${z(totalPay)}`)
+          + (totalMinus > 0.005 ? `\n${t("Мінусові рядки (борг — переноситься в наступний місяць) у суму не входять")}: ${z(totalMinus)}` : "")} />
+      {sensitive && <Item label={t("ЗП на карту")} value={kontoPay} icon={CreditCard} tone="bg-sky-50 text-sky-600"
+        formula={`${t("Σ «Księg. netto (конто)» — офіційна частина, що йде на рахунок")} = ${z(kontoPay)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`
+          + (kontoPay - konto > 0.005 ? `\n${t("Мінусові рядки (борг — переноситься в наступний місяць) у суму не входять")}: ${z(r2(kontoPay - konto))}` : "")} />}
       {sensitive && <Item label={t("ЗП готівкою")} value={gotowkaPay} icon={Banknote} tone="bg-amber-50 text-amber-600"
         formula={`${t("Σ колонки «Готівка» (лише додатні; мінусова готівка — борг, до видачі не входить)")} = ${z(gotowkaPay)}. ${t("Лише рядки, де розклад уже заповнений у сводній.")}`} />}
       {sensitive && nierozp > 0.5 && <Item label={t("Не розписано (конто/готівка)")} value={nierozp} icon={CircleAlert} tone="bg-slate-100 text-slate-500"
@@ -1542,13 +1550,18 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
     n.has(k) ? n.delete(k) : n.add(k);
     return n;
   });
-  type Agg = { count: number; hours: number; pay: number; konto: number; gotowka: number; gotowkaPay: number; doplata: number; zaliczki: number; hostel: number; kary: number; students: number };
-  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, konto: 0, gotowka: 0, gotowkaPay: 0, doplata: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
+  // *Pay-поля — «до видачі»: лише додатні (мінусовий рядок = борг людини,
+  // переноситься в наступний місяць і суму виплат не зменшує); сирі pay/konto/
+  // gotowka лишаються для рівняння «Не розп.»
+  type Agg = { count: number; hours: number; pay: number; payPay: number; konto: number; kontoPay: number; gotowka: number; gotowkaPay: number; doplata: number; zaliczki: number; hostel: number; kary: number; students: number };
+  const zero = (): Agg => ({ count: 0, hours: 0, pay: 0, payPay: 0, konto: 0, kontoPay: 0, gotowka: 0, gotowkaPay: 0, doplata: 0, zaliczki: 0, hostel: 0, kary: 0, students: 0 });
   const add = (a: Agg, r: Row) => {
     a.count += 1;
     a.hours += r.hours ?? 0;
     a.pay += r.doWyplaty ?? 0;
+    a.payPay += Math.max(0, r.doWyplaty ?? 0);
     a.konto += r.konto ?? r.ksiegNetto ?? 0;
+    a.kontoPay += Math.max(0, r.konto ?? r.ksiegNetto ?? 0);
     a.gotowka += r.gotowka ?? 0;
     a.gotowkaPay += Math.max(0, r.gotowka ?? 0);
     a.doplata += ex(r, "doplataEs");
@@ -1576,7 +1589,8 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
         const total = zero();
         const factories = [...m.entries()].sort((a, b) => b[1].pay - a[1].pay || a[0].localeCompare(b[0]));
         for (const [, a] of factories) {
-          total.count += a.count; total.hours += a.hours; total.pay += a.pay; total.konto += a.konto;
+          total.count += a.count; total.hours += a.hours; total.pay += a.pay; total.payPay += a.payPay;
+          total.konto += a.konto; total.kontoPay += a.kontoPay;
           total.gotowka += a.gotowka; total.gotowkaPay += a.gotowkaPay; total.doplata += a.doplata; total.zaliczki += a.zaliczki;
           total.hostel += a.hostel; total.kary += a.kary; total.students += a.students;
         }
@@ -1598,8 +1612,9 @@ function TotalBreakdown({ rows, sensitive }: { rows: Row[]; sensitive: boolean }
     <>
       <td className="px-2 py-1.5 text-right tabular-nums">{a.count}</td>
       <td className="bg-sky-50/40 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.hours))}</td>
-      <td className={`border-x-2 border-red-100 bg-red-50/60 px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}>{fmt(r2(a.pay))}</td>
-      {sensitive && <td className="bg-amber-50/50 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.konto))}</td>}
+      <td className={`border-x-2 border-red-100 bg-red-50/60 px-2 py-1.5 text-right font-semibold tabular-nums ${payCls}`}
+        title={a.payPay - a.pay > 0.005 ? `${t("Мінусові рядки (борг — переноситься в наступний місяць) у суму не входять")}: ${fmt(r2(a.payPay - a.pay))} zł` : undefined}>{fmt(r2(a.payPay))}</td>
+      {sensitive && <td className="bg-amber-50/50 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.kontoPay))}</td>}
       {sensitive && <td className="bg-amber-50/50 px-2 py-1.5 text-right tabular-nums">{fmt(r2(a.gotowkaPay))}</td>}
       {sensitive && (
         <td className={`bg-amber-50/50 px-2 py-1.5 text-right tabular-nums ${nierozpTitle ? "cursor-help text-amber-600 underline decoration-dotted underline-offset-2" : "text-slate-400"}`}

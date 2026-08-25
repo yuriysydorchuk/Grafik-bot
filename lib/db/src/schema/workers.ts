@@ -877,6 +877,7 @@ export const cashCategoriesTable = pgTable("cash_categories", {
   label: text("label").notNull(),
   city: text("city"),                          // Люблін | Лодзь | Познань (для payroll-категорій)
   payroll: text("payroll"),                    // factory | office | cleaning | legacy → зарплатна категорія
+  cleaning: boolean("cleaning").notNull().default(false), // видаткова категорія бізнесу прибирання (розділ /cleaning)
   requiresDesc: boolean("requires_desc").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
 });
@@ -959,6 +960,8 @@ export const expenseCategoriesTable = pgTable("expense_categories", {
   label: text("label").notNull(),
   pattern: text("pattern"),
   sortOrder: integer("sort_order").notNull().default(0), // classification priority: first match wins
+  icon: text("icon"),                          // емодзі-значок для UI (напр. ⛽)
+  color: text("color"),                        // ключ палітри web/src/lib/colors.ts (slate|red|…)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1008,6 +1011,8 @@ export const invoicesTable = pgTable("invoices", {
   hostelId: integer("hostel_id").references(() => hostelsTable.id), // рахунок за оренду/медіа конкретного хостелу
   vehicleId: integer("vehicle_id").references(() => vehiclesTable.id), // лізингова/сервісна фактура конкретного авто (картка авто рахує виплачено/залишок)
   city: text("city"),                          // cost-center місто для P&L по містах (хостельні беруть місто хостелу)
+  cleaning: boolean("cleaning").notNull().default(false), // видаток бізнесу прибирання (розділ /cleaning)
+  cleaningProjectId: integer("cleaning_project_id").references(() => cleaningProjectsTable.id), // вспульнота (NULL = загальний видаток прибирання)
   note: text("note"),
   filePath: text("file_path"),                 // скан/фото фактури на диску (uploads/invoices/)
   createdBy: integer("created_by").references(() => adminsTable.id), // хто вніс (site/бот)
@@ -1497,6 +1502,7 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   revenueMonth: text("revenue_month").notNull(),// "YYYY-MM" — P&L month (issue − 1)
   clientLabel: text("client_label"),            // mapped P&L client name
   segment: text("segment").notNull().default("main"), // main | cleaning (wspólnoty)
+  cleaningProjectId: integer("cleaning_project_id").references(() => cleaningProjectsTable.id), // вспульнота: sale — override NIP-матчу, purchase (segment=cleaning) — атрибуція видатку
   invoiceHash: text("invoice_hash"),            // KSeF metadata hash
   correctedHash: text("corrected_hash"),        // korekta → hash of the corrected invoice
   paidDate: date("paid_date"),                  // from bank matching (by invoice number in title)
@@ -1508,6 +1514,7 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   paymentMethod: text("payment_method"),        // przelew | gotowka | NULL = авто (банк/XML)
   paymentMethodXml: text("payment_method_xml"), // метод з XML (FormaPlatnosci) — авто-фолбек
   cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий»
+  manualCategory: text("manual_category"),      // ручна категорія витрат (expense_categories.key; NULL = авто по правилах/патернах)
   xmlPath: text("xml_path"),                    // локальна копія XML (uploads/ksef-xml/)
   driveFileId: text("drive_file_id"),           // XML на Google Drive (Faktury kosztowe/sprzedażowe)
   drivePdfId: text("drive_pdf_id"),             // PDF-візуалізація поряд з XML (лінк веб-панелі веде сюди)
@@ -1674,6 +1681,49 @@ export const gratyfikantUmowyTable = pgTable("gratyfikant_umowy", {
   importedAt: timestamp("imported_at").notNull().defaultNow(),
 });
 export type GratyfikantUmowa = typeof gratyfikantUmowyTable.$inferSelect;
+
+// ── Прибирання (окремий бізнес, розділ /cleaning, cap `cleaning`) ─────────────
+// Вспульноти мешканьові (проєкти прибирання). Дохід = KSeF-продажі сегмента
+// cleaning; матч фактури до проєкту — по NIP покупця (?? ручна привʼязка
+// ksef_invoices.cleaning_project_id). Реєстр сідиться кнопкою з KSeF + ручний CRUD.
+export const cleaningProjectsTable = pgTable("cleaning_projects", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  nip: text("nip").unique(),                    // NIP вспульноти (10 цифр) — ключ авто-матчу доходу
+  active: boolean("active").notNull().default(true),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Винагродження прибирання: вільний список людей (без привʼязки до workers) по
+// місяцях. Разом = podstawa (base) + додаткові години×ставка + Σ складових
+// (доплати/відрахування з підписами, як у власника: plewienie, krew, zastępstwo,
+// komornik −300 …). konto — частина на рахунок; готівка = разом − konto (типово
+// все готівкою).
+export const cleaningPayrollsTable = pgTable("cleaning_payrolls", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(),  // YYYY-MM
+  name: text("name").notNull(),
+  base: real("base").notNull().default(0),      // podstawa — базова місячна сума (окремо від додаткових годин)
+  hours: real("hours"),                         // додаткові години
+  rate: real("rate"),
+  components: jsonb("components").notNull().default([]), // [{label, amount}] — amount може бути відʼємним (komornik)
+  total: real("total").notNull().default(0),    // підсумок; сервер перераховує при кожному записі
+  konto: real("konto").notNull().default(0),    // частина на конто; готівка = total − konto
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ЗП людини ділиться ПОРІВНУ між привʼязаними вспульнотами (P&L по проєктах);
+// без привʼязок — «нерозподілене» у P&L.
+export const cleaningPayrollProjectsTable = pgTable("cleaning_payroll_projects", {
+  id: serial("id").primaryKey(),
+  payrollId: integer("payroll_id").notNull().references(() => cleaningPayrollsTable.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => cleaningProjectsTable.id),
+}, t => [uniqueIndex("cleaning_payroll_projects_uniq").on(t.payrollId, t.projectId)]);
+
+export type CleaningProject = typeof cleaningProjectsTable.$inferSelect;
+export type CleaningPayroll = typeof cleaningPayrollsTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";

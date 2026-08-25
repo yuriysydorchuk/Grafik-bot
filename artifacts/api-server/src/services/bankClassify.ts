@@ -72,12 +72,17 @@ BUCKET.cashmove = `((${BUCKET.cash}) OR (${BUCKET.cashdep}))`;
 // within a line must ALL match; each term is a Postgres regex evaluated against
 // TXT. Single quotes are escaped on composition, so a pattern can never break
 // out of the SQL literal.
-export type ExpenseCat = { id: number; key: string; label: string; pattern: string | null; sortOrder: number };
+export type ExpenseCat = { id: number; key: string; label: string; pattern: string | null; sortOrder: number; icon: string | null; color: string | null };
 
-export function patternCondition(pattern: string): string {
+// кольори бейджів категорій — підмножина палітри web/src/lib/colors.ts (класи там літеральні)
+export const CAT_COLORS = ["slate", "gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"] as const;
+
+// `haystack` — SQL-вираз тексту, по якому матчити: типово TXT банківської
+// транзакції; фактури (/cost-invoices) передають свій (назва постачальника).
+export function patternCondition(pattern: string, haystack: string = TXT): string {
   const esc = (s: string) => s.replace(/'/g, "''");
   const ors = pattern.split("\n").map(l => l.trim()).filter(Boolean).map(line => {
-    const ands = line.split(" + ").map(t => t.trim()).filter(Boolean).map(t => `${TXT} ~ '${esc(t)}'`);
+    const ands = line.split(" + ").map(t => t.trim()).filter(Boolean).map(t => `${haystack} ~ '${esc(t)}'`);
     return ands.length > 1 ? `(${ands.join(" AND ")})` : ands[0]!;
   });
   if (ors.length === 0) return "FALSE";
@@ -86,35 +91,35 @@ export function patternCondition(pattern: string): string {
 
 // Seed list — the single source for the migration, the test harness and the labels
 // that existed before categories moved to the DB. NOT read at runtime.
-export const DEFAULT_EXPENSE_CATS: { key: string; label: string; pattern: string }[] = [
-  { key: "zus", label: "ZUS", pattern: "ZUS|ZAK.AD UB|SK.ADKA" },
-  { key: "vat", label: "Податки (VAT, US)", pattern: "SKARBOW|/SFP/|VAT-7" },
-  { key: "seizure", label: "Зайняття (komornik)", pattern: "EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\." },
-  { key: "salary", label: "Зарплати", pattern: "WYNAGRODZ|PENSJ\nRACHUNEK + UMOW" },
-  { key: "zaliczki", label: "Аванси (zaliczki)", pattern: "ZALICZK" },
+export const DEFAULT_EXPENSE_CATS: { key: string; label: string; pattern: string; icon: string; color: string }[] = [
+  { key: "zus", label: "ZUS", pattern: "ZUS|ZAK.AD UB|SK.ADKA" , icon: "🏛️", color: "indigo" },
+  { key: "vat", label: "Податки (VAT, US)", pattern: "SKARBOW|/SFP/|VAT-7" , icon: "🧾", color: "purple" },
+  { key: "seizure", label: "Зайняття (komornik)", pattern: "EGZEKUC|KOMORNIK|ZAJ.CIE|CA. Z\\." , icon: "⚖️", color: "rose" },
+  { key: "salary", label: "Зарплати", pattern: "WYNAGRODZ|PENSJ\nRACHUNEK + UMOW" , icon: "💰", color: "emerald" },
+  { key: "zaliczki", label: "Аванси (zaliczki)", pattern: "ZALICZK" , icon: "💸", color: "teal" },
   // all bank commissions in one place: transfers, deposits, cash withdrawals,
   // account/card/package maintenance, e-banking (GOonline), ELIXIR transfer fees
-  { key: "fees", label: "Комісії банку (перекази, вплати, зняття)", pattern: "PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE" },
-  { key: "fuel", label: "Паливо", pattern: "ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW" },
-  { key: "housing", label: "Житло / готелі", pattern: "BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM" },
-  { key: "car_repair", label: "Ремонт авто", pattern: "TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII" },
-  { key: "office_rent", label: "Оренда офісу", pattern: "ODROW..-PIENI|PIENI..EK" },
-  { key: "clothing", label: "Одяг", pattern: "\\yULAN\\y" },
-  { key: "multisport", label: "Мультиспорт (Benefit)", pattern: "BENEFIT" },
-  { key: "trainer", label: "Тренер (Palusiński)", pattern: "PALUSI.SKI|PALUSINSKI" },
-  { key: "leasing", label: "Лізинг / авто", pattern: "LEASING|VOLKSWAGEN|SANTANDER CONSUMER|AUDI|TOYOTA" },
-  { key: "credit", label: "Кредит", pattern: "KREDYT|SP.ATA KAPITA|SP.ATA ODSET" },
-  { key: "services", label: "Послуги (бух., юристи)", pattern: "TKM|RACHUNKOW|KANCELARIA|ADWOKA|NOTARI|ONESOFT|LUXMED|MEDYCZN" },
-  { key: "marketing", label: "Маркетинг", pattern: "FB\\.|FACEBOOK|FACEBK|GOOGLE|TIKTOK|OLX|FREELINE|META PLATFORM|OTOMOTO" },
-  { key: "permits", label: "Дозволи / уряд", pattern: "WOJEWODZKI|WOJEW.DZKI|ZEZWOLEN|OP.ATA SKARBOWA" },
-  { key: "b2b", label: "Підрядники B2B", pattern: "ANDROSHCHUK|SIMONIAN" },
+  { key: "fees", label: "Комісії банку (перекази, вплати, зняття)", pattern: "PROWIZ|PROW-PRZEL|C38|OP.ATA ZA PROWADZENIE|OP..MIES|OP.ATA MIESI|ZA OBS.UG|WEWN.TRZNE OBCI..ENIE|OP.ATA ZA PRZELEW|OP.ATA ZA RACHUNEK|GOONLINE" , icon: "🧮", color: "slate" },
+  { key: "fuel", label: "Паливо", pattern: "ORLEN|SHELL|CIRCLE K|LOTOS|MOYA|AMIC|PALIW|STACJA PALIW" , icon: "⛽", color: "orange" },
+  { key: "housing", label: "Житло / готелі", pattern: "BLUERENT|HOUSE POLAND|HOSTEL|GIMIK|BARTKOWIAK|ZALEWSKA|FSDW|NOCLEG|APART|MIESZKAN|CZYNSZ|NAJEM" , icon: "🏠", color: "sky" },
+  { key: "car_repair", label: "Ремонт авто", pattern: "TECHNO HOUSE|ANDRII BOIKO|BOIKO ANDRII" , icon: "🔧", color: "amber" },
+  { key: "office_rent", label: "Оренда офісу", pattern: "ODROW..-PIENI|PIENI..EK" , icon: "🏢", color: "blue" },
+  { key: "clothing", label: "Одяг", pattern: "\\yULAN\\y" , icon: "👕", color: "pink" },
+  { key: "multisport", label: "Мультиспорт (Benefit)", pattern: "BENEFIT" , icon: "🏋️", color: "lime" },
+  { key: "trainer", label: "Тренер (Palusiński)", pattern: "PALUSI.SKI|PALUSINSKI" , icon: "🥋", color: "green" },
+  { key: "leasing", label: "Лізинг / авто", pattern: "LEASING|VOLKSWAGEN|SANTANDER CONSUMER|AUDI|TOYOTA" , icon: "🚗", color: "violet" },
+  { key: "credit", label: "Кредит", pattern: "KREDYT|SP.ATA KAPITA|SP.ATA ODSET" , icon: "🏦", color: "red" },
+  { key: "services", label: "Послуги (бух., юристи)", pattern: "TKM|RACHUNKOW|KANCELARIA|ADWOKA|NOTARI|ONESOFT|LUXMED|MEDYCZN" , icon: "📑", color: "cyan" },
+  { key: "marketing", label: "Маркетинг", pattern: "FB\\.|FACEBOOK|FACEBK|GOOGLE|TIKTOK|OLX|FREELINE|META PLATFORM|OTOMOTO" , icon: "📣", color: "fuchsia" },
+  { key: "permits", label: "Дозволи / уряд", pattern: "WOJEWODZKI|WOJEW.DZKI|ZEZWOLEN|OP.ATA SKARBOWA" , icon: "📜", color: "yellow" },
+  { key: "b2b", label: "Підрядники B2B", pattern: "ANDROSHCHUK|SIMONIAN", icon: "🤝", color: "gray" },
   // card purchases by merchant type (cash withdrawals by card are NOT here — they're in the cash bucket)
-  { key: "taxi", label: "Таксі (Bolt, Uber)", pattern: "\\yBOLT\\y|BOLT\\.EU|\\yUBER\\y|FREENOW|ITAXI" },
-  { key: "travel", label: "Подорожі / відрядження", pattern: "AIRBNB|BOOKI|KIWI\\.COM|GOTOGATE|RAINBOW|HOTEL|GETYOURGUIDE|RYANAIR|WIZZ|\\yLOT\\y|BKG-|ESKY|INTERCITY|BILET\\.|DISCOVERCARS" },
-  { key: "shops", label: "Магазини (продукти)", pattern: "ZABKA|.ABKA|BIEDRONKA|LIDL|AUCHAN|CARREFOUR|KAUFLAND|PEPCO|ACTION|DEALZ|STOKROTKA|LEWIATAN|TRANSGOURMET" },
-  { key: "tech", label: "Техніка / електроніка", pattern: "X-KOM|MEDIA MARKT|MEDIA SATURN|EURO-NET|KOMPUTRONIK|SMARTSPOT|RTV EURO|APPLE|ALLEGRO" },
-  { key: "household", label: "Госптовари / буд", pattern: "\\yOBI\\y|BRICOMAN|CASTORAMA|LEROY|JYSK|IKEA|STALPOL|TEDI|SUPERHOBBY|DEDRA|DOMATOR|MAT[- ]?BUD|\\yPSB\\y|MR.WKA|BUDOWLAN|HURTOWNIA|MERKURY|BUDMAT" },
-  { key: "card", label: "Інші карткові", pattern: "BEZGOT|KART. DEBET" },
+  { key: "taxi", label: "Таксі (Bolt, Uber)", pattern: "\\yBOLT\\y|BOLT\\.EU|\\yUBER\\y|FREENOW|ITAXI" , icon: "🚕", color: "yellow" },
+  { key: "travel", label: "Подорожі / відрядження", pattern: "AIRBNB|BOOKI|KIWI\\.COM|GOTOGATE|RAINBOW|HOTEL|GETYOURGUIDE|RYANAIR|WIZZ|\\yLOT\\y|BKG-|ESKY|INTERCITY|BILET\\.|DISCOVERCARS" , icon: "✈️", color: "sky" },
+  { key: "shops", label: "Магазини (продукти)", pattern: "ZABKA|.ABKA|BIEDRONKA|LIDL|AUCHAN|CARREFOUR|KAUFLAND|PEPCO|ACTION|DEALZ|STOKROTKA|LEWIATAN|TRANSGOURMET" , icon: "🛒", color: "green" },
+  { key: "tech", label: "Техніка / електроніка", pattern: "X-KOM|MEDIA MARKT|MEDIA SATURN|EURO-NET|KOMPUTRONIK|SMARTSPOT|RTV EURO|APPLE|ALLEGRO" , icon: "💻", color: "indigo" },
+  { key: "household", label: "Госптовари / буд", pattern: "\\yOBI\\y|BRICOMAN|CASTORAMA|LEROY|JYSK|IKEA|STALPOL|TEDI|SUPERHOBBY|DEDRA|DOMATOR|MAT[- ]?BUD|\\yPSB\\y|MR.WKA|BUDOWLAN|HURTOWNIA|MERKURY|BUDMAT" , icon: "🧰", color: "orange" },
+  { key: "card", label: "Інші карткові", pattern: "BEZGOT|KART. DEBET" , icon: "💳", color: "gray" },
 ];
 
 // In-memory cache of the category list — this is a single-process app, so
@@ -126,7 +131,7 @@ export async function getExpenseCats(): Promise<ExpenseCat[]> {
     const { asc } = await import("drizzle-orm");
     const rows = await db.select().from(expenseCategoriesTable)
       .orderBy(asc(expenseCategoriesTable.sortOrder), asc(expenseCategoriesTable.id));
-    catsCache = rows.map(r => ({ id: r.id, key: r.key, label: r.label, pattern: r.pattern, sortOrder: r.sortOrder }));
+    catsCache = rows.map(r => ({ id: r.id, key: r.key, label: r.label, pattern: r.pattern, sortOrder: r.sortOrder, icon: r.icon, color: r.color }));
   }
   return catsCache;
 }

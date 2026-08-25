@@ -6,7 +6,10 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { get } from "./api";
 
-export interface ExpenseCat { id: number; key: string; label: string; pattern: string | null; sortOrder: number; txCount?: number }
+export interface ExpenseCat { id: number; key: string; label: string; pattern: string | null; sortOrder: number; icon: string | null; color: string | null; txCount?: number }
+
+// значки/кольори віртуальних ключів (не живуть у таблиці категорій)
+const VIRTUAL_ICONS: Record<string, string> = { other: "🗂️", owner_roman: "👤", owner_tetiana: "👤", owner_yuriy: "👤", deposit: "🏧", transfer: "🔁" };
 
 export const OWNER_OPTIONS: { value: string; label: string }[] = [
   { value: "owner_roman", label: "Особисте — Сидорчук Роман" },
@@ -25,7 +28,7 @@ export const CASH_ONLY_LABELS: Record<string, string> = {
 // ('card' = знято з карти). Ендпойнт під page-гейтом /cash — доступний кадровій.
 export interface CashCat {
   id: number; flow: "in" | "out"; key: string; label: string;
-  city: string | null; payroll: string | null; requiresDesc: boolean; sortOrder: number; usedCount?: number;
+  city: string | null; payroll: string | null; cleaning: boolean; requiresDesc: boolean; sortOrder: number; usedCount?: number;
 }
 
 export function useCashCats() {
@@ -58,10 +61,17 @@ export function useCats() {
   }, [cats]);
   // dropdown options: filterOptions — expense categories only; recatOptions — + owners'
   const filterOptions = useMemo(() => [
-    ...cats.map(c => ({ value: c.key, label: c.label })),
-    { value: "other", label: "Інше" },
+    ...cats.map(c => ({ value: c.key, label: c.label, icon: c.icon ?? undefined })),
+    { value: "other", label: "Інше", icon: VIRTUAL_ICONS.other },
   ], [cats]);
-  const recatOptions = useMemo(() => [...filterOptions, ...OWNER_OPTIONS], [filterOptions]);
+  const recatOptions = useMemo(() => [
+    ...filterOptions,
+    ...OWNER_OPTIONS.map(o => ({ ...o, icon: VIRTUAL_ICONS[o.value] })),
+  ], [filterOptions]);
   const label = (key: string) => labels[key] ?? key;
-  return { cats, otherCount: q.data?.otherCount ?? 0, labels, filterOptions, recatOptions, label };
+  // значок/колір категорії — для бейджів і опцій селектів (значок рендериться ПОЗА t())
+  const byKey = useMemo(() => new Map(cats.map(c => [c.key, c])), [cats]);
+  const icon = (key: string) => byKey.get(key)?.icon ?? VIRTUAL_ICONS[key] ?? "";
+  const color = (key: string) => byKey.get(key)?.color ?? "slate";
+  return { cats, otherCount: q.data?.otherCount ?? 0, labels, filterOptions, recatOptions, label, icon, color };
 }

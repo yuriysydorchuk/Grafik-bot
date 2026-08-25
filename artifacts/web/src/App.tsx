@@ -46,6 +46,7 @@ import Hostels from "./pages/Hostels";
 import Penalties from "./pages/Penalties";
 import Ksef from "./pages/Ksef";
 import Fuel from "./pages/Fuel";
+import Cleaning from "./pages/Cleaning";
 import Sushi from "./pages/Sushi";
 import Andros from "./pages/Andros";
 import Settings from "./pages/Settings";
@@ -143,6 +144,7 @@ export default function App() {
         <Route path="/penalties">{() => guard("/penalties", <Penalties />)}</Route>
         <Route path="/ksef">{() => guard("/ksef", <Ksef />)}</Route>
         <Route path="/fuel">{() => guard("/fuel", <Fuel />)}</Route>
+        <Route path="/cleaning">{() => guard("/cleaning", <Cleaning />)}</Route>
         <Route path="/sushi">{() => guard("/sushi", <Sushi />)}</Route>
         <Route path="/andros">{() => guard("/andros", <Andros />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>

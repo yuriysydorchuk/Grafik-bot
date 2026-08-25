@@ -7,6 +7,7 @@ import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../component
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 import { useCats, type ExpenseCat } from "../lib/financeCats";
+import { dotClass, badgeClass, STAGE_COLORS } from "../lib/colors";
 
 interface Txn {
   id: number; companyId: number | null; account: string | null; valueDate: string; bookingDate: string | null;
@@ -730,7 +731,7 @@ function Reconciliation({ year, monthNum, companyId }: { year: string; monthNum:
 // clicked, a row click opens that category's transaction list.
 function ExpenseBreakdown({ year, monthNum, companyId, selected, onSelect }: { year: string; monthNum: string; companyId: string; selected: string | null; onSelect: (k: string) => void }) {
   const t = useT();
-  const { label: catLabel } = useCats();
+  const { label: catLabel, icon: catIcon, color: catColor } = useCats();
   const params = new URLSearchParams({ year });
   if (monthNum) params.set("month", monthNum);
   if (companyId) params.set("companyId", companyId);
@@ -750,10 +751,14 @@ function ExpenseBreakdown({ year, monthNum, companyId, selected, onSelect }: { y
             return (
               <button key={c.key} onClick={() => onSelect(c.key)}
                 className={`flex w-full items-center gap-3 border-b border-slate-100 px-4 py-2 text-left text-sm transition last:border-0 ${active ? "bg-red-50" : "hover:bg-slate-50"}`}>
-                <div className={`w-64 shrink-0 truncate ${active ? "font-semibold text-red-700" : "font-medium text-slate-700"}`}>{t(catLabel(c.key))}</div>
+                <div className={`flex w-64 shrink-0 items-center gap-1.5 truncate ${active ? "font-semibold text-red-700" : "font-medium text-slate-700"}`}>
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass(catColor(c.key))}`} />
+                  <span className="w-5 shrink-0 text-center">{catIcon(c.key)}</span>
+                  <span className="truncate">{t(catLabel(c.key))}</span>
+                </div>
                 <div className="hidden flex-1 sm:block">
                   <div className="h-2 rounded-full bg-slate-100">
-                    <div className={`h-2 rounded-full ${active ? "bg-red-400" : "bg-slate-300"}`} style={{ width: `${Math.max(share, 0.5)}%` }} />
+                    <div className={`h-2 rounded-full ${active ? "bg-red-400" : dotClass(catColor(c.key))}`} style={{ width: `${Math.max(share, 0.5)}%` }} />
                   </div>
                 </div>
                 <div className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-400">{share >= 0.1 ? `${share.toFixed(1)}%` : "<0.1%"}</div>
@@ -854,7 +859,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
             <>
               <Select value={catSel} onChange={e => setCatSel(e.target.value)} className="w-44">
                 <option value="">{t("Всі категорії")}</option>
-                {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+                {filterOptions.map(o => <option key={o.value} value={o.value}>{o.icon ? `${o.icon} ` : ""}{t(o.label)}</option>)}
               </Select>
               <Select value={dir} onChange={e => setDir(e.target.value as any)} className="w-32" disabled={!!catSel}>
                 <option value="">{t("Всі напрями")}</option>
@@ -879,7 +884,7 @@ function DetailPanel({ bucket, year, monthNum, companyId, companies, query, onCl
           <span className="font-medium text-slate-700">{t("Вибрано: {n}", { n: picked.size })}</span>
           <Select value={bulkCat} onChange={e => setBulkCat(e.target.value)} className="w-56">
             <option value="">{t("— куди перенести —")}</option>
-            {recatOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+            {recatOptions.map(o => <option key={o.value} value={o.value}>{o.icon ? `${o.icon} ` : ""}{t(o.label)}</option>)}
           </Select>
           <Button loading={bulkSaving} disabled={!bulkCat} onClick={async () => {
             setBulkSaving(true);
@@ -1012,7 +1017,7 @@ function RuleRow({ rule, onChanged }: { rule: { id: number; pattern: string; cat
       <td className="py-1.5 pr-2"><Input value={pattern} onChange={e => setPattern(e.target.value)} className="w-full" /></td>
       <td className="py-1.5 pr-2">
         <Select value={category} onChange={e => setCategory(e.target.value)} className="w-44">
-          {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          {filterOptions.map(o => <option key={o.value} value={o.value}>{o.icon ? `${o.icon} ` : ""}{t(o.label)}</option>)}
         </Select>
       </td>
       <td className="whitespace-nowrap py-1.5 text-right">
@@ -1081,7 +1086,7 @@ function RulesModal({ onClose }: { onClose: () => void }) {
         <Input value={newPattern} onChange={e => setNewPattern(e.target.value)} placeholder={t("входження в назву контрагента, напр. Orange")} className="w-64 flex-1" />
         <Select value={newCat} onChange={e => setNewCat(e.target.value)} className="w-44">
           <option value="">{t("— категорія —")}</option>
-          {filterOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          {filterOptions.map(o => <option key={o.value} value={o.value}>{o.icon ? `${o.icon} ` : ""}{t(o.label)}</option>)}
         </Select>
         <Button loading={adding} disabled={newPattern.trim().length < 3 || !newCat} onClick={async () => {
           setAdding(true);
@@ -1197,14 +1202,18 @@ function CatRow({ cat, onChanged }: { cat: ExpenseCat; onChanged: () => void }) 
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(cat.label);
   const [pattern, setPattern] = useState(cat.pattern ?? "");
+  const [icon, setIcon] = useState(cat.icon ?? "");
+  const [color, setColor] = useState(cat.color ?? "slate");
   const [saving, setSaving] = useState(false);
   return (
     <div className="border-b border-slate-100 py-2 last:border-0">
       <div className="flex items-center gap-2">
         <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(v => !v)}>
-          <span className="truncate text-sm font-medium text-slate-700 hover:text-red-700">{cat.label}</span>
-          {cat.pattern ? <span className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">{t("авто")}</span>
-            : <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{t("ручна")}</span>}
+          <span className={`mr-1.5 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-sm font-medium ${badgeClass(cat.color ?? "slate")}`}>
+            {cat.icon && <span>{cat.icon}</span>}{cat.label}
+          </span>
+          {cat.pattern ? <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">{t("авто")}</span>
+            : <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">{t("ручна")}</span>}
           {cat.pattern && !editing && (
             <div className="mt-0.5 max-w-[440px] truncate font-mono text-[11px] text-slate-400" title={patternToChips(cat.pattern).join("  ·  ")}>
               {patternToChips(cat.pattern).join("  ·  ")}
@@ -1223,16 +1232,27 @@ function CatRow({ cat, onChanged }: { cat: ExpenseCat; onChanged: () => void }) 
       </div>
       {editing && (
         <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-          <div className="mb-1 text-xs font-medium text-slate-500">{t("Назва")}</div>
-          <Input value={label} onChange={e => setLabel(e.target.value)} className="mb-2 w-full" />
+          <div className="mb-2 flex items-end gap-2">
+            <label className="block w-16 shrink-0"><span className="mb-1 block text-xs font-medium text-slate-500">{t("Значок")}</span>
+              <Input value={icon} onChange={e => setIcon(e.target.value)} placeholder="⛽" className="text-center" /></label>
+            <label className="block min-w-0 flex-1"><span className="mb-1 block text-xs font-medium text-slate-500">{t("Назва")}</span>
+              <Input value={label} onChange={e => setLabel(e.target.value)} className="w-full" /></label>
+          </div>
+          <div className="mb-1 text-xs font-medium text-slate-500">{t("Колір")}</div>
+          <div className="mb-2 flex flex-wrap gap-1">
+            {STAGE_COLORS.map(c => (
+              <button key={c} onClick={() => setColor(c)} title={c}
+                className={`h-6 w-6 rounded-full ${dotClass(c)} ${color === c ? "ring-2 ring-slate-700 ring-offset-1" : "opacity-70 hover:opacity-100"}`} />
+            ))}
+          </div>
           <div className="mb-1 text-xs font-medium text-slate-500">{t("Слова для авто-віднесення")}</div>
           <PatternChips value={pattern} onChange={setPattern} />
           <div className="mt-2 flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => { setEditing(false); setLabel(cat.label); setPattern(cat.pattern ?? ""); }}>{t("Скасувати")}</Button>
+            <Button variant="secondary" onClick={() => { setEditing(false); setLabel(cat.label); setPattern(cat.pattern ?? ""); setIcon(cat.icon ?? ""); setColor(cat.color ?? "slate"); }}>{t("Скасувати")}</Button>
             <Button loading={saving} disabled={label.trim().length < 2} onClick={async () => {
               setSaving(true);
               try {
-                await patch(`/bank/categories/${cat.id}`, { label: label.trim(), pattern: pattern.trim() });
+                await patch(`/bank/categories/${cat.id}`, { label: label.trim(), pattern: pattern.trim(), icon: icon.trim(), color });
                 toast.success(t("Збережено"));
                 setEditing(false); onChanged();
               } catch (e: any) { toast.error(e?.message ?? String(e)); }
@@ -1347,7 +1367,7 @@ function TxnModal({ txn: r, companies, onClose }: { txn: Txn; companies: { id: n
           <div className="flex items-center gap-2">
             <Select value={cat} onChange={e => setCat(e.target.value)} className="flex-1">
               <option value="">{t("— автоматична —")}</option>
-              {recatOptions.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+              {recatOptions.map(o => <option key={o.value} value={o.value}>{o.icon ? `${o.icon} ` : ""}{t(o.label)}</option>)}
             </Select>
             <Button loading={saving} disabled={!forAll && (cat || null) === (r.manualCategory ?? null)} onClick={() => saveCat(cat || null)}>{t("Зберегти")}</Button>
             {r.manualCategory && <Button variant="secondary" loading={saving} onClick={() => saveCat(null)}>{t("Скинути на авто")}</Button>}

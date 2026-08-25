@@ -11,6 +11,7 @@ import { hostelsTable, hostelStaysTable, hostelDeductionsTable, hostelRoomsTable
 import { and, asc, eq, inArray, isNull, or, gte, lte, sql } from "drizzle-orm";
 import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
+import { canonCity } from "../services/svodniSync";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -124,7 +125,7 @@ router.get("/hostels/options", requireAnyCap("svodni", "viewFinance", "costInvoi
 
 const hostelPatch = (b: any, patch: Record<string, unknown>): string | null => {
   if (b.name !== undefined) { if (!String(b.name).trim()) return "name required"; patch.name = String(b.name).trim(); }
-  if (b.city !== undefined) { if (!String(b.city).trim()) return "city required"; patch.city = String(b.city).trim(); }
+  if (b.city !== undefined) { const c = canonCity(b.city); if (!c) return "city required"; patch.city = c; }
   if (b.address !== undefined) patch.address = b.address ? String(b.address).trim() : null;
   if (b.rentModel !== undefined) { if (!RENT_MODELS.has(String(b.rentModel))) return "rentModel must be whole|per_place"; patch.rentModel = String(b.rentModel); }
   for (const k of ["monthlyCost", "kaucja", "workerRate"] as const) {

@@ -16,6 +16,7 @@ import svodniRouter from "./svodni";
 import hostelsRouter from "./hostels";
 import penaltiesRouter from "./penalties";
 import ksefRouter from "./ksef";
+import cleaningRouter from "./cleaning";
 import fuelRouter from "./fuel";
 import securityRouter from "./security";
 import fleetRouter from "./fleet";
@@ -50,6 +51,7 @@ router.use(pnlRouter);
 router.use(analyticsRouter);
 router.use(payrollRouter);
 router.use(ksefRouter);
+router.use(cleaningRouter);
 router.use(fuelRouter);
 router.use(securityRouter);
 

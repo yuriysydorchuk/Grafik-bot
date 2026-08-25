@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { revenueMonthFor, mapBuyerToClient, segmentForBuyer, parseKsefXmlMeta } from "./ksef.ts";
+import { revenueMonthFor, mapBuyerToClient, segmentForBuyer, isCleaningSupplier, parseKsefXmlMeta } from "./ksef.ts";
 
 test("revenueMonthFor: фактура за попередній місяць (акруал M−1)", () => {
   assert.equal(revenueMonthFor("2026-06-08"), "2026-05");
@@ -30,6 +30,15 @@ test("segmentForBuyer: wspólnoty і Galej — прибирання, решта 
   assert.equal(segmentForBuyer("GALEY KRZYSZTOF GALEJ"), "cleaning");
   assert.equal(segmentForBuyer("AGRAM SPÓŁKA AKCYJNA"), "main");
   assert.equal(segmentForBuyer(null), "main");
+});
+
+test("isCleaningSupplier: PELIA Nepelak (по NIP і назві) та FloRyś — так, решта — ні", () => {
+  assert.equal(isCleaningSupplier("PELIA Włodzimierz Nepelak"), true);
+  assert.equal(isCleaningSupplier("будь-хто", "9462635737"), true);       // NIP головніший за назву
+  assert.equal(isCleaningSupplier("FloRyśRenata Ryś"), true);             // діакритика Ś фолдиться
+  assert.equal(isCleaningSupplier("24 Flora Polska s.c."), false);        // FLORA ≠ FLORYS
+  assert.equal(isCleaningSupplier("ORLEN S.A.", "7740001454"), false);
+  assert.equal(isCleaningSupplier(null), false);
 });
 
 test("parseKsefXmlMeta: термін оплати і форма з XML FA", () => {

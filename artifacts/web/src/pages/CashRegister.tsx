@@ -564,7 +564,7 @@ function EntryModal({ companies, entry, defaultCompany, defaultBox, boxLocked, o
 // ── Управління категоріями (додати / перейменувати / видалити) ────────────────
 // Вирівняна сітка: назва | тип ЗП | місто | опис обовʼязк. | 🗑 — колонки фіксовані,
 // щоб контроли не стрибали під назву; кнопка ✓ живе всередині поля назви.
-const CAT_GRID_OUT = "grid grid-cols-[minmax(0,1fr)_8.5rem_7rem_6.5rem_2rem] items-center gap-2";
+const CAT_GRID_OUT = "grid grid-cols-[minmax(0,1fr)_8.5rem_7rem_5.5rem_6.5rem_2rem] items-center gap-2";
 const CAT_GRID_IN = "grid grid-cols-[minmax(0,1fr)_6.5rem_2rem] items-center gap-2";
 
 function CatsModal({ onClose }: { onClose: () => void }) {
@@ -600,6 +600,7 @@ function CatSection({ flow, title, cats, onChanged }: { flow: "in" | "out"; titl
         <div>{t("Назва")}</div>
         {isOut && <div>{t("Тип ЗП")}</div>}
         {isOut && <div>{t("Місто")}</div>}
+        {isOut && <div>{t("прибирання")}</div>}
         <div>{t("опис обовʼязк.")}</div>
         <div />
       </div>
@@ -652,6 +653,13 @@ function CatRow({ cat, onChanged }: { cat: CashCat; onChanged: () => void }) {
           {["Люблін", "Лодзь", "Познань"].map(c => <option key={c} value={c}>{c}</option>)}
         </Select>
       ) : <div />)}
+      {isOut && (
+        <label className="flex items-center justify-center gap-1 text-[11px] text-slate-500"
+          title={t("готівкові видатки цієї категорії потрапляють у розділ «Прибирання» → Видатки (зарплатні категорії туди не додавай — винагородження ведуться в розділі)")}>
+          <input type="checkbox" checked={cat.cleaning} onChange={e => save({ cleaning: e.target.checked })} />
+          🧹
+        </label>
+      )}
       <label className="flex items-center justify-center gap-1 text-[11px] text-slate-500" title={t("Запис із цією категорією вимагає опис")}>
         <input type="checkbox" checked={cat.requiresDesc} onChange={e => save({ requiresDesc: e.target.checked })} />
       </label>

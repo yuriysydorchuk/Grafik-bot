@@ -9,13 +9,15 @@ import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import { db , vehiclesTable } from "@workspace/db";
-import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable } from "@workspace/db";
+import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable, cleaningProjectsTable, counterpartyRulesTable } from "@workspace/db";
 import { and, eq, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
 import { lastSyncStatus, syncKsef } from "../services/ksef";
 import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile } from "../services/invoiceArchive";
+import { getExpenseCats, patternCondition, type ExpenseCat } from "../services/bankClassify";
+import { canonCity } from "../services/svodniSync";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -42,6 +44,40 @@ const validMethod = (v: any): v is PayMethod => v === null || v === "przelew" ||
 const methodFromText = (s: string | null | undefined): PayMethod =>
   /got[óo]wk/i.test(s ?? "") ? "gotowka" : /przelew/i.test(s ?? "") ? "przelew" : null;
 
+// ── Категорія витрат фактури ───────────────────────────────────────────────────
+// Та сама система, що й у витягах: ручна (manual_category) ?? правило контрагента
+// по назві постачальника ?? авто-патерн категорії ?? 'other'. Рахується при
+// читанні — зміни патернів/правил перекласифіковують фактури самі.
+function invoiceCatCase(haystack: string, cats: ExpenseCat[], rules: { pattern: string; category: string }[]): string {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const ruleWhens = rules.map(r => `WHEN ${haystack} LIKE '%${esc(r.pattern.toUpperCase().replace(/\s+/g, " "))}%' THEN '${esc(r.category)}'`).join(" ");
+  const patWhens = cats.filter(c => c.pattern).map(c => `WHEN ${patternCondition(c.pattern!, haystack)} THEN '${esc(c.key)}'`).join(" ");
+  return `CASE WHEN manual_category IS NOT NULL THEN manual_category ${ruleWhens} ${patWhens} ELSE 'other' END`;
+}
+
+// key → {cat, manual} для набору id-шок однієї з двох таблиць
+async function invoiceCats(table: "ksef_invoices" | "invoices", ids: number[], haystack: string): Promise<Map<number, { cat: string; manual: boolean }>> {
+  const out = new Map<number, { cat: string; manual: boolean }>();
+  if (!ids.length) return out;
+  const cats = await getExpenseCats();
+  // новіше правило пріоритетніше (у витягах послідовне застосування лишає останнє)
+  const rules = await db.select().from(counterpartyRulesTable).orderBy(desc(counterpartyRulesTable.id));
+  const r: any = await db.execute(sql`
+    SELECT id, ${sql.raw(invoiceCatCase(haystack, cats, rules))} AS cat, (manual_category IS NOT NULL) AS manual
+    FROM ${sql.raw(table)} WHERE id IN (${sql.raw(ids.join(","))})`);
+  for (const row of (r?.rows ?? r) as any[]) out.set(Number(row.id), { cat: String(row.cat), manual: !!row.manual });
+  return out;
+}
+
+const KSEF_HAY = `upper(coalesce(seller_name, ''))`;
+const LOCAL_HAY = `upper(coalesce(counterparty, '') || ' ' || coalesce(note, ''))`;
+
+// валідний ключ ручної категорії фактури (owner_* тут не мають сенсу)
+async function validInvoiceCat(v: string): Promise<boolean> {
+  if (v === "other") return true;
+  return (await getExpenseCats()).some(c => c.key === v);
+}
+
 // Уніфікований рядок списку: origin визначає, звідки правити (ksef | local)
 export type CostInvoiceRow = {
   key: string; origin: "ksef" | "local"; id: number;
@@ -59,12 +95,16 @@ export type CostInvoiceRow = {
   paymentMethod: PayMethod;   // ефективний спосіб оплати (ручний ?? авто)
   paymentMethodSource: "manual" | "auto" | null;
   cashReport: boolean;        // «рапорт готівковий» — чекбокс кшєнгової
+  cleaning: boolean;          // видаток бізнесу прибирання (розділ /cleaning; KSeF — segment='cleaning')
+  cleaningProjectId: number | null; // вспульнота видатку (NULL = загальний видаток прибирання)
   overdue: boolean;           // не оплачена і термін минув
   driveFileId: string | null; // файл в архіві Google Drive (KSeF: XML)
   drivePdfId: string | null;  // PDF-візуалізація KSeF-фактури (лінк веде сюди)
   driveError: string | null;  // чому файла нема на Drive
   addedBy: string | null;     // хто вніс (скан з бота / сайт)
   addedAt: string | null;
+  category: string;           // ефективна категорія витрат (ключ expense_categories або 'other')
+  categorySource: "manual" | "auto";
 };
 
 router.get("/cost-invoices", async (req, res) => {
@@ -91,6 +131,12 @@ router.get("/cost-invoices", async (req, res) => {
     ksefByNum.get(key)!.push({ id: k.id, gross: k.gross });
   }
 
+  // ефективні категорії витрат обох джерел (ручна ?? правило ?? патерн ?? other)
+  const [kCats, lCats] = await Promise.all([
+    invoiceCats("ksef_invoices", ksefRows.map(k => k.id), KSEF_HAY),
+    invoiceCats("invoices", localRows.map(l => l.id), LOCAL_HAY),
+  ]);
+
   const rows: CostInvoiceRow[] = [];
   for (const k of ksefRows) {
     const paid = k.manualStatus ? k.manualStatus === "paid" : k.paidDate != null;
@@ -108,8 +154,11 @@ router.get("/cost-invoices", async (req, res) => {
       paidSource: k.manualStatus ? "manual" : k.paidDate ? k.paidVia ?? "bank" : null,
       note: null, hasFile: false, dupOfKsefId: null, hostelId: null, vehicleId: null, city: null,
       paymentMethod: method, paymentMethodSource: k.paymentMethod ? "manual" : method ? "auto" : null,
-      cashReport: k.cashReport, overdue: !paid && !!k.dueDate && k.dueDate < today,
+      cashReport: k.cashReport, cleaning: k.segment === "cleaning", cleaningProjectId: k.cleaningProjectId,
+      overdue: !paid && !!k.dueDate && k.dueDate < today,
       driveFileId: k.driveFileId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
+      category: kCats.get(k.id)?.cat ?? "other",
+      categorySource: kCats.get(k.id)?.manual ? "manual" : "auto",
     });
   }
   for (const l of localRows) {
@@ -129,10 +178,13 @@ router.get("/cost-invoices", async (req, res) => {
       paidSource: l.manualStatus ? "manual" : paid ? "sheet" : null,
       note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null, hostelId: l.hostelId, vehicleId: l.vehicleId, city: l.city,
       paymentMethod: method, paymentMethodSource: l.paymentMethod ? "manual" : method ? "auto" : null,
-      cashReport: l.cashReport, overdue: !paid && !!l.dueDate && l.dueDate < today,
+      cashReport: l.cashReport, cleaning: l.cleaning, cleaningProjectId: l.cleaningProjectId,
+      overdue: !paid && !!l.dueDate && l.dueDate < today,
       driveFileId: l.driveFileId, drivePdfId: null, driveError: l.driveError,
       addedBy: l.createdBy ? admins.get(l.createdBy) ?? null : null,
       addedAt: l.importedAt ? l.importedAt.toISOString() : null,
+      category: lCats.get(l.id)?.cat ?? "other",
+      categorySource: lCats.get(l.id)?.manual ? "manual" : "auto",
     });
   }
   rows.sort((a, b) => String(b.issueDate ?? "").localeCompare(String(a.issueDate ?? "")));
@@ -165,6 +217,8 @@ router.get("/cost-invoices", async (req, res) => {
       overdueGross: sum(overdue), overdueCount: overdue.length,
     },
     companies: [...companies.entries()].map(([id, name]) => ({ id, name })),
+    // словник категорій — бухгалтерія (cap costInvoices) не має доступу до /bank/categories
+    categories: (await getExpenseCats()).map(c => ({ key: c.key, label: c.label, icon: c.icon, color: c.color })),
     ksefSync: await lastSyncStatus(),
   });
 });
@@ -240,10 +294,19 @@ function parseBody(b: any): { err?: string; patch?: Record<string, unknown> } {
   return { patch };
 }
 
+// ручна категорія витрат (null/"" = повернути на авто)
+async function applyExpenseCategory(b: any, patch: Record<string, unknown>): Promise<string | null> {
+  if (b.expenseCategory === undefined) return null;
+  const v = b.expenseCategory === null || b.expenseCategory === "" ? null : String(b.expenseCategory);
+  if (v && !(await validInvoiceCat(v))) return "unknown category";
+  patch.manualCategory = v;
+  return null;
+}
+
 // привʼязка фактури до хостелу (рахунки за оренду/медіа) і cost-center міста
 // (P&L по містах) — наша метадата
 async function applyHostelId(b: any, patch: Record<string, unknown>): Promise<string | null> {
-  if (b.city !== undefined) patch.city = b.city ? String(b.city).trim() : null;
+  if (b.city !== undefined) patch.city = canonCity(b.city);
   if (b.hostelId === undefined) return null;
   const hid = b.hostelId ? Number(b.hostelId) : null;
   if (hid !== null && !Number.isFinite(hid)) return "bad hostelId";
@@ -252,6 +315,21 @@ async function applyHostelId(b: any, patch: Record<string, unknown>): Promise<st
     if (!h) return "unknown hostel";
   }
   patch.hostelId = hid;
+  return null;
+}
+
+// позначка «видаток прибирання» (розділ /cleaning) + опційна вспульнота.
+// Для local-рядків cleaning — власна колонка; для KSeF це segment='cleaning' —
+// мапиться у викликах нижче.
+async function applyCleaningProject(b: any, patch: Record<string, unknown>): Promise<string | null> {
+  if (b.cleaningProjectId === undefined) return null;
+  const pid = b.cleaningProjectId ? Number(b.cleaningProjectId) : null;
+  if (pid !== null && !Number.isFinite(pid)) return "bad cleaningProjectId";
+  if (pid) {
+    const [p] = await db.select({ id: cleaningProjectsTable.id }).from(cleaningProjectsTable).where(eq(cleaningProjectsTable.id, pid));
+    if (!p) return "unknown cleaning project";
+  }
+  patch.cleaningProjectId = pid;
   return null;
 }
 
@@ -281,6 +359,11 @@ router.post("/cost-invoices", async (req, res) => {
   const vehicleErr = await applyVehicleId(b, patch);
   if (vehicleErr) return fail(res, 400, vehicleErr);
   if (hostelErr) return fail(res, 400, hostelErr);
+  if (b.cleaning !== undefined) patch.cleaning = !!b.cleaning;
+  const cleaningErr = await applyCleaningProject(b, patch);
+  if (cleaningErr) return fail(res, 400, cleaningErr);
+  const catErr = await applyExpenseCategory(b, patch);
+  if (catErr) return fail(res, 400, catErr);
   const paid = !!b.paid;
   const paidDate = paid ? (validDate(b.paidDate) ? b.paidDate : new Date().toISOString().slice(0, 10)) : null;
   const [row] = await db.insert(invoicesTable).values({
@@ -316,6 +399,16 @@ router.patch("/cost-invoices/:id", async (req, res) => {
   const vehicleErr = await applyVehicleId(b, patch);
   if (vehicleErr) return fail(res, 400, vehicleErr);
     if (hostelErr) return fail(res, 400, hostelErr);
+  }
+  // позначка «на прибирання» + вспульнота (розділ /cleaning)
+  if (b.cleaning !== undefined) patch.cleaning = !!b.cleaning;
+  {
+    const cleaningErr = await applyCleaningProject(b, patch);
+    if (cleaningErr) return fail(res, 400, cleaningErr);
+  }
+  {
+    const catErr = await applyExpenseCategory(b, patch);
+    if (catErr) return fail(res, 400, catErr);
   }
   // спосіб оплати (переказ/готівка/назад на авто) і «рапорт готівковий» — кшєнгова
   if (b.paymentMethod !== undefined) {
@@ -369,6 +462,16 @@ router.patch("/cost-invoices/ksef/:id", async (req, res) => {
     patch.paymentMethod = b.paymentMethod;
   }
   if (b.cashReport !== undefined) patch.cashReport = !!b.cashReport;
+  // позначка «на прибирання»: для KSeF-рядка це segment (закупівля main → cleaning)
+  if (b.cleaning !== undefined) patch.segment = b.cleaning ? "cleaning" : "main";
+  {
+    const cleaningErr = await applyCleaningProject(b, patch);
+    if (cleaningErr) return fail(res, 400, cleaningErr);
+  }
+  {
+    const catErr = await applyExpenseCategory(b, patch);
+    if (catErr) return fail(res, 400, catErr);
+  }
   if (b.dueDate !== undefined) {
     if (b.dueDate !== null && !validDate(b.dueDate)) return fail(res, 400, "dueDate: YYYY-MM-DD");
     patch.dueDate = b.dueDate;

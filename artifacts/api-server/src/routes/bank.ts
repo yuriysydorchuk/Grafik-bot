@@ -9,7 +9,7 @@ import { authRequired, requireCap } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { syncBankTransactions, applyCounterpartyRules, RULE_HAYSTACK } from "../services/bankStatements";
 import {
-  BUCKET, OWNER_KEYS, MC, TXT, OPER, catCondition, catCaseExpr, patternCondition,
+  BUCKET, OWNER_KEYS, MC, TXT, OPER, catCondition, catCaseExpr, patternCondition, CAT_COLORS,
   getExpenseCats, invalidateExpenseCats, periodRange,
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
@@ -403,12 +403,17 @@ router.get("/bank/categories", async (_req, res) => {
 });
 
 const RESERVED_KEYS = new Set(["other", ...OWNER_KEYS, "deposit", "transfer", "income", "vat_refund"]);
+const VALID_COLORS = new Set<string>(CAT_COLORS);
+// \u0435\u043c\u043e\u0434\u0437\u0456-\u0437\u043d\u0430\u0447\u043e\u043a: \u043a\u043e\u0440\u043e\u0442\u043a\u0438\u0439 \u0440\u044f\u0434\u043e\u043a \u0431\u0435\u0437 \u0440\u043e\u0437\u043c\u0456\u0442\u043a\u0438
+const validIcon = (v: string) => v.length <= 8 && !/[<>&"']/.test(v);
 
 router.post("/bank/categories", async (req, res) => {
   const label = String(req.body?.label ?? "").trim();
   if (label.length < 2) return fail(res, 400, "label must be at least 2 characters");
   const pattern = String(req.body?.pattern ?? "").trim() || null;
   if (pattern) { const err = await checkPattern(pattern); if (err) return fail(res, 400, err); }
+  const icon = String(req.body?.icon ?? "").trim() || null;
+  if (icon && !validIcon(icon)) return fail(res, 400, "bad icon");
   // key: latin slug from the label when possible, otherwise a generated cat_<n>
   const slug = label.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30);
@@ -417,8 +422,12 @@ router.post("/bank/categories", async (req, res) => {
   let key = slug.length >= 2 && !taken.has(slug) ? slug : "";
   if (!key) { let n = cats.length + 1; while (taken.has(`cat_${n}`)) n++; key = `cat_${n}`; }
   const maxSort = cats.reduce((m, c) => Math.max(m, c.sortOrder), 0);
+  // \u043a\u043e\u043b\u0456\u0440: \u044f\u0432\u043d\u0438\u0439 \u0437 \u0437\u0430\u043f\u0438\u0442\u0443 \u0430\u0431\u043e \u0430\u0432\u0442\u043e-\u0440\u043e\u0442\u0430\u0446\u0456\u044f \u043f\u0430\u043b\u0456\u0442\u0440\u0438 (\u0449\u043e\u0431 \u043d\u043e\u0432\u0456 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0456\u0457 \u0432\u0456\u0434\u0440\u0456\u0437\u043d\u044f\u043b\u0438\u0441\u044c)
+  const reqColor = String(req.body?.color ?? "").trim();
+  if (reqColor && !VALID_COLORS.has(reqColor)) return fail(res, 400, "unknown color");
+  const color = reqColor || CAT_COLORS[cats.length % CAT_COLORS.length]!;
   const [row] = await db.insert(expenseCategoriesTable)
-    .values({ key, label, pattern, sortOrder: maxSort + 10 }).returning();
+    .values({ key, label, pattern, sortOrder: maxSort + 10, icon, color }).returning();
   invalidateExpenseCats();
   ok(res, row);
 });
@@ -428,7 +437,7 @@ router.patch("/bank/categories/:id", async (req, res) => {
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [cat] = await db.select().from(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, id));
   if (!cat) return fail(res, 404, "not found");
-  const patch: Partial<{ label: string; pattern: string | null; sortOrder: number }> = {};
+  const patch: Partial<{ label: string; pattern: string | null; sortOrder: number; icon: string | null; color: string | null }> = {};
   if (req.body?.label !== undefined) {
     const label = String(req.body.label).trim();
     if (label.length < 2) return fail(res, 400, "label must be at least 2 characters");
@@ -438,6 +447,16 @@ router.patch("/bank/categories/:id", async (req, res) => {
     const pattern = String(req.body.pattern ?? "").trim() || null;
     if (pattern) { const err = await checkPattern(pattern); if (err) return fail(res, 400, err); }
     patch.pattern = pattern;
+  }
+  if (req.body?.icon !== undefined) {
+    const icon = String(req.body.icon ?? "").trim() || null;
+    if (icon && !validIcon(icon)) return fail(res, 400, "bad icon");
+    patch.icon = icon;
+  }
+  if (req.body?.color !== undefined) {
+    const color = String(req.body.color ?? "").trim() || null;
+    if (color && !VALID_COLORS.has(color)) return fail(res, 400, "unknown color");
+    patch.color = color;
   }
   if (req.body?.sortOrder !== undefined) {
     const so = Number(req.body.sortOrder);

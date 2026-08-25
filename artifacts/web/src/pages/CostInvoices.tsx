@@ -9,6 +9,7 @@ import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
+import { badgeClass } from "../lib/colors";
 
 type PayMethod = "przelew" | "gotowka" | null;
 interface Row {
@@ -22,9 +23,10 @@ interface Row {
   note: string | null; hasFile: boolean; dupOfKsefId: number | null;
   hostelId: number | null; vehicleId: number | null; city: string | null;
   paymentMethod: PayMethod; paymentMethodSource: "manual" | "auto" | null;
-  cashReport: boolean; overdue: boolean;
+  cashReport: boolean; cleaning: boolean; cleaningProjectId: number | null; overdue: boolean;
   driveFileId: string | null; drivePdfId: string | null; driveError: string | null;
   addedBy: string | null; addedAt: string | null;
+  category: string; categorySource: "manual" | "auto";
 }
 interface Resp {
   month: string; rows: Row[]; cities: string[];
@@ -34,6 +36,7 @@ interface Resp {
     overdueGross: number; overdueCount: number;
   };
   companies: { id: number; name: string }[];
+  categories: { key: string; label: string; icon: string | null; color: string | null }[];
   ksefSync: { at: string; ok: boolean; companies: number; fetched: number; inserted: number; errors: string[] } | null;
 }
 
@@ -53,6 +56,7 @@ export default function CostInvoices() {
   const [companyId, setCompanyId] = useState("");
   const [status, setStatus] = useState("");   // "" | paid | unpaid
   const [source, setSource] = useState("");   // "" | ksef | manual | scan | sheet
+  const [catFilter, setCatFilter] = useState(""); // ключ категорії з розбивки-чіпсів
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
@@ -93,16 +97,34 @@ export default function CostInvoices() {
   const d = data.data;
   const invalidate = () => qc.invalidateQueries({ queryKey: ["cost-invoices"] });
 
+  const catMeta = useMemo(() => new Map((d?.categories ?? []).map(c => [c.key, c])), [d]);
+  const catLabel = (k: string) => catMeta.get(k)?.label ?? (k === "other" ? "Інше" : k);
+  const catIcon = (k: string) => catMeta.get(k)?.icon ?? (k === "other" ? "🗂️" : "");
+  const catColor = (k: string) => catMeta.get(k)?.color ?? "slate";
+
   const rows = useMemo(() => {
     let r = d?.rows ?? [];
     if (status) r = r.filter(x => (status === "paid") === x.paid);
     if (source) r = r.filter(x => x.source === source);
+    if (catFilter) r = r.filter(x => x.category === catFilter);
     if (q.trim().length >= 2) {
       const needle = q.trim().toLowerCase();
       r = r.filter(x => `${x.number} ${x.seller} ${x.sellerNip} ${x.note}`.toLowerCase().includes(needle));
     }
     return r;
-  }, [d, status, source, q]);
+  }, [d, status, source, catFilter, q]);
+
+  // розбивка місяця по категоріях (без KSeF-дублів) — чіпси-фільтри над таблицею
+  const catBreakdown = useMemo(() => {
+    const acc = new Map<string, { gross: number; n: number }>();
+    for (const r of d?.rows ?? []) {
+      if (r.dupOfKsefId) continue;
+      const cur = acc.get(r.category) ?? { gross: 0, n: 0 };
+      cur.gross += r.gross; cur.n++;
+      acc.set(r.category, cur);
+    }
+    return [...acc.entries()].sort((a, b) => b[1].gross - a[1].gross);
+  }, [d]);
 
   const patchRow = async (r: Row, body: Record<string, unknown>) => {
     try {
@@ -243,42 +265,62 @@ export default function CostInvoices() {
             <Tile icon={<FileText className="h-5 w-5 text-slate-400" />} label={t("Показано")} value={String(rows.length)} sub={t("з {n}", { n: d.rows.length })} />
           </div>
 
+          {catBreakdown.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="mr-1 text-slate-400">{t("Категорії:")}</span>
+              {catBreakdown.map(([key, v]) => (
+                <button key={key} onClick={() => setCatFilter(catFilter === key ? "" : key)}
+                  className={`rounded-full border px-2 py-0.5 tabular-nums transition ${catFilter === key ? "border-red-400 font-semibold ring-1 ring-red-300" : "border-transparent hover:brightness-95"} ${badgeClass(catColor(key))}`}>
+                  {catIcon(key) && <span className="mr-0.5">{catIcon(key)}</span>}{t(catLabel(key))} · {zl(v.gross)} <span className="opacity-60">({v.n})</span>
+                </button>
+              ))}
+              {catFilter && <button className="ml-1 text-slate-400 underline hover:text-slate-600" onClick={() => setCatFilter("")}>{t("зняти фільтр")}</button>}
+            </div>
+          )}
+
           <Card className="overflow-x-auto p-0">
             {!rows.length ? <Empty>{t("Нічого не знайдено")}</Empty> : (
-              <table className="w-full min-w-[1000px] text-sm">
+              <table className="w-full text-sm">
                 <thead><tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
-                  <th className="px-4 py-2.5">{t("Дата")}</th>
-                  <th className="px-3 py-2.5">{t("Номер")}</th>
-                  <th className="px-3 py-2.5">{t("Постачальник")}</th>
-                  {!companyId && <th className="px-3 py-2.5">{t("Фірма")}</th>}
-                  <th className="px-3 py-2.5 text-right">{t("Брутто")}</th>
-                  <th className="px-3 py-2.5">{t("Спосіб")}</th>
-                  <th className="px-3 py-2.5">{t("Термін")}</th>
-                  <th className="px-3 py-2.5">{t("Оплата")}</th>
-                  <th className="px-3 py-2.5" />
+                  <th className="px-3 py-2.5">{t("Дата")}</th>
+                  <th className="px-2 py-2.5">{t("Номер")}</th>
+                  <th className="px-2 py-2.5">{t("Постачальник")}</th>
+                  <th className="px-2 py-2.5 text-right">{t("Брутто")}</th>
+                  <th className="px-2 py-2.5">{t("Категорія")}</th>
+                  <th className="px-2 py-2.5">{t("Спосіб")}</th>
+                  <th className="px-2 py-2.5">{t("Оплата")}</th>
+                  <th className="px-2 py-2.5" />
                 </tr></thead>
                 <tbody>
                   {rows.map(r => (
                     <tr key={r.key} className={`border-b border-slate-100 hover:bg-slate-50/60 ${r.dupOfKsefId ? "opacity-50" : ""} ${!r.driveFileId ? "bg-rose-50/60" : r.overdue ? "bg-orange-50/60" : ""}`}>
-                      <td className="whitespace-nowrap px-4 py-2 text-slate-500">{r.issueDate ?? "—"}</td>
-                      <td className="px-3 py-2">
+                      <td className="whitespace-nowrap px-3 py-1.5 text-xs text-slate-500">
+                        {r.issueDate ?? "—"}
+                        {!companyId && <div className="text-[10px] text-slate-400">{r.firm ?? ""}</div>}
+                      </td>
+                      <td className="px-2 py-1.5">
                         {r.driveFileId ? (
                           <a href={`https://drive.google.com/file/d/${r.drivePdfId ?? r.driveFileId}/view`} target="_blank" rel="noreferrer"
-                            className="block max-w-[190px] truncate font-medium text-sky-700 hover:underline" title={t("відкрити фактуру на Google Drive")}>
+                            className="block max-w-[150px] truncate text-xs font-medium text-sky-700 hover:underline" title={t("відкрити фактуру на Google Drive")}>
                             {r.number ?? "—"}
                           </a>
                         ) : (
-                          <div className="max-w-[190px] truncate font-medium text-slate-700" title={r.number ?? ""}>{r.number ?? "—"}</div>
+                          <div className="max-w-[150px] truncate text-xs font-medium text-slate-700" title={r.number ?? ""}>{r.number ?? "—"}</div>
                         )}
                         <div className="mt-0.5 flex items-center gap-1">
                           <span className={`rounded px-1 py-0.5 text-[10px] font-semibold ${SOURCE_BADGE[r.source]!.cls}`}>{t(SOURCE_BADGE[r.source]!.label)}</span>
                           {!r.driveFileId && (
-                            <span className="rounded bg-rose-100 px-1 py-0.5 text-[10px] font-semibold text-rose-700"
+                            <span className="max-w-[110px] truncate rounded bg-rose-100 px-1 py-0.5 text-[10px] font-semibold text-rose-700"
                               title={r.driveError ? r.driveError : t("ще не синковано з Drive (крон 06:00 або кнопка «Синк KSeF»)")}>
                               {t("нема на Drive")}{r.driveError ? `: ${r.driveError}` : ""}
                             </span>
                           )}
                           {r.dupOfKsefId && <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700" title={t("та сама фактура вже є з KSeF — цей рядок не рахується в підсумках")}>{t("дубль KSeF")}</span>}
+                          <button onClick={() => void patchRow(r, { cleaning: !r.cleaning })}
+                            className={`rounded px-1 py-0.5 text-[10px] font-semibold ${r.cleaning ? "bg-teal-100 text-teal-700" : "bg-slate-100 text-slate-400 hover:bg-slate-200"}`}
+                            title={t("видаток бізнесу прибирання — потрапляє у розділ «Прибирання» → Видатки (вспульнота привʼязується там)")}>
+                            🧹{r.cleaning ? ` ${t("прибирання")}` : ""}
+                          </button>
                           {r.hasFile && (
                             <a href={`/api/cost-invoices/${r.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center text-[10px] text-red-600 hover:underline">
                               {t("файл")} <ExternalLink className="ml-0.5 h-3 w-3" />
@@ -291,13 +333,22 @@ export default function CostInvoices() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2">
-                        <div className="max-w-[260px] truncate text-slate-700" title={r.seller ?? ""}>{r.seller ?? "—"}</div>
-                        {r.sellerNip && <div className="text-xs tabular-nums text-slate-400">NIP {r.sellerNip}</div>}
+                      <td className="px-2 py-1.5">
+                        <div className="max-w-[200px] truncate text-xs text-slate-700" title={`${r.seller ?? ""}${r.sellerNip ? ` · NIP ${r.sellerNip}` : ""}`}>{r.seller ?? "—"}</div>
                       </td>
-                      {!companyId && <td className="px-3 py-2 text-slate-500">{r.firm ?? "—"}</td>}
-                      <td className="whitespace-nowrap px-3 py-2 text-right font-medium tabular-nums">{zl(r.gross)}</td>
-                      <td className="whitespace-nowrap px-3 py-2">
+                      <td className="whitespace-nowrap px-2 py-1.5 text-right text-xs font-medium tabular-nums">{zl(r.gross)}</td>
+                      <td className="whitespace-nowrap px-2 py-1.5">
+                        <select
+                          value={r.categorySource === "manual" ? r.category : ""}
+                          onChange={e => void patchRow(r, { expenseCategory: e.target.value || null })}
+                          className={`max-w-[150px] cursor-pointer truncate rounded border-0 bg-transparent p-0 text-xs focus:ring-0 ${r.categorySource === "manual" ? "font-medium text-sky-700" : "text-slate-500"}`}
+                          title={r.categorySource === "manual" ? t("категорію вибрано вручну") : t("категорія авто (правила/патерни) — можна змінити")}>
+                          <option value="">{catIcon(r.category) ? `${catIcon(r.category)} ` : ""}{t(catLabel(r.category))}{r.categorySource === "auto" ? ` (${t("авто")})` : ""}</option>
+                          {(d.categories ?? []).map(c => <option key={c.key} value={c.key}>{c.icon ? `${c.icon} ` : ""}{t(c.label)}</option>)}
+                          <option value="other">🗂️ {t("Інше")}</option>
+                        </select>
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5">
                         <button onClick={() => cycleMethod(r)}
                           className={`rounded px-1.5 py-0.5 text-xs font-medium ${r.paymentMethod === "gotowka" ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : r.paymentMethod === "przelew" ? "bg-sky-50 text-sky-700 hover:bg-sky-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"}`}
                           title={t("клік — змінити: переказ → готівка → авто")}>
@@ -312,17 +363,7 @@ export default function CostInvoices() {
                           </label>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-xs">
-                        {r.origin === "ksef" ? (
-                          <input type="date" value={r.dueDate ?? ""} onChange={e => void patchRow(r, { dueDate: e.target.value || null })}
-                            title={t("термін оплати (з XML фактури; можна виправити)")}
-                            className={`w-32 rounded border border-transparent bg-transparent p-0 text-xs hover:border-slate-300 ${r.overdue ? "font-semibold text-orange-600" : "text-slate-500"}`} />
-                        ) : (
-                          <span className={r.overdue ? "font-semibold text-orange-600" : "text-slate-500"}>{r.dueDate ?? "—"}</span>
-                        )}
-                        {r.overdue && <span className="ml-1 font-semibold text-orange-600">{t("прострочено")}</span>}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2">
+                      <td className="whitespace-nowrap px-2 py-1.5">
                         <button onClick={() => togglePaid(r)}
                           className={`rounded px-1.5 py-0.5 text-xs font-medium ${r.paid ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
                           title={t("клік — змінити статус оплати")}>
@@ -331,8 +372,19 @@ export default function CostInvoices() {
                         {r.paid && r.paidSource === "bank" && <span className="ml-1 text-[10px] text-slate-400">{t("витяг")}</span>}
                         {r.paid && r.paidSource === "register" && <span className="ml-1 text-[10px] text-sky-500">{t("реєстр")}</span>}
                         {r.paid && r.paidSource === "manual" && <span className="ml-1 text-[10px] text-violet-500">{t("вручну")}</span>}
+                        {/* термін оплати — рядком під статусом, редагований для KSeF */}
+                        <div className="mt-0.5 flex items-center gap-1 text-[11px]">
+                          {r.origin === "ksef" ? (
+                            <input type="date" value={r.dueDate ?? ""} onChange={e => void patchRow(r, { dueDate: e.target.value || null })}
+                              title={t("термін оплати (з XML фактури; можна виправити)")}
+                              className={`w-28 rounded border border-transparent bg-transparent p-0 text-[11px] hover:border-slate-300 ${r.overdue ? "font-semibold text-orange-600" : "text-slate-400"}`} />
+                          ) : (
+                            r.dueDate && <span className={r.overdue ? "font-semibold text-orange-600" : "text-slate-400"}>{t("до")} {r.dueDate}</span>
+                          )}
+                          {r.overdue && <span className="font-semibold text-orange-600">{t("прострочено")}</span>}
+                        </div>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-right">
+                      <td className="whitespace-nowrap px-2 py-1.5 text-right">
                         {!r.driveFileId && (
                           <button className="p-1 text-slate-300 hover:text-sky-600 disabled:animate-pulse" disabled={pushing === r.key}
                             title={t("Залити на Drive зараз (KSeF-рядку заодно підтягне термін оплати)")}
@@ -370,6 +422,7 @@ export default function CostInvoices() {
           initialFile={editing ? null : scanFile}
           companies={d?.companies ?? []}
           cities={d?.cities ?? []}
+          categories={d?.categories ?? []}
           onClose={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); }}
           onSaved={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); invalidate(); }}
         />
@@ -430,9 +483,10 @@ function Tile({ icon, label, value, sub, tone }: { icon: React.ReactNode; label:
   );
 }
 
-function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, onSaved }: {
+function InvoiceModal({ row, prefill, initialFile, companies, cities, categories, onClose, onSaved }: {
   row: Row | null; prefill?: Partial<Row> | null; initialFile?: File | null;
-  companies: { id: number; name: string }[]; cities: string[]; onClose: () => void; onSaved: () => void;
+  companies: { id: number; name: string }[]; cities: string[];
+  categories: { key: string; label: string; icon: string | null; color: string | null }[]; onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
   const src = row ?? prefill;
@@ -450,6 +504,9 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, o
     hostelId: row?.hostelId ? String(row.hostelId) : "",
     vehicleId: row?.vehicleId ? String(row.vehicleId) : "",
     city: row?.city ?? "",
+    cleaning: row?.cleaning ?? false,
+    // "" = авто-категорія (правила/патерни по постачальнику)
+    expenseCategory: row?.categorySource === "manual" ? row.category : "",
   });
   const [file, setFile] = useState<File | null>(initialFile ?? null);
   const [saving, setSaving] = useState(false);
@@ -496,6 +553,8 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, o
         hostelId: f.hostelId ? Number(f.hostelId) : null,
         vehicleId: f.vehicleId ? Number(f.vehicleId) : null,
         city: f.city.trim() || null,
+        cleaning: f.cleaning,
+        expenseCategory: f.expenseCategory || null,
       };
       const saved = row ? await patch(`/cost-invoices/${row.id}`, body) : await post("/cost-invoices", body);
       if (file) {
@@ -533,6 +592,12 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, o
           <Input type="date" value={f.dueDate} onChange={e => set("dueDate", e.target.value)} /></label>
         <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Нотатка")}</span>
           <Input value={f.note} onChange={e => set("note", e.target.value)} /></label>
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Категорія витрат")}</span>
+          <Select value={f.expenseCategory} onChange={e => set("expenseCategory", e.target.value)}>
+            <option value="">{t("— авто (правила/патерни) —")}</option>
+            {categories.map(c => <option key={c.key} value={c.key}>{c.icon ? `${c.icon} ` : ""}{t(c.label)}</option>)}
+            <option value="other">🗂️ {t("Інше")}</option>
+          </Select></label>
         {(hostels.data?.length ?? 0) > 0 && (
           <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Хостел (оренда/медіа)")}</span>
             <Select value={f.hostelId} onChange={e => set("hostelId", e.target.value)}>
@@ -556,6 +621,10 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, onClose, o
           <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={f.paid} onChange={e => set("paid", e.target.checked)} />
           {t("Оплачена")}
           {f.paid && <Input type="date" value={f.paidDate} onChange={e => set("paidDate", e.target.value)} className="w-40" />}
+        </label>
+        <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600" title={t("потрапляє у розділ «Прибирання» → Видатки")}>
+          <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={f.cleaning} onChange={e => set("cleaning", e.target.checked)} />
+          🧹 {t("Видаток бізнесу прибирання")}
         </label>
         <label className="col-span-2 block"><span className="mb-1 block text-xs text-slate-500">{t("Файл (PDF/фото), необов'язково")}</span>
           {file && <div className="mb-1 text-xs text-emerald-700">📎 {file.name} <button type="button" className="ml-1 text-slate-400 hover:text-rose-500" onClick={() => setFile(null)}>×</button></div>}

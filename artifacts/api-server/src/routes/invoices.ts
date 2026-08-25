@@ -7,6 +7,7 @@ import { db } from "@workspace/db";
 import { invoicesTable, companiesTable, hostelsTable, vehiclesTable } from "@workspace/db";
 import { and, eq, desc, asc, ilike, or, sql, type SQL } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
+import { canonCity } from "../services/svodniSync";
 import { syncInvoices } from "../services/invoices";
 import { logger } from "../lib/logger";
 
@@ -128,7 +129,7 @@ router.post("/invoices", async (req, res) => {
     paidDate: paid && paidDate && validDate(paidDate) ? paidDate : (paid ? new Date().toISOString().slice(0, 10) : null),
     hostelId: hostelId ? Number(hostelId) : null,
     vehicleId: vehicleId ? Number(vehicleId) : null,
-    city: req.body?.city ? String(req.body.city).trim() : null,
+    city: canonCity(req.body?.city),
     tabName: MANUAL, sortIdx: Math.floor(Date.now() / 1000),
   }).returning();
   ok(res, effRow(row!));
@@ -188,7 +189,7 @@ router.patch("/invoices/:id", async (req, res) => {
     patch.vehicleId = vid;
   }
   // cost-center місто (P&L по містах) — теж наша метадата
-  if (b.city !== undefined) patch.city = b.city ? String(b.city).trim() : null;
+  if (b.city !== undefined) patch.city = canonCity(b.city);
   if (isManual) {
     if (b.issueDate !== undefined) { if (!validDate(b.issueDate)) return fail(res, 400, "bad issueDate"); patch.issueDate = b.issueDate; patch.periodMonth = String(b.issueDate).slice(0, 7); }
     if (b.number !== undefined) { if (!String(b.number).trim()) return fail(res, 400, "number required"); patch.number = String(b.number).trim(); }

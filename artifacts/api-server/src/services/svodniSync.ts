@@ -577,6 +577,15 @@ export function cityOfRegion(region: string): City | null {
   return null;
 }
 
+// Канонізація вільно вписаного міста (фабрики/хостели/фактури/поділи персоналу):
+// відомі міста зводяться до кириличного канону («Lublin» → «Люблін»), щоб P&L
+// по містах не плодив дублікати; невідомі — лишаються як вписано; порожнє/"null" → null.
+export function canonCity(s: string | null | undefined): string | null {
+  const raw = String(s ?? "").trim();
+  if (!raw || raw.toLowerCase() === "null") return null;
+  return cityOfRegion(raw) ?? raw;
+}
+
 // Місто кожної фабрики (factoryId → місто) з наявних даних, без окремого поля:
 // 1) історія сводних (найсвіжіший рядок фабрики виграє);
 // 2) регіон із «Зарплат» (payroll_factory_months) — матч назви фабрики до назви

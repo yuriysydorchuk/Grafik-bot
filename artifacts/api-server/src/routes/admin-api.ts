@@ -15,7 +15,7 @@ import {
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
-import { factoryCityMap, isUnder26 } from "../services/svodniSync";
+import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
 import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
@@ -1641,7 +1641,7 @@ router.post("/factories", RW, async (req, res) => {
   if (usesScheduling !== undefined) values.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
-  if (req.body?.city !== undefined) values.city = String(req.body.city).trim() || null;
+  if (req.body?.city !== undefined) values.city = canonCity(req.body.city); // не String(null)="null"
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
@@ -1673,7 +1673,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
     if (v !== undefined) patch[k] = v === "" ? null : v;
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
-  if (req.body?.city !== undefined) patch.city = String(req.body.city).trim() || null;
+  if (req.body?.city !== undefined) patch.city = canonCity(req.body.city); // не String(null)="null"
   if (req.body?.fuelCommute !== undefined) patch.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) patch.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) patch.transportFeePerShift = parseRate(req.body.transportFeePerShift);

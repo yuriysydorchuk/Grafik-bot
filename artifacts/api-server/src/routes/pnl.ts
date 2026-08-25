@@ -13,7 +13,7 @@ import {
 import { and, eq, desc, inArray, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import { factoryCost, pnlLabelResolver, cleanName, EMPLOYER_ZUS_RATE } from "../services/payrollSummaries";
-import { cityOfRegion } from "../services/svodniSync";
+import { cityOfRegion, canonCity } from "../services/svodniSync";
 import { BUCKET, catCondition, getExpenseCats } from "../services/bankClassify";
 
 const router: IRouter = Router();
@@ -181,15 +181,19 @@ router.get("/pnl/cities", async (req, res) => {
     invoices: { total: number; rows: { id: number; number: string | null; counterparty: string | null; category: string | null; amount: number }[] };
   };
   const cities = new Map<string, CityAgg>();
-  const cityOf = (c: string) => cities.get(c) ?? cities.set(c, {
-    city: c,
-    revenue: 0, revenueClients: [],
-    cogs: 0, cogsClients: [],
-    office: { total: 0, rows: [] },
-    fuel: { total: 0, workers: 0 },
-    housing: { cost: 0, deducted: 0, net: 0, hostels: [] },
-    invoices: { total: 0, rows: [] },
-  }).get(c)!;
+  // захисна канонізація: «Lublin» зі старих/ручних записів зливається з «Люблін»
+  const cityOf = (raw: string) => {
+    const c = canonCity(raw) ?? raw;
+    return cities.get(c) ?? cities.set(c, {
+      city: c,
+      revenue: 0, revenueClients: [],
+      cogs: 0, cogsClients: [],
+      office: { total: 0, rows: [] },
+      fuel: { total: 0, workers: 0 },
+      housing: { cost: 0, deducted: 0, net: 0, hostels: [] },
+      invoices: { total: 0, rows: [] },
+    }).get(c)!;
+  };
 
   // — собівартість по містах і клієнтах (payroll_factory_months)
   const pf = await db.select().from(payrollFactoryMonthsTable).where(eq(payrollFactoryMonthsTable.periodMonth, month));
@@ -279,7 +283,7 @@ router.get("/pnl/cities", async (req, res) => {
       ))
       .groupBy(svodniRowsTable.factoryId, svodniRowsTable.city);
     for (const c of counts) {
-      const city = commuteCityById.get(c.factoryId) ?? c.city;
+      const city = canonCity(commuteCityById.get(c.factoryId) ?? c.city);
       if (!city) continue;
       fuelWorkersByCity.set(city, (fuelWorkersByCity.get(city) ?? 0) + Number(c.n));
       fuelWorkersTotal += Number(c.n);
@@ -491,7 +495,7 @@ router.put("/pnl/staff-allocations", async (req, res) => {
   if (!Array.isArray(allocations)) return fail(res, 400, "allocations must be an array");
   const clean: { city: string; pct: number }[] = [];
   for (const a of allocations) {
-    const city = String(a?.city ?? "").trim();
+    const city = canonCity(a?.city);
     const pct = Number(a?.pct);
     if (!city) return fail(res, 400, "allocation city required");
     if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return fail(res, 400, "pct must be in (0, 100]");

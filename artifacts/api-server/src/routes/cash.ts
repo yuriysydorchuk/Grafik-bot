@@ -63,7 +63,7 @@ const CITIES = ["Люблін", "Лодзь", "Познань"];
 const PAYROLLS = ["factory", "office", "cleaning"];
 
 router.post("/cash/categories", async (req, res) => {
-  const { flow, label, city, payroll, requiresDesc } = req.body ?? {};
+  const { flow, label, city, payroll, requiresDesc, cleaning } = req.body ?? {};
   if (flow !== "in" && flow !== "out") return fail(res, 400, "flow must be in|out");
   const lbl = String(label ?? "").trim();
   if (!lbl) return fail(res, 400, "label required");
@@ -75,6 +75,7 @@ router.post("/cash/categories", async (req, res) => {
   const maxSort = Math.max(0, ...cats.filter(c => c.flow === flow && c.sortOrder < 99).map(c => c.sortOrder));
   const [row] = await db.insert(cashCategoriesTable).values({
     flow, key, label: lbl, city: city || null, payroll: payroll || null,
+    cleaning: !!cleaning, // видаткова категорія бізнесу прибирання (розділ /cleaning)
     requiresDesc: !!requiresDesc, sortOrder: maxSort + 1,
   }).returning();
   invalidateCashCats();
@@ -92,6 +93,7 @@ router.patch("/cash/categories/:id", async (req, res) => {
   if (b.city !== undefined) { if (b.city && !CITIES.includes(b.city)) return fail(res, 400, "unknown city"); patch.city = b.city || null; }
   if (b.payroll !== undefined) { if (b.payroll && !PAYROLLS.includes(b.payroll)) return fail(res, 400, "bad payroll kind"); patch.payroll = b.payroll || null; }
   if (b.requiresDesc !== undefined) patch.requiresDesc = !!b.requiresDesc;
+  if (b.cleaning !== undefined) patch.cleaning = !!b.cleaning;
   if (b.sortOrder !== undefined) { const s = Number(b.sortOrder); if (!Number.isFinite(s)) return fail(res, 400, "bad sortOrder"); patch.sortOrder = s; }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(cashCategoriesTable).set(patch).where(eq(cashCategoriesTable.id, id)).returning();
