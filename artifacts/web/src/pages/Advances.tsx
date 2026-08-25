@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, X, Banknote, Landmark, Plus, Copy, ArrowLeftRight, Building2, CalendarClock, Stethoscope } from "lucide-react";
+import { Check, X, Banknote, Landmark, Plus, Copy, ArrowLeftRight, Building2, CalendarClock, Stethoscope, Download, FileSpreadsheet } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, type AdvanceRequest } from "../lib/api";
 import { Card, Spinner, Select, Empty, Badge, Modal, Button, Input, Label } from "../components/ui";
@@ -147,7 +147,12 @@ export default function Advances() {
         {r.decidedByName && <div className="text-xs text-slate-400">✍️ {r.decidedByName}</div>}
         {r.status === "rejected" && r.adminNote && <div className="mt-0.5 text-xs text-rose-600">⛔ {r.adminNote}</div>}
       </td>
-      <td className="px-4 py-2"><Badge color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status]}</Badge></td>
+      <td className="px-4 py-2">
+        <Badge color={STATUS_COLOR[r.status]}>{STATUS_LABEL[r.status]}</Badge>
+        {r.status === "paid" && r.svodniMonth && (
+          <div className="mt-0.5"><Badge color="slate">{t("сводна")} {r.svodniMonth}</Badge></div>
+        )}
+      </td>
       <td className="px-4 py-2 text-right">
         {r.status === "approved" && (
           <div className="inline-flex items-center gap-1">
@@ -165,19 +170,22 @@ export default function Advances() {
     </tr>
   );
 
-  const [tab, setTab] = useState<"adv" | "badania">("adv");
+  const [tab, setTab] = useState<"adv" | "badania" | "svodni">("adv");
+  const [gratOpen, setGratOpen] = useState(false);
+  const me = useMe();
+  const canGrat = can(me, "svodniSensitive");
   return (
     <>
       <PageHeader title={t("Аванси")} subtitle={t("Залічки: подача, групи виплат 15-го/30-го, виплата переказом чи готівкою")} />
       <div className="mb-4 flex w-fit gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
-        {([["adv", t("Залічки")], ["badania", t("Бадання до зняття")]] as const).map(([k, label]) => (
+        {([["adv", t("Залічки")], ["badania", t("Бадання до зняття")], ["svodni", t("У сводну")]] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`rounded-lg px-3 py-1.5 ${tab === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
             {label}
           </button>
         ))}
       </div>
-      {tab === "badania" ? <BadaniaTab /> : <>
+      {tab === "badania" ? <BadaniaTab /> : tab === "svodni" ? <SvodniTransferTab /> : <>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -189,6 +197,11 @@ export default function Advances() {
           <option value="rejected">{t("Відхилено")}</option>
         </Select>
         <Button onClick={() => setSubmitting(true)}><Plus className="h-4 w-4" /> {t("Подати залічку")}</Button>
+        {canGrat && (
+          <Button variant="secondary" onClick={() => setGratOpen(true)} title={t("Файл для імпорту naliczeń у Gratyfikant nexo")}>
+            <FileSpreadsheet className="h-4 w-4" /> Gratyfikant
+          </Button>
+        )}
         <div className="ml-auto flex gap-2">
           <Badge color="amber">{t("На розгляді:")} {totals.requested} zł</Badge>
           <Badge color="blue">{t("До виплати:")} {totals.approved} zł</Badge>
@@ -335,6 +348,7 @@ export default function Advances() {
 
       {moving && <MoveModal row={moving} onClose={() => setMoving(null)} onSaved={() => { setMoving(null); inv(); }} />}
       {submitting && <SubmitModal onClose={() => setSubmitting(false)} onSaved={() => { setSubmitting(false); inv(); }} />}
+      {gratOpen && <GratyfikantZaliczkiModal month={month} rows={monthRows} onClose={() => setGratOpen(false)} />}
       </>}
     </>
   );
@@ -535,8 +549,349 @@ function BadaniaTab() {
   );
 }
 
+// Ліста залічок до Gratyfikant nexo (дзеркало модалки сводних): фірма (один
+// підмiot за раз) → група 15/30 → превʼю людей з сумами й попередженнями
+// (без PESEL / умова — знімок з Налаштувань → Gratyfikant), галочки прибирають
+// непотрібних, файл — Імʼя | PESEL | Дата виплати | Сума (без заголовка).
+type GratZalPreviewRow = { rowId: number; name: string; pesel: string; factoryLabel: string | null; kwota: number; warnings: string[] };
+const GRAT_WARN: Record<string, string> = {
+  no_pesel: "без PESEL",
+  umowa_none: "немає умови",
+  umowa_expired: "умова скінчилась",
+  umowa_other_firm: "умова в іншій фірмі",
+};
+function GratyfikantZaliczkiModal({ month, rows, onClose }: {
+  month: string; rows: AdvanceRequest[]; onClose: () => void;
+}) {
+  const t = useT();
+  // кандидати — «передано до виплати» вибраного місяця; фірма = фірма працівника
+  const eligible = useMemo(() => rows.filter(r => r.status === "approved"), [rows]);
+  const [group, setGroup] = useState<"15" | "30">(() =>
+    eligible.some(r => r.payoutGroup === "15") || !eligible.some(r => r.payoutGroup === "30") ? "15" : "30");
+  const inGroup = useMemo(() => eligible.filter(r => r.payoutGroup === group), [eligible, group]);
+  const firms = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of inGroup) if (r.company) m.set(r.company, (m.get(r.company) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [inGroup]);
+  const [firm, setFirm] = useState<string>(() => firms[0]?.[0] ?? "");
+  useEffect(() => { if (firm && !firms.some(([f]) => f === firm)) setFirm(firms[0]?.[0] ?? ""); }, [firms, firm]);
+  const params = new URLSearchParams({ month, group, firm });
+  const { data: preview, isLoading } = useQuery<{
+    payDate: string; umowySnapshot: boolean; rows: GratZalPreviewRow[]; totals: { count: number; sum: number };
+  }>({
+    queryKey: ["grat-zal-preview", month, group, firm],
+    queryFn: () => get(`/advances/gratyfikant-preview?${params.toString()}`),
+    enabled: !!firm,
+  });
+  const [payDate, setPayDate] = useState("");
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    if (!preview) return;
+    setPayDate(preview.payDate);
+    // дефолт: відзначені всі без попереджень; попереджені — зняті
+    setChecked(new Set(preview.rows.filter(r => !r.warnings.length).map(r => r.rowId)));
+  }, [preview]);
+  const toggle = (id: number) => setChecked(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const selRows = (preview?.rows ?? []).filter(r => checked.has(r.rowId));
+  const selSum = r2(selRows.reduce((a, r) => a + r.kwota, 0));
+  const dl = new URLSearchParams(params);
+  dl.set("payDate", payDate);
+  dl.set("rows", selRows.map(r => r.rowId).join(","));
+  return (
+    <Modal open onClose={onClose} title={t("Ліста залічок до Gratyfikanta")}>
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Група")}</div>
+            <div className="flex gap-1.5">
+              {(["15", "30"] as const).map(g => (
+                <button key={g} onClick={() => setGroup(g)}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ${group === g ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                  {t(g === "15" ? "Виплата 15-го" : "Виплата 30-го")}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Фірма (podmiot)")}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {firms.length ? firms.map(([f, n]) => (
+                <button key={f} onClick={() => setFirm(f)}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ${firm === f ? "bg-red-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                  {f} · {n}
+                </button>
+              )) : <span className="text-sm text-slate-400">{t("у групі немає залічок «передано до виплати»")}</span>}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Дата виплати")}</div>
+            <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+              className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm focus:border-red-400 focus:outline-none" />
+          </div>
+        </div>
+        {preview && !preview.umowySnapshot && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            {t("Знімок умов ще не завантажено (Налаштування → Gratyfikant) — попередження про умови недоступні.")}
+          </p>
+        )}
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-200">
+          {isLoading ? <div className="p-4"><Spinner /></div> : (
+            <table className="w-full text-sm">
+              <tbody>
+                {(preview?.rows ?? []).map(r => (
+                  <tr key={r.rowId} className={`border-b border-slate-100 last:border-0 ${checked.has(r.rowId) ? "" : "opacity-50"}`}>
+                    <td className="w-8 px-2 py-1.5"><input type="checkbox" checked={checked.has(r.rowId)} onChange={() => toggle(r.rowId)} /></td>
+                    <td className="px-2 py-1.5">{r.name}
+                      {r.warnings.map(w => (
+                        <span key={w} className="ml-1.5 rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-600 ring-1 ring-rose-200">{t(GRAT_WARN[w] ?? w)}</span>
+                      ))}
+                    </td>
+                    <td className="px-2 py-1.5 font-mono text-xs text-slate-500">{r.pesel || "—"}</td>
+                    <td className="px-2 py-1.5 text-xs text-slate-400">{r.factoryLabel}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{r.kwota.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <span className="mr-auto text-sm text-slate-500">
+            {t("Вибрано")}: <b>{selRows.length}</b> / {preview?.rows.length ?? 0} · {t("разом")}: <b className="tabular-nums">{selSum.toFixed(2)}</b>
+          </span>
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          {selRows.length > 0 && payDate ? (
+            <a href={`/api/advances/gratyfikant?${dl.toString()}`} onClick={onClose}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">
+              <Download className="h-4 w-4" /> {t("Скачати лісту")}
+            </a>
+          ) : (
+            <span className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-400">
+              <Download className="h-4 w-4" /> {t("Скачати лісту")}
+            </span>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Вкладка «У сводну»: масове перенесення ВИПЛАЧЕНИХ залічок у колонку Zaliczka
+// сводної після звірки (from-hours залічки не заповнює). Дзеркало вкладки
+// бадань: галочки → перенести у вибраний місяць; «перенесені» — з відміною ↩.
+type SvodniPendingAdvance = {
+  id: number; workerId: number; workerName: string | null; nationality: string | null;
+  company: string | null; factory: string | null; amount: number;
+  payoutMonth: string | null; payoutGroup: string | null;
+  paidAt: string | null; paidMethod: string | null; paidTxnId: number | null;
+};
+type SvodniAppliedAdvance = {
+  id: number; workerId: number; workerName: string | null; nationality: string | null;
+  amount: number; paidAt: string | null; svodniMonth: string; svodniAppliedAt: string | null;
+};
+
+function SvodniAppliedList() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const me = useMe();
+  const canSvodni = can(me, "svodni");
+  const { data, isLoading } = useQuery<{ rows: SvodniAppliedAdvance[] }>({
+    queryKey: ["adv-svodni-applied"], queryFn: () => get("/advances/svodni-applied"),
+  });
+  const undo = useMutation({
+    mutationFn: (id: number) => post<{ month: string; subtracted: { factoryLabel: string; newValue: number | null } | null; warning: string | null }>("/svodni/undo-zaliczka", { id }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["adv-svodni-applied"] });
+      qc.invalidateQueries({ queryKey: ["adv-svodni-pending"] });
+      qc.invalidateQueries({ queryKey: ["advances"] });
+      if (d.warning) toast.warning(d.warning, { duration: 10000 });
+      else toast.success(t("Відмінено"), { description: `${d.subtracted!.factoryLabel} (${d.month}): Zaliczka → ${d.subtracted!.newValue ?? 0} zł` });
+    },
+    onError: (e: any) => toast.error(e.message, { duration: e.status === 409 ? 12000 : undefined }),
+  });
+  if (isLoading) return <Spinner />;
+  if (!data?.rows.length) return <Card><Empty>{t("Ще нічого не перенесено")}</Empty></Card>;
+  return (
+    <Card className="overflow-x-auto">
+      <table className="w-full min-w-130 text-sm">
+        <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+          <tr>
+            <th className="px-3 py-2.5">{t("Працівник")}</th>
+            <th className="px-3 py-2.5 text-right">{t("Сума")}</th>
+            <th className="px-3 py-2.5">{t("Виплачено")}</th>
+            <th className="px-3 py-2.5">{t("Перенесено")}</th>
+            <th className="px-3 py-2.5"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {data.rows.map(r => (
+            <tr key={r.id} className="hover:bg-slate-50">
+              <td className="px-3 py-2">
+                <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? "—"}</Link>
+                <NatFlag value={r.nationality} className="ml-1 cursor-default" />
+              </td>
+              <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+              <td className="px-3 py-2 tabular-nums text-slate-500">{r.paidAt ? fmtDate(r.paidAt) : "—"}</td>
+              <td className="px-3 py-2 text-slate-600">
+                {r.svodniAppliedAt ? fmtDateStr(r.svodniAppliedAt) : "—"}
+                <Badge color="green">{t("сводна")} {r.svodniMonth}</Badge>
+              </td>
+              <td className="px-3 py-2 text-right">
+                {canSvodni && (
+                  <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                    onClick={async () => { if (await confirm({ title: t("Відмінити перенесення?"), message: `${r.workerName ?? "—"} · ${r.amount} zł — ${t("сума віднімається з клітинки Zaliczka сводної")} ${r.svodniMonth}. ${t("Аванс лишиться виплаченим і повернеться в «до перенесення».")}`, danger: true, confirmText: t("Відмінити") })) undo.mutate(r.id); }}>
+                    ↩ {t("Відмінити")}
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function SvodniTransferTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const me = useMe();
+  const canSvodni = can(me, "svodni");
+  const [month, setMonth] = useState(curMonthWarsaw());
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const { data, isLoading } = useQuery<{ rows: SvodniPendingAdvance[]; total: number }>({
+    queryKey: ["adv-svodni-pending"], queryFn: () => get("/advances/svodni-pending"),
+  });
+  // типово вибрані всі виплачені — оператор знімає зайве
+  useEffect(() => { if (data) setSel(new Set(data.rows.map(r => r.id))); }, [data]);
+  const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = (data?.rows.length ?? 0) > 0 && sel.size === data!.rows.length;
+  const selSum = r2((data?.rows ?? []).filter(r => sel.has(r.id)).reduce((a, r) => a + r.amount, 0));
+  // місяці на вибір — реальні місяці сводних (перенесення цілить у наявну вкладку)
+  const { data: svodniMonths } = useQuery<{ months: string[] }>({
+    queryKey: ["svodni-months"], queryFn: () => get("/svodni/months"), enabled: canSvodni,
+  });
+  const months = useMemo(
+    () => [...new Set([curMonthWarsaw(), ...(svodniMonths?.months ?? [])])].sort().reverse(),
+    [svodniMonths]);
+  const apply = useMutation({
+    mutationFn: () => post<{ updated: number; itemsMarked: number; verified: number; verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; amount: number }[] }>(
+      "/svodni/apply-zaliczki", { month, ids: [...sel] }),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["adv-svodni-pending"] });
+      qc.invalidateQueries({ queryKey: ["adv-svodni-applied"] });
+      qc.invalidateQueries({ queryKey: ["advances"] });
+      const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("залічок перенесено")}: ${d.itemsMarked}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
+      if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
+      if (d.verifyMismatches.length) {
+        toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
+          description: d.verifyMismatches.slice(0, 6).map(v => `${v.workerName}: ${v.expected ?? 0} ≠ ${v.actual ?? 0}`).join(", "), duration: 15000,
+        });
+      }
+      if (d.unmatched.length) {
+        toast.warning(`${t("Без рядка сводної")}: ${d.unmatched.length}`, {
+          description: d.unmatched.slice(0, 6).map(u => u.workerName ?? "—").join(", ") + (d.unmatched.length > 6 ? "…" : ""), duration: 12000,
+        });
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const [view, setView] = useState<"pending" | "applied">("pending");
+  const viewSwitch = (
+    <div className="flex w-fit gap-1 rounded-lg bg-slate-100 p-0.5 text-xs font-medium">
+      {([["pending", t("До перенесення")], ["applied", t("Перенесені")]] as const).map(([k, label]) => (
+        <button key={k} onClick={() => setView(k)}
+          className={`rounded-md px-2.5 py-1 ${view === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  if (view === "applied") {
+    return (
+      <>
+        <div className="mb-3 flex flex-wrap items-center gap-3">{viewSwitch}</div>
+        <SvodniAppliedList />
+      </>
+    );
+  }
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        {viewSwitch}
+        <span className="text-sm text-slate-500">
+          <Banknote className="mr-1 inline h-4 w-4 text-red-600" />
+          {t("виплачені, ще не в сводній")}: <b>{(data?.total ?? 0).toFixed(2)} zł</b> · {data?.rows.length ?? 0}
+        </span>
+        {canSvodni && (
+          <div className="ml-auto flex items-center gap-2">
+            <Select value={month} onChange={e => setMonth(e.target.value)} className="w-36">
+              {months.map(m => <option key={m} value={m}>{m}</option>)}
+            </Select>
+            <Button loading={apply.isPending} disabled={!sel.size}
+              onClick={async () => { if (await confirm({ title: t("Перенести залічки до сводної?"), message: t("Суми вибраних ляжуть у колонку Zaliczka рядка фабрики запиту (нема — основної фабрики) за вибраний місяць, додаючись до наявних. Затверджені вкладки пропускаються."), confirmText: t("Перенести") })) apply.mutate(); }}>
+              → {allSelected ? t("Перенести всі") : `${t("Перенести вибрані")} (${sel.size})`} · {selSum.toFixed(2)} zł
+            </Button>
+          </div>
+        )}
+      </div>
+      <Card className="overflow-x-auto">
+        {isLoading ? <Spinner /> : !data?.rows.length ? <Empty>{t("Немає виплачених залічок до перенесення")}</Empty> : (
+          <table className="w-full min-w-130 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="w-8 px-3 py-2.5">
+                  <input type="checkbox" className="accent-red-600" checked={allSelected}
+                    onChange={() => setSel(allSelected ? new Set() : new Set(data.rows.map(r => r.id)))} />
+                </th>
+                <th className="px-3 py-2.5">{t("Працівник")}</th>
+                <th className="px-3 py-2.5">{t("Фабрика")}</th>
+                <th className="px-3 py-2.5 text-right">{t("Сума")}</th>
+                <th className="px-3 py-2.5">{t("Група")}</th>
+                <th className="px-3 py-2.5">{t("Виплачено")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {data.rows.map(r => (
+                <tr key={r.id} className="cursor-pointer hover:bg-slate-50" onClick={() => toggle(r.id)}>
+                  <td className="px-3 py-2"><input type="checkbox" className="accent-red-600" checked={sel.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} /></td>
+                  <td className="px-3 py-2">
+                    <Link href={`/workers/${r.workerId}`} onClick={e => e.stopPropagation()}
+                      className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? "—"}</Link>
+                    <NatFlag value={r.nationality} className="ml-1 cursor-default" />
+                    {r.company && <span className="ml-1.5 text-xs text-slate-400">{r.company}</span>}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">{r.factory ?? "—"}</td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+                  <td className="px-3 py-2 text-xs text-slate-500">
+                    {r.payoutMonth ? `${r.payoutMonth} · ${r.payoutGroup ?? "—"}` : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500">
+                    {r.paidAt ? fmtDate(r.paidAt) : "—"}
+                    {r.paidTxnId != null ? <span className="ml-1 text-emerald-600">{t("авто")}</span>
+                      : r.paidMethod === "cash" ? <span className="ml-1">💵</span>
+                      : r.paidMethod === "transfer" ? <span className="ml-1">💳</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </>
+  );
+}
+
 // Перенесення авансу в іншу групу виплат (місяць + 15/30) + зміна фабрики
-// запиту (з якої ЗП знімається залічка; from-hours кладе суму в її рядок).
+// запиту (з якої ЗП знімається залічка; перенесення в сводну цілить у її рядок).
 function MoveModal({ row, onClose, onSaved }: { row: AdvanceRequest; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const cur = row.payoutMonth ?? monthOptions()[0]!.value;

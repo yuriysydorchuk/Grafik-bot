@@ -650,7 +650,7 @@ export const hoursDisputesTable = pgTable("hours_disputes", {
 export const advanceRequestsTable = pgTable("advance_requests", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id),
-  factoryId: integer("factory_id").references(() => factoriesTable.id), // з якої фабрики просили залічку; from-hours кладе суму в рядок сводної саме цієї пари (NULL = історія → «основна» фабрика місяця)
+  factoryId: integer("factory_id").references(() => factoriesTable.id), // з якої фабрики просили залічку; перенесення в сводну (apply-zaliczki) кладе суму в рядок саме цієї пари (NULL = історія → «основна» фабрика місяця)
   amount: real("amount").notNull(),                       // requested amount (PLN)
   comment: text("comment"),                               // worker's optional note
   status: text("status").notNull().default("pending"),   // pending | approved (= передано до виплати) | rejected | paid
@@ -665,6 +665,11 @@ export const advanceRequestsTable = pgTable("advance_requests", {
   // авто-помітка «виплачено» по банківському переказу (services/advances.ts);
   // set null — MT940-імпорт заміщає api-рядки, статус авансу при цьому лишається
   paidTxnId: integer("paid_txn_id").references(() => bankTransactionsTable.id, { onDelete: "set null" }),
+  // Перенесення в сводну — масова дія ПІСЛЯ звірки виплат (дзеркало worker_badania.deducted):
+  // POST /svodni/apply-zaliczki пише суму в Zaliczka і ставить місяць+дату; from-hours
+  // залічки НЕ чіпає. NULL = виплачений аванс ще не перенесено.
+  svodniMonth: text("svodni_month"),                      // YYYY-MM сводної, куди перенесено
+  svodniAppliedAt: date("svodni_applied_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

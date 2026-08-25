@@ -60,6 +60,7 @@ export interface AdvanceRequest {
   payoutMonth: string | null; payoutGroup: "15" | "30" | null;
   paidAt: string | null; paidMethod: "transfer" | "cash" | null; paidTxnId: number | null;
   paidByName: string | null; // хто вручну позначив «виплачено» (сайт; бот-кнопка теж пише)
+  svodniMonth: string | null; // YYYY-MM сводної, куди перенесено (вкладка «У сводну»)
   createdAt: string;
 }
 export interface Company { id: number; name: string; workerCount?: number }

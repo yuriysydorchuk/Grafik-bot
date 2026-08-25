@@ -116,3 +116,55 @@ test("advance decisions require editData", opts, async () => {
   const { cookie } = await seedAdmin({ role: "viewer" });
   assert.equal((await request(app).post(`/api/advances/${id}/approve`).set("Cookie", cookie).set(H).send({})).status, 403);
 });
+
+test("gratyfikant-ліста залічок: фірма+група, вибір rows, файл; гейт svodniSensitive", opts, async () => {
+  const { companiesTable } = await import("../test/harness.ts");
+  const [firmES] = await db.insert(companiesTable).values({ name: "ES" } as any).returning();
+  const [firmESO] = await db.insert(companiesTable).values({ name: "ESO" } as any).returning();
+  const [w1] = await db.insert(workersTable).values({ fullName: "Kowalski Jan", companyId: firmES!.id, gratyfikantName: "KOWALSKI JAN", pesel: "90010112345" } as any).returning();
+  const [w2] = await db.insert(workersTable).values({ fullName: "Bez Pesela", companyId: firmES!.id } as any).returning();
+  const [w3] = await db.insert(workersTable).values({ fullName: "Chuzha Firma", companyId: firmESO!.id } as any).returning();
+  const mk = (workerId: number, amount: number, group: "15" | "30") => db.insert(advanceRequestsTable).values({
+    workerId, amount, status: "approved", payoutMonth: "2026-09", payoutGroup: group, decidedAt: new Date(),
+  } as any).returning();
+  const [a1] = await mk(w1!.id, 200, "15");
+  const [a2] = await mk(w2!.id, 300, "15");
+  await mk(w3!.id, 999, "15");     // інша фірма — поза лістою ES
+  await mk(w1!.id, 150, "30");     // інша група
+
+  const prev = await request(app).get("/api/advances/gratyfikant-preview?month=2026-09&group=15&firm=ES").set("Cookie", owner);
+  assert.equal(prev.status, 200);
+  assert.equal(prev.body.payDate, "2026-09-15");
+  assert.deepEqual(prev.body.rows.map((r: any) => r.rowId).sort(), [a1!.id, a2!.id].sort());
+  const noPesel = prev.body.rows.find((r: any) => r.rowId === a2!.id);
+  assert.ok(noPesel.warnings.includes("no_pesel"));
+  assert.equal(prev.body.rows.find((r: any) => r.rowId === a1!.id).name, "KOWALSKI JAN");
+
+  // файл: лише вибрані rows, xlsx content-type
+  const dl = await request(app).get(`/api/advances/gratyfikant?month=2026-09&group=15&firm=ES&payDate=2026-09-15&rows=${a1!.id}`).set("Cookie", owner);
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers["content-type"] ?? "", /spreadsheetml/);
+
+  // editData без svodniSensitive — 403
+  await seedRole("clerk", ["editData"], ["/advances"]);
+  const clerk = (await seedAdmin({ role: "clerk" })).cookie;
+  assert.equal((await request(app).get("/api/advances/gratyfikant-preview?month=2026-09&group=15&firm=ES").set("Cookie", clerk)).status, 403);
+});
+
+test("svodni-pending: виплачені без позначки; перенесені зникають", opts, async () => {
+  const { id, workerId } = await mkRequest();
+  await request(app).post(`/api/advances/${id}/approve`).set("Cookie", owner).set(H).send({});
+  await request(app).post(`/api/advances/${id}/paid`).set("Cookie", owner).set(H).send({ method: "cash" });
+  let pend = await request(app).get("/api/advances/svodni-pending").set("Cookie", owner);
+  assert.equal(pend.status, 200);
+  assert.deepEqual(pend.body.rows.map((r: any) => r.id), [id]);
+  assert.equal(pend.body.total, 500);
+  // позначка перенесення прибирає з черги і зʼявляється у «перенесених»
+  await db.update(advanceRequestsTable).set({ svodniMonth: "2026-08", svodniAppliedAt: "2026-08-25" } as any)
+    .where(eq(advanceRequestsTable.id, id));
+  pend = await request(app).get("/api/advances/svodni-pending").set("Cookie", owner);
+  assert.equal(pend.body.rows.length, 0);
+  const applied = await request(app).get("/api/advances/svodni-applied").set("Cookie", owner);
+  assert.deepEqual(applied.body.rows.map((r: any) => r.id), [id]);
+  void workerId;
+});

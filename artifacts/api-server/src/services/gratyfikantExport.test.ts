@@ -47,3 +47,32 @@ test("ліста: скоуп «всі фабрики» = порожній factor
 test("exportNameOf: зайві пробіли колапсують", () => {
   assert.equal(exportNameOf({ gratyfikantName: null, workerName: null, rawName: "  Nowak   Anna " }), "Nowak Anna");
 });
+
+// ── Ліста залічок (сторінка Аванси → Gratyfikant) ────────────────────────────
+import { zaliczkaRecords, groupPayDate, type ZaliczkaSourceRow } from "./gratyfikantExport.ts";
+
+const zrow = (over: Partial<ZaliczkaSourceRow> = {}): ZaliczkaSourceRow => ({
+  id: 1, workerName: "Kowalski Jan", gratyfikantName: null, pesel: "90010112345",
+  firm: "ES", factoryLabel: "SUPERDROB", amount: 200, ...over,
+});
+
+test("залічки: фільтр по фірмі, сортування фабрика→імʼя, пріоритет нексо-імені", () => {
+  const recs = zaliczkaRecords([
+    zrow({ id: 1, factoryLabel: "SUPERDROB" }),
+    zrow({ id: 2, firm: "ESO", workerName: "Chuzha Firma" }),
+    zrow({ id: 3, factoryLabel: "AGRAM", workerName: "Ihnorowane", gratyfikantName: "NOWAK ANNA", pesel: null, amount: 350.556 }),
+  ], { firm: "ES", payDate: "2026-09-15" });
+  assert.deepEqual(recs.map(r => r.rowId), [3, 1]); // AGRAM перед SUPERDROB
+  assert.equal(recs[0]!.name, "NOWAK ANNA");
+  assert.equal(recs[0]!.pesel, "");
+  assert.equal(recs[0]!.kwota, 350.56);
+  assert.equal(recs[0]!.data, "2026-09-15");
+  assert.equal(recs[1]!.name, "Kowalski Jan");
+});
+
+test("groupPayDate: день групи; лютий — останній день місяця", () => {
+  assert.equal(groupPayDate("2026-09", "15"), "2026-09-15");
+  assert.equal(groupPayDate("2026-09", "30"), "2026-09-30");
+  assert.equal(groupPayDate("2026-02", "30"), "2026-02-28");
+  assert.equal(groupPayDate("2028-02", "30"), "2028-02-29");
+});

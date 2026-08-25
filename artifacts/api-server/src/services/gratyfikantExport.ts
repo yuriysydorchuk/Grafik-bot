@@ -29,6 +29,59 @@ const normLabel = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 export const exportNameOf = (r: Pick<ListaSourceRow, "gratyfikantName" | "workerName" | "rawName">): string =>
   (r.gratyfikantName ?? r.workerName ?? r.rawName).trim().replace(/\s+/g, " ");
 
+// Ліста залічок (сторінка Аванси → Gratyfikant): аванси «передано до виплати»
+// вибраної групи 15/30 → той самий 4-колонковий файл. Сума = сума авансу,
+// фірма = фірма працівника (підмiot nexo), сортування фабрика → імʼя (pl).
+export type ZaliczkaSourceRow = {
+  id: number;
+  workerName?: string | null;
+  gratyfikantName?: string | null;
+  pesel?: string | null;
+  firm: string | null;
+  factoryLabel: string | null;
+  amount: number;
+};
+
+export function zaliczkaRecords(
+  rows: ZaliczkaSourceRow[],
+  opts: { firm: string; payDate: string },
+): ListaRecord[] {
+  const collator = new Intl.Collator("pl");
+  const nameOf = (r: ZaliczkaSourceRow) =>
+    (r.gratyfikantName ?? r.workerName ?? "").trim().replace(/\s+/g, " ");
+  return rows
+    .filter(r => (r.firm ?? "") === opts.firm)
+    .sort((a, b) => collator.compare(a.factoryLabel ?? "", b.factoryLabel ?? "") || collator.compare(nameOf(a), nameOf(b)))
+    .map(r => ({
+      rowId: r.id,
+      name: nameOf(r),
+      pesel: r.pesel ?? "",
+      data: opts.payDate,
+      kwota: Math.round(r.amount * 100) / 100,
+    }));
+}
+
+// Дефолтна дата лісти залічок = день групи виплати: «15» → 15-те місяця,
+// «30» → 30-те (лютий — останній день місяця).
+export function groupPayDate(month: string, group: "15" | "30"): string {
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y!, m!, 0).getDate();
+  const day = Math.min(Number(group), lastDay);
+  return `${month}-${String(day).padStart(2, "0")}`;
+}
+
+// Спільний генератор XLSX-лісти: БЕЗ заголовка, Arkusz1,
+// колонки Імʼя | PESEL | Дата | Сума (формат, відпрацьований з księgową).
+export async function listaXlsxBuffer(records: ListaRecord[]): Promise<Buffer> {
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Arkusz1");
+  for (const r of records) ws.addRow([r.name, r.pesel, r.data, r.kwota]);
+  ws.getColumn(1).width = 32;
+  ws.getColumn(2).width = 14;
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 // Рядки сводної місяця → записи лісти однієї фірми.
 // factoryLabels — обмеження по вкладках (нормалізовано); порожньо = всі.
 export function listaRecords(

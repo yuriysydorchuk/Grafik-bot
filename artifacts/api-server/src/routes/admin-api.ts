@@ -11,10 +11,10 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, lte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
@@ -38,6 +38,8 @@ import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
+import { zaliczkaRecords, groupPayDate, listaXlsxBuffer, type ZaliczkaSourceRow } from "../services/gratyfikantExport";
+import { umowaStatusFor } from "../services/gratyfikantImport";
 
 const router: IRouter = Router();
 
@@ -4119,6 +4121,7 @@ router.get("/advances", RW, async (_req, res) => {
       payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
       paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
       paidTxnId: advanceRequestsTable.paidTxnId, paidBy: advanceRequestsTable.paidBy,
+      svodniMonth: advanceRequestsTable.svodniMonth,
       createdAt: advanceRequestsTable.createdAt,
     })
     .from(advanceRequestsTable)
@@ -4152,6 +4155,138 @@ router.get("/advances", RW, async (_req, res) => {
       iban: bestIban.get(r.workerId)?.iban ?? null,
     };
   }));
+});
+
+// ── Ліста залічок до Gratyfikant nexo (кнопка Gratyfikant на /advances) ───────
+// Той самий 4-колонковий формат, що ліста сводної (services/gratyfikantExport):
+// Імʼя (нексо-форма) | PESEL | Дата виплати | Сума. Джерело — аванси «передано
+// до виплати» вибраної групи 15/30; одна ліста = одна фірма (підмiot nexo,
+// фірма працівника). Дата — день групи (редагована в модалці). Гейт —
+// svodniSensitive, як усі Gratyfikant-поверхні (превʼю світить PESEL).
+async function zaliczkaListaScope(req: any, res: any): Promise<{
+  month: string; group: "15" | "30"; firm: string; rows: (ZaliczkaSourceRow & { workerId: number })[];
+} | null> {
+  const month = /^\d{4}-\d{2}$/.test(String(req.query.month ?? "")) ? String(req.query.month) : null;
+  const group = ["15", "30"].includes(String(req.query.group ?? "")) ? String(req.query.group) as "15" | "30" : null;
+  const firm = String(req.query.firm ?? "").trim();
+  if (!month || !group) { fail(res, 400, "month=YYYY-MM і group=15|30 обовʼязкові"); return null; }
+  if (!firm) { fail(res, 400, "firm обовʼязкова"); return null; }
+  const raw = await db.select({
+    id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
+    amount: advanceRequestsTable.amount,
+    reqFactoryId: advanceRequestsTable.factoryId, profileFactoryId: workersTable.factoryId,
+    workerName: workersTable.fullName, gratyfikantName: workersTable.gratyfikantName,
+    pesel: workersTable.pesel, firm: companiesTable.name,
+  }).from(advanceRequestsTable)
+    .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
+    .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
+    .where(and(
+      eq(advanceRequestsTable.status, "approved"),
+      eq(advanceRequestsTable.payoutMonth, month), eq(advanceRequestsTable.payoutGroup, group),
+    ));
+  const facAll = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facNameById = new Map(facAll.map(f => [f.id, f.name]));
+  const rows = raw.map(({ reqFactoryId, profileFactoryId, ...r }) => {
+    const factoryId = reqFactoryId ?? profileFactoryId;
+    return { ...r, factoryLabel: factoryId != null ? facNameById.get(factoryId) ?? null : null };
+  });
+  return { month, group, firm, rows };
+}
+
+router.get("/advances/gratyfikant-preview", requireCap("svodniSensitive"), async (req, res) => {
+  const scope = await zaliczkaListaScope(req, res);
+  if (!scope) return;
+  const { month, group, firm, rows } = scope;
+  const records = zaliczkaRecords(rows, { firm, payDate: groupPayDate(month, group) });
+  const byId = new Map(rows.map(r => [r.id, r]));
+  // знімок умов для попереджень (як у лісті сводної); статус — по місяцю виплати
+  const workerIds = [...new Set(records.map(r => byId.get(r.rowId)!.workerId))];
+  const umowy = workerIds.length
+    ? await db.select().from(gratyfikantUmowyTable).where(inArray(gratyfikantUmowyTable.workerId, workerIds))
+    : [];
+  const byWorker = new Map<number, { firm: string; od: string | null; do: string | null }[]>();
+  for (const u of umowy) {
+    (byWorker.get(u.workerId!) ?? byWorker.set(u.workerId!, []).get(u.workerId!)!)
+      .push({ firm: u.firm, od: u.odDnia, do: u.doDnia });
+  }
+  const anyUmowy = (await db.select({ id: gratyfikantUmowyTable.id }).from(gratyfikantUmowyTable).limit(1)).length > 0;
+  const out = records.map(r => {
+    const row = byId.get(r.rowId)!;
+    const warnings: string[] = [];
+    if (!r.pesel) warnings.push("no_pesel");
+    if (anyUmowy) {
+      const st = umowaStatusFor(month, firm, byWorker.get(row.workerId) ?? []);
+      if (st !== "ok") warnings.push(`umowa_${st}`);
+    }
+    return { rowId: r.rowId, name: r.name, pesel: r.pesel, factoryLabel: row.factoryLabel, kwota: r.kwota, warnings };
+  });
+  ok(res, {
+    month, group, firm, payDate: groupPayDate(month, group), umowySnapshot: anyUmowy,
+    rows: out,
+    totals: { count: out.length, sum: Math.round(out.reduce((a, r) => a + r.kwota, 0) * 100) / 100 },
+  });
+});
+
+router.get("/advances/gratyfikant", requireCap("svodniSensitive"), async (req, res) => {
+  const scope = await zaliczkaListaScope(req, res);
+  if (!scope) return;
+  const { month, group, firm, rows } = scope;
+  const payDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.payDate ?? ""))
+    ? String(req.query.payDate) : groupPayDate(month, group);
+  const wanted = String(req.query.rows ?? "").split(",").map(s => Number(s)).filter(n => Number.isFinite(n) && n > 0);
+  let records = zaliczkaRecords(rows, { firm, payDate });
+  if (wanted.length) {
+    const set = new Set(wanted);
+    records = records.filter(r => set.has(r.rowId));
+  }
+  if (!records.length) return fail(res, 404, "немає рядків за вибором");
+  const buffer = await listaXlsxBuffer(records);
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Zaliczki ${firm} ${month} (${group}).xlsx`)}"`);
+  res.send(buffer);
+});
+
+// ── Перенесення виплачених залічок у сводну (вкладка «У сводну») ──────────────
+// Список кандидатів: виплачені аванси, ще не перенесені (svodni_month IS NULL).
+// Саме перенесення/відміна — POST /svodni/apply-zaliczki | /svodni/undo-zaliczka.
+router.get("/advances/svodni-pending", RW, async (_req, res) => {
+  const rows = await db.select({
+    id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
+    workerName: workersTable.fullName, nationality: workersTable.nationality,
+    company: companiesTable.name,
+    reqFactoryId: advanceRequestsTable.factoryId, profileFactoryId: workersTable.factoryId,
+    amount: advanceRequestsTable.amount,
+    payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
+    paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
+    paidTxnId: advanceRequestsTable.paidTxnId,
+  }).from(advanceRequestsTable)
+    .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
+    .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
+    .where(and(eq(advanceRequestsTable.status, "paid"), isNull(advanceRequestsTable.svodniMonth)))
+    .orderBy(desc(advanceRequestsTable.paidAt));
+  const facAll = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facNameById = new Map(facAll.map(f => [f.id, f.name]));
+  const out = rows.map(({ reqFactoryId, profileFactoryId, ...r }) => {
+    const factoryId = reqFactoryId ?? profileFactoryId;
+    return { ...r, factory: factoryId != null ? facNameById.get(factoryId) ?? null : null };
+  });
+  ok(res, { rows: out, total: Math.round(out.reduce((a, r) => a + r.amount, 0) * 100) / 100 });
+});
+
+// Перенесені: свіжі зверху, з місяцем сводної — для відміни (↩).
+router.get("/advances/svodni-applied", RW, async (_req, res) => {
+  const rows = await db.select({
+    id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
+    workerName: workersTable.fullName, nationality: workersTable.nationality,
+    amount: advanceRequestsTable.amount,
+    paidAt: advanceRequestsTable.paidAt,
+    svodniMonth: advanceRequestsTable.svodniMonth, svodniAppliedAt: advanceRequestsTable.svodniAppliedAt,
+  }).from(advanceRequestsTable)
+    .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
+    .where(isNotNull(advanceRequestsTable.svodniMonth))
+    .orderBy(desc(advanceRequestsTable.svodniAppliedAt), desc(advanceRequestsTable.id))
+    .limit(300);
+  ok(res, { rows });
 });
 
 // Офісна подача залічки: одразу «передано до виплати» від імені того, хто подав

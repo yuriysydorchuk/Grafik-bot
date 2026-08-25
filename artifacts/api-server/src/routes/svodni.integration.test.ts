@@ -269,7 +269,7 @@ test("«Години підтверджені → до сводної»: ряд�
   assert.equal(rows[0]!.doWyplaty, 3768);
 });
 
-test("from-hours: залічка лягає у рядок фабрики ЗАПИТУ; без привʼязки — у «основну» (найбільше годин)", opts, async () => {
+test("залічки: from-hours Zaliczka НЕ пише; масове перенесення цілить у фабрику запиту, відміна віднімає", opts, async () => {
   await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
   const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
   const [w] = await db.insert(workersTable).values({ fullName: "Dwie Fabryki", hourlyRate: 25, hourlyRateNetto: 25 }).returning();
@@ -282,21 +282,48 @@ test("from-hours: залічка лягає у рядок фабрики ЗАП�
     { workerId: w!.id, month: "2026-05", factoryId: facA!.id, hoursReported: 120 },
     { workerId: w!.id, month: "2026-05", factoryId: facB!.id, hoursReported: 40 },
   ] as any);
-  // виплачені аванси місяця: 400 просили з FAB B (factory_id), 100 — легасі без привʼязки
-  await db.insert(advanceRequestsTable).values([
-    { workerId: w!.id, factoryId: facB!.id, amount: 400, status: "paid", paidAt: new Date("2026-05-20T12:00:00Z") },
-    { workerId: w!.id, amount: 100, status: "paid", paidAt: new Date("2026-05-22T12:00:00Z") },
-  ] as any);
+  // виплачені аванси: 400 просили з FAB B (factory_id), 100 — легасі без привʼязки
+  const [advB] = await db.insert(advanceRequestsTable).values(
+    { workerId: w!.id, factoryId: facB!.id, amount: 400, status: "paid", paidAt: new Date("2026-05-20T12:00:00Z") } as any).returning();
+  const [advLegacy] = await db.insert(advanceRequestsTable).values(
+    { workerId: w!.id, amount: 100, status: "paid", paidAt: new Date("2026-05-22T12:00:00Z") } as any).returning();
 
   const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
   assert.equal(r.status, 200);
   assert.equal(r.body.created, 2);
 
-  const rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
-  const rowA = rows.find(x => x.factoryLabel === "FAB A");
-  const rowB = rows.find(x => x.factoryLabel === "FAB B");
-  assert.equal(rowB?.zaliczka, 400, "аванс із фабрикою запиту — у її рядок");
-  assert.equal(rowA?.zaliczka, 100, "легасі-аванс без привʼязки — у основну фабрику");
+  // from-hours залічки не чіпає — переносяться окремою масовою дією
+  let rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  assert.equal(rows.find(x => x.factoryLabel === "FAB A")?.zaliczka, null);
+  assert.equal(rows.find(x => x.factoryLabel === "FAB B")?.zaliczka, null);
+
+  const ap = await request(app).post("/api/svodni/apply-zaliczki").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(ap.status, 200);
+  assert.equal(ap.body.updated, 2);
+  assert.equal(ap.body.itemsMarked, 2);
+  assert.equal(ap.body.verifyMismatches.length, 0);
+
+  rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  assert.equal(rows.find(x => x.factoryLabel === "FAB B")?.zaliczka, 400, "аванс із фабрикою запиту — у її рядок");
+  assert.equal(rows.find(x => x.factoryLabel === "FAB A")?.zaliczka, 100, "легасі-аванс без привʼязки — у основну фабрику");
+
+  // аванси позначені перенесеними; повторний прогін не задвоює
+  const marked = await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.workerId, w!.id));
+  assert.ok(marked.every(a => a.svodniMonth === "2026-05"));
+  const again = await request(app).post("/api/svodni/apply-zaliczki").set("Cookie", full).set(H).send({ month: "2026-05" });
+  assert.equal(again.status, 400, "без непереннесених залічок — 400");
+
+  // відміна легасі-авансу: 100 знімається з рядка основної фабрики (A), позначка чиста
+  const undo = await request(app).post("/api/svodni/undo-zaliczka").set("Cookie", full).set(H).send({ id: advLegacy!.id });
+  assert.equal(undo.status, 200);
+  assert.equal(undo.body.subtracted.factoryLabel, "FAB A");
+  assert.equal(undo.body.subtracted.newValue, null, "100 − 100 = 0 → клітинка порожня");
+  rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  assert.equal(rows.find(x => x.factoryLabel === "FAB A")?.zaliczka, null);
+  assert.equal(rows.find(x => x.factoryLabel === "FAB B")?.zaliczka, 400, "перенесення B не зачеплене");
+  const [legacyFresh] = await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, advLegacy!.id));
+  assert.equal(legacyFresh!.svodniMonth, null);
+  void advB;
 });
 
 test("from-hours: мінусова виплата M−1 авто-переноситься в ту ж колонку M; ідемпотентно; мінус зник — борг знято", opts, async () => {

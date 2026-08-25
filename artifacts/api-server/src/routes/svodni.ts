@@ -19,7 +19,7 @@ import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
-import { listaRecords } from "../services/gratyfikantExport";
+import { listaRecords, listaXlsxBuffer } from "../services/gratyfikantExport";
 import { defaultPayDate, umowaStatusFor } from "../services/gratyfikantImport";
 
 const router: IRouter = Router();
@@ -277,7 +277,7 @@ async function pendingJournalForScope(month: string, lock: LockRow, workerIds: n
 // ── Kara до зняття по області, що розблоковується ────────────────────────────
 // Незняті штрафи за пропуски місяця сводної (+ штрафи реєстру /penalties цього
 // місяця), чий цільовий рядок (пара джерела або фолбек-основна фабрика — та
-// сама логіка, що applyKaraDeductions) лежить у розлочуваній області. Поки
+// сама логіка, що applyDeductionGroups) лежить у розлочуваній області. Поки
 // вкладка затверджена, перенесення їх пропускає — при розлоку веб показує їх
 // у ревʼю, прийняті переносяться apply-*-deductions одразу після розлоку.
 // Люди без жодного рядка місяця — окремим інфо-списком «нема з чого зняти»
@@ -2219,25 +2219,9 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }
   const eurocashUnmatched: { name: string; reason: string }[] = [];
 
-  // системні джерела відрахувань: виплачені аванси місяця → Zaliczka,
-  // зняття за хостел (вкладка «Хостели») → Hostel
-  const advances = await db.select().from(advanceRequestsTable).where(and(
-    inArray(advanceRequestsTable.workerId, workerIds), eq(advanceRequestsTable.status, "paid"),
-    sql`${advanceRequestsTable.paidAt} >= ${monthStart}`, sql`${advanceRequestsTable.paidAt} < ${monthEnd}`,
-  ));
-  // Аванс із фабрикою запиту (factory_id) лягає в рядок САМЕ цієї пари — якщо
-  // в місяці є її години; інакше (і для історії без привʼязки) — фолбек у рядок
-  // «основної» фабрики (найбільше годин). Чужі рядки не чіпаємо (ручні правки).
-  const advByPair = new Map<string, number>();   // key2(worker, factory) → сума
-  const advByWorker = new Map<number, number>(); // фолбек: у main-пару
-  for (const a of advances) {
-    if (a.factoryId != null && hoursByPair.has(key2(a.workerId, a.factoryId))) {
-      const k = key2(a.workerId, a.factoryId);
-      advByPair.set(k, (advByPair.get(k) ?? 0) + a.amount);
-    } else {
-      advByWorker.set(a.workerId, (advByWorker.get(a.workerId) ?? 0) + a.amount);
-    }
-  }
+  // системне джерело відрахувань: зняття за хостел (вкладка «Хостели») → Hostel.
+  // Залічки from-hours НЕ заповнює: виплачені аванси переносяться масовою дією
+  // «У сводну» на сторінці Аванси (POST /svodni/apply-zaliczki, після звірки виплат).
   const hostels = await db.select().from(hostelDeductionsTable).where(and(
     eq(hostelDeductionsTable.periodMonth, month), inArray(hostelDeductionsTable.workerId, workerIds),
   ));
@@ -2255,12 +2239,6 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     }
   }
   const isMainPair = (p: { workerId: number; factoryId: number | null }) => mainFactoryOf.get(p.workerId) === p.factoryId;
-  // залічка пари: привʼязані до цієї фабрики аванси + (для main-пари) фолбек-суми
-  const zalForPair = (p: { workerId: number; factoryId: number | null }): number | undefined => {
-    const direct = advByPair.get(key2(p.workerId, p.factoryId));
-    const main = isMainPair(p) ? advByWorker.get(p.workerId) : undefined;
-    return direct == null && main == null ? undefined : (direct ?? 0) + (main ?? 0);
-  };
 
   const existing = await db.select().from(svodniRowsTable)
     .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
@@ -2419,11 +2397,10 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
             brutto: s.rateBrutto != null ? r2(h * s.rateBrutto) : null,
           }).where(eq(svodniRowsTable.id, s.id));
         }
-        const zalS = zalForPair(pair);
         const hosS = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
         // борг M−1 — місячний ввід на батькові (перерозкладе сегментний двигун)
         const segCols: Record<string, number | null> = {
-          zaliczka: zalS != null ? r2(zalS) : prev.zaliczka,
+          zaliczka: prev.zaliczka,
           zaliczkaBd: prev.zaliczkaBd,
           hostel: hosS != null ? r2(hosS) : prev.hostel,
           odziez: prev.odziez, dojazd: prev.dojazd, kara: prev.kara,
@@ -2431,7 +2408,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         };
         const segExtras = { ...(prev.extras as Record<string, unknown>) };
         applyDebtCols(segCols, segExtras, debtSrc?.carry ?? null,
-          new Set([...(zalS != null ? ["zaliczka"] : []), ...(hosS != null ? ["hostel"] : [])]));
+          new Set(hosS != null ? ["hostel"] : []));
         await db.update(svodniRowsTable).set({
           ...segCols, extras: segExtras,
           ...(fac?.multiFirm ? { firm: rowFirm } : {}),
@@ -2441,12 +2418,11 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
         updated++;
         continue;
       }
-      // повторне підтвердження: оновлюємо години + системні відрахування
-      // (аванси/хостели — їх джерело тепер система), перераховуємо формули;
-      // інші ручні правки (кари, odzież…) не затираються.
+      // повторне підтвердження: оновлюємо години + системний хостел (залічки
+      // переносяться окремою масовою дією, тут не чіпаються), перераховуємо
+      // формули; інші ручні правки (кари, odzież…) не затираються.
       // Бонусні фабрики (Agram/LST): ставка перечитується (галочки/дата могли змінитися)
       // Eurocash: файл фабрики авторитетний — ставки/нічні/потроненя перекриваються
-      const zal = zalForPair(pair);
       const hos = isMainPair(pair) ? hostelByWorker.get(pair.workerId) : undefined;
       const mergedExtras: Record<string, number | string> = { ...((prev.extras as Record<string, number | string>) ?? {}) };
       if (ec) {
@@ -2460,7 +2436,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       // борг M−1 в ті ж колонки: свіжі системні значення (аванси/хостел,
       // Eurocash-потроненя) старого боргу не містять — віднімається він з решти
       const debtCols: Record<string, number | null> = {
-        zaliczka: zal != null ? r2(zal) : prev.zaliczka,
+        zaliczka: prev.zaliczka,
         zaliczkaBd: prev.zaliczkaBd,
         hostel: hos != null ? r2(hos) : prev.hostel,
         odziez: prev.odziez, dojazd: prev.dojazd, kara: prev.kara,
@@ -2469,7 +2445,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       };
       const debtTouched = !!debtSrc?.carry || (prev.extras as any)?.debtIn != null;
       applyDebtCols(debtCols, mergedExtras as Record<string, unknown>, debtSrc?.carry ?? null,
-        new Set([...(zal != null ? ["zaliczka"] : []), ...(hos != null ? ["hostel"] : []), ...(ec ? ["potracenia"] : [])]));
+        new Set([...(hos != null ? ["hostel"] : []), ...(ec ? ["potracenia"] : [])]));
       const merged: any = {
         ...prev, hours: r2(pair.hours),
         firm: fac?.multiFirm ? rowFirm : prev.firm,
@@ -2516,7 +2492,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       rateBrutto: ec ? ec.rateBrutto : base.brutto ?? (w.legalStatus == null || (isBonusFac && !stud26) ? KSIEG_STD_BRUTTO() : null),
       rateNetto: ec ? ec.rateNetto : isBonusFac ? bonusNetto() : base.netto ?? (w.legalStatus == null ? KSIEG_STD_NETTO() : null),
       potracenia: ec ? ec.potracenia : null,
-      zaliczka: zalForPair(pair) != null ? r2(zalForPair(pair)!) : null,
+      zaliczka: null, // залічки переносяться масовою дією «У сводну» (apply-zaliczki)
       hostel: isMainPair(pair) && hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
       extras: {
@@ -3069,25 +3045,27 @@ router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: 
 // (schedule_entries). Формат — як у бадань (Zaliczka BD): сума ДОДАЄТЬСЯ до
 // наявної Kara (там можуть жити ручні/синковані суми), відміна віднімає своє.
 
-// Запис клітинки Kara тим самим ланцюжком, що й ручна правка: сегментований
-// рядок — місячний ввід на батькові з перерахунком сегментів; інакше
-// computePayout → статусні правила księgowości → готівка.
-async function writeKaraCell(
+// Запис клітинки місячного відрахування (Kara / Zaliczka) тим самим ланцюжком,
+// що й ручна правка: сегментований рядок — місячний ввід на батькові з
+// перерахунком сегментів; інакше computePayout → статусні правила księgowości → готівка.
+type DeductionCol = "kara" | "zaliczka";
+async function writeDeductionCell(
   row: typeof svodniRowsTable.$inferSelect,
   w: typeof workersTable.$inferSelect | undefined,
+  col: DeductionCol,
   amount: number | null,
 ): Promise<void> {
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
     .where(eq(svodniRowsTable.segmentOf, row.id)).limit(1);
   if (segMark) {
-    await db.update(svodniRowsTable).set({ kara: amount, manual: true, mismatch: null })
+    await db.update(svodniRowsTable).set({ [col]: amount, manual: true, mismatch: null })
       .where(eq(svodniRowsTable.id, row.id));
     await recomputeSegmentedParent(row.id);
     return;
   }
-  const merged: any = { ...row, kara: amount };
-  const set: Record<string, unknown> = { kara: amount, manual: true, mismatch: null };
+  const merged: any = { ...row, [col]: amount };
+  const set: Record<string, unknown> = { [col]: amount, manual: true, mismatch: null };
   const payout = computePayout(merged, row.city as any);
   if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
@@ -3109,8 +3087,8 @@ async function writeKaraCell(
 // (найбільше годин), як аванси з factory_id. Групи обробляються послідовно
 // (дві групи людини можуть влучити в той самий рядок — додаємо на свіже
 // значення), локи пропускаються, наприкінці — самозвірка перечитуванням.
-type KaraGroup = { workerId: number; factoryId: number | null; amount: number; refs: { id: number; amount: number }[] };
-async function applyKaraDeductions(month: string, groups: KaraGroup[]): Promise<{
+type DeductionGroup = { workerId: number; factoryId: number | null; amount: number; refs: { id: number; amount: number }[] };
+async function applyDeductionGroups(month: string, col: DeductionCol, groups: DeductionGroup[]): Promise<{
   updated: number; skippedLocked: number;
   unmatched: { workerName: string | null; amount: number }[];
   landedRefs: { id: number; amount: number }[];
@@ -3137,19 +3115,19 @@ async function applyKaraDeductions(month: string, groups: KaraGroup[]): Promise<
       ?? mine.sort(byHours)[0];
     if (!row) { unmatched.push({ workerName: w?.fullName ?? null, amount: g.amount }); continue; }
     if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
-    const amount = r2((row.kara ?? 0) + g.amount);
-    await writeKaraCell(row, w, amount);
-    row.kara = amount; // свіже значення для наступних груп у той самий рядок
+    const amount = r2((row[col] ?? 0) + g.amount);
+    await writeDeductionCell(row, w, col, amount);
+    row[col] = amount; // свіже значення для наступних груп у той самий рядок
     expected.set(row.id, { workerName: w?.fullName ?? row.rawName, factoryLabel: row.factoryLabel, amount });
     landedRefs.push(...g.refs);
     updated++;
   }
-  // САМОЗВІРКА: перечитуємо записані рядки і порівнюємо Kara з очікуваним
+  // САМОЗВІРКА: перечитуємо записані рядки і порівнюємо колонку з очікуваним
   const verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[] = [];
   if (expected.size) {
-    const fresh = await db.select({ id: svodniRowsTable.id, kara: svodniRowsTable.kara })
+    const fresh = await db.select({ id: svodniRowsTable.id, kara: svodniRowsTable.kara, zaliczka: svodniRowsTable.zaliczka })
       .from(svodniRowsTable).where(inArray(svodniRowsTable.id, [...expected.keys()]));
-    const freshById = new Map(fresh.map(f => [f.id, f.kara]));
+    const freshById = new Map(fresh.map(f => [f.id, f[col]]));
     for (const [rowId, e] of expected) {
       const actual = freshById.get(rowId) ?? null;
       if ((actual ?? 0) !== (e.amount ?? 0)) {
@@ -3160,10 +3138,10 @@ async function applyKaraDeductions(month: string, groups: KaraGroup[]): Promise<
   return { updated, skippedLocked, unmatched, landedRefs, verified: expected.size, verifyMismatches };
 }
 
-// Відміна одного перенесення: віднімає суму з Kara рядка місяця перенесення
-// (рядок пари, фолбек — з найбільшими годинами серед тих, де є Kara).
+// Відміна одного перенесення: віднімає суму з колонки рядка місяця перенесення
+// (рядок пари, фолбек — з найбільшими годинами серед тих, де є значення).
 // Залочена вкладка — 409; рядка вже нема — чесний warning.
-async function subtractKara(month: string, workerId: number, factoryId: number | null, amount: number): Promise<
+async function subtractDeduction(month: string, col: DeductionCol, workerId: number, factoryId: number | null, amount: number): Promise<
   { error: string } | { subtracted: { factoryLabel: string; newValue: number | null } | null }
 > {
   const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -3172,18 +3150,18 @@ async function subtractKara(month: string, workerId: number, factoryId: number |
     eq(svodniRowsTable.workerId, workerId),
   ));
   const byHours = (a: typeof rows[number], b: typeof rows[number]) => (b.hours ?? 0) - (a.hours ?? 0);
-  const withKara = rows.filter(r => (r.kara ?? 0) > 0);
-  const row = (factoryId != null ? withKara.filter(r => r.factoryId === factoryId).sort(byHours)[0] : undefined)
-    ?? withKara.sort(byHours)[0];
+  const withVal = rows.filter(r => (r[col] ?? 0) > 0);
+  const row = (factoryId != null ? withVal.filter(r => r.factoryId === factoryId).sort(byHours)[0] : undefined)
+    ?? withVal.sort(byHours)[0];
   if (!row) return { subtracted: null };
   const locks = await monthLocks(month);
   if (isLocked(locks, row.city, row.factoryLabel)) {
     return { error: `Вкладка «${row.factoryLabel}» (${month}) затверджена — спершу зніми лок, потім відміняй` };
   }
-  const newKara = r2(Math.max(0, (row.kara ?? 0) - amount));
-  const value = newKara > 0 ? newKara : null;
+  const newVal = r2(Math.max(0, (row[col] ?? 0) - amount));
+  const value = newVal > 0 ? newVal : null;
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
-  await writeKaraCell(row, w, value);
+  await writeDeductionCell(row, w, col, value);
   return { subtracted: { factoryLabel: row.factoryLabel, newValue: value } };
 }
 
@@ -3199,14 +3177,14 @@ router.post("/svodni/apply-penalty-deductions", requireCap("svodni"), async (req
   if (!items.length) return fail(res, 400, "немає штрафів до зняття");
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
-  const byPair = new Map<string, KaraGroup>();
+  const byPair = new Map<string, DeductionGroup>();
   for (const p of items) {
     const k = key2(p.workerId, p.factoryId);
     const g = byPair.get(k) ?? byPair.set(k, { workerId: p.workerId, factoryId: p.factoryId, amount: 0, refs: [] }).get(k)!;
     g.amount = r2(g.amount + p.amount);
     g.refs.push({ id: p.id, amount: p.amount });
   }
-  const result = await applyKaraDeductions(month, [...byPair.values()]);
+  const result = await applyDeductionGroups(month, "kara", [...byPair.values()]);
   if (result.landedRefs.length) {
     await db.update(penaltiesTable)
       .set({ deducted: true, deductedAt: sql`CURRENT_DATE`, deductedMonth: month })
@@ -3226,7 +3204,7 @@ router.post("/svodni/undo-penalty-deduction", requireCap("svodni"), async (req: 
   const [p] = await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, id));
   if (!p) return fail(res, 404, "Не знайдено");
   if (!p.deducted || !p.deductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
-  const r = await subtractKara(p.deductedMonth, p.workerId, p.factoryId, p.amount);
+  const r = await subtractDeduction(p.deductedMonth, "kara", p.workerId, p.factoryId, p.amount);
   if ("error" in r) return fail(res, 409, r.error);
   await db.update(penaltiesTable)
     .set({ deducted: false, deductedAt: null, deductedMonth: null })
@@ -3254,14 +3232,14 @@ router.post("/svodni/apply-absence-deductions", requireCap("svodni"), async (req
   if (!entries.length) return fail(res, 400, "немає штрафів за пропуски до зняття");
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
-  const byPair = new Map<string, KaraGroup>();
+  const byPair = new Map<string, DeductionGroup>();
   for (const e of entries) {
     const k = key2(e.workerId, e.factoryId);
     const g = byPair.get(k) ?? byPair.set(k, { workerId: e.workerId, factoryId: e.factoryId, amount: 0, refs: [] }).get(k)!;
     g.amount = r2(g.amount + e.penalty);
     g.refs.push({ id: e.id, amount: e.penalty });
   }
-  const result = await applyKaraDeductions(month, [...byPair.values()]);
+  const result = await applyDeductionGroups(month, "kara", [...byPair.values()]);
   for (const ref of result.landedRefs) {
     await db.update(scheduleEntriesTable)
       .set({ absenceDeductedMonth: month, absenceDeductedAt: sql`CURRENT_DATE`, absenceDeductedAmount: ref.amount })
@@ -3282,7 +3260,7 @@ router.post("/svodni/undo-absence-deduction", requireCap("svodni"), async (req: 
   if (!e) return fail(res, 404, "Не знайдено");
   if (!e.absenceDeductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
   const amount = e.absenceDeductedAmount ?? absencePenaltyOf(e);
-  const r = await subtractKara(e.absenceDeductedMonth, e.workerId, e.factoryId, amount);
+  const r = await subtractDeduction(e.absenceDeductedMonth, "kara", e.workerId, e.factoryId, amount);
   if ("error" in r) return fail(res, 409, r.error);
   await db.update(scheduleEntriesTable)
     .set({ absenceDeductedMonth: null, absenceDeductedAt: null, absenceDeductedAmount: null })
@@ -3290,6 +3268,60 @@ router.post("/svodni/undo-absence-deduction", requireCap("svodni"), async (req: 
   ok(res, {
     ok: true, month: e.absenceDeductedMonth, subtracted: r.subtracted,
     warning: r.subtracted ? null : "рядка сводної з Kara не знайдено — позначку знято, суму віднімати нема звідки",
+  });
+});
+
+// ─── Перенесення виплачених залічок у колонку Zaliczka сводної ────────────────
+// Масова дія ПІСЛЯ звірки виплат (сторінка Аванси → «У сводну»): from-hours
+// залічки НЕ заповнює. Джерело — виплачені аванси без svodni_month; body.ids —
+// вибіркове перенесення. Аванс із фабрикою запиту лягає в рядок цієї фабрики
+// (нема в місяці — фолбек у рядок з найбільшими годинами); суми ДОДАЮТЬСЯ до
+// наявної Zaliczka (там можуть жити ручні/синковані значення). Після запису
+// аванси позначаються svodni_month+датою; локи пропускаються, самозвірка як у бадань.
+router.post("/svodni/apply-zaliczki", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const onlyIds: number[] | null = Array.isArray(req.body?.ids)
+    ? req.body.ids.map(Number).filter(Number.isFinite) : null;
+  const items = (await db.select().from(advanceRequestsTable)
+    .where(and(eq(advanceRequestsTable.status, "paid"), isNull(advanceRequestsTable.svodniMonth))))
+    .filter(a => onlyIds == null || onlyIds.includes(a.id));
+  if (!items.length) return fail(res, 400, "немає виплачених залічок до перенесення");
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  // група на аванс: applyDeductionGroups сам агрегує послідовно у свіжі рядки
+  const groups: DeductionGroup[] = items.map(a => ({
+    workerId: a.workerId, factoryId: a.factoryId, amount: r2(a.amount), refs: [{ id: a.id, amount: a.amount }],
+  }));
+  const result = await applyDeductionGroups(month, "zaliczka", groups);
+  const markedIds = result.landedRefs.map(r => r.id);
+  if (markedIds.length) {
+    await db.update(advanceRequestsTable)
+      .set({ svodniMonth: month, svodniAppliedAt: sql`CURRENT_DATE` })
+      .where(inArray(advanceRequestsTable.id, markedIds));
+  }
+  ok(res, {
+    month, updated: result.updated, itemsMarked: markedIds.length,
+    verified: result.verified, verifyMismatches: result.verifyMismatches,
+    skippedLocked: result.skippedLocked, unmatched: result.unmatched,
+  });
+});
+
+// Відміна перенесеної залічки: віднімає суму з клітинки Zaliczka сводної місяця
+// перенесення і знімає позначку з авансу (сам аванс лишається виплаченим).
+router.post("/svodni/undo-zaliczka", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.body?.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "id обовʼязковий");
+  const [a] = await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id));
+  if (!a) return fail(res, 404, "Не знайдено");
+  if (!a.svodniMonth) return fail(res, 400, "Аванс не перенесений у сводну");
+  const r = await subtractDeduction(a.svodniMonth, "zaliczka", a.workerId, a.factoryId, a.amount);
+  if ("error" in r) return fail(res, 409, r.error);
+  await db.update(advanceRequestsTable)
+    .set({ svodniMonth: null, svodniAppliedAt: null })
+    .where(eq(advanceRequestsTable.id, id));
+  ok(res, {
+    month: a.svodniMonth, subtracted: r.subtracted,
+    warning: r.subtracted ? null : "рядка сводної з Zaliczka не знайдено — позначку знято, суму віднімати нема звідки",
   });
 });
 
@@ -3510,17 +3542,11 @@ router.get("/svodni/gratyfikant", requireCap("svodniSensitive"), async (req: Aut
   }
   if (!records.length) return fail(res, 404, "немає рядків за вибором");
 
-  const ExcelJS = (await import("exceljs")).default;
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Arkusz1");
   // без заголовка — формат, відпрацьований з księgową (імʼя | PESEL | дата | сума)
-  for (const r of records) ws.addRow([r.name, r.pesel, r.data, r.kwota]);
-  ws.getColumn(1).width = 32;
-  ws.getColumn(2).width = 14;
-  const buffer = await wb.xlsx.writeBuffer();
+  const buffer = await listaXlsxBuffer(records);
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Naliczenia ${firm} ${month}.xlsx`)}"`);
-  res.send(Buffer.from(buffer));
+  res.send(buffer);
 });
 
 // застосувати ставки/студент/до-26 місяця до профілів працівників (фінансова дія)
