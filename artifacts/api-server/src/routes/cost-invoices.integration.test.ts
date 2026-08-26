@@ -18,8 +18,8 @@ let companyId = 0;
 beforeEach(async () => {
   if (!hasTestDb) return;
   await resetDb();
-  // invoices/ksef_invoices не входять у стандартний resetDb — чистимо самі
-  await db.execute(sql.raw("TRUNCATE invoices, ksef_invoices RESTART IDENTITY CASCADE"));
+  // invoices/ksef_invoices/invoice_audit не входять у стандартний resetDb — чистимо самі
+  await db.execute(sql.raw("TRUNCATE invoices, ksef_invoices, invoice_audit RESTART IDENTITY CASCADE"));
   await seedRole("buch", ["costInvoices"], ["/cost-invoices"]);
   buch = (await seedAdmin({ role: "buch", name: "Кшєнгова" })).cookie;
   const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning({ id: companiesTable.id });
@@ -105,4 +105,25 @@ test("гейт: роль без costInvoices не бачить модуль; х�
   const bad = await request(app).patch(`/api/cost-invoices/ksef/${kid}`).set("Cookie", buch).set(H)
     .send({ paymentMethod: "karta" });
   assert.equal(bad.status, 400);
+});
+
+test("аудит: PATCH пише історію з іменем адміна, GET /cost-invoices/audit віддає", opts, async () => {
+  const kid = await insertKsef({});
+  await request(app).patch(`/api/cost-invoices/ksef/${kid}`).set("Cookie", buch).set(H)
+    .send({ paymentMethod: "gotowka", cashReport: true });
+  const created = await request(app).post("/api/cost-invoices").set("Cookie", buch).set(H)
+    .send({ companyId, issueDate: "2026-08-06", number: "FV 9/08/2026", amount: "10" });
+
+  const ka = await request(app).get(`/api/cost-invoices/audit?origin=ksef&id=${kid}`).set("Cookie", buch);
+  assert.equal(ka.status, 200);
+  assert.equal(ka.body.entries.length, 1);
+  assert.equal(ka.body.entries[0].action, "updated");
+  assert.equal(ka.body.entries[0].adminName, "Кшєнгова");
+  const fields = ka.body.entries[0].changes.map((c: any) => c.field).sort();
+  assert.deepEqual(fields, ["cashReport", "paymentMethod"]);
+
+  const la = await request(app).get(`/api/cost-invoices/audit?origin=local&id=${created.body.id}`).set("Cookie", buch);
+  assert.equal(la.body.entries.length, 1);
+  assert.equal(la.body.entries[0].action, "created");
+  assert.equal(la.body.entries[0].adminName, "Кшєнгова");
 });

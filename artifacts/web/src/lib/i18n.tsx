@@ -2009,6 +2009,9 @@ const EN: Record<string, string> = {
   "Drive: залито {u}, помилок {f}": "Drive: uploaded {u}, failed {f}",
   "Усі фактури архівуються на Google Drive (Faktury kosztowe → рік → місяць → фірма): KSeF — стандартним XML, скани — PDF. Червоний рядок = файла ще немає на Drive (причина — в бейджі).": "All invoices are archived to Google Drive (Faktury kosztowe → year → month → firm): KSeF as their standard XML, scans as PDF. A red row means the file is not on Drive yet (the badge explains why).",
   "Сканування фактур у боті (кнопка «📄 Фактура»)": "Invoice scanning in the bot (the “📄 Invoice” button)",
+  "Фактури закупові": "Purchase invoices",
+  "Фактури спшедажові": "Sales invoices",
+  "Закупові (KSeF + вручну + скани з бота) і спшедажові (KSeF) — оплати й архів на Диску в одному місці": "Purchases (KSeF + manual + bot scans) and sales (KSeF) — payments and the Drive archive in one place",
   // Довідник контрагентів
   "Контрагенти": "Counterparties",
   "назва, NIP, аліас…": "name, NIP, alias…",

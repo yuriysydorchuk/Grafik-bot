@@ -26,7 +26,7 @@ export const CAP_LABEL: Record<Capability, string> = {
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
 export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
-  "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/invoices", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/ksef", "/fuel", "/cleaning", "/settings",
+  "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/fuel", "/cleaning", "/settings",
   "/workers", "/recruitment", "/broadcast", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
   "/sushi", "/andros",
 ] as const;

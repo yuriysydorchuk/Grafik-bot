@@ -184,7 +184,8 @@ export function startScheduler() {
         // яких ще немає на Диску; принагідно тягне due_date/FormaPlatnosci з XML.
         // Авто-запуск НЕ чіпає минулі місяці (рішення 13.08.2026) — старе доганяється
         // вручну кнопкою місяця на /cost-invoices
-        const { archiveInvoicesToDrive } = await import("./invoiceArchive");
+        const { archiveInvoicesToDrive, upgradeArchiveNamesV2 } = await import("./invoiceArchive");
+        await upgradeArchiveNamesV2(); // разово: імена v2 + прибирання legacy-XML (guard у settings)
         const fromMonth = new Date().toLocaleDateString("sv-SE", { timeZone: TZ }).slice(0, 7);
         const a = await archiveInvoicesToDrive({ fromMonth });
         logger.info({ processed: a.processed, uploaded: a.uploaded, failed: a.failed, errors: a.errors.length, fromMonth }, "Daily invoice drive archive");

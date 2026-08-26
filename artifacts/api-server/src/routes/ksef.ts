@@ -3,14 +3,16 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { ksefInvoicesTable, companiesTable } from "@workspace/db";
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { archiveInvoicesToDrive } from "../services/invoiceArchive";
-import { authRequired, requireCap } from "../lib/auth";
+import { logInvoiceAudit, auditDiff } from "../services/invoiceAudit";
+import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { syncKsef, matchKsefPayments, feedPnlRevenue } from "../services/ksef";
 
 const router: IRouter = Router();
 router.use(authRequired);
-router.use("/ksef", requireCap("viewFinance")); // скоуп по префіксу
+// скоуп по префіксу; costInvoices — бухгалтерія веде і спшедажові (розділ на /cost-invoices, рішення 26.08.2026)
+router.use("/ksef", requireAnyCap("viewFinance", "costInvoices"));
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
@@ -22,7 +24,10 @@ const validKind = (k: any): "sale" | "purchase" => (k === "purchase" ? "purchase
 
 router.get("/ksef/months", async (req, res) => {
   const kind = validKind(req.query.kind);
-  const r: any = await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices WHERE kind = ${kind} ORDER BY 1 DESC`);
+  // продажі: wspólnoty (segment=cleaning) живуть у розділі «Прибирання», не тут
+  const r: any = kind === "sale"
+    ? await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices WHERE kind = 'sale' AND segment <> 'cleaning' ORDER BY 1 DESC`)
+    : await db.execute(sql`SELECT DISTINCT revenue_month AS m FROM ksef_invoices WHERE kind = ${kind} ORDER BY 1 DESC`);
   ok(res, { months: ((r.rows ?? r) as any[]).map(x => String(x.m)) });
 });
 
@@ -33,6 +38,8 @@ router.get("/ksef", async (req, res) => {
   const kind = validKind(req.query.kind);
 
   const conds = [eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind)];
+  // фактури на вспульноти (segment=cleaning) — у розділі «Прибирання», не в спшедажових
+  if (kind === "sale") conds.push(sql`${ksefInvoicesTable.segment} <> 'cleaning'`);
   if (companyId) conds.push(eq(ksefInvoicesTable.companyId, companyId));
   const rows = await db.select().from(ksefInvoicesTable).where(and(...conds))
     .orderBy(asc(ksefInvoicesTable.companyId), desc(ksefInvoicesTable.issueDate), asc(ksefInvoicesTable.invoiceNumber));
@@ -45,7 +52,8 @@ router.get("/ksef", async (req, res) => {
     // paid_via records HOW the auto-match decided (bank/register/korekta); older
     // rows without it fall back to txn-presence inference
     const paidSource = inv.manualStatus ? "manual" : inv.paidDate ? inv.paidVia ?? (inv.paidTxnId ? "bank" : "register") : null;
-    return { ...inv, firm: companies.get(inv.companyId) ?? "?", paid, effPaidDate: paidDate, paidSource };
+    // на Диск їде лише PDF (26.08) — «залито» означає «є PDF-візуалізація»
+    return { ...inv, firm: companies.get(inv.companyId) ?? "?", paid, effPaidDate: paidDate, paidSource, driveFileId: inv.drivePdfId };
   });
 
   // sales group by client, purchases by supplier
@@ -92,6 +100,11 @@ router.patch("/ksef/invoices/:id", async (req, res) => {
   }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();
+  {
+    const adm = (req as AuthedRequest).admin;
+    const changes = auditDiff(inv as any, patch);
+    if (changes.length) await logInvoiceAudit("ksef", id, "updated", { adminId: adm?.adminId, name: adm?.name }, changes);
+  }
   ok(res, updated);
 });
 
@@ -109,7 +122,7 @@ router.post("/ksef/invoices/:id/drive", async (req, res) => {
   if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
   if (r.errors.length) return fail(res, 502, r.errors[0]!);
   const [updated] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
-  ok(res, { driveFileId: updated?.driveFileId ?? null, driveError: updated?.driveError ?? null });
+  ok(res, { driveFileId: updated?.drivePdfId ?? null, driveError: updated?.driveError ?? null });
 });
 
 // Залити на Drive всі фактури місяця вкладки (sale АБО purchase), крім уже
@@ -121,7 +134,7 @@ router.post("/ksef/drive-month", async (req, res) => {
   const kind = validKind(req.body?.kind);
   const ids = (await db.select({ id: ksefInvoicesTable.id }).from(ksefInvoicesTable)
     .where(and(eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind),
-      or(isNull(ksefInvoicesTable.driveFileId), isNull(ksefInvoicesTable.drivePdfId))!)))
+      or(isNull(ksefInvoicesTable.drivePdfId), isNotNull(ksefInvoicesTable.driveFileId))!)))
     .map(r => r.id);
   if (!ids.length) return ok(res, { processed: 0, uploaded: 0, failed: 0, errors: [] });
   const r = await archiveInvoicesToDrive({ ksefIds: ids });

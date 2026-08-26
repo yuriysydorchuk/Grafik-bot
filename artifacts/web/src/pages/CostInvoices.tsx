@@ -4,11 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud } from "lucide-react";
+import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud, History } from "lucide-react";
 import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
+import { InvoiceAuditModal } from "../components/InvoiceAuditModal";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
+import { KsefSales } from "./Ksef";
 import { badgeClass } from "../lib/colors";
 
 type PayMethod = "przelew" | "gotowka" | null;
@@ -51,6 +53,9 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
 export default function CostInvoices() {
   const t = useT();
   const qc = useQueryClient();
+  // обидва розділи видні всім, хто має сторінку (viewFinance АБО costInvoices) —
+  // кшєнгова веде і закупові, і спшедажові (рішення 26.08.2026)
+  const [section, setSection] = useState<"purchase" | "sales">("purchase");
   const thisMonth = new Date().toISOString().slice(0, 7);
   const [month, setMonth] = useState(thisMonth);
   const [companyId, setCompanyId] = useState("");
@@ -63,6 +68,7 @@ export default function CostInvoices() {
   const [prefill, setPrefill] = useState<Partial<Row> | null>(null);
   const [scanFile, setScanFile] = useState<File | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [auditFor, setAuditFor] = useState<Row | null>(null); // модалка «Історія фактури»
   const fileInput = useRef<HTMLInputElement>(null);
 
   // «Скан»: файл → /cost-invoices/scan → модалка з розпізнаними полями і файлом
@@ -185,7 +191,18 @@ export default function CostInvoices() {
 
   return (
     <>
-      <PageHeader title={t("Фактури коштові")} subtitle={t("KSeF-закупівлі + внесені вручну і скани з бота — оплати в одному місці")} />
+      <PageHeader title={t("Фактури")} subtitle={t("Закупові (KSeF + вручну + скани з бота) і спшедажові (KSeF) — оплати й архів на Диску в одному місці")} />
+
+      <div className="mb-4 flex gap-1 rounded-lg bg-slate-100 p-1 lg:w-fit">
+        {([["purchase", t("Фактури закупові")], ["sales", t("Фактури спшедажові")]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setSection(k)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${section === k ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {section === "sales" ? <KsefSales /> : (<>
 
       {d && (
         <div className="-mt-2 mb-3 flex flex-wrap items-center gap-2 text-xs">
@@ -196,6 +213,12 @@ export default function CostInvoices() {
               {d.ksefSync.ok ? " ✅" : ` ⚠️ ${t("помилки")}: ${d.ksefSync.errors.length}`}
             </span>
           ) : <span className="text-slate-400">{t("ще не запускався")}</span>}
+          <span className="text-slate-300">·</span>
+          {missingOnDrive === 0 && d.rows.length > 0 ? (
+            <span className="font-medium text-emerald-600">☁️ {t("Всі фактури місяця збережено на Google Диск")} ({d.rows.length})</span>
+          ) : d.rows.length > 0 ? (
+            <span className="font-medium text-amber-600">☁️ {t("На Google Диску {a} з {b}", { a: d.rows.length - missingOnDrive, b: d.rows.length })}</span>
+          ) : null}
         </div>
       )}
 
@@ -328,9 +351,10 @@ export default function CostInvoices() {
                           )}
                         </div>
                         {r.addedBy && (
-                          <div className="mt-0.5 text-[10px] text-slate-400" title={r.addedAt ? new Date(r.addedAt).toLocaleString("uk-UA") : ""}>
+                          <button className="mt-0.5 block text-[10px] text-slate-400 hover:text-slate-600 hover:underline"
+                            title={t("клік — історія змін фактури")} onClick={() => setAuditFor(r)}>
                             {t("додав(-ла)")} {r.addedBy}{r.addedAt ? ` · ${new Date(r.addedAt).toLocaleDateString("uk-UA")}` : ""}
-                          </div>
+                          </button>
                         )}
                       </td>
                       <td className="px-2 py-1.5">
@@ -385,6 +409,10 @@ export default function CostInvoices() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                        <button className="p-1 text-slate-300 hover:text-slate-600" title={t("Історія змін (хто додав / змінив / затвердив)")}
+                          onClick={() => setAuditFor(r)}>
+                          <History className="h-4 w-4" />
+                        </button>
                         {!r.driveFileId && (
                           <button className="p-1 text-slate-300 hover:text-sky-600 disabled:animate-pulse" disabled={pushing === r.key}
                             title={t("Залити на Drive зараз (KSeF-рядку заодно підтягне термін оплати)")}
@@ -410,10 +438,12 @@ export default function CostInvoices() {
           </Card>
           <p className="mt-3 text-xs text-slate-400">
             {t("KSeF-фактури приходять автоматично; «вручну» — внесені тут; «скан» — з бота (кнопка «📄 Фактура») або кнопкою «Скан». Оплата «витяг» проставляється банківським матчингом сама.")}
-            {" "}{t("Усі фактури архівуються на Google Drive (Faktury kosztowe → рік → місяць → фірма): KSeF — стандартним XML, скани — PDF. Червоний рядок = файла ще немає на Drive (причина — в бейджі).")}
+            {" "}{t("Усі фактури архівуються PDF-ами на Google Drive (Faktury kosztowe → рік → місяць → фірма), імʼя файла = номер + постачальник. Червоний рядок = файла ще немає на Drive (причина — в бейджі).")}
           </p>
         </>
       )}
+
+      {auditFor && <InvoiceAuditModal target={auditFor} onClose={() => setAuditFor(null)} />}
 
       {(adding || editing) && (
         <InvoiceModal
@@ -427,6 +457,7 @@ export default function CostInvoices() {
           onSaved={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); invalidate(); }}
         />
       )}
+      </>)}
     </>
   );
 }
@@ -543,6 +574,8 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, categories
 
   const save = async () => {
     if (!f.companyId || !f.issueDate || !f.number.trim() || !f.amount) { toast.error(t("Фірма, дата, номер і сума — обов'язкові")); return; }
+    // ручна фактура без скана не зберігається (вимога 26.08) — файл їде в архів на Drive
+    if (!row && !file) { toast.error(t("Додай фото або скан фактури — без файла не зберігаємо")); return; }
     setSaving(true);
     try {
       const body = {

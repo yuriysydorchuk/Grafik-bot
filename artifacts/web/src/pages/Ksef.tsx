@@ -4,10 +4,10 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { RefreshCw, TrendingUp, FileText, CheckCircle2, AlertCircle, UploadCloud } from "lucide-react";
+import { RefreshCw, TrendingUp, FileText, CheckCircle2, AlertCircle, UploadCloud, History } from "lucide-react";
 import { get, post, patch } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
-import { PageHeader } from "../components/Layout";
+import { InvoiceAuditModal, type AuditTarget } from "../components/InvoiceAuditModal";
 import { useT } from "../lib/i18n";
 
 interface Inv {
@@ -60,11 +60,13 @@ const zl = (n: number | null | undefined) => n == null ? "—" : `${n.toLocaleSt
 const MONTHS_UK = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const monthLabel = (m: string) => { const [y, mm] = m.split("-"); return `${MONTHS_UK[Number(mm) - 1]} ${y}`; };
 
-export default function Ksef() {
+// Вбудовується розділом «Фактури спшедажові» на /cost-invoices (26.08.2026;
+// окрема сторінка /ksef видалена, закупівлі-«сирі» покриває розділ закупових).
+export function KsefSales() {
   const t = useT();
   const qc = useQueryClient();
-  const [kind, setKind] = useState<"sale" | "purchase">("sale");
-  const isPurchase = kind === "purchase";
+  const kind = "sale" as const;
+  const isPurchase = false;
   const months = useQuery<{ months: string[] }>({ queryKey: ["ksef-months", kind], queryFn: () => get(`/ksef/months?kind=${kind}`) });
   const [month, setMonth] = useState("");
   const [firm, setFirm] = useState("");
@@ -73,6 +75,7 @@ export default function Ksef() {
   const [busy, setBusy] = useState(false);
   const [monthPushing, setMonthPushing] = useState(false);
   const [pushingId, setPushingId] = useState<number | null>(null);
+  const [auditFor, setAuditFor] = useState<AuditTarget | null>(null); // модалка «Історія фактури»
   const active = month || months.data?.months[0] || "";
   const q = useQuery<Data>({
     queryKey: ["ksef", kind, active], queryFn: () => get(`/ksef?month=${active}&kind=${kind}`), enabled: !!active,
@@ -81,7 +84,6 @@ export default function Ksef() {
   });
   const d = q.data;
   const invalidate = () => ["ksef", "ksef-months", "pnl", "pnl-months"].forEach(k => qc.invalidateQueries({ queryKey: [k] }));
-  const switchKind = (k: "sale" | "purchase") => { setKind(k); setMonth(""); setFirm(""); setSearch(""); setParty(""); };
   const partyOf = (i: Inv) => (isPurchase ? i.sellerName ?? "—" : i.clientLabel ?? i.buyerName ?? "—");
 
   const syncNow = async () => { setBusy(true); try { await post("/ksef/sync", {}); invalidate(); } finally { setBusy(false); } };
@@ -131,17 +133,6 @@ export default function Ksef() {
 
   return (
     <>
-      <PageHeader title="KSeF" subtitle={t("Фактури з Krajowy System e-Faktur: продажі (netto → P&L) і закупівлі, статус оплат")} />
-
-      <div className="mb-4 flex gap-1 rounded-lg bg-slate-100 p-1 lg:w-fit">
-        {([["sale", t("Продажі")], ["purchase", t("Видатки (закупівлі)")]] as const).map(([k, label]) => (
-          <button key={k} onClick={() => switchKind(k)}
-            className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${kind === k ? "bg-white text-red-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-            {label}
-          </button>
-        ))}
-      </div>
-
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div>
           <div className="mb-1 text-xs text-slate-500">{isPurchase ? t("Місяць (за датою виставлення)") : t("Місяць P&L (робота за)")}</div>
@@ -160,6 +151,9 @@ export default function Ksef() {
         )}
         <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={isPurchase ? t("Пошук: номер, постачальник…") : t("Пошук: номер, покупець…")} className="h-9 w-56" />
         <div className="ml-auto flex items-end gap-2">
+          {(d?.invoices.length ?? 0) > 0 && missingOnDrive === 0 && (
+            <span className="pb-2 text-xs font-medium text-emerald-600">☁️ {t("Всі фактури збережено на Google Диск")} ({d!.invoices.length})</span>
+          )}
           {missingOnDrive > 0 && (
             <Button variant="secondary" onClick={pushMonth} disabled={monthPushing}
               title={t("Залити на Drive всі фактури цього місяця, крім уже залитих")}>
@@ -229,6 +223,7 @@ export default function Ksef() {
           {party && (
             <PartyModal party={party} invoices={partyInvoices} onToggle={togglePaid} onClose={() => setParty("")} />
           )}
+          {auditFor && <InvoiceAuditModal target={auditFor} onClose={() => setAuditFor(null)} />}
 
           {/* invoices */}
           <Card className="mt-4 p-0">
@@ -258,7 +253,14 @@ export default function Ksef() {
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.net)}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-500">{zl(inv.vat)}</td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums text-slate-700">{zl(inv.gross)}</td>
-                      <td className="whitespace-nowrap px-3 py-1.5"><DriveCell inv={inv} pushing={pushingId === inv.id} onPush={() => void pushOne(inv)} /></td>
+                      <td className="whitespace-nowrap px-3 py-1.5">
+                        <DriveCell inv={inv} pushing={pushingId === inv.id} onPush={() => void pushOne(inv)} />
+                        <button className="ml-1 p-0.5 align-middle text-slate-300 hover:text-slate-600"
+                          title={t("Історія змін (хто додав / змінив / затвердив)")}
+                          onClick={() => setAuditFor({ origin: "ksef", id: inv.id, number: inv.invoiceNumber })}>
+                          <History className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
                       <td className="whitespace-nowrap px-4 py-1.5">
                         <button onClick={() => togglePaid(inv)} title={inv.paidSource === "bank" ? t("знайдено у витягу — клік, щоб перекрити вручну") : t("клік — змінити вручну")}
                           className={`rounded px-1.5 py-0.5 text-xs font-medium ${inv.paid ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}>

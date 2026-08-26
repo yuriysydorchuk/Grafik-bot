@@ -10,7 +10,7 @@ import fs from "node:fs";
 import { Readable } from "node:stream";
 import { google } from "googleapis";
 import { db, invoicesTable, ksefInvoicesTable, companiesTable, settingsTable } from "@workspace/db";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { UPLOADS_ROOT, sniffDocMime } from "../lib/uploads";
 import { getDriveAuth, getOrCreateFolder, ensureFolderStructure } from "./drive";
@@ -34,6 +34,14 @@ async function setSetting(key: string, value: string): Promise<void> {
 
 // імʼя файла = номер фактури; прибираємо лише небезпечні для пошуку/скачування символи
 const safeName = (num: string) => num.replace(/[\\/:*?"<>|']/g, "_").replace(/\s+/g, " ").trim() || "faktura";
+
+// Імʼя файла в архіві (вимога власника 26.08.2026): «<номер> <контрагент>».
+// Контрагент = друга сторона фактури: для закупівель/сканів — постачальник,
+// для продажів — покупець. Довгі юрназви обрізаються, щоб імʼя лишалось читабельним.
+export function archiveFileName(number: string, counterparty: string | null | undefined): string {
+  const co = (counterparty ?? "").replace(/\s+/g, " ").trim().slice(0, 60).trim();
+  return safeName(co ? `${number} ${co}` : number);
+}
 
 // "2026-08-03" → { year: "2026", month: "M8.26" } (формат вимоги: M1.26, M2.26, …)
 export function driveMonthFolder(dateStr: string): { year: string; month: string } {
@@ -75,7 +83,8 @@ async function uploadFile(folderId: string, name: string, mimeType: string, buff
   const drive = google.drive({ version: "v3", auth: getDriveAuth() });
   if (existingId) {
     try {
-      await drive.files.update({ fileId: existingId, media: { mimeType, body: Readable.from(buffer) } });
+      // разом із вмістом оновлюємо й імʼя — force-перезалив підтягує нову схему назв
+      await drive.files.update({ fileId: existingId, requestBody: { name }, media: { mimeType, body: Readable.from(buffer) } });
       return existingId;
     } catch { /* stale id — падаємо на create */ }
   }
@@ -87,6 +96,18 @@ async function uploadFile(folderId: string, name: string, mimeType: string, buff
   const fileId = created.data.id!;
   await drive.permissions.create({ fileId, requestBody: { role: "reader", type: "anyone" } }).catch(() => {});
   return fileId;
+}
+
+// Перейменувати файл на Drive (без перезаливу вмісту) — апгрейд схеми назв
+async function renameDriveFile(fileId: string, name: string): Promise<boolean> {
+  try {
+    const drive = google.drive({ version: "v3", auth: getDriveAuth() });
+    await drive.files.update({ fileId, requestBody: { name } });
+    return true;
+  } catch (e) {
+    logger.warn({ fileId, name, err: String(e) }, "drive file rename failed");
+    return false;
+  }
 }
 
 // Прибрати файл з Drive (у кошик) — коли фактуру видалили/переназвали/замінили файл
@@ -157,7 +178,7 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
         }
         const firm = companies.get(row.companyId ?? -1)?.name ?? "Inne";
         const folderId = await invoiceFolderId(COST_BRANCH, row.issueDate, firm);
-        const fileId = await uploadFile(folderId, `${safeName(row.number)}${ext}`, uploadMime, buffer, row.driveFileId);
+        const fileId = await uploadFile(folderId, `${archiveFileName(row.number, row.counterparty)}${ext}`, uploadMime, buffer, row.driveFileId);
         res.uploaded++;
         await setRow({ driveFileId: fileId, driveError: null, driveSyncedAt: new Date() });
       } catch (e: any) {
@@ -171,9 +192,10 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
       if (opts.ksefIds?.length) kConds.push(inArray(ksefInvoicesTable.id, opts.ksefIds));
       if (opts.month) kConds.push(sql`substring(${ksefInvoicesTable.issueDate}::text, 1, 7) = ${opts.month}`);
       if (opts.fromMonth) kConds.push(sql`substring(${ksefInvoicesTable.issueDate}::text, 1, 7) >= ${opts.fromMonth}`);
-      // «не залито» = бракує XML АБО PDF-візуалізації (PDF додано 13.08 — старі
-      // рядки з самим XML доганяють PDF наступним проходом)
-      if (!opts.force) kConds.push(or(isNull(ksefInvoicesTable.driveFileId), isNull(ksefInvoicesTable.drivePdfId))!);
+      // «не залито» = бракує PDF-візуалізації. На Диск їде ЛИШЕ PDF (рішення
+      // 26.08.2026); drive_file_id (legacy-XML перших заливів) — прибираємо в кошик,
+      // тому рядки з ним теж підбираються.
+      if (!opts.force) kConds.push(or(isNull(ksefInvoicesTable.drivePdfId), isNotNull(ksefInvoicesTable.driveFileId))!);
       const ksefRows = await db.select().from(ksefInvoicesTable).where(kConds.length ? and(...kConds) : undefined);
 
       fs.mkdirSync(KSEF_XML_DIR, { recursive: true });
@@ -221,21 +243,21 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
           const branch = row.kind === "sale" ? SALES_BRANCH : COST_BRANCH;
           const folderId = await invoiceFolderId(branch, row.issueDate, firm);
           const patch: Record<string, unknown> = { driveError: null, driveSyncedAt: new Date() };
-          if (!row.driveFileId || opts.force) {
-            patch.driveFileId = await uploadFile(folderId, `${safeName(row.invoiceNumber)}.xml`, "text/xml", Buffer.from(xml, "utf8"), row.driveFileId);
-            res.uploaded++;
+          // контрагент в імені файла — друга сторона: закупівля → постачальник, продаж → покупець
+          const counterparty = row.kind === "sale" ? row.buyerName : row.sellerName;
+          const baseName = archiveFileName(row.invoiceNumber, counterparty);
+          // legacy: XML перших заливів прибираємо з Диска (на Диску має лишатись лише PDF)
+          if (row.driveFileId) {
+            await retireDriveFile(row.driveFileId);
+            patch.driveFileId = null;
           }
-          // PDF-візуалізація поряд з XML (лінк веб-панелі веде на PDF); падіння
-          // рендера не валить XML-аплоуд — рядок лишається на Диску з поміткою
           if (!row.drivePdfId || opts.force) {
-            try {
-              const pdf = await buildKsefInvoicePdf(xml, { ksefNumber: row.ksefNumber, invoicingDate: row.invoicingDate });
-              patch.drivePdfId = await uploadFile(folderId, `${safeName(row.invoiceNumber)}.pdf`, "application/pdf", Buffer.from(pdf), row.drivePdfId);
-              res.uploaded++;
-            } catch (e: any) {
-              res.failed++;
-              patch.driveError = `PDF: ${String(e?.message ?? e).slice(0, 160)}`;
-            }
+            const pdf = await buildKsefInvoicePdf(xml, { ksefNumber: row.ksefNumber, invoicingDate: row.invoicingDate });
+            patch.drivePdfId = await uploadFile(folderId, `${baseName}.pdf`, "application/pdf", Buffer.from(pdf), row.drivePdfId);
+            res.uploaded++;
+          } else if (row.driveFileId) {
+            // PDF уже був, ми лише прибрали XML — заодно піднімаємо імʼя до нової схеми
+            await renameDriveFile(row.drivePdfId, `${baseName}.pdf`);
           }
           await setRow(patch);
         } catch (e: any) {
@@ -250,6 +272,37 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
   } finally {
     running = false;
   }
+}
+
+// Разовий апгрейд архіву до схеми імен v2 (26.08.2026): «<номер> <контрагент>.pdf»,
+// на Диску лише PDF. Прибирає legacy-XML у кошик і перейменовує вже залиті файли.
+// Guard у settings — виконується один раз на середовище (крон/синк викликають щодня).
+export async function upgradeArchiveNamesV2(): Promise<void> {
+  const FLAG = "invoice_archive_names_v2";
+  if (await getSetting(FLAG)) return;
+  const drive = google.drive({ version: "v3", auth: getDriveAuth() });
+  const ksefRows = await db.select().from(ksefInvoicesTable)
+    .where(or(isNotNull(ksefInvoicesTable.driveFileId), isNotNull(ksefInvoicesTable.drivePdfId))!);
+  for (const row of ksefRows) {
+    const counterparty = row.kind === "sale" ? row.buyerName : row.sellerName;
+    const baseName = archiveFileName(row.invoiceNumber, counterparty);
+    if (row.driveFileId) {
+      await retireDriveFile(row.driveFileId);
+      await db.update(ksefInvoicesTable).set({ driveFileId: null }).where(eq(ksefInvoicesTable.id, row.id));
+    }
+    if (row.drivePdfId) await renameDriveFile(row.drivePdfId, `${baseName}.pdf`);
+  }
+  const locals = await db.select().from(invoicesTable).where(isNotNull(invoicesTable.driveFileId));
+  for (const row of locals) {
+    if (!row.number || !row.driveFileId) continue;
+    try {
+      const meta = await drive.files.get({ fileId: row.driveFileId, fields: "name" });
+      const ext = path.extname(meta.data.name ?? "") || ".pdf";
+      await renameDriveFile(row.driveFileId, `${archiveFileName(row.number, row.counterparty)}${ext}`);
+    } catch { /* stale id — файл зник з Диска, перезаллється звичайним проходом */ }
+  }
+  await setSetting(FLAG, new Date().toISOString());
+  logger.info({ ksef: ksefRows.length, locals: locals.length }, "invoice archive names v2 upgrade done");
 }
 
 // Фонове довантаження одного локального рядка (після скану/ручного додавання) —

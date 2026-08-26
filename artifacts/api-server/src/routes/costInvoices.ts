@@ -15,7 +15,8 @@ import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
 import { lastSyncStatus, syncKsef } from "../services/ksef";
-import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile } from "../services/invoiceArchive";
+import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile, upgradeArchiveNamesV2 } from "../services/invoiceArchive";
+import { logInvoiceAudit, auditDiff, invoiceAuditRows } from "../services/invoiceAudit";
 import { getExpenseCats, patternCondition, type ExpenseCat } from "../services/bankClassify";
 import { canonCity } from "../services/svodniSync";
 
@@ -156,7 +157,8 @@ router.get("/cost-invoices", async (req, res) => {
       paymentMethod: method, paymentMethodSource: k.paymentMethod ? "manual" : method ? "auto" : null,
       cashReport: k.cashReport, cleaning: k.segment === "cleaning", cleaningProjectId: k.cleaningProjectId,
       overdue: !paid && !!k.dueDate && k.dueDate < today,
-      driveFileId: k.driveFileId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
+      // на Диск їде лише PDF (26.08) — «залито» для KSeF-рядка означає «є PDF»
+      driveFileId: k.drivePdfId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
       category: kCats.get(k.id)?.cat ?? "other",
       categorySource: kCats.get(k.id)?.manual ? "manual" : "auto",
     });
@@ -230,8 +232,11 @@ router.post("/cost-invoices/sync", async (_req, res) => {
   const sync = await syncKsef();
   // фоновий архів — лише з поточного місяця (минуле власник доганяє кнопкою місяця)
   const fromMonth = todayStr().slice(0, 7);
-  setImmediate(() => {
-    archiveInvoicesToDrive({ fromMonth }).catch(e => logger.warn({ err: String(e) }, "invoice archive after sync failed"));
+  setImmediate(async () => {
+    try {
+      await upgradeArchiveNamesV2(); // разово: імена v2 + прибирання legacy-XML
+      await archiveInvoicesToDrive({ fromMonth });
+    } catch (e) { logger.warn({ err: String(e) }, "invoice archive after sync failed"); }
   });
   ok(res, { sync, archiveStarted: true });
 });
@@ -257,7 +262,7 @@ router.post("/cost-invoices/ksef/:id/drive", async (req, res) => {
   if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
   if (r.errors.length) return fail(res, 502, r.errors[0]!);
   const [updated] = await db.select().from(ksefInvoicesTable).where(eq(ksefInvoicesTable.id, id));
-  ok(res, { driveFileId: updated?.driveFileId ?? null, driveError: updated?.driveError ?? null, dueDate: updated?.dueDate ?? null });
+  ok(res, { driveFileId: updated?.drivePdfId ?? null, driveError: updated?.driveError ?? null, dueDate: updated?.dueDate ?? null });
 });
 
 router.post("/cost-invoices/:id/drive", async (req, res) => {
@@ -373,6 +378,8 @@ router.post("/cost-invoices", async (req, res) => {
     statusRaw: paid ? "Opłacona (панель)" : "Nie oplacona", unpaid: !paid, paidDate,
     createdBy: (req as AuthedRequest).admin?.adminId ?? null,
   }).returning();
+  const adm = (req as AuthedRequest).admin;
+  await logInvoiceAudit("local", row!.id, "created", { adminId: adm?.adminId, name: adm?.name });
   archiveLocalInvoiceLater(row!.id); // файл долетить окремим POST /:id/file — той перезалиє
   ok(res, row);
 });
@@ -439,6 +446,11 @@ router.patch("/cost-invoices/:id", async (req, res) => {
     patch.driveFileId = null; patch.driveError = null; patch.driveSyncedAt = null;
   }
   const [updated] = await db.update(invoicesTable).set(patch).where(eq(invoicesTable.id, id)).returning();
+  {
+    const adm = (req as AuthedRequest).admin;
+    const changes = auditDiff(row as any, patch);
+    if (changes.length) await logInvoiceAudit("local", id, "updated", { adminId: adm?.adminId, name: adm?.name }, changes);
+  }
   if (identityChanged) archiveLocalInvoiceLater(id);
   ok(res, updated);
 });
@@ -478,7 +490,20 @@ router.patch("/cost-invoices/ksef/:id", async (req, res) => {
   }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();
+  {
+    const adm = (req as AuthedRequest).admin;
+    const changes = auditDiff(inv as any, patch);
+    if (changes.length) await logInvoiceAudit("ksef", id, "updated", { adminId: adm?.adminId, name: adm?.name }, changes);
+  }
   ok(res, updated);
+});
+
+// Історія змін фактури: хто додав/змінив/затвердив (модалка на сайті)
+router.get("/cost-invoices/audit", async (req, res) => {
+  const origin = req.query.origin === "ksef" ? "ksef" as const : "local" as const;
+  const id = Number(req.query.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  ok(res, { entries: await invoiceAuditRows(origin, id) });
 });
 
 router.delete("/cost-invoices/:id", async (req, res) => {
@@ -489,6 +514,11 @@ router.delete("/cost-invoices/:id", async (req, res) => {
   deleteStoredFile(row.filePath);
   await retireDriveFile(row.driveFileId); // архівна копія — у кошик Drive
   await db.delete(invoicesTable).where(eq(invoicesTable.id, id));
+  {
+    const adm = (req as AuthedRequest).admin;
+    await logInvoiceAudit("local", id, "deleted", { adminId: adm?.adminId, name: adm?.name },
+      [{ field: "number", from: row.number, to: null }]);
+  }
   ok(res, { ok: true });
 });
 
@@ -526,6 +556,10 @@ router.post("/cost-invoices/:id/file", uploadScan.single("file"), async (req, re
   // новий файл = нова архівна копія: стару — в кошик, перезалив у фоні
   await retireDriveFile(row.driveFileId);
   await db.update(invoicesTable).set({ filePath: rel, driveFileId: null, driveError: null, driveSyncedAt: null }).where(eq(invoicesTable.id, id));
+  {
+    const adm = (req as AuthedRequest).admin;
+    await logInvoiceAudit("local", id, "file", { adminId: adm?.adminId, name: adm?.name });
+  }
   archiveLocalInvoiceLater(id);
   ok(res, { ok: true, filePath: rel });
 });
@@ -562,6 +596,7 @@ export async function createScannedInvoice(data: {
     filePath: data.fileRel, createdBy: data.createdBy,
   }).returning({ id: invoicesTable.id });
   logger.info({ id: row!.id, number: data.number }, "scanned invoice stored");
+  await logInvoiceAudit("local", row!.id, "created", { adminId: data.createdBy }); // імʼя підтягнеться по id
   archiveLocalInvoiceLater(row!.id); // скан одразу їде в архів на Drive
   return row!.id;
 }

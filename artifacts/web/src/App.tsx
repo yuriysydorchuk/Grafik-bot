@@ -35,7 +35,6 @@ import CashRegister from "./pages/CashRegister";
 import Cashflow from "./pages/Cashflow";
 import Balance from "./pages/Balance";
 import Obligations from "./pages/Obligations";
-import Invoices from "./pages/Invoices";
 import CostInvoices from "./pages/CostInvoices";
 import Cfo from "./pages/Cfo";
 import Analytics from "./pages/Analytics";
@@ -44,7 +43,6 @@ import Payroll from "./pages/Payroll";
 import Svodni from "./pages/Svodni";
 import Hostels from "./pages/Hostels";
 import Penalties from "./pages/Penalties";
-import Ksef from "./pages/Ksef";
 import Fuel from "./pages/Fuel";
 import Cleaning from "./pages/Cleaning";
 import Sushi from "./pages/Sushi";
@@ -133,7 +131,8 @@ export default function App() {
         <Route path="/cashflow">{() => guard("/cashflow", <Cashflow />)}</Route>
         <Route path="/balance">{() => guard("/balance", <Balance />)}</Route>
         <Route path="/obligations">{() => guard("/obligations", <Obligations />)}</Route>
-        <Route path="/invoices">{() => guard("/invoices", <Invoices />)}</Route>
+        {/* старі сторінки злиті в /cost-invoices (26.08.2026) — закладки редіректимо */}
+        <Route path="/invoices">{() => <Redirect to="/cost-invoices" />}</Route>
         <Route path="/cost-invoices">{() => guard("/cost-invoices", <CostInvoices />)}</Route>
         <Route path="/cfo">{() => guard("/cfo", <Cfo />)}</Route>
         <Route path="/analytics">{() => guard("/analytics", <Analytics />)}</Route>
@@ -142,7 +141,7 @@ export default function App() {
         <Route path="/svodni">{() => guard("/svodni", <Svodni />)}</Route>
         <Route path="/hostels">{() => guard("/hostels", <Hostels />)}</Route>
         <Route path="/penalties">{() => guard("/penalties", <Penalties />)}</Route>
-        <Route path="/ksef">{() => guard("/ksef", <Ksef />)}</Route>
+        <Route path="/ksef">{() => <Redirect to="/cost-invoices" />}</Route>
         <Route path="/fuel">{() => guard("/fuel", <Fuel />)}</Route>
         <Route path="/cleaning">{() => guard("/cleaning", <Cleaning />)}</Route>
         <Route path="/sushi">{() => guard("/sushi", <Sushi />)}</Route>
