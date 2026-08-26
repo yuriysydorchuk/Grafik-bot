@@ -43,12 +43,24 @@ async function ebFetch(method: string, path: string, payload?: unknown): Promise
 }
 
 // ── Authorization flow ─────────────────────────────────────────────────────────
-export async function listAspsps(country: string): Promise<{ name: string; country: string }[]> {
+export async function listAspsps(country: string): Promise<{ name: string; country: string; psuTypes: string[] }[]> {
   const data = await ebFetch("GET", `/aspsps?country=${encodeURIComponent(country)}`);
-  return (data.aspsps ?? []).map((a: any) => ({ name: a.name, country: a.country }));
+  return (data.aspsps ?? []).map((a: any) => ({ name: a.name, country: a.country, psuTypes: a.psu_types ?? [] }));
 }
 
-export async function startAuth(aspspName: string, aspspCountry: string): Promise<{ url: string }> {
+// psu_type вирішує, В ЯКИЙ банкінг поведе редірект: business = корпоративний,
+// personal = роздрібний/приватний. Фірмові конта бувають в ОБОХ (BNP — business,
+// mBank малих фірм — усередині приватної банковості), тож тип обирає власник.
+export type PsuType = "business" | "personal";
+export const validPsuType = (v: any): v is PsuType => v === "business" || v === "personal";
+
+// state → psuType авторизацій у польоті: банк повертає state на callback, і ми
+// зберігаємо тип на згоді (щоб «Поновити» пішло в той самий банкінг). In-memory —
+// процес один, а флоу живе хвилини; рестарт посеред авторизації просто лишить
+// дефолт business на рядку згоди.
+const pendingPsu = new Map<string, PsuType>();
+
+export async function startAuth(aspspName: string, aspspCountry: string, psuType: PsuType = "business"): Promise<{ url: string }> {
   const state = crypto.randomUUID();
   const validUntil = new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString();
   const data = await ebFetch("POST", "/auth", {
@@ -56,25 +68,28 @@ export async function startAuth(aspspName: string, aspspCountry: string): Promis
     aspsp: { name: aspspName, country: aspspCountry },
     state,
     redirect_url: REDIRECT_URL,
-    psu_type: "business",
+    psu_type: psuType,
   });
+  pendingPsu.set(state, psuType);
   return { url: data.url };
 }
 
 // Redirect back from the bank: exchange the code for a session and store it.
-export async function completeAuth(code: string): Promise<{ consentId: number; accounts: number }> {
+export async function completeAuth(code: string, state?: string | null): Promise<{ consentId: number; accounts: number }> {
   const session = await ebFetch("POST", "/sessions", { code });
-  return storeSession(session.session_id, session);
+  const psuType = (state && pendingPsu.get(state)) || "business";
+  if (state) pendingPsu.delete(state);
+  return storeSession(session.session_id, session, psuType);
 }
 
 // Import an already-created session by id (used to seed the sessions authorized
 // with the scratch probe before this module existed).
 export async function importSession(sessionId: string): Promise<{ consentId: number; accounts: number }> {
   const session = await ebFetch("GET", `/sessions/${sessionId}`);
-  return storeSession(sessionId, session);
+  return storeSession(sessionId, session, "business");
 }
 
-async function storeSession(sessionId: string, session: any): Promise<{ consentId: number; accounts: number }> {
+async function storeSession(sessionId: string, session: any, psuType: PsuType = "business"): Promise<{ consentId: number; accounts: number }> {
   const aspspName: string = session.aspsp?.name ?? "?";
   const aspspCountry: string = session.aspsp?.country ?? "PL";
   const validUntil = new Date(session.access?.valid_until ?? Date.now() + 180 * 24 * 3600 * 1000);
@@ -94,8 +109,8 @@ async function storeSession(sessionId: string, session: any): Promise<{ consentI
   const consentCompanyId = accounts.map(a => accCompany(a.name ?? null)).find(id => id != null) ?? null;
 
   const [consent] = await db.insert(bankApiConsentsTable)
-    .values({ sessionId, aspspName, aspspCountry, companyId: consentCompanyId, validUntil })
-    .onConflictDoUpdate({ target: bankApiConsentsTable.sessionId, set: { validUntil, revokedAt: null, companyId: consentCompanyId } })
+    .values({ sessionId, aspspName, aspspCountry, companyId: consentCompanyId, validUntil, psuType })
+    .onConflictDoUpdate({ target: bankApiConsentsTable.sessionId, set: { validUntil, revokedAt: null, companyId: consentCompanyId, psuType } })
     .returning();
   await db.delete(bankApiAccountsTable).where(eq(bankApiAccountsTable.consentId, consent!.id));
   if (accounts.length) {

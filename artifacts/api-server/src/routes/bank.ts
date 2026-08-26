@@ -13,7 +13,7 @@ import {
   getExpenseCats, invalidateExpenseCats, periodRange,
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
-import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, syncBankApi } from "../services/bankApi";
+import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, syncBankApi, validPsuType } from "../services/bankApi";
 import { syncCounterparties, resolveBankCounterparties, normAlias, normIban } from "../services/counterparties";
 
 const router: IRouter = Router();
@@ -623,12 +623,15 @@ router.get("/bank/api-aspsps", async (req, res) => {
   } catch (e: any) { fail(res, 502, e?.message || "aspsps failed"); }
 });
 
-// Старт авторизації: віддає URL банку, куди веб-панель редіректить власника
+// Старт авторизації: віддає URL банку, куди веб-панель редіректить власника.
+// psuType вирішує, який банкінг відкриється: business (корпоративний, дефолт)
+// чи personal (роздрібний — фірмові конта mBank малих фірм живуть там).
 router.post("/bank/api-consents/start", async (req, res) => {
   const name = String(req.body?.aspspName ?? "").trim();
   const country = /^[A-Z]{2}$/.test(String(req.body?.aspspCountry)) ? String(req.body?.aspspCountry) : "PL";
+  const psuType = validPsuType(req.body?.psuType) ? req.body.psuType : "business";
   if (!name) return fail(res, 400, "aspspName required");
-  try { ok(res, await startAuth(name, country)); }
+  try { ok(res, await startAuth(name, country, psuType)); }
   catch (e: any) { fail(res, 502, e?.message || "auth start failed"); }
 });
 
@@ -636,10 +639,11 @@ router.post("/bank/api-consents/start", async (req, res) => {
 // зачіпає; сесія панелі в цьому ж браузері, бо флоу стартує зі сторінки /bank.
 router.get("/bank/psd2-callback", async (req, res) => {
   const code = typeof req.query.code === "string" ? req.query.code : null;
+  const state = typeof req.query.state === "string" ? req.query.state : null;
   const error = typeof req.query.error === "string" ? req.query.error : null;
   if (!code) return res.redirect(`/bank?api=${encodeURIComponent(error || "no_code")}`);
   try {
-    const r = await completeAuth(code);
+    const r = await completeAuth(code, state);
     // 0 рахунків = логін не прив'язаний (whitelisted) в Enable Banking CP — згода
     // порожня і марна, прибираємо одразу й пояснюємо тостом
     if (r.accounts === 0) {

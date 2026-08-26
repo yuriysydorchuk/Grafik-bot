@@ -24,6 +24,7 @@ interface ApiAccount {
 interface ApiConsent {
   id: number; aspspName: string; aspspCountry: string; companyName: string | null;
   validUntil: string; revokedAt: string | null; daysLeft: number; accounts: ApiAccount[];
+  psuType: "business" | "personal";
 }
 interface ConsentsResp { configured: boolean; consents: ApiConsent[] }
 interface Meta { companies: { id: number; name: string }[]; years: string[] }
@@ -472,13 +473,18 @@ function ConsentsModal({ consents, onClose }: { consents: ApiConsent[]; onClose:
   const t = useT();
   const qc = useQueryClient();
   const [aspsp, setAspsp] = useState("");
-  const aspsps = useQuery<{ aspsps: { name: string; country: string }[] }>({
+  // який банкінг відкриє авторизація: бізнес (корпоративний) чи приватний
+  // (роздрібний — фірмові конта mBank малих фірм живуть саме там)
+  const [psuType, setPsuType] = useState<"business" | "personal">("business");
+  const aspsps = useQuery<{ aspsps: { name: string; country: string; psuTypes: string[] }[] }>({
     queryKey: ["bank-api-aspsps"], queryFn: () => get("/bank/api-aspsps?country=PL"),
   });
+  const selected = (aspsps.data?.aspsps ?? []).find(a => a.name === aspsp);
+  const bothTypes = !selected || selected.psuTypes.length !== 1;
 
-  const connect = async (name: string, country: string) => {
+  const connect = async (name: string, country: string, type: "business" | "personal" = "business") => {
     try {
-      const r = await post("/bank/api-consents/start", { aspspName: name, aspspCountry: country });
+      const r = await post("/bank/api-consents/start", { aspspName: name, aspspCountry: country, psuType: type });
       window.location.href = r.url; // SCA у банку; повернемось на /bank?api=…
     } catch (e: any) { toast.error(e?.message || t("Не вдалося підключити банк")); }
   };
@@ -511,7 +517,7 @@ function ConsentsModal({ consents, onClose }: { consents: ApiConsent[]; onClose:
               </td>
               <td className="py-2 text-right whitespace-nowrap">
                 {!c.revokedAt && <>
-                  <Button variant="ghost" onClick={() => connect(c.aspspName, c.aspspCountry)}>{t("Поновити")}</Button>
+                  <Button variant="ghost" onClick={() => connect(c.aspspName, c.aspspCountry, c.psuType)}>{t("Поновити")}</Button>
                   <Button variant="ghost" onClick={() => revoke(c.id)}><X className="h-4 w-4 text-rose-500" /></Button>
                 </>}
               </td>
@@ -519,14 +525,29 @@ function ConsentsModal({ consents, onClose }: { consents: ApiConsent[]; onClose:
           ))}
         </tbody>
       </table>
-      <div className="mt-4 flex items-center gap-2">
-        <Select value={aspsp} onChange={e => setAspsp(e.target.value)} className="w-64">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Select value={aspsp} onChange={e => { setAspsp(e.target.value); setPsuType("business"); }} className="w-64">
           <option value="">{t("Підключити ще банк…")}</option>
           {(aspsps.data?.aspsps ?? []).map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
         </Select>
-        <Button disabled={!aspsp} onClick={() => connect(aspsp, "PL")}>{t("Підключити")}</Button>
+        {aspsp && bothTypes && (
+          <div className="flex gap-3 text-sm text-slate-600">
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={psuType === "business"} onChange={() => setPsuType("business")} />
+              {t("бізнес-банкінг")}
+            </label>
+            <label className="flex items-center gap-1.5" title={t("роздрібна банковість — фірмові конта mBank малих фірм живуть саме там")}>
+              <input type="radio" checked={psuType === "personal"} onChange={() => setPsuType("personal")} />
+              {t("приватна банковість")}
+            </label>
+          </div>
+        )}
+        <Button disabled={!aspsp} onClick={() => connect(aspsp, "PL", bothTypes ? psuType : (selected!.psuTypes[0] as "business" | "personal"))}>{t("Підключити")}</Button>
       </div>
-      <p className="mt-2 text-xs text-slate-400">{t("Перед підключенням нового рахунку його треба прив'язати до застосунку в Enable Banking (Link accounts).")}</p>
+      <p className="mt-2 text-xs text-slate-400">
+        {t("Перед підключенням нового рахунку його треба прив'язати до застосунку в Enable Banking (Link accounts).")}{" "}
+        {t("Якщо фірмове конто обслуговується в роздрібному інтернет-банкінгу (напр. mBank) — вибери «приватна банковість», інакше банк відкриє корпоративний вхід.")}
+      </p>
     </Modal>
   );
 }

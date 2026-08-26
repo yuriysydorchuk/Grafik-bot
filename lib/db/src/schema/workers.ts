@@ -818,6 +818,7 @@ export const bankApiConsentsTable = pgTable("bank_api_consents", {
   validUntil: timestamp("valid_until").notNull(),
   revokedAt: timestamp("revoked_at"),
   expiryWarnedAt: timestamp("expiry_warned_at"),    // останнє бот-попередження «згода добігає кінця»
+  psuType: text("psu_type").notNull().default("business"), // business | personal — який банкінг відкриває авторизація (mBank фірм — personal); «Поновити» реюзає
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1027,6 +1028,19 @@ export const invoicesTable = pgTable("invoices", {
   driveError: text("drive_error"),             // чому файла нема на Drive
   driveSyncedAt: timestamp("drive_synced_at"),
   importedAt: timestamp("imported_at").notNull().defaultNow(),
+});
+
+// Журнал змін фактур (/cost-invoices, /ksef): хто додав/змінив/затвердив оплату.
+// admin_name — снапшот на момент дії (переживає перейменування/видалення адміна).
+export const invoiceAuditTable = pgTable("invoice_audit", {
+  id: serial("id").primaryKey(),
+  origin: text("origin").notNull(),            // ksef | local (invoices)
+  invoiceId: integer("invoice_id").notNull(),
+  action: text("action").notNull(),            // created | updated | file | deleted
+  changes: jsonb("changes").$type<{ field: string; from?: unknown; to?: unknown }[] | null>(),
+  adminId: integer("admin_id"),
+  adminName: text("admin_name"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // P&L accrual lines («P&L», /pnl): revenue/cogs per client + fixed costs per month.
