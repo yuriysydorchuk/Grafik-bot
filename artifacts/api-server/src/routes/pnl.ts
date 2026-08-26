@@ -214,7 +214,9 @@ router.get("/pnl/cities", async (req, res) => {
   // — дохід: revenue-рядки P&L, поділені ∝ собівартості клієнта по містах.
   // Рядок «Хостели (утримання з ЗП)» (source=payroll) сюди не входить —
   // утримання вже зменшують вартість житла нижче.
-  const entries = await db.select().from(pnlEntriesTable).where(eq(pnlEntriesTable.periodMonth, month));
+  // лише main-сегмент: дохід/рядки прибирання мають власний P&L у /cleaning
+  const entries = (await db.select().from(pnlEntriesTable).where(eq(pnlEntriesTable.periodMonth, month)))
+    .filter(r => (r.segment ?? "main") === "main");
   const unallocRevenue: { label: string; amount: number }[] = [];
   for (const r of entries.filter(r => r.section === "revenue" && r.source !== "payroll")) {
     const byCity = cogsByClient.get(r.label);
