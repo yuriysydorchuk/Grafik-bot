@@ -348,7 +348,7 @@ router.get("/workers", RW, async (req, res) => {
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
 // національність — прапорець біля імені (профіль, довози, сводна); дзеркало веб-каталогу lib/nationality.ts
-const NATIONALITIES = ["ukraine", "belarus", "africa", "latin_america", "central_asia", "south_asia"];
+const NATIONALITIES = ["ukraine", "belarus", "poland", "moldova", "romania", "georgia", "azerbaijan", "turkey", "africa", "latin_america", "central_asia", "south_asia"];
 
 router.post("/workers", RW, async (req, res) => {
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport, force } = req.body ?? {};

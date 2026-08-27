@@ -87,8 +87,9 @@ export const workersTable = pgTable("workers", {
   // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)
-  // національність: ukraine | belarus | africa | latin_america | central_asia | south_asia
-  // (показ прапорцем біля імені: профіль, довози, сводна)
+  // національність: ukraine | belarus | poland | moldova | romania | georgia |
+  // azerbaijan | turkey | africa | latin_america | central_asia | south_asia
+  // (показ прапорцем біля імені: профіль, довози, сводна; каталог — lib/nationality.tsx)
   nationality: text("nationality"),
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
