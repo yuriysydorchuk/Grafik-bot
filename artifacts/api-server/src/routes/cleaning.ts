@@ -12,6 +12,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   cleaningProjectsTable, cleaningPayrollsTable, cleaningPayrollProjectsTable,
+  cleaningWorkersTable, cleaningWorkerRatesTable,
   invoicesTable, ksefInvoicesTable, cashEntriesTable, cashCategoriesTable, companiesTable,
 } from "@workspace/db";
 import { and, eq, desc, inArray, sql } from "drizzle-orm";
@@ -195,6 +196,108 @@ router.patch("/cleaning/income/:id", async (req, res) => {
   ok(res, { id: updated!.id, projectId: updated!.cleaningProjectId });
 });
 
+// ── Працівники прибирання (довідник; фірма Klinex і посада sprzątanie — статичні) ──
+// Оплата — позиціями (cleaning_worker_rates): вспульнота(и) → фіксована сума за
+// позицію ЦІЛКОМ («3 вспульноти за 2500») АБО % від місячної ЗП. Режими в межах
+// людини не змішуються.
+type RateIn = { projectIds: number[]; amount: number | null; pct: number | null; note: string | null };
+function parseRates(v: any, knownIds: Set<number>): { err?: string; rates?: RateIn[] } {
+  if (v === undefined || v === null) return { rates: [] };
+  if (!Array.isArray(v)) return { err: "rates: array" };
+  const rates: RateIn[] = [];
+  for (const r of v) {
+    const pids: number[] = Array.isArray(r?.projectIds) ? [...new Set<number>((r.projectIds as any[]).map(Number))] : [];
+    if (pids.some((x: number) => !knownIds.has(x))) return { err: "rates: невідома вспульнота" };
+    const amount = r?.amount != null && r.amount !== "" ? Number(String(r.amount).replace(",", ".")) : null;
+    const pct = r?.pct != null && r.pct !== "" ? Number(String(r.pct).replace(",", ".")) : null;
+    if ((amount == null) === (pct == null)) return { err: "rates: позиція — сума АБО відсоток" };
+    if (amount != null && (!Number.isFinite(amount) || amount <= 0)) return { err: "rates: сума > 0" };
+    if (pct != null && (!Number.isFinite(pct) || pct <= 0 || pct > 100)) return { err: "rates: відсоток 0–100" };
+    // фіксована позиція БЕЗ вспульнот — легальна «загальна podstawa» (людина без
+    // відомої вспульноти: Irek, Aneta…) — іде в base, у P&L не атрибутується;
+    // відсоткова позиція без вспульнот безглузда
+    if (pct != null && !pids.length) return { err: "rates: відсоткова позиція мусить мати вспульноти" };
+    rates.push({ projectIds: pids, amount: amount != null ? r2(amount) : null, pct, note: String(r?.note ?? "").trim() || null });
+  }
+  if (rates.some(r => r.amount != null) && rates.some(r => r.pct != null)) return { err: "rates: не змішуй суми і відсотки в однієї людини" };
+  const pctSum = rates.reduce((s, r) => s + (r.pct ?? 0), 0);
+  if (pctSum > 100.001) return { err: "rates: сума відсотків не може перевищувати 100" };
+  return { rates };
+}
+
+async function workerWithRates(id: number) {
+  const [w] = await db.select().from(cleaningWorkersTable).where(eq(cleaningWorkersTable.id, id));
+  if (!w) return null;
+  const rates = await db.select().from(cleaningWorkerRatesTable).where(eq(cleaningWorkerRatesTable.workerId, id)).orderBy(cleaningWorkerRatesTable.id);
+  const fixedTotal = r2(rates.reduce((s, r) => s + (r.amount ?? 0), 0));
+  return { ...w, rates, fixedTotal };
+}
+
+router.get("/cleaning/workers", async (_req, res) => {
+  const workers = await db.select().from(cleaningWorkersTable)
+    .orderBy(cleaningWorkersTable.lastName, cleaningWorkersTable.firstName);
+  const rates = await db.select().from(cleaningWorkerRatesTable).orderBy(cleaningWorkerRatesTable.id);
+  const byWorker = new Map<number, typeof rates>();
+  for (const r of rates) (byWorker.get(r.workerId) ?? byWorker.set(r.workerId, []).get(r.workerId)!).push(r);
+  const projects = await db.select().from(cleaningProjectsTable).orderBy(cleaningProjectsTable.name);
+  ok(res, {
+    workers: workers.map(w => {
+      const rs = byWorker.get(w.id) ?? [];
+      return { ...w, rates: rs, fixedTotal: r2(rs.reduce((s, r) => s + (r.amount ?? 0), 0)) };
+    }),
+    projects,
+  });
+});
+
+async function replaceWorkerRates(workerId: number, rates: RateIn[]) {
+  await db.delete(cleaningWorkerRatesTable).where(eq(cleaningWorkerRatesTable.workerId, workerId));
+  for (const r of rates) {
+    await db.insert(cleaningWorkerRatesTable).values({
+      workerId, projectIds: r.projectIds, amount: r.amount, pct: r.pct, note: r.note,
+    });
+  }
+}
+
+router.post("/cleaning/workers", async (req, res) => {
+  const b = req.body ?? {};
+  const firstName = String(b.firstName ?? "").trim();
+  if (!firstName) return fail(res, 400, "firstName required");
+  const known = new Set((await db.select({ id: cleaningProjectsTable.id }).from(cleaningProjectsTable)).map(p => p.id));
+  const { err, rates } = parseRates(b.rates, known);
+  if (err) return fail(res, 400, err);
+  const [row] = await db.insert(cleaningWorkersTable).values({
+    firstName, lastName: String(b.lastName ?? "").trim(), note: String(b.note ?? "").trim() || null,
+  }).returning();
+  if (rates!.length) await replaceWorkerRates(row!.id, rates!);
+  ok(res, await workerWithRates(row!.id));
+});
+
+router.patch("/cleaning/workers/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const [row] = await db.select().from(cleaningWorkersTable).where(eq(cleaningWorkersTable.id, id));
+  if (!row) return fail(res, 404, "not found");
+  const b = req.body ?? {};
+  const patch: Record<string, unknown> = {};
+  if (b.firstName !== undefined) { const n = String(b.firstName).trim(); if (!n) return fail(res, 400, "firstName required"); patch.firstName = n; }
+  if (b.lastName !== undefined) patch.lastName = String(b.lastName ?? "").trim();
+  if (b.active !== undefined) patch.active = !!b.active;
+  if (b.note !== undefined) patch.note = String(b.note ?? "").trim() || null;
+  if (Object.keys(patch).length) await db.update(cleaningWorkersTable).set(patch).where(eq(cleaningWorkersTable.id, id));
+  if (b.rates !== undefined) {
+    const known = new Set((await db.select({ id: cleaningProjectsTable.id }).from(cleaningProjectsTable)).map(p => p.id));
+    const { err, rates } = parseRates(b.rates, known);
+    if (err) return fail(res, 400, err);
+    await replaceWorkerRates(id, rates!);
+  }
+  ok(res, await workerWithRates(id));
+});
+
+router.delete("/cleaning/workers/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  await db.delete(cleaningWorkersTable).where(eq(cleaningWorkersTable.id, id)); // rates — ON DELETE CASCADE
+  ok(res, { ok: true });
+});
+
 // ── Винагродження ─────────────────────────────────────────────────────────────
 router.get("/cleaning/payrolls", async (req, res) => {
   const month = validMonth(req.query.month) ? String(req.query.month) : null;
@@ -260,11 +363,50 @@ function parsePayrollBody(b: any, forCreate: boolean): { err?: string; fields?: 
 }
 
 async function replacePayrollLinks(payrollId: number, projectIds: number[]) {
+  // share (вага поділу з довідника працівників) переживає інлайн-правку списку
+  const old = await db.select().from(cleaningPayrollProjectsTable).where(eq(cleaningPayrollProjectsTable.payrollId, payrollId));
+  const shareBy = new Map(old.map(l => [l.projectId, l.share]));
   await db.delete(cleaningPayrollProjectsTable).where(eq(cleaningPayrollProjectsTable.payrollId, payrollId));
   for (const pid of projectIds) {
-    await db.insert(cleaningPayrollProjectsTable).values({ payrollId, projectId: pid });
+    await db.insert(cleaningPayrollProjectsTable).values({ payrollId, projectId: pid, share: shareBy.get(pid) ?? null });
   }
 }
+
+// Заповнення місяця з довідника працівників: кожному АКТИВНОМУ без рядка місяця
+// (матч по імені) створюється винагродження: base = Σ фіксованих позицій,
+// вспульноти позицій — привʼязками з вагою поділу (сума/відсоток позиції
+// ділиться порівну між її вспульнотами). Наявні рядки не чіпаються.
+router.post("/cleaning/payrolls/from-workers", async (req, res) => {
+  const month = validMonth(req.body?.month) ? String(req.body.month) : null;
+  if (!month) return fail(res, 400, "month: YYYY-MM");
+  const workers = await db.select().from(cleaningWorkersTable).where(eq(cleaningWorkersTable.active, true));
+  const allRates = await db.select().from(cleaningWorkerRatesTable);
+  const ratesBy = new Map<number, typeof allRates>();
+  for (const r of allRates) (ratesBy.get(r.workerId) ?? ratesBy.set(r.workerId, []).get(r.workerId)!).push(r);
+  const existing = new Set((await db.select({ name: cleaningPayrollsTable.name }).from(cleaningPayrollsTable)
+    .where(eq(cleaningPayrollsTable.periodMonth, month))).map(x => x.name.trim().toLowerCase()));
+  let created = 0, skipped = 0;
+  for (const w of workers) {
+    const name = `${w.firstName} ${w.lastName}`.trim();
+    if (existing.has(name.toLowerCase())) { skipped++; continue; }
+    const rs = ratesBy.get(w.id) ?? [];
+    const base = r2(rs.reduce((s, r) => s + (r.amount ?? 0), 0));
+    const [row] = await db.insert(cleaningPayrollsTable).values({
+      periodMonth: month, name, base, hours: null, rate: null, components: [], total: base, konto: 0,
+    }).returning({ id: cleaningPayrollsTable.id });
+    const weight = new Map<number, number>();
+    for (const r of rs) {
+      const pids = (r.projectIds as number[]) ?? [];
+      const per = (r.amount ?? r.pct ?? 0) / (pids.length || 1);
+      for (const pid of pids) weight.set(pid, r2((weight.get(pid) ?? 0) + per));
+    }
+    for (const [pid, share] of weight) {
+      await db.insert(cleaningPayrollProjectsTable).values({ payrollId: row!.id, projectId: pid, share }).onConflictDoNothing();
+    }
+    created++;
+  }
+  ok(res, { month, created, skipped });
+});
 
 router.post("/cleaning/payrolls", async (req, res) => {
   const b = req.body ?? {};
@@ -441,13 +583,20 @@ router.get("/cleaning/pnl", async (req, res) => {
     ? await db.select().from(cleaningPayrollProjectsTable)
         .where(inArray(cleaningPayrollProjectsTable.payrollId, payrolls.map(x => x.id)))
     : [];
-  const linksByPayroll = new Map<number, number[]>();
-  for (const l of links) (linksByPayroll.get(l.payrollId) ?? linksByPayroll.set(l.payrollId, []).get(l.payrollId)!).push(l.projectId);
+  const linksByPayroll = new Map<number, { projectId: number; share: number | null }[]>();
+  for (const l of links) (linksByPayroll.get(l.payrollId) ?? linksByPayroll.set(l.payrollId, []).get(l.payrollId)!)
+    .push({ projectId: l.projectId, share: l.share });
   for (const p of payrolls) {
-    const pids = linksByPayroll.get(p.id) ?? [];
-    if (!pids.length) { bump(null, p.periodMonth, "payroll", p.total); continue; }
-    const share = p.total / pids.length; // порівну між вспульнотами
-    for (const pid of pids) bump(pid, p.periodMonth, "payroll", share);
+    const pls = linksByPayroll.get(p.id) ?? [];
+    if (!pls.length) { bump(null, p.periodMonth, "payroll", p.total); continue; }
+    // ваги з довідника працівників (share: zł фіксованих позицій або %); без ваг — порівну
+    const totalW = pls.reduce((s, l) => s + (l.share ?? 0), 0);
+    if (totalW > 0) {
+      for (const l of pls) bump(l.projectId, p.periodMonth, "payroll", p.total * ((l.share ?? 0) / totalW));
+    } else {
+      const share = p.total / pls.length;
+      for (const l of pls) bump(l.projectId, p.periodMonth, "payroll", share);
+    }
   }
 
   const expenses = await expensesForMonths((col: any) => sql`${col} LIKE ${like}`);

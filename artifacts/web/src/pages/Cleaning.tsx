@@ -62,10 +62,10 @@ const shortProj = (name: string): string => {
 
 export default function Cleaning() {
   const t = useT();
-  const [tab, setTab] = useState<"income" | "payroll" | "expenses" | "pnl" | "projects">("income");
+  const [tab, setTab] = useState<"income" | "payroll" | "workers" | "expenses" | "pnl" | "projects">("income");
   const TABS: [typeof tab, string][] = [
-    ["income", t("Дохід")], ["payroll", t("Винагродження")], ["expenses", t("Видатки")],
-    ["pnl", "P&L"], ["projects", t("Вспульноти")],
+    ["income", t("Дохід")], ["payroll", t("Винагродження")], ["workers", t("Працівники")],
+    ["expenses", t("Видатки")], ["pnl", "P&L"], ["projects", t("Вспульноти")],
   ];
   const months = useMemo(() => monthOptions("uk-UA", 18), []);
   const [month, setMonth] = useState(months[0]!.value);
@@ -81,7 +81,7 @@ export default function Cleaning() {
             </button>
           ))}
         </div>
-        {tab !== "pnl" && tab !== "projects" && (
+        {tab !== "pnl" && tab !== "projects" && tab !== "workers" && (
           <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
             {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </Select>
@@ -89,6 +89,7 @@ export default function Cleaning() {
       </div>
       {tab === "income" && <IncomeTab month={month} />}
       {tab === "payroll" && <PayrollTab month={month} />}
+      {tab === "workers" && <WorkersTab />}
       {tab === "expenses" && <ExpensesTab month={month} />}
       {tab === "pnl" && <PnlTab />}
       {tab === "projects" && <ProjectsTab />}
@@ -198,6 +199,14 @@ function PayrollTab({ month }: { month: string }) {
     onSuccess: invalidate,
     onError: (e: any) => toast.error(e.message),
   });
+  const fromWorkers = useMutation({
+    mutationFn: () => post<{ created: number; skipped: number }>("/cleaning/payrolls/from-workers", { month }),
+    onSuccess: (d) => {
+      invalidate();
+      toast.success(`${t("Створено рядків:")} ${d.created}`, { description: d.skipped ? `${t("пропущено (вже є):")} ${d.skipped}` : undefined });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   if (isFetching && !data) return <Spinner />;
   if (!data) return null;
   const sum = (f: (r: PayrollRow) => number) => r2(data.rows.reduce((s, r) => s + f(r), 0));
@@ -214,7 +223,11 @@ function PayrollTab({ month }: { month: string }) {
         <Badge color="blue">{t("Конто:")} {fmt(data.totals.konto)} zł</Badge>
         <Badge color="amber">{t("Готівка:")} {fmt(data.totals.cash)} zł</Badge>
         <Badge color="slate">{data.totals.count} {t("ос.")}</Badge>
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" loading={fromWorkers.isPending} onClick={() => fromWorkers.mutate()}
+            title={t("Створити рядки місяця з довідника працівників: podstawa = сума фіксованих позицій, вспульноти — з поділом за позиціями. Наявні рядки не чіпаються.")}>
+            ⤵ {t("З працівників")}
+          </Button>
           <Button onClick={() => setEditing("new")}><Plus className="h-4 w-4" /> {t("Додати людину")}</Button>
         </div>
       </div>
@@ -460,6 +473,230 @@ function PayrollModal({ month, row, projects, onClose }: { month: string; row: P
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} disabled={!name.trim() || kontoN > total} onClick={() => save.mutate()}>
+            {row ? t("Зберегти") : t("Додати")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Працівники прибирання ─────────────────────────────────────────────────────
+// Легкий довідник (не workers): ім'я + прізвище, фірма Klinex і посада sprzątanie
+// у всіх (статично). Оплата — позиціями: вспульнота(и) → фіксована сума за
+// позицію ЦІЛКОМ («3 вспульноти за 2500») або % від місячної ЗП.
+type WorkerRate = { id?: number; projectIds: number[]; amount: number | null; pct: number | null; note: string | null };
+type CWorker = { id: number; firstName: string; lastName: string; active: boolean; note: string | null; rates: WorkerRate[]; fixedTotal: number };
+
+function WorkersTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { data, isFetching } = useQuery<{ workers: CWorker[]; projects: Project[] }>({
+    queryKey: ["cleaning-workers"], queryFn: () => get("/cleaning/workers"),
+  });
+  const [editing, setEditing] = useState<CWorker | "new" | null>(null);
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["cleaning-workers"] }); qc.invalidateQueries({ queryKey: ["cleaning-pnl"] }); };
+  const toggleActive = useMutation({
+    mutationFn: (w: CWorker) => patch(`/cleaning/workers/${w.id}`, { active: !w.active }),
+    onSuccess: invalidate, onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/cleaning/workers/${id}`),
+    onSuccess: () => { invalidate(); toast.success(t("Видалено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  if (isFetching && !data) return <Spinner />;
+  if (!data) return null;
+  const projById = new Map(data.projects.map(p => [p.id, p]));
+  const rateLabel = (r: WorkerRate) => {
+    const names = r.projectIds.map(pid => shortProj(projById.get(pid)?.name ?? `#${pid}`)).join(" + ") || t("podstawa");
+    return `${names} — ${r.amount != null ? `${fmt(r.amount)} zł` : `${r.pct}%`}`;
+  };
+  const active = data.workers.filter(w => w.active);
+  return (
+    <>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Badge color="slate">{active.length} {t("ос.")}</Badge>
+        <Badge color="green">{t("Фікс. разом/міс:")} {fmt(r2(active.reduce((s, w) => s + w.fixedTotal, 0)))} zł</Badge>
+        <div className="ml-auto">
+          <Button onClick={() => setEditing("new")}><Plus className="h-4 w-4" /> {t("Додати працівника")}</Button>
+        </div>
+      </div>
+      {editing && (
+        <WorkerModal row={editing === "new" ? null : editing} projects={data.projects} onClose={() => setEditing(null)} />
+      )}
+      {!data.workers.length ? (
+        <Empty>{t("Працівників ще немає — додай першого, і в «Винагродженнях» з'явиться кнопка заповнення місяця з довідника.")}</Empty>
+      ) : (
+        <Card className="overflow-x-auto p-0">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                <th className="px-4 py-2.5">{t("Працівник")}</th>
+                <th className="px-3 py-2.5">{t("Фірма")}</th>
+                <th className="px-3 py-2.5">{t("Посада")}</th>
+                <th className="px-3 py-2.5">{t("Вспульноти й оплата")}</th>
+                <th className="px-3 py-2.5 text-right">{t("Фікс./міс")}</th>
+                <th className="px-3 py-2.5">{t("Стан")}</th>
+                <th className="w-16 px-2" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {data.workers.map(w => (
+                <tr key={w.id} className={cn("group hover:bg-slate-50/60", !w.active && "opacity-50")}>
+                  <td className="px-4 py-2 font-medium text-slate-700">
+                    <button className="hover:underline" onClick={() => setEditing(w)}>{w.firstName} {w.lastName}</button>
+                    {w.note && <div className="text-[11px] font-normal text-slate-400">{w.note}</div>}
+                  </td>
+                  <td className="px-3 py-2"><Badge color="slate">Klinex</Badge></td>
+                  <td className="px-3 py-2"><Badge color="blue">sprzątanie</Badge></td>
+                  <td className="px-3 py-2">
+                    <div className="flex max-w-96 flex-wrap gap-1">
+                      {w.rates.length
+                        ? w.rates.map((r, i) => (
+                          <span key={i} className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] tabular-nums text-slate-600"
+                            title={r.projectIds.map(pid => projById.get(pid)?.name ?? `#${pid}`).join("\n")}>
+                            {rateLabel(r)}
+                          </span>
+                        ))
+                        : <span className="text-xs text-slate-400">—</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                    {w.fixedTotal ? fmt(w.fixedTotal) : w.rates.some(r => r.pct != null)
+                      ? <span className="font-normal text-slate-400">{r2(w.rates.reduce((s, r) => s + (r.pct ?? 0), 0))}%</span> : ""}
+                  </td>
+                  <td className="px-3 py-2">
+                    <button onClick={() => toggleActive.mutate(w)}>
+                      {w.active ? <Badge color="green">{t("активний")}</Badge> : <Badge color="slate">{t("неактивний")}</Badge>}
+                    </button>
+                  </td>
+                  <td className="px-2 text-right whitespace-nowrap">
+                    <button className="invisible rounded p-1 text-slate-300 hover:bg-slate-100 hover:text-slate-600 group-hover:visible"
+                      title={t("Редагувати")} onClick={() => setEditing(w)}><Pencil className="h-3.5 w-3.5" /></button>
+                    <button className="invisible rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-500 group-hover:visible"
+                      title={t("Видалити")}
+                      onClick={async () => { if (await confirm({ title: t("Видалити працівника?"), message: `${w.firstName} ${w.lastName}`, danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      <p className="mt-3 text-xs text-slate-400">
+        {t("Позиція оплати — одна чи кілька вспульнот з сумою за позицію цілком, або % від місячної ЗП. Кнопка «З працівників» у Винагродженнях створює рядки місяця з цими сумами й поділом.")}
+      </p>
+    </>
+  );
+}
+
+function WorkerModal({ row, projects, onClose }: { row: CWorker | null; projects: Project[]; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [firstName, setFirstName] = useState(row?.firstName ?? "");
+  const [lastName, setLastName] = useState(row?.lastName ?? "");
+  const [note, setNote] = useState(row?.note ?? "");
+  const [mode, setMode] = useState<"amount" | "pct">(row?.rates.some(r => r.pct != null) ? "pct" : "amount");
+  const [rates, setRates] = useState<{ projectIds: number[]; value: string; note: string }[]>(
+    row?.rates.map(r => ({ projectIds: r.projectIds, value: String(r.amount ?? r.pct ?? ""), note: r.note ?? "" })) ?? []);
+  const setRate = (i: number, patchR: Partial<{ projectIds: number[]; value: string; note: string }>) =>
+    setRates(rs => rs.map((r, j) => j === i ? { ...r, ...patchR } : r));
+  const save = useMutation({
+    mutationFn: () => {
+      const body = {
+        firstName: firstName.trim(), lastName: lastName.trim(), note: note.trim() || null,
+        rates: rates.filter(r => r.value.trim() && (mode === "amount" || r.projectIds.length)).map(r => ({
+          projectIds: r.projectIds,
+          amount: mode === "amount" ? num(r.value) : null,
+          pct: mode === "pct" ? num(r.value) : null,
+          note: r.note.trim() || null,
+        })),
+      };
+      return row ? patch(`/cleaning/workers/${row.id}`, body) : post("/cleaning/workers", body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cleaning-workers"] });
+      qc.invalidateQueries({ queryKey: ["cleaning-pnl"] });
+      toast.success(row ? t("Збережено") : t("Додано")); onClose();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const fixedSum = mode === "amount" ? r2(rates.reduce((s, r) => s + (Number.isFinite(num(r.value)) ? num(r.value) : 0), 0)) : 0;
+  const pctSum = mode === "pct" ? r2(rates.reduce((s, r) => s + (Number.isFinite(num(r.value)) ? num(r.value) : 0), 0)) : 0;
+  return (
+    <Modal open onClose={onClose} title={row ? `${row.firstName} ${row.lastName}`.trim() : t("Додати працівника")} size="lg">
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t("Імʼя")}</Label><Input value={firstName} onChange={e => setFirstName(e.target.value)} autoFocus /></div>
+          <div><Label>{t("Прізвище")}</Label><Input value={lastName} onChange={e => setLastName(e.target.value)} /></div>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-500">
+          <Badge color="slate">Klinex</Badge>
+          <Badge color="blue">sprzątanie</Badge>
+          <span className="text-xs text-slate-400">{t("фірма й посада однакові для всіх працівників прибирання")}</span>
+        </div>
+        <div>
+          <div className="mb-1 flex items-center gap-3">
+            <Label>{t("Вспульноти й оплата")}</Label>
+            <div className="flex w-fit gap-1 rounded-lg bg-slate-100 p-0.5 text-[11px] font-medium">
+              {([["amount", t("Суми, zł")], ["pct", t("% поділ")]] as const).map(([k, label]) => (
+                <button key={k} type="button" onClick={() => setMode(k)}
+                  className={`rounded-md px-2 py-0.5 ${mode === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2">
+            {rates.map((r, i) => (
+              <div key={i} className="flex items-start gap-2 rounded-lg border border-slate-100 p-2">
+                <div className="flex flex-1 flex-wrap items-center gap-1">
+                  {r.projectIds.map(pid => {
+                    const p = projects.find(x => x.id === pid);
+                    return (
+                      <span key={pid} className="inline-flex items-center gap-0.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700" title={p?.name}>
+                        {shortProj(p?.name ?? `#${pid}`)}
+                        <button type="button" className="text-blue-300 hover:text-rose-500"
+                          onClick={() => setRate(i, { projectIds: r.projectIds.filter(x => x !== pid) })}>✕</button>
+                      </span>
+                    );
+                  })}
+                  <select value="" title={t("Додати вспульноту до позиції")}
+                    onChange={e => e.target.value && setRate(i, { projectIds: [...r.projectIds, Number(e.target.value)] })}
+                    className="w-6 cursor-pointer rounded-full border border-dashed border-slate-300 bg-transparent px-1 py-0.5 text-[11px] text-slate-400 hover:border-slate-400 hover:text-slate-600">
+                    <option value="">+</option>
+                    {projects.filter(p => p.active && !r.projectIds.includes(p.id)).map(p =>
+                      <option key={p.id} value={p.id}>{shortProj(p.name)}</option>)}
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Input value={r.value} onChange={e => setRate(i, { value: e.target.value })}
+                    inputMode="decimal" placeholder={mode === "amount" ? "2500" : "%"} className="w-24 text-right" />
+                  <span className="text-xs text-slate-400">{mode === "amount" ? "zł" : "%"}</span>
+                  <button type="button" className="rounded p-1 text-slate-300 hover:text-rose-500" onClick={() => setRates(rs => rs.filter((_, j) => j !== i))}>
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+            <Button variant="secondary" onClick={() => setRates(rs => [...rs, { projectIds: [], value: "", note: "" }])}>
+              <Plus className="h-4 w-4" /> {t("Додати позицію оплати")}
+            </Button>
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {mode === "amount"
+              ? `${t("Фікс. разом/міс:")} ${fmt(fixedSum)} zł · ${t("сума позиції — за всі її вспульноти разом; позиція без вспульнот — загальна podstawa")}`
+              : `${t("Σ відсотків:")} ${pctSum}% ${pctSum > 100 ? "⚠️" : ""} · ${t("ЗП місяця ділиться між вспульнотами за цими відсотками")}`}
+          </div>
+        </div>
+        <div><Label>{t("Примітка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} placeholder={t("необовʼязково")} /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} disabled={!firstName.trim() || (mode === "pct" && pctSum > 100)} onClick={() => save.mutate()}>
             {row ? t("Зберегти") : t("Додати")}
           </Button>
         </div>

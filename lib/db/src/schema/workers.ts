@@ -1733,16 +1733,45 @@ export const cleaningPayrollsTable = pgTable("cleaning_payrolls", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// ЗП людини ділиться ПОРІВНУ між привʼязаними вспульнотами (P&L по проєктах);
+// ЗП людини ділиться між привʼязаними вспульнотами (P&L по проєктах): share —
+// вага поділу (з позицій оплат працівника; NULL у всіх = порівну, як раніше);
 // без привʼязок — «нерозподілене» у P&L.
 export const cleaningPayrollProjectsTable = pgTable("cleaning_payroll_projects", {
   id: serial("id").primaryKey(),
   payrollId: integer("payroll_id").notNull().references(() => cleaningPayrollsTable.id, { onDelete: "cascade" }),
   projectId: integer("project_id").notNull().references(() => cleaningProjectsTable.id),
+  share: real("share"), // вага поділу ЗП (zł фіксованої позиції або % — відносні числа)
 }, t => [uniqueIndex("cleaning_payroll_projects_uniq").on(t.payrollId, t.projectId)]);
+
+// Працівники прибирання — власний легкий довідник (НЕ workers: без бота/графіків/
+// документів; фірма Klinex і посада sprzątanie — статичні атрибути всіх, у БД не
+// зберігаються). Оплата — позиціями в cleaning_worker_rates.
+export const cleaningWorkersTable = pgTable("cleaning_workers", {
+  id: serial("id").primaryKey(),
+  firstName: text("first_name").notNull(),
+  lastName: text("last_name").notNull().default(""),
+  active: boolean("active").notNull().default(true),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Позиція оплати працівника прибирання: одна або кілька вспульнот (project_ids
+// jsonb: number[]) з фіксованою сумою за позицію ЦІЛКОМ (amount zł/міс — «3
+// вспульноти за 2500») АБО відсотком від місячної ЗП (pct). Режими в межах
+// людини не змішуються; Σpct ≤ 100.
+export const cleaningWorkerRatesTable = pgTable("cleaning_worker_rates", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => cleaningWorkersTable.id, { onDelete: "cascade" }),
+  projectIds: jsonb("project_ids").notNull().default([]),
+  amount: real("amount"),
+  pct: real("pct"),
+  note: text("note"),
+});
 
 export type CleaningProject = typeof cleaningProjectsTable.$inferSelect;
 export type CleaningPayroll = typeof cleaningPayrollsTable.$inferSelect;
+export type CleaningWorker = typeof cleaningWorkersTable.$inferSelect;
+export type CleaningWorkerRate = typeof cleaningWorkerRatesTable.$inferSelect;
 
 export type DayOfWeek = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type Shift = "1" | "2" | "3" | "4" | "5" | "6";
