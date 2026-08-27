@@ -17,7 +17,8 @@ import {
 } from "@workspace/db";
 import { and, eq, desc, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
-import { officeCost, CLEANING_OFFICE_RE } from "./pnl";
+import { CLEANING_OFFICE_RE } from "./pnl";
+import { calcPayroll } from "../lib/payroll";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -603,14 +604,21 @@ router.get("/cleaning/pnl", async (req, res) => {
   const expenses = await expensesForMonths((col: any) => sql`${col} LIKE ${like}`);
   for (const e of expenses) bump(e.projectId, e.month, "expenses", e.amount);
 
-  // офіційна ЗП прибиральників — OFFICE KLINEX-вкладка зведених ЗП (Sidor,
-  // Zilińska, Dębski): брутто + ZUS роботодавця для статусу ZUS. З main-P&L
+  // Офіційні умови прибиральників — OFFICE KLINEX-вкладка зведених ЗП (Sidor,
+  // Zilińska, Dębski). Нетто їм переказом НЕ висилається (перевірено по витягах
+  // 27.08.2026) — реальні гроші людям ідуть готівкою і ВЖЕ пораховані вкладкою
+  // «Винагродження», тож у кошт прибирання лягають лише ПОДАТКИ умови:
+  // ZUS+здоровʼя працівника (брутто − нетто) + ZUS роботодавця. З main-P&L
   // (міста, actuals) ці рядки виключені (routes/pnl.ts, CLEANING_OFFICE_RE);
   // людина↔вспульноти тут не мапляться — іде в payroll «нерозподілено»
   const officeRows = (await db.select().from(payrollOfficeRowsTable)
     .where(sql`${payrollOfficeRowsTable.periodMonth} LIKE ${like}`))
     .filter(o => CLEANING_OFFICE_RE.test(o.section ?? ""));
-  for (const o of officeRows) bump(null, o.periodMonth, "payroll", officeCost(o.brutto, o.status));
+  for (const o of officeRows) {
+    if (!String(o.status ?? "").toUpperCase().includes("ZUS")) continue; // без ZUS податків нема
+    const p = calcPayroll(o.brutto ?? 0, false, false);
+    bump(null, o.periodMonth, "payroll", r2(p.eeTotal + p.erTotal));
+  }
 
   const months = [...new Set([...matrix.values()].flatMap(m => [...m.keys()]))].sort();
   const cellOut = (c: Cell | undefined) => c
