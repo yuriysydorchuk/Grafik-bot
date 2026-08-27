@@ -11,6 +11,8 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
+import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
+import { NATIONALITIES, NatFlag } from "../lib/nationality";
 
 export default function Workers() {
   const t = useT();
@@ -26,6 +28,9 @@ export default function Workers() {
   const [facFilter, setFacFilter] = useState("");
   const [coFilter, setCoFilter] = useState("");
   const [posFilter, setPosFilter] = useState("");
+  const [legFilter, setLegFilter] = useState("");
+  const [natFilter, setNatFilter] = useState("");
+  const [stud26Only, setStud26Only] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
@@ -61,8 +66,14 @@ export default function Workers() {
     (!facFilter || String(w.factoryId) === facFilter) &&
     (!coFilter || String(w.companyId) === coFilter) &&
     (!posFilter || String(w.positionId) === posFilter) &&
+    (!legFilter ||
+      (legFilter === "problem" ? (!w.legalStatus || w.legalStatus === "oczekuje")
+        : legFilter === "none" ? !w.legalStatus
+        : w.legalStatus === legFilter)) &&
+    (!natFilter || (natFilter === "none" ? !w.nationality : w.nationality === natFilter)) &&
+    (!stud26Only || !!w.stud26) &&
     (!q || w.fullName.toLowerCase().includes(q.toLowerCase()) || (w.workerCode ?? "").includes(q))
-  ), [workers, q, facFilter, coFilter, posFilter, showInactive]);
+  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, showInactive]);
 
   if (isLoading) return <Spinner />;
 
@@ -91,6 +102,20 @@ export default function Workers() {
           <option value="">{t("Усі посади")}</option>
           {positions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </Select>
+        <Select value={legFilter} onChange={e => setLegFilter(e.target.value)} className="w-48">
+          <option value="">{t("Легалізація: всі")}</option>
+          <option value="problem">{t("⚠️ Проблемні (без форми / не зголошені)")}</option>
+          <option value="none">{t("Без форми")}</option>
+          {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
+        </Select>
+        <Select value={natFilter} onChange={e => setNatFilter(e.target.value)} className="w-44">
+          <option value="">{t("Національність: всі")}</option>
+          <option value="none">{t("Без національності")}</option>
+          {NATIONALITIES.map(n => <option key={n.value} value={n.value}>{n.flag} {t(n.label)}</option>)}
+        </Select>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={stud26Only} onChange={e => setStud26Only(e.target.checked)} /> {t("Студ. до 26")}
+        </label>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> {t("Звільнені")}
         </label>
@@ -103,19 +128,21 @@ export default function Workers() {
 
       <Card className="overflow-x-auto">
         {filtered.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : (
-          <table className="w-full min-w-130 text-sm">
+          <table className="w-full min-w-150 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
+              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filtered.map(w => (
-                <tr key={w.id} className="hover:bg-slate-50">
+                <tr key={w.id} className={rowTint(w)}>
                   <td className="px-4 py-2.5 font-medium">
                     <Link href={`/workers/${w.id}`} className="text-red-700 underline-offset-2 hover:underline">{w.fullName}</Link>
                     {w.gender && <span className={`ml-1.5 font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
+                    <NatFlag value={w.nationality} className="ml-1.5 cursor-default" />
                   </td>
                   <td className="px-4 py-2.5 font-mono text-slate-500">{w.workerCode ?? "—"}</td>
                   <td className="px-4 py-2.5">{w.positionName ? <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span> : <span className="text-slate-300">—</span>}</td>
+                  <td className="px-4 py-2.5"><LegalCell w={w} /></td>
                   <td className="px-4 py-2.5">{w.companyName ? <Badge color="blue">{w.companyName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.factoryName ? <Badge color="red">{w.factoryName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.telegramId ? <Badge color="green">✓</Badge> : <Badge color="amber">{t("не приєднаний")}</Badge>}</td>
@@ -141,6 +168,30 @@ export default function Workers() {
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport) => fire.mutate({ id: firing.id, offerReport })} />}
     </>
   );
+}
+
+// Підсвітка проблемних рядків: не зголошений (oczekuje) → rose; без форми
+// легалізації → amber (не студент, «не оформлений») / yellow (студент — форму
+// просто не заповнили). Дзеркало логіки unlegalized в Обліку годин.
+const rowTint = (w: Worker) =>
+  w.legalStatus === "oczekuje" ? "bg-rose-50/60 hover:bg-rose-50"
+  : !w.legalStatus ? (w.student ? "bg-yellow-50/60 hover:bg-yellow-50" : "bg-amber-50/60 hover:bg-amber-50")
+  : "hover:bg-slate-50";
+
+// Бейдж форми легалізації: канонічні статуси — компактні бейджі сводної
+// (zus там свідомо без бейджа — у списку показуємо нейтральний «ZUS», щоб
+// стандартний випадок не виглядав як «без форми»)
+function LegalCell({ w }: { w: Worker }) {
+  const t = useT();
+  const s = w.legalStatus as LegalStatus | null | undefined;
+  if (s && (LEGAL_STATUSES as readonly string[]).includes(s)) {
+    const b = LEGAL_BADGE[s as LegalStatus];
+    return <span title={t(LEGAL_LABEL[s as LegalStatus])} className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-semibold ${b ? b.cls : "bg-slate-100 text-slate-600"}`}>{b ? b.short : "ZUS"}</span>;
+  }
+  if (s) return <span className="text-xs text-slate-500">{s}</span>; // legacy-статус поза каталогом — показуємо як є
+  return w.student
+    ? <span title={t("Студент — форма легалізації не заповнена")} className="inline-block rounded bg-yellow-100 px-1.5 py-0.5 text-[11px] font-semibold text-yellow-700">{t("без форми")}</span>
+    : <span title={t("Не оформлений — без форми легалізації")} className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">{t("без форми")}</span>;
 }
 
 // Firing confirm with the "offer a farewell report" option: the leaver gets inline

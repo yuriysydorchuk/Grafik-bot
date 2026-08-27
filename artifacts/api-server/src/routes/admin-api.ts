@@ -317,16 +317,26 @@ router.get("/workers", RW, async (req, res) => {
       gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
+      legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
     })
     .from(workersTable)
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .orderBy(workersTable.fullName))
-    .map(r => ({
-      ...r,
-      companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
-      positionName: r.positionId ? (posMap.get(r.positionId)?.name ?? null) : null,
-      positionColor: r.positionId ? (posMap.get(r.positionId)?.color ?? null) : null,
-    }));
+    .map(({ birthDate, ...r }) => {
+      // форма легалізації + похідні статуси для фільтрів/підсвітки списку —
+      // доступні всім ролям (як і в профілі); сирі payroll-поля лишаються owner-only
+      const legalStatus = normalizeProfileLegal(r.legalStatus) ?? r.legalStatus;
+      const s26 = stud26Of({ isStudent: r.isStudent, legalStatus, birthDate, under26: r.under26 });
+      return {
+        ...r,
+        legalStatus,
+        student: s26.isStudent,
+        stud26: s26.isStudent && s26.under26,
+        companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
+        positionName: r.positionId ? (posMap.get(r.positionId)?.name ?? null) : null,
+        positionColor: r.positionId ? (posMap.get(r.positionId)?.color ?? null) : null,
+      };
+    });
   const filtered = rows.filter(r => factoryId == null || r.factoryId === factoryId);
   // payroll fields are financial — owner only
   if (!canFinance(req)) {

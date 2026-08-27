@@ -82,6 +82,9 @@ export interface Worker {
   gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
+  legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми
+  student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)
+  stud26?: boolean; // похідне: студент І до 26 (вік з birth_date, фолбек under26)
   status: string; isActive: boolean; language?: string | null;
   gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
   pesel?: string | null; // 11 цифр текстом (з картотек nexo; матчинг ліст по PESEL)
