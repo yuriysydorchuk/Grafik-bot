@@ -625,9 +625,15 @@ router.delete("/svodni/factory-rules/:id", requireCap("viewFinance"), async (req
 // вшитий бонус перечитується від правила ДЕЛЬТОЮ поверх поточної ставки рядка
 // (ручні правки ставки не скидаються — міняється лише бонусна частина), далі
 // той самий ланцюжок, що ручна правка клітинки (computePayout →
-// applyLegalDefaults). Порізані рядки: дельта по кожному сегменту + сегментний
-// двигун. Залочені вкладки пропускаються. Рядки без factory_id (легасі-вкладки
-// без привʼязки) свідомо не чіпаються. dryRun — лише дифи для превʼю.
+// applyLegalDefaults). «Старий бонус» рядка БЕЗ маркера extras.facBonus — це
+// НЕ нуль: рядки до ери маркерів (синк з таблиць, до 20.08.2026) несуть бонус
+// вшитим у ставку за старим хардкодом, тож фолбек — бонус legacy-правила
+// (нуль подвоював би бонус: перша ж версія правила LST додала +1 до вже
+// бонусних 26,35 — інцидент 22.08.2026). Наслідок: перша версія, що повторює
+// legacy, гарантовано не рухає ставки. Порізані рядки: дельта по кожному
+// сегменту + сегментний двигун. Залочені вкладки пропускаються. Рядки без
+// factory_id (легасі-вкладки без привʼязки) свідомо не чіпаються. dryRun —
+// лише дифи для превʼю.
 type RuleImpactRow = {
   id: number; month: string; city: string; factoryLabel: string; name: string;
   locked: boolean; segmented: boolean;
@@ -653,6 +659,13 @@ async function factoryRuleRecompute(factoryId: number, fromMonth: string, dryRun
   const locksByMonth = new Map<string, LockRow[]>();
   for (const month of new Set(parents.map(p => p.periodMonth))) locksByMonth.set(month, await monthLocks(month));
   const r2 = (n: number) => Math.round(n * 100) / 100;
+  // вшитий бонус рядка без маркера facBonus — за legacy-правилом (див. шапку)
+  const legacyRule = legacyPayoutRule(factoryId, factory.name);
+  const oldBonusOf = (extras: unknown, w: typeof ws[number] | undefined, stud26: boolean, month: string, monthHours: number | null | undefined): number => {
+    const marked = (extras as Record<string, unknown> | null)?.facBonus;
+    if (typeof marked === "number") return marked;
+    return stud26 || !w ? 0 : factoryBonusPerHour(w, legacyRule, month, monthHours);
+  };
   const numish = (v: unknown) => typeof v === "number" ? r2(v) : v ?? null;
   const DIFF_KEYS = ["rateNetto", "doWyplaty", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const;
   const out: RuleImpactRow[] = [];
@@ -671,7 +684,7 @@ async function factoryRuleRecompute(factoryId: number, fromMonth: string, dryRun
       const monthHours = r2(rowSegs.reduce((a, s) => a + (s.hours ?? 0), 0));
       const nextSegs = rowSegs.map(s => {
         const segStud26 = !!(s.isStudent && s.under26);
-        const oldB = typeof (s.extras as any)?.facBonus === "number" ? (s.extras as any).facBonus as number : 0;
+        const oldB = oldBonusOf(s.extras, w, segStud26, row.periodMonth, monthHours);
         const newB = !segStud26 && w ? factoryBonusPerHour(w, rule, row.periodMonth, monthHours) : segStud26 ? 0 : oldB;
         const rateNetto = r2(newB) !== r2(oldB) && s.rateNetto != null ? r2(Math.max(0, s.rateNetto - oldB + newB)) : s.rateNetto;
         return { seg: s, newBonus: r2(newB), oldBonus: r2(oldB), rateNetto };
@@ -717,7 +730,7 @@ async function factoryRuleRecompute(factoryId: number, fromMonth: string, dryRun
     // звичайний рядок
     const merged: any = { ...row, extras: { ...(row.extras as Record<string, unknown>) } };
     const stud26 = merged.isStudent === true && merged.under26 === true;
-    const oldBonus = typeof merged.extras.facBonus === "number" ? merged.extras.facBonus as number : 0;
+    const oldBonus = oldBonusOf(merged.extras, w, stud26, row.periodMonth, row.hours);
     if (w && r2(stud26 ? 0 : factoryBonusPerHour(w, rule, row.periodMonth, row.hours)) !== r2(oldBonus)) {
       const newBonus = r2(stud26 ? 0 : factoryBonusPerHour(w, rule, row.periodMonth, row.hours));
       if (merged.rateNetto != null) merged.rateNetto = r2(Math.max(0, merged.rateNetto - oldBonus + newBonus));

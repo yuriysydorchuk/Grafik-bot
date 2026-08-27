@@ -14,8 +14,11 @@ const H = { "X-Requested-With": "grafik" } as const;
 beforeEach(async () => { if (hasTestDb) await resetDb(); });
 after(async () => { if (hasTestDb) await closeDb(); });
 
-async function seedFactory(name = "TESTOWA") {
-  const [f] = await db.insert(factoriesTable).values({ name, city: "Люблін" } as any).returning();
+// explicit id: серійний після resetDb стартує з 1 = LST_FACTORY_ID, а legacy-
+// бонуси ключуються по id (1 LST, 12/13 Agram) — тестова фабрика не має
+// випадково успадкувати чужі legacy-правила
+async function seedFactory(name = "TESTOWA", id = 100) {
+  const [f] = await db.insert(factoriesTable).values({ id, name, city: "Люблін" } as any).returning();
   return f!;
 }
 async function seedWorker(over: Record<string, unknown> = {}) {
@@ -141,4 +144,52 @@ test("recompute: готівковий бонус — дельта до став�
   assert.equal(july!.gotowka, 200, "бонус 2 × 100 год налом");
   const [aug] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row8.id));
   assert.equal(aug!.rateNetto, 25.35, "залочений рядок не змінено");
+});
+
+// Рядки до ери маркерів (синк 07.2026 і раніше): бонус ВЖЕ вшитий у ставку,
+// але extras.facBonus нема. «Старий бонус» для дельти — legacy-правило, не 0
+// (нуль додав би бонус ще раз: інцидент LST 22.08.2026 — 26,35 → 27,35).
+test("recompute: до-маркерний рядок з вшитим legacy-бонусом — перша версія-копія legacy не рухає ставку", opts, async () => {
+  const f = await seedFactory("AGRAM MOTYCZ", 12); // 12 ∈ AGRAM_FACTORY_IDS: legacy нал +1, стаж 30→1/60→1.5 від 160 год
+  const w = await seedWorker({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-04-01" });
+  // 170 год × (25,35 + вшиті 1 нал + 1,5 стаж = 27,85); konto по księgowій парі
+  const row = await seedSvodniRow(f.id, w.id, "2026-07", {
+    factoryLabel: "AGRAM MOTYCZ", hours: 170, rateNetto: 27.85, doWyplaty: 4734.5,
+    hoursDeclared: 170, ksiegBrutto: 5338, ksiegNetto: 4309.5, konto: 4309.5, gotowka: 425,
+  });
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  await request(app).post("/api/svodni/factory-rules").set("Cookie", owner).set(H)
+    .send({ factoryId: f.id, effectiveFrom: "2026-07-01", cashBonus: 1, stazBonus: true, stazMinHours: 160, stazSteps: [{ days: 30, add: 1 }, { days: 60, add: 1.5 }], premiaCash: true });
+
+  const rec = await request(app).post("/api/svodni/factory-rules/recompute").set("Cookie", owner).set(H)
+    .send({ factoryId: f.id, fromMonth: "2026-07" });
+  assert.equal(rec.status, 200);
+  assert.equal(rec.body.updated, 0, "правило-копія legacy: жодних змін (бонус не подвоївся)");
+  const [after1] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row.id));
+  assert.equal(after1!.rateNetto, 27.85, "ставка як була (НЕ 30,35)");
+  assert.equal((after1!.extras as any).facBonus, undefined, "без дельти маркер не штампується");
+});
+
+test("recompute: до-маркерний рядок — зміна бонусу дельтою від legacy-бази", opts, async () => {
+  const f = await seedFactory("AGRAM MOTYCZ", 12);
+  const w = await seedWorker({ agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-04-01" });
+  const row = await seedSvodniRow(f.id, w.id, "2026-07", {
+    factoryLabel: "AGRAM MOTYCZ", hours: 170, rateNetto: 27.85, doWyplaty: 4734.5,
+    hoursDeclared: 170, ksiegBrutto: 5338, ksiegNetto: 4309.5, konto: 4309.5, gotowka: 425,
+  });
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  // нал 1 → 2 (стаж без змін): вшитий legacy 2,5 → новий бонус 3,5, дельта +1
+  await request(app).post("/api/svodni/factory-rules").set("Cookie", owner).set(H)
+    .send({ factoryId: f.id, effectiveFrom: "2026-07-01", cashBonus: 2, stazBonus: true, stazMinHours: 160, stazSteps: [{ days: 30, add: 1 }, { days: 60, add: 1.5 }], premiaCash: true });
+  const rec = await request(app).post("/api/svodni/factory-rules/recompute").set("Cookie", owner).set(H)
+    .send({ factoryId: f.id, fromMonth: "2026-07" });
+  assert.equal(rec.status, 200);
+  assert.equal(rec.body.updated, 1);
+
+  const [after1] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row.id));
+  assert.equal(after1!.rateNetto, 28.85, "27,85 − старий 2,5 + новий 3,5");
+  assert.equal((after1!.extras as any).facBonus, 3.5);
+  assert.equal(after1!.doWyplaty, 4904.5, "170 × 28,85");
+  assert.equal(after1!.konto, 4309.5, "konto по księgowій парі не росте");
+  assert.equal(after1!.gotowka, 595, "весь бонус 3,5 × 170 — готівкою");
 });
