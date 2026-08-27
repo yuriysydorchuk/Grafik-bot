@@ -79,7 +79,10 @@ let reminderHour = 18;
 
 // Фінансові алерти йдуть головному адміну (не в ALERT_TELEGRAM_CHAT_ID — то канал
 // системних помилок). Best-effort: помилка відправки не має валити крон.
+// FINANCE_ALERTS_ENABLED=0 вимикає їх (локальна розробка: тестовий бот дублював
+// продові сповіщення головному адміну).
 async function sendFinanceAlerts(lines: string[]): Promise<void> {
+  if (process.env.FINANCE_ALERTS_ENABLED === "0" || process.env.FINANCE_ALERTS_ENABLED === "false") return;
   if (!lines.length) return;
   const shown = lines.slice(0, 10);
   if (lines.length > shown.length) shown.push(`…і ще ${lines.length - shown.length} подій — деталі на сторінці Витяги`);
@@ -94,6 +97,34 @@ async function sendFinanceAlerts(lines: string[]): Promise<void> {
 }
 
 export function getReminderHour(): number { return reminderHour; }
+
+// Повний цикл оперативного банк-синку: транзакції+баланси → same-day матчинг
+// KSeF-оплат і авансів → фінансові алерти головному адміну. Викликають і крон
+// (4×/день — PSD2-ліміт фонових звернень), і кнопка «Оновити зараз»
+// (routes/bank.ts) — щоб ручний синк не з'їдав події мовчки: раніше кнопка лише
+// вставляла рядки, а сповіщення й матчинг чекали наступного крону.
+export async function runBankApiSyncCycle(): Promise<import("./bankApi").BankApiSyncResult> {
+  const { syncBankApi } = await import("./bankApi");
+  const r = await syncBankApi();
+  if (r.inserted || r.errors.length) logger.info({ inserted: r.inserted, accounts: r.accounts, errors: r.errors.length }, "Bank API sync");
+  const alerts = [...r.alerts];
+  if (r.inserted) {
+    try {
+      const { matchKsefPayments, recentlyPaidByApi } = await import("./ksef");
+      if (await matchKsefPayments()) {
+        for (const p of await recentlyPaidByApi(30)) {
+          alerts.push(`✅ Фактура ${p.invoiceNumber} (${p.buyerName ?? "?"}) закрита переказом — ${p.gross.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł`);
+        }
+      }
+    } catch (e: any) { logger.warn({ err: e?.message }, "KSeF same-day match failed"); }
+    try {
+      const { autoMarkPaidAdvances } = await import("./advances");
+      alerts.push(...await autoMarkPaidAdvances());
+    } catch (e: any) { logger.warn({ err: e?.message }, "Advance auto-paid failed"); }
+  }
+  await sendFinanceAlerts(alerts);
+  return r;
+}
 
 export function startScheduler() {
   stopScheduler();
@@ -216,27 +247,8 @@ export function startScheduler() {
   bankApiTask = cron.schedule(
     "10 7,11,15,19 * * *",
     async () => {
-      try {
-        const { syncBankApi } = await import("./bankApi");
-        const r = await syncBankApi();
-        if (r.inserted || r.errors.length) logger.info({ inserted: r.inserted, accounts: r.accounts, errors: r.errors.length }, "Bank API sync");
-        const alerts = [...r.alerts];
-        if (r.inserted) {
-          try {
-            const { matchKsefPayments, recentlyPaidByApi } = await import("./ksef");
-            if (await matchKsefPayments()) {
-              for (const p of await recentlyPaidByApi(30)) {
-                alerts.push(`✅ Фактура ${p.invoiceNumber} (${p.buyerName ?? "?"}) закрита переказом — ${p.gross.toLocaleString("pl-PL", { minimumFractionDigits: 2 })} zł`);
-              }
-            }
-          } catch (e: any) { logger.warn({ err: e?.message }, "KSeF same-day match failed"); }
-          try {
-            const { autoMarkPaidAdvances } = await import("./advances");
-            alerts.push(...await autoMarkPaidAdvances());
-          } catch (e: any) { logger.warn({ err: e?.message }, "Advance auto-paid failed"); }
-        }
-        await sendFinanceAlerts(alerts);
-      } catch (e: any) { logger.warn({ err: e?.message }, "Bank API sync failed"); }
+      try { await runBankApiSyncCycle(); }
+      catch (e: any) { logger.warn({ err: e?.message }, "Bank API sync failed"); }
     },
     { timezone: TZ },
   );

@@ -13,7 +13,7 @@ import {
   getExpenseCats, invalidateExpenseCats, periodRange,
   T_INTERNAL, T_VATREF, T_VATMOVE, T_VATSPLIT_OUT, T_CASHDEP,
 } from "../services/bankClassify";
-import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, syncBankApi, validPsuType } from "../services/bankApi";
+import { ebConfigured, listAspsps, startAuth, completeAuth, importSession, revokeConsent, validPsuType } from "../services/bankApi";
 import { syncCounterparties, resolveBankCounterparties, normAlias, normIban } from "../services/counterparties";
 
 const router: IRouter = Router();
@@ -671,10 +671,12 @@ router.delete("/bank/api-consents/:id", async (req, res) => {
 });
 
 // Ручний синк (кнопка на /bank); крон робить те саме за розкладом
+// Той самий повний цикл, що й крон (синк → матчинг оплат/авансів → алерти) —
+// ручне «Оновити зараз» не має з'їдати події мовчки
 router.post("/bank/api-sync", async (_req, res) => {
   try {
-    const r = await syncBankApi();
-    ok(res, r);
+    const { runBankApiSyncCycle } = await import("../services/scheduler");
+    ok(res, await runBankApiSyncCycle());
   } catch (e: any) { logger.error({ err: e?.message }, "bank api sync failed"); fail(res, 500, e?.message || "sync failed"); }
 });
 
