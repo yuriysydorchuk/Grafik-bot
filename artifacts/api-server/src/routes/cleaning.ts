@@ -12,11 +12,12 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   cleaningProjectsTable, cleaningPayrollsTable, cleaningPayrollProjectsTable,
-  cleaningWorkersTable, cleaningWorkerRatesTable,
+  cleaningWorkersTable, cleaningWorkerRatesTable, payrollOfficeRowsTable,
   invoicesTable, ksefInvoicesTable, cashEntriesTable, cashCategoriesTable, companiesTable,
 } from "@workspace/db";
 import { and, eq, desc, inArray, sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
+import { officeCost, CLEANING_OFFICE_RE } from "./pnl";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -601,6 +602,15 @@ router.get("/cleaning/pnl", async (req, res) => {
 
   const expenses = await expensesForMonths((col: any) => sql`${col} LIKE ${like}`);
   for (const e of expenses) bump(e.projectId, e.month, "expenses", e.amount);
+
+  // офіційна ЗП прибиральників — OFFICE KLINEX-вкладка зведених ЗП (Sidor,
+  // Zilińska, Dębski): брутто + ZUS роботодавця для статусу ZUS. З main-P&L
+  // (міста, actuals) ці рядки виключені (routes/pnl.ts, CLEANING_OFFICE_RE);
+  // людина↔вспульноти тут не мапляться — іде в payroll «нерозподілено»
+  const officeRows = (await db.select().from(payrollOfficeRowsTable)
+    .where(sql`${payrollOfficeRowsTable.periodMonth} LIKE ${like}`))
+    .filter(o => CLEANING_OFFICE_RE.test(o.section ?? ""));
+  for (const o of officeRows) bump(null, o.periodMonth, "payroll", officeCost(o.brutto, o.status));
 
   const months = [...new Set([...matrix.values()].flatMap(m => [...m.keys()]))].sort();
   const cellOut = (c: Cell | undefined) => c

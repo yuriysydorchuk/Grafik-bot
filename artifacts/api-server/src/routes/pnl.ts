@@ -160,10 +160,14 @@ const monthBounds = (month: string) => {
   const days = new Date(Date.UTC(y!, m!, 0)).getUTCDate();
   return { start: `${month}-01`, end: `${month}-${String(days).padStart(2, "0")}` };
 };
-const officeCost = (brutto: number | null, status: string | null) => {
+export const officeCost = (brutto: number | null, status: string | null) => {
   const b = brutto ?? 0;
   return round2(b + (String(status ?? "").toUpperCase().includes("ZUS") ? b * EMPLOYER_ZUS_RATE : 0));
 };
+// Секція/вкладка OFFICE KLINEX — прибиральники (Sidor, Zilińska, Dębski):
+// їхня офіційна ЗП — кошт бізнесу прибирання (/cleaning/pnl), у main-P&L
+// (міста, actuals) її нема (рішення власника 27.08.2026)
+export const CLEANING_OFFICE_RE = /OFFICE\s+KLINEX/i;
 
 router.get("/pnl/cities", async (req, res) => {
   const month = validMonth(req.query.month) ? String(req.query.month) : null;
@@ -238,6 +242,7 @@ router.get("/pnl/cities", async (req, res) => {
   type StaffRow = { personKey: string; personName: string; firms: string[]; defaultCity: string; cost: number; allocations: { city: string; pct: number }[] };
   const staffByKey = new Map<string, StaffRow>();
   for (const o of officeRows) {
+    if (CLEANING_OFFICE_RE.test(o.section ?? "")) continue; // прибиральники → /cleaning
     const k = personKeyOf(o.name);
     const cost = officeCost(o.brutto, o.status);
     const s = staffByKey.get(k) ?? staffByKey.set(k, {
@@ -401,6 +406,7 @@ router.get("/pnl/actuals", async (req, res) => {
   const office = { konto: 0, cash: 0, unsplit: 0 };   // офісні вкладки
   let advances = 0;
   for (const r of sv) {
+    if (CLEANING_OFFICE_RE.test(r.factoryLabel)) continue; // виплати прибиральникам — не офіс main-бізнесу
     const dst = OFFICE_TAB_RE.test(r.factoryLabel) ? office : pay;
     if (r.konto == null && r.gotowka == null) dst.unsplit = round2(dst.unsplit + (r.doWyplaty ?? 0));
     else { dst.konto = round2(dst.konto + (r.konto ?? 0)); dst.cash = round2(dst.cash + (r.gotowka ?? 0)); }
