@@ -31,6 +31,8 @@ const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const validDate = (d: any) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
+// суми приходять і копіпастом («2 000», «4 733,00» з NBSP) — пробіли не мають валити запис
+const parseAmount = (v: unknown) => Number(String(v ?? "").replace(/\s/g, "").replace(",", "."));
 const MANUAL = "manual";
 
 // Physical cash boxes: the office safe (sheet-synced, per firm) and the owners'
@@ -297,7 +299,7 @@ router.post("/cash/entries", async (req, res) => {
   if (box === "office" && !companyId) return fail(res, 400, "companyId required");
   if (!KINDS.includes(kind)) return fail(res, 400, `kind must be ${KINDS.join("|")}`);
   if (!validDate(entryDate)) return fail(res, 400, "entryDate must be YYYY-MM-DD");
-  const amt = Number(String(amount ?? "").replace(",", "."));
+  const amt = parseAmount(amount);
   if (!Number.isFinite(amt) || amt < 0 || (kind !== "opening" && amt <= 0)) return fail(res, 400, "amount must be > 0");
   if (box === "office") {
     const [co] = await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, Number(companyId)));
@@ -329,7 +331,7 @@ router.patch("/cash/entries/:id", async (req, res) => {
   }
   if (b.kind !== undefined) { if (!KINDS.includes(b.kind)) return fail(res, 400, `kind must be ${KINDS.join("|")}`); patch.kind = b.kind; }
   if (b.amount !== undefined) {
-    const amt = Number(String(b.amount).replace(",", "."));
+    const amt = parseAmount(b.amount);
     const kind = (patch.kind as string) ?? row.kind;
     if (!Number.isFinite(amt) || amt < 0 || (kind !== "opening" && amt <= 0)) return fail(res, 400, "amount must be > 0");
     patch.amount = amt;
@@ -370,7 +372,7 @@ router.post("/cash/transfer", async (req, res) => {
   if (from === to) return fail(res, 400, "from and to must differ");
   if (from === "bank" && to === "bank") return fail(res, 400, "bank↔bank is not a cash transfer");
   if (!validDate(entryDate)) return fail(res, 400, "entryDate must be YYYY-MM-DD");
-  const amt = Number(String(amount ?? "").replace(",", "."));
+  const amt = parseAmount(amount);
   if (!Number.isFinite(amt) || amt <= 0) return fail(res, 400, "amount must be > 0");
   const officeInvolved = from === "office" || to === "office";
   if (officeInvolved && !companyId) return fail(res, 400, "companyId required for the office leg");

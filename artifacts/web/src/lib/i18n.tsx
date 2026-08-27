@@ -2122,6 +2122,8 @@ const EN: Record<string, string> = {
   "— оберіть категорію —": "— pick a category —",
   "Опис (кому / за що)": "Description (to whom / what for)",
   "Для цієї категорії опис обовʼязковий": "This category requires a description",
+  "Некоректна сума": "Invalid amount",
+  "Не вдалося зберегти": "Save failed",
   "Новий запис каси": "New cash entry",
   "Видалити переміщення (обидва записи)?": "Delete the transfer (both legs)?",
   "Переміщення готівки": "Cash transfer",

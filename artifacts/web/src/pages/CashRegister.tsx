@@ -31,6 +31,8 @@ interface PayrollGroup { key: string; label: string; city: string | null; payrol
 interface PayrollRec { kasaMonth: string; svodniMonth: string; groups: PayrollGroup[]; kasaTotal: number; svodniTotal: number; diffTotal: number }
 
 const zl = (n: number) => `${(n ?? 0).toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
+// суми часто вставляють з таблиць/банку («2 000», «4 733,00» з NBSP) — нормалізуємо перед відправкою
+const normAmount = (s: string) => s.replace(/\s/g, "").replace(",", ".");
 const MONTHS_UK = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const BOX_LABELS: Record<string, string> = { office: "Каса офісу", yuriy: "Сейф Юрія", tetiana: "Сейф Тетяни", hostel: "Каса хостелів" };
 // фолбеки класифікації і службові ключі — не видаляються (дзеркало PROTECTED_CASH_KEYS)
@@ -418,14 +420,18 @@ function TransferModal({ companies, defaultFrom, onClose, onSaved }: {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const officeInvolved = from === "office" || to === "office";
-  const valid = from !== to && !!amount && !!entryDate && (!officeInvolved || !!companyId) && !(from === "bank" && to === "bank");
+  const amtNum = Number(normAmount(amount));
+  const amountOk = !!amount && Number.isFinite(amtNum) && amtNum > 0;
+  const valid = from !== to && amountOk && !!entryDate && (!officeInvolved || !!companyId) && !(from === "bank" && to === "bank");
   const save = async () => {
-    setBusy(true);
+    setBusy(true); setErr("");
     try {
-      await post("/cash/transfer", { from, to, companyId: officeInvolved ? Number(companyId) : null, entryDate, amount, note });
+      await post("/cash/transfer", { from, to, companyId: officeInvolved ? Number(companyId) : null, entryDate, amount: normAmount(amount), note });
       onSaved();
-    } finally { setBusy(false); }
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
   };
   return (
     <Modal open title={t("Переміщення готівки")} onClose={onClose}>
@@ -448,12 +454,14 @@ function TransferModal({ companies, defaultFrom, onClose, onSaved }: {
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Дата")}</div>
           <Input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} /></label>
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Сума")}</div>
-          <Input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" /></label>
+          <Input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
+          {!!amount && !amountOk && <div className="mt-1 text-xs text-rose-600">{t("Некоректна сума")}</div>}</label>
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Нотатка")}</div>
           <Input value={note} onChange={e => setNote(e.target.value)} /></label>
         {(from === "bank" || to === "bank") && (
           <div className="text-xs text-slate-500">{t("Рух з/на рахунок створює лише запис у касі — банківська частина підтягнеться з витягу і звіриться автоматично")}</div>
         )}
+        {err && <div className="text-sm text-rose-600">{t("Не вдалося зберегти")}: {err}</div>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={busy} disabled={!valid} onClick={save}>{t("Перемістити")}</Button>
@@ -482,23 +490,27 @@ function EntryModal({ companies, entry, defaultCompany, defaultBox, boxLocked, o
   const [inSource, setInSource] = useState(entry?.kind === "in" && entryCat && entryCat !== "card" ? "extra" : "card");
   const [inCat, setInCat] = useState(entry?.kind === "in" && entryCat !== "card" ? entryCat : "");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const isOffice = box === "office";
   // deposit іде через «Переміщення», legacy salary для нових записів не пропонуємо
   const outOptions = outCats.filter(c => c.key !== "deposit" && c.payroll !== "legacy");
   const inOptions = inCats.filter(c => c.key !== "card");
   const category = kind === "out" ? outCat : kind === "in" ? (inSource === "card" ? "card" : inCat) : "";
   const needsDesc = !!category && !!byKey(category)?.requiresDesc;
-  const valid = !!amount && !!entryDate && (!isOffice || !!companyId)
+  const amtNum = Number(normAmount(amount));
+  const amountOk = !!amount && Number.isFinite(amtNum) && (kind === "opening" ? amtNum >= 0 : amtNum > 0);
+  const valid = amountOk && !!entryDate && (!isOffice || !!companyId)
     && (kind === "opening" || !!category)
     && (!needsDesc || !!description.trim());
   const save = async () => {
-    setBusy(true);
+    setBusy(true); setErr("");
     try {
-      const body = { box, companyId: isOffice ? Number(companyId) : null, entryDate, kind, amount, description, note, category: kind === "opening" ? null : category };
+      const body = { box, companyId: isOffice ? Number(companyId) : null, entryDate, kind, amount: normAmount(amount), description, note, category: kind === "opening" ? null : category };
       if (entry) await patch(`/cash/entries/${entry.id}`, body);
       else await post("/cash/entries", body);
       onSaved();
-    } finally { setBusy(false); }
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
   };
   return (
     <Modal open title={entry ? t("Редагувати запис") : t("Новий запис каси")} onClose={onClose}>
@@ -544,7 +556,8 @@ function EntryModal({ companies, entry, defaultCompany, defaultBox, boxLocked, o
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Дата")}</div>
           <Input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} /></label>
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Сума")}</div>
-          <Input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" /></label>
+          <Input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
+          {!!amount && !amountOk && <div className="mt-1 text-xs text-rose-600">{t("Некоректна сума")}</div>}</label>
         <label className="block">
           <div className="mb-1 text-xs font-medium text-slate-500">{t("Опис (кому / за що)")}{needsDesc && <span className="ml-1 text-rose-500">*</span>}</div>
           <Input value={description} onChange={e => setDescription(e.target.value)} />
@@ -552,6 +565,7 @@ function EntryModal({ companies, entry, defaultCompany, defaultBox, boxLocked, o
         </label>
         <label className="block"><div className="mb-1 text-xs font-medium text-slate-500">{t("Нотатка")}</div>
           <Input value={note} onChange={e => setNote(e.target.value)} /></label>
+        {err && <div className="text-sm text-rose-600">{t("Не вдалося зберегти")}: {err}</div>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={busy} disabled={!valid} onClick={save}>{t("Зберегти")}</Button>
