@@ -2778,6 +2778,8 @@ const EN: Record<string, string> = {
   "Створено рядків:": "Rows created:",
   "пропущено (вже є):": "skipped (already exist):",
   "Створити рядки місяця з довідника працівників: podstawa = сума фіксованих позицій, вспульноти — з поділом за позиціями. Наявні рядки не чіпаються.": "Create month rows from the worker directory: podstawa = sum of fixed positions, communities linked with the position split. Existing rows are left untouched.",
+  "Податки ZUS (офіційні умови)": "ZUS taxes (official contracts)",
+  "ZUS+здоровʼя працівника + ZUS роботодавця з офіційних умов Klinex (нетто не висилається — готівка вже у Винагородженнях)": "Employee ZUS+health + employer ZUS from the official Klinex contracts (net is not transferred — cash is already counted in Wages)",
   "Складові (доплати «+», відрахування «−»)": "Components (additions “+”, deductions “−”)",
   "підпис (plewienie, komornik…)": "label (plewienie, komornik…)",
   "Додати складову": "Add component",

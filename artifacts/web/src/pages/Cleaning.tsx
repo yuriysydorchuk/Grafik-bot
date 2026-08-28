@@ -40,6 +40,7 @@ type PnlData = {
   year: string; months: string[];
   projects: { id: number; name: string; nip: string | null; active: boolean; byMonth: Record<string, PnlCell>; totals: PnlCell }[];
   common: { byMonth: Record<string, PnlCell>; totals: PnlCell };
+  zusOffice: { byMonth: Record<string, PnlCell>; totals: PnlCell };
   totalsByMonth: Record<string, PnlCell>; totals: PnlCell;
 };
 
@@ -865,6 +866,8 @@ function MonthDetail({ data, month }: { data: PnlData; month: string }) {
     .sort((a, b) => b.c.revenue - a.c.revenue);
   const common = cell(data.common);
   if (common.revenue || common.payroll || common.expenses) rows.push({ id: null, name: t("Загальні / нерозподілені"), c: common });
+  const zus = cell(data.zusOffice);
+  if (zus.payroll) rows.push({ id: null, name: t("Податки ZUS (офіційні умови)"), c: zus });
   const totals = data.totalsByMonth[month] ?? { revenue: 0, payroll: 0, expenses: 0, margin: 0 };
   const pct = (c: PnlCell) => c.revenue > 0 ? `${Math.round(100 * c.margin / c.revenue)}%` : "—";
   return (
@@ -884,7 +887,7 @@ function MonthDetail({ data, month }: { data: PnlData; month: string }) {
           {!rows.length ? (
             <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">{t("У цьому місяці даних немає")}</td></tr>
           ) : rows.map(r => (
-            <tr key={r.id ?? "common"} className={cn("hover:bg-slate-50/60", r.id == null && "bg-slate-50/60 text-slate-500")}>
+            <tr key={r.id ?? r.name} className={cn("hover:bg-slate-50/60", r.id == null && "bg-slate-50/60 text-slate-500")}>
               <td className="max-w-72 truncate px-4 py-2 font-medium text-slate-700" title={r.name}>{r.id == null ? r.name : shortProj(r.name)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{r.c.revenue ? fmt(r.c.revenue) : "·"}</td>
               <td className="px-3 py-2 text-right tabular-nums text-slate-500">{r.c.payroll ? fmt(r.c.payroll) : "·"}</td>
@@ -946,6 +949,19 @@ function YearMatrix({ data, metric, mLabel }: { data: PnlData; metric: "margin" 
                   return <td key={m} className={cn("px-3 py-2 text-right tabular-nums", cellCls(v))}>{v ? fmt(v) : "·"}</td>;
                 })}
                 <td className={cn("px-4 py-2 text-right font-semibold tabular-nums", cellCls(data.common.totals[metric]))}>{fmt(data.common.totals[metric])}</td>
+              </tr>
+            )}
+            {data.zusOffice.totals.payroll !== 0 && (
+              <tr className="bg-slate-50/60">
+                <td className="sticky left-0 bg-slate-50 px-4 py-2 font-medium text-slate-500"
+                  title={t("ZUS+здоровʼя працівника + ZUS роботодавця з офіційних умов Klinex (нетто не висилається — готівка вже у Винагородженнях)")}>
+                  {t("Податки ZUS (офіційні умови)")}
+                </td>
+                {data.months.map(m => {
+                  const v = data.zusOffice.byMonth[m]?.[metric] ?? 0;
+                  return <td key={m} className={cn("px-3 py-2 text-right tabular-nums", cellCls(v))}>{v ? fmt(v) : "·"}</td>;
+                })}
+                <td className={cn("px-4 py-2 text-right font-semibold tabular-nums", cellCls(data.zusOffice.totals[metric]))}>{fmt(data.zusOffice.totals[metric])}</td>
               </tr>
             )}
           </tbody>

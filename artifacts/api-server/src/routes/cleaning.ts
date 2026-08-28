@@ -614,10 +614,12 @@ router.get("/cleaning/pnl", async (req, res) => {
   const officeRows = (await db.select().from(payrollOfficeRowsTable)
     .where(sql`${payrollOfficeRowsTable.periodMonth} LIKE ${like}`))
     .filter(o => CLEANING_OFFICE_RE.test(o.section ?? ""));
+  // окремий ключ -1 — щоб у P&L це був ВИДИМИЙ рядок «Податки ZUS (офіційні
+  // умови)», а не безіменна частина «нерозподіленого»
   for (const o of officeRows) {
     if (!String(o.status ?? "").toUpperCase().includes("ZUS")) continue; // без ZUS податків нема
     const p = calcPayroll(o.brutto ?? 0, false, false);
-    bump(null, o.periodMonth, "payroll", r2(p.eeTotal + p.erTotal));
+    bump(-1, o.periodMonth, "payroll", r2(p.eeTotal + p.erTotal));
   }
 
   const months = [...new Set([...matrix.values()].flatMap(m => [...m.keys()]))].sort();
@@ -645,11 +647,16 @@ router.get("/cleaning/pnl", async (req, res) => {
     byMonth: Object.fromEntries(months.map(m => [m, cellOut(commonByMonth.get(m))])),
     totals: cellOut(sumCells(months.map(m => commonByMonth.get(m)))),
   };
+  const zusByMonth = matrix.get(-1) ?? new Map<string, Cell>();
+  const zusOffice = {
+    byMonth: Object.fromEntries(months.map(m => [m, cellOut(zusByMonth.get(m))])),
+    totals: cellOut(sumCells(months.map(m => zusByMonth.get(m)))),
+  };
   const totalsByMonth = Object.fromEntries(months.map(m =>
     [m, cellOut(sumCells([...matrix.values()].map(x => x.get(m))))]));
   const totals = cellOut(sumCells([...matrix.values()].flatMap(x => [...x.values()])));
 
-  ok(res, { year, months, projects: projRows, common, totalsByMonth, totals });
+  ok(res, { year, months, projects: projRows, common, zusOffice, totalsByMonth, totals });
 });
 
 export default router;
