@@ -856,6 +856,85 @@ router.get("/workers/:id", RW, async (req, res) => {
   });
 });
 
+// Аванси працівника — для блоку на сторінці профілю (той самий гейт, що /advances)
+router.get("/workers/:id/advances", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const rows = await db
+    .select({
+      id: advanceRequestsTable.id, amount: advanceRequestsTable.amount,
+      status: advanceRequestsTable.status, comment: advanceRequestsTable.comment,
+      reqFactoryId: advanceRequestsTable.factoryId,
+      payoutMonth: advanceRequestsTable.payoutMonth, payoutGroup: advanceRequestsTable.payoutGroup,
+      paidAt: advanceRequestsTable.paidAt, paidMethod: advanceRequestsTable.paidMethod,
+      svodniMonth: advanceRequestsTable.svodniMonth, createdAt: advanceRequestsTable.createdAt,
+    })
+    .from(advanceRequestsTable)
+    .where(eq(advanceRequestsTable.workerId, id))
+    .orderBy(desc(advanceRequestsTable.id))
+    .limit(60);
+  const w = (await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, id)))[0];
+  const facAll = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facNameById = new Map(facAll.map(f => [f.id, f.name]));
+  const paidTotal = Math.round(rows.filter(r => r.paidAt).reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  ok(res, {
+    paidTotal,
+    rows: rows.map(({ reqFactoryId, ...r }) => {
+      const factoryId = reqFactoryId ?? w?.factoryId ?? null;
+      return { ...r, factory: factoryId != null ? facNameById.get(factoryId) ?? null : null };
+    }),
+  });
+});
+
+// Пропуски працівника з усіх затверджених тижнів — блок на сторінці профілю
+router.get("/workers/:id/absences", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const rows = await db
+    .select({
+      entryId: scheduleEntriesTable.id, factory: factoriesTable.name,
+      day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
+      reason: scheduleEntriesTable.absenceReason,
+      excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
+      deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
+      weekStart: scheduleWeeksTable.weekStart,
+    })
+    .from(scheduleEntriesTable)
+    .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(eq(scheduleEntriesTable.workerId, id), eq(scheduleEntriesTable.status, "absent"), eq(scheduleWeeksTable.status, "approved")));
+  const absences = rows
+    .map(r => ({
+      entryId: r.entryId, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), shift: r.shift,
+      reason: r.reason, excused: !!r.reason, justified: !!r.excusedFlag,
+      penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
+      deductedMonth: r.deductedMonth, deductedAmount: r.deductedAmount,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 60);
+  const counted = absences.filter(a => !a.justified);
+  const penaltyTotal = Math.round(absences.reduce((s, a) => s + a.penalty, 0) * 100) / 100;
+  ok(res, { total: counted.length, justified: absences.length - counted.length, penaltyTotal, absences });
+});
+
+// Місяці сводної працівника (відкритий шар; konto/готівка — лише svodniSensitive)
+router.get("/workers/:id/svodni", requireCap("svodni"), async (req, res) => {
+  const id = Number(req.params.id);
+  const sensitive = hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive");
+  const rows = await db
+    .select({
+      id: svodniRowsTable.id, month: svodniRowsTable.periodMonth, city: svodniRowsTable.city,
+      firm: svodniRowsTable.firm, factoryLabel: svodniRowsTable.factoryLabel,
+      hours: svodniRowsTable.hours, shifts: svodniRowsTable.shifts, rateNetto: svodniRowsTable.rateNetto,
+      premia: svodniRowsTable.premia, zaliczka: svodniRowsTable.zaliczka, kara: svodniRowsTable.kara,
+      doWyplaty: svodniRowsTable.doWyplaty,
+      gotowka: svodniRowsTable.gotowka, konto: svodniRowsTable.konto,
+    })
+    .from(svodniRowsTable)
+    .where(eq(svodniRowsTable.workerId, id))
+    .orderBy(desc(svodniRowsTable.periodMonth), svodniRowsTable.factoryLabel)
+    .limit(36);
+  ok(res, rows.map(({ gotowka, konto, ...r }) => sensitive ? { ...r, gotowka, konto } : r));
+});
+
 // ─── Work positions (admin-managed roles catalogue) ────────────────────────────
 router.get("/positions", async (_req, res) => {
   const rows = await db.select().from(positionsTable).orderBy(positionsTable.sortOrder, positionsTable.id);

@@ -16,7 +16,7 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
-import { NatFlag } from "../lib/nationality";
+import { NatFlag, NATIONALITIES } from "../lib/nationality";
 import { useClothingTypes } from "../lib/clothingTypes";
 
 type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null };
@@ -43,18 +43,44 @@ interface WorkerProfile {
   recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
 }
 
-function Kpi({ icon: Icon, label, value, sub, color }: { icon: any; label: string; value: React.ReactNode; sub?: string; color: string }) {
+// Компактний стат-тайл: сітка з gap-px на слейт-фоні дає волосяні розділювачі
+// при будь-якому переносі рядів (divide-x/y ламаються на брейкпойнтах)
+function Stat({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub?: string; tone?: "rose" | "emerald" }) {
   return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-xs text-slate-500">{label}</div>
-          <div className="mt-1 text-2xl font-bold text-slate-800">{value}</div>
-          {sub && <div className="mt-0.5 text-xs text-slate-400">{sub}</div>}
-        </div>
-        <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${color}`}><Icon className="h-5 w-5" /></div>
+    <div className="min-w-0 bg-white px-3.5 py-2.5">
+      <div className="truncate text-[11px] text-slate-400" title={label}>{label}</div>
+      <div className={`mt-0.5 text-lg font-bold leading-6 tabular-nums ${tone === "rose" ? "text-rose-600" : tone === "emerald" ? "text-emerald-600" : "text-slate-800"}`}>
+        {value}{sub && <span className="ml-1 text-xs font-normal text-slate-400">{sub}</span>}
       </div>
+    </div>
+  );
+}
+
+// Секція профілю: тонкий заголовок; без даних — один рядок тексту замість
+// повнорозмірної заглушки (сторінка з порожніми блоками лишається компактною)
+function Section({ icon: Icon, title, extra, action, empty, children }: {
+  icon?: any; title: string; extra?: React.ReactNode; action?: React.ReactNode; empty?: string; children: React.ReactNode | null;
+}) {
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-2.5">
+        {Icon && <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
+        <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+        {extra}
+        {action && <div className="ml-auto flex shrink-0 items-center gap-2">{action}</div>}
+      </div>
+      {children ?? <div className="px-5 py-2 text-sm text-slate-400">{empty}</div>}
     </Card>
+  );
+}
+
+// Група полів інфо-картки з підзаголовком
+function InfoGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 px-5 py-3">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{title}</div>
+      <div className="divide-y divide-slate-50">{children}</div>
+    </div>
   );
 }
 
@@ -68,7 +94,16 @@ export default function WorkerDetail() {
   const { data: w, isLoading, isError } = useQuery<WorkerProfile>({ queryKey: ["worker", id], queryFn: () => get(`/workers/${id}`), enabled: !!id });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
+  const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
   const [editing, setEditing] = useState(false);
+  // інлайн-редагування прямо з профілю (без модалки «Редагувати»)
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const wpatch = useMutation({
+    mutationFn: (p: Record<string, unknown>) => patch(`/workers/${id}`, p),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
+    onError: (e: any) => toast.error(e.message),
+  });
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
   // що зачепить» замість прямого PATCH (лише для користувачів з cap svodni)
   const canSvodni = can(me, "svodni");
@@ -91,6 +126,10 @@ export default function WorkerDetail() {
   };
 
   const st = w.stats;
+  // опції посад для інлайн-селекта: фабрика з посадами → її список, інакше каталог
+  const selFactory = factories.find(f => f.id === w.factoryId);
+  const posOptions = ((selFactory?.usesPositions && (selFactory.positions?.length ?? 0) > 0 ? selFactory!.positions! : positions) as { id: number; name: string }[])
+    .map(p => ({ value: String(p.id), label: p.name }));
   const statusBadge = (s: string) =>
     s === "present" ? <Badge color="green">{t("вийшов")}</Badge>
     : s === "absent" ? <Badge color="rose">{t("не вийшов")}</Badge>
@@ -100,142 +139,227 @@ export default function WorkerDetail() {
     <>
       <Link href="/workers" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"><ArrowLeft className="h-4 w-4" /> {t("До працівників")}</Link>
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100 text-lg font-bold text-red-700">
-          {w.fullName?.[0]?.toUpperCase() ?? "?"}
-        </div>
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-slate-800">
-            {w.fullName}
-            <NatFlag value={w.nationality} className="cursor-default text-lg" />
-            {w.gender && <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
-            {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
-          </h1>
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-            {w.workerCode && <span className="font-mono">{w.workerCode}</span>}
-            {w.positionName && <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span>}
-            {w.companyName && <Badge color="blue">{w.companyName}</Badge>}
-            {w.factoryName && <Badge color="red">{w.factoryName}</Badge>}
+      {/* Єдина шапка-картка: ідентичність + лічильники текстом + групи полів.
+          Всі поля редагуються інлайн; свод-релевантні (посада/ставка/студент,
+          як у WorkerModal) для користувачів з cap svodni ідуть через модалку «Діє з» */}
+      <Card className="mb-5 overflow-hidden p-0">
+        <div className="flex flex-wrap items-start gap-3 px-5 py-4">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-red-100 text-lg font-bold text-red-700">
+            {w.fullName?.[0]?.toUpperCase() ?? "?"}
           </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="flex flex-wrap items-center gap-2 text-xl font-bold tracking-tight text-slate-800">
+              {renaming ? (
+                <span className="flex items-center gap-1.5">
+                  <input autoFocus value={nameDraft} onChange={e => setNameDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") { const v = nameDraft.trim(); if (v && v !== w.fullName) wpatch.mutate({ fullName: v }); setRenaming(false); }
+                      if (e.key === "Escape") setRenaming(false);
+                    }}
+                    className="rounded-lg border border-slate-300 px-2 py-0.5 text-lg font-semibold text-slate-800 focus:border-red-400 focus:outline-none" />
+                  <button className="text-xs font-medium text-emerald-600" onClick={() => { const v = nameDraft.trim(); if (v && v !== w.fullName) wpatch.mutate({ fullName: v }); setRenaming(false); }}>{t("Зберегти")}</button>
+                  <button className="text-xs text-slate-400" onClick={() => setRenaming(false)}>{t("Скасувати")}</button>
+                </span>
+              ) : (
+                <button className="group inline-flex items-center gap-1.5 text-left" title={t("Перейменувати")}
+                  onClick={() => { setNameDraft(w.fullName); setRenaming(true); }}>
+                  {w.fullName}
+                  <Pencil className="h-3.5 w-3.5 text-slate-300 opacity-0 transition group-hover:opacity-100" />
+                </button>
+              )}
+              <NatFlag value={w.nationality} className="cursor-default text-lg" />
+              {w.gender && <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
+              {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
+            </h1>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+              {w.workerCode && <span className="font-mono">{w.workerCode}</span>}
+              {w.positionName && <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span>}
+              {w.companyName && <Badge color="blue">{w.companyName}</Badge>}
+              {w.factoryName && <Badge color="red">{w.factoryName}</Badge>}
+            </div>
+            {/* лічильники — текстовим рядком замість окремої стрічки тайлів */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+              <span>{t("цей місяць")}: <b className="font-semibold text-slate-700">{st.monthShifts}</b> {t("зм")} · <b className="font-semibold text-slate-700">{st.monthHours}</b> {t("год")}</span>
+              <span className="text-slate-300">|</span>
+              <span>{t("всього")}: <b className="font-semibold text-slate-700">{st.totalShifts}</b> {t("зм")} · <b className="font-semibold text-slate-700">{st.totalHours}</b> {t("год")}</span>
+              <span className="text-slate-300">|</span>
+              <span>{t("надійність")} <b className={`font-semibold ${st.reliability != null && st.reliability >= 90 ? "text-emerald-600" : "text-slate-700"}`}>{st.reliability != null ? `${st.reliability}%` : "—"}</b></span>
+              <span className="text-slate-300">|</span>
+              <span>{t("невиходи")} <b className={`font-semibold ${st.totalAbsent > 0 ? "text-rose-600" : "text-slate-700"}`}>{st.totalAbsent}</b></span>
+              <span className="text-slate-300">|</span>
+              <span>{t("запросив друзів")}: <b className="font-semibold text-slate-700">{st.referralCount}</b></span>
+            </div>
+          </div>
+          <Button variant="secondary" className="ml-auto shrink-0" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" /> {t("Редагувати")}</Button>
         </div>
-        <Button variant="secondary" className="ml-auto" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" /> {t("Редагувати")}</Button>
-      </div>
 
-      {/* Contact / info */}
-      <Card className="mb-5 p-4">
-        <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-          <Info icon={Building2} label={t("Фірма")} value={w.companyName ?? "—"} />
-          <Info icon={FactoryIcon} label={t("Фабрика")} value={w.factoryName ?? "—"} />
-          <Info icon={Briefcase} label={t("Посада")} value={w.positionName ?? "—"} />
-          <Info icon={Users} label={t("Стать")} value={w.gender === "male" ? t("Чоловік") : w.gender === "female" ? t("Жінка") : "—"} />
-          {w.fixedShift && <Info icon={CalendarCheck} label={t("Закріплена зміна")} value={t("{n} зміна", { n: w.fixedShift })} />}
-          {(w.selfTransport || w.selfTransportSince) && (
-            <Info icon={Car} label={t("Транспорт")}
-              value={`${w.selfTransport ? t("Доїжджає сам") : t("Возить фірма")}${w.selfTransportSince ? ` · ${t("з")} ${new Date(w.selfTransportSince + "T00:00:00").toLocaleDateString("uk-UA")}` : ""}`} />
-          )}
-          <BadaniaRow workerId={w.id} entries={w.badania ?? []} />
-          {(w.factoryCodes ?? []).length > 0 && (
-            <Info icon={KeyRound} label={t("Ключі фабрики")}
-              value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
-          )}
-          <Info icon={KeyRound} label="PESEL" value={w.pesel ?? "—"} />
-          {w.gratyfikantName && <Info icon={Briefcase} label={t("Імʼя в Gratyfikancie")} value={w.gratyfikantName} />}
-          <Info icon={Send} label="Telegram" value={w.telegramId ?? t("не приєднаний")} />
-          <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
-          <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
-          <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
-          <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
-          <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
-          {(w.agramFactory || w.cashBonusFactory) && (
-            <AgramBonusRow workerId={w.id} staz={!!w.agramStazBonus} cash={!!w.agramCashBonus} startDate={w.employmentStartDate ?? null} cashOnly={!w.agramFactory} onRequest={requestChange} />
-          )}
-          {w.payoutPrefKind !== undefined && (
-            <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} onRequest={requestChange} />
-          )}
-          {(w.hourlyRate != null || w.effectiveRate != null) && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.hourlyRate == null ? " · " + t("авто") : ""}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />}
-          {w.hourlyRate === null && w.effectiveRate == null && w.hourlyRateNetto == null && (
-            <Info icon={Clock} label={t("Ставка")} value={t("авто (за правилами фабрики)")} />
-          )}
+        <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 md:grid-cols-3 md:divide-x md:divide-y-0">
+          <InfoGroup title={t("Робота")}>
+            <InfoRow icon={Building2} label={t("Фірма")}>
+              <InlineSelect value={w.companyId != null ? String(w.companyId) : ""} onChange={v => wpatch.mutate({ companyId: v ? Number(v) : null })}
+                options={companies.map(c => ({ value: String(c.id), label: c.name }))} />
+            </InfoRow>
+            <InfoRow icon={FactoryIcon} label={t("Фабрика")}>
+              <InlineSelect value={w.factoryId != null ? String(w.factoryId) : ""} onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
+                options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
+            </InfoRow>
+            <InfoRow icon={Briefcase} label={t("Посада")}>
+              <InlineSelect value={w.positionId != null ? String(w.positionId) : ""}
+                onChange={v => { const p = v ? Number(v) : null; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
+                options={posOptions} />
+            </InfoRow>
+            <InfoRow icon={Users} label={t("Стать")}>
+              <InlineSelect value={w.gender ?? ""} onChange={v => wpatch.mutate({ gender: v || null })}
+                options={[{ value: "male", label: t("Чоловік") }, { value: "female", label: t("Жінка") }]} />
+            </InfoRow>
+            <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
+              <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
+                options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} />
+            </InfoRow>
+            <InfoRow icon={Car} label={t("Транспорт")}>
+              <InlineSelect value={w.selfTransport ? "self" : ""} none={t("Возить фірма")} onChange={v => wpatch.mutate({ selfTransport: v === "self" })}
+                options={[{ value: "self", label: t("Доїжджає сам") }]} />
+              {w.selfTransport && (
+                <input type="date" value={w.selfTransportSince ?? ""} title={t("з")}
+                  onChange={e => wpatch.mutate({ selfTransportSince: e.target.value || null })}
+                  className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
+              )}
+            </InfoRow>
+            {(w.factoryCodes ?? []).length > 0 && (
+              <Info icon={KeyRound} label={t("Ключі фабрики")}
+                value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
+            )}
+          </InfoGroup>
+          <InfoGroup title={t("Особисте")}>
+            <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
+            <InfoRow icon={KeyRound} label="PESEL">
+              <InlineText value={w.pesel ?? ""} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} />
+            </InfoRow>
+            <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
+            <InfoRow icon={Users} label={t("Національність")}>
+              <InlineSelect value={w.nationality ?? ""} onChange={v => wpatch.mutate({ nationality: v || null })}
+                options={NATIONALITIES.map(n => ({ value: n.value, label: `${n.flag} ${t(n.label)}` }))} />
+            </InfoRow>
+            <InfoRow icon={Send} label="Telegram">
+              <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} />
+            </InfoRow>
+            <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
+          </InfoGroup>
+          <InfoGroup title={t("Фінанси й облік")}>
+            {isOwner ? (
+              <>
+                <InfoRow icon={Clock} label={t("Ставка")}>
+                  <InlineText value={w.hourlyRate != null ? String(w.hourlyRate) : ""} placeholder={t("авто")} width="w-20"
+                    onSave={v => {
+                      const r = v.trim() === "" ? null : Number(v.replace(",", "."));
+                      // підняття/зміна ставки — через «Діє з» (як WorkerModal); очищення до «авто» двигун не приймає → голий PATCH
+                      if (requestChange && r != null && r !== (w.hourlyRate ?? null)) requestChange({ hourlyRate: r }, t("Ставка брутто"));
+                      else wpatch.mutate({ hourlyRate: r });
+                    }} />
+                  <span className="text-xs font-normal text-slate-400">
+                    {w.hourlyRate == null && `${t("авто")}${w.effectiveRate != null ? ` ${w.effectiveRate}` : ""} `}
+                    zł/{t("год")}{w.positionRate != null ? ` · ${t("за посадою")}` : ""}{w.under26 ? " · <26" : ""}
+                  </span>
+                </InfoRow>
+                <InfoRow icon={IdCard} label={t("Студент")}>
+                  <input type="checkbox" checked={!!w.isStudent}
+                    onChange={e => { if (requestChange) requestChange({ isStudent: e.target.checked }, t("Студент")); else wpatch.mutate({ isStudent: e.target.checked }); }} />
+                </InfoRow>
+              </>
+            ) : (
+              (w.hourlyRate != null || w.effectiveRate != null) && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.hourlyRate == null ? " · " + t("авто") : ""}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />
+            )}
+            <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
+            <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
+            {w.payoutPrefKind !== undefined && (
+              <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} onRequest={requestChange} />
+            )}
+            {(w.agramFactory || w.cashBonusFactory) && (
+              <AgramBonusRow workerId={w.id} staz={!!w.agramStazBonus} cash={!!w.agramCashBonus} startDate={w.employmentStartDate ?? null} cashOnly={!w.agramFactory} onRequest={requestChange} />
+            )}
+            <BadaniaRow workerId={w.id} entries={w.badania ?? []} />
+            {w.gratyfikantName !== undefined && (
+              <InfoRow icon={Briefcase} label={t("Імʼя в Gratyfikancie")}>
+                <InlineText value={w.gratyfikantName ?? ""} placeholder={t("вказати")} width="w-44" onSave={v => wpatch.mutate({ gratyfikantName: v.trim() || null })} />
+              </InfoRow>
+            )}
+          </InfoGroup>
         </div>
         {w.note !== undefined && <NoteBlock workerId={w.id} note={w.note ?? null} />}
       </Card>
 
-      {/* KPI grid */}
-      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Kpi icon={CalendarCheck} label={t("Змін цього місяця")} value={st.monthShifts} sub={`${st.monthHours} ${t("год")}`} color="text-emerald-600 bg-emerald-50" />
-        <Kpi icon={Clock} label={t("Годин цього місяця")} value={st.monthHours} color="text-sky-600 bg-sky-50" />
-        <Kpi icon={Activity} label={t("Надійність")} value={st.reliability != null ? `${st.reliability}%` : "—"} sub={t("за весь час")} color="text-red-600 bg-red-50" />
-        <Kpi icon={UserX} label={t("Невиходи")} value={st.totalAbsent} sub={t("за весь час")} color="text-rose-600 bg-rose-50" />
+      {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
+      <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+        <div className="min-w-0 space-y-5">
+          {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
+          {(w.factoryHistory?.length ?? 0) > 0 && (
+            <Section icon={FactoryIcon} title={t("Історія по фабриках")}>
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+                  <tr><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Період")}</th><th className="px-4 py-2 text-center">{t("Зміни")}</th><th className="px-4 py-2 text-right">{t("Години")}</th><th className="px-4 py-2 text-right">{t("Невиходи")}</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {w.factoryHistory.map((f, i) => (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="px-4 py-1.5 font-medium text-slate-700">
+                        {f.factoryName ?? t("Без фабрики")}
+                        {f.factoryId != null && f.factoryId === w.factoryId && <span className="ml-2"><Badge color="green">{t("поточна")}</Badge></span>}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-1.5 text-slate-500">{f.firstDate} — {f.lastDate}</td>
+                      <td className="px-4 py-1.5 text-center text-slate-600">{f.shifts}</td>
+                      <td className="px-4 py-1.5 text-right font-medium text-emerald-700">{f.hours} {t("год")}</td>
+                      <td className="px-4 py-1.5 text-right text-slate-600">{f.absent || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            </Section>
+          )}
+
+          {/* Recent shifts */}
+          <Section icon={CalendarCheck} title={t("Останні зміни")} empty={t("Немає відпрацьованих змін")}>
+            {!w.recent.length ? null : (
+              <div className="max-h-96 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+                    <tr><th className="px-4 py-2">{t("Дата")}</th><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Зміна")}</th><th className="px-4 py-2">{t("Статус")}</th><th className="px-4 py-2 text-right">{t("Години")}</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {w.recent.map((r, i) => (
+                      <tr key={i} className="hover:bg-slate-50">
+                        <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700">{r.date}</td>
+                        <td className="px-4 py-1.5 text-slate-500">{r.factoryName ?? "—"}</td>
+                        <td className="px-4 py-1.5 text-slate-500">{r.shift} {t("зм")}</td>
+                        <td className="px-4 py-1.5">{statusBadge(r.status)}</td>
+                        <td className="px-4 py-1.5 text-right text-slate-600">{r.hours || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+
+          {/* Сводна по місяцях (cap svodni; konto/готівка приходять лише з svodniSensitive) */}
+          {canSvodni && <WorkerSvodni workerId={w.id} />}
+
+          {/* Історія змін профілю (журнал з датами набуття) + видалення зміни */}
+          <ChangesTimeline workerId={w.id} canUndo={canSvodni} />
+        </div>
+
+        <div className="min-w-0 space-y-5">
+          <WorkerDocuments workerId={w.id} />
+          <WorkerBankAccounts workerId={w.id} />
+          <WorkerAdvances workerId={w.id} />
+          <WorkerAbsences workerId={w.id} />
+          {/* Хостел: де живе і скільки платить (довідник — сторінка /hostels) */}
+          {canSvodni && <WorkerHostel workerId={w.id} />}
+          {/* Одяг: видане зі складу магазину, вартість/зняття, повернення */}
+          <WorkerClothing workerId={w.id} />
+        </div>
       </div>
-      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Kpi icon={CalendarCheck} label={t("Усього змін")} value={st.totalShifts} color="text-slate-600 bg-slate-100" />
-        <Kpi icon={Clock} label={t("Усього годин")} value={st.totalHours} color="text-slate-600 bg-slate-100" />
-        <Kpi icon={Gift} label={t("Запросив друзів")} value={st.referralCount} color="text-amber-600 bg-amber-50" />
-      </div>
-
-      {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
-      {(w.factoryHistory?.length ?? 0) > 0 && (
-        <Card className="mb-5 overflow-hidden">
-          <div className="border-b border-slate-100 px-5 py-3"><h3 className="text-sm font-semibold text-slate-700">{t("Історія по фабриках")}</h3></div>
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Період")}</th><th className="px-4 py-2 text-center">{t("Зміни")}</th><th className="px-4 py-2 text-right">{t("Години")}</th><th className="px-4 py-2 text-right">{t("Невиходи")}</th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {w.factoryHistory.map((f, i) => (
-                <tr key={i} className="hover:bg-slate-50">
-                  <td className="px-4 py-2 font-medium text-slate-700">
-                    {f.factoryName ?? t("Без фабрики")}
-                    {f.factoryId != null && f.factoryId === w.factoryId && <span className="ml-2"><Badge color="green">{t("поточна")}</Badge></span>}
-                  </td>
-                  <td className="px-4 py-2 text-slate-500">{f.firstDate} — {f.lastDate}</td>
-                  <td className="px-4 py-2 text-center text-slate-600">{f.shifts}</td>
-                  <td className="px-4 py-2 text-right font-medium text-emerald-700">{f.hours} {t("год")}</td>
-                  <td className="px-4 py-2 text-right text-slate-600">{f.absent || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
-
-      {/* Documents */}
-      <WorkerDocuments workerId={w.id} />
-
-      <WorkerBankAccounts workerId={w.id} />
-
-      {/* Хостел: де живе і скільки платить (довідник — сторінка /hostels) */}
-      {canSvodni && <WorkerHostel workerId={w.id} />}
-
-      {/* Одяг: видане зі складу магазину, вартість/зняття, повернення */}
-      <WorkerClothing workerId={w.id} />
-
-
-      {/* Recent shifts */}
-      <Card className="mt-5 overflow-hidden">
-        <div className="border-b border-slate-100 px-5 py-3"><h3 className="text-sm font-semibold text-slate-700">{t("Останні зміни")}</h3></div>
-        {!w.recent.length ? <Empty>{t("Немає відпрацьованих змін")}</Empty> : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2">{t("Дата")}</th><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Зміна")}</th><th className="px-4 py-2">{t("Статус")}</th><th className="px-4 py-2 text-right">{t("Години")}</th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {w.recent.map((r, i) => (
-                <tr key={i} className="hover:bg-slate-50">
-                  <td className="px-4 py-2 font-medium text-slate-700">{r.date}</td>
-                  <td className="px-4 py-2 text-slate-500">{r.factoryName ?? "—"}</td>
-                  <td className="px-4 py-2 text-slate-500">{r.shift} {t("зм")}</td>
-                  <td className="px-4 py-2">{statusBadge(r.status)}</td>
-                  <td className="px-4 py-2 text-right text-slate-600">{r.hours || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-
-      {/* Історія змін профілю (журнал з датами набуття) + видалення зміни */}
-      <ChangesTimeline workerId={w.id} canUndo={canSvodni} />
 
       {editing && (
         <WorkerModal worker={workerForEdit} factories={factories} companies={companies} isOwner={isOwner}
@@ -250,13 +374,52 @@ export default function WorkerDetail() {
   );
 }
 
-function Info({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
+// Рядок інфо-картки: підпис ліворуч, значення (текст або редактор) праворуч.
+// flex-wrap: широкий редактор (select, чекбокси) переноситься ПІД підпис цілим
+// рядком, а не налазить на нього (переповнення justify-end вилазить уліво)
+function InfoRow({ icon: Icon, label, children, title }: { icon: any; label: string; children: React.ReactNode; title?: string }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <Icon className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="shrink-0 text-slate-400">{label}:</span>
-      <span className="min-w-0 truncate font-medium text-slate-700" title={value}>{value}</span>
+    <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 py-1 text-sm">
+      <span className="flex shrink-0 items-center gap-1.5 text-slate-400"><Icon className="h-3.5 w-3.5 shrink-0" />{label}</span>
+      <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-right font-medium text-slate-700" title={title}>{children}</span>
     </div>
+  );
+}
+function Info({ icon, label, value }: { icon: any; label: string; value: string }) {
+  return <InfoRow icon={icon} label={label} title={value}><span className="truncate">{value}</span></InfoRow>;
+}
+
+// Текстове значення «клік → інпут» для інлайн-редагування рядка інфо-картки
+function InlineText({ value, placeholder, width = "w-40", onSave }: { value: string; placeholder: string; width?: string; onSave: (v: string) => void }) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commit = () => { onSave(draft); setEditing(false); };
+  if (!editing) return (
+    <button className="max-w-full truncate font-medium text-slate-700 hover:text-red-600" title={value || undefined}
+      onClick={() => { setDraft(value); setEditing(true); }}>
+      {value || <span className="font-normal text-slate-400">{placeholder}</span>}
+    </button>
+  );
+  return (
+    <span className="flex items-center gap-1">
+      <input autoFocus value={draft} onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+        className={`${width} rounded border border-slate-300 px-1 py-0.5 text-xs`} />
+      <button className="text-xs font-medium text-emerald-600" onClick={commit}>{t("Зберегти")}</button>
+      <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+    </span>
+  );
+}
+
+// Borderless-select для інлайн-редагування (стиль — як рядок форми легалізації)
+function InlineSelect({ value, options, onChange, none = "—" }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; none?: string }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="max-w-full rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
+      <option value="">{none}</option>
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
   );
 }
 
@@ -314,26 +477,23 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
   };
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-          {t("Документи")}
-          {missingRequired > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-600"><AlertTriangle className="h-3 w-3" /> {t("бракує {n}", { n: missingRequired })}</span>}
-        </h3>
-        <Button variant="secondary" onClick={() => setAddFor("custom")}><Plus className="h-4 w-4" /> {t("Документ")}</Button>
-      </div>
-      {isLoading ? <Spinner /> : (
-        <div>
-          {types.map(ty => row(`ty${ty.id}`, ty.name, ty.required, docByType.get(ty.id), ty))}
-          {extras.map(d => row(`ex${d.id}`, d.title, false, d, null))}
-          {!types.length && !extras.length && <Empty>{t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}</Empty>}
-        </div>
-      )}
+    <>
+      <Section icon={FileText} title={t("Документи")}
+        extra={missingRequired > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-600"><AlertTriangle className="h-3 w-3" /> {t("бракує {n}", { n: missingRequired })}</span>}
+        action={<Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAddFor("custom")}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>}
+        empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
+        {isLoading ? <Spinner /> : (types.length || extras.length) ? (
+          <div>
+            {types.map(ty => row(`ty${ty.id}`, ty.name, ty.required, docByType.get(ty.id), ty))}
+            {extras.map(d => row(`ex${d.id}`, d.title, false, d, null))}
+          </div>
+        ) : null}
+      </Section>
       {(addFor !== null || editing) && (
         <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types}
           onClose={() => { setAddFor(null); setEditing(null); }} onSaved={() => { inv(); setAddFor(null); setEditing(null); }} />
       )}
-    </Card>
+    </>
   );
 }
 
@@ -363,14 +523,11 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
   const fmtIban = (s: string) => s.replace(/(.{4})/g, "$1 ").trim();
 
   return (
-    <Card className="overflow-hidden">
-      <div className="border-b border-slate-100 px-5 py-3">
-        <h3 className="text-sm font-semibold text-slate-700">{t("Банківські рахунки (для ЗП/авансів)")}</h3>
-      </div>
+    <Section icon={Wallet} title={t("Банківські рахунки (для ЗП/авансів)")}>
       {isLoading ? <Spinner /> : (
         <div>
           {rows.map(r => (
-            <div key={r.id} className="flex items-center gap-2 border-b border-slate-50 px-4 py-2 text-sm last:border-0">
+            <div key={r.id} className="flex items-center gap-2 border-b border-slate-50 px-4 py-1.5 text-sm last:border-0">
               <span className="tabular-nums text-slate-700">{fmtIban(r.iban)}</span>
               <span className="text-[10px] uppercase text-slate-400">{r.source === "auto" ? t("авто") : t("ручна")}</span>
               {r.isPrimary ? (
@@ -387,16 +544,16 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
               </button>
             </div>
           ))}
-          {!rows.length && <Empty>{t("Рахунків ще немає — підтягнуться з зарплатних переказів або додай вручну.")}</Empty>}
-          <div className="flex items-center gap-2 px-4 py-3">
+          {!rows.length && <div className="px-4 pt-2 text-sm text-slate-400">{t("Рахунків ще немає — підтягнуться з зарплатних переказів або додай вручну.")}</div>}
+          <div className="flex items-center gap-2 px-4 py-2">
             <Input value={iban} onChange={e => setIban(e.target.value)} placeholder="PL00 0000…" className="w-72" />
-            <Button variant="secondary" disabled={iban.replace(/\W/g, "").length < 15 || add.isPending} onClick={() => add.mutate()}>
-              <Plus className="h-4 w-4" /> {t("Додати")}
+            <Button variant="secondary" className="px-2 py-1 text-xs" disabled={iban.replace(/\W/g, "").length < 15 || add.isPending} onClick={() => add.mutate()}>
+              <Plus className="h-3.5 w-3.5" /> {t("Додати")}
             </Button>
           </div>
         </div>
       )}
-    </Card>
+    </Section>
   );
 }
 
@@ -509,11 +666,9 @@ function PayoutPrefRow({ workerId, kind, value, onRequest }: { workerId: number;
     }
   };
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <Wallet className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Побажання по виплаті")}:</span>
+    <InfoRow icon={Wallet} label={t("Побажання по виплаті")}>
       <select value={effKind} onChange={e => pickKind(e.target.value)}
-        className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
+        className="max-w-full rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">{t("— за правилами —")}</option>
         {Object.entries(PAYOUT_PREF_LABEL).map(([k, l]) => <option key={k} value={k}>{t(l)}</option>)}
       </select>
@@ -526,7 +681,7 @@ function PayoutPrefRow({ workerId, kind, value, onRequest }: { workerId: number;
           className="w-24 rounded border border-slate-300 px-1 py-0.5 text-sm" />
       )}
       {kindDraft && <span className="text-xs text-slate-400">{t("впиши суму — далі одне підтвердження")}</span>}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -542,7 +697,7 @@ function NoteBlock({ workerId, note }: { workerId: number; note: string | null }
     onError: (e: any) => toast.error(e.message),
   });
   return (
-    <div className="mt-3 border-t border-slate-100 pt-3">
+    <div className="border-t border-slate-100 px-5 py-3">
       <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-600">
         <FileText className="h-3.5 w-3.5" /> {t("Примітка (закритий доступ)")}
       </div>
@@ -577,16 +732,14 @@ function LegalStatusRow({ workerId, legalStatus, onRequest }: { workerId: number
   const submit = (v: string) => onRequest ? onRequest({ legalStatus: v || null }, t("Форма легалізації")) : save.mutate(v);
   const badge = legalStatus ? LEGAL_BADGE[legalStatus] : null;
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Форма легалізації")}:</span>
+    <InfoRow icon={IdCard} label={t("Форма легалізації")}>
       <select value={legalStatus ?? ""} onChange={e => submit(e.target.value)}
-        className="rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
+        className="max-w-full rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">—</option>
         {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
       </select>
       {badge && <span className={`rounded px-1 text-[10px] font-medium ${badge.cls}`}>{badge.short}</span>}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -606,9 +759,7 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
     else save.mutate();
   };
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <Clock className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Год. у повідомленні")}:</span>
+    <InfoRow icon={Clock} label={t("Год. у повідомленні")}>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
@@ -622,7 +773,7 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
           {notifyHours != null ? `${notifyHours} ${t("год")}` : t("вказати")}
         </button>
       )}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -651,9 +802,7 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
   });
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <IdCard className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Залічки за бадання")}:</span>
+    <InfoRow icon={IdCard} label={t("Залічки за бадання")}>
       {entries.map(b => (
         <span key={b.id} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-1.5 py-0.5">
           <span className="font-medium text-slate-700">{b.amount} зл</span>
@@ -678,7 +827,7 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
       ) : (
         <button className="text-xs font-medium text-slate-400 hover:text-red-600" onClick={() => setAdding(true)}>+ {t("додати")}</button>
       )}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -703,9 +852,7 @@ function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { wor
   // вік — окрема властивість (не форма легалізації): з дати, без дати — з профілю
   const under26 = birthDate ? new Date(birthDate + "T00:00:00").getTime() > Date.now() - 26 * 365.25 * 86400000 : under26Fallback ?? null;
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <Cake className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Дата народження")}:</span>
+    <InfoRow icon={Cake} label={t("Дата народження")}>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="date" value={draft} onChange={e => setDraft(e.target.value)}
@@ -719,7 +866,7 @@ function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { wor
           {under26 != null && <span className={under26 ? "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" : "ml-1 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500"}>{under26 ? "<26" : "26+"}</span>}
         </button>
       )}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -741,9 +888,7 @@ function EmploymentDateRow({ workerId, date, readOnly, onRequest }: { workerId: 
     else save.mutate();
   };
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <Briefcase className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{t("Дата працевлаштування")}:</span>
+    <InfoRow icon={Briefcase} label={t("Дата працевлаштування")}>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="date" value={draft} onChange={e => setDraft(e.target.value)}
@@ -760,7 +905,7 @@ function EmploymentDateRow({ workerId, date, readOnly, onRequest }: { workerId: 
           {date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
         </button>
       )}
-    </div>
+    </InfoRow>
   );
 }
 
@@ -788,9 +933,7 @@ function AgramBonusRow({ workerId, staz, cash, startDate, cashOnly, onRequest }:
     return days >= 60 ? 1.5 : days >= 30 ? 1 : 0;
   })();
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:col-span-2">
-      <BadgePlus className="h-4 w-4 shrink-0 text-slate-400" />
-      <span className="text-slate-400">{groupLabel}:</span>
+    <InfoRow icon={BadgePlus} label={groupLabel}>
       {!cashOnly && (
         <label className="flex cursor-pointer items-center gap-1.5 font-medium text-slate-700">
           <input type="checkbox" checked={staz} onChange={e => submit({ agramStazBonus: e.target.checked })} />
@@ -805,7 +948,7 @@ function AgramBonusRow({ workerId, staz, cash, startDate, cashOnly, onRequest }:
         {t("Частина ЗП налом")}
         <span className="text-xs text-slate-400">+1 zł/{t("год")}</span>
       </label>
-    </div>
+    </InfoRow>
   );
 }
 
@@ -821,27 +964,23 @@ function WorkerHostel({ workerId }: { workerId: number }) {
   if (!stays?.length) return null;
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
   return (
-    <Card className="mt-5 overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
-        <Home className="h-4 w-4 text-slate-400" />
-        <h3 className="text-sm font-semibold text-slate-700">{t("Хостел")}</h3>
-        <Link href="/hostels" className="ml-auto text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до хостелів")} →</Link>
-      </div>
+    <Section icon={Home} title={t("Хостел")}
+      action={<Link href="/hostels" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до хостелів")} →</Link>}>
       <table className="w-full text-sm">
         <tbody className="divide-y divide-slate-100">
           {[...stays].reverse().map(s => (
             <tr key={s.stayId} className="hover:bg-slate-50">
-              <td className="px-4 py-2 font-medium text-slate-700">
+              <td className="px-4 py-1.5 font-medium text-slate-700">
                 {s.hostelName} <span className="font-normal text-slate-400">· {t(s.city)}</span>
                 {!s.toDate && <span className="ml-2"><Badge color="green">{t("живе")}</Badge></span>}
               </td>
-              <td className="px-4 py-2 text-slate-500">{fmtD(s.fromDate)} — {s.toDate ? fmtD(s.toDate) : "…"}</td>
-              <td className="px-4 py-2 text-right tabular-nums text-slate-600">{s.monthlyRate != null ? `${s.monthlyRate.toFixed(2)} zł/${t("міс")}` : "—"}</td>
+              <td className="px-4 py-1.5 text-slate-500">{fmtD(s.fromDate)} — {s.toDate ? fmtD(s.toDate) : "…"}</td>
+              <td className="px-4 py-1.5 text-right tabular-nums text-slate-600">{s.monthlyRate != null ? `${s.monthlyRate.toFixed(2)} zł/${t("міс")}` : "—"}</td>
             </tr>
           ))}
         </tbody>
       </table>
-    </Card>
+    </Section>
   );
 }
 
@@ -867,16 +1006,13 @@ function WorkerClothing({ workerId }: { workerId: number }) {
   const rows = data?.rows ?? [];
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
   return (
-    <Card className="mt-5 overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
-        <Shirt className="h-4 w-4 text-slate-400" />
-        <h3 className="text-sm font-semibold text-slate-700">{t("Одяг")}</h3>
-        <div className="ml-auto flex items-center gap-3">
-          <Link href="/clothing" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до магазину")} →</Link>
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setIssuing(true)}><Plus className="h-3.5 w-3.5" /> {t("Видати")}</Button>
-        </div>
-      </div>
-      {!rows.length ? <Empty>{t("Одяг не видавався")}</Empty> : (
+    <>
+    <Section icon={Shirt} title={t("Одяг")} empty={t("Одяг не видавався")}
+      action={<>
+        <Link href="/clothing" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до магазину")} →</Link>
+        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setIssuing(true)}><Plus className="h-3.5 w-3.5" /> {t("Видати")}</Button>
+      </>}>
+      {!rows.length ? null : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-130 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
@@ -918,12 +1054,13 @@ function WorkerClothing({ workerId }: { workerId: number }) {
           </table>
         </div>
       )}
-      {issuing && <IssueClothingModal workerId={workerId} onClose={() => setIssuing(false)} onSaved={() => { inv(); setIssuing(false); }} />}
-      {returning && (
-        <ReturnClothingModal itemId={returning.id} label={`${t(labelOf(returning.itemType))}${returning.size ? ` · ${returning.size}` : ""}`}
-          onClose={() => setReturning(null)} onSaved={() => { inv(); setReturning(null); }} />
-      )}
-    </Card>
+    </Section>
+    {issuing && <IssueClothingModal workerId={workerId} onClose={() => setIssuing(false)} onSaved={() => { inv(); setIssuing(false); }} />}
+    {returning && (
+      <ReturnClothingModal itemId={returning.id} label={`${t(labelOf(returning.itemType))}${returning.size ? ` · ${returning.size}` : ""}`}
+        onClose={() => setReturning(null)} onSaved={() => { inv(); setReturning(null); }} />
+    )}
+  </>
   );
 }
 
@@ -1057,12 +1194,8 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
   };
   if (!changes.length) return null;
   return (
-    <Card className="mt-5 overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
-        <History className="h-4 w-4 text-slate-400" />
-        <h3 className="text-sm font-semibold text-slate-700">{t("Історія змін")}</h3>
-      </div>
-      <div className="divide-y divide-slate-100">
+    <Section icon={History} title={t("Історія змін")}>
+      <div className="max-h-80 divide-y divide-slate-100 overflow-auto">
         {changes.map(c => (
           <div key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-5 py-2 text-sm">
             <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}:</span>
@@ -1090,6 +1223,140 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
           </div>
         ))}
       </div>
-    </Card>
+    </Section>
+  );
+}
+
+// ─── Аванси працівника (гейт editData — як /advances) ─────────────────────────
+function WorkerAdvances({ workerId }: { workerId: number }) {
+  const t = useT();
+  const { data } = useQuery<{
+    paidTotal: number;
+    rows: { id: number; amount: number; status: string; comment: string | null; factory: string | null; payoutMonth: string | null; payoutGroup: string | null; paidAt: string | null; paidMethod: string | null; svodniMonth: string | null; createdAt: string }[];
+  }>({ queryKey: ["worker-advances", workerId], queryFn: () => get(`/workers/${workerId}/advances`) });
+  const rows = data?.rows ?? [];
+  const STATUS: Record<string, { label: string; color: "amber" | "blue" | "rose" | "green" }> = {
+    pending: { label: t("На розгляді"), color: "amber" }, approved: { label: t("Передано до виплати"), color: "blue" },
+    rejected: { label: t("Відхилено"), color: "rose" }, paid: { label: t("Виплачено"), color: "green" },
+  };
+  const fmtD = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  return (
+    <Section icon={Wallet} title={t("Аванси")} empty={t("Авансів ще не було")}
+      extra={data != null && data.paidTotal > 0 ? <span className="text-xs text-slate-400">{t("виплачено разом")} <b className="text-slate-600">{data.paidTotal} zł</b></span> : undefined}
+      action={<Link href="/advances" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до авансів")} →</Link>}>
+      {!rows.length ? null : (
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(r => {
+                const s = STATUS[r.paidAt ? "paid" : r.status] ?? STATUS.pending;
+                return (
+                  <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="whitespace-nowrap px-4 py-1.5 text-slate-500">{fmtD(r.paidAt ?? r.createdAt)}</td>
+                    <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-700">{r.amount} zł</td>
+                    <td className="px-3 py-1.5 text-slate-500" title={r.comment ?? undefined}>{r.factory ?? "—"}</td>
+                    <td className="px-3 py-1.5"><Badge color={s!.color}>{s!.label}</Badge></td>
+                    <td className="px-3 py-1.5 text-right text-xs text-slate-400">
+                      {r.svodniMonth ? `${t("у сводній")} ${r.svodniMonth}` : r.payoutMonth ? `${t("група")} ${r.payoutGroup ?? "—"} · ${r.payoutMonth}` : ""}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// ─── Пропуски і штрафи працівника (всі затверджені тижні) ─────────────────────
+function WorkerAbsences({ workerId }: { workerId: number }) {
+  const t = useT();
+  const { data } = useQuery<{
+    total: number; justified: number; penaltyTotal: number;
+    absences: { entryId: number; factory: string | null; date: string; shift: string; reason: string | null; excused: boolean; justified: boolean; penalty: number; deductedMonth: string | null; deductedAmount: number | null }[];
+  }>({ queryKey: ["worker-absences", workerId], queryFn: () => get(`/workers/${workerId}/absences`) });
+  const rows = data?.absences ?? [];
+  return (
+    <Section icon={UserX} title={t("Пропуски і штрафи")} empty={t("Пропусків немає")}
+      extra={data != null && rows.length > 0 ? (
+        <span className="text-xs text-slate-400">
+          {data.total}{data.justified > 0 ? ` (+${data.justified} ${t("виправд.")})` : ""} · {t("штрафи")} <b className="text-slate-600">{data.penaltyTotal} zł</b>
+        </span>
+      ) : undefined}
+      action={<Link href="/absences" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до відсутностей")} →</Link>}>
+      {!rows.length ? null : (
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(a => (
+                <tr key={a.entryId} className="hover:bg-slate-50">
+                  <td className="whitespace-nowrap px-4 py-1.5 text-slate-500">{a.date}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{a.factory ?? "—"} · {a.shift} {t("зм")}</td>
+                  <td className="px-3 py-1.5">
+                    {a.justified ? <Badge color="green">{t("виправдано")}</Badge>
+                      : a.excused ? <Badge color="amber">{t("відпросився")}</Badge>
+                      : <Badge color="rose">{t("не вийшов")}</Badge>}
+                    {a.reason && <span className="ml-1.5 text-xs text-slate-400" title={a.reason}>{a.reason.length > 24 ? a.reason.slice(0, 24) + "…" : a.reason}</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {a.penalty > 0 ? <span className="font-medium text-rose-600">−{a.penalty} zł</span> : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-right text-xs text-slate-400">{a.deductedMonth ? `${t("у сводній")} ${a.deductedMonth}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// ─── Сводна по місяцях (cap svodni; konto/готівка є в відповіді лише з svodniSensitive) ──
+function WorkerSvodni({ workerId }: { workerId: number }) {
+  const t = useT();
+  type Row = { id: number; month: string; city: string; firm: string | null; factoryLabel: string; hours: number | null; shifts: number | null; rateNetto: number | null; premia: number | null; zaliczka: number | null; kara: number | null; doWyplaty: number | null; gotowka?: number | null; konto?: number | null };
+  const { data: rows = [] } = useQuery<Row[]>({ queryKey: ["worker-svodni", workerId], queryFn: () => get(`/workers/${workerId}/svodni`) });
+  const sensitive = rows.length > 0 && "konto" in rows[0]!;
+  const num = (v: number | null | undefined) => v == null || v === 0 ? <span className="text-slate-300">—</span> : <span className="tabular-nums">{Math.round(v * 100) / 100}</span>;
+  return (
+    <Section icon={Activity} title={t("Сводна по місяцях")} empty={t("Рядків сводної ще немає")}
+      action={<Link href="/svodni" className="text-xs text-slate-400 hover:text-red-600 hover:underline">{t("до сводних")} →</Link>}>
+      {!rows.length ? null : (
+        <div className="max-h-96 overflow-auto">
+          <table className="w-full min-w-130 text-sm">
+            <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="px-4 py-2">{t("Місяць")}</th><th className="px-3 py-2">{t("Фабрика")}</th>
+                <th className="px-3 py-2 text-right">{t("Год")}</th><th className="px-3 py-2 text-right">{t("Ставка")}</th>
+                <th className="px-3 py-2 text-right">{t("До виплати")}</th>
+                <th className="px-3 py-2 text-right">Premia</th><th className="px-3 py-2 text-right">Zaliczka</th>
+                <th className="px-3 py-2 text-right">Kara</th>
+                {sensitive && <th className="px-3 py-2 text-right">Konto</th>}
+                {sensitive && <th className="px-3 py-2 text-right">{t("Готівка")}</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(r => (
+                <tr key={r.id} className="hover:bg-slate-50">
+                  <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700">{r.month}</td>
+                  <td className="px-3 py-1.5 text-slate-500" title={`${r.city}${r.firm ? ` · ${r.firm}` : ""}`}>{r.factoryLabel}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600">{num(r.hours)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600">{num(r.rateNetto)}</td>
+                  <td className="px-3 py-1.5 text-right font-medium text-emerald-700">{num(r.doWyplaty)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600">{num(r.premia)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600">{num(r.zaliczka)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600">{num(r.kara)}</td>
+                  {sensitive && <td className="px-3 py-1.5 text-right text-slate-600">{num(r.konto)}</td>}
+                  {sensitive && <td className="px-3 py-1.5 text-right text-slate-600">{num(r.gotowka)}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
   );
 }
