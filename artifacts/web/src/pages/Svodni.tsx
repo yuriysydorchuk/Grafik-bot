@@ -92,7 +92,8 @@ type ApplyKaraResp = {
   verifyMismatches: { workerName: string; expected: number | null; actual: number | null }[];
   skippedLocked: number; unmatched: { workerName: string | null; amount: number }[];
 };
-type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[]; staleLocks?: Lock[]; ksiegMin?: { netto: number; brutto: number } };
+type CashWarning = { city: string; factoryLabel: string; name: string; gotowka: number };
+type Data = { month: string; cities: string[]; rows: Row[]; checks: Check[]; tabMeta?: TabMeta[]; sensitive: boolean; locks: Lock[]; staleLocks?: Lock[]; cashWarnings?: CashWarning[]; ksiegMin?: { netto: number; brutto: number } };
 type Unmatched = { rawName: string; city: string; factories: string[]; months: string[]; candidates: { id: number; name: string }[] };
 
 // колонки відкритого шару: [поле, заголовок]
@@ -743,6 +744,17 @@ export default function Svodni() {
         <Empty>{t("Немає даних за цей місяць — запусти «Синк із Google»")}</Empty>
       ) : (
         <div className="space-y-4">
+          {(() => {
+            // нал-бонус є, а готівки в розкладі < 500 зл — попередження над вкладкою
+            const warns = (data?.cashWarnings ?? []).filter(w => w.city === effCity && w.factoryLabel === effFactory);
+            return warns.length > 0 && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                ⚠️ <span className="font-semibold">{t("Нал-бонус, а готівкою менше 500 зл")}:</span>{" "}
+                {warns.map(w => `${w.name} (${w.gotowka.toLocaleString("pl-PL")} zł)`).join("; ")}
+                <span className="mt-0.5 block text-xs text-amber-700">{t("Частина ЗП цих людей за домовленістю — налом; перевір розклад konto/готівки перед виплатою.")}</span>
+              </div>
+            );
+          })()}
           <FactoryTable month={effMonth} city={effCity} label={effFactory} rows={rows} checks={checks} sensitive={!!data?.sensitive}
             visible={visible} cityExtraKeys={cityExtraKeys} cityHrCols={cityHrCols} onHideCol={toggleCol} cityRows={cityRows}
             meta={data?.tabMeta?.find(m => m.factoryLabel === effFactory && (effCity === OFFICE_CITY || m.city === effCity))}

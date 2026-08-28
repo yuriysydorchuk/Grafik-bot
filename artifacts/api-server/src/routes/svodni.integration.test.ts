@@ -794,3 +794,33 @@ test("from-hours: вибір джерела годин (reports/factory) і са
     .send({ month: "2026-05", source: "reports", workerIds: [w!.id] });
   assert.equal(rw.body.workers, 1, "лише людина зі списку workerIds");
 });
+
+test("cashWarnings: нал-бонус, а готівки < 500 — попередження вкладки; гейт sensitive", opts, async () => {
+  // explicit id 12 = AGRAM_FACTORY_IDS: legacy-правило з нал-бонусом без версії в БД
+  await db.insert(factoriesTable).values({ id: 12, name: "AGRAM MOTYCZ", city: "Люблін" } as any);
+  const mk = async (name: string, over: Record<string, unknown> = {}) => {
+    const [w] = await db.insert(workersTable).values({ fullName: name, agramCashBonus: true, legalStatus: "zus", ...over } as any).returning();
+    return w!;
+  };
+  const wWarn = await mk("MALO GOTOWKI");                    // готівка 84 < 500 → попередження
+  const wOk = await mk("DUZO GOTOWKI");                      // готівка 570 ≥ 500 → ні
+  const wStud = await mk("STUDENT MLODY", { isStudent: true, under26: true }); // бонус не належить → ні
+  const wSmall = await mk("CALA GOTOWKA");                   // вся мала виплата готівкою → ні
+  const agram = (workerId: number, over: Record<string, unknown>) =>
+    seedRow({ periodMonth: "2026-07", factoryLabel: "AGRAM MOTYCZ", factoryId: 12, workerId, linkStatus: "confirmed", ...over });
+  await agram(wWarn.id, { rawName: "MALO GOTOWKI", hours: 84, rateNetto: 26.35, doWyplaty: 2143.4, konto: 2059.4, gotowka: 84, extras: { facBonus: 1 } });
+  await agram(wOk.id, { rawName: "DUZO GOTOWKI", hours: 228, rateNetto: 27.85, doWyplaty: 6269.8, konto: 5699.8, gotowka: 570, extras: { facBonus: 2.5 } });
+  await agram(wStud.id, { rawName: "STUDENT MLODY", isStudent: true, under26: true, hours: 100, rateNetto: 31.4, doWyplaty: 3140, konto: 3140, gotowka: 0 });
+  await agram(wSmall.id, { rawName: "CALA GOTOWKA", hours: 12, rateNetto: 26.35, doWyplaty: 316.2, konto: 0, gotowka: 316.2, extras: { facBonus: 1 } });
+
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const full = (await request(app).get("/api/svodni?month=2026-07").set("Cookie", owner)).body;
+  assert.deepEqual(full.cashWarnings, [{ city: "Люблін", factoryLabel: "AGRAM MOTYCZ", name: "MALO GOTOWKI", gotowka: 84 }],
+    "лише людина з нал-галочкою і готівкою < 500 (не студент, не повна мала виплата налом)");
+
+  // без svodniSensitive попереджень нема (готівка — закритий шар)
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const rBase = (await request(app).get("/api/svodni?month=2026-07").set("Cookie", base)).body;
+  assert.deepEqual(rBase.cashWarnings, [], "без sensitive — порожньо");
+});

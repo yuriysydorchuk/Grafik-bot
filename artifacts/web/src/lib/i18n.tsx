@@ -1089,6 +1089,8 @@ const EN: Record<string, string> = {
   "Księgowość (текст)": "Księgowość (text)",
   "Дата народження (рядок)": "Birth date (row)",
   "Профілі людей змінились після затвердження — переглянь лок": "Worker profiles changed after approval — review the lock",
+  "Нал-бонус, а готівкою менше 500 зл": "Cash bonus, but less than 500 zł in cash",
+  "Частина ЗП цих людей за домовленістю — налом; перевір розклад konto/готівки перед виплатою.": "Part of these workers' pay is agreed to be in cash; check the konto/cash split before payout.",
   "Бонуси Agram": "Agram bonuses",
   "Бонус фабрики": "Factory bonus",
   "авто (за правилами фабрики)": "auto (factory rules)",

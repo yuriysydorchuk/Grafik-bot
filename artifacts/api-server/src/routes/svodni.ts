@@ -805,7 +805,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const where = city
     ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city))
     : eq(svodniRowsTable.periodMonth, month);
-  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue, workerNationality: workersTable.nationality })
+  const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue, workerNationality: workersTable.nationality, workerCash: workersTable.agramCashBonus })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(where)
@@ -920,8 +920,27 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       }
     }
   }
+  // Попередження «нал-бонус, а готівки мало»: людина з галочкою нал-бонусу на
+  // бонусній фабриці, розклад порахований, а готівкою виходить < 500 зл (або
+  // вся мала виплата пішла на конто). Частина ЗП цих людей за домовленістю —
+  // налом, тож «все на конто» = порушення домовленості, яке треба побачити до
+  // виплати. Лише для закритого перегляду — суми готівки sensitive.
+  const cashWarnings: { city: string; factoryLabel: string; name: string; gotowka: number }[] = [];
+  if (sensitive) {
+    const warnRules = await PayoutRules.load();
+    for (const { r, workerName, workerCash } of raw) {
+      if (r.segmentOf != null || !tabAllowed(r.factoryLabel)) continue;
+      if (!workerCash || r.workerId == null || r.factoryId == null) continue;
+      if (r.isStudent === true && r.under26 === true) continue; // студенту до 26 бонус не належить
+      if (warnRules.for(r.factoryId, r.factoryLabel, month).cashBonus <= 0) continue;
+      if (r.doWyplaty == null || r.konto == null) continue; // розклад ще не порахований
+      const got = r.gotowka ?? 0;
+      if (got + 0.005 < Math.min(500, Math.max(r.doWyplaty, 0)))
+        cashWarnings.push({ city: r.city, factoryLabel: r.factoryLabel, name: workerName ?? r.rawName, gotowka: Math.round(got * 100) / 100 });
+    }
+  }
   const { KSIEG_STD_NETTO, KSIEG_STD_BRUTTO } = await import("../services/svodni");
-  ok(res, { month, city, cities, rows, checks, tabMeta, sensitive, locks, staleLocks, ksiegMin: { netto: KSIEG_STD_NETTO(), brutto: KSIEG_STD_BRUTTO() } });
+  ok(res, { month, city, cities, rows, checks, tabMeta, sensitive, locks, staleLocks, cashWarnings, ksiegMin: { netto: KSIEG_STD_NETTO(), brutto: KSIEG_STD_BRUTTO() } });
 });
 
 // незматчені люди: місто · фабрика · місяці + кандидати для привʼязки
