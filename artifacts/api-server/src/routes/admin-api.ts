@@ -838,8 +838,12 @@ router.get("/workers/:id", RW, async (req, res) => {
         const rule = w.factoryId != null
           ? (await PayoutRules.load([w.factoryId])).for(w.factoryId, facMap.get(w.factoryId)?.name ?? null, thisMonth)
           : null;
-        if (rule?.stazBonus) return { agramFactory: true, agramStazBonus: w.agramStazBonus, agramCashBonus: w.agramCashBonus };
-        if (rule && rule.cashBonus > 0) return { cashBonusFactory: true, agramCashBonus: w.agramCashBonus };
+        // галочка, що ВЖЕ стоїть, видима й на фабриці без бонусного правила
+        // (людину перекинули з бонусної) — інакше бонус невидимо тягнеться у
+        // сводні/from-hours, а зняти його в профілі нема де (кейс 28.08:
+        // люди на ANDROS із застряглими Agram-галочками)
+        if (rule?.stazBonus || w.agramStazBonus) return { agramFactory: true, agramStazBonus: w.agramStazBonus, agramCashBonus: w.agramCashBonus };
+        if ((rule != null && rule.cashBonus > 0) || w.agramCashBonus) return { cashBonusFactory: true, agramCashBonus: w.agramCashBonus };
         return {};
       })()
       : {}),
