@@ -540,6 +540,7 @@ export const HOURS_XLSX_COLS = [
   { key: "name", header: "Imię i nazwisko", width: 34 },
   { key: "factory", header: "Fabryka", width: 26 },
   { key: "shifts", header: "Zmiany", width: 10 },
+  { key: "weekendShifts", header: "Zmiany w weekend", width: 15 },
   { key: "hours", header: "Godziny (grafik)", width: 16 },
   { key: "report", header: "Godziny (raport)", width: 16 },
   { key: "factoryHours", header: "Godziny (fabryka)", width: 17 },
@@ -572,7 +573,7 @@ export async function buildReportHoursExcel(
 
   type Row = {
     facId: number | null; code: string; name: string; factory: string;
-    shifts: number; hours: number; report: number | null; factoryHours: number | null;
+    shifts: number; weekendShifts: number; hours: number; report: number | null; factoryHours: number | null;
     confirmed: boolean; workerResponse: string | null; asked: boolean; note: string | null;
   };
   // Той самий diffState, що на сторінці /hours (Hours.tsx)
@@ -587,7 +588,7 @@ export async function buildReportHoursExcel(
     .map(x => ({
       facId: x.factoryId, code: x.code ?? "", name: x.name,
       factory: x.factory ?? "Bez fabryki",
-      shifts: x.shifts, hours: Math.round(x.hours * 100) / 100,
+      shifts: x.shifts, weekendShifts: x.weekendShifts, hours: Math.round(x.hours * 100) / 100,
       report: x.reportHours, factoryHours: x.factoryHours,
       confirmed: x.factoryConfirmed, workerResponse: x.workerResponse, asked: x.askSentAt != null,
       note: x.note,
@@ -609,7 +610,7 @@ export async function buildReportHoursExcel(
   ws.columns = cols.map(c => ({ width: c.width }));
   const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
   const nCols = cols.length;
-  const numericCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff" || key === "shifts" || key === "hours";
+  const numericCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff" || key === "shifts" || key === "weekendShifts" || key === "hours";
 
   ws.mergeCells(1, 1, 1, Math.max(2, nCols));
   const title = ws.getCell(1, 1);
@@ -635,6 +636,7 @@ export async function buildReportHoursExcel(
       case "name": return nameCaps(row.name);
       case "factory": return row.factory;
       case "shifts": return row.shifts;
+      case "weekendShifts": return row.weekendShifts;
       case "hours": return row.hours;
       case "report": return row.report ?? "";
       case "factoryHours": return row.factoryHours ?? "";
@@ -671,6 +673,7 @@ export async function buildReportHoursExcel(
   const totalRow = ws.getRow(r);
   totalRow.values = cols.map((c, i) => {
     if (c.key === "shifts") return rows.reduce((s, x) => s + x.shifts, 0);
+    if (c.key === "weekendShifts") return rows.reduce((s, x) => s + x.weekendShifts, 0);
     if (c.key === "hours") return round2(rows.reduce((s, x) => s + x.hours, 0));
     if (c.key === "report") return round2(rows.reduce((s, x) => s + (x.report ?? 0), 0));
     if (c.key === "factoryHours") return round2(rows.reduce((s, x) => s + (x.factoryHours ?? 0), 0));

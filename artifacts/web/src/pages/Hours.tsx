@@ -22,7 +22,7 @@ const facDayTotal = (v: FacDayVal) => typeof v === "number" ? v : Object.values(
 interface HourRow {
   workerId: number; name: string; code: string | null; factoryId: number | null; factory: string | null;
   firm?: string | null; // наша юрособа фабрики (ES/ESO/Klinex) — колір вкладки
-  city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; hours: number;
+  city: string; factoryShiftCount: number; byShift: Record<string, number>; shifts: number; weekendShifts: number; hours: number;
   reportHours?: number | null; reportSubmitted?: boolean; reportLink?: string | null;
   factoryHours?: number | null; factoryDays?: Record<string, FacDayVal> | null; factoryConfirmed?: boolean; clientEmail?: string | null;
   createdViaImport?: boolean; // профіль створений «створити профіль» в імпорті годин → можна 🗑 зі списку
@@ -33,7 +33,7 @@ interface HourRow {
   unlegalized?: boolean; // без форми легалізації або oczekuje — лише з cap svodni
   rate?: number; gross?: number; net?: number; laborCost?: number; reportNet?: number | null; reportGross?: number | null; // owner only
 }
-interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; hours: number; net: number }
+interface Group { key: string; name: string; factoryId: number | null; firm: string | null; city: string; n: number; rows: HourRow[]; shifts: number; weekendShifts: number; hours: number; net: number }
 // активний працівник, прихований з місяця (hours_month_exclusions)
 interface ExcludedInfo { workerId: number; name: string; factoryId: number | null; reason: string }
 const EXCL_REASON_LABEL: Record<string, string> = { manual: "прибрано", vacation: "відпустка", not_started: "ще не приступив" };
@@ -60,7 +60,7 @@ const DIFF_CELL: Record<DiffState, string> = {
 // «×» ховає — суто відображення: суми, редагування і Excel-експорт не залежать).
 // shiftBlock = колонки «1/2/3 зм» одним цілим (їх кількість різна по фабриках).
 const HOURS_COLS: [string, string][] = [
-  ["code", "Код"], ["shiftBlock", "Розбивка по змінах"], ["totalShifts", "Усього змін"], ["hours", "Години"],
+  ["code", "Код"], ["shiftBlock", "Розбивка по змінах"], ["totalShifts", "Усього змін"], ["weekendShifts", "Змін у вихідні"], ["hours", "Години"],
   ["report", "Години з рапорту"], ["factory", "Години з фабрики"], ["ack", "Підтв. працівника"], ["note", "Замітки"],
   ["rate", "Ставка"], ["net", "ЗП нетто"], ["reportNet", "ЗП по рапорту"],
 ];
@@ -112,7 +112,7 @@ export default function Hours() {
   const [leftoverKey, setLeftoverKey] = useState<string | null>(null); // «залишки» після імпорту годин
   const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
-  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; svodniDone?: number[]; totalHours: number; totalShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
+  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; svodniDone?: number[]; totalHours: number; totalShifts: number; totalWeekendShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
   });
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
@@ -224,10 +224,10 @@ export default function Hours() {
         key,
         name: r.factory ?? t("Без фабрики"),
         factoryId: r.factoryId, firm: r.firm ?? null, city: r.city,
-        n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, hours: 0, net: 0,
+        n: Math.max(1, r.factoryShiftCount || 1), rows: [], shifts: 0, weekendShifts: 0, hours: 0, net: 0,
       });
       const g = map.get(key)!;
-      g.rows.push(r); g.shifts += r.shifts; g.hours += r.hours; g.net += r.net ?? 0;
+      g.rows.push(r); g.shifts += r.shifts; g.weekendShifts += r.weekendShifts; g.hours += r.hours; g.net += r.net ?? 0;
     }
     return [...map.values()];
   }, [data]);
@@ -287,6 +287,7 @@ export default function Hours() {
           <div className="flex gap-2">
             <Badge color="slate">{t("Людей:")} {totalPeople}</Badge>
             <Badge color="slate">{t("Усього змін:")} {data.totalShifts}</Badge>
+            <Badge color="slate">{t("Змін у вихідні:")} {data.totalWeekendShifts}</Badge>
             <Badge color="green">{t("Усього годин:")} {round(data.totalHours)}</Badge>
             {isOwner && data.totalNet != null && <Badge color="green">{t("ЗП нетто:")} {round(data.totalNet)} zł</Badge>}
             <Badge color="blue">{t("Годин з рапорту:")} {round(data.totalReportHours ?? 0)}</Badge>
@@ -446,6 +447,11 @@ export default function Hours() {
                 th: () => colTh("totalShifts", "border-l-2 border-slate-300 px-4 py-2.5 text-center", t("Усього змін")),
                 td: w => <td key="totalShifts" className="border-l-2 border-slate-200 px-4 py-1.5 text-center font-medium text-slate-700">{w.shifts}</td>,
                 foot: () => <td key="totalShifts" className="px-4 py-2.5 text-center">{g.shifts}</td>,
+              },
+              weekendShifts: {
+                th: () => colTh("weekendShifts", "px-3 py-2.5 text-center", t("Змін у вихідні"), { title: t("Кількість змін, відпрацьованих у суботу/неділю") }),
+                td: w => <td key="weekendShifts" className="px-3 py-1.5 text-center text-slate-600">{w.weekendShifts || <span className="text-slate-300">0</span>}</td>,
+                foot: () => <td key="weekendShifts" className="px-3 py-2.5 text-center">{g.weekendShifts}</td>,
               },
               hours: {
                 th: () => colTh("hours", "bg-emerald-100/60 px-4 py-2.5 text-right text-emerald-800", t("Години")),
@@ -756,7 +762,7 @@ export default function Hours() {
         // синтетична порожня (перший імпорт — вкладка виникне після збереження)
         const f = allFactories.find(x => x.id === importFacId);
         const g: Group = groups.find(x => x.factoryId === importFacId && !x.firm)
-          ?? { key: `f${importFacId}`, name: f?.name ?? `#${importFacId}`, factoryId: importFacId, firm: null, city: f?.city ?? "", n: 1, rows: [], shifts: 0, hours: 0, net: 0 };
+          ?? { key: `f${importFacId}`, name: f?.name ?? `#${importFacId}`, factoryId: importFacId, firm: null, city: f?.city ?? "", n: 1, rows: [], shifts: 0, weekendShifts: 0, hours: 0, net: 0 };
         return <ImportHoursModal group={g} month={month} onClose={() => setImportFacId(null)}
           onApplied={fmt => { setLeftoverKey(g.key); if (fmt === "eurocash" && can(me, "svodni")) toSvodni.mutate({ factoryId: importFacId, source: "factory" }); }} />;
       })()}
@@ -775,6 +781,7 @@ function ExportExcelModal({ month, monthLabel, target, onClose }: {
     { key: "name", label: t("Працівник") },
     { key: "factory", label: t("Фабрика") },
     { key: "shifts", label: t("Зміни") },
+    { key: "weekendShifts", label: t("Змін у вихідні") },
     { key: "hours", label: t("Години (графік)") },
     { key: "report", label: t("Години з рапорту") },
     { key: "factoryHours", label: t("Години з фабрики") },

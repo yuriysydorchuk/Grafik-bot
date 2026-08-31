@@ -35,6 +35,7 @@ export type HoursMergedRow = {
   factoryShiftCount: number;
   byShift: Record<string, number>;
   shifts: number;
+  weekendShifts: number;               // кількість змін, відпрацьованих у сб/нд
   hours: number;                       // затверджені явки (підтверджує водій/графікова)
   reportHours: number | null;
   reportSubmitted: boolean;
@@ -91,7 +92,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
       isStudent: w.isStudent, under26: w.under26, legalStatus: w.legalStatus, birthDate: w.birthDate,
       factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),
-      byShift: {}, shifts: 0, hours: 0,
+      byShift: {}, shifts: 0, weekendShifts: 0, hours: 0,
       reportHours: null, reportSubmitted: false, reportLink: null,
       factoryHours: null, factoryDays: null, factoryConfirmed: false,
       askSentAt: null, askHours: null, workerResponse: null, workerResponseAt: null, workerNote: null,
@@ -138,6 +139,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
     row.shifts++;
     row.hours += r.hoursOverride ?? factoryShiftHours(fac, r.shift as any);
     row.byShift[r.shift] = (row.byShift[r.shift] ?? 0) + 1;
+    if (r.day === "sat" || r.day === "sun") row.weekendShifts++;
   }
 
   // Всі активні працівники — навіть без жодної зміни місяця (нульовий рядок

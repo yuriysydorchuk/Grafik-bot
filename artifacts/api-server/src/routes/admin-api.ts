@@ -2963,7 +2963,7 @@ router.get("/hours", RW, async (req, res) => {
         workerId: w.workerId, name: w.name, code: w.code, factoryId: w.factoryId, factory: w.factory, firm: w.firm,
         factoryShiftCount: w.factoryShiftCount,
         rate: svodniRate(w.profileRate, w.factoryId, w.positionId), ...stud26Of(w),
-        byShift: w.byShift, shifts: w.shifts, hours,
+        byShift: w.byShift, shifts: w.shifts, weekendShifts: w.weekendShifts, hours,
         reportHours: w.reportHours, reportSubmitted: w.reportSubmitted, reportLink: w.reportLink,
         factoryHours: w.factoryHours, factoryDays: w.factoryDays, factoryConfirmed: w.factoryConfirmed,
         createdViaImport: w.createdViaImport,
@@ -2994,6 +2994,7 @@ router.get("/hours", RW, async (req, res) => {
     ...(canSvodni ? { svodniDone } : {}),
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
+    totalWeekendShifts: workers.reduce((s, w) => s + w.weekendShifts, 0),
     totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),
     totalFactoryHours: round2(workers.reduce((s, w) => s + (w.factoryHours ?? 0), 0)),
     ...(isOwner ? {
