@@ -48,6 +48,10 @@ router.use(authRequired);
 
 // Read/write capability for owner + scheduler (driver is read-only / live-only)
 const RW = requireCap("editData");
+// Перегляд картки/списку працівників — editData (як завжди) АБО viewWorkers
+// (read-only cap для ролі «бухгалтерія»: бачить дані, не редагує — самі
+// мутуючі роути (POST/PATCH/DELETE/fire/restore) лишаються лише на RW)
+const WORKERS_RO = requireAnyCap("editData", "viewWorkers");
 
 // КАНОН статусу «студент до 26» (як у сводній): студент = чекбокс АБО
 // legalStatus="student"; вік — з дати народження, прапорець under26 — лише
@@ -301,7 +305,7 @@ router.get("/attention", async (_req, res) => {
 });
 
 // ─── Workers ─────────────────────────────────────────────────────────────────
-router.get("/workers", RW, async (req, res) => {
+router.get("/workers", WORKERS_RO, async (req, res) => {
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : undefined;
   const companies = await db.select().from(companiesTable);
   const coMap = new Map(companies.map(c => [c.id, c.name]));
@@ -676,7 +680,7 @@ router.get("/badania/deducted", RW, async (_req, res) => {
 });
 
 // Історія змін профілю (журнал worker_changes) — таймлайн у профілі
-router.get("/workers/:id/changes", RW, async (req, res) => {
+router.get("/workers/:id/changes", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db.select({ c: workerChangesTable, adminName: adminsTable.name })
     .from(workerChangesTable)
@@ -737,7 +741,7 @@ router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
 
 // Per-worker profile + analytics (for the worker detail page).
 const DAY_OFFSET: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
-router.get("/workers/:id", RW, async (req, res) => {
+router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
@@ -861,7 +865,7 @@ router.get("/workers/:id", RW, async (req, res) => {
 });
 
 // Аванси працівника — для блоку на сторінці профілю (той самий гейт, що /advances)
-router.get("/workers/:id/advances", RW, async (req, res) => {
+router.get("/workers/:id/advances", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db
     .select({
@@ -890,7 +894,7 @@ router.get("/workers/:id/advances", RW, async (req, res) => {
 });
 
 // Пропуски працівника з усіх затверджених тижнів — блок на сторінці профілю
-router.get("/workers/:id/absences", RW, async (req, res) => {
+router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db
     .select({
@@ -1004,7 +1008,7 @@ router.delete("/document-types/:id", RW, async (req, res) => {
 });
 
 // ─── Per-worker documents ───────────────────────────────────────────────────────
-router.get("/workers/:id/documents", RW, async (req, res) => {
+router.get("/workers/:id/documents", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id)).orderBy(desc(workerDocumentsTable.id));
   ok(res, docs);

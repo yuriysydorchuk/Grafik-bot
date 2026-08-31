@@ -9,6 +9,7 @@ import { WorkerModal } from "../components/WorkerModal";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
@@ -20,6 +21,7 @@ export default function Workers() {
   const confirm = useConfirm();
   const me = useMe();
   const isOwner = me?.role === "owner";
+  const canEdit = can(me, "editData"); // viewWorkers-only (бухгалтерія) — лише перегляд, без дій
   const { data: workers, isLoading } = useQuery<Worker[]>({ queryKey: ["workers"], queryFn: () => get("/workers") });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
@@ -80,7 +82,7 @@ export default function Workers() {
   return (
     <>
       <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${showInactive ? t("звільнених") : t("активних")}`}
-        action={<Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>} />
+        action={canEdit ? <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button> : undefined} />
 
       {/* Filters pinned under the top bar while the table scrolls (md+ only) —
           same pattern as Schedule: top-[52px] = desktop top-bar height − 1px,
@@ -148,12 +150,12 @@ export default function Workers() {
                   <td className="px-4 py-2.5">{w.telegramId ? <Badge color="green">✓</Badge> : <Badge color="amber">{t("не приєднаний")}</Badge>}</td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex justify-end gap-1">
-                      <button onClick={() => setEdit(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
-                      {w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
-                      {w.isActive
+                      {canEdit && <button onClick={() => setEdit(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>}
+                      {canEdit && w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
+                      {canEdit && (w.isActive
                         ? <button onClick={() => setFiring(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
-                        : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>}
-                      {!w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
+                        : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>)}
+                      {canEdit && !w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
                     </div>
                   </td>
                 </tr>
