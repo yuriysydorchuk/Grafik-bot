@@ -14,11 +14,13 @@ export const UPLOADS_ROOT = process.env.UPLOADS_DIR
 
 export const WORKER_DOCS_DIR = path.join(UPLOADS_ROOT, "worker-documents");
 export const INVOICES_DIR = path.join(UPLOADS_ROOT, "invoices"); // скани фактур (бот + сайт)
+export const AGREEMENTS_DIR = path.join(UPLOADS_ROOT, "agreements"); // скани умов (/cost-invoices)
 
 // Create the upload directories once at startup.
 export function ensureUploadDirs(): void {
   fs.mkdirSync(WORKER_DOCS_DIR, { recursive: true });
   fs.mkdirSync(INVOICES_DIR, { recursive: true });
+  fs.mkdirSync(AGREEMENTS_DIR, { recursive: true });
 }
 
 // The multipart MIME is client-declared and NOT trustworthy. Sniff magic bytes so a

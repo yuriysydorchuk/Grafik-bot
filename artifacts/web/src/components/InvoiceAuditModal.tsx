@@ -6,7 +6,9 @@ import { get } from "../lib/api";
 import { Modal, Spinner, Empty } from "./ui";
 import { useT } from "../lib/i18n";
 
-export interface AuditTarget { origin: "ksef" | "local"; id: number; number: string | null }
+export type AuditTarget =
+  | { kind: "invoice"; origin: "ksef" | "local"; id: number; label: string }
+  | { kind: "agreement"; entity: "condition" | "charge"; id: number; label: string };
 
 interface Entry {
   id: number; action: string;
@@ -21,6 +23,9 @@ const FIELD: Record<string, string> = {
   manualStatus: "Статус оплати (вручну)", manualPaidDate: "Дата оплати (вручну)", paidDate: "Дата оплати",
   hostelId: "Хостел", vehicleId: "Авто", city: "Місто", companyId: "Фірма",
   cleaning: "Прибирання", segment: "Сегмент", cleaningProjectId: "Вспульнота",
+  title: "Назва", category: "Категорія", kind: "Тип умови",
+  vatRate: "Ставка ВАТ", startMonth: "Діє з", endMonth: "Діє до",
+  month: "Місяць", status: "Статус", source: "Джерело", docType: "Тип документа",
 };
 const ACTION: Record<string, string> = {
   created: "додано фактуру", updated: "змінено", file: "додано/замінено файл", deleted: "видалено",
@@ -29,12 +34,14 @@ const ACTION: Record<string, string> = {
 export function InvoiceAuditModal({ target, onClose }: { target: AuditTarget; onClose: () => void }) {
   const t = useT();
   const q = useQuery<{ entries: Entry[] }>({
-    queryKey: ["invoice-audit", target.origin, target.id],
-    queryFn: () => get(`/cost-invoices/audit?origin=${target.origin}&id=${target.id}`),
+    queryKey: target.kind === "invoice" ? ["invoice-audit", target.origin, target.id] : ["agreement-audit", target.entity, target.id],
+    queryFn: () => target.kind === "invoice"
+      ? get(`/cost-invoices/audit?origin=${target.origin}&id=${target.id}`)
+      : get(`/agreements/audit?entity=${target.entity}&id=${target.id}`),
   });
   const val = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : v === true ? t("так") : v === false ? t("ні") : String(v));
   return (
-    <Modal open title={`${t("Історія фактури")} ${target.number ?? ""}`} onClose={onClose} size="lg">
+    <Modal open title={`${t("Історія")} ${target.label}`} onClose={onClose} size="lg">
       {q.isFetching && !q.data ? <Spinner /> : !q.data?.entries.length ? (
         <Empty>{t("Записів ще немає — історія ведеться з моменту додавання цієї функції")}</Empty>
       ) : (

@@ -6,7 +6,7 @@
 import { google } from "googleapis";
 import { db } from "@workspace/db";
 import { invoicesTable, companiesTable } from "@workspace/db";
-import { eq, isNull } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { isCleaningSupplier } from "./ksef";
 
@@ -36,6 +36,17 @@ const toAmount = (v: unknown): number | null => {
   return Number.isFinite(n) && n !== 0 ? n : null;
 };
 
+// «за який місяць» з номера фактури: «1/06/2026», «142/07/2026» (№/MM/YYYY)
+// або «2026/08/HOUSE/…» (YYYY/MM/…). Рік — здоровий діапазон, інакше null.
+export function guessServiceMonth(number: string | null | undefined): string | null {
+  const s = String(number ?? "").trim();
+  let m = /^\d{1,4}\/(0[1-9]|1[0-2])\/(20[2-3]\d)\b/.exec(s);
+  if (m) return `${m[2]}-${m[1]}`;
+  m = /^(20[2-3]\d)\/(0[1-9]|1[0-2])\//.exec(s);
+  if (m) return `${m[1]}-${m[2]}`;
+  return null;
+}
+
 export interface InvoiceSyncResult { sheets: number; tabs: number; invoices: number; unpaid: number }
 
 export async function syncInvoices(): Promise<InvoiceSyncResult> {
@@ -47,6 +58,15 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
   const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
   const coId = new Map(companies.map(c => [c.name, c.id]));
   const result: InvoiceSyncResult = { sheets: 0, tabs: 0, invoices: 0, unpaid: 0 };
+
+  // cost-center місто по контрагенту: остання фактура з проставленим містом
+  // передає його новим фактурам того ж контрагента (щоб B2B не проставляти щомісяця)
+  const cpKey = (s: string | null | undefined) => String(s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  const prevCity = new Map<string, string>();
+  for (const r of await db.select({ c: invoicesTable.counterparty, city: invoicesTable.city })
+    .from(invoicesTable).where(sql`${invoicesTable.city} IS NOT NULL`).orderBy(invoicesTable.id)) {
+    if (r.c) prevCity.set(cpKey(r.c), r.city!);
+  }
 
   for (const src of INVOICE_SHEETS) {
     const companyId = coId.get(src.company);
@@ -89,17 +109,25 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
       // manual_* overrides + hostel link + позначка прибирання are OUR metadata —
       // carry them over by row identity (invoice number + amount), first unused match wins
       const old = await db.select().from(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
-      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null; cleaning: boolean; cleaningProjectId: number | null }[]>();
+      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null; serviceMonth: string | null; cleaning: boolean; cleaningProjectId: number | null }[]>();
       const rowKey = (e: { number: string | null; amount: number }) => `${(e.number ?? "").trim()}|${e.amount}`;
-      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city || o.cleaning || o.cleaningProjectId) {
+      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city || o.serviceMonth || o.cleaning || o.cleaningProjectId) {
         const k = rowKey(o);
-        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city, cleaning: o.cleaning, cleaningProjectId: o.cleaningProjectId });
+        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city, serviceMonth: o.serviceMonth, cleaning: o.cleaning, cleaningProjectId: o.cleaningProjectId });
       }
       for (const e of entries) {
         const stack = overrides.get(rowKey(e as any));
         if (stack?.length) Object.assign(e, stack.shift()!);
         // постачальники прибирання (PELIA Nepelak, FloRyś) — завжди cleaning, і після ресинку
         if (isCleaningSupplier(e.counterparty)) e.cleaning = true;
+        // cost-center місто успадковується: нова фактура контрагента бере місто
+        // з його попередніх фактур (B2B: Androshchuk→Люблін, Simonian→Лодзь+Познань…)
+        if (!(e as any).city) {
+          const c = prevCity.get(cpKey(e.counterparty));
+          if (c) (e as any).city = c;
+        }
+        // «за який місяць» — авто з номера фактури (ручне значення живе в carry-over)
+        if (!(e as any).serviceMonth) (e as any).serviceMonth = guessServiceMonth((e as any).number);
       }
       await db.delete(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
       if (entries.length) await db.insert(invoicesTable).values(entries);

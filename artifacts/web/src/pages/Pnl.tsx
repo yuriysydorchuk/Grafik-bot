@@ -335,7 +335,7 @@ interface CityData {
   cogs: number; cogsClients: { label: string; amount: number }[];
   office: { total: number; rows: { personKey: string; name: string; cost: number; pct: number }[] };
   fuel: { total: number; workers: number };
-  housing: { cost: number; deducted: number; net: number; hostels: { name: string; cost: number; source: string | null }[] };
+  housing: { cost: number; deducted: number; net: number; hostels: { name: string; cost: number; source: string | null }[]; rows: { id: number; number: string | null; counterparty: string | null; amount: number; hostelName: string | null }[] };
   invoices: { total: number; rows: { id: number; number: string | null; counterparty: string | null; category: string | null; amount: number }[] };
   margin: number; overheads: number; net: number;
 }
@@ -345,7 +345,7 @@ interface CitiesData {
   cities: CityData[];
   staff: StaffRow[];
   fuelMeta: { bankTotal: number; workersTotal: number; commuteFactories: number };
-  unallocated: { revenue: { label: string; amount: number }[]; fixed: { label: string; amount: number }[]; fixedTotal: number; fuel: number };
+  unallocated: { revenue: { label: string; amount: number }[]; fixed: { label: string; amount: number }[]; fixedTotal: number; fuel: number; housing: { id: number; number: string | null; counterparty: string | null; amount: number }[]; housingTotal: number };
   totals: { revenue: number; cogs: number; overheads: number; net: number };
 }
 
@@ -405,6 +405,13 @@ function CitiesView({ month }: { month: string }) {
                         <div className="space-y-3">
                           <DrillList title={`${t("Житло")}: ${zl(c.housing.cost)} − ${zl(c.housing.deducted)} ${t("з ЗП")}`}
                             rows={c.housing.hostels.map(h => ({ label: `${h.name}${h.source === "contract" ? ` (${t("за договором")})` : ""}`, amount: h.cost }))} />
+                          {c.housing.rows.length > 0 && (
+                            <DrillList title={`${t("Фактури житла (за місяць послуги)")}: ${c.housing.rows.length}`}
+                              rows={c.housing.rows.map(r => ({
+                                label: `${r.counterparty ?? "—"}${r.number ? ` · ${r.number}` : ""}${r.hostelName ? ` · ${r.hostelName}` : ""}`,
+                                amount: r.amount,
+                              }))} />
+                          )}
                           {c.invoices.rows.length > 0 && (
                             <DrillList title={t("Фактури міста")} rows={c.invoices.rows.map(i => ({ label: `${i.number ?? "—"}${i.counterparty ? ` · ${i.counterparty}` : ""}`, amount: i.amount }))} />
                           )}
@@ -433,11 +440,15 @@ function CitiesView({ month }: { month: string }) {
         </div>
       </Card>
 
-      {/* нерозподілене: fixed-рядки + дохід без собівартості + паливо без фабрик */}
-      {(d.unallocated.fixed.length > 0 || d.unallocated.revenue.length > 0 || d.unallocated.fuel > 0) && (
+      {/* нерозподілене: fixed-рядки + дохід без собівартості + житло без міста + паливо без фабрик */}
+      {(d.unallocated.fixed.length > 0 || d.unallocated.revenue.length > 0 || d.unallocated.fuel > 0 || (d.unallocated.housing?.length ?? 0) > 0) && (
         <Card className="mt-4 p-4 text-sm">
           <div className="mb-2 font-semibold text-slate-700">{t("Нерозподілене по містах")}</div>
           <div className="grid gap-4 text-xs md:grid-cols-3">
+            {(d.unallocated.housing?.length ?? 0) > 0 && (
+              <DrillList title={`${t("Житло без міста/хостелу")} — ${zl(d.unallocated.housingTotal)} (${d.unallocated.housing.length})`}
+                rows={d.unallocated.housing.map(h => ({ label: `${h.counterparty ?? "—"}${h.number ? ` · ${h.number}` : ""}`, amount: h.amount }))} />
+            )}
             {d.unallocated.fixed.length > 0 && (
               <DrillList title={`${t("Постійні витрати (фірма загалом)")} — ${zl(d.unallocated.fixedTotal)}`} rows={d.unallocated.fixed} />
             )}

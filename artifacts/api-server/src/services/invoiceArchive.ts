@@ -67,16 +67,19 @@ async function branchRootId(branch: string): Promise<string> {
   return id;
 }
 
-async function invoiceFolderId(branch: string, issueDate: string, firm: string): Promise<string> {
+// proforma — окрема підпапка «Proformy» всередині папки фірми місяця (лише
+// ручні/скан-рядки costInvoices, KSeF проформ не має — це нефіскальний документ)
+async function invoiceFolderId(branch: string, issueDate: string, firm: string, proforma = false): Promise<string> {
   const { year, month } = driveMonthFolder(issueDate);
-  const key = `${branch}|${year}|${month}|${firm}`;
+  const key = `${branch}|${year}|${month}|${firm}|${proforma ? "proforma" : "main"}`;
   if (folderMemo.has(key)) return folderMemo.get(key)!;
   const rootId = await branchRootId(branch);
   const yearId = await getOrCreateFolder(year, rootId);
   const monthId = await getOrCreateFolder(month, yearId);
   const firmId = await getOrCreateFolder(firm, monthId);
-  folderMemo.set(key, firmId);
-  return firmId;
+  const finalId = proforma ? await getOrCreateFolder("Proformy", firmId) : firmId;
+  folderMemo.set(key, finalId);
+  return finalId;
 }
 
 async function uploadFile(folderId: string, name: string, mimeType: string, buffer: Buffer, existingId: string | null): Promise<string> {
@@ -177,7 +180,7 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
           uploadMime = mime;
         }
         const firm = companies.get(row.companyId ?? -1)?.name ?? "Inne";
-        const folderId = await invoiceFolderId(COST_BRANCH, row.issueDate, firm);
+        const folderId = await invoiceFolderId(COST_BRANCH, row.issueDate, firm, row.docType === "PROFORMA");
         const fileId = await uploadFile(folderId, `${archiveFileName(row.number, row.counterparty)}${ext}`, uploadMime, buffer, row.driveFileId);
         res.uploaded++;
         await setRow({ driveFileId: fileId, driveError: null, driveSyncedAt: new Date() });

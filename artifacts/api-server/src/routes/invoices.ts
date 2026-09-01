@@ -190,6 +190,12 @@ router.patch("/invoices/:id", async (req, res) => {
   }
   // cost-center місто (P&L по містах) — теж наша метадата
   if (b.city !== undefined) patch.city = canonCity(b.city);
+  // «за який місяць» послуга (P&L відносить фактуру на цей місяць) — метадата, переживає ресинк
+  if (b.serviceMonth !== undefined) {
+    const sm = b.serviceMonth ? String(b.serviceMonth).trim() : null;
+    if (sm && !/^\d{4}-(0[1-9]|1[0-2])$/.test(sm)) return fail(res, 400, "serviceMonth must be YYYY-MM");
+    patch.serviceMonth = sm;
+  }
   if (isManual) {
     if (b.issueDate !== undefined) { if (!validDate(b.issueDate)) return fail(res, 400, "bad issueDate"); patch.issueDate = b.issueDate; patch.periodMonth = String(b.issueDate).slice(0, 7); }
     if (b.number !== undefined) { if (!String(b.number).trim()) return fail(res, 400, "number required"); patch.number = String(b.number).trim(); }

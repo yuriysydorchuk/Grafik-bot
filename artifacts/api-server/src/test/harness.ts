@@ -12,6 +12,7 @@ import {
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable, factoryPayoutRulesTable,
   clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
   workerChangesTable, penaltiesTable,
+  agreementConditionsTable, agreementChargesTable, agreementAuditTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -32,6 +33,7 @@ export {
   transportDeductionsTable, svodniLocksTable, factoryPositionsTable, factoryPayoutRulesTable,
   clothingItemsTable, clothingStockTable, clothingTypesTable, workerBadaniaTable,
   workerChangesTable, penaltiesTable,
+  agreementConditionsTable, agreementChargesTable, agreementAuditTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -52,6 +54,7 @@ export async function resetDb(): Promise<void> {
     "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, svodni_locks, factory_payout_rules, monthly_reports, factory_hours, hours_notes, worker_changes, " +
     "transport_deductions, clothing_items, clothing_stock, clothing_types, " +
+    "agreement_conditions, agreement_charges, agreement_audit, " +
     "companies, document_types, vehicles, advance_requests, " +
     "funnels, candidates, candidate_activity, " +
     "expense_categories, counterparty_rules, " +

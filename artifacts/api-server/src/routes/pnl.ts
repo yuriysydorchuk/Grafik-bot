@@ -8,7 +8,7 @@ import { db } from "@workspace/db";
 import {
   pnlEntriesTable, payrollFactoryMonthsTable, payrollOfficeRowsTable, staffAllocationsTable,
   hostelsTable, hostelDeductionsTable, invoicesTable, factoriesTable, svodniRowsTable,
-  ksefInvoicesTable, pnlManualItemsTable, companiesTable,
+  ksefInvoicesTable, pnlManualItemsTable, companiesTable, agreementChargesTable, agreementConditionsTable,
 } from "@workspace/db";
 import { and, eq, desc, inArray, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
@@ -181,7 +181,7 @@ router.get("/pnl/cities", async (req, res) => {
     cogs: number; cogsClients: { label: string; amount: number }[];
     office: { total: number; rows: { personKey: string; name: string; cost: number; pct: number }[] };
     fuel: { total: number; workers: number };
-    housing: { cost: number; deducted: number; net: number; hostels: { name: string; cost: number; source: "invoices" | "contract" | null }[] };
+    housing: { cost: number; deducted: number; net: number; hostels: { name: string; cost: number; source: "invoices" | "contract" | null }[]; rows: { id: number; number: string | null; counterparty: string | null; amount: number; hostelName: string | null }[] };
     invoices: { total: number; rows: { id: number; number: string | null; counterparty: string | null; category: string | null; amount: number }[] };
   };
   const cities = new Map<string, CityAgg>();
@@ -194,7 +194,7 @@ router.get("/pnl/cities", async (req, res) => {
       cogs: 0, cogsClients: [],
       office: { total: 0, rows: [] },
       fuel: { total: 0, workers: 0 },
-      housing: { cost: 0, deducted: 0, net: 0, hostels: [] },
+      housing: { cost: 0, deducted: 0, net: 0, hostels: [], rows: [] },
       invoices: { total: 0, rows: [] },
     }).get(c)!;
   };
@@ -304,12 +304,35 @@ router.get("/pnl/cities", async (req, res) => {
     }
   }
 
-  // — житло: хостели міста (фактури або договірна ціна) мінус утримання з ЗП
+  // — житло: хостели міста мінус утримання з ЗП. Фактури беруться за МІСЯЦЕМ
+  // ПОСЛУГИ (service_month ?? period_month — реєстр веде їх у вкладці оплати):
+  // привʼязані до хостелу → місто хостелу; без привʼязки, але з cost-center
+  // містом чи категорією Hostele → місто фактури; без міста — «нерозподілене».
+  const effMonthCond = sql`coalesce(${invoicesTable.serviceMonth}, ${invoicesTable.periodMonth}) = ${month}`;
   const hostels = await db.select().from(hostelsTable).where(eq(hostelsTable.active, true));
-  const hostelInv = await db.select().from(invoicesTable)
-    .where(and(eq(invoicesTable.periodMonth, month), sql`${invoicesTable.hostelId} IS NOT NULL`));
+  const allHostels = await db.select().from(hostelsTable);
+  const hostelById = new Map(allHostels.map(h => [h.id, h]));
+  const catOfInv = (i: { manualCategory: string | null; category: string | null }) => (i.manualCategory ?? i.category ?? "").trim();
+  const housingInv = await db.select().from(invoicesTable).where(and(
+    effMonthCond,
+    sql`(${invoicesTable.hostelId} IS NOT NULL OR coalesce(${invoicesTable.manualCategory}, ${invoicesTable.category}) = 'Hostele')`,
+  ));
   const invByHostel = new Map<number, number>();
-  for (const i of hostelInv) invByHostel.set(i.hostelId!, round2((invByHostel.get(i.hostelId!) ?? 0) + i.amount));
+  const unallocHousing: { id: number; number: string | null; counterparty: string | null; amount: number }[] = [];
+  for (const i of housingInv) {
+    if (i.hostelId != null) {
+      invByHostel.set(i.hostelId, round2((invByHostel.get(i.hostelId) ?? 0) + i.amount));
+      const city = hostelById.get(i.hostelId)?.city;
+      if (city) cityOf(canonCity(city) ?? city).housing.rows.push({ id: i.id, number: i.number, counterparty: i.counterparty, amount: i.amount, hostelName: hostelById.get(i.hostelId)?.name ?? null });
+      continue;
+    }
+    const city = canonCity(i.city);
+    if (city) {
+      const agg = cityOf(city);
+      agg.housing.cost = round2(agg.housing.cost + i.amount); // без привʼязки до хостелу — прямо у вартість житла міста
+      agg.housing.rows.push({ id: i.id, number: i.number, counterparty: i.counterparty, amount: i.amount, hostelName: null });
+    } else unallocHousing.push({ id: i.id, number: i.number, counterparty: i.counterparty, amount: i.amount });
+  }
   for (const h of hostels) {
     const invTotal = invByHostel.get(h.id) ?? 0;
     const rentCost = h.monthlyCost != null ? round2(h.rentModel === "per_place" ? h.monthlyCost * (h.places ?? 1) : h.monthlyCost) : null;
@@ -317,6 +340,15 @@ router.get("/pnl/cities", async (req, res) => {
     const agg = cityOf(h.city);
     agg.housing.cost = round2(agg.housing.cost + cost);
     agg.housing.hostels.push({ name: h.name, cost, source: invTotal > 0 ? "invoices" : rentCost != null ? "contract" : null });
+  }
+  // фактури, привʼязані до неактивного хостелу — вартість не має губитися
+  for (const [hid, amt] of invByHostel) {
+    if (hostels.some(h => h.id === hid)) continue;
+    const h = hostelById.get(hid);
+    if (!h) continue;
+    const agg = cityOf(h.city);
+    agg.housing.cost = round2(agg.housing.cost + amt);
+    agg.housing.hostels.push({ name: h.name, cost: amt, source: "invoices" });
   }
   const dedRows: any = await db.select({
     city: hostelDeductionsTable.city,
@@ -329,14 +361,47 @@ router.get("/pnl/cities", async (req, res) => {
   }
   for (const agg of cities.values()) agg.housing.net = round2(agg.housing.cost - agg.housing.deducted);
 
-  // — інші фактури з cost-center містом (хостельні вже пораховані вище)
+  // — інші фактури з cost-center містом за місяцем ПОСЛУГИ (хостельні — вище)
   const cityInv = await db.select().from(invoicesTable).where(and(
-    eq(invoicesTable.periodMonth, month), sql`${invoicesTable.city} IS NOT NULL`, sql`${invoicesTable.hostelId} IS NULL`,
+    effMonthCond, sql`${invoicesTable.city} IS NOT NULL`, sql`${invoicesTable.hostelId} IS NULL`,
+    sql`coalesce(${invoicesTable.manualCategory}, ${invoicesTable.category}, '') <> 'Hostele'`,
   ));
   for (const i of cityInv) {
-    const agg = cityOf(i.city!);
-    agg.invoices.total = round2(agg.invoices.total + i.amount);
-    agg.invoices.rows.push({ id: i.id, number: i.number, counterparty: i.counterparty, category: (i.manualCategory ?? i.category) || null, amount: i.amount });
+    // cost-center «Місто1+Місто2» — контрагент працює на кілька міст (Simonian:
+    // Лодзь+Познань): фактура ділиться ∝ собівартості цих міст (порожні — порівну)
+    const parts = i.city!.split("+").map(s => s.trim()).filter(Boolean);
+    const weights = parts.map(c => Math.max(0, cities.get(c)?.cogs ?? 0));
+    const wSum = weights.reduce((a, b) => a + b, 0);
+    parts.forEach((cName, idx) => {
+      const share = parts.length === 1 ? 1 : wSum > 0 ? weights[idx]! / wSum : 1 / parts.length;
+      const amt = round2(i.amount * share);
+      if (!amt) return;
+      const agg = cityOf(cName);
+      agg.invoices.total = round2(agg.invoices.total + amt);
+      agg.invoices.rows.push({ id: i.id, number: i.number, counterparty: i.counterparty, category: (i.manualCategory ?? i.category) || null, amount: amt });
+    });
+  }
+
+  // — умови з cost-center містом за той самий місяць (той самий патерн, що й cityInv)
+  const cityAgreements = await db.select({ charge: agreementChargesTable, cond: agreementConditionsTable })
+    .from(agreementChargesTable)
+    .innerJoin(agreementConditionsTable, eq(agreementChargesTable.agreementId, agreementConditionsTable.id))
+    .where(and(
+      eq(agreementChargesTable.month, month), eq(agreementChargesTable.status, "active"),
+      sql`${agreementConditionsTable.city} IS NOT NULL`,
+    ));
+  for (const { charge: a, cond: c } of cityAgreements) {
+    const parts = c.city!.split("+").map(s => s.trim()).filter(Boolean);
+    const weights = parts.map(cn => Math.max(0, cities.get(cn)?.cogs ?? 0));
+    const wSum = weights.reduce((s, w) => s + w, 0);
+    parts.forEach((cName, idx) => {
+      const share = parts.length === 1 ? 1 : wSum > 0 ? weights[idx]! / wSum : 1 / parts.length;
+      const amt = round2(a.amount * share);
+      if (!amt) return;
+      const agg = cityOf(cName);
+      agg.invoices.total = round2(agg.invoices.total + amt);
+      agg.invoices.rows.push({ id: a.id, number: null, counterparty: c.title, category: c.category, amount: amt });
+    });
   }
 
   // — підсумки
@@ -358,6 +423,8 @@ router.get("/pnl/cities", async (req, res) => {
     staff: [...staffByKey.values()].sort((a, b) => b.cost - a.cost),
     fuelMeta: { bankTotal: fuelBankTotal, workersTotal: fuelWorkersTotal, commuteFactories: commuteFactories.length },
     unallocated: {
+      housing: unallocHousing.sort((a, b) => b.amount - a.amount),
+      housingTotal: round2(unallocHousing.reduce((s, x) => s + x.amount, 0)),
       revenue: unallocRevenue.sort((a, b) => b.amount - a.amount),
       fixed,
       fixedTotal: round2(fixed.reduce((s, f) => s + f.amount, 0)),
@@ -433,6 +500,17 @@ router.get("/pnl/actuals", async (req, res) => {
     const agg = byCat.get(c) ?? byCat.set(c, { category: c, total: 0, rows: [] }).get(c)!;
     agg.total = round2(agg.total + i.amount);
     agg.rows.push({ id: i.id, number: i.number, counterparty: i.counterparty, amount: i.amount });
+  }
+  // умови (agreement_charges) за той самий місяць — та сама категорійна розбивка
+  const agreementCharges = await db.select({ charge: agreementChargesTable, cond: agreementConditionsTable })
+    .from(agreementChargesTable)
+    .innerJoin(agreementConditionsTable, eq(agreementChargesTable.agreementId, agreementConditionsTable.id))
+    .where(and(eq(agreementChargesTable.month, month), eq(agreementChargesTable.status, "active")));
+  for (const { charge: a, cond: c } of agreementCharges) {
+    const cat = c.category || "Inne";
+    const agg = byCat.get(cat) ?? byCat.set(cat, { category: cat, total: 0, rows: [] }).get(cat)!;
+    agg.total = round2(agg.total + a.amount);
+    agg.rows.push({ id: a.id, number: null, counterparty: c.title, amount: a.amount });
   }
   const takeCat = (name: string): CatAgg => {
     const agg = byCat.get(name) ?? { category: name, total: 0, rows: [] };
