@@ -24,6 +24,7 @@ import fleetRouter from "./fleet";
 import transportRouter from "./transport";
 import clothingRouter from "./clothing";
 import gratyfikantRouter from "./gratyfikant";
+import sushiRouter from "./sushi";
 
 const router: IRouter = Router();
 
@@ -34,6 +35,7 @@ router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);
 router.use(gratyfikantRouter);
+router.use(sushiRouter);
 // Авторизаційні use-гейти фінансових роутерів скоуплені по префіксах шляхів
 // (напр. router.use("/bank", requireCap(...))) — неупакований router.use() в Express
 // зачіпав би і прохідні запити до всіх роутерів, змонтованих нижче (латентний баг
