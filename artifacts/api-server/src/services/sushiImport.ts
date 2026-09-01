@@ -1,0 +1,316 @@
+/**
+ * Сервіс імпорту та валідації щоденних звітів зміни (DAILY_SHIFT_REPORT)
+ * для фабрики «Суші» (на прикладі файлів Pakowanie M4 (I + II zm).xlsx).
+ */
+
+import * as XLSX from "xlsx";
+import { normalizeTime, validateTimeInterval } from "./sushiTime.ts";
+
+export interface RawParsedRow {
+  rowNumber: number;
+  firma: string;
+  rcpCode: string;
+  dzial: string;
+  od: string;
+  do: string;
+  realneGodziny: number;
+  podpis: string;
+  uwagi: string;
+}
+
+export interface ParsedDailyReport {
+  fileName: string;
+  reportDate: string; // YYYY-MM-DD
+  rows: RawParsedRow[];
+  totalRows: number;
+}
+
+export interface WorkerCodeLookup {
+  rcpCode: string;
+  workerId: number;
+  companyId: number;
+  validFrom: string;
+  validTo: string | null;
+}
+
+export interface ValidationContext {
+  reportDate: string;
+  workerCodes: WorkerCodeLookup[];
+  companies: { id: number; name: string }[];
+  lines: { id: number; name: string; code: string }[];
+  lineAliases: { lineId: number; rawAlias: string }[];
+  supervisors: { id: number; signatureName: string; workerId: number | null }[];
+}
+
+export interface ValidationRowResult {
+  status: "OK" | "CHECK_ID" | "INVALID_TIME" | "UNKNOWN_LINE" | "MISSING_SIGNATURE" | "COMPANY_MISMATCH";
+  errorMessage?: string;
+  resolvedWorkerId: number | null;
+  resolvedLineId: number | null;
+  resolvedSupervisorId: number | null;
+  roundedStart?: string;
+  roundedStop?: string;
+  computedHours?: number;
+}
+
+/**
+ * Парсинг та нормалізація дати звіту (з A1 або тексту "Data: YYYY-MM-DD" / "DD.MM.YYYY").
+ */
+export function parseReportDate(raw: string | number | null | undefined): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  if (typeof raw === "number") {
+    // Excel date serial number
+    const parsedDate = XLSX.SSF.parse_date_code(raw);
+    if (!parsedDate) return null;
+    const y = parsedDate.y;
+    const m = String(parsedDate.m).padStart(2, "0");
+    const d = String(parsedDate.d).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  const str = String(raw).trim();
+  const cleaned = str.replace(/^Data\s*[:\s-]\s*/i, "").trim();
+
+  // Match YYYY-MM-DD or YYYY/MM/DD
+  const ymdMatch = cleaned.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = String(parseInt(ymdMatch[2]!, 10)).padStart(2, "0");
+    const d = String(parseInt(ymdMatch[3]!, 10)).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  // Match DD.MM.YYYY or DD/MM/YYYY
+  const dmyMatch = cleaned.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmyMatch) {
+    const d = String(parseInt(dmyMatch[1]!, 10)).padStart(2, "0");
+    const m = String(parseInt(dmyMatch[2]!, 10)).padStart(2, "0");
+    const y = dmyMatch[3];
+    return `${y}-${m}-${d}`;
+  }
+
+  return null;
+}
+
+/**
+ * Нормалізація коду RCP (прибирає ведучі нулі: "00123" -> "123", але зберігає "0").
+ */
+export function normalizeRcpCode(rcpVal: string | number | null | undefined): string {
+  if (rcpVal === undefined || rcpVal === null) return "";
+  const str = String(rcpVal).trim();
+  if (!str) return "";
+  const stripped = str.replace(/^0+/, "");
+  return stripped || "0";
+}
+
+/**
+ * Парсер Excel-файлу щоденного звіту бригадира.
+ */
+export function parseDailyShiftExcel(
+  buffer: Buffer | Uint8Array,
+  fileName: string,
+): ParsedDailyReport {
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: false });
+  const firstSheetName = wb.SheetNames[0];
+  if (!firstSheetName) {
+    throw new Error("Excel файл не містить аркушів");
+  }
+
+  const ws = wb.Sheets[firstSheetName];
+  if (!ws) {
+    throw new Error("Не вдалося відкрити перший аркуш Excel");
+  }
+
+  // Raw rows as matrix
+  const data: (string | number | null | undefined)[][] = XLSX.utils.sheet_to_json(ws, {
+    header: 1,
+    defval: "",
+    raw: true,
+  });
+
+  if (data.length === 0) {
+    throw new Error("Excel файл порожній");
+  }
+
+  // 1. Пошук дати в перших 5 рядках
+  let reportDate: string | null = null;
+  for (let r = 0; r < Math.min(5, data.length); r++) {
+    const row = data[r] || [];
+    for (let c = 0; c < Math.min(5, row.length); c++) {
+      const val = row[c];
+      const parsed = parseReportDate(val);
+      if (parsed) {
+        reportDate = parsed;
+        break;
+      }
+    }
+    if (reportDate) break;
+  }
+
+  if (!reportDate) {
+    // Спробувати витягнути дату з імені файлу (напр. "2026-08-31_Pakowanie.xlsx")
+    const fromFilename = parseReportDate(fileName);
+    reportDate = fromFilename || new Date().toISOString().slice(0, 10);
+  }
+
+  // 2. Пошук рядка заголовків
+  let headerRowIndex = -1;
+  let colFirma = 0;
+  let colRcp = 1;
+  let colDzial = 2;
+  let colOd = 6;
+  let colDo = 7;
+  let colRealne = 8;
+  let colPodpis = 9;
+  let colUwagi = 11;
+
+  for (let r = 0; r < Math.min(10, data.length); r++) {
+    const row = data[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const val = String(row[c] || "").toLowerCase();
+      if (val.includes("rcp")) {
+        headerRowIndex = r;
+        break;
+      }
+    }
+    if (headerRowIndex !== -1) break;
+  }
+
+  const startRow = headerRowIndex !== -1 ? headerRowIndex + 1 : 2;
+  const rows: RawParsedRow[] = [];
+
+  for (let r = startRow; r < data.length; r++) {
+    const row = data[r] || [];
+    const firstCell = String(row[0] || "").trim().toUpperCase();
+    const secondCell = String(row[1] || "").trim().toUpperCase();
+
+    // Маркери завершення
+    if (
+      firstCell.includes("SUMA") ||
+      firstCell.includes("RAZEM") ||
+      secondCell.includes("SUMA") ||
+      secondCell.includes("RAZEM")
+    ) {
+      break;
+    }
+
+    const rawFirma = String(row[colFirma] || "").trim();
+    const rawRcp = normalizeRcpCode(row[colRcp]);
+    const rawDzial = String(row[colDzial] || "").trim();
+    const rawOd = normalizeTime(row[colOd]) || String(row[colOd] || "").trim();
+    const rawDo = normalizeTime(row[colDo]) || String(row[colDo] || "").trim();
+    const rawRealne = typeof row[colRealne] === "number" ? row[colRealne] : parseFloat(String(row[colRealne] || 0)) || 0;
+    const rawPodpis = String(row[colPodpis] || "").trim();
+    const rawUwagi = String(row[colUwagi] || "").trim();
+
+    // Пропускаємо повністю порожні рядки
+    if (!rawRcp && !rawOd && !rawDo && !rawFirma && !rawDzial) {
+      continue;
+    }
+
+    rows.push({
+      rowNumber: r + 1,
+      firma: rawFirma,
+      rcpCode: rawRcp,
+      dzial: rawDzial,
+      od: rawOd,
+      do: rawDo,
+      realneGodziny: rawRealne,
+      podpis: rawPodpis,
+      uwagi: rawUwagi,
+    });
+  }
+
+  return {
+    fileName,
+    reportDate,
+    rows,
+    totalRows: rows.length,
+  };
+}
+
+/**
+ * Валідація рядка зі Staging Area проти контексту бази даних.
+ */
+export function validateStagingRow(
+  row: RawParsedRow,
+  context: ValidationContext,
+): ValidationRowResult {
+  // 1. Пошук табельного номера RCP у базі за датою звіту
+  const workerCodeEntry = context.workerCodes.find((w) => {
+    if (normalizeRcpCode(w.rcpCode) !== normalizeRcpCode(row.rcpCode)) return false;
+    if (w.validFrom && context.reportDate < w.validFrom) return false;
+    if (w.validTo && context.reportDate > w.validTo) return false;
+    return true;
+  });
+
+  const resolvedWorkerId = workerCodeEntry ? workerCodeEntry.workerId : null;
+
+  if (!resolvedWorkerId) {
+    return {
+      status: "CHECK_ID",
+      errorMessage: `Табельний номер RCP "${row.rcpCode}" не знайдено в базі працівників`,
+      resolvedWorkerId: null,
+      resolvedLineId: null,
+      resolvedSupervisorId: null,
+    };
+  }
+
+  // 2. Валідація часу
+  const timeVal = validateTimeInterval(row.od, row.do);
+  if (!timeVal.valid) {
+    return {
+      status: "INVALID_TIME",
+      errorMessage: timeVal.errorMessage || "Некоректний час зміни",
+      resolvedWorkerId,
+      resolvedLineId: null,
+      resolvedSupervisorId: null,
+      computedHours: 0,
+    };
+  }
+
+  // 3. Валідація підпису бригадира
+  if (!row.podpis) {
+    return {
+      status: "MISSING_SIGNATURE",
+      errorMessage: "Відсутній підпис бригадира у звіті",
+      resolvedWorkerId,
+      resolvedLineId: null,
+      resolvedSupervisorId: null,
+    };
+  }
+
+  // Пошук ID бригадира за підписом
+  const sup = context.supervisors.find(
+    (s) => s.signatureName.trim().toLowerCase() === row.podpis.trim().toLowerCase(),
+  );
+  const resolvedSupervisorId = sup ? sup.id : null;
+
+  // 4. Пошук лінії через аліаси або пряму назву
+  let resolvedLineId: number | null = null;
+  const directLine = context.lines.find(
+    (l) => l.name.trim().toLowerCase() === row.dzial.trim().toLowerCase() || l.code.trim().toLowerCase() === row.dzial.trim().toLowerCase(),
+  );
+
+  if (directLine) {
+    resolvedLineId = directLine.id;
+  } else {
+    const alias = context.lineAliases.find(
+      (a) => a.rawAlias.trim().toLowerCase() === row.dzial.trim().toLowerCase(),
+    );
+    if (alias) {
+      resolvedLineId = alias.lineId;
+    }
+  }
+
+  return {
+    status: "OK",
+    resolvedWorkerId,
+    resolvedLineId,
+    resolvedSupervisorId,
+    roundedStart: timeVal.roundedStart,
+    roundedStop: timeVal.roundedStop,
+    computedHours: timeVal.hours,
+  };
+}
