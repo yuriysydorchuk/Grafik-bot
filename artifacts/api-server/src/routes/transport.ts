@@ -10,7 +10,7 @@ import {
   driversTable, factoriesTable, workersTable, driverShiftAssignmentsTable, scheduleWeeksTable,
   scheduleEntriesTable, shiftCancellationsTable, svodniRowsTable,
 } from "@workspace/db";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap } from "../lib/auth";
 import { weekFromForMonth, entryDateStr } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
@@ -23,6 +23,12 @@ const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m }
 const RW = requireAnyCap("editData", "assignDrivers");
 const validMonth = (m: any) => typeof m === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
 const r2 = (n: number) => Math.round(n * 100) / 100;
+// строго ДО першого числа наступного місяця: "-31" валить date-каст Postgres
+// у коротких місяцях (30/28 днів) — див. svodni.ts nextMonthStart
+const nextMonthStart = (month: string): string => {
+  const [y, m] = month.split("-").map(Number);
+  return m === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+};
 
 // ─── Журнал поїздок (архів) ──────────────────────────────────────────────────
 
@@ -30,7 +36,7 @@ router.get("/transport/trip-log", async (req, res) => {
   const month = validMonth(req.query.month) ? String(req.query.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const factory = String(req.query.factory ?? "").trim();
-  const conds = [gte(driverTripLogTable.tripDate, `${month}-01`), lte(driverTripLogTable.tripDate, `${month}-31`)];
+  const conds = [gte(driverTripLogTable.tripDate, `${month}-01`), lt(driverTripLogTable.tripDate, nextMonthStart(month))];
   if (factory) conds.push(eq(driverTripLogTable.factoryLabel, factory));
   const rows = await db.select().from(driverTripLogTable)
     .where(and(...conds))
@@ -60,7 +66,7 @@ router.get("/transport/driver-pay", async (req, res) => {
     km: sql<number>`coalesce(sum(${driverTripLogTable.km}), 0)`,
     pay: sql<number>`coalesce(sum(${driverTripLogTable.payAmount}::numeric), 0)`,
   }).from(driverTripLogTable)
-    .where(and(gte(driverTripLogTable.tripDate, `${month}-01`), lte(driverTripLogTable.tripDate, `${month}-31`)))
+    .where(and(gte(driverTripLogTable.tripDate, `${month}-01`), lt(driverTripLogTable.tripDate, nextMonthStart(month))))
     .groupBy(driverTripLogTable.driverId, driverTripLogTable.driverName, driverTripLogTable.factoryLabel);
 
   if (logRows.length) {
