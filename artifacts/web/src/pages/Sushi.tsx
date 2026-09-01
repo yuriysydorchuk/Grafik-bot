@@ -1,17 +1,1549 @@
-// «Суші» — вкладка окремого проєкту по суші. Заготовка: функціонал
-// поетапно переноситься сюди з окремої програми (паралельні PR-и колеги).
-import { Card, Empty } from "../components/ui";
+import { useMemo, useState, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Upload,
+  FileSpreadsheet,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  HelpCircle,
+  Plus,
+  Trash2,
+  Edit2,
+  Link2,
+  Lock,
+  Calendar,
+  Clock,
+  Shirt,
+  Search,
+  Filter,
+  ArrowRight,
+  ShieldAlert,
+  ChevronDown,
+  ChevronRight,
+  UserCheck,
+  Check,
+  Building2,
+  RefreshCw,
+} from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "../components/Layout";
+import {
+  Card,
+  Button,
+  Input,
+  Select,
+  Badge,
+  Modal,
+  Label,
+  Spinner,
+  Empty,
+  cn,
+} from "../components/ui";
+import { useConfirm } from "../components/confirm";
+import { monthOptions } from "../lib/dates";
 import { useT } from "../lib/i18n";
+import {
+  fetchSushiRoles,
+  fetchSushiLines,
+  createSushiLine,
+  addSushiLineAlias,
+  fetchSushiSupervisors,
+  saveSushiSupervisor,
+  fetchSushiWorkerCodes,
+  createSushiWorkerCode,
+  deleteSushiWorkerCode,
+  uploadSushiReport,
+  fetchSushiImportBatches,
+  fetchSushiStaging,
+  patchSushiStaging,
+  linkSushiRcpAlias,
+  approveSushiValidStaging,
+  fetchSushiTimesheetTree,
+  fetchSushiIntervals,
+  createSushiInterval,
+  patchSushiInterval,
+  deleteSushiInterval,
+  fetchSushiDisputes,
+  createSushiDispute,
+  resolveSushiDispute,
+  rejectSushiDispute,
+  fetchSushiZalacznik,
+  lockSushiZalacznik,
+  fetchSushiReconciliation,
+  createSushiException,
+  type SushiStagingEntry,
+  type SushiIntervalItem,
+  type SushiDispute,
+  type SushiLine,
+  type SushiSupervisor,
+  type SushiWorkerCode,
+} from "../lib/sushiApi";
+import { get } from "../lib/api";
+
+const fmt = (n: number) =>
+  n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function Sushi() {
   const t = useT();
+  const [tab, setTab] = useState<"import" | "timesheet" | "disputes" | "finance" | "settings">("import");
+
+  const TABS: [typeof tab, string][] = [
+    ["import", t("Імпорт та Staging")],
+    ["timesheet", t("Табель годин")],
+    ["disputes", t("Диспути та скарги")],
+    ["finance", t("Фінанси та Załącznik")],
+    ["settings", t("Налаштування проєкту")],
+  ];
+
   return (
-    <div>
-      <PageHeader title={t("Суші")} subtitle={t("Окремий проєкт — функціонал поетапно переноситься сюди")} />
-      <Card>
-        <Empty>{t("Сторінка-заготовка: розділи зʼявляться в міру перенесення функціоналу.")}</Empty>
-      </Card>
+    <div className="space-y-6">
+      <PageHeader
+        title={t("Фабрика «Суші» (Sushi & Food Factory)")}
+        subtitle={t("Персональний виробничий модуль: імпорт звітів зміни, табель з 15-хв заокругленням, Załącznik та звірка")}
+      />
+
+      {/* Tabs navigation */}
+      <div className="flex w-fit gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
+        {TABS.map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`rounded-lg px-4 py-2 transition-all ${
+              tab === k
+                ? "bg-white text-slate-900 shadow-sm font-semibold"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Panels */}
+      {tab === "import" && <ImportTab />}
+      {tab === "timesheet" && <TimesheetTab />}
+      {tab === "disputes" && <DisputesTab />}
+      {tab === "finance" && <FinanceTab />}
+      {tab === "settings" && <SettingsTab />}
     </div>
+  );
+}
+
+// ─── 1. ВКЛАДКА ІМПОРТ ТА STAGING ──────────────────────────────────────────
+
+function ImportTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState<number | undefined>();
+  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [linkingEntry, setLinkingEntry] = useState<SushiStagingEntry | null>(null);
+
+  const { data: batches = [], isLoading: loadingBatches } = useQuery({
+    queryKey: ["sushi-batches"],
+    queryFn: () => fetchSushiImportBatches(),
+  });
+
+  const activeBatch = useMemo(() => {
+    if (selectedBatchId) return batches.find((b) => b.id === selectedBatchId);
+    return batches[0];
+  }, [batches, selectedBatchId]);
+
+  const { data: stagingEntries = [], isLoading: loadingStaging } = useQuery({
+    queryKey: ["sushi-staging", activeBatch?.id, statusFilter],
+    queryFn: () =>
+      fetchSushiStaging({
+        batchId: activeBatch?.id,
+        status: statusFilter === "ALL" ? undefined : statusFilter,
+      }),
+    enabled: !!activeBatch?.id,
+  });
+
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => uploadSushiReport(file),
+    onSuccess: (res) => {
+      toast.success(
+        t("Файл успішно завантажено! Оброблено рядків: {total}, валідних: {valid}, помилок: {err}", {
+          total: res.totalRows,
+          valid: res.validRows,
+          err: res.errorRows,
+        }),
+      );
+      qc.invalidateQueries({ queryKey: ["sushi-batches"] });
+      setSelectedBatchId(res.batchId);
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t("Помилка завантаження файлу"));
+    },
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (batchId: number) => approveSushiValidStaging(batchId),
+    onSuccess: (res) => {
+      toast.success(t("Успішно перенесено {count} валідних інтервалів у табель!", { count: res.committed }));
+      qc.invalidateQueries({ queryKey: ["sushi-staging"] });
+      qc.invalidateQueries({ queryKey: ["sushi-batches"] });
+      qc.invalidateQueries({ queryKey: ["sushi-intervals"] });
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t("Помилка перенесення рядків"));
+    },
+  });
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadMutation.mutate(file);
+    }
+  };
+
+  const validEntriesCount = useMemo(
+    () => stagingEntries.filter((e) => e.validationStatus === "OK" && !e.isProcessed).length,
+    [stagingEntries],
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Upload Banner */}
+      <Card className="p-6">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4 border-2 border-dashed border-slate-200 rounded-xl p-6 bg-slate-50/50 hover:bg-slate-50 transition">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-red-100 text-red-600 rounded-xl">
+              <FileSpreadsheet className="w-8 h-8" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-800 text-base">
+                {t("Завантажити щоденний звіт бригадира (Excel)")}
+              </h3>
+              <p className="text-xs text-slate-500">
+                {t("Підтримуються файли форми DAILY_SHIFT_REPORT (.xlsx, .xls). Автоматичне округлення 15 хв та звірка RCP.")}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              accept=".xlsx,.xls"
+              className="hidden"
+            />
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              loading={uploadMutation.isPending}
+              className="gap-2"
+            >
+              <Upload className="w-4 h-4" />
+              {t("Обрати Excel файл")}
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Batches Selector & Action Bar */}
+      {batches.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Label>{t("Звіт за дату:")}</Label>
+            <Select
+              value={activeBatch?.id ?? ""}
+              onChange={(e) => setSelectedBatchId(Number(e.target.value))}
+              className="w-72 font-medium"
+            >
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.reportDate} ({b.sourceFilename}) — {b.validRowsCount} ОК / {b.errorRowsCount} ⚠
+                </option>
+              ))}
+            </Select>
+
+            <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs font-medium">
+              {[
+                ["ALL", t("Усі рядки")],
+                ["OK", t("Валідні (OK)")],
+                ["CHECK_ID", t("Потрібна прив'язка (CHECK_ID)")],
+                ["INVALID_TIME", t("Помилка часу")],
+                ["MISSING_SIGNATURE", t("Без підпису")],
+              ].map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setStatusFilter(k)}
+                  className={`px-2.5 py-1 rounded-md transition ${
+                    statusFilter === k ? "bg-white shadow-xs font-semibold text-slate-800" : "text-slate-500"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {activeBatch && activeBatch.status !== "PROCESSED" && (
+            <Button
+              variant="success"
+              disabled={validEntriesCount === 0 || approveMutation.isPending}
+              loading={approveMutation.isPending}
+              onClick={() => approveMutation.mutate(activeBatch.id)}
+              className="gap-2"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              {t("Затвердити всі валідні ({count})", { count: validEntriesCount })}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Staging Entries Table */}
+      <Card className="overflow-hidden">
+        {loadingBatches || loadingStaging ? (
+          <Spinner />
+        ) : !activeBatch ? (
+          <Empty>{t("Ще не завантажено жодного щоденного звіту")}</Empty>
+        ) : stagingEntries.length === 0 ? (
+          <Empty>{t("Немає записів за обраним фільтром")}</Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/75 text-slate-500 font-semibold uppercase">
+                  <th className="py-3 px-4">#</th>
+                  <th className="py-3 px-4">{t("Фірма")}</th>
+                  <th className="py-3 px-4">{t("Nr RCP")}</th>
+                  <th className="py-3 px-4">{t("Працівник (Розпізнано)")}</th>
+                  <th className="py-3 px-4">{t("Цех / Лінія")}</th>
+                  <th className="py-3 px-4">{t("Час (OD – DO)")}</th>
+                  <th className="py-3 px-4">{t("Години")}</th>
+                  <th className="py-3 px-4">{t("Підпис")}</th>
+                  <th className="py-3 px-4">{t("Статус")}</th>
+                  <th className="py-3 px-4 text-right">{t("Дії")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                {stagingEntries.map((entry) => {
+                  return (
+                    <tr
+                      key={entry.id}
+                      className={cn(
+                        "hover:bg-slate-50/50 transition",
+                        entry.validationStatus === "CHECK_ID" && "bg-amber-50/30",
+                        entry.validationStatus === "INVALID_TIME" && "bg-red-50/30",
+                        entry.isProcessed && "opacity-60 bg-slate-50/80",
+                      )}
+                    >
+                      <td className="py-3 px-4 text-slate-400">{entry.rowNumber}</td>
+                      <td className="py-3 px-4">
+                        <Badge color={entry.rawFirma === "ES" ? "blue" : "amber"}>
+                          {entry.rawFirma || "—"}
+                        </Badge>
+                      </td>
+                      <td className="py-3 px-4 font-mono font-semibold">{entry.rawRcp || "—"}</td>
+                      <td className="py-3 px-4">
+                        {entry.workerName ? (
+                          <div className="font-semibold text-slate-800">{entry.workerName}</div>
+                        ) : (
+                          <span className="text-amber-600 italic">{t("Не знайдено в базі")}</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="text-slate-600">{entry.lineName || entry.rawDzial || "—"}</span>
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        {entry.rawOd || "—"} → {entry.rawDo || "—"}
+                      </td>
+                      <td className="py-3 px-4 font-semibold text-slate-800">
+                        {entry.rawRealneGodziny || "—"}
+                      </td>
+                      <td className="py-3 px-4 text-slate-600">{entry.rawPodpis || "—"}</td>
+                      <td className="py-3 px-4">
+                        <StagingStatusBadge status={entry.validationStatus} isProcessed={entry.isProcessed} />
+                        {entry.errorMessage && (
+                          <div className="text-[10px] text-red-500 font-normal mt-0.5 max-w-[200px] truncate" title={entry.errorMessage}>
+                            {entry.errorMessage}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        {!entry.isProcessed && entry.validationStatus === "CHECK_ID" && (
+                          <Button
+                            variant="secondary"
+                            className="text-xs py-1 px-2.5 h-auto text-amber-700 hover:text-amber-800"
+                            onClick={() => setLinkingEntry(entry)}
+                          >
+                            <Link2 className="w-3.5 h-3.5" />
+                            {t("Прив'язати аліас")}
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Link Alias Modal */}
+      {linkingEntry && (
+        <LinkAliasModal
+          entry={linkingEntry}
+          onClose={() => setLinkingEntry(null)}
+          onSuccess={() => {
+            setLinkingEntry(null);
+            qc.invalidateQueries({ queryKey: ["sushi-staging"] });
+            qc.invalidateQueries({ queryKey: ["sushi-batches"] });
+            qc.invalidateQueries({ queryKey: ["sushi-worker-codes"] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function StagingStatusBadge({ status, isProcessed }: { status: string; isProcessed: boolean }) {
+  const t = useT();
+  if (isProcessed) {
+    return <Badge color="slate">{t("Оброблено")}</Badge>;
+  }
+  switch (status) {
+    case "OK":
+      return <Badge color="green">{t("Готовий до табеля")}</Badge>;
+    case "CHECK_ID":
+      return <Badge color="amber">{t("Невідомий RCP")}</Badge>;
+    case "INVALID_TIME":
+      return <Badge color="rose">{t("Помилка часу")}</Badge>;
+    case "MISSING_SIGNATURE":
+      return <Badge color="amber">{t("Без підпису")}</Badge>;
+    case "UNKNOWN_LINE":
+      return <Badge color="rose">{t("Невідомий цех")}</Badge>;
+    default:
+      return <Badge color="slate">{status}</Badge>;
+  }
+}
+
+// ─── 2. ВКЛАДКА ТАБЕЛЬ ГОДИН ТА ІНТЕРВАЛИ ──────────────────────────────────
+
+function TimesheetTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const months = useMemo(() => monthOptions("uk-UA", 18), []);
+  const [month, setMonth] = useState(months[0]!.value);
+  const [selectedWorkerId, setSelectedWorkerId] = useState<number | undefined>();
+  const [editingInterval, setEditingInterval] = useState<Partial<SushiIntervalItem> | null>(null);
+
+  // Отримуємо список працівників фабрики
+  const { data: workerCodes = [] } = useQuery({
+    queryKey: ["sushi-worker-codes"],
+    queryFn: () => fetchSushiWorkerCodes(),
+  });
+
+  const { data: timesheetData, isLoading: loadingTree } = useQuery({
+    queryKey: ["sushi-timesheet-tree", selectedWorkerId],
+    queryFn: () => fetchSushiTimesheetTree(selectedWorkerId!),
+    enabled: !!selectedWorkerId,
+  });
+
+  const { data: monthIntervals = [], isLoading: loadingMonth } = useQuery({
+    queryKey: ["sushi-intervals", month],
+    queryFn: () => fetchSushiIntervals({ month }),
+    enabled: !selectedWorkerId,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteSushiInterval(id),
+    onSuccess: () => {
+      toast.success(t("Інтервал успішно видалено"));
+      qc.invalidateQueries({ queryKey: ["sushi-intervals"] });
+      qc.invalidateQueries({ queryKey: ["sushi-timesheet-tree"] });
+    },
+  });
+
+  const handleDelete = async (id: number) => {
+    const ok = await confirm({
+      title: t("Видалити інтервал?"),
+      message: t("Цю дію не можна скасувати. Години буде видалено з табеля та Załącznik."),
+      confirmText: t("Видалити"),
+      danger: true,
+    });
+    if (ok) deleteMutation.mutate(id);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Controls Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Label>{t("Місяць:")}</Label>
+          <Select value={month} onChange={(e) => setMonth(e.target.value)} className="w-52">
+            {months.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+
+          <Label>{t("Картка працівника:")}</Label>
+          <Select
+            value={selectedWorkerId ?? ""}
+            onChange={(e) => setSelectedWorkerId(e.target.value ? Number(e.target.value) : undefined)}
+            className="w-72"
+          >
+            <option value="">{t("Всі працівники (Зведений табель)")}</option>
+            {workerCodes.map((w) => (
+              <option key={w.id} value={w.workerId}>
+                {w.workerName || `Працівник #${w.workerId}`} (RCP: {w.rcpCode})
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <Button onClick={() => setEditingInterval({ workDate: `${month}-01`, startTime: "06:00", stopTime: "14:00" })} className="gap-2">
+          <Plus className="w-4 h-4" />
+          {t("Додати зміну вручну")}
+        </Button>
+      </div>
+
+      {/* View: Single Worker Hierarchical Tree or Flat Month List */}
+      {selectedWorkerId ? (
+        <Card className="p-6">
+          {loadingTree ? (
+            <Spinner />
+          ) : !timesheetData?.tree.length ? (
+            <Empty>{t("Немає збережених інтервалів для цього працівника")}</Empty>
+          ) : (
+            <div className="space-y-4">
+              {timesheetData.tree.map((yearNode) => (
+                <div key={yearNode.year} className="space-y-4">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-red-500" />
+                    {yearNode.year} {t("рік")} — {yearNode.totalHours} {t("год")}
+                  </h3>
+
+                  {yearNode.months.map((monthNode) => (
+                    <div key={monthNode.month} className="border border-slate-200 rounded-xl overflow-hidden">
+                      <div className="bg-slate-50 px-4 py-3 flex items-center justify-between border-b border-slate-200">
+                        <span className="font-semibold text-slate-800 text-sm">
+                          {monthNode.month} ({monthNode.totalDays} {t("днів")})
+                        </span>
+                        <div className="flex items-center gap-3 text-xs">
+                          <span className="text-slate-500">
+                            {t("Оплачувані:")} <strong className="text-slate-800">{monthNode.totalPayableHours} год</strong>
+                          </span>
+                          <span className="text-slate-500">
+                            {t("Фактура:")} <strong className="text-slate-800">{monthNode.totalBillableHours} год</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="divide-y divide-slate-100">
+                        {monthNode.days.map((dayNode) => (
+                          <div key={dayNode.date} className="p-3 hover:bg-slate-50/50 transition flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                            <div className="flex items-center gap-3">
+                              <span className="font-mono font-bold text-slate-800 text-sm w-28">
+                                {dayNode.date} ({dayNode.dayOfWeek})
+                              </span>
+                              {dayNode.odziezApplied && (
+                                <Badge color="green">
+                                  <Shirt className="w-3 h-3 mr-1" />
+                                  {t("Одяг 6 zł")}
+                                </Badge>
+                              )}
+                              <span className="font-semibold text-slate-700">
+                                {dayNode.totalHours} {t("год")}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              {dayNode.intervals.map((interval) => (
+                                <div
+                                  key={interval.id}
+                                  className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-2xs"
+                                >
+                                  <Clock className="w-3.5 h-3.5 text-slate-400" />
+                                  <span className="font-mono text-slate-700">
+                                    {interval.roundedStartTime}–{interval.roundedStopTime} ({interval.hours}h)
+                                  </span>
+                                  {interval.lineName && (
+                                    <span className="text-slate-500 text-[11px]">[{interval.lineName}]</span>
+                                  )}
+                                  {interval.supervisorName && (
+                                    <span className="text-slate-400 text-[10px]">✍ {interval.supervisorName}</span>
+                                  )}
+                                  <button
+                                    onClick={() => setEditingInterval(interval)}
+                                    className="text-slate-400 hover:text-slate-600 p-0.5"
+                                  >
+                                    <Edit2 className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(interval.id)}
+                                    className="text-slate-400 hover:text-red-600 p-0.5"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      ) : (
+        /* Flat Month View */
+        <Card className="overflow-hidden">
+          {loadingMonth ? (
+            <Spinner />
+          ) : monthIntervals.length === 0 ? (
+            <Empty>{t("Немає записів за обраний місяць")}</Empty>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                    <th className="py-3 px-4">{t("Дата")}</th>
+                    <th className="py-3 px-4">{t("Працівник")}</th>
+                    <th className="py-3 px-4">{t("Цех / Лінія")}</th>
+                    <th className="py-3 px-4">{t("Початок")}</th>
+                    <th className="py-3 px-4">{t("Кінець")}</th>
+                    <th className="py-3 px-4">{t("Округлені години")}</th>
+                    <th className="py-3 px-4">{t("Бригадир")}</th>
+                    <th className="py-3 px-4">{t("Одяг")}</th>
+                    <th className="py-3 px-4 text-right">{t("Дії")}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  {monthIntervals.map((i) => (
+                    <tr key={i.id} className="hover:bg-slate-50/50">
+                      <td className="py-3 px-4 font-mono font-semibold">{i.workDate}</td>
+                      <td className="py-3 px-4 font-semibold text-slate-800">{i.workerName || `#${i.workerId}`}</td>
+                      <td className="py-3 px-4 text-slate-600">{i.lineName || "—"}</td>
+                      <td className="py-3 px-4 font-mono">
+                        {i.startTime} <span className="text-slate-400">→ {i.roundedStartTime}</span>
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        {i.stopTime} <span className="text-slate-400">→ {i.roundedStopTime}</span>
+                      </td>
+                      <td className="py-3 px-4 font-bold text-slate-900">{i.hours} год</td>
+                      <td className="py-3 px-4 text-slate-600">{i.supervisorName || "—"}</td>
+                      <td className="py-3 px-4">
+                        {i.odziezFeeApplicable ? <Badge color="green">{t("6 zł")}</Badge> : <span className="text-slate-400">—</span>}
+                      </td>
+                      <td className="py-3 px-4 text-right space-x-1">
+                        <Button variant="ghost" className="p-1 h-auto" onClick={() => setEditingInterval(i)}>
+                          <Edit2 className="w-3.5 h-3.5 text-slate-500" />
+                        </Button>
+                        <Button variant="ghost" className="p-1 h-auto text-red-500" onClick={() => handleDelete(i.id)}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Add / Edit Interval Modal */}
+      {editingInterval && (
+        <IntervalModal
+          interval={editingInterval}
+          onClose={() => setEditingInterval(null)}
+          onSuccess={() => {
+            setEditingInterval(null);
+            qc.invalidateQueries({ queryKey: ["sushi-intervals"] });
+            qc.invalidateQueries({ queryKey: ["sushi-timesheet-tree"] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 3. ВКЛАДКА ДИСПУТИ ТА СКАРГИ ──────────────────────────────────────────
+
+function DisputesTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const [status, setStatus] = useState<string>("OPEN");
+  const [resolvingDispute, setResolvingDispute] = useState<SushiDispute | null>(null);
+
+  const { data: disputes = [], isLoading } = useQuery({
+    queryKey: ["sushi-disputes", status],
+    queryFn: () => fetchSushiDisputes({ status: status === "ALL" ? undefined : status }),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: ({ id, note }: { id: number; note: string }) => rejectSushiDispute(id, note),
+    onSuccess: () => {
+      toast.success(t("Диспут відхилено"));
+      qc.invalidateQueries({ queryKey: ["sushi-disputes"] });
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Filter Bar */}
+      <div className="flex items-center gap-2">
+        {[
+          ["OPEN", t("Відкриті")],
+          ["RESOLVED", t("Вирішені")],
+          ["REJECTED", t("Відхилені")],
+          ["ALL", t("Усі")],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setStatus(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              status === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <Card className="overflow-hidden">
+        {isLoading ? (
+          <Spinner />
+        ) : disputes.length === 0 ? (
+          <Empty>{t("Немає скарг за обраним фільтром")}</Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                  <th className="py-3 px-4">#</th>
+                  <th className="py-3 px-4">{t("Працівник")}</th>
+                  <th className="py-3 px-4">{t("Дата зміни")}</th>
+                  <th className="py-3 px-4">{t("Тип скарги")}</th>
+                  <th className="py-3 px-4">{t("Заявлений час")}</th>
+                  <th className="py-3 px-4">{t("Коментар працівника")}</th>
+                  <th className="py-3 px-4">{t("Статус")}</th>
+                  <th className="py-3 px-4 text-right">{t("Дії")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                {disputes.map((d) => (
+                  <tr key={d.id} className="hover:bg-slate-50/50">
+                    <td className="py-3 px-4 text-slate-400">#{d.id}</td>
+                    <td className="py-3 px-4 font-semibold text-slate-900">{d.workerName || `#${d.workerId}`}</td>
+                    <td className="py-3 px-4 font-mono">{d.targetDate}</td>
+                    <td className="py-3 px-4">
+                      <Badge color="amber">{d.disputeType}</Badge>
+                    </td>
+                    <td className="py-3 px-4 font-mono">
+                      {d.claimedStartTime} → {d.claimedStopTime} ({d.claimedHours ?? 8}h)
+                    </td>
+                    <td className="py-3 px-4 max-w-xs truncate text-slate-600" title={d.workerComment || ""}>
+                      {d.workerComment || "—"}
+                    </td>
+                    <td className="py-3 px-4">
+                      <Badge color={d.status === "OPEN" ? "amber" : d.status === "RESOLVED" ? "green" : "rose"}>
+                        {d.status}
+                      </Badge>
+                    </td>
+                    <td className="py-3 px-4 text-right space-x-2">
+                      {d.status === "OPEN" && (
+                        <>
+                          <Button
+                            variant="success"
+                            className="text-xs py-1 px-2.5 h-auto"
+                            onClick={() => setResolvingDispute(d)}
+                          >
+                            {t("Розглянути")}
+                          </Button>
+                          <Button
+                            variant="danger"
+                            className="text-xs py-1 px-2.5 h-auto"
+                            onClick={() => rejectMutation.mutate({ id: d.id, note: "Відхилено адміністратором" })}
+                          >
+                            {t("Відхилити")}
+                          </Button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Resolve Modal */}
+      {resolvingDispute && (
+        <ResolveDisputeModal
+          dispute={resolvingDispute}
+          onClose={() => setResolvingDispute(null)}
+          onSuccess={() => {
+            setResolvingDispute(null);
+            qc.invalidateQueries({ queryKey: ["sushi-disputes"] });
+            qc.invalidateQueries({ queryKey: ["sushi-intervals"] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── 4. ВКЛАДКА ФІНАНСИ ТА ZAŁĄCZNIK ───────────────────────────────────────
+
+function FinanceTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const months = useMemo(() => monthOptions("uk-UA", 18), []);
+  const [month, setMonth] = useState(months[0]!.value);
+  const [viewMode, setViewMode] = useState<"consolidated" | "company">("consolidated");
+  const [selectedCompanyId, setSelectedCompanyId] = useState<number | undefined>();
+  const [subTab, setSubTab] = useState<"zalacznik" | "reconciliation">("zalacznik");
+
+  const { data: zalacznik, isLoading: loadingZalacznik } = useQuery({
+    queryKey: ["sushi-zalacznik", month, viewMode === "company" ? selectedCompanyId : null],
+    queryFn: () =>
+      fetchSushiZalacznik({
+        month,
+        companyId: viewMode === "company" ? selectedCompanyId : null,
+      }),
+  });
+
+  const { data: reconciliation, isLoading: loadingRecon } = useQuery({
+    queryKey: ["sushi-reconciliation", month],
+    queryFn: () => fetchSushiReconciliation({ month }),
+    enabled: subTab === "reconciliation",
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: () => lockSushiZalacznik(zalacznik),
+    onSuccess: () => {
+      toast.success(t("Załącznik do faktury успішно зафіксовано!"));
+      qc.invalidateQueries({ queryKey: ["sushi-zalacznik"] });
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Sub tabs & Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Label>{t("Місяць:")}</Label>
+          <Select value={month} onChange={(e) => setMonth(e.target.value)} className="w-52">
+            {months.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+
+          <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs font-medium">
+            <button
+              onClick={() => setSubTab("zalacznik")}
+              className={`px-3 py-1.5 rounded-md transition ${
+                subTab === "zalacznik" ? "bg-white shadow-xs font-semibold text-slate-800" : "text-slate-500"
+              }`}
+            >
+              {t("Załącznik do faktury")}
+            </button>
+            <button
+              onClick={() => setSubTab("reconciliation")}
+              className={`px-3 py-1.5 rounded-md transition ${
+                subTab === "reconciliation" ? "bg-white shadow-xs font-semibold text-slate-800" : "text-slate-500"
+              }`}
+            >
+              {t("Двоконтурна звірка годин")}
+            </button>
+          </div>
+        </div>
+
+        {subTab === "zalacznik" && (
+          <div className="flex items-center gap-2">
+            <Select
+              value={viewMode === "consolidated" ? "ALL" : String(selectedCompanyId ?? 1)}
+              onChange={(e) => {
+                if (e.target.value === "ALL") {
+                  setViewMode("consolidated");
+                  setSelectedCompanyId(undefined);
+                } else {
+                  setViewMode("company");
+                  setSelectedCompanyId(Number(e.target.value));
+                }
+              }}
+              className="w-64 text-xs font-medium"
+            >
+              <option value="ALL">{t("Вся фабрика (Консолідовано для клієнта)")}</option>
+              <option value="1">{t("Тільки фірма ES (Внутрішній розподіл)")}</option>
+              <option value="2">{t("Тільки фірма ESO (Внутрішній розподіл)")}</option>
+            </Select>
+
+            <Button
+              variant="secondary"
+              loading={lockMutation.isPending}
+              onClick={() => lockMutation.mutate()}
+              className="gap-1.5"
+            >
+              <Lock className="w-4 h-4" />
+              {t("Зафіксувати")}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {subTab === "zalacznik" ? (
+        loadingZalacznik ? (
+          <Spinner />
+        ) : !zalacznik ? (
+          <Empty>{t("Немає даних за цей місяць")}</Empty>
+        ) : (
+          <div className="space-y-6">
+            {/* KPI Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <Card className="p-4 bg-slate-50/50">
+                <span className="text-xs text-slate-500 font-medium">{t("Фактуровані години")}</span>
+                <div className="text-xl font-bold text-slate-900 mt-1">{zalacznik.totalBillableHours} год</div>
+              </Card>
+              <Card className="p-4 bg-slate-50/50">
+                <span className="text-xs text-slate-500 font-medium">{t("Вартість робіт Netto")}</span>
+                <div className="text-xl font-bold text-slate-900 mt-1">{fmt(zalacznik.totalLaborCostNet)} zł</div>
+              </Card>
+              <Card className="p-4 bg-slate-50/50">
+                <span className="text-xs text-slate-500 font-medium">
+                  {t("Спецодяг Netto ({count} дн)", { count: zalacznik.totalOdziezDaysCount })}
+                </span>
+                <div className="text-xl font-bold text-emerald-600 mt-1">-{fmt(zalacznik.totalOdziezDeductionNet)} zł</div>
+              </Card>
+              <Card className="p-4 bg-slate-50/50">
+                <span className="text-xs text-slate-500 font-medium">{t("Штрафи клієнта (Kary)")}</span>
+                <div className="text-xl font-bold text-rose-600 mt-1">-{fmt(zalacznik.totalContractualPenalties)} zł</div>
+              </Card>
+              <Card className="p-4 bg-red-50/40 border-red-200">
+                <span className="text-xs text-red-600 font-semibold">{t("До фактури Netto")}</span>
+                <div className="text-2xl font-black text-red-600 mt-1">{fmt(zalacznik.finalInvoiceNet)} zł</div>
+              </Card>
+            </div>
+
+            {/* Roles Breakdown Table */}
+            <Card className="overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <h4 className="font-semibold text-slate-800 text-sm">{t("Розбивка годин за тарифними ролями")}</h4>
+              </div>
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50/50 text-slate-500 font-semibold uppercase">
+                    <th className="py-3 px-4">{t("Категорія / Роль")}</th>
+                    <th className="py-3 px-4">{t("Ставка клієнту")}</th>
+                    <th className="py-3 px-4">{t("Відпрацьовані години")}</th>
+                    <th className="py-3 px-4 text-right">{t("Сума Netto")}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  {Object.values(zalacznik.breakdownByRole).map((b) => (
+                    <tr key={b.roleCode} className="hover:bg-slate-50/50">
+                      <td className="py-3 px-4 font-semibold text-slate-900">{b.roleName}</td>
+                      <td className="py-3 px-4 font-mono">{fmt(b.clientRate)} zł/h</td>
+                      <td className="py-3 px-4 font-bold">{b.hours} год</td>
+                      <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
+                        {fmt(b.amountNet)} zł
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          </div>
+        )
+      ) : (
+        /* Reconciliation Sub Tab */
+        <Card className="overflow-hidden">
+          {loadingRecon ? (
+            <Spinner />
+          ) : !reconciliation?.items.length ? (
+            <Empty>{t("Немає даних для звірки за цей місяць")}</Empty>
+          ) : (
+            <div className="space-y-4 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                <span>
+                  {t("Годин за даними фабрики:")} <strong>{reconciliation.totalFactoryHours} год</strong>
+                </span>
+                <span>
+                  {t("Годин у табелі Grafik-bot:")} <strong>{reconciliation.totalInternalHours} год</strong>
+                </span>
+                <span>
+                  {t("Незбігів:")}{" "}
+                  <strong className={reconciliation.mismatchCount > 0 ? "text-red-600 font-bold" : "text-emerald-600 font-bold"}>
+                    {reconciliation.mismatchCount}
+                  </strong>
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                      <th className="py-2.5 px-3">{t("Працівник")}</th>
+                      <th className="py-2.5 px-3">{t("Дата")}</th>
+                      <th className="py-2.5 px-3">{t("Фабрика (Realne)")}</th>
+                      <th className="py-2.5 px-3">{t("Табель Grafik-bot")}</th>
+                      <th className="py-2.5 px-3">{t("Різниця")}</th>
+                      <th className="py-2.5 px-3">{t("Статус звірки")}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                    {reconciliation.items.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/50">
+                        <td className="py-2.5 px-3 font-semibold text-slate-800">#{item.workerId}</td>
+                        <td className="py-2.5 px-3 font-mono">{item.workDate}</td>
+                        <td className="py-2.5 px-3 font-mono">{item.factoryHours}h</td>
+                        <td className="py-2.5 px-3 font-mono">{item.internalHours}h</td>
+                        <td className="py-2.5 px-3 font-mono font-bold">
+                          {item.deltaHours > 0 ? `+${item.deltaHours}` : item.deltaHours}h
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {item.status === "MATCH" && <Badge color="green">{t("Збігається")}</Badge>}
+                          {item.status === "COMPENSATED_OFFSET" && (
+                            <Badge color="blue">{t("Нічний зсув (Самокомпенсовано)")}</Badge>
+                          )}
+                          {item.status === "MISMATCH" && <Badge color="rose">{t("Розбіжність")}</Badge>}
+                          {item.status === "EXCEPTION_APPROVED" && (
+                            <Badge color="amber">{t("Узгоджене виключення")}</Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── 5. ВКЛАДКА НАЛАШТУВАННЯ ПРОЄКТУ ───────────────────────────────────────
+
+function SettingsTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const [subTab, setSubTab] = useState<"lines" | "supervisors" | "rcp" | "roles">("lines");
+
+  const { data: lines = [] } = useQuery({ queryKey: ["sushi-lines"], queryFn: () => fetchSushiLines() });
+  const { data: supervisors = [] } = useQuery({ queryKey: ["sushi-supervisors"], queryFn: () => fetchSushiSupervisors() });
+  const { data: workerCodes = [] } = useQuery({ queryKey: ["sushi-worker-codes"], queryFn: () => fetchSushiWorkerCodes() });
+  const { data: roles = [] } = useQuery({ queryKey: ["sushi-roles"], queryFn: () => fetchSushiRoles() });
+
+  const [addingLine, setAddingLine] = useState(false);
+  const [newLineName, setNewLineName] = useState("");
+  const [newLineCode, setNewLineCode] = useState("");
+
+  const [addingAliasLineId, setAddingAliasLineId] = useState<number | null>(null);
+  const [newAliasText, setNewAliasText] = useState("");
+
+  const lineMutation = useMutation({
+    mutationFn: () => createSushiLine({ name: newLineName, code: newLineCode }),
+    onSuccess: () => {
+      toast.success(t("Лінію успішно створено"));
+      setAddingLine(false);
+      setNewLineName("");
+      setNewLineCode("");
+      qc.invalidateQueries({ queryKey: ["sushi-lines"] });
+    },
+  });
+
+  const aliasMutation = useMutation({
+    mutationFn: () => addSushiLineAlias(addingAliasLineId!, newAliasText),
+    onSuccess: () => {
+      toast.success(t("Аліас додано"));
+      setAddingAliasLineId(null);
+      setNewAliasText("");
+      qc.invalidateQueries({ queryKey: ["sushi-lines"] });
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Sub tabs */}
+      <div className="flex items-center gap-2">
+        {[
+          ["lines", t("Виробничі лінії та аліаси")],
+          ["supervisors", t("Підписи бригадирів")],
+          ["rcp", t("Табельні коди RCP")],
+          ["roles", t("Тарифні ролі")],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSubTab(k as any)}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+              subTab === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === "lines" && (
+        <Card className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h4 className="font-semibold text-slate-800 text-sm">{t("Виробничі лінії фабрики Суші")}</h4>
+            <Button onClick={() => setAddingLine(true)} className="text-xs gap-1.5">
+              <Plus className="w-3.5 h-3.5" />
+              {t("Додати лінію")}
+            </Button>
+          </div>
+
+          <div className="divide-y divide-slate-100">
+            {lines.map((l) => (
+              <div key={l.id} className="py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                <div>
+                  <div className="font-semibold text-slate-800 text-sm">
+                    {l.name} <span className="font-mono text-slate-400 font-normal">({l.code})</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    <span className="text-slate-400 text-[11px]">{t("Аліаси з Excel:")}</span>
+                    {l.aliases.map((a, i) => (
+                      <Badge key={i} color="slate">{a}</Badge>
+                    ))}
+                    <button
+                      onClick={() => setAddingAliasLineId(l.id)}
+                      className="text-red-600 hover:text-red-700 font-medium text-[11px] ml-1"
+                    >
+                      + {t("додати аліас")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {addingLine && (
+            <Modal open={addingLine} onClose={() => setAddingLine(false)} title={t("Створити нову лінію")}>
+              <div className="space-y-4">
+                <div>
+                  <Label>{t("Назва лінії (наприклад, Pakowanie 4)")}</Label>
+                  <Input value={newLineName} onChange={(e) => setNewLineName(e.target.value)} />
+                </div>
+                <div>
+                  <Label>{t("Код лінії (наприклад, PAK_4)")}</Label>
+                  <Input value={newLineCode} onChange={(e) => setNewLineCode(e.target.value)} />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="secondary" onClick={() => setAddingLine(false)}>{t("Скасувати")}</Button>
+                  <Button onClick={() => lineMutation.mutate()} loading={lineMutation.isPending}>{t("Створити")}</Button>
+                </div>
+              </div>
+            </Modal>
+          )}
+
+          {addingAliasLineId && (
+            <Modal open={!!addingAliasLineId} onClose={() => setAddingAliasLineId(null)} title={t("Додати аліас з Excel")}>
+              <div className="space-y-4">
+                <div>
+                  <Label>{t("Точний текст із файлу бригадира (наприклад, 'PAKOWANIE 4 (2 zm)')")}</Label>
+                  <Input value={newAliasText} onChange={(e) => setNewAliasText(e.target.value)} />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="secondary" onClick={() => setAddingAliasLineId(null)}>{t("Скасувати")}</Button>
+                  <Button onClick={() => aliasMutation.mutate()} loading={aliasMutation.isPending}>{t("Додати")}</Button>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </Card>
+      )}
+
+      {subTab === "supervisors" && (
+        <Card className="overflow-hidden">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                <th className="py-3 px-4">{t("Підпис у звіті")}</th>
+                <th className="py-3 px-4">{t("Працівник агентства (для штрафів)")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+              {supervisors.map((s) => (
+                <tr key={s.id}>
+                  <td className="py-3 px-4 font-bold text-slate-900 font-mono">{s.signatureName}</td>
+                  <td className="py-3 px-4">{s.workerName || <span className="text-slate-400 italic">{t("Не прив'язано")}</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {subTab === "rcp" && (
+        <Card className="overflow-hidden">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                <th className="py-3 px-4">{t("Табельний Nr RCP")}</th>
+                <th className="py-3 px-4">{t("Працівник")}</th>
+                <th className="py-3 px-4">{t("Фірма")}</th>
+                <th className="py-3 px-4">{t("Діє з")}</th>
+                <th className="py-3 px-4">{t("Діє до")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+              {workerCodes.map((w) => (
+                <tr key={w.id}>
+                  <td className="py-3 px-4 font-mono font-bold text-slate-900">{w.rcpCode}</td>
+                  <td className="py-3 px-4 font-semibold text-slate-800">{w.workerName || `#${w.workerId}`}</td>
+                  <td className="py-3 px-4"><Badge color={w.companyId === 1 ? "blue" : "amber"}>{w.companyName || "ES"}</Badge></td>
+                  <td className="py-3 px-4 font-mono text-slate-500">{w.validFrom}</td>
+                  <td className="py-3 px-4 font-mono text-slate-500">{w.validTo || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {subTab === "roles" && (
+        <Card className="overflow-hidden">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase">
+                <th className="py-3 px-4">{t("Код")}</th>
+                <th className="py-3 px-4">{t("Назва ролі")}</th>
+                <th className="py-3 px-4">{t("Ставка клієнту")}</th>
+                <th className="py-3 px-4">{t("Базова ставка працівнику")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+              {roles.map((r) => (
+                <tr key={r.id}>
+                  <td className="py-3 px-4 font-mono font-semibold">{r.code}</td>
+                  <td className="py-3 px-4 font-bold text-slate-900">{r.name}</td>
+                  <td className="py-3 px-4 font-mono font-bold text-slate-800">{fmt(r.defaultClientRate)} zł/h</td>
+                  <td className="py-3 px-4 font-mono">{fmt(r.defaultWorkerRate)} zł/h</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── 6. МОДАЛКА ПРИВ'ЯЗКИ АЛІАСУ RCP ───────────────────────────────────────
+
+function LinkAliasModal({
+  entry,
+  onClose,
+  onSuccess,
+}: {
+  entry: SushiStagingEntry;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const t = useT();
+  const [selectedWorkerId, setSelectedWorkerId] = useState<number | undefined>();
+  const [notes, setNotes] = useState("");
+
+  const { data: workers = [] } = useQuery({
+    queryKey: ["active-workers"],
+    queryFn: () => get<any[]>("/workers?active=true"),
+  });
+
+  const linkMutation = useMutation({
+    mutationFn: () =>
+      linkSushiRcpAlias({
+        workerId: selectedWorkerId!,
+        rcpCode: entry.rawRcp || "",
+        notes,
+      }),
+    onSuccess: (res) => {
+      toast.success(
+        t("Успішно прив'язано RCP #{rcp} до працівника! Оновлено {count} рядків.", {
+          rcp: res.linkedRcp,
+          count: res.updatedStagingRows,
+        }),
+      );
+      onSuccess();
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t("Помилка прив'язки аліасу"));
+    },
+  });
+
+  return (
+    <Modal open={true} onClose={onClose} title={t("Прив'язати фабричний номер RCP")}>
+      <div className="space-y-4 text-xs">
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+          {t("Табельний номер")} <strong className="font-mono font-bold">{entry.rawRcp}</strong>{" "}
+          {t("знайдено у файлі зміни, але він ще не зареєстрований за працівником агентства.")}
+        </div>
+
+        <div>
+          <Label>{t("Оберіть працівника агентства:")}</Label>
+          <Select
+            value={selectedWorkerId ?? ""}
+            onChange={(e) => setSelectedWorkerId(Number(e.target.value))}
+            className="w-full"
+          >
+            <option value="">{t("— Оберіть працівника —")}</option>
+            {workers.map((w: any) => (
+              <option key={w.id} value={w.id}>
+                {w.fullName} (Код #{w.workerCode})
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div>
+          <Label>{t("Примітка:")}</Label>
+          <Input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder={t("Наприклад: Видано новий RCP після повторного працевлаштування")}
+          />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>
+            {t("Скасувати")}
+          </Button>
+          <Button
+            onClick={() => linkMutation.mutate()}
+            disabled={!selectedWorkerId || linkMutation.isPending}
+            loading={linkMutation.isPending}
+          >
+            {t("Зберегти та перевалідувати")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── 7. МОДАЛКА ДОДАВАННЯ / РЕДАГУВАННЯ ІНТЕРВАЛУ ─────────────────────────
+
+function IntervalModal({
+  interval,
+  onClose,
+  onSuccess,
+}: {
+  interval: Partial<SushiIntervalItem>;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const t = useT();
+  const isNew = !interval.id;
+
+  const [workerId, setWorkerId] = useState(interval.workerId ? String(interval.workerId) : "");
+  const [workDate, setWorkDate] = useState(interval.workDate || new Date().toISOString().slice(0, 10));
+  const [startTime, setStartTime] = useState(interval.startTime || "06:00");
+  const [stopTime, setStopTime] = useState(interval.stopTime || "14:00");
+  const [lineId, setLineId] = useState(interval.lineId ? String(interval.lineId) : "1");
+  const [roleId, setRoleId] = useState(interval.roleId ? String(interval.roleId) : "1");
+  const [notes, setNotes] = useState(interval.notes || "");
+
+  const { data: workers = [] } = useQuery({ queryKey: ["active-workers"], queryFn: () => get<any[]>("/workers?active=true") });
+  const { data: lines = [] } = useQuery({ queryKey: ["sushi-lines"], queryFn: () => fetchSushiLines() });
+  const { data: roles = [] } = useQuery({ queryKey: ["sushi-roles"], queryFn: () => fetchSushiRoles() });
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = {
+        workerId: Number(workerId),
+        workDate,
+        startTime,
+        stopTime,
+        lineId: Number(lineId),
+        roleId: Number(roleId),
+        notes,
+      };
+      if (isNew) return createSushiInterval(payload);
+      return patchSushiInterval(interval.id!, payload);
+    },
+    onSuccess: () => {
+      toast.success(isNew ? t("Інтервал створено") : t("Інтервал оновлено"));
+      onSuccess();
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t("Помилка збереження інтервалу"));
+    },
+  });
+
+  return (
+    <Modal open={true} onClose={onClose} title={isNew ? t("Додати інтервал зміни") : t("Редагувати інтервал")}>
+      <div className="space-y-4 text-xs">
+        {isNew && (
+          <div>
+            <Label>{t("Працівник:")}</Label>
+            <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)} className="w-full">
+              <option value="">{t("— Оберіть працівника —")}</option>
+              {workers.map((w: any) => (
+                <option key={w.id} value={w.id}>
+                  {w.fullName} (Код #{w.workerCode})
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+
+        <div>
+          <Label>{t("Дата зміни:")}</Label>
+          <Input type="date" value={workDate} onChange={(e) => setWorkDate(e.target.value)} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>{t("Час початку:")}</Label>
+            <Input value={startTime} onChange={(e) => setStartTime(e.target.value)} placeholder="06:00" />
+          </div>
+          <div>
+            <Label>{t("Час завершення:")}</Label>
+            <Input value={stopTime} onChange={(e) => setStopTime(e.target.value)} placeholder="14:00" />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>{t("Виробнича лінія:")}</Label>
+            <Select value={lineId} onChange={(e) => setLineId(e.target.value)}>
+              {lines.map((l) => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>{t("Роль:")}</Label>
+            <Select value={roleId} onChange={(e) => setRoleId(e.target.value)}>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>{r.name} ({r.defaultClientRate} zł)</option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        <div>
+          <Label>{t("Примітка / Причина зміни:")}</Label>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("Коригування за табелем")} />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending}>{t("Зберегти")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── 8. МОДАЛКА РОЗГЛЯДУ ДИСПУТУ ──────────────────────────────────────────
+
+function ResolveDisputeModal({
+  dispute,
+  onClose,
+  onSuccess,
+}: {
+  dispute: SushiDispute;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const t = useT();
+  const [action, setAction] = useState<string>("CREATED_NEW_INTERVAL");
+  const [startTime, setStartTime] = useState(dispute.claimedStartTime || "06:00");
+  const [stopTime, setStopTime] = useState(dispute.claimedStopTime || "14:00");
+  const [applyPenalty, setApplyPenalty] = useState(false);
+  const [supervisorId, setSupervisorId] = useState<string>("");
+  const [penaltyAmount, setPenaltyAmount] = useState("50");
+  const [note, setNote] = useState("");
+
+  const { data: supervisors = [] } = useQuery({ queryKey: ["sushi-supervisors"], queryFn: () => fetchSushiSupervisors() });
+
+  const resolveMutation = useMutation({
+    mutationFn: () =>
+      resolveSushiDispute(dispute.id, {
+        action,
+        startTime,
+        stopTime,
+        note,
+        applyPenaltyToSupervisor: applyPenalty,
+        supervisorId: supervisorId ? Number(supervisorId) : undefined,
+        penaltyAmount: Number(penaltyAmount),
+      }),
+    onSuccess: () => {
+      toast.success(t("Диспут успішно розглянуто та врегульовано!"));
+      onSuccess();
+    },
+  });
+
+  return (
+    <Modal open={true} onClose={onClose} title={t("Розгляд скарги #{id}", { id: dispute.id })}>
+      <div className="space-y-4 text-xs">
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
+          <div>{t("Працівник:")} <strong>{dispute.workerName}</strong></div>
+          <div>{t("Дата:")} <strong>{dispute.targetDate}</strong></div>
+          <div>{t("Коментар:")} <em>{dispute.workerComment}</em></div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>{t("Час початку:")}</Label>
+            <Input value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+          </div>
+          <div>
+            <Label>{t("Час завершення:")}</Label>
+            <Input value={stopTime} onChange={(e) => setStopTime(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="border border-slate-200 rounded-lg p-3 space-y-3 bg-slate-50/50">
+          <label className="flex items-center gap-2 font-medium text-slate-800">
+            <input
+              type="checkbox"
+              checked={applyPenalty}
+              onChange={(e) => setApplyPenalty(e.target.checked)}
+              className="rounded"
+            />
+            {t("Списати штраф з бригадира за непідтверджені години")}
+          </label>
+
+          {applyPenalty && (
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <div>
+                <Label>{t("Бригадир:")}</Label>
+                <Select value={supervisorId} onChange={(e) => setSupervisorId(e.target.value)}>
+                  <option value="">{t("— Оберіть бригадира —")}</option>
+                  {supervisors.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.signatureName} ({s.workerName || "Без прив'язки"})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div>
+                <Label>{t("Сума штрафу (PLN):")}</Label>
+                <Input value={penaltyAmount} onChange={(e) => setPenaltyAmount(e.target.value)} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <Label>{t("Резолюція / Коментар:")}</Label>
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("Години підтверджено за погодженням з клієнтом")} />
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => resolveMutation.mutate()} loading={resolveMutation.isPending}>{t("Підтвердити та врегулювати")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
