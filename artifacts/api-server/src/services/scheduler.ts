@@ -78,6 +78,7 @@ let agreementChargesTask: ScheduledTask | null = null;
 let fleetAlertTask: ScheduledTask | null = null;
 let serverStatsSampleTask: ScheduledTask | null = null;
 let serverStatsReportTask: ScheduledTask | null = null;
+let recruiterHoursSheetTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
 // Фінансові алерти йдуть ролям, які самі підписані на тип "finance_alerts"
@@ -324,6 +325,21 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Daily 06:20 Warsaw: recruiter payout feed — свіжі (≤60 днів стажу) активні
+  // працівники з годинами обліку (мінус 8, не нижче 0) у окремий Google Sheet,
+  // який підтягує зовнішній сервіс розрахунку рекрутерів. Після банк-імпорту.
+  recruiterHoursSheetTask = cron.schedule(
+    "20 6 * * *",
+    async () => {
+      try {
+        const { syncRecruiterHoursSheet } = await import("./recruiterHoursSheet");
+        const r = await syncRecruiterHoursSheet();
+        logger.info(r, "Daily recruiter hours sheet sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily recruiter hours sheet sync failed"); }
+    },
+    { timezone: TZ },
+  );
+
   pruneNotifications(); // run once on boot so the table is bounded immediately
 
   logger.info({ cron: `0 ${reminderHour} * * 0`, tz: TZ }, "Weekly reminder scheduler started");
@@ -360,6 +376,7 @@ export function stopScheduler() {
   fleetAlertTask?.stop();     fleetAlertTask = null;
   serverStatsSampleTask?.stop(); serverStatsSampleTask = null;
   serverStatsReportTask?.stop(); serverStatsReportTask = null;
+  recruiterHoursSheetTask?.stop(); recruiterHoursSheetTask = null;
 }
 
 export function setReminderHour(hour: number) {
