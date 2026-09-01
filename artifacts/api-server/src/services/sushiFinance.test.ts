@@ -8,7 +8,7 @@ import {
   type ReconciliationException,
 } from "./sushiFinance.ts";
 
-test("calculateSushiZalacznik: calculates categorized labor, odziez and penalties", () => {
+test("calculateSushiZalacznik: calculates categorized labor, odziez and penalties for specific company", () => {
   const intervals: FinanceInterval[] = [
     // 2 days for worker 1 (role: worker, 40 zł)
     {
@@ -102,11 +102,50 @@ test("calculateSushiZalacznik: calculates categorized labor, odziez and penaltie
   assert.equal(resES.breakdownByRole["leader"]!.amountNet, 332);
 });
 
-test("reconcileSushiHours: handles night shift offsets and true discrepancies", () => {
-  // Worker 1: Night shift offset across 08-31 and 09-01 (sums to 0 delta)
-  // Worker 2: True discrepancy (missing hours)
-  // Worker 3: Discrepancy covered by approved exception
+test("calculateSushiZalacznik: calculates consolidated total for entire factory (when companyId is omitted)", () => {
+  const intervals: FinanceInterval[] = [
+    {
+      id: 1,
+      workerId: 1,
+      workDate: "2026-08-01",
+      companyId: 1, // ES
+      roleCode: "worker",
+      roleName: "Pracownik Fizyczny",
+      billableHours: 10,
+      appliedClientRate: 40.0,
+      odziezFeeApplicable: true,
+    },
+    {
+      id: 2,
+      workerId: 4,
+      workDate: "2026-08-01",
+      companyId: 2, // ESO
+      roleCode: "worker",
+      roleName: "Pracownik Fizyczny",
+      billableHours: 10,
+      appliedClientRate: 40.0,
+      odziezFeeApplicable: true,
+    },
+  ];
 
+  // Consolidated Załącznik for client (all workers regardless of internal ES / ESO registration)
+  const resTotal = calculateSushiZalacznik({
+    periodMonth: "2026-08",
+    factoryId: 1,
+    intervals,
+    contractualPenalties: 0,
+    adjustments: 0,
+  });
+
+  assert.equal(resTotal.companyId, null);
+  assert.equal(resTotal.totalBillableHours, 20.0);
+  assert.equal(resTotal.totalLaborCostNet, 800.0);
+  assert.equal(resTotal.totalOdziezDaysCount, 2);
+  assert.equal(resTotal.totalOdziezDeductionNet, 12.0);
+  assert.equal(resTotal.finalInvoiceNet, 788.0);
+});
+
+test("reconcileSushiHours: handles night shift offsets and true discrepancies", () => {
   const factoryRecords: FactoryShiftRecord[] = [
     { workerId: 1, workDate: "2026-08-31", factoryHours: 4.0 },
     { workerId: 1, workDate: "2026-09-01", factoryHours: 12.0 },

@@ -7,7 +7,7 @@ export interface FinanceInterval {
   id: number;
   workerId: number;
   workDate: string; // YYYY-MM-DD
-  companyId: number; // 1 = ES, 2 = ESO
+  companyId: number; // 1 = ES, 2 = ESO, 3 = Klinex
   roleCode: string; // worker | leader | supervisor | repack | skoczek | trainee
   roleName: string;
   billableHours: number;
@@ -18,7 +18,7 @@ export interface FinanceInterval {
 export interface ZalacznikCalculationInput {
   periodMonth: string; // YYYY-MM
   factoryId: number;
-  companyId: number;
+  companyId?: number | null; // Якщо null/undefined -> рахує загальний Załącznik по всій фабриці
   intervals: FinanceInterval[];
   contractualPenalties?: number; // Kary umowne
   adjustments?: number; // Inne korekty
@@ -35,7 +35,7 @@ export interface RoleBreakdown {
 export interface ZalacznikCalculationResult {
   periodMonth: string;
   factoryId: number;
-  companyId: number;
+  companyId: number | null;
   totalBillableHours: number;
   totalLaborCostNet: number;
   totalOdziezDaysCount: number;
@@ -78,12 +78,16 @@ export interface ReconciliationReport {
 }
 
 /**
- * Розрахунок підсумків додатку до фактури Załącznik для вказаної компанії (ES або ESO).
+ * Розрахунок підсумків додатку до фактури Załącznik:
+ * - Якщо передано companyId -> формує розрахунок по конкретній юридичній особі (ES / ESO).
+ * - Якщо companyId не передано -> формує консолідований Załącznik по всій фабриці Суші для клієнта.
  */
 export function calculateSushiZalacznik(
   input: ZalacznikCalculationInput,
 ): ZalacznikCalculationResult {
-  const companyIntervals = input.intervals.filter((i) => i.companyId === input.companyId);
+  const targetIntervals = input.companyId
+    ? input.intervals.filter((i) => i.companyId === input.companyId)
+    : input.intervals;
 
   const breakdownByRole: Record<string, RoleBreakdown> = {};
   let totalBillableHours = 0;
@@ -92,7 +96,7 @@ export function calculateSushiZalacznik(
   // Підрахунок унікальних людино-днів для віднімання одягу (6 zł/день)
   const uniqueWorkerDays = new Set<string>();
 
-  for (const interval of companyIntervals) {
+  for (const interval of targetIntervals) {
     totalBillableHours += interval.billableHours;
     const amount = Math.round(interval.billableHours * interval.appliedClientRate * 100) / 100;
     totalLaborCostNet += amount;
@@ -127,7 +131,7 @@ export function calculateSushiZalacznik(
   return {
     periodMonth: input.periodMonth,
     factoryId: input.factoryId,
-    companyId: input.companyId,
+    companyId: input.companyId ?? null,
     totalBillableHours: Math.round(totalBillableHours * 100) / 100,
     totalLaborCostNet: Math.round(totalLaborCostNet * 100) / 100,
     totalOdziezDaysCount,
