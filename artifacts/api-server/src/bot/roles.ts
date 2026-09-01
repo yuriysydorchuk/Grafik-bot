@@ -46,8 +46,12 @@ export async function adminHasCap(admin: { role: string } | undefined, cap: Capa
 // Чи роль адміна підписана на цей тип бот-сповіщення. На відміну від
 // adminHasCap — БЕЗ owner-байпасу: це плаский per-role список, власник теж
 // сам вирішує, що отримувати (див. план «Гранулярний вибір сповіщень»).
+// web-only роль "driver" виключена централізовано тут (не getAdmin-фільтром,
+// бо notify-розсилки читають adminsTable напряму, в обхід getAdmin) — інакше
+// бекфіл notify на цю роль (щоб не замовкнути іншим ролям при деплої) тихо
+// починає слати офісні сповіщення головному водієві через його web-логін.
 export async function adminWantsNotify(admin: { role: string } | undefined, type: NotifyType): Promise<boolean> {
-  if (!admin) return false;
+  if (!admin || admin.role === "driver") return false;
   const cache = await loadRolesCache();
   return (cache.get(admin.role)?.notify ?? []).includes(type);
 }
