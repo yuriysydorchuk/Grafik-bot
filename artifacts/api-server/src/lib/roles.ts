@@ -37,3 +37,24 @@ export function hasCap(role: Role | null | undefined, caps: string[] | null | un
   if (role === OWNER) return true;
   return !!caps && caps.includes(cap);
 }
+
+// Bot notification types a role can be subscribed to — independent of caps
+// (a role may see a bot button via editData but not want every ping about it).
+// Unlike caps, owner is NOT auto-included: it's a plain per-role list, same as
+// everyone else (see plan "Гранулярний вибір типів сповіщень для кожної ролі").
+export const NOTIFY_KEYS = [
+  "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
+  "absence_warning", "weekly_summary", "finance_alerts",
+] as const;
+export type NotifyType = (typeof NOTIFY_KEYS)[number];
+export const NOTIFY_LABEL: Record<NotifyType, string> = {
+  no_show: "🔴 Невихід на зміну",
+  cancellation: "❌ Скасування зміни",
+  hours_correction: "⚠️ Помилка в годинах фабрики",
+  advance: "💰 Запит на аванс",
+  substitution: "🔁 Заміна на зміні (графік)",
+  availability_change: "📋 Зміна доступності працівника",
+  absence_warning: "🟡 Повторні пропуски (попередження)",
+  weekly_summary: "🤖 Тижневий звіт розсилки нагадувань",
+  finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
+};

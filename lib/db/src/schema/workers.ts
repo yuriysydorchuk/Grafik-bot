@@ -469,6 +469,7 @@ export const rolesTable = pgTable("roles", {
   isSystem: boolean("is_system").notNull().default(false), // owner/scheduler/driver — not deletable
   pages: jsonb("pages").$type<string[]>().notNull().default([]),  // allowed page paths
   caps: jsonb("caps").$type<string[]>().notNull().default([]),    // allowed capability keys
+  notify: jsonb("notify").$type<string[]>().notNull().default([]), // bot notification types this role receives (NotifyType keys)
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

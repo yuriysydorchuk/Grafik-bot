@@ -8,6 +8,8 @@ import {
 } from "@workspace/db";
 import { eq, and, count, desc, ne, gte, lt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { adminWantsNotify } from "./roles";
+import type { NotifyType } from "../lib/roles";
 import { setState } from "./state";
 import { DAY_UK, SHIFT_SHORT, splitMessage, mdSafe } from "./display";
 import { t, asLang, dayShort, DATE_LOCALE, type Lang } from "./i18n";
@@ -123,6 +125,19 @@ export async function notifyAdmins(text: string, options: Record<string, unknown
   }
 }
 
+// Send to whichever admins have this NotifyType checked in their role's
+// notification prefs (roles.notify — see lib/roles.ts NOTIFY_KEYS). Unlike
+// notifyAdmins, this is opt-in per role, owner included (no auto-bypass).
+export async function notifyByType(type: NotifyType, text: string, options: Record<string, unknown> = {}) {
+  const admins = await db.select().from(adminsTable);
+  for (const a of admins) {
+    if (!a.telegramId) continue;
+    if (!(await adminWantsNotify(a, type))) continue;
+    try { await bot.telegram.sendMessage(a.telegramId, text, options as any); }
+    catch { /* individual failure should not stop others */ }
+  }
+}
+
 // Role-targeted notification: stores an on-site notification (bell) AND sends Telegram
 // to the matching web users (by role) + the head driver when "driver"/"both" is targeted.
 export async function notifyRoles(
@@ -136,9 +151,15 @@ export async function notifyRoles(
 
   // 2) Telegram recipients
   const recipients = new Set<string>();
-  const wantRoles = audience === "both" ? ["scheduler", "driver", "owner"] : [audience, "owner"];
-  const admins = await db.select().from(adminsTable);
-  for (const a of admins) if (wantRoles.includes(a.role ?? "owner") && a.telegramId) recipients.add(a.telegramId);
+  if (audience === "scheduler" || audience === "both") {
+    const admins = await db.select().from(adminsTable);
+    for (const a of admins) {
+      if (!a.telegramId) continue;
+      // per-role notify prefs, not a caps/role-string shortcut — every role
+      // (incl. owner) decides for itself whether it wants this event type.
+      if (await adminWantsNotify(a, msg.type)) recipients.add(a.telegramId);
+    }
+  }
   if (audience === "driver" || audience === "both") {
     const heads = await db.select().from(driversTable).where(and(eq(driversTable.isHeadDriver, true), eq(driversTable.isActive, true)));
     for (const d of heads) if (d.telegramId) recipients.add(d.telegramId);
@@ -476,7 +497,8 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
 
     if (totalAbsences >= 2) {
       const emoji = totalAbsences >= 5 ? "🔴" : totalAbsences >= 3 ? "🟠" : "🟡";
-      await notifyAdmins(
+      await notifyByType(
+        "absence_warning",
         `${emoji} *Попередження: пропуски*\n\n👷 *${row.name}*\nПропусків всього: *${totalAbsences}*\n\nПерейдіть до "📋 Список працівників" для деталей.`,
         { parse_mode: "Markdown" },
       );

@@ -1,20 +1,33 @@
 import { Markup } from "telegraf";
 import { t, tb, type Lang } from "./i18n";
 
-// «📄 Фактура» (бот-сканер) — лише ролям з капою invoiceScan (opts.invoice).
-// Дефолт true: рендери меню всередині флоу не знають капи — реальний гейт стоїть
-// у самому флоу (bot/handlers/invoiceScan.ts), а головні входи в меню (start,
-// «Головне меню», зміна мови) передають точне значення через adminMenuFor.
-export const adminMenu = (lang: Lang = "uk", opts: { invoice?: boolean } = {}) => Markup.keyboard([
-  // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
-  // (prod keeps it head-driver-only per owner's decision).
-  ...(process.env.WEB_APP_ADMIN === "1" && webAppUrl() ? [[Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]] : []),
-  [tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")],
-  [tb(lang, "✅ Перегляд графіків")],
-  [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
-  opts.invoice === false ? [tb(lang, "📢 Розсилки")] : [tb(lang, "📢 Розсилки"), tb(lang, "📄 Фактура")],
-  [tb(lang, "🌐 Мова / Language")],
-]).resize();
+// Пункти меню фільтруються за capability адміна (opts.* — див. adminMenuFor у
+// ./roles, єдине джерело правди, звідки ці прапорці рахуються). Дефолт кожного
+// opts — true: рендери меню всередині флоу, які не проходять через adminMenuFor
+// (напр. сирий adminMenu() у стані генерації графіку), лишаються з повним меню —
+// вони вже за гейтованим флоу, capability там перевірена на вході.
+export type AdminMenuOpts = { invoice?: boolean; orders?: boolean; orderView?: boolean; broadcast?: boolean; management?: boolean };
+export const adminMenu = (lang: Lang = "uk", opts: AdminMenuOpts = {}) => {
+  const { invoice = true, orders = true, orderView = true, broadcast = true, management = true } = opts;
+  const rows: any[][] = [];
+  if (process.env.WEB_APP_ADMIN === "1" && webAppUrl()) {
+    // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
+    // (prod keeps it head-driver-only per owner's decision).
+    rows.push([Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]);
+  }
+  if (orders) rows.push([tb(lang, "📋 Замовлення фабрик"), tb(lang, "🗓 Генерувати графік")]);
+  if (orderView) rows.push([tb(lang, "✅ Перегляд графіків")]);
+  const bottomRow: string[] = [];
+  if (orders) bottomRow.push(tb(lang, "📥 Імпорт графіку (Excel)"));
+  if (management) bottomRow.push(tb(lang, "👥 Управління"));
+  if (bottomRow.length) rows.push(bottomRow);
+  const actionRow: string[] = [];
+  if (broadcast) actionRow.push(tb(lang, "📢 Розсилки"));
+  if (invoice) actionRow.push(tb(lang, "📄 Фактура"));
+  if (actionRow.length) rows.push(actionRow);
+  rows.push([tb(lang, "🌐 Мова / Language")]);
+  return Markup.keyboard(rows).resize();
+};
 
 
 // Worker menu rows are trimmed by the factory's settings: hide "Submit availability"
@@ -59,10 +72,30 @@ export const driverMenu = (lang: Lang = "uk", onShift = false) => Markup.keyboar
   [tb(lang, "🌐 Мова / Language")],
 ]).resize();
 
-export const managementMenu = (lang: Lang = "uk") => Markup.keyboard([
-  [tb(lang, "➕ Додати працівника"), tb(lang, "📋 Список працівників")],
-  [tb(lang, "📥 Імпорт працівників"), tb(lang, "🔗 Прив'язати Telegram")],
-  [tb(lang, "🚗 Водії"), tb(lang, "🏭 Фабрики")],
-  [tb(lang, "🔥 Звільнити працівника"), tb(lang, "👑 Адміни")],
-  [tb(lang, "☁️ Google Drive"), tb(lang, "⬅️ Назад")],
-]).resize();
+// Кнопки підменю фільтруються за capability (opts.* рахує managementMenuFor у
+// ./roles). Дефолт кожного opts — true, з тих самих причин, що й у adminMenu.
+export type ManagementMenuOpts = { editData?: boolean; viewWorkers?: boolean; assignDrivers?: boolean; deleteWorkers?: boolean };
+export const managementMenu = (lang: Lang = "uk", opts: ManagementMenuOpts = {}) => {
+  const { editData = true, viewWorkers = true, assignDrivers = true, deleteWorkers = true } = opts;
+  const rows: any[][] = [];
+  const row1: string[] = [];
+  if (editData) row1.push(tb(lang, "➕ Додати працівника"));
+  if (viewWorkers) row1.push(tb(lang, "📋 Список працівників"));
+  if (row1.length) rows.push(row1);
+  const row2: string[] = [];
+  if (editData) row2.push(tb(lang, "📥 Імпорт працівників"), tb(lang, "🔗 Прив'язати Telegram"));
+  if (row2.length) rows.push(row2);
+  const row3: string[] = [];
+  if (assignDrivers) row3.push(tb(lang, "🚗 Водії"));
+  if (editData) row3.push(tb(lang, "🏭 Фабрики"));
+  if (row3.length) rows.push(row3);
+  const row4: string[] = [];
+  if (deleteWorkers) row4.push(tb(lang, "🔥 Звільнити працівника"));
+  row4.push(tb(lang, "👑 Адміни")); // завжди — внутрішньо гейтиться isMainAdmin
+  rows.push(row4);
+  const row5: string[] = [];
+  if (editData) row5.push(tb(lang, "☁️ Google Drive"));
+  row5.push(tb(lang, "⬅️ Назад"));
+  rows.push(row5);
+  return Markup.keyboard(rows).resize();
+};

@@ -18,7 +18,7 @@ import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
-import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
+import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, NOTIFY_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
 import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
@@ -4792,12 +4792,12 @@ router.get("/roles", requireMainAdmin, async (_req, res) => {
   for (const a of admins) inUse.set(a.role ?? "", (inUse.get(a.role ?? "") ?? 0) + 1);
   ok(res, rows.map(r => ({
     id: r.id, key: r.key, label: r.label, isSystem: r.isSystem,
-    pages: r.pages ?? [], caps: r.caps ?? [], inUse: inUse.get(r.key) ?? 0,
+    pages: r.pages ?? [], caps: r.caps ?? [], notify: r.notify ?? [], inUse: inUse.get(r.key) ?? 0,
   })));
 });
 
 router.post("/roles", requireMainAdmin, async (req, res) => {
-  const { label, key, pages, caps } = req.body ?? {};
+  const { label, key, pages, caps, notify } = req.body ?? {};
   if (!label?.trim()) return fail(res, 400, "Вкажіть назву ролі");
   // key is internal (the label is what's shown); non-latin names slug to "" → auto-generate
   let k = slugify(key || label) || `role-${Date.now().toString(36).slice(-6)}`;
@@ -4805,7 +4805,7 @@ router.post("/roles", requireMainAdmin, async (req, res) => {
   const max = (await db.select({ s: rolesTable.sortOrder }).from(rolesTable)).reduce((a, r) => Math.max(a, r.s ?? 0), 0);
   const [r] = await db.insert(rolesTable).values({
     key: k, label: String(label).trim(), isSystem: false,
-    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), sortOrder: max + 1,
+    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), notify: cleanKeys(notify, NOTIFY_KEYS), sortOrder: max + 1,
   }).returning();
   invalidateRolesCache();
   ok(res, r);
@@ -4815,12 +4815,17 @@ router.patch("/roles/:id", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const [role] = await db.select().from(rolesTable).where(eq(rolesTable.id, id));
   if (!role) return fail(res, 404, "Роль не знайдено");
-  if (role.key === OWNER) return fail(res, 400, "Роль «Власник» не можна змінювати");
-  const { label, pages, caps } = req.body ?? {};
+  const { label, pages, caps, notify } = req.body ?? {};
+  // owner is the immutable superuser — label/pages/caps can't change, but its
+  // notification prefs are a plain per-role list like everyone else's.
+  if (role.key === OWNER && (label !== undefined || pages !== undefined || caps !== undefined)) {
+    return fail(res, 400, "Роль «Власник»: можна змінювати лише сповіщення");
+  }
   const patch: any = {};
   if (label !== undefined) { if (!String(label).trim()) return fail(res, 400, "Назва не може бути порожньою"); patch.label = String(label).trim(); }
   if (pages !== undefined) patch.pages = cleanKeys(pages, PAGE_KEYS);
   if (caps !== undefined) patch.caps = cleanKeys(caps, CAP_KEYS);
+  if (notify !== undefined) patch.notify = cleanKeys(notify, NOTIFY_KEYS);
   const [r] = await db.update(rolesTable).set(patch).where(eq(rolesTable.id, id)).returning();
   invalidateRolesCache();
   ok(res, r);

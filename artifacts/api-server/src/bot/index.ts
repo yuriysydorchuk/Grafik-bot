@@ -83,7 +83,7 @@ const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
 import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
-import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor } from "./roles";
+import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
@@ -422,6 +422,7 @@ bot.action(/^olang:(uk|en|ru)$/, async (ctx) => {
 bot.hears(bhears("📋 Замовлення фабрик"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику через 👥 Управління → 🏭 Фабрики."));
   setState(tid, "order:select_factory", {});
@@ -435,6 +436,7 @@ bot.hears(bhears("📋 Замовлення фабрик"), async (ctx) => {
 bot.hears(bhears("🗓 Генерувати графік"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."), adminMenu(al));
   setState(tid, "gen:select_factory", {});
@@ -446,6 +448,7 @@ bot.hears(bhears("🗓 Генерувати графік"), async (ctx) => {
 bot.hears(bhears("✅ Перегляд графіків"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers"], al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "view:select_factory", {});
@@ -456,7 +459,8 @@ bot.hears(bhears("✅ Перегляд графіків"), async (ctx) => {
 
 bot.hears(bhears("👥 Управління"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
-  return ctx.reply(tb(al, "Управління:"), managementMenu(al));
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers", "assignDrivers", "deleteWorkers"], al))) return;
+  return ctx.reply(tb(al, "Управління:"), await managementMenuFor(admin, al));
 });
 
 // ─── Admin: Notifications ─────────────────────────────────────────────────────
@@ -464,6 +468,7 @@ bot.hears(bhears("👥 Управління"), async (ctx) => {
 bot.hears(bhears("📢 Розсилки"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const { getReminderHour } = await import("../services/scheduler");
   return ctx.reply(
     `📢 *${tb(al, "Розсилки")}*\n\n⏰ ${tb(al, "Авто-нагадування: щонеділі о *{h}:00* (Київ)", { h: getReminderHour() })}`,
@@ -516,6 +521,7 @@ bot.hears(bhears("📢 Розіслати затверджений графік"
 bot.hears(bhears("📥 Імпорт графіку (Excel)"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "schedule_import:awaiting_file", {});
   return ctx.reply(
     tb(al, `📥 *Імпорт графіку з Excel*\n\nНадішліть Excel файл у форматі який генерує бот.\n\n*Очікуваний формат:*\n• Аркуш "Загальний" з колонками: ПІБ, Код, потім дні (Пн зм1, Пн зм2...)\n• Або будь-який аркуш з колонками: ПІБ | Код | Зміна | День\n\nБот визначить тиждень з назви файлу (формат: \`Графік 2026.06.01.xlsx\`)`),
@@ -526,6 +532,7 @@ bot.hears(bhears("📥 Імпорт графіку (Excel)"), async (ctx) => {
 bot.hears(bhears("➕ Додати працівника"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "add_worker", {});
   return ctx.reply(tb(al, "Введіть повне ім'я працівника (Прізвище Ім'я):"), Markup.removeKeyboard());
 });
@@ -562,6 +569,7 @@ async function promptAddWorkerStep(ctx: Context, data: Record<string, any>, al: 
 bot.hears(bhears("📋 Список працівників"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers"], al))) return;
   const factories = await db.select().from(factoriesTable);
   setState(tid, "workers_list:select_filter", {});
   return ctx.reply(
@@ -577,6 +585,7 @@ bot.hears(bhears("📋 Список працівників"), async (ctx) => {
 bot.hears(bhears("📥 Імпорт працівників"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "import:awaiting_file", {});
   return ctx.reply(
     tb(al, "📥 *Масовий імпорт працівників*\n\nНадішліть CSV або Excel (.xlsx) файл.\n\n*Формат CSV:*\n```\nПрізвище Ім'я,telegram_id,код\nІванов Іван,123456789,0001\nПетров Петро,,\n```\nКолонки telegram_id та код — необов'язкові. Перший рядок — заголовок (пропускається)."),
@@ -587,6 +596,7 @@ bot.hears(bhears("📥 Імпорт працівників"), async (ctx) => {
 bot.hears(bhears("🔗 Прив'язати Telegram"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "link:enter_name", { type: "worker" });
   return ctx.reply(tb(al, "Введіть ім'я працівника для прив'язки:"), Markup.removeKeyboard());
 });
@@ -595,6 +605,7 @@ bot.hears(bhears("🔗 Прив'язати Telegram"), async (ctx) => {
 
 bot.hears(bhears("🚗 Водії"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   return ctx.reply(tb(al, "Управління водіями:"), Markup.keyboard([
     [tb(al, "➕ Додати водія"), tb(al, "📋 Список водіїв")],
     [tb(al, "📨 Запросити водія"), tb(al, "👑 Призначити головним")],
@@ -627,8 +638,9 @@ bot.hears(bhears("🗑 Видалити водія"), async (ctx) => {
 
 bot.hears(bhears("📋 Список водіїв"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
-  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."), managementMenu(al));
+  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."), await managementMenuFor(admin, al));
   const list = drivers.map((d, i) =>
     `${i + 1}. ${d.isHeadDriver ? "👑 " : ""}*${d.name}*${d.vehicle ? ` (${d.vehicle})` : ""}${d.telegramId ? " ✅" : " ⚠️"}`
   ).join("\n");
@@ -645,8 +657,9 @@ bot.hears(bhears("🔗 Прив'язати вручну (ID)"), async (ctx) => {
 bot.hears(bhears("📨 Запросити водія"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
-  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв. Спочатку додайте водія."), managementMenu(al));
+  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв. Спочатку додайте водія."), await managementMenuFor(admin, al));
   setState(tid, "invite_driver:select", {});
   return ctx.reply(tb(al, "Оберіть водія, щоб отримати посилання-запрошення:"), Markup.keyboard([
     ...drivers.map(d => [`${d.name}${d.telegramId ? " ✅" : " ⚠️"}`]),
@@ -657,6 +670,7 @@ bot.hears(bhears("📨 Запросити водія"), async (ctx) => {
 bot.hears(bhears("👑 Призначити головним"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
   if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."));
   setState(tid, "set_head_driver", {});
@@ -667,6 +681,7 @@ bot.hears(bhears("👑 Призначити головним"), async (ctx) => {
 
 bot.hears(bhears("🏭 Фабрики"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   return ctx.reply(tb(al, "Управління фабриками:"), Markup.keyboard([
     [tb(al, "➕ Додати фабрику"), tb(al, "📋 Список фабрик")],
     [tb(al, "⏰ Часи змін фабрики"), tb(al, "📧 Email клієнта")],
@@ -677,6 +692,7 @@ bot.hears(bhears("🏭 Фабрики"), async (ctx) => {
 bot.hears(bhears("⏰ Часи змін фабрики"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "factory_times:select", {});
@@ -686,6 +702,7 @@ bot.hears(bhears("⏰ Часи змін фабрики"), async (ctx) => {
 bot.hears(bhears("📧 Email клієнта"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "factory_email:select", {});
@@ -695,12 +712,14 @@ bot.hears(bhears("📧 Email клієнта"), async (ctx) => {
 bot.hears(bhears("➕ Додати фабрику"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "add_factory", {});
   return ctx.reply(tb(al, "Введіть назву фабрики:"), Markup.removeKeyboard());
 });
 
 bot.hears(bhears("📋 Список фабрик"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Немає фабрик."));
   const list = factories.map((f, i) => `${i + 1}. *${f.name}*${f.address ? `\n   📍 ${f.address}` : ""}`).join("\n");
@@ -712,10 +731,11 @@ bot.hears(bhears("📋 Список фабрик"), async (ctx) => {
 bot.hears(bhears("🔥 Звільнити працівника"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "deleteWorkers", al))) return;
   const workers = await db.select().from(workersTable)
     .where(and(eq(workersTable.isActive, true), ne(workersTable.status, "fired")))
     .orderBy(workersTable.fullName);
-  if (workers.length === 0) return ctx.reply(tb(al, "Немає активних працівників."), managementMenu(al));
+  if (workers.length === 0) return ctx.reply(tb(al, "Немає активних працівників."), await managementMenuFor(admin, al));
   setState(tid, "fire_worker:select", { workers: workers.map(w => ({ id: w.id, name: w.fullName, code: w.workerCode })) });
   return ctx.reply(tb(al, "Оберіть працівника для звільнення:"), Markup.keyboard([...workers.map(w => [`${w.fullName} (${w.workerCode ?? "—"})`]), [tb(al, "⬅️ Назад")]]).resize());
 });
@@ -786,17 +806,18 @@ bot.hears(bhears("🗑 Видалити адміна"), async (ctx) => {
 bot.hears(bhears("☁️ Google Drive"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   await ctx.reply(tb(al, "⏳ Перевіряю папки на Google Drive..."));
   try {
     await ensureFolderStructure();
     const link = await getDriveFolderLink();
     return ctx.reply(
       tb(al, "☁️ *Google Drive*\n\n📁 Головна папка:\n{link}\n\nСтруктура:\n📂 Графіки — Excel графіків по тижнях\n📂 Облік годин — річний Excel з вкладками по місяцях\n📂 Поїздки водіїв — статистика водіїв\n📂 Рапорти — фото рапортів по фабриках та місяцях", { link: link ?? "" }),
-      { parse_mode: "Markdown", ...managementMenu(al) },
+      { parse_mode: "Markdown", ...await managementMenuFor(admin, al) },
     );
   } catch (e) {
     logger.error({ err: e }, "Drive folder check error");
-    return ctx.reply(tb(al, "❌ Помилка підключення до Google Drive. Перевірте налаштування сервісного акаунту."), managementMenu(al));
+    return ctx.reply(tb(al, "❌ Помилка підключення до Google Drive. Перевірте налаштування сервісного акаунту."), await managementMenuFor(admin, al));
   }
 });
 

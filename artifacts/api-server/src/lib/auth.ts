@@ -46,11 +46,11 @@ type SessionPayload = { adminId: number; name: string; role: Role; exp: number; 
 // ─── Role access cache (roles table) ───────────────────────────────────────────
 // Role membership (pages/caps) lives in the DB and rarely changes — cache it and
 // invalidate whenever a role is created/edited/deleted.
-let rolesCache: Map<string, { pages: string[]; caps: string[] }> | null = null;
-export async function loadRolesCache(force = false): Promise<Map<string, { pages: string[]; caps: string[] }>> {
+let rolesCache: Map<string, { pages: string[]; caps: string[]; notify: string[] }> | null = null;
+export async function loadRolesCache(force = false): Promise<Map<string, { pages: string[]; caps: string[]; notify: string[] }>> {
   if (rolesCache && !force) return rolesCache;
-  const rows = await db.select({ key: rolesTable.key, pages: rolesTable.pages, caps: rolesTable.caps }).from(rolesTable);
-  rolesCache = new Map(rows.map(r => [r.key, { pages: r.pages ?? [], caps: r.caps ?? [] }]));
+  const rows = await db.select({ key: rolesTable.key, pages: rolesTable.pages, caps: rolesTable.caps, notify: rolesTable.notify }).from(rolesTable);
+  rolesCache = new Map(rows.map(r => [r.key, { pages: r.pages ?? [], caps: r.caps ?? [], notify: r.notify ?? [] }]));
   return rolesCache;
 }
 export function invalidateRolesCache(): void { rolesCache = null; }

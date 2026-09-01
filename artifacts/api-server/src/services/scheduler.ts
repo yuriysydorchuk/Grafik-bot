@@ -16,8 +16,8 @@ import { resolveWeekRow, type WeekRow } from "./weeks";
 import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr, minutesUntilShift, pickupAssignmentSlot } from "../bot/time";
 import { loadDateShiftOverrides, shiftOverrideKey } from "./shiftOverrides";
 import { t, asLang, tb, oLang } from "../bot/i18n";
-import { notifyAdmins } from "../bot/notify";
-import { adminHasCap } from "../bot/roles";
+import { notifyByType } from "../bot/notify";
+import { adminWantsNotify } from "../bot/roles";
 
 // All cron times in Europe/Warsaw timezone
 const TZ = "Europe/Warsaw";
@@ -80,11 +80,13 @@ let serverStatsSampleTask: ScheduledTask | null = null;
 let serverStatsReportTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
-// Фінансові алерти йдуть головному адміну і будь-кому з capability viewFinance
-// (не в ALERT_TELEGRAM_CHAT_ID — то канал системних помилок) — узгоджено з
-// FINANCE_RULES.md: фінансові поля бачить лише owner/viewFinance. Best-effort:
-// помилка відправки не має валити крон. FINANCE_ALERTS_ENABLED=0 вимикає їх
-// (локальна розробка: тестовий бот дублював продові сповіщення головному адміну).
+// Фінансові алерти йдуть ролям, які самі підписані на тип "finance_alerts"
+// (roles.notify — гранулярний вибір, кожна роль включно з owner вирішує сама;
+// міграція 2026-09-01-role-notify-prefs.sql бекфілить це всім наявним ролям,
+// тож деплой сам по собі нічого не вимикає). Не в ALERT_TELEGRAM_CHAT_ID — то
+// канал системних помилок. Best-effort: помилка відправки не має валити крон.
+// FINANCE_ALERTS_ENABLED=0 вимикає їх (локальна розробка: тестовий бот
+// дублював продові сповіщення).
 async function sendFinanceAlerts(lines: string[]): Promise<void> {
   if (process.env.FINANCE_ALERTS_ENABLED === "0" || process.env.FINANCE_ALERTS_ENABLED === "false") return;
   if (!lines.length) return;
@@ -93,7 +95,7 @@ async function sendFinanceAlerts(lines: string[]): Promise<void> {
   try {
     const all = await db.select().from(adminsTable);
     const admins: typeof all = [];
-    for (const a of all) if (a.isMain || (await adminHasCap(a, "viewFinance"))) admins.push(a);
+    for (const a of all) if (await adminWantsNotify(a, "finance_alerts")) admins.push(a);
     for (const a of admins) {
       if (!a.telegramId) continue;
       try { await bot.telegram.sendMessage(a.telegramId, shown.join("\n\n")); }
@@ -720,7 +722,8 @@ export async function sendWeeklyReminders(): Promise<{ notified: number; skipped
       }
     }
 
-    await notifyAdmins(
+    await notifyByType(
+      "weekly_summary",
       `🤖 *Авто-нагадування*\n\nТиждень: ${formatWeekStart(nextWeek)}\n✅ Надіслано: ${notified}\n⚠️ Без Telegram: ${skipped}\n📭 Не заповнили: ${missing.length}`,
       { parse_mode: "Markdown" },
     );
