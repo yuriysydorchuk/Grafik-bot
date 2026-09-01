@@ -219,14 +219,21 @@ export const createSushiWorkerCode = (data: Partial<SushiWorkerCode>) =>
 export const deleteSushiWorkerCode = (id: number) => del(`/sushi/worker-codes/${id}`);
 
 // 4. Import & Staging
-export const uploadSushiReport = (file: File, factoryId = 1) => {
+export const uploadSushiReport = (fileOrFiles: File | File[] | FileList, factoryId = 1) => {
   const form = new FormData();
-  form.append("file", file);
+  const list = fileOrFiles instanceof File ? [fileOrFiles] : Array.from(fileOrFiles);
+  for (const f of list) {
+    form.append("files", f);
+  }
   form.append("factoryId", String(factoryId));
-  return upload<{ batchId: number; reportDate: string; totalRows: number; validRows: number; errorRows: number }>(
-    "/sushi/import/upload",
-    form,
-  );
+  return upload<{
+    batchesCount: number;
+    batchId?: number;
+    reportDate?: string;
+    totalRows: number;
+    validRows: number;
+    errorRows: number;
+  }>("/sushi/import/upload", form);
 };
 export const fetchSushiImportBatches = (factoryId = 1) =>
   get<SushiImportBatch[]>(`/sushi/import/batches?factoryId=${factoryId}`);

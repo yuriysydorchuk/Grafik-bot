@@ -91,7 +91,7 @@ export default function Sushi() {
   const TABS: [typeof tab, string][] = [
     ["import", t("Імпорт та Staging")],
     ["timesheet", t("Табель годин")],
-    ["disputes", t("Диспути та скарги")],
+    ["disputes", t("Скарги по годинах")],
     ["finance", t("Фінанси та Załącznik")],
     ["settings", t("Налаштування проєкту")],
   ];
@@ -161,17 +161,18 @@ function ImportTab() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadSushiReport(file),
+    mutationFn: (files: FileList | File[]) => uploadSushiReport(files),
     onSuccess: (res) => {
       toast.success(
-        t("Файл успішно завантажено! Оброблено рядків: {total}, валідних: {valid}, помилок: {err}", {
+        t("Успішно оброблено {count} файлів! Всього рядків: {total}, валідних: {valid}, помилок: {err}", {
+          count: res.batchesCount || 1,
           total: res.totalRows,
           valid: res.validRows,
           err: res.errorRows,
         }),
       );
       qc.invalidateQueries({ queryKey: ["sushi-batches"] });
-      setSelectedBatchId(res.batchId);
+      if (res.batchId) setSelectedBatchId(res.batchId);
     },
     onError: (err: any) => {
       toast.error(err.message || t("Помилка завантаження файлу"));
@@ -192,9 +193,10 @@ function ImportTab() {
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      uploadMutation.mutate(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      uploadMutation.mutate(files);
+      e.target.value = ""; // reset for next upload
     }
   };
 
@@ -214,10 +216,10 @@ function ImportTab() {
             </div>
             <div>
               <h3 className="font-semibold text-slate-800 text-base">
-                {t("Завантажити щоденний звіт бригадира (Excel)")}
+                {t("Завантажити щоденні звіти зміни (Excel)")}
               </h3>
               <p className="text-xs text-slate-500">
-                {t("Підтримуються файли форми DAILY_SHIFT_REPORT (.xlsx, .xls). Автоматичне округлення 15 хв та звірка RCP.")}
+                {t("Можна обрати один або кілька файлів (наприклад 20 звітів за раз). Автоматичне округлення 15 хв та звірка RCP.")}
               </p>
             </div>
           </div>
@@ -227,6 +229,7 @@ function ImportTab() {
               ref={fileInputRef}
               onChange={handleFileChange}
               accept=".xlsx,.xls"
+              multiple
               className="hidden"
             />
             <Button
@@ -235,7 +238,7 @@ function ImportTab() {
               className="gap-2"
             >
               <Upload className="w-4 h-4" />
-              {t("Обрати Excel файл")}
+              {t("Обрати Excel файли")}
             </Button>
           </div>
         </div>
@@ -685,7 +688,7 @@ function DisputesTab() {
   const rejectMutation = useMutation({
     mutationFn: ({ id, note }: { id: number; note: string }) => rejectSushiDispute(id, note),
     onSuccess: () => {
-      toast.success(t("Диспут відхилено"));
+      toast.success(t("Скаргу відхилено"));
       qc.invalidateQueries({ queryKey: ["sushi-disputes"] });
     },
   });
@@ -1477,13 +1480,13 @@ function ResolveDisputeModal({
         penaltyAmount: Number(penaltyAmount),
       }),
     onSuccess: () => {
-      toast.success(t("Диспут успішно розглянуто та врегульовано!"));
+      toast.success(t("Скаргу успішно розглянуто та узгоджено!"));
       onSuccess();
     },
   });
 
   return (
-    <Modal open={true} onClose={onClose} title={t("Розгляд скарги #{id}", { id: dispute.id })}>
+    <Modal open={true} onClose={onClose} title={`${t("Розгляд скарги")} #${dispute.id}`}>
       <div className="space-y-4 text-xs">
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
           <div>{t("Працівник:")} <strong>{dispute.workerName}</strong></div>
@@ -1510,7 +1513,7 @@ function ResolveDisputeModal({
               onChange={(e) => setApplyPenalty(e.target.checked)}
               className="rounded"
             />
-            {t("Списати штраф з бригадира за непідтверджені години")}
+            {t("Списати штраф з бригадира за помилку в табелі")}
           </label>
 
           {applyPenalty && (
@@ -1541,7 +1544,7 @@ function ResolveDisputeModal({
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button onClick={() => resolveMutation.mutate()} loading={resolveMutation.isPending}>{t("Підтвердити та врегулювати")}</Button>
+          <Button onClick={() => resolveMutation.mutate()} loading={resolveMutation.isPending}>{t("Узгодити та зберегти")}</Button>
         </div>
       </div>
     </Modal>

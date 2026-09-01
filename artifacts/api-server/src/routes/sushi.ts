@@ -224,120 +224,142 @@ router.delete("/sushi/worker-codes/:id", async (req, res) => {
 
 // ─── 3. ШЛЮЗ ІМПОРТУ (STAGING AREA) ────────────────────────────────────────────
 
-router.post("/sushi/import/upload", upload.single("file"), async (req: AuthedRequest, res) => {
-  if (!req.file || !req.file.buffer) {
-    fail(res, 400, "Будь ласка, оберіть Excel файл для завантаження");
+router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res) => {
+  const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+  if (files.length === 0) {
+    fail(res, 400, "Будь ласка, оберіть Excel файл(и) для завантаження");
     return;
   }
 
   const factoryId = Number(req.body?.factoryId) || 1;
-  const fileName = req.file.originalname || "report.xlsx";
-  const fileHash = crypto.createHash("sha256").update(req.file.buffer).digest("hex");
 
-  try {
-    const parsed = parseDailyShiftExcel(req.file.buffer, fileName);
+  // Завантажуємо спільний контекст валідації
+  const workerCodes = await db.select().from(sushiWorkerCodesTable).where(eq(sushiWorkerCodesTable.factoryId, factoryId));
+  const companies = await db.select().from(companiesTable);
+  const lines = await db.select().from(sushiLinesTable).where(eq(sushiLinesTable.factoryId, factoryId));
+  const lineAliases = await db.select().from(sushiLineAliasesTable);
+  const supervisors = await db.select().from(sushiSupervisorsTable);
 
-    // Завантажуємо контекст валідації
-    const workerCodes = await db.select().from(sushiWorkerCodesTable).where(eq(sushiWorkerCodesTable.factoryId, factoryId));
-    const companies = await db.select().from(companiesTable);
-    const lines = await db.select().from(sushiLinesTable).where(eq(sushiLinesTable.factoryId, factoryId));
-    const lineAliases = await db.select().from(sushiLineAliasesTable);
-    const supervisors = await db.select().from(sushiSupervisorsTable);
+  const batchesProcessed = [];
+  let totalRowsOverall = 0;
+  let totalValidOverall = 0;
+  let totalErrorsOverall = 0;
 
-    const validationContext = {
-      reportDate: parsed.reportDate,
-      workerCodes: workerCodes.map((c) => ({
-        rcpCode: c.rcpCode,
-        workerId: c.workerId,
-        companyId: c.companyId,
-        validFrom: c.validFrom,
-        validTo: c.validTo,
-      })),
-      companies: companies.map((c) => ({ id: c.id, name: c.name })),
-      lines: lines.map((l) => ({ id: l.id, name: l.name, code: l.code })),
-      lineAliases: lineAliases.map((a) => ({ lineId: a.lineId, rawAlias: a.rawAlias })),
-      supervisors: supervisors.map((s) => ({ id: s.id, signatureName: s.signatureName, workerId: s.workerId })),
-    };
+  for (const file of files) {
+    const fileName = file.originalname || "report.xlsx";
+    const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
 
-    // Створюємо або оновлюємо батч
-    const [batch] = await db
-      .insert(sushiImportBatchesTable)
-      .values({
-        factoryId,
-        sourceFilename: fileName,
-        fileHashSha256: fileHash,
+    try {
+      const parsed = parseDailyShiftExcel(file.buffer, fileName);
+
+      const validationContext = {
         reportDate: parsed.reportDate,
-        totalRowsCount: parsed.rows.length,
-        status: "PENDING",
-        uploadedByAdminId: req.admin?.adminId ?? null,
-      })
-      .onConflictDoUpdate({
-        target: [sushiImportBatchesTable.fileHashSha256],
-        set: {
+        workerCodes: workerCodes.map((c) => ({
+          rcpCode: c.rcpCode,
+          workerId: c.workerId,
+          companyId: c.companyId,
+          validFrom: c.validFrom,
+          validTo: c.validTo,
+        })),
+        companies: companies.map((c) => ({ id: c.id, name: c.name })),
+        lines: lines.map((l) => ({ id: l.id, name: l.name, code: l.code })),
+        lineAliases: lineAliases.map((a) => ({ lineId: a.lineId, rawAlias: a.rawAlias })),
+        supervisors: supervisors.map((s) => ({ id: s.id, signatureName: s.signatureName, workerId: s.workerId })),
+      };
+
+      const [batch] = await db
+        .insert(sushiImportBatchesTable)
+        .values({
+          factoryId,
+          sourceFilename: fileName,
+          fileHashSha256: fileHash,
           reportDate: parsed.reportDate,
           totalRowsCount: parsed.rows.length,
           status: "PENDING",
-        },
-      })
-      .returning();
+          uploadedByAdminId: req.admin?.adminId ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [sushiImportBatchesTable.fileHashSha256],
+          set: {
+            reportDate: parsed.reportDate,
+            totalRowsCount: parsed.rows.length,
+            status: "PENDING",
+          },
+        })
+        .returning();
 
-    // Очищаємо попередні staging записи цього батчу при перезавантаженні
-    await db.delete(sushiStagingEntriesTable).where(eq(sushiStagingEntriesTable.batchId, batch!.id));
+      // Очищаємо попередні staging записи цього батчу при перезавантаженні
+      await db.delete(sushiStagingEntriesTable).where(eq(sushiStagingEntriesTable.batchId, batch!.id));
 
-    let validCount = 0;
-    let errorCount = 0;
-    const stagingEntriesToInsert = [];
+      let validCount = 0;
+      let errorCount = 0;
+      const stagingEntriesToInsert = [];
 
-    for (const row of parsed.rows) {
-      const valResult = validateStagingRow(row, validationContext);
-      if (valResult.status === "OK") {
-        validCount++;
-      } else {
-        errorCount++;
+      for (const row of parsed.rows) {
+        const valResult = validateStagingRow(row, validationContext);
+        if (valResult.status === "OK") {
+          validCount++;
+        } else {
+          errorCount++;
+        }
+
+        stagingEntriesToInsert.push({
+          batchId: batch!.id,
+          rowNumber: row.rowNumber,
+          rawFirma: row.firma,
+          rawRcp: row.rcpCode,
+          rawDzial: row.dzial,
+          rawOd: row.od,
+          rawDo: row.do,
+          rawRealneGodziny: String(row.realneGodziny),
+          rawPodpis: row.podpis,
+          rawUwagi: row.uwagi,
+          resolvedWorkerId: valResult.resolvedWorkerId,
+          resolvedLineId: valResult.resolvedLineId,
+          resolvedSupervisorId: valResult.resolvedSupervisorId,
+          validationStatus: valResult.status,
+          errorMessage: valResult.errorMessage ?? null,
+        });
       }
 
-      stagingEntriesToInsert.push({
+      if (stagingEntriesToInsert.length > 0) {
+        await db.insert(sushiStagingEntriesTable).values(stagingEntriesToInsert);
+      }
+
+      await db
+        .update(sushiImportBatchesTable)
+        .set({
+          validRowsCount: validCount,
+          errorRowsCount: errorCount,
+        })
+        .where(eq(sushiImportBatchesTable.id, batch!.id));
+
+      totalRowsOverall += parsed.rows.length;
+      totalValidOverall += validCount;
+      totalErrorsOverall += errorCount;
+
+      batchesProcessed.push({
         batchId: batch!.id,
-        rowNumber: row.rowNumber,
-        rawFirma: row.firma,
-        rawRcp: row.rcpCode,
-        rawDzial: row.dzial,
-        rawOd: row.od,
-        rawDo: row.do,
-        rawRealneGodziny: String(row.realneGodziny),
-        rawPodpis: row.podpis,
-        rawUwagi: row.uwagi,
-        resolvedWorkerId: valResult.resolvedWorkerId,
-        resolvedLineId: valResult.resolvedLineId,
-        resolvedSupervisorId: valResult.resolvedSupervisorId,
-        validationStatus: valResult.status,
-        errorMessage: valResult.errorMessage ?? null,
+        fileName,
+        reportDate: parsed.reportDate,
+        totalRows: parsed.rows.length,
+        validRows: validCount,
+        errorRows: errorCount,
       });
+    } catch (err: any) {
+      logger.error({ err, fileName }, "failed parsing report file in batch");
     }
-
-    if (stagingEntriesToInsert.length > 0) {
-      await db.insert(sushiStagingEntriesTable).values(stagingEntriesToInsert);
-    }
-
-    await db
-      .update(sushiImportBatchesTable)
-      .set({
-        validRowsCount: validCount,
-        errorRowsCount: errorCount,
-      })
-      .where(eq(sushiImportBatchesTable.id, batch!.id));
-
-    ok(res, {
-      batchId: batch!.id,
-      reportDate: parsed.reportDate,
-      totalRows: parsed.rows.length,
-      validRows: validCount,
-      errorRows: errorCount,
-    });
-  } catch (err: any) {
-    logger.error({ err }, "sushi import upload failed");
-    fail(res, 400, err.message || "Помилка обробки файлу");
   }
+
+  ok(res, {
+    batchesCount: batchesProcessed.length,
+    batchId: batchesProcessed[0]?.batchId,
+    reportDate: batchesProcessed[0]?.reportDate,
+    totalRows: totalRowsOverall,
+    validRows: totalValidOverall,
+    errorRows: totalErrorsOverall,
+    batches: batchesProcessed,
+  });
 });
 
 router.get("/sushi/import/batches", async (req, res) => {
