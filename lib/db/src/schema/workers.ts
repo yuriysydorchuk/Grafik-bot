@@ -1844,3 +1844,252 @@ export const insertWorkerSchema = createInsertSchema(workersTable).omit({ id: tr
 export const insertDriverSchema = createInsertSchema(driversTable).omit({ id: true, createdAt: true });
 export const insertFactorySchema = createInsertSchema(factoriesTable).omit({ id: true, createdAt: true });
 export type InsertWorker = z.infer<typeof insertWorkerSchema>;
+
+// ============================================================================
+// МОДУЛЬ ФАБРИКИ «СУШІ» (Sushi & Food Factory)
+// ============================================================================
+
+// 1. Темпоральні фабричні коди (Nr RCP) для працівників
+export const sushiWorkerCodesTable = pgTable("sushi_worker_codes", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id), // ES vs ESO
+  rcpCode: text("rcp_code").notNull(),
+  validFrom: date("valid_from").notNull().default("2020-01-01"),
+  validTo: date("valid_to"),
+  isPrimary: boolean("is_primary").notNull().default(true),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sushi_worker_codes_search_idx").on(t.factoryId, t.rcpCode, t.validFrom, t.validTo),
+  index("sushi_worker_codes_worker_idx").on(t.workerId),
+]);
+
+// 2. Довідник локальних ролей та виробничих ліній
+export const sushiRolesTable = pgTable("sushi_roles", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(), // leader | supervisor | skoczek | trainee | worker | repack
+  name: text("name").notNull(),
+  colorBadge: text("color_badge").default("#3b82f6"),
+  defaultClientRate: real("default_client_rate").notNull(),
+  defaultWorkerRate: real("default_worker_rate").notNull(),
+  isBillableToClient: boolean("is_billable_to_client").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+});
+
+export const sushiLinesTable = pgTable("sushi_lines", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  code: text("code").notNull(),
+  requiresLeader: boolean("requires_leader").notNull().default(true),
+  minStaffing: integer("min_staffing").default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+}, (t) => [
+  uniqueIndex("sushi_lines_factory_code_uniq").on(t.factoryId, t.code),
+]);
+
+export const sushiLineAliasesTable = pgTable("sushi_line_aliases", {
+  id: serial("id").primaryKey(),
+  lineId: integer("line_id").notNull().references(() => sushiLinesTable.id, { onDelete: "cascade" }),
+  rawAlias: text("raw_alias").notNull().unique(),
+});
+
+export const sushiSupervisorsTable = pgTable("sushi_supervisors", {
+  id: serial("id").primaryKey(),
+  signatureName: text("signature_name").notNull().unique(),
+  workerId: integer("worker_id").references(() => workersTable.id),
+  isActive: boolean("is_active").notNull().default(true),
+});
+
+export const sushiWorkerRolesTable = pgTable("sushi_worker_roles", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  roleId: integer("role_id").notNull().references(() => sushiRolesTable.id, { onDelete: "cascade" }),
+  customClientRate: real("custom_client_rate"),
+  customWorkerRate: real("custom_worker_rate"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+}, (t) => [
+  uniqueIndex("sushi_worker_roles_uniq").on(t.workerId, t.roleId),
+]);
+
+export const sushiWorkerLinesTable = pgTable("sushi_worker_lines", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  lineId: integer("line_id").notNull().references(() => sushiLinesTable.id, { onDelete: "cascade" }),
+  isPreferred: boolean("is_preferred").notNull().default(true),
+}, (t) => [
+  uniqueIndex("sushi_worker_lines_uniq").on(t.workerId, t.lineId),
+]);
+
+// 3. Пакети імпорту та Staging Area
+export const sushiImportBatchesTable = pgTable("sushi_import_batches", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  sourceFilename: text("source_filename").notNull(),
+  fileHashSha256: text("file_hash_sha256").notNull(),
+  reportDate: date("report_date").notNull(),
+  shiftType: text("shift_type"),
+  totalRowsCount: integer("total_rows_count").notNull().default(0),
+  validRowsCount: integer("valid_rows_count").notNull().default(0),
+  errorRowsCount: integer("error_rows_count").notNull().default(0),
+  status: text("status").notNull().default("PENDING"),
+  uploadedByAdminId: integer("uploaded_by_admin_id").references(() => adminsTable.id),
+  ingestedVia: text("ingested_via").notNull().default("WEB_UPLOAD"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("sushi_import_batches_hash_uniq").on(t.fileHashSha256),
+  index("sushi_import_batches_date_idx").on(t.factoryId, t.reportDate),
+]);
+
+export const sushiStagingEntriesTable = pgTable("sushi_staging_entries", {
+  id: serial("id").primaryKey(),
+  batchId: integer("batch_id").notNull().references(() => sushiImportBatchesTable.id, { onDelete: "cascade" }),
+  rowNumber: integer("row_number").notNull(),
+  rawFirma: text("raw_firma"),
+  rawRcp: text("raw_rcp"),
+  rawDzial: text("raw_dzial"),
+  rawOd: text("raw_od"),
+  rawDo: text("raw_do"),
+  rawRealneGodziny: text("raw_realne_godziny"),
+  rawPodpis: text("raw_podpis"),
+  rawUwagi: text("raw_uwagi"),
+  resolvedWorkerId: integer("resolved_worker_id").references(() => workersTable.id),
+  resolvedLineId: integer("resolved_line_id").references(() => sushiLinesTable.id),
+  resolvedRoleId: integer("resolved_role_id").references(() => sushiRolesTable.id),
+  resolvedSupervisorId: integer("resolved_supervisor_id").references(() => sushiSupervisorsTable.id),
+  validationStatus: text("validation_status").notNull().default("PENDING"),
+  errorMessage: text("error_message"),
+  isProcessed: boolean("is_processed").notNull().default(false),
+  processedIntervalId: integer("processed_interval_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sushi_staging_batch_status_idx").on(t.batchId, t.validationStatus),
+]);
+
+// 4. Головний табель робочих інтервалів
+export const sushiWorkIntervalsTable = pgTable("sushi_work_intervals", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id),
+  lineId: integer("line_id").notNull().references(() => sushiLinesTable.id),
+  roleId: integer("role_id").notNull().references(() => sushiRolesTable.id),
+  supervisorId: integer("supervisor_id").references(() => sushiSupervisorsTable.id),
+  stagingEntryId: integer("staging_entry_id").references(() => sushiStagingEntriesTable.id, { onDelete: "set null" }),
+  shiftGroupId: text("shift_group_id"),
+  workDate: date("work_date").notNull(),
+  billingMonth: text("billing_month").notNull(),
+  startAt: timestamp("start_at", { withTimezone: true }),
+  stopAt: timestamp("stop_at", { withTimezone: true }),
+  startTime: text("start_time").notNull(),
+  stopTime: text("stop_time").notNull(),
+  roundedStartTime: text("rounded_start_time").notNull(),
+  roundedStopTime: text("rounded_stop_time").notNull(),
+  rawHours: real("raw_hours").notNull(),
+  roundedHours: real("rounded_hours").notNull(),
+  billableHours: real("billable_hours").notNull(),
+  payableHours: real("payable_hours").notNull(),
+  appliedClientRate: real("applied_client_rate").notNull(),
+  appliedWorkerRate: real("applied_worker_rate").notNull(),
+  rateSnapshotSource: text("rate_snapshot_source").notNull().default("ROLE_DEFAULT"),
+  isPrimaryDailyInterval: boolean("is_primary_daily_interval").notNull().default(true),
+  odziezFeeApplicable: boolean("odziez_fee_applicable").notNull().default(true),
+  status: text("status").notNull().default("SYNCED"),
+  confirmedAt: timestamp("confirmed_at"),
+  confirmedByWorker: boolean("confirmed_by_worker").notNull().default(false),
+  isManualOverride: boolean("is_manual_override").notNull().default(false),
+  overrideReason: text("override_reason"),
+  createdVia: text("created_via").notNull().default("IMPORT"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("sushi_intervals_worker_month_idx").on(t.workerId, t.billingMonth),
+  index("sushi_intervals_date_company_idx").on(t.workDate, t.companyId),
+  index("sushi_intervals_factory_month_idx").on(t.factoryId, t.billingMonth),
+]);
+
+// 5. Диспути та скарги
+export const sushiDisputesTable = pgTable("sushi_disputes", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  workIntervalId: integer("work_interval_id").references(() => sushiWorkIntervalsTable.id, { onDelete: "set null" }),
+  disputeType: text("dispute_type").notNull(),
+  targetDate: date("target_date").notNull(),
+  billingMonth: text("billing_month").notNull(),
+  claimedStartTime: text("claimed_start_time"),
+  claimedStopTime: text("claimed_stop_time"),
+  claimedHours: real("claimed_hours"),
+  claimedLineId: integer("claimed_line_id").references(() => sushiLinesTable.id),
+  workerComment: text("worker_comment"),
+  evidencePhotoFileId: text("evidence_photo_file_id"),
+  status: text("status").notNull().default("OPEN"),
+  resolutionAction: text("resolution_action"),
+  adminResolutionNote: text("admin_resolution_note"),
+  resolvedByAdminId: integer("resolved_by_admin_id").references(() => adminsTable.id),
+  resolvedAt: timestamp("resolved_at"),
+  supervisorPenaltyApplied: boolean("supervisor_penalty_applied").notNull().default(false),
+  penaltyId: integer("penalty_id").references(() => penaltiesTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sushi_disputes_worker_status_idx").on(t.workerId, t.status),
+  index("sushi_disputes_month_idx").on(t.billingMonth, t.status),
+]);
+
+// 6. Załącznik та виключення звірки
+export const sushiZalacznikSummariesTable = pgTable("sushi_zalacznik_summaries", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id),
+  periodMonth: text("period_month").notNull(),
+  totalBillableHours: real("total_billable_hours").notNull().default(0),
+  totalLaborCostNet: real("total_labor_cost_net").notNull().default(0),
+  totalContractualPenalties: real("total_contractual_penalties").notNull().default(0),
+  totalOdziezDaysCount: integer("total_odziez_days_count").notNull().default(0),
+  totalOdziezDeductionNet: real("total_odziez_deduction_net").notNull().default(0),
+  otherAdjustmentsNet: real("other_adjustments_net").notNull().default(0),
+  finalInvoiceNet: real("final_invoice_net").notNull().default(0),
+  details: jsonb("details").notNull().default({}),
+  isLocked: boolean("is_locked").notNull().default(false),
+  lockedAt: timestamp("locked_at"),
+  lockedByAdminId: integer("locked_by_admin_id").references(() => adminsTable.id),
+  generatedPdfPath: text("generated_pdf_path"),
+  generatedXlsxPath: text("generated_xlsx_path"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("sushi_zalacznik_period_company_uniq").on(t.factoryId, t.companyId, t.periodMonth),
+]);
+
+export const sushiReconciliationExceptionsTable = pgTable("sushi_reconciliation_exceptions", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  fromDate: date("from_date").notNull(),
+  toDate: date("to_date").notNull(),
+  reason: text("reason").notNull(),
+  approvedByAdminId: integer("approved_by_admin_id").notNull().references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sushi_reconciliation_exc_idx").on(t.factoryId, t.workerId, t.fromDate, t.toDate),
+]);
+
+// Inferred TypeScript Types
+export type SushiWorkerCode = typeof sushiWorkerCodesTable.$inferSelect;
+export type SushiRole = typeof sushiRolesTable.$inferSelect;
+export type SushiLine = typeof sushiLinesTable.$inferSelect;
+export type SushiLineAlias = typeof sushiLineAliasesTable.$inferSelect;
+export type SushiSupervisor = typeof sushiSupervisorsTable.$inferSelect;
+export type SushiWorkerRole = typeof sushiWorkerRolesTable.$inferSelect;
+export type SushiWorkerLine = typeof sushiWorkerLinesTable.$inferSelect;
+export type SushiImportBatch = typeof sushiImportBatchesTable.$inferSelect;
+export type SushiStagingEntry = typeof sushiStagingEntriesTable.$inferSelect;
+export type SushiWorkInterval = typeof sushiWorkIntervalsTable.$inferSelect;
+export type SushiDispute = typeof sushiDisputesTable.$inferSelect;
+export type SushiZalacznikSummary = typeof sushiZalacznikSummariesTable.$inferSelect;
+export type SushiReconciliationException = typeof sushiReconciliationExceptionsTable.$inferSelect;
+
