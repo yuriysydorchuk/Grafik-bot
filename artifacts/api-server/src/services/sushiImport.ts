@@ -112,14 +112,26 @@ export function parseDailyShiftExcel(
   fileName: string,
 ): ParsedDailyReport {
   const wb = XLSX.read(buffer, { type: "buffer", cellDates: false });
-  const firstSheetName = wb.SheetNames[0];
-  if (!firstSheetName) {
+  if (!wb.SheetNames || wb.SheetNames.length === 0) {
     throw new Error("Excel файл не містить аркушів");
   }
 
-  const ws = wb.Sheets[firstSheetName];
+  // Знаходимо перший аркуш, що містить дані
+  let ws: XLSX.WorkSheet | undefined;
+  for (const sheetName of wb.SheetNames) {
+    const candidate = wb.Sheets[sheetName];
+    if (candidate && candidate["!ref"]) {
+      ws = candidate;
+      break;
+    }
+  }
+
   if (!ws) {
-    throw new Error("Не вдалося відкрити перший аркуш Excel");
+    ws = wb.Sheets[wb.SheetNames[0]!];
+  }
+
+  if (!ws) {
+    throw new Error("Не вдалося відкрити аркуш Excel");
   }
 
   // Raw rows as matrix
@@ -133,11 +145,11 @@ export function parseDailyShiftExcel(
     throw new Error("Excel файл порожній");
   }
 
-  // 1. Пошук дати в перших 5 рядках
+  // 1. Пошук дати в перших 10 рядках
   let reportDate: string | null = null;
-  for (let r = 0; r < Math.min(5, data.length); r++) {
+  for (let r = 0; r < Math.min(10, data.length); r++) {
     const row = data[r] || [];
-    for (let c = 0; c < Math.min(5, row.length); c++) {
+    for (let c = 0; c < Math.min(10, row.length); c++) {
       const val = row[c];
       const parsed = parseReportDate(val);
       if (parsed) {
@@ -154,28 +166,65 @@ export function parseDailyShiftExcel(
     reportDate = fromFilename || new Date().toISOString().slice(0, 10);
   }
 
-  // 2. Пошук рядка заголовків
+  // 2. Пошук рядка заголовків та динамічне визначення стовпчиків
   let headerRowIndex = -1;
-  let colFirma = 0;
-  let colRcp = 1;
-  let colDzial = 2;
-  let colOd = 6;
-  let colDo = 7;
-  let colRealne = 8;
-  let colPodpis = 9;
-  let colUwagi = 11;
+  let colFirma = -1;
+  let colRcp = -1;
+  let colDzial = -1;
+  let colOd = -1;
+  let colDo = -1;
+  let colRealne = -1;
+  let colPodpis = -1;
+  let colUwagi = -1;
 
-  for (let r = 0; r < Math.min(10, data.length); r++) {
+  for (let r = 0; r < Math.min(15, data.length); r++) {
     const row = data[r] || [];
+    let foundKeywords = 0;
     for (let c = 0; c < row.length; c++) {
-      const val = String(row[c] || "").toLowerCase();
-      if (val.includes("rcp")) {
-        headerRowIndex = r;
-        break;
+      const val = String(row[c] || "").toLowerCase().trim();
+      if (val.includes("rcp") || val.includes("karta") || val.includes("kod") || val === "id" || val.includes("id prac")) {
+        foundKeywords++;
+      }
+      if (val === "od" || val.startsWith("od ") || val.includes("start") || val === "do" || val.startsWith("do ") || val.includes("stop") || val.includes("koniec")) {
+        foundKeywords++;
       }
     }
-    if (headerRowIndex !== -1) break;
+
+    if (foundKeywords >= 2 || row.some((cell) => String(cell || "").toLowerCase().includes("rcp"))) {
+      headerRowIndex = r;
+      for (let c = 0; c < row.length; c++) {
+        const val = String(row[c] || "").toLowerCase().trim();
+        if (colRcp === -1 && (val.includes("rcp") || val.includes("karta") || val.includes("kod") || val === "id" || val.includes("id prac"))) {
+          colRcp = c;
+        } else if (colFirma === -1 && (val.includes("firma") || val.includes("agencja") || val.includes("klient"))) {
+          colFirma = c;
+        } else if (colDzial === -1 && (val.includes("dzia") || val.includes("linia") || val.includes("stanowisko") || val.includes("sektor"))) {
+          colDzial = c;
+        } else if (colOd === -1 && (val === "od" || val.startsWith("od ") || val.includes("start") || val.includes("pocz"))) {
+          colOd = c;
+        } else if (colDo === -1 && (val === "do" || val.startsWith("do ") || val.includes("stop") || val.includes("koniec"))) {
+          colDo = c;
+        } else if (colRealne === -1 && (val.includes("realn") || val.includes("godzin") || val.includes("czas") || val.includes("suma"))) {
+          colRealne = c;
+        } else if (colPodpis === -1 && (val.includes("podpis") || val.includes("brygadz") || val.includes("lider"))) {
+          colPodpis = c;
+        } else if (colUwagi === -1 && (val.includes("uwag") || val.includes("koment") || val.includes("notat"))) {
+          colUwagi = c;
+        }
+      }
+      break;
+    }
   }
+
+  // Fallbacks if not found by header text
+  if (colFirma === -1) colFirma = 0;
+  if (colRcp === -1) colRcp = 1;
+  if (colDzial === -1) colDzial = 2;
+  if (colOd === -1) colOd = 6;
+  if (colDo === -1) colDo = 7;
+  if (colRealne === -1) colRealne = 8;
+  if (colPodpis === -1) colPodpis = 9;
+  if (colUwagi === -1) colUwagi = 11;
 
   const startRow = headerRowIndex !== -1 ? headerRowIndex + 1 : 2;
   const rows: RawParsedRow[] = [];
@@ -195,14 +244,19 @@ export function parseDailyShiftExcel(
       break;
     }
 
-    const rawFirma = String(row[colFirma] || "").trim();
-    const rawRcp = normalizeRcpCode(row[colRcp]);
-    const rawDzial = String(row[colDzial] || "").trim();
-    const rawOd = normalizeTime(row[colOd]) || String(row[colOd] || "").trim();
-    const rawDo = normalizeTime(row[colDo]) || String(row[colDo] || "").trim();
-    const rawRealne = typeof row[colRealne] === "number" ? row[colRealne] : parseFloat(String(row[colRealne] || 0)) || 0;
-    const rawPodpis = String(row[colPodpis] || "").trim();
-    const rawUwagi = String(row[colUwagi] || "").trim();
+    const rawFirma = colFirma >= 0 ? String(row[colFirma] || "").trim() : "";
+    const rawRcp = colRcp >= 0 ? normalizeRcpCode(row[colRcp]) : "";
+    const rawDzial = colDzial >= 0 ? String(row[colDzial] || "").trim() : "";
+    const rawOd = colOd >= 0 ? normalizeTime(row[colOd]) || String(row[colOd] || "").trim() : "";
+    const rawDo = colDo >= 0 ? normalizeTime(row[colDo]) || String(row[colDo] || "").trim() : "";
+    const rawRealne =
+      colRealne >= 0
+        ? typeof row[colRealne] === "number"
+          ? (row[colRealne] as number)
+          : parseFloat(String(row[colRealne] || 0)) || 0
+        : 0;
+    const rawPodpis = colPodpis >= 0 ? String(row[colPodpis] || "").trim() : "";
+    const rawUwagi = colUwagi >= 0 ? String(row[colUwagi] || "").trim() : "";
 
     // Пропускаємо повністю порожні рядки
     if (!rawRcp && !rawOd && !rawDo && !rawFirma && !rawDzial) {

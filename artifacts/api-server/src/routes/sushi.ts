@@ -225,13 +225,15 @@ router.delete("/sushi/worker-codes/:id", async (req, res) => {
 // ─── 3. ШЛЮЗ ІМПОРТУ (STAGING AREA) ────────────────────────────────────────────
 
 router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res) => {
-  const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
-  if (files.length === 0) {
+  const rawFiles = (req.files as Express.Multer.File[] | undefined) || (req.file ? [req.file] : []);
+  if (!rawFiles || rawFiles.length === 0) {
+    logger.warn({ body: req.body }, "sushi upload: no files in request");
     fail(res, 400, "Будь ласка, оберіть Excel файл(и) для завантаження");
     return;
   }
 
   const factoryId = Number(req.body?.factoryId) || 1;
+  logger.info({ count: rawFiles.length, names: rawFiles.map((f) => f.originalname) }, "sushi upload: processing files");
 
   // Завантажуємо спільний контекст валідації
   const workerCodes = await db.select().from(sushiWorkerCodesTable).where(eq(sushiWorkerCodesTable.factoryId, factoryId));
@@ -244,8 +246,9 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
   let totalRowsOverall = 0;
   let totalValidOverall = 0;
   let totalErrorsOverall = 0;
+  let lastErrorMsg: string | null = null;
 
-  for (const file of files) {
+  for (const file of rawFiles) {
     const fileName = file.originalname || "report.xlsx";
     const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
 
@@ -347,8 +350,14 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
         errorRows: errorCount,
       });
     } catch (err: any) {
-      logger.error({ err, fileName }, "failed parsing report file in batch");
+      lastErrorMsg = err.message || "Помилка структури файлу";
+      logger.error({ err, fileName }, "sushi import: failed parsing report file in batch");
     }
+  }
+
+  if (batchesProcessed.length === 0) {
+    fail(res, 400, lastErrorMsg || "Не вдалося розпізнати структуру файлу");
+    return;
   }
 
   ok(res, {
