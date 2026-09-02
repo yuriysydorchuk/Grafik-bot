@@ -20,7 +20,8 @@ export interface RawParsedRow {
 
 export interface ParsedDailyReport {
   fileName: string;
-  reportDate: string; // YYYY-MM-DD
+  reportDate: string | null; // YYYY-MM-DD
+  isDateMissing: boolean;
   rows: RawParsedRow[];
   totalRows: number;
 }
@@ -125,6 +126,7 @@ export interface ExcelPreviewData {
   sheetNames: string[];
   selectedSheet: string;
   detectedDate: string;
+  isDateMissing: boolean;
   detectedHeaderRow: number;
   detectedMapping: {
     colFirma: number;
@@ -182,8 +184,9 @@ export function previewExcelReport(
     if (detectedDate) break;
   }
   if (!detectedDate) {
-    detectedDate = parseReportDate(fileName) || new Date().toISOString().slice(0, 10);
+    detectedDate = parseReportDate(fileName) || "";
   }
+  const isDateMissing = !detectedDate;
 
   // 2. Визначення рядка заголовків
   let headerRowIndex = -1;
@@ -253,6 +256,7 @@ export function previewExcelReport(
     sheetNames: wb.SheetNames,
     selectedSheet,
     detectedDate,
+    isDateMissing,
     detectedHeaderRow: headerRowIndex !== -1 ? headerRowIndex : 1,
     detectedMapping: {
       colFirma,
@@ -318,6 +322,7 @@ export function parseDailyShiftExcel(
 
   // 1. Пошук дати в customMapping або перших 10 рядках
   let reportDate: string | null = customMapping?.customReportDate || null;
+  let isDateMissing = false;
   if (!reportDate) {
     for (let r = 0; r < Math.min(10, data.length); r++) {
       const row = data[r] || [];
@@ -335,7 +340,12 @@ export function parseDailyShiftExcel(
 
   if (!reportDate) {
     const fromFilename = parseReportDate(fileName);
-    reportDate = fromFilename || new Date().toISOString().slice(0, 10);
+    if (fromFilename) {
+      reportDate = fromFilename;
+    } else {
+      reportDate = null;
+      isDateMissing = true;
+    }
   }
 
   // 2. Визначення стовпчиків: якщо передано customMapping, беремо його, інакше авто-детекція
@@ -448,6 +458,7 @@ export function parseDailyShiftExcel(
   return {
     fileName,
     reportDate,
+    isDateMissing,
     rows,
     totalRows: rows.length,
   };

@@ -55,6 +55,7 @@ export interface SushiImportBatch {
   factoryId: number;
   sourceFilename: string;
   reportDate: string;
+  isDateMissing?: boolean;
   totalRowsCount: number;
   validRowsCount: number;
   errorRowsCount: number;
@@ -237,6 +238,7 @@ export interface ExcelPreviewData {
   sheetNames: string[];
   selectedSheet: string;
   detectedDate: string;
+  isDateMissing?: boolean;
   detectedHeaderRow: number;
   detectedMapping: {
     colFirma: number;
@@ -286,6 +288,8 @@ export const uploadSushiReport = (
 };
 export const fetchSushiImportBatches = (factoryId = 1) =>
   get<SushiImportBatch[]>(`/sushi/import/batches?factoryId=${factoryId}`);
+export const updateSushiBatchDate = (batchId: number, reportDate: string) =>
+  patch<{ success: boolean; reportDate: string }>(`/sushi/import/batches/${batchId}`, { reportDate });
 export const fetchSushiStaging = (params?: { batchId?: number; status?: string }) => {
   const q = new URLSearchParams();
   if (params?.batchId) q.set("batchId", String(params.batchId));

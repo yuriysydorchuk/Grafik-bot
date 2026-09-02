@@ -291,7 +291,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
       const parsed = parseDailyShiftExcel(file.buffer, fileName, customMapping);
 
       const validationContext = {
-        reportDate: parsed.reportDate,
+        reportDate: parsed.reportDate || "1970-01-01",
         workerCodes: workerCodes.map((c) => ({
           rcpCode: c.rcpCode,
           workerId: c.workerId,
@@ -312,6 +312,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
           sourceFilename: fileName,
           fileHashSha256: fileHash,
           reportDate: parsed.reportDate,
+          isDateMissing: parsed.isDateMissing,
           totalRowsCount: parsed.rows.length,
           status: "PENDING",
           uploadedByAdminId: req.admin?.adminId ?? null,
@@ -320,6 +321,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
           target: [sushiImportBatchesTable.fileHashSha256],
           set: {
             reportDate: parsed.reportDate,
+            isDateMissing: parsed.isDateMissing,
             totalRowsCount: parsed.rows.length,
             status: "PENDING",
           },
@@ -414,6 +416,7 @@ router.get("/sushi/import/batches", async (req, res) => {
       factoryId: sushiImportBatchesTable.factoryId,
       sourceFilename: sushiImportBatchesTable.sourceFilename,
       reportDate: sushiImportBatchesTable.reportDate,
+      isDateMissing: sushiImportBatchesTable.isDateMissing,
       totalRowsCount: sushiImportBatchesTable.totalRowsCount,
       validRowsCount: sushiImportBatchesTable.validRowsCount,
       errorRowsCount: sushiImportBatchesTable.errorRowsCount,
@@ -425,6 +428,54 @@ router.get("/sushi/import/batches", async (req, res) => {
     .orderBy(desc(sushiImportBatchesTable.reportDate), desc(sushiImportBatchesTable.id));
 
   ok(res, rows);
+});
+
+// Оновлення дати звіту для імпортованого батчу (якщо бригадир пропустив дату)
+router.patch("/sushi/import/batches/:id", async (req, res) => {
+  const batchId = Number(req.params.id);
+  if (!batchId) {
+    fail(res, 400, "batchId обов'язковий");
+    return;
+  }
+
+  const { reportDate } = req.body ?? {};
+  if (!reportDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(reportDate))) {
+    fail(res, 400, "Вкажіть коректну дату у форматі YYYY-MM-DD");
+    return;
+  }
+
+  const [batch] = await db.select().from(sushiImportBatchesTable).where(eq(sushiImportBatchesTable.id, batchId));
+  if (!batch) {
+    fail(res, 404, "Батч не знайдено");
+    return;
+  }
+
+  await db
+    .update(sushiImportBatchesTable)
+    .set({
+      reportDate: String(reportDate),
+      isDateMissing: false,
+    })
+    .where(eq(sushiImportBatchesTable.id, batchId));
+
+  // Оновлюємо також дати у вже створених робочих інтервалах (якщо є)
+  const stagingEntries = await db
+    .select({ id: sushiStagingEntriesTable.id })
+    .from(sushiStagingEntriesTable)
+    .where(eq(sushiStagingEntriesTable.batchId, batchId));
+
+  const stagingIds = stagingEntries.map((e) => e.id);
+  if (stagingIds.length > 0) {
+    await db
+      .update(sushiWorkIntervalsTable)
+      .set({
+        workDate: String(reportDate),
+        billingMonth: String(reportDate).slice(0, 7),
+      })
+      .where(inArray(sushiWorkIntervalsTable.stagingEntryId, stagingIds));
+  }
+
+  ok(res, { success: true, reportDate });
 });
 
 router.get("/sushi/staging", async (req, res) => {
@@ -561,6 +612,15 @@ router.post("/sushi/staging/approve-all-valid", async (req, res) => {
     return;
   }
 
+  if (!batch.reportDate || batch.isDateMissing) {
+    fail(
+      res,
+      400,
+      "Неможливо затвердити години: у цьому файлі не вказано дату зміни! Бригадир забув вписати дату в Excel. Будь ласка, вкажіть дату звіту перед затвердженням.",
+    );
+    return;
+  }
+
   const validEntries = await db
     .select()
     .from(sushiStagingEntriesTable)
@@ -597,8 +657,8 @@ router.post("/sushi/staging/approve-all-valid", async (req, res) => {
       workerId: e.resolvedWorkerId!,
       factoryId,
       companyId: batch.companyId || 1,
-      workDate: batch.reportDate,
-      billingMonth: batch.reportDate.slice(0, 7),
+      workDate: batch.reportDate!,
+      billingMonth: batch.reportDate!.slice(0, 7),
       startTime: e.rawOd || "06:00",
       stopTime: e.rawDo || "14:00",
       roundedStartTime: roundedStart,
@@ -1256,10 +1316,10 @@ router.get("/sushi/finance/reconciliation", async (req, res) => {
     );
 
   const factoryRecords = stagingRows
-    .filter((s) => s.workerId != null)
+    .filter((s) => s.workerId != null && s.reportDate != null)
     .map((s) => ({
       workerId: s.workerId!,
-      workDate: s.reportDate,
+      workDate: s.reportDate!,
       factoryHours: parseFloat(s.rawHours || "0") || 0,
     }));
 

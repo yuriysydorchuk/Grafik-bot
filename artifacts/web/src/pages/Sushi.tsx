@@ -63,6 +63,7 @@ import {
   patchSushiStaging,
   linkSushiRcpAlias,
   approveSushiValidStaging,
+  updateSushiBatchDate,
   fetchSushiTimesheetTree,
   fetchSushiIntervals,
   createSushiInterval,
@@ -203,6 +204,26 @@ function ImportTab() {
     },
   });
 
+  const [editingBatchDate, setEditingBatchDate] = useState<string>("");
+
+  useEffect(() => {
+    if (activeBatch) {
+      setEditingBatchDate(activeBatch.reportDate || "");
+    }
+  }, [activeBatch?.id, activeBatch?.reportDate]);
+
+  const updateBatchDateMutation = useMutation({
+    mutationFn: ({ batchId, date }: { batchId: number; date: string }) => updateSushiBatchDate(batchId, date),
+    onSuccess: () => {
+      toast.success(t("Дату звіту успішно встановлено!"));
+      qc.invalidateQueries({ queryKey: ["sushi-batches"] });
+      qc.invalidateQueries({ queryKey: ["sushi-staging"] });
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t("Помилка оновлення дати звіту"));
+    },
+  });
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) return;
@@ -289,53 +310,103 @@ function ImportTab() {
 
       {/* Batches Selector & Action Bar */}
       {batches.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Label>{t("Звіт за дату:")}</Label>
-            <Select
-              value={activeBatch?.id ?? ""}
-              onChange={(e) => setSelectedBatchId(Number(e.target.value))}
-              className="w-72 font-medium"
-            >
-              {batches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.reportDate} ({b.sourceFilename}) — {b.validRowsCount} ОК / {b.errorRowsCount} ⚠
-                </option>
-              ))}
-            </Select>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Label>{t("Звіт за дату:")}</Label>
+              <Select
+                value={activeBatch?.id ?? ""}
+                onChange={(e) => setSelectedBatchId(Number(e.target.value))}
+                className="w-72 font-medium"
+              >
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.isDateMissing || !b.reportDate ? `⚠ [БЕЗ ДАТИ] ${b.sourceFilename}` : `${b.reportDate} (${b.sourceFilename})`} — {b.validRowsCount} ОК / {b.errorRowsCount} ⚠
+                  </option>
+                ))}
+              </Select>
 
-            <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs font-medium">
-              {[
-                ["ALL", t("Усі рядки")],
-                ["OK", t("Валідні (OK)")],
-                ["CHECK_ID", t("Потрібна прив'язка (CHECK_ID)")],
-                ["INVALID_TIME", t("Помилка часу")],
-                ["MISSING_SIGNATURE", t("Без підпису")],
-              ].map(([k, label]) => (
-                <button
-                  key={k}
-                  onClick={() => setStatusFilter(k)}
-                  className={`px-2.5 py-1 rounded-md transition ${
-                    statusFilter === k ? "bg-white shadow-xs font-semibold text-slate-800" : "text-slate-500"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+              <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs font-medium">
+                {[
+                  ["ALL", t("Усі рядки")],
+                  ["OK", t("Валідні (OK)")],
+                  ["CHECK_ID", t("Потрібна прив'язка (CHECK_ID)")],
+                  ["INVALID_TIME", t("Помилка часу")],
+                  ["MISSING_SIGNATURE", t("Без підпису")],
+                ].map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setStatusFilter(k)}
+                    className={`px-2.5 py-1 rounded-md transition ${
+                      statusFilter === k ? "bg-white shadow-xs font-semibold text-slate-800" : "text-slate-500"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {activeBatch && activeBatch.status !== "PROCESSED" && (
+              <div className="flex items-center gap-3">
+                {(activeBatch.isDateMissing || !activeBatch.reportDate) && (
+                  <span className="text-xs font-semibold text-amber-700 bg-amber-100 px-3 py-1.5 rounded-lg border border-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    {t("Затвердження заблоковано: вкажіть дату звіту")}
+                  </span>
+                )}
+                <Button
+                  variant="success"
+                  disabled={validEntriesCount === 0 || activeBatch.isDateMissing || !activeBatch.reportDate || approveMutation.isPending}
+                  loading={approveMutation.isPending}
+                  onClick={() => approveMutation.mutate(activeBatch.id)}
+                  className="gap-2"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  {t("Затвердити всі валідні ({count})", { count: validEntriesCount })}
+                </Button>
+              </div>
+            )}
           </div>
 
-          {activeBatch && activeBatch.status !== "PROCESSED" && (
-            <Button
-              variant="success"
-              disabled={validEntriesCount === 0 || approveMutation.isPending}
-              loading={approveMutation.isPending}
-              onClick={() => approveMutation.mutate(activeBatch.id)}
-              className="gap-2"
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              {t("Затвердити всі валідні ({count})", { count: validEntriesCount })}
-            </Button>
+          {/* Missing Date Alert & Quick Fix Bar */}
+          {activeBatch && (activeBatch.isDateMissing || !activeBatch.reportDate) && (
+            <div className="p-3.5 bg-amber-50 border-2 border-amber-400 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-amber-900 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-200/80 rounded-lg text-amber-800 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-bold text-sm text-amber-950">
+                    {t("Увага: у файлі не вказано дату зміни!")}
+                  </div>
+                  <div className="text-xs text-amber-800">
+                    {t("Бригадир не заповнив клітинку дати в Excel. Затвердження інтервалів заблоковано, доки ви не вкажете дату звіту:")}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="date"
+                  value={editingBatchDate}
+                  onChange={(e) => setEditingBatchDate(e.target.value)}
+                  className="w-36 py-1.5 px-2 text-xs font-mono bg-white border-amber-400"
+                />
+                <Button
+                  variant="primary"
+                  disabled={!editingBatchDate || updateBatchDateMutation.isPending}
+                  loading={updateBatchDateMutation.isPending}
+                  onClick={() => {
+                    if (activeBatch && editingBatchDate) {
+                      updateBatchDateMutation.mutate({ batchId: activeBatch.id, date: editingBatchDate });
+                    }
+                  }}
+                  className="text-xs py-1.5 px-3 whitespace-nowrap bg-amber-600 hover:bg-amber-700 text-white font-semibold"
+                >
+                  {t("Зберегти дату")}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -1810,10 +1881,23 @@ function ExcelMappingModal({
               type="date"
               value={reportDate}
               onChange={(e) => setReportDate(e.target.value)}
-              className="w-36 py-1 px-2 text-xs font-mono"
+              className={`w-36 py-1 px-2 text-xs font-mono ${
+                !reportDate ? "border-red-500 ring-2 ring-red-200 bg-red-50/50" : ""
+              }`}
             />
           </div>
         </div>
+
+        {/* Missing Date Banner inside Modal */}
+        {(!reportDate || preview?.isDateMissing) && (
+          <div className="p-3 bg-red-50 border border-red-300 rounded-xl flex items-center gap-2.5 text-red-800 text-xs shadow-xs">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>
+              <strong>{t("Увага: у файлі не вказано дату зміни!")}</strong>{" "}
+              {t("Бригадир не заповнив клітинку дати в Excel. Будь ласка, оберіть точну дату звіту вище перед імпортом.")}
+            </span>
+          </div>
+        )}
 
         {/* Fields Selector Bar */}
         <div className="space-y-2">
@@ -1974,10 +2058,14 @@ function ExcelMappingModal({
             </Button>
             <Button
               onClick={() => {
+                if (!reportDate) {
+                  toast.error(t("Будь ласка, вкажіть дату звіту перед імпортом!"));
+                  return;
+                }
                 onUpload(file, {
                   sheetName: selectedSheet || undefined,
                   headerRowIndex: headerRow,
-                  customReportDate: reportDate || undefined,
+                  customReportDate: reportDate,
                   colFirma: mapping.colFirma,
                   colRcp: mapping.colRcp,
                   colDzial: mapping.colDzial,
@@ -1988,6 +2076,7 @@ function ExcelMappingModal({
                   colUwagi: mapping.colUwagi,
                 });
               }}
+              disabled={!reportDate}
               className="gap-2"
             >
               <Check className="w-4 h-4" />
