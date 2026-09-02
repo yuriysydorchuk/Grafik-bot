@@ -21,7 +21,13 @@ import {
 } from "@workspace/db";
 import { eq, and, desc, asc, inArray, gte, lte } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
-import { parseDailyShiftExcel, validateStagingRow, normalizeRcpCode } from "../services/sushiImport";
+import {
+  parseDailyShiftExcel,
+  previewExcelReport,
+  validateStagingRow,
+  normalizeRcpCode,
+  type SushiColumnMapping,
+} from "../services/sushiImport";
 import { buildTimesheetTree, prepareStagingCommit } from "../services/sushiTimesheet";
 import { validateTimeInterval, roundStartTime, roundStopTime, calcIntervalHours } from "../services/sushiTime";
 import { calculateSushiZalacznik, reconcileSushiHours } from "../services/sushiFinance";
@@ -224,6 +230,23 @@ router.delete("/sushi/worker-codes/:id", async (req, res) => {
 
 // ─── 3. ШЛЮЗ ІМПОРТУ (STAGING AREA) ────────────────────────────────────────────
 
+router.post("/sushi/import/preview", upload.any(), async (req: AuthedRequest, res) => {
+  const rawFiles = (req.files as Express.Multer.File[] | undefined) || (req.file ? [req.file] : []);
+  const file = rawFiles[0];
+  if (!file || !file.buffer) {
+    fail(res, 400, "Будь ласка, оберіть Excel файл для попереднього перегляду");
+    return;
+  }
+  try {
+    const sheetName = req.body?.sheetName ? String(req.body.sheetName) : undefined;
+    const preview = previewExcelReport(file.buffer, file.originalname || "report.xlsx", sheetName);
+    ok(res, preview);
+  } catch (err: any) {
+    logger.error({ err }, "sushi import preview failed");
+    fail(res, 400, err.message || "Помилка читання файлу Excel");
+  }
+});
+
 router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res) => {
   const rawFiles = (req.files as Express.Multer.File[] | undefined) || (req.file ? [req.file] : []);
   if (!rawFiles || rawFiles.length === 0) {
@@ -233,7 +256,19 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
   }
 
   const factoryId = Number(req.body?.factoryId) || 1;
-  logger.info({ count: rawFiles.length, names: rawFiles.map((f) => f.originalname) }, "sushi upload: processing files");
+  let customMapping: SushiColumnMapping | undefined;
+  if (req.body?.mapping) {
+    try {
+      customMapping = typeof req.body.mapping === "string" ? JSON.parse(req.body.mapping) : req.body.mapping;
+    } catch (e) {
+      logger.warn({ err: e }, "failed parsing custom mapping from upload body");
+    }
+  }
+
+  logger.info(
+    { count: rawFiles.length, names: rawFiles.map((f) => f.originalname), hasCustomMapping: !!customMapping },
+    "sushi upload: processing files",
+  );
 
   // Завантажуємо спільний контекст валідації
   const workerCodes = await db.select().from(sushiWorkerCodesTable).where(eq(sushiWorkerCodesTable.factoryId, factoryId));
@@ -253,7 +288,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
     const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
 
     try {
-      const parsed = parseDailyShiftExcel(file.buffer, fileName);
+      const parsed = parseDailyShiftExcel(file.buffer, fileName, customMapping);
 
       const validationContext = {
         reportDate: parsed.reportDate,

@@ -218,14 +218,62 @@ export const createSushiWorkerCode = (data: Partial<SushiWorkerCode>) =>
   post<SushiWorkerCode>("/sushi/worker-codes", data);
 export const deleteSushiWorkerCode = (id: number) => del(`/sushi/worker-codes/${id}`);
 
+export interface SushiColumnMapping {
+  sheetName?: string;
+  headerRowIndex?: number;
+  colFirma?: number;
+  colRcp?: number;
+  colDzial?: number;
+  colOd?: number;
+  colDo?: number;
+  colRealne?: number;
+  colPodpis?: number;
+  colUwagi?: number;
+}
+
+export interface ExcelPreviewData {
+  fileName: string;
+  sheetNames: string[];
+  selectedSheet: string;
+  detectedDate: string;
+  detectedHeaderRow: number;
+  detectedMapping: {
+    colFirma: number;
+    colRcp: number;
+    colDzial: number;
+    colOd: number;
+    colDo: number;
+    colRealne: number;
+    colPodpis: number;
+    colUwagi: number;
+  };
+  rows: (string | number | null)[][];
+  totalRows: number;
+  totalCols: number;
+}
+
 // 4. Import & Staging
-export const uploadSushiReport = (fileOrFiles: File | File[] | FileList, factoryId = 1) => {
+export const previewSushiExcel = (file: File, sheetName?: string) => {
+  const form = new FormData();
+  form.append("files", file);
+  if (sheetName) form.append("sheetName", sheetName);
+  return upload<ExcelPreviewData>("/sushi/import/preview", form);
+};
+
+export const uploadSushiReport = (
+  fileOrFiles: File | File[] | FileList,
+  factoryId = 1,
+  mapping?: SushiColumnMapping,
+) => {
   const form = new FormData();
   const list = fileOrFiles instanceof File ? [fileOrFiles] : Array.from(fileOrFiles);
   for (const f of list) {
     form.append("files", f);
   }
   form.append("factoryId", String(factoryId));
+  if (mapping) {
+    form.append("mapping", JSON.stringify(mapping));
+  }
   return upload<{
     batchesCount: number;
     batchId?: number;

@@ -104,69 +104,85 @@ export function normalizeRcpCode(rcpVal: string | number | null | undefined): st
   return stripped || "0";
 }
 
+export interface SushiColumnMapping {
+  sheetName?: string;
+  headerRowIndex?: number;
+  colFirma?: number;
+  colRcp?: number;
+  colDzial?: number;
+  colOd?: number;
+  colDo?: number;
+  colRealne?: number;
+  colPodpis?: number;
+  colUwagi?: number;
+}
+
+export interface ExcelPreviewData {
+  fileName: string;
+  sheetNames: string[];
+  selectedSheet: string;
+  detectedDate: string;
+  detectedHeaderRow: number;
+  detectedMapping: {
+    colFirma: number;
+    colRcp: number;
+    colDzial: number;
+    colOd: number;
+    colDo: number;
+    colRealne: number;
+    colPodpis: number;
+    colUwagi: number;
+  };
+  rows: (string | number | null)[][];
+  totalRows: number;
+  totalCols: number;
+}
+
 /**
- * Парсер Excel-файлу щоденного звіту бригадира.
+ * Генерує прев'ю вмісту Excel-файлу для візуального маппінгу колонок супервайзером.
  */
-export function parseDailyShiftExcel(
+export function previewExcelReport(
   buffer: Buffer | Uint8Array,
   fileName: string,
-): ParsedDailyReport {
+  targetSheetName?: string,
+): ExcelPreviewData {
   const wb = XLSX.read(buffer, { type: "buffer", cellDates: false });
   if (!wb.SheetNames || wb.SheetNames.length === 0) {
     throw new Error("Excel файл не містить аркушів");
   }
 
-  // Знаходимо перший аркуш, що містить дані
-  let ws: XLSX.WorkSheet | undefined;
-  for (const sheetName of wb.SheetNames) {
-    const candidate = wb.Sheets[sheetName];
-    if (candidate && candidate["!ref"]) {
-      ws = candidate;
-      break;
-    }
-  }
+  const selectedSheet =
+    targetSheetName && wb.SheetNames.includes(targetSheetName)
+      ? targetSheetName
+      : wb.SheetNames[0]!;
 
-  if (!ws) {
-    ws = wb.Sheets[wb.SheetNames[0]!];
-  }
+  const ws = wb.Sheets[selectedSheet];
+  if (!ws) throw new Error(`Аркуш ${selectedSheet} не знайдено`);
 
-  if (!ws) {
-    throw new Error("Не вдалося відкрити аркуш Excel");
-  }
-
-  // Raw rows as matrix
-  const data: (string | number | null | undefined)[][] = XLSX.utils.sheet_to_json(ws, {
+  const data: (string | number | null)[][] = XLSX.utils.sheet_to_json(ws, {
     header: 1,
     defval: "",
     raw: true,
   });
 
-  if (data.length === 0) {
-    throw new Error("Excel файл порожній");
-  }
-
-  // 1. Пошук дати в перших 10 рядках
-  let reportDate: string | null = null;
+  // 1. Пошук дати
+  let detectedDate: string | null = null;
   for (let r = 0; r < Math.min(10, data.length); r++) {
     const row = data[r] || [];
     for (let c = 0; c < Math.min(10, row.length); c++) {
-      const val = row[c];
-      const parsed = parseReportDate(val);
+      const parsed = parseReportDate(row[c]);
       if (parsed) {
-        reportDate = parsed;
+        detectedDate = parsed;
         break;
       }
     }
-    if (reportDate) break;
+    if (detectedDate) break;
+  }
+  if (!detectedDate) {
+    detectedDate = parseReportDate(fileName) || new Date().toISOString().slice(0, 10);
   }
 
-  if (!reportDate) {
-    // Спробувати витягнути дату з імені файлу (напр. "2026-08-31_Pakowanie.xlsx")
-    const fromFilename = parseReportDate(fileName);
-    reportDate = fromFilename || new Date().toISOString().slice(0, 10);
-  }
-
-  // 2. Пошук рядка заголовків та динамічне визначення стовпчиків
+  // 2. Визначення рядка заголовків
   let headerRowIndex = -1;
   let colFirma = -1;
   let colRcp = -1;
@@ -216,7 +232,160 @@ export function parseDailyShiftExcel(
     }
   }
 
-  // Fallbacks if not found by header text
+  // Fallbacks
+  if (colFirma === -1) colFirma = 0;
+  if (colRcp === -1) colRcp = 1;
+  if (colDzial === -1) colDzial = 2;
+  if (colOd === -1) colOd = 6;
+  if (colDo === -1) colDo = 7;
+  if (colRealne === -1) colRealne = 8;
+  if (colPodpis === -1) colPodpis = 9;
+  if (colUwagi === -1) colUwagi = 11;
+
+  const previewRows = data.slice(0, 25);
+  const maxCols = Math.max(...previewRows.map((r) => r.length), 12);
+
+  return {
+    fileName,
+    sheetNames: wb.SheetNames,
+    selectedSheet,
+    detectedDate,
+    detectedHeaderRow: headerRowIndex !== -1 ? headerRowIndex : 1,
+    detectedMapping: {
+      colFirma,
+      colRcp,
+      colDzial,
+      colOd,
+      colDo,
+      colRealne,
+      colPodpis,
+      colUwagi,
+    },
+    rows: previewRows,
+    totalRows: data.length,
+    totalCols: maxCols,
+  };
+}
+
+/**
+ * Парсер Excel-файлу щоденного звіту бригадира з підтримкою кастомного маппінгу.
+ */
+export function parseDailyShiftExcel(
+  buffer: Buffer | Uint8Array,
+  fileName: string,
+  customMapping?: SushiColumnMapping,
+): ParsedDailyReport {
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: false });
+  if (!wb.SheetNames || wb.SheetNames.length === 0) {
+    throw new Error("Excel файл не містить аркушів");
+  }
+
+  // Аркуш з кастомного маппінгу або перший валідний
+  let ws: XLSX.WorkSheet | undefined;
+  if (customMapping?.sheetName && wb.Sheets[customMapping.sheetName]) {
+    ws = wb.Sheets[customMapping.sheetName];
+  } else {
+    for (const sheetName of wb.SheetNames) {
+      const candidate = wb.Sheets[sheetName];
+      if (candidate && candidate["!ref"]) {
+        ws = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!ws) {
+    ws = wb.Sheets[wb.SheetNames[0]!];
+  }
+
+  if (!ws) {
+    throw new Error("Не вдалося відкрити аркуш Excel");
+  }
+
+  // Raw rows as matrix
+  const data: (string | number | null | undefined)[][] = XLSX.utils.sheet_to_json(ws, {
+    header: 1,
+    defval: "",
+    raw: true,
+  });
+
+  if (data.length === 0) {
+    throw new Error("Excel файл порожній");
+  }
+
+  // 1. Пошук дати в перших 10 рядках
+  let reportDate: string | null = null;
+  for (let r = 0; r < Math.min(10, data.length); r++) {
+    const row = data[r] || [];
+    for (let c = 0; c < Math.min(10, row.length); c++) {
+      const val = row[c];
+      const parsed = parseReportDate(val);
+      if (parsed) {
+        reportDate = parsed;
+        break;
+      }
+    }
+    if (reportDate) break;
+  }
+
+  if (!reportDate) {
+    const fromFilename = parseReportDate(fileName);
+    reportDate = fromFilename || new Date().toISOString().slice(0, 10);
+  }
+
+  // 2. Визначення стовпчиків: якщо передано customMapping, беремо його, інакше авто-детекція
+  let headerRowIndex = customMapping?.headerRowIndex ?? -1;
+  let colFirma = customMapping?.colFirma ?? -1;
+  let colRcp = customMapping?.colRcp ?? -1;
+  let colDzial = customMapping?.colDzial ?? -1;
+  let colOd = customMapping?.colOd ?? -1;
+  let colDo = customMapping?.colDo ?? -1;
+  let colRealne = customMapping?.colRealne ?? -1;
+  let colPodpis = customMapping?.colPodpis ?? -1;
+  let colUwagi = customMapping?.colUwagi ?? -1;
+
+  if (colRcp === -1 || colOd === -1 || colDo === -1) {
+    for (let r = 0; r < Math.min(15, data.length); r++) {
+      const row = data[r] || [];
+      let foundKeywords = 0;
+      for (let c = 0; c < row.length; c++) {
+        const val = String(row[c] || "").toLowerCase().trim();
+        if (val.includes("rcp") || val.includes("karta") || val.includes("kod") || val === "id" || val.includes("id prac")) {
+          foundKeywords++;
+        }
+        if (val === "od" || val.startsWith("od ") || val.includes("start") || val === "do" || val.startsWith("do ") || val.includes("stop") || val.includes("koniec")) {
+          foundKeywords++;
+        }
+      }
+
+      if (foundKeywords >= 2 || row.some((cell) => String(cell || "").toLowerCase().includes("rcp"))) {
+        headerRowIndex = r;
+        for (let c = 0; c < row.length; c++) {
+          const val = String(row[c] || "").toLowerCase().trim();
+          if (colRcp === -1 && (val.includes("rcp") || val.includes("karta") || val.includes("kod") || val === "id" || val.includes("id prac"))) {
+            colRcp = c;
+          } else if (colFirma === -1 && (val.includes("firma") || val.includes("agencja") || val.includes("klient"))) {
+            colFirma = c;
+          } else if (colDzial === -1 && (val.includes("dzia") || val.includes("linia") || val.includes("stanowisko") || val.includes("sektor"))) {
+            colDzial = c;
+          } else if (colOd === -1 && (val === "od" || val.startsWith("od ") || val.includes("start") || val.includes("pocz"))) {
+            colOd = c;
+          } else if (colDo === -1 && (val === "do" || val.startsWith("do ") || val.includes("stop") || val.includes("koniec"))) {
+            colDo = c;
+          } else if (colRealne === -1 && (val.includes("realn") || val.includes("godzin") || val.includes("czas") || val.includes("suma"))) {
+            colRealne = c;
+          } else if (colPodpis === -1 && (val.includes("podpis") || val.includes("brygadz") || val.includes("lider"))) {
+            colPodpis = c;
+          } else if (colUwagi === -1 && (val.includes("uwag") || val.includes("koment") || val.includes("notat"))) {
+            colUwagi = c;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Fallbacks if still not found
   if (colFirma === -1) colFirma = 0;
   if (colRcp === -1) colRcp = 1;
   if (colDzial === -1) colDzial = 2;

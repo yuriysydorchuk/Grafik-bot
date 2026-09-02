@@ -25,6 +25,8 @@ import {
   Check,
   Building2,
   RefreshCw,
+  Sliders,
+  Table,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "../components/Layout";
@@ -53,6 +55,7 @@ import {
   fetchSushiWorkerCodes,
   createSushiWorkerCode,
   deleteSushiWorkerCode,
+  previewSushiExcel,
   uploadSushiReport,
   fetchSushiImportBatches,
   fetchSushiStaging,
@@ -78,6 +81,8 @@ import {
   type SushiLine,
   type SushiSupervisor,
   type SushiWorkerCode,
+  type SushiColumnMapping,
+  type ExcelPreviewData,
 } from "../lib/sushiApi";
 import { get } from "../lib/api";
 
@@ -136,9 +141,11 @@ function ImportTab() {
   const t = useT();
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mappingFileInputRef = useRef<HTMLInputElement>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<number | undefined>();
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [linkingEntry, setLinkingEntry] = useState<SushiStagingEntry | null>(null);
+  const [mappingFile, setMappingFile] = useState<File | null>(null);
 
   const { data: batches = [], isLoading: loadingBatches } = useQuery({
     queryKey: ["sushi-batches"],
@@ -161,7 +168,8 @@ function ImportTab() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: (files: FileList | File[]) => uploadSushiReport(files),
+    mutationFn: ({ files, mapping }: { files: File | File[]; mapping?: SushiColumnMapping }) =>
+      uploadSushiReport(files, 1, mapping),
     onSuccess: (res) => {
       toast.success(
         t("Успішно оброблено {count} файлів! Всього рядків: {total}, валідних: {valid}, помилок: {err}", {
@@ -171,6 +179,7 @@ function ImportTab() {
           err: res.errorRows,
         }),
       );
+      setMappingFile(null);
       qc.invalidateQueries({ queryKey: ["sushi-batches"] });
       if (res.batchId) setSelectedBatchId(res.batchId);
     },
@@ -193,11 +202,19 @@ function ImportTab() {
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      uploadMutation.mutate(files);
-      e.target.value = ""; // reset for next upload
-    }
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const fileArray = Array.from(fileList);
+    e.target.value = ""; // Безпечне очищення після копіювання
+    uploadMutation.mutate({ files: fileArray });
+  };
+
+  const handleMappingFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const file = fileList[0];
+    e.target.value = "";
+    if (file) setMappingFile(file);
   };
 
   const validEntriesCount = useMemo(
@@ -219,11 +236,11 @@ function ImportTab() {
                 {t("Завантажити щоденні звіти зміни (Excel)")}
               </h3>
               <p className="text-xs text-slate-500">
-                {t("Можна обрати один або кілька файлів (наприклад 20 звітів за раз). Автоматичне округлення 15 хв та звірка RCP.")}
+                {t("Можна обрати один або кілька файлів (наприклад 20 звітів за раз) або налаштувати стовпчики візуально.")}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="file"
               ref={fileInputRef}
@@ -232,17 +249,41 @@ function ImportTab() {
               multiple
               className="hidden"
             />
+            <input
+              type="file"
+              ref={mappingFileInputRef}
+              onChange={handleMappingFileSelect}
+              accept=".xlsx,.xls"
+              className="hidden"
+            />
+            <Button
+              variant="secondary"
+              onClick={() => mappingFileInputRef.current?.click()}
+              className="gap-2"
+            >
+              <Sliders className="w-4 h-4 text-blue-600" />
+              {t("Візуальне налаштування")}
+            </Button>
             <Button
               onClick={() => fileInputRef.current?.click()}
               loading={uploadMutation.isPending}
               className="gap-2"
             >
               <Upload className="w-4 h-4" />
-              {t("Обрати Excel файли")}
+              {t("Швидкий імпорт")}
             </Button>
           </div>
         </div>
       </Card>
+
+      {/* Visual Mapping Modal */}
+      {mappingFile && (
+        <ExcelMappingModal
+          file={mappingFile}
+          onClose={() => setMappingFile(null)}
+          onUpload={(f, m) => uploadMutation.mutate({ files: f, mapping: m })}
+        />
+      )}
 
       {/* Batches Selector & Action Bar */}
       {batches.length > 0 && (
@@ -1545,6 +1586,341 @@ function ResolveDisputeModal({
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button onClick={() => resolveMutation.mutate()} loading={resolveMutation.isPending}>{t("Узгодити та зберегти")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── 9. МОДАЛКА ВІЗУАЛЬНОГО НАЛАШТУВАННЯ КОЛОНОК EXCEL ──────────────────────
+
+function colToLetter(c: number): string {
+  let letter = "";
+  let temp = c;
+  while (temp >= 0) {
+    letter = String.fromCharCode((temp % 26) + 65) + letter;
+    temp = Math.floor(temp / 26) - 1;
+  }
+  return letter;
+}
+
+function ExcelMappingModal({
+  file,
+  onClose,
+  onUpload,
+}: {
+  file: File;
+  onClose: () => void;
+  onUpload: (file: File, mapping: SushiColumnMapping) => void;
+}) {
+  const t = useT();
+  const [selectedSheet, setSelectedSheet] = useState<string>("");
+  const [activeField, setActiveField] = useState<
+    "rcp" | "od" | "do" | "dzial" | "firma" | "podpis" | "realne" | "uwagi"
+  >("rcp");
+
+  const { data: preview, isLoading, error } = useQuery({
+    queryKey: ["sushi-preview", file.name, selectedSheet],
+    queryFn: () => previewSushiExcel(file, selectedSheet || undefined),
+  });
+
+  const [headerRow, setHeaderRow] = useState<number>(1);
+  const [mapping, setMapping] = useState<{
+    colRcp: number;
+    colOd: number;
+    colDo: number;
+    colDzial: number;
+    colFirma: number;
+    colPodpis: number;
+    colRealne: number;
+    colUwagi: number;
+  }>({
+    colRcp: 1,
+    colOd: 6,
+    colDo: 7,
+    colDzial: 2,
+    colFirma: 0,
+    colPodpis: 9,
+    colRealne: 8,
+    colUwagi: 11,
+  });
+
+  // Sync detected mapping when preview loads
+  useMemo(() => {
+    if (preview) {
+      if (!selectedSheet && preview.selectedSheet) {
+        setSelectedSheet(preview.selectedSheet);
+      }
+      setHeaderRow(preview.detectedHeaderRow);
+      setMapping(preview.detectedMapping);
+    }
+  }, [preview]);
+
+  const FIELDS: {
+    key: typeof activeField;
+    label: string;
+    colKey: keyof typeof mapping;
+    badgeColor: string;
+    required: boolean;
+  }[] = [
+    { key: "rcp", label: t("Табельний номер (RCP)"), colKey: "colRcp", badgeColor: "bg-emerald-500 text-white", required: true },
+    { key: "od", label: t("Час початку (OD)"), colKey: "colOd", badgeColor: "bg-blue-500 text-white", required: true },
+    { key: "do", label: t("Час завершення (DO)"), colKey: "colDo", badgeColor: "bg-indigo-500 text-white", required: true },
+    { key: "dzial", label: t("Цех / Лінія (Dział)"), colKey: "colDzial", badgeColor: "bg-amber-500 text-white", required: false },
+    { key: "firma", label: t("Агентство (Firma)"), colKey: "colFirma", badgeColor: "bg-purple-500 text-white", required: false },
+    { key: "podpis", label: t("Підпис бригадира"), colKey: "colPodpis", badgeColor: "bg-rose-500 text-white", required: false },
+    { key: "realne", label: t("Реальні години"), colKey: "colRealne", badgeColor: "bg-teal-500 text-white", required: false },
+    { key: "uwagi", label: t("Примітки (Uwagi)"), colKey: "colUwagi", badgeColor: "bg-slate-500 text-white", required: false },
+  ];
+
+  const handleColumnClick = (colIdx: number) => {
+    const activeObj = FIELDS.find((f) => f.key === activeField);
+    if (!activeObj) return;
+    setMapping((prev) => ({
+      ...prev,
+      [activeObj.colKey]: colIdx,
+    }));
+    toast.success(
+      t("Прив'язано: {field} → Колонка {col}", {
+        field: activeObj.label,
+        col: colToLetter(colIdx),
+      })
+    );
+  };
+
+  const getColBadges = (colIdx: number) => {
+    return FIELDS.filter((f) => mapping[f.colKey] === colIdx);
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title={t("Візуальне налаштування колонок Excel")} size="xl">
+      <div className="space-y-4 text-xs">
+        {/* Top Controls: Sheet selector & Header row */}
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+          <div className="flex items-center gap-4">
+            <div>
+              <span className="text-slate-500 font-medium mr-2">{t("Файл:")}</span>
+              <strong className="text-slate-900 font-mono">{file.name}</strong>
+            </div>
+
+            {preview && preview.sheetNames.length > 1 && (
+              <div className="flex items-center gap-2">
+                <Label>{t("Аркуш:")}</Label>
+                <Select
+                  value={selectedSheet}
+                  onChange={(e) => setSelectedSheet(e.target.value)}
+                  className="py-1 px-2 text-xs"
+                >
+                  {preview.sheetNames.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <Label>{t("Рядок заголовків:")}</Label>
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={headerRow + 1}
+                onChange={(e) => setHeaderRow(Math.max(0, Number(e.target.value) - 1))}
+                className="w-16 py-1 px-2 text-xs font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="text-slate-500">
+            {t("Знайдена дата звіту:")}{" "}
+            <strong className="font-mono text-slate-800">{preview?.detectedDate || "—"}</strong>
+          </div>
+        </div>
+
+        {/* Fields Selector Bar */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-slate-700">
+              {t("Оберіть поле для прив'язки, потім клікніть на відповідний стовпчик у таблиці нижче:")}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {FIELDS.map((f) => {
+              const isSelected = activeField === f.key;
+              const assignedCol = mapping[f.colKey];
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setActiveField(f.key)}
+                  className={`p-2.5 rounded-xl border text-left transition flex items-center justify-between ${
+                    isSelected
+                      ? "border-blue-600 bg-blue-50/70 shadow-sm ring-2 ring-blue-500/20"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="truncate pr-2">
+                    <div className="flex items-center gap-1.5 font-semibold text-slate-800">
+                      <span className={`w-2 h-2 rounded-full ${f.badgeColor.split(" ")[0]}`} />
+                      <span className="truncate">{f.label}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-500">
+                      {f.required ? t("Обов'язкове") : t("Опціонально")}
+                    </span>
+                  </div>
+
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-mono font-bold text-xs ${f.badgeColor}`}>
+                    {assignedCol >= 0 ? colToLetter(assignedCol) : "—"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Interactive Excel Preview Table */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+          {isLoading ? (
+            <div className="p-12 flex justify-center">
+              <Spinner />
+            </div>
+          ) : error ? (
+            <div className="p-8 text-center text-red-600">
+              {t("Не вдалося завантажити прев'ю файлу Excel.")}
+            </div>
+          ) : !preview || preview.rows.length === 0 ? (
+            <div className="p-8 text-center text-slate-400">{t("Файл порожній")}</div>
+          ) : (
+            <div className="overflow-x-auto max-h-96">
+              <table className="w-full text-left text-xs border-collapse font-sans">
+                <thead>
+                  {/* Column Letters & Active Field Badges */}
+                  <tr className="bg-slate-100 border-b border-slate-300 select-none">
+                    <th className="py-2 px-2.5 text-center text-slate-400 font-mono bg-slate-200 border-r border-slate-300 w-12 sticky left-0">
+                      #
+                    </th>
+                    {Array.from({ length: preview.totalCols }).map((_, colIdx) => {
+                      const badges = getColBadges(colIdx);
+                      const isTargetOfActive = mapping[FIELDS.find((f) => f.key === activeField)?.colKey!] === colIdx;
+
+                      return (
+                        <th
+                          key={colIdx}
+                          onClick={() => handleColumnClick(colIdx)}
+                          className={`py-2 px-3 text-center cursor-pointer transition border-r border-slate-200 min-w-[120px] ${
+                            isTargetOfActive
+                              ? "bg-blue-100 font-bold text-blue-900 ring-2 ring-blue-500 ring-inset"
+                              : "hover:bg-slate-200 text-slate-700"
+                          }`}
+                        >
+                          <div className="font-mono text-sm font-bold">{colToLetter(colIdx)}</div>
+                          <div className="flex flex-wrap gap-1 justify-center mt-1">
+                            {badges.map((b) => (
+                              <span
+                                key={b.key}
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${b.badgeColor}`}
+                              >
+                                {b.key.toUpperCase()}
+                              </span>
+                            ))}
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                  {preview.rows.map((row, rIdx) => {
+                    const isHeader = rIdx === headerRow;
+                    return (
+                      <tr
+                        key={rIdx}
+                        className={`hover:bg-blue-50/40 transition ${
+                          isHeader ? "bg-amber-50 font-bold text-amber-900" : ""
+                        }`}
+                      >
+                        <td
+                          className={`py-1.5 px-2 text-center text-slate-400 bg-slate-50 border-r border-slate-200 sticky left-0 font-sans text-xs ${
+                            isHeader ? "bg-amber-100 font-bold text-amber-800" : ""
+                          }`}
+                        >
+                          {rIdx + 1}
+                          {isHeader && <span className="block text-[9px] text-amber-600">HEADER</span>}
+                        </td>
+                        {Array.from({ length: preview.totalCols }).map((_, cIdx) => {
+                          const cellVal = row[cIdx];
+                          const isColActive = mapping[FIELDS.find((f) => f.key === activeField)?.colKey!] === cIdx;
+
+                          return (
+                            <td
+                              key={cIdx}
+                              onClick={() => handleColumnClick(cIdx)}
+                              className={`py-1.5 px-3 border-r border-slate-100 cursor-pointer truncate max-w-[180px] ${
+                                isColActive ? "bg-blue-50/70 font-semibold" : ""
+                              }`}
+                              title={String(cellVal || "")}
+                            >
+                              {cellVal !== undefined && cellVal !== null && String(cellVal).trim() !== "" ? (
+                                String(cellVal)
+                              ) : (
+                                <span className="text-slate-300 italic">—</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Actions */}
+        <div className="flex justify-between items-center pt-2">
+          <Button
+            variant="secondary"
+            onClick={() => {
+              if (preview) {
+                setMapping(preview.detectedMapping);
+                setHeaderRow(preview.detectedHeaderRow);
+                toast.info(t("Скинуто до авто-визначення"));
+              }
+            }}
+          >
+            {t("Скинути до авто-детекції")}
+          </Button>
+
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>
+              {t("Скасувати")}
+            </Button>
+            <Button
+              onClick={() => {
+                onUpload(file, {
+                  sheetName: selectedSheet || undefined,
+                  headerRowIndex: headerRow,
+                  colFirma: mapping.colFirma,
+                  colRcp: mapping.colRcp,
+                  colDzial: mapping.colDzial,
+                  colOd: mapping.colOd,
+                  colDo: mapping.colDo,
+                  colRealne: mapping.colRealne,
+                  colPodpis: mapping.colPodpis,
+                  colUwagi: mapping.colUwagi,
+                });
+              }}
+              className="gap-2"
+            >
+              <Check className="w-4 h-4" />
+              {t("Імпортувати файл із цим маппінгом")}
+            </Button>
+          </div>
         </div>
       </div>
     </Modal>
