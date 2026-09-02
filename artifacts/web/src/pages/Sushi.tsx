@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef } from "react";
+import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Upload,
@@ -91,41 +92,42 @@ const fmt = (n: number) =>
 
 export default function Sushi() {
   const t = useT();
-  const [tab, setTab] = useState<"import" | "timesheet" | "disputes" | "finance" | "settings">("import");
+  const [, params] = useRoute("/sushi/:tab");
+  const tab = (params?.tab as "import" | "timesheet" | "disputes" | "finance" | "settings") || "import";
 
-  const TABS: [typeof tab, string][] = [
-    ["import", t("Імпорт та Staging")],
-    ["timesheet", t("Табель годин")],
-    ["disputes", t("Скарги по годинах")],
-    ["finance", t("Фінанси та Załącznik")],
-    ["settings", t("Налаштування проєкту")],
-  ];
+  const TITLES: Record<string, { title: string; subtitle: string }> = {
+    import: {
+      title: t("Суші: Імпорт та Staging звітів"),
+      subtitle: t("Шлюз завантаження та попередньої валідації щоденних змін бригадирів"),
+    },
+    timesheet: {
+      title: t("Суші: Табель робочих годин"),
+      subtitle: t("Дерево змін, 15-хвилинне округлення та ручні коригування"),
+    },
+    disputes: {
+      title: t("Суші: Скарги по годинах"),
+      subtitle: t("Узгодження розбіжностей у табелі та дисциплінарні штрафи бригадирів"),
+    },
+    finance: {
+      title: t("Суші: Фінанси та Załącznik do faktury"),
+      subtitle: t("Консолідований розрахунок для клієнта та двоконтурна звірка годин"),
+    },
+    settings: {
+      title: t("Суші: Налаштування проєкту"),
+      subtitle: t("Довідники цехів, виробничих ліній, підписів бригадирів та аліасів табельних номерів"),
+    },
+  };
+
+  const headerInfo = TITLES[tab] || TITLES.import;
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title={t("Фабрика «Суші» (Sushi & Food Factory)")}
-        subtitle={t("Персональний виробничий модуль: імпорт звітів зміни, табель з 15-хв заокругленням, Załącznik та звірка")}
+        title={headerInfo.title}
+        subtitle={headerInfo.subtitle}
       />
 
-      {/* Tabs navigation */}
-      <div className="flex w-fit gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
-        {TABS.map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => setTab(k)}
-            className={`rounded-lg px-4 py-2 transition-all ${
-              tab === k
-                ? "bg-white text-slate-900 shadow-sm font-semibold"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab Panels */}
+      {/* Tab Panels — керуються через бічне підменю проєкту */}
       {tab === "import" && <ImportTab />}
       {tab === "timesheet" && <TimesheetTab />}
       {tab === "disputes" && <DisputesTab />}
@@ -396,7 +398,13 @@ function ImportTab() {
                         {entry.rawOd || "—"} → {entry.rawDo || "—"}
                       </td>
                       <td className="py-3 px-4 font-semibold text-slate-800">
-                        {entry.rawRealneGodziny || "—"}
+                        {(() => {
+                          if (!entry.rawRealneGodziny) return "—";
+                          const parsed = parseFloat(String(entry.rawRealneGodziny).replace(",", "."));
+                          if (isNaN(parsed)) return entry.rawRealneGodziny;
+                          const h = parsed < 1 && parsed > 0 ? parsed * 24 : parsed;
+                          return `${h.toFixed(2)} год`;
+                        })()}
                       </td>
                       <td className="py-3 px-4 text-slate-600">{entry.rawPodpis || "—"}</td>
                       <td className="py-3 px-4">
@@ -1692,6 +1700,65 @@ function ExcelMappingModal({
     return FIELDS.filter((f) => mapping[f.colKey] === colIdx);
   };
 
+  const renderCellPreview = (cellVal: any, cIdx: number) => {
+    if (cellVal === undefined || cellVal === null || String(cellVal).trim() === "") {
+      return <span className="text-slate-300 italic">—</span>;
+    }
+
+    const isNum = typeof cellVal === "number";
+    const strVal = String(cellVal).trim().replace(",", ".");
+    const num = isNum ? cellVal : parseFloat(strVal);
+    const isFraction = !isNaN(num) && num > 0 && num < 1;
+
+    // 1. Колонки часу (OD або DO)
+    if (cIdx === mapping.colOd || cIdx === mapping.colDo) {
+      if (!isNaN(num)) {
+        let totalM = 0;
+        if (num < 1) totalM = Math.round(num * 24 * 60);
+        else if (num <= 24) totalM = Math.round(num * 60);
+        else totalM = Math.round((num % 1) * 24 * 60);
+        const h = Math.floor(totalM / 60) % 24;
+        const m = totalM % 60;
+        const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+        return (
+          <span className="font-semibold text-blue-700">
+            {timeStr}
+            {isFraction && <span className="text-[9px] text-slate-400 font-normal ml-1">({num.toFixed(2)})</span>}
+          </span>
+        );
+      }
+    }
+
+    // 2. Колонка реальних годин (Realne godziny)
+    if (cIdx === mapping.colRealne) {
+      if (!isNaN(num)) {
+        const hours = num < 1 ? num * 24 : num;
+        return (
+          <span className="font-semibold text-emerald-700">
+            {hours.toFixed(2)} год
+            {isFraction && <span className="text-[9px] text-slate-400 font-normal ml-1">({num.toFixed(2)})</span>}
+          </span>
+        );
+      }
+    }
+
+    // 3. Загальний числовий дріб доби (< 1)
+    if (isFraction) {
+      const totalM = Math.round(num * 24 * 60);
+      const h = Math.floor(totalM / 60) % 24;
+      const m = totalM % 60;
+      const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      return (
+        <span>
+          <strong className="text-slate-800">{timeStr}</strong>
+          <span className="text-[9px] text-slate-400 font-normal ml-1">({num.toFixed(2)})</span>
+        </span>
+      );
+    }
+
+    return String(cellVal);
+  };
+
   return (
     <Modal open={true} onClose={onClose} title={t("Візуальне налаштування колонок Excel")} size="xl">
       <div className="space-y-4 text-xs">
@@ -1864,11 +1931,7 @@ function ExcelMappingModal({
                               }`}
                               title={String(cellVal || "")}
                             >
-                              {cellVal !== undefined && cellVal !== null && String(cellVal).trim() !== "" ? (
-                                String(cellVal)
-                              ) : (
-                                <span className="text-slate-300 italic">—</span>
-                              )}
+                              {renderCellPreview(cellVal, cIdx)}
                             </td>
                           );
                         })}

@@ -144,6 +144,7 @@ export default function App() {
         <Route path="/ksef">{() => <Redirect to="/cost-invoices" />}</Route>
         <Route path="/fuel">{() => guard("/fuel", <Fuel />)}</Route>
         <Route path="/cleaning">{() => guard("/cleaning", <Cleaning />)}</Route>
+        <Route path="/sushi/:tab">{() => guard("/sushi", <Sushi />)}</Route>
         <Route path="/sushi">{() => guard("/sushi", <Sushi />)}</Route>
         <Route path="/andros">{() => guard("/andros", <Andros />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>

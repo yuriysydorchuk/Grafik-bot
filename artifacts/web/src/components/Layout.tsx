@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileSpreadsheet, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
@@ -41,7 +41,8 @@ function ThemeToggle() {
   );
 }
 
-type NavItem = { href: string; label: string; icon: LucideIcon };
+type NavSubItem = { href: string; label: string; icon: LucideIcon };
+type NavItem = { href: string; label: string; icon: LucideIcon; subItems?: NavSubItem[] };
 type NavGroup = { title?: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
@@ -56,15 +57,14 @@ const NAV: NavGroup[] = [
     ],
   },
   {
-    title: "Персонал",
+    title: "Люди та ресурси",
     items: [
       { href: "/workers", label: "Працівники", icon: Users },
-      { href: "/drivers", label: "Водії", icon: Truck },
-      { href: "/fleet", label: "Автопарк", icon: CarFront },
-      { href: "/transport", label: "Транспорт", icon: Bus },
-      { href: "/clothing", label: "Одяг", icon: Shirt },
       { href: "/recruitment", label: "Рекрутація", icon: UserPlus },
+      { href: "/drivers", label: "Водії", icon: CarFront },
       { href: "/broadcast", label: "Розсилка", icon: Megaphone },
+      { href: "/clothing", label: "Робочий одяг", icon: Shirt },
+      { href: "/factories", label: "Фабрики", icon: FolderOpen },
     ],
   },
   {
@@ -73,9 +73,10 @@ const NAV: NavGroup[] = [
       { href: "/reliability", label: "Надійність", icon: Activity },
       { href: "/hours", label: "Облік годин", icon: Clock },
       { href: "/absences", label: "Відсутності", icon: CalendarX },
-      { href: "/advances", label: "Аванси", icon: HandCoins },
       { href: "/trips", label: "Поїздки", icon: Route },
-      { href: "/mileage", label: "Звіт по пробігу", icon: Gauge },
+      { href: "/mileage", label: "Пробіг авто", icon: Gauge },
+      { href: "/fleet", label: "Автопарк", icon: CarFront },
+      { href: "/transport", label: "Транспорт", icon: Bus },
       { href: "/reports", label: "Звіти / Drive", icon: FolderOpen },
     ],
   },
@@ -83,10 +84,12 @@ const NAV: NavGroup[] = [
     title: "Фінанси",
     items: [
       { href: "/finance", label: "Фінанси", icon: Wallet },
-      { href: "/bank", label: "Витяги", icon: Landmark },
-      { href: "/cash", label: "Каса", icon: Vault },
-      { href: "/cashflow", label: "Кешфлоу", icon: TrendingUp },
-      { href: "/cfo", label: "CFO", icon: TrendingUp },
+      { href: "/bank", label: "Виписки банку", icon: Landmark },
+      { href: "/cash", label: "Каса фірми", icon: Vault },
+      { href: "/cashflow", label: "Cash Flow", icon: TrendingUp },
+      { href: "/advances", label: "Аванси", icon: HandCoins },
+      { href: "/obligations", label: "Зобов'язання", icon: FileText },
+      { href: "/cfo", label: "CFO Dashboard", icon: BarChart3 },
       { href: "/analytics", label: "Аналітика", icon: BarChart3 },
       { href: "/balance", label: "Баланс", icon: PiggyBank },
       { href: "/cost-invoices", label: "Фактури", icon: FileText },
@@ -101,7 +104,18 @@ const NAV: NavGroup[] = [
   {
     title: "Проєкти",
     items: [
-      { href: "/sushi", label: "Суші", icon: Fish },
+      {
+        href: "/sushi",
+        label: "Суші",
+        icon: Fish,
+        subItems: [
+          { href: "/sushi", label: "Імпорт та Staging", icon: FileSpreadsheet },
+          { href: "/sushi/timesheet", label: "Табель годин", icon: CalendarRange },
+          { href: "/sushi/disputes", label: "Скарги по годинах", icon: ShieldCheck },
+          { href: "/sushi/finance", label: "Фінанси та Załącznik", icon: Banknote },
+          { href: "/sushi/settings", label: "Налаштування проєкту", icon: SettingsIcon },
+        ],
+      },
       { href: "/andros", label: "Андрос", icon: Citrus },
       { href: "/cleaning", label: "Прибирання", icon: Sparkles },
     ],
@@ -114,7 +128,7 @@ const NAV: NavGroup[] = [
   },
 ];
 
-const ALL_ITEMS = NAV.flatMap(g => g.items);
+const ALL_ITEMS = NAV.flatMap(g => g.items.flatMap(i => [i, ...(i.subItems ?? [])]));
 // segment-boundary match, otherwise /cash lights up on /cashflow too
 const isUnder = (loc: string, href: string) => href === "/" ? loc === "/" : loc === href || loc.startsWith(href + "/");
 const titleFor = (loc: string) => {
@@ -168,18 +182,57 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
               </div>
             )}
             <div className="space-y-0.5">
-              {group.items.map(({ href, label, icon: Icon }) => {
+              {group.items.map(({ href, label, icon: Icon, subItems }) => {
                 const active = isUnder(loc, href);
+                const hasSub = subItems && subItems.length > 0;
+                const showSub = hasSub && active;
+
                 return (
-                  <Link key={href} href={href} onClick={() => setOpen(false)} title={rail ? t(label) : undefined}
-                    className={cn(
-                      "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition",
-                      active ? "bg-red-50 text-red-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
-                    )}>
-                    {active && <span className="absolute left-0 h-5 w-1 rounded-r-full bg-red-600" />}
-                    <Icon className={cn("h-[18px] w-[18px] shrink-0 transition", active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600")} />
-                    <span className={cn("truncate", rail && "hidden group-hover/nav:inline")}>{t(label)}</span>
-                  </Link>
+                  <div key={href} className="space-y-0.5">
+                    <Link
+                      key={href}
+                      href={hasSub ? (subItems[0]?.href ?? href) : href}
+                      onClick={() => setOpen(false)}
+                      title={rail ? t(label) : undefined}
+                      className={cn(
+                        "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition",
+                        active ? "bg-red-50 text-red-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+                      )}
+                    >
+                      {active && <span className="absolute left-0 h-5 w-1 rounded-r-full bg-red-600" />}
+                      <Icon className={cn("h-[18px] w-[18px] shrink-0 transition", active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600")} />
+                      <span className={cn("truncate", rail && "hidden group-hover/nav:inline")}>{t(label)}</span>
+                    </Link>
+
+                    {/* Підменю для вибраного проєкту (відкривається тільки коли вибрано цей проєкт) */}
+                    {showSub && (
+                      <div className={cn("pl-5 pr-1 py-0.5 space-y-0.5 border-l-2 border-red-200 ml-5 my-1", rail && "hidden group-hover/nav:block")}>
+                        {subItems.map((sub) => {
+                          const subActive =
+                            sub.href === "/sushi"
+                              ? loc === "/sushi" || loc === "/sushi/import"
+                              : loc === sub.href || loc.startsWith(sub.href + "/");
+                          const SubIcon = sub.icon;
+                          return (
+                            <Link
+                              key={sub.href}
+                              href={sub.href}
+                              onClick={() => setOpen(false)}
+                              className={cn(
+                                "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition",
+                                subActive
+                                  ? "bg-red-100/70 text-red-800 font-semibold shadow-xs"
+                                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-800",
+                              )}
+                            >
+                              <SubIcon className={cn("h-3.5 w-3.5 shrink-0", subActive ? "text-red-600" : "text-slate-400")} />
+                              <span className="truncate">{t(sub.label)}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>

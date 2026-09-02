@@ -4,7 +4,7 @@
  */
 
 import * as XLSX from "xlsx";
-import { normalizeTime, validateTimeInterval } from "./sushiTime.ts";
+import { normalizeTime, parseExcelHours, validateTimeInterval } from "./sushiTime.ts";
 
 export interface RawParsedRow {
   rowNumber: number;
@@ -418,12 +418,7 @@ export function parseDailyShiftExcel(
     const rawDzial = colDzial >= 0 ? String(row[colDzial] || "").trim() : "";
     const rawOd = colOd >= 0 ? normalizeTime(row[colOd]) || String(row[colOd] || "").trim() : "";
     const rawDo = colDo >= 0 ? normalizeTime(row[colDo]) || String(row[colDo] || "").trim() : "";
-    const rawRealne =
-      colRealne >= 0
-        ? typeof row[colRealne] === "number"
-          ? (row[colRealne] as number)
-          : parseFloat(String(row[colRealne] || 0)) || 0
-        : 0;
+    const rawRealne = colRealne >= 0 ? parseExcelHours(row[colRealne]) : 0;
     const rawPodpis = colPodpis >= 0 ? String(row[colPodpis] || "").trim() : "";
     const rawUwagi = colUwagi >= 0 ? String(row[colUwagi] || "").trim() : "";
 

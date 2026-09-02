@@ -40,27 +40,36 @@ export interface ValidationResult {
 
 /**
  * Нормалізація рядка часу у формат HH:MM (наприклад, "6:5" -> "06:05", "14:00:00" -> "14:00").
- * Також підтримує десятковий час з Excel (наприклад, 0.25 -> "06:00").
+ * Також підтримує десятковий час з Excel (наприклад, 0.25 -> "06:00", 0.708333 -> "17:00").
  */
 export function normalizeTime(timeVal?: string | number | null): string | null {
   if (timeVal === undefined || timeVal === null) return null;
 
   if (typeof timeVal === "number") {
-    // Excel зберігає час як дробову частину доби (0.0 .. 1.0)
     if (isNaN(timeVal) || timeVal < 0) return null;
-    const totalMinutes = Math.round((timeVal % 1) * 24 * 60);
+    let totalMinutes = 0;
+    if (timeVal < 1) {
+      // Дріб доби в Excel (0.0 .. 1.0) -> множимо на 24 * 60
+      totalMinutes = Math.round(timeVal * 24 * 60);
+    } else if (timeVal <= 24) {
+      // Година (напр. 7 -> 07:00, 17.5 -> 17:30)
+      totalMinutes = Math.round(timeVal * 60);
+    } else {
+      // Excel datetime serial (> 24) -> беремо дробову частину
+      totalMinutes = Math.round((timeVal % 1) * 24 * 60);
+    }
     const h = Math.floor(totalMinutes / 60) % 24;
     const m = totalMinutes % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
 
-  const str = String(timeVal).trim();
+  const str = String(timeVal).trim().replace(",", ".");
   if (!str) return null;
 
-  // Якщо рядок є числом у вигляді "0.25"
-  if (/^0\.\d+$/.test(str)) {
+  // Якщо рядок є числовим дробом (напр. "0.7083333333333334" або "0.2708333333333333")
+  if (/^\d+(\.\d+)?$/.test(str)) {
     const num = parseFloat(str);
-    return normalizeTime(num);
+    if (!isNaN(num)) return normalizeTime(num);
   }
 
   const match = str.match(/^(\d{1,2}):(\d{1,2})(?::\d{1,2})?$/);
@@ -74,6 +83,39 @@ export function normalizeTime(timeVal?: string | number | null): string | null {
   if (h >= 24) return null;
 
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * Парсинг кількості відпрацьованих годин (Realne godziny) з Excel,
+ * включно з дробами доби (напр. 0.708333 -> 17.0 год, 0.4166667 -> 10.0 год) та форматом "HH:MM".
+ */
+export function parseExcelHours(val: string | number | null | undefined): number {
+  if (val === undefined || val === null) return 0;
+  if (typeof val === "number") {
+    if (isNaN(val) || val <= 0) return 0;
+    if (val < 1) {
+      return Math.round(val * 24 * 100) / 100;
+    }
+    return Math.round(val * 100) / 100;
+  }
+  const str = String(val).trim().replace(",", ".");
+  if (!str) return 0;
+
+  const timeMatch = str.match(/^(\d{1,2}):(\d{2})$/);
+  if (timeMatch) {
+    const h = parseInt(timeMatch[1]!, 10);
+    const m = parseInt(timeMatch[2]!, 10);
+    return Math.round((h + m / 60) * 100) / 100;
+  }
+
+  const num = parseFloat(str);
+  if (!isNaN(num) && num > 0) {
+    if (num < 1) {
+      return Math.round(num * 24 * 100) / 100;
+    }
+    return Math.round(num * 100) / 100;
+  }
+  return 0;
 }
 
 /**
