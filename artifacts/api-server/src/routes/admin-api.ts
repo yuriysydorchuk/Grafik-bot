@@ -352,7 +352,7 @@ router.get("/workers", RW, async (req, res) => {
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
 // національність — прапорець біля імені (профіль, довози, сводна); дзеркало веб-каталогу lib/nationality.ts
-const NATIONALITIES = ["ukraine", "belarus", "poland", "moldova", "romania", "georgia", "azerbaijan", "turkey", "africa", "latin_america", "central_asia", "south_asia"];
+const NATIONALITIES = ["ukraine", "belarus", "poland", "moldova", "romania", "georgia", "azerbaijan", "turkey", "eu_other", "africa", "latin_america", "central_asia", "south_asia", "other"];
 
 router.post("/workers", RW, async (req, res) => {
   const { fullName, factoryId, companyId, positionId, gender, fixedShift, telegramId, workerCode, hourlyRate, isStudent, under26, selfTransport, force } = req.body ?? {};
@@ -413,6 +413,7 @@ const JOURNALED_FIELDS = [
   "agramStazBonus", "agramCashBonus", "hourlyRate", "hourlyRateNetto", "isStudent",
   "payoutPrefKind", "payoutPrefValue",
   "nationality", // прапорець біля імені: історія зміни — в журналі
+  "companyId",   // фірма-роботодавець: дата переходу = employerSince для легалізації (обов'язки/документи на фірму); лише журнал, поведінка PATCH без змін
 ] as const;
 const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 async function journalWorkerChanges(workerId: number, before: Record<string, unknown>, patch: Record<string, unknown>, adminId: number | null, effectiveDate?: string) {

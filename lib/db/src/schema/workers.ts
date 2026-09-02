@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex, index
+  pgTable, serial, text, integer, timestamp, boolean, date, pgEnum, jsonb, real, uniqueIndex, index, type AnyPgColumn
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
@@ -98,7 +98,14 @@ export const workersTable = pgTable("workers", {
   hourlyRateNetto: real("hourly_rate_netto"), // net PLN/hour — пари brutto/netto нестандартні, з одного поля не виводяться; студенту до 26 нетто = брутто (виводиться)
   isStudent: boolean("is_student").notNull().default(false),
   under26: boolean("under_26").notNull().default(false),
-  legalStatus: text("legal_status"), // форма легалізації: student | dyplom | do26 | zus | oczekuje | karta_pobytu | staly_pobyt | polak
+  // Форма легалізації — КАНОН services/svodni.ts LEGAL_STATUSES:
+  // student | dyplom | powiadomienie | zus | oczekuje | karta_pobytu | staly_pobyt | polak
+  // (легасі do26/oswiadczenie/zezwolenie/nieoformiony мапляться при читанні normalizeProfileLegal).
+  // ЦЕ ЖИВИЙ ВХІД listy płac (applyLegalDefaults/computeSegmented/ksiegRatesOf, /hours.unlegalized):
+  // oczekuje → все готівкою; student → податковий клас; решта — «оформлений». Ручне поле.
+  // Юридичний стан за документами живе окремо у worker_legality і сюди НЕ пишеться
+  // (інваріант модуля легалізації, 02.09.2026).
+  legalStatus: text("legal_status"),
   notifyHours: real("notify_hours"), // години в powiadomieniu (дозвіл на працю)
   note: text("note"), // примітка (видима лише з доступом svodniSensitive)
   payoutPrefKind: text("payout_pref_kind"), // побажання по виплаті: all_konto | hours | amount (найвищий пріоритет у розкладі konto/готівка)
@@ -108,8 +115,9 @@ export const workersTable = pgTable("workers", {
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)
   // національність: ukraine | belarus | poland | moldova | romania | georgia |
-  // azerbaijan | turkey | africa | latin_america | central_asia | south_asia
-  // (показ прапорцем біля імені: профіль, довози, сводна; каталог — lib/nationality.tsx)
+  // azerbaijan | turkey | eu_other | africa | latin_america | central_asia | south_asia | other
+  // (показ прапорцем біля імені: профіль, довози, сводна; каталог — lib/nationality.tsx;
+  // eu_other/other додано 02.09.2026 для правил легальності: EU = poland|romania|eu_other)
   nationality: text("nationality"),
   firedAt: timestamp("fired_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -623,6 +631,18 @@ export const documentTypesTable = pgTable("document_types", {
   hasExpiry: boolean("has_expiry").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   icon: text("icon"), // ключ з фіксованого набору web/src/lib/docTypeIcons.tsx — null = загальна іконка-фолбек
+  // ── Легалізація (02.09.2026): тип = каталог EVIDENCE; що документ «дає» — прапорці нижче,
+  // вимоги/винятки/глобальні дати — legal_rules (services/legality.ts). ──
+  code: text("code").unique(),          // стабільний ключ для правил (passport, trc, oswiadczenie…); NULL у кастомних типів
+  category: text("category").notNull().default("other"), // identity | stay | work | payroll | medical | other
+  grantsStay: boolean("grants_stay").notNull().default(false),   // документ сам є підставою перебування
+  grantsWork: boolean("grants_work").notNull().default(false),   // документ сам є підставою праці
+  requiresEmployerMatch: boolean("requires_employer_match").notNull().default(false), // видано на конкретного роботодавця (oświadczenie/zezwolenie/powiadomienie)
+  defaultValidityDays: integer("default_validity_days"), // підказка строку при внесенні (oświadczenie 24 міс → 730)
+  renewalLeadDays: integer("renewal_lead_days"),         // за скільки днів статус стає expiring; NULL → глобальний дефолт з legal_rules
+  appliesToNationalities: jsonb("applies_to_nationalities").$type<string[]>(), // null = усі; групи "ua" | "eu" | "non_eu" або коди каталогу
+  isActive: boolean("is_active").notNull().default(true),
+  isSystem: boolean("is_system").notNull().default(false), // сід-рядок: не видаляти, лише деактивувати
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -641,6 +661,23 @@ export const workerDocumentsTable = pgTable("worker_documents", {
   fileMime: text("file_mime"),             // uploaded file: MIME type
   note: text("note"),
   expiryWarnedAt: timestamp("expiry_warned_at"), // cron reminder dedup (bankApiConsentsTable.expiryWarnedAt pattern)
+  // ── Легалізація (02.09.2026). `status` лишається як був (present|missing|expired|pending —
+  // pending = аплоуд працівника на перевірці офісом); стан СПРАВИ — окремо в caseStatus. ──
+  validFrom: date("valid_from"),
+  issuedAt: date("issued_at"),
+  issuer: text("issuer"),
+  employerCompanyId: integer("employer_company_id").references(() => companiesTable.id), // на яку нашу фірму видано (requires_employer_match); зміна фірми працівника цей рядок НЕ редагує
+  caseStatus: text("case_status"),     // NULL | to_submit | submitted | in_progress | decision_positive | decision_negative | withdrawn
+  submittedAt: date("submitted_at"),
+  caseNumber: text("case_number"),
+  decisionAt: date("decision_at"),
+  verifiedBy: integer("verified_by").references(() => adminsTable.id), // офіс перевірив скан/дані
+  verifiedAt: timestamp("verified_at"),
+  reviewNote: text("review_note"),     // причина відхилення аплоуду
+  source: text("source").notNull().default("office"), // office | worker_bot | ocr | import
+  replacesDocumentId: integer("replaces_document_id").references((): AnyPgColumn => workerDocumentsTable.id), // ланцюг поновлень (у межах одного роботодавця)
+  requestedAt: timestamp("requested_at"), // офіс попросив працівника подати цей документ (гейт кнопки в боті)
+  requestedBy: integer("requested_by").references(() => adminsTable.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -2041,6 +2078,73 @@ export const passportScanTokensTable = pgTable("passport_scan_tokens", {
   workerId: integer("worker_id").references(() => workersTable.id), // заповнюється після confirm()
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ─── Легалізація працівників (02.09.2026) ─────────────────────────────────────
+// П'ять шарів: facts (workers/worker_documents) → evidence (файли, verified_*) →
+// rules (legal_rules + прапорці document_types) → derived (worker_legality, лише
+// движок services/legality.ts) → legacy (workers.legal_status — ручне payroll-поле,
+// движок його НЕ пише; див. коментар біля legalStatus).
+
+// Версійовані правила легальності. Чинне правило не редагується на місці:
+// закривається effective_to і вставляється нова версія. Правило без verified_at
+// дає reviewRequired у результаті движка (модель не вирішує legal/illegal за
+// неперевіреним правилом).
+export const legalRulesTable = pgTable("legal_rules", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull(),        // stay.pl_citizen | obligation.ua_notification | global.ukr_status_end | defaults.lead_days …
+  kind: text("kind").notNull(),        // basis_by_nationality | requirement | obligation | precedence | global
+  axis: text("axis"),                  // stay | work | both | NULL
+  conditions: jsonb("conditions").$type<Record<string, unknown>>().notNull(), // DSL, інтерпретує services/legality.ts
+  effectiveFrom: date("effective_from").notNull(),
+  effectiveTo: date("effective_to"),   // NULL = чинне
+  source: text("source"),              // URL / назва акта
+  verifiedAt: timestamp("verified_at"),
+  verifiedBy: integer("verified_by").references(() => adminsTable.id),
+  note: text("note"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("legal_rules_code_from_uniq").on(t.code, t.effectiveFrom)]);
+
+// Кеш результату движка (перерахунок від подій + нічний). Можна TRUNCATE без втрат.
+export const workerLegalityTable = pgTable("worker_legality", {
+  workerId: integer("worker_id").primaryKey().references(() => workersTable.id, { onDelete: "cascade" }),
+  stay: text("stay").notNull(),        // legal | pending | expiring | illegal | unknown
+  work: text("work").notNull(),
+  overall: text("overall").notNull(),
+  reviewRequired: boolean("review_required").notNull().default(false),
+  reasons: jsonb("reasons").$type<{ code: string; axis: string; severity: string; params?: Record<string, unknown> }[]>().notNull().default([]),
+  nextExpiryAt: date("next_expiry_at"),
+  nextExpiryDocId: integer("next_expiry_doc_id"),
+  requiredMissing: jsonb("required_missing").$type<string[]>().notNull().default([]), // коди типів документів
+  obligations: jsonb("obligations").$type<{ code: string; dueAt: string; overdue: boolean; params?: Record<string, unknown> }[]>().notNull().default([]),
+  // Пропозиція для легасі-поля (§4.2 плану): NULL = нема доведеної мапи. НІКОЛИ не пишеться у workers.legal_status автоматично.
+  derivedLegalStatus: text("derived_legal_status"),
+  derivedPayrollClass: text("derived_payroll_class"),       // A_cash | B_student | C_registered | N_none
+  legacyMappingRequiresReview: boolean("legacy_mapping_requires_review").notNull().default(false),
+  legacyMismatchKind: text("legacy_mismatch_kind").notNull().default("none"), // none | within_class | cross_class | no_proposal
+  payrollHints: jsonb("payroll_hints").$type<Record<string, unknown>>(), // контрольні підказки для UI, НЕ вхід payroll
+  inputHash: text("input_hash"),
+  rulesHash: text("rules_hash"),
+  computedAt: timestamp("computed_at").notNull(),
+}, (t) => [index("worker_legality_overall_idx").on(t.overall), index("worker_legality_next_expiry_idx").on(t.nextExpiryAt)]);
+
+// Журнал дій над документами працівника (дзеркало invoice_audit): хто, коли, що.
+export const documentAuditTable = pgTable("document_audit", {
+  id: serial("id").primaryKey(),
+  documentId: integer("document_id").notNull(), // без FK — історія переживає видалення документа
+  workerId: integer("worker_id").notNull(),
+  action: text("action").notNull(),   // created | updated | file | verified | rejected | case | requested | deleted
+  changes: jsonb("changes").$type<{ field: string; from?: unknown; to?: unknown }[]>(),
+  adminId: integer("admin_id"),
+  adminName: text("admin_name"),      // снапшот імені
+  source: text("source"),             // office | worker_bot | ocr | system
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("document_audit_doc_idx").on(t.documentId, t.id), index("document_audit_worker_idx").on(t.workerId)]);
+
+export type LegalRule = typeof legalRulesTable.$inferSelect;
+export type WorkerLegality = typeof workerLegalityTable.$inferSelect;
+export type DocumentAudit = typeof documentAuditTable.$inferSelect;
 
 export type WorkerQuestionnaire = typeof workerQuestionnairesTable.$inferSelect;
 export type DocumentTemplate = typeof documentTemplatesTable.$inferSelect;

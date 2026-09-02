@@ -26,6 +26,7 @@ import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet } from "../services/contracts";
+import { ensureDocumentType } from "../services/workerDocuments";
 import { randomInviteCode } from "../lib/invite";
 import { sendSignLink } from "../bot/notify";
 import { logger } from "../lib/logger";
@@ -153,13 +154,12 @@ export async function applyPassportScan(workerId: number, buffer: Buffer, origin
   const realMime = sniffDocMime(buffer);
   if (!realMime || !SCAN_MIME_WHITELIST.has(realMime)) throw new Error("Тип файлу не підтверджено вмістом");
 
-  let [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.name, "Paszport"));
-  if (!docType) [docType] = await db.insert(documentTypesTable).values({ name: "Paszport", required: true, hasExpiry: true, sortOrder: 0 }).returning();
+  const docType = await ensureDocumentType("passport");
 
   const storedName = makeStoredName(originalName);
   await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), buffer);
   const [doc] = await db.insert(workerDocumentsTable).values({
-    workerId, docTypeId: docType!.id, title: "Paszport", status: "present",
+    workerId, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
     filePath: path.join("worker-documents", storedName), fileName: originalName, fileMime: realMime,
   }).returning();
 

@@ -1,0 +1,1766 @@
+{
+ "NULL|notify=0|stud26=false|force=true": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "NULL|notify=0|stud26=false|force=false": {
+  "konto": null,
+  "gotowka": null,
+  "hoursDeclared": null,
+  "ksiegBrutto": null,
+  "ksiegNetto": null,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|NULL|notify=0|stud26=false": {
+  "parent": {
+   "konto": 0,
+   "gotowka": 4056,
+   "hoursDeclared": 0,
+   "ksiegBrutto": 0,
+   "ksiegNetto": 0
+  },
+  "segs": [
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": null
+   },
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "NULL|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "NULL|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|NULL|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "NULL|notify=100|stud26=false|force=true": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "NULL|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|NULL|notify=100|stud26=false": {
+  "parent": {
+   "konto": 0,
+   "gotowka": 4056,
+   "hoursDeclared": 0,
+   "ksiegBrutto": 0,
+   "ksiegNetto": 0
+  },
+  "segs": [
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "NULL|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "NULL|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|NULL|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "student|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "student|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|student|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "student|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "student|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|student|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "student|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "student|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|student|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "student|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "student|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|student|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "dyplom|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "dyplom|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|dyplom|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "dyplom|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "dyplom|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|dyplom|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "dyplom|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "dyplom|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|dyplom|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "dyplom|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "dyplom|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|dyplom|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "powiadomienie|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "powiadomienie|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|powiadomienie|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "powiadomienie|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "powiadomienie|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|powiadomienie|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "powiadomienie|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "powiadomienie|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|powiadomienie|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "powiadomienie|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "powiadomienie|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|powiadomienie|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "zus|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "zus|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|zus|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "zus|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "zus|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|zus|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "zus|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "zus|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|zus|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "zus|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "zus|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|zus|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "oczekuje|notify=0|stud26=false|force=true": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "oczekuje|notify=0|stud26=false|force=false": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|oczekuje|notify=0|stud26=false": {
+  "parent": {
+   "konto": 0,
+   "gotowka": 4056,
+   "hoursDeclared": 0,
+   "ksiegBrutto": 0,
+   "ksiegNetto": 0
+  },
+  "segs": [
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": null
+   },
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "oczekuje|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "oczekuje|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|oczekuje|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "oczekuje|notify=100|stud26=false|force=true": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "oczekuje|notify=100|stud26=false|force=false": {
+  "konto": 0,
+  "gotowka": 4056,
+  "hoursDeclared": 0,
+  "ksiegBrutto": 0,
+  "ksiegNetto": 0,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|oczekuje|notify=100|stud26=false": {
+  "parent": {
+   "konto": 0,
+   "gotowka": 4056,
+   "hoursDeclared": 0,
+   "ksiegBrutto": 0,
+   "ksiegNetto": 0
+  },
+  "segs": [
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 0,
+    "gotowka": 2028,
+    "hoursDeclared": 0,
+    "ksiegBrutto": 0,
+    "ksiegNetto": 0,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "oczekuje|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "oczekuje|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|oczekuje|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "karta_pobytu|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "karta_pobytu|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|karta_pobytu|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "karta_pobytu|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "karta_pobytu|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|karta_pobytu|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "karta_pobytu|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "karta_pobytu|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|karta_pobytu|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "karta_pobytu|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "karta_pobytu|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|karta_pobytu|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "staly_pobyt|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "staly_pobyt|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|staly_pobyt|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "staly_pobyt|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "staly_pobyt|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|staly_pobyt|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "staly_pobyt|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "staly_pobyt|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|staly_pobyt|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "staly_pobyt|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "staly_pobyt|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|staly_pobyt|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ },
+ "polak|notify=0|stud26=false|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "polak|notify=0|stud26=false|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 5024,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|polak|notify=0|stud26=false": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 5024,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "polak|notify=0|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "polak|notify=0|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|polak|notify=0|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": null
+   }
+  ]
+ },
+ "polak|notify=100|stud26=false|force=true": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "polak|notify=100|stud26=false|force=false": {
+  "konto": 2535,
+  "gotowka": 1521,
+  "hoursDeclared": 100,
+  "ksiegBrutto": 3140,
+  "ksiegNetto": 2535,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|polak|notify=100|stud26=false": {
+  "parent": {
+   "konto": 2535,
+   "gotowka": 1521,
+   "hoursDeclared": 100,
+   "ksiegBrutto": 3140,
+   "ksiegNetto": 2535
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2512,
+    "ksiegNetto": 2028,
+    "hoursNotified": 80
+   },
+   {
+    "konto": 507,
+    "gotowka": 1521,
+    "hoursDeclared": 20,
+    "ksiegBrutto": 628,
+    "ksiegNetto": 507,
+    "hoursNotified": 20
+   }
+  ]
+ },
+ "polak|notify=100|stud26=true|force=true": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "polak|notify=100|stud26=true|force=false": {
+  "konto": 4056,
+  "gotowka": 0,
+  "hoursDeclared": 160,
+  "ksiegBrutto": 4056,
+  "ksiegNetto": 4056,
+  "rates": {
+   "netto": 25.35,
+   "brutto": 31.4
+  }
+ },
+ "SEG|polak|notify=100|stud26=true": {
+  "parent": {
+   "konto": 4056,
+   "gotowka": 0,
+   "hoursDeclared": 160,
+   "ksiegBrutto": 4056,
+   "ksiegNetto": 4056
+  },
+  "segs": [
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   },
+   {
+    "konto": 2028,
+    "gotowka": 0,
+    "hoursDeclared": 80,
+    "ksiegBrutto": 2028,
+    "ksiegNetto": 2028,
+    "hoursNotified": 0
+   }
+  ]
+ }
+}

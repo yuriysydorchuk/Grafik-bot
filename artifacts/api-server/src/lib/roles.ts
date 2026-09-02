@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -22,6 +22,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   hostelOps: "Хостели — операційне ведення (кімнати, проживання, платежі мешканців)",
   cleaning: "Прибирання — окремий бізнес (вспульноти: дохід, винагродження, видатки, P&L)",
   workerDocs: "Документи й підписання (паспортні дані, анкети, умови працівників)",
+  legalization: "Легалізація (документи зі строками й номерами, справи, правила легальності)",
 };
 
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
@@ -29,7 +30,7 @@ export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
   "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/fuel", "/cleaning", "/settings",
   "/workers", "/recruitment", "/broadcast", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
-  "/sushi", "/andros", "/contracts", "/document-templates",
+  "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks",
 ] as const;
 
 // owner is always allowed; otherwise check the resolved capability set.

@@ -14,6 +14,7 @@ import {
   workerChangesTable, penaltiesTable, workerQuestionnairesTable,
   documentTemplatesTable, contractsTable, contractFilesTable,
   signatureTokensTable, signatureEventsTable, passportScanTokensTable,
+  legalRulesTable, workerLegalityTable, documentAuditTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -36,6 +37,7 @@ export {
   workerChangesTable, penaltiesTable, workerQuestionnairesTable,
   documentTemplatesTable, contractsTable, contractFilesTable,
   signatureTokensTable, signatureEventsTable, passportScanTokensTable,
+  legalRulesTable, workerLegalityTable, documentAuditTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -58,6 +60,7 @@ export async function resetDb(): Promise<void> {
     "transport_deductions, clothing_items, clothing_stock, clothing_types, " +
     "companies, document_types, vehicles, advance_requests, worker_questionnaires, " +
     "document_templates, contracts, contract_files, signature_tokens, signature_events, " +
+    "legal_rules, worker_legality, document_audit, " +
     "funnels, candidates, candidate_activity, " +
     "expense_categories, counterparty_rules, " +
     "payroll_sources, payroll_factory_months RESTART IDENTITY CASCADE",

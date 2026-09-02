@@ -93,7 +93,7 @@ router.get("/passport-scan/:token", async (req, res) => {
     if (row.purpose === "anketa") {
       const [passportDoc] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable)
         .innerJoin(documentTypesTable, eq(workerDocumentsTable.docTypeId, documentTypesTable.id))
-        .where(and(eq(workerDocumentsTable.workerId, row.workerId), eq(documentTypesTable.name, "Paszport"), eq(workerDocumentsTable.status, "present")));
+        .where(and(eq(workerDocumentsTable.workerId, row.workerId), eq(documentTypesTable.code, "passport"), eq(workerDocumentsTable.status, "present")));
       needsPassportScan = !passportDoc;
     }
   }
@@ -212,14 +212,14 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       worker = created!;
     }
 
-    let [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.name, "Paszport"));
-    if (!docType) [docType] = await db.insert(documentTypesTable).values({ name: "Paszport", required: true, hasExpiry: true, sortOrder: 0 }).returning();
+    const docType = await ensureDocumentType("passport");
     const tmpAbs = path.join(UPLOADS_ROOT, row.tempFilePath);
     const storedName = makeStoredName(row.tempFileName || "passport.jpg");
     const finalRel = path.join("worker-documents", storedName);
     await fs.promises.rename(tmpAbs, path.join(WORKER_DOCS_DIR, storedName));
     const [doc] = await db.insert(workerDocumentsTable).values({
-      workerId: worker.id, docTypeId: docType!.id, title: "Paszport", status: "present",
+      workerId: worker.id, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
+      expiresAt: passportExpiresAt,
       filePath: finalRel, fileName: row.tempFileName, fileMime: row.tempFileMime,
     }).returning();
 
@@ -349,7 +349,7 @@ router.post("/passport-scan/:token/student-cert", uploadScan.single("file"), asy
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
 
   try {
-    const docType = await ensureDocumentType("Довідка студента", { hasExpiry: true, icon: "student" });
+    const docType = await ensureDocumentType("student_cert");
     const originalName = Buffer.from(req.file.originalname ?? "certificate.jpg", "latin1").toString("utf8");
     const { documentId, title } = await applyWorkerDocumentUpload(row.workerId, docType.id, req.file.buffer, originalName);
     ok(res, { doc: { id: documentId, title } });

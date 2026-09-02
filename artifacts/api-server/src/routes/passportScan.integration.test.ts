@@ -217,15 +217,17 @@ test("POST .../student-cert: після confirm() створює докумен�
     .attach("file", PNG, { filename: "cert.png", contentType: "image/png" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
 
-  // Працівник уже має "Paszport" з confirm() — беремо саме "Довідка студента".
-  const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, workerId));
-  const doc = docs.find(d => d.title === "Довідка студента");
-  assert.ok(doc, "документ «Довідка студента» має створитись");
-  assert.equal(doc!.status, "pending");
-  assert.ok(fs.existsSync(path.join(UPLOADS_ROOT, doc!.filePath!)));
-
-  const [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.name, "Довідка студента"));
+  // Працівник уже має паспорт з confirm() — беремо саме тип student_cert
+  // (02.09.2026: типи резолвляться по стабільному code, назва — польська з сіду).
+  const [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "student_cert"));
+  assert.ok(docType, "тип student_cert має створитись через ensureDocumentType");
   assert.equal(docType!.icon, "student");
+  const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, workerId));
+  const doc = docs.find(d => d.docTypeId === docType!.id);
+  assert.ok(doc, "документ типу student_cert має створитись");
+  assert.equal(doc!.status, "pending");
+  assert.equal(doc!.source, "worker_bot");
+  assert.ok(fs.existsSync(path.join(UPLOADS_ROOT, doc!.filePath!)));
 });
 
 // ── purpose=anketa (бот «📄 Документи → заповнити анкету», §31.08.2026) ────
@@ -294,7 +296,7 @@ test("GET .../<anketa-токен>: needsPassportScan=true без паспорт�
   assert.equal(r1.status, 200);
   assert.equal(r1.body.needsPassportScan, true);
 
-  const [docType] = await db.insert(documentTypesTable).values({ name: "Paszport", required: true, hasExpiry: true }).returning({ id: documentTypesTable.id });
+  const [docType] = await db.insert(documentTypesTable).values({ name: "Paszport", code: "passport", category: "identity", required: true, hasExpiry: true }).returning({ id: documentTypesTable.id });
   await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: docType!.id, title: "Paszport", status: "present" });
   const withDocToken = await createAnketaToken(w!.id);
   const r2 = await request(app).get(`/api/passport-scan/${withDocToken}`);

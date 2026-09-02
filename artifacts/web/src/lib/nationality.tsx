@@ -10,10 +10,13 @@ export const NATIONALITIES: { value: string; label: string; flag: string }[] = [
   { value: "georgia", label: "Грузія", flag: "🇬🇪" },
   { value: "azerbaijan", label: "Азербайджан", flag: "🇦🇿" },
   { value: "turkey", label: "Туреччина", flag: "🇹🇷" },
+  // eu_other/other — 02.09.2026, для правил легальності (EU-група = poland | romania | eu_other)
+  { value: "eu_other", label: "Інша країна ЄС/ЄЕЗ", flag: "🇪🇺" },
   { value: "africa", label: "Африка", flag: "🇿🇼" },
   { value: "latin_america", label: "Латинська Америка", flag: "🇨🇴" },
   { value: "central_asia", label: "Центральна Азія", flag: "🇰🇿" },
   { value: "south_asia", label: "Південна Азія", flag: "🇮🇳" },
+  { value: "other", label: "Інша (поза ЄС)", flag: "🌍" },
 ];
 
 export const natLabel = (v?: string | null): string | null =>
