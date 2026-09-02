@@ -33,3 +33,19 @@
 ## 6. Navigation & Submenu
 - **Isolated Module:** Top horizontal tab bar removed. Replaced by a nested sidebar submenu under «Суші» in the left navigation panel (`/sushi`, `/sushi/timesheet`, `/sushi/disputes`, `/sushi/finance`, `/sushi/settings`).
 - **Multi-language (i18n):** All submenu items and page headers are fully translated in `i18n.tsx` (`uk`, `en`, `ru`).
+
+## 7. Integration with Svodni (Poznań), Stanowiska & Month Splitting (Segmentation)
+- **Two-Way Synchronization (Worker Profile <-> Svodni Poznań <-> Sushi Module):**
+  - **Worker Number:** `workers.workerCode` $\leftrightarrow$ `svodni_rows.hr.nrOsobowy` $\leftrightarrow$ `sushi_worker_codes.rcp_code`.
+  - **Company / Firma:** `workers.companyId` (ES/ESO/Klinex) $\leftrightarrow$ `svodni_rows.hr.firma` $\leftrightarrow$ `sushi_worker_codes.firm`.
+  - **Position / Stanowisko:** `workers.positionId` $\leftrightarrow$ `svodni_rows.section` (`hr.stanowisko`) $\leftrightarrow$ `sushi_roles` (linked via `position_id`).
+- **Selective Rate Impact (Status Roles vs Regular Production):**
+  - **Status Roles (`Lider`, `Brygadzista`, `Supervisor`):** Role directly dictates the pay rate (higher rate / status bonus). Changing to a status role updates the applicable rate.
+  - **Regular Production Roles (`Pracownik`, `Skoczek`, `Оператор машини заморозки`, `Repack`):** Fixed for operational/line tracking, but pay rate stays standard factory base rate (rates do not change).
+- **Mid-Month Role Promotion & Month Splitting (Segmentation):**
+  - If a worker is promoted to `Lider` mid-month (e.g. from the 16th), `svodni` splits the row into 2 sub-segments:
+    - **Segment 1 (01–15):** Stanowisko = `Pracownik` at base rate, with hours summed from `sushi_work_intervals` for dates 01–15.
+    - **Segment 2 (16–30):** Stanowisko = `Lider` at leader rate, with hours summed from `sushi_work_intervals` for dates 16–30.
+  - `attendanceByWindows` in `svodni.ts` fetches actual shift hours directly from `sushi_work_intervals` for Sushi factory.
+  - `Załącznik do faktury` reflects the exact same split dates and rates for billing the client.
+
