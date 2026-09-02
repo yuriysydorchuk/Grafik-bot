@@ -109,6 +109,7 @@ export function normalizeRcpCode(rcpVal: string | number | null | undefined): st
 export interface SushiColumnMapping {
   sheetName?: string;
   headerRowIndex?: number;
+  customReportDate?: string;
   colFirma?: number;
   colRcp?: number;
   colDzial?: number;
@@ -315,19 +316,21 @@ export function parseDailyShiftExcel(
     throw new Error("Excel файл порожній");
   }
 
-  // 1. Пошук дати в перших 10 рядках
-  let reportDate: string | null = null;
-  for (let r = 0; r < Math.min(10, data.length); r++) {
-    const row = data[r] || [];
-    for (let c = 0; c < Math.min(10, row.length); c++) {
-      const val = row[c];
-      const parsed = parseReportDate(val);
-      if (parsed) {
-        reportDate = parsed;
-        break;
+  // 1. Пошук дати в customMapping або перших 10 рядках
+  let reportDate: string | null = customMapping?.customReportDate || null;
+  if (!reportDate) {
+    for (let r = 0; r < Math.min(10, data.length); r++) {
+      const row = data[r] || [];
+      for (let c = 0; c < Math.min(10, row.length); c++) {
+        const val = row[c];
+        const parsed = parseReportDate(val);
+        if (parsed) {
+          reportDate = parsed;
+          break;
+        }
       }
+      if (reportDate) break;
     }
-    if (reportDate) break;
   }
 
   if (!reportDate) {

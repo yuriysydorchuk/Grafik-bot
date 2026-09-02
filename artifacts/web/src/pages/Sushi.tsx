@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1633,6 +1633,7 @@ function ExcelMappingModal({
   });
 
   const [headerRow, setHeaderRow] = useState<number>(1);
+  const [reportDate, setReportDate] = useState<string>("");
   const [mapping, setMapping] = useState<{
     colRcp: number;
     colOd: number;
@@ -1654,13 +1655,16 @@ function ExcelMappingModal({
   });
 
   // Sync detected mapping when preview loads
-  useMemo(() => {
+  useEffect(() => {
     if (preview) {
       if (!selectedSheet && preview.selectedSheet) {
         setSelectedSheet(preview.selectedSheet);
       }
       setHeaderRow(preview.detectedHeaderRow);
       setMapping(preview.detectedMapping);
+      if (preview.detectedDate) {
+        setReportDate(preview.detectedDate);
+      }
     }
   }, [preview]);
 
@@ -1800,9 +1804,14 @@ function ExcelMappingModal({
             </div>
           </div>
 
-          <div className="text-slate-500">
-            {t("Знайдена дата звіту:")}{" "}
-            <strong className="font-mono text-slate-800">{preview?.detectedDate || "—"}</strong>
+          <div className="flex items-center gap-2">
+            <Label>{t("Дата звіту:")}</Label>
+            <Input
+              type="date"
+              value={reportDate}
+              onChange={(e) => setReportDate(e.target.value)}
+              className="w-36 py-1 px-2 text-xs font-mono"
+            />
           </div>
         </div>
 
@@ -1968,6 +1977,7 @@ function ExcelMappingModal({
                 onUpload(file, {
                   sheetName: selectedSheet || undefined,
                   headerRowIndex: headerRow,
+                  customReportDate: reportDate || undefined,
                   colFirma: mapping.colFirma,
                   colRcp: mapping.colRcp,
                   colDzial: mapping.colDzial,

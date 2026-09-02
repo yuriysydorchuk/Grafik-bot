@@ -221,6 +221,7 @@ export const deleteSushiWorkerCode = (id: number) => del(`/sushi/worker-codes/${
 export interface SushiColumnMapping {
   sheetName?: string;
   headerRowIndex?: number;
+  customReportDate?: string;
   colFirma?: number;
   colRcp?: number;
   colDzial?: number;
