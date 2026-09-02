@@ -26,6 +26,7 @@ import {
   previewExcelReport,
   validateStagingRow,
   normalizeRcpCode,
+  decodeOriginalFilename,
   type SushiColumnMapping,
 } from "../services/sushiImport";
 import { buildTimesheetTree, prepareStagingCommit } from "../services/sushiTimesheet";
@@ -239,7 +240,8 @@ router.post("/sushi/import/preview", upload.any(), async (req: AuthedRequest, re
   }
   try {
     const sheetName = req.body?.sheetName ? String(req.body.sheetName) : undefined;
-    const preview = previewExcelReport(file.buffer, file.originalname || "report.xlsx", sheetName);
+    const fileName = decodeOriginalFilename(file.originalname || "report.xlsx");
+    const preview = previewExcelReport(file.buffer, fileName, sheetName);
     ok(res, preview);
   } catch (err: any) {
     logger.error({ err }, "sushi import preview failed");
@@ -266,7 +268,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
   }
 
   logger.info(
-    { count: rawFiles.length, names: rawFiles.map((f) => f.originalname), hasCustomMapping: !!customMapping },
+    { count: rawFiles.length, names: rawFiles.map((f) => decodeOriginalFilename(f.originalname || "")), hasCustomMapping: !!customMapping },
     "sushi upload: processing files",
   );
 
@@ -284,7 +286,7 @@ router.post("/sushi/import/upload", upload.any(), async (req: AuthedRequest, res
   let lastErrorMsg: string | null = null;
 
   for (const file of rawFiles) {
-    const fileName = file.originalname || "report.xlsx";
+    const fileName = decodeOriginalFilename(file.originalname || "report.xlsx");
     const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
 
     try {

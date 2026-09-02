@@ -6,6 +6,7 @@ import {
   normalizeRcpCode,
   parseDailyShiftExcel,
   validateStagingRow,
+  decodeOriginalFilename,
   type RawParsedRow,
   type ValidationContext,
 } from "./sushiImport.ts";
@@ -183,4 +184,27 @@ test("validateStagingRow: flags MISSING_SIGNATURE when supervisor is empty", () 
   const res = validateStagingRow(row, context);
 
   assert.equal(res.status, "MISSING_SIGNATURE");
+});
+
+test("decodeOriginalFilename: recovers Polish and Cyrillic UTF-8 characters from Latin-1 mojibake", () => {
+  // Latin-1 byte interpretation of "Składanie M5.xlsx"
+  const mojibakePolish = Buffer.from("Składanie M5.xlsx", "utf8").toString("latin1");
+  assert.equal(decodeOriginalFilename(mojibakePolish), "Składanie M5.xlsx");
+
+  // Latin-1 byte interpretation of "Główna Produkcja (żółty).xlsx"
+  const mojibakeComplex = Buffer.from("Główna Produkcja (żółty).xlsx", "utf8").toString("latin1");
+  assert.equal(decodeOriginalFilename(mojibakeComplex), "Główna Produkcja (żółty).xlsx");
+
+  // Latin-1 byte interpretation of Ukrainian Cyrillic
+  const mojibakeCyr = Buffer.from("Звіт_Суші_Серпень.xlsx", "utf8").toString("latin1");
+  assert.equal(decodeOriginalFilename(mojibakeCyr), "Звіт_Суші_Серпень.xlsx");
+
+  // Already valid UTF-8 remains unchanged
+  assert.equal(decodeOriginalFilename("Składanie M5.xlsx"), "Składanie M5.xlsx");
+
+  // Standard ASCII remains unchanged
+  assert.equal(decodeOriginalFilename("Pakowanie M4.xlsx"), "Pakowanie M4.xlsx");
+
+  // Empty string fallback
+  assert.equal(decodeOriginalFilename(""), "report.xlsx");
 });

@@ -548,3 +548,20 @@ export function validateStagingRow(
     computedHours: timeVal.hours,
   };
 }
+
+/**
+ * Відновлює правильне кодування UTF-8 для імен файлів із multipart/form-data.
+ * Multer/busboy за замовчуванням інтерпретує заголовки як Latin-1, через що польські літери
+ * (ą, ć, ę, ł, ń, ó, ś, ź, ż) або кирилиця перетворюються на кракозябри (mojibake на зразок SkÅadanie).
+ */
+export function decodeOriginalFilename(filename: string): string {
+  if (!filename) return "report.xlsx";
+  if (/[\xC2-\xF4][\x80-\xBF]/.test(filename)) {
+    try {
+      return Buffer.from(filename, "latin1").toString("utf8");
+    } catch {
+      return filename;
+    }
+  }
+  return filename;
+}
