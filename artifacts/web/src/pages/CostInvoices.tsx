@@ -5,7 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud, History, FolderClock, Ban, CalendarPlus } from "lucide-react";
-import { get, post, patch, del } from "../lib/api";
+import { get, post, patch, del, upload } from "../lib/api";
+import { shrinkImageFile } from "../lib/shrinkFile";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { InvoiceAuditModal, type AuditTarget } from "../components/InvoiceAuditModal";
 import { PageHeader } from "../components/Layout";
@@ -59,7 +60,7 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
   agreement: { label: "умова", cls: "bg-teal-100 text-teal-700" },
 };
 const TYPE_TABS = [
-  ["", "Всі"], ["ksef", "Фактури КСеФ"], ["agreement", "Умови"], ["local", "Фактури без КСеФ"],
+  ["", "Всі"], ["ksef", "Фактури КСеФ"], ["agreement", "Умови"], ["local", "Фактури без КСеФ"], ["proforma", "Проформи"],
 ] as const;
 
 export default function CostInvoices() {
@@ -72,11 +73,13 @@ export default function CostInvoices() {
   const [month, setMonth] = useState(thisMonth);
   const [companyId, setCompanyId] = useState("");
   const [status, setStatus] = useState("");   // "" | paid | unpaid
-  const [originFilter, setOriginFilter] = useState<"" | "ksef" | "agreement" | "local">("");
+  // «proforma» — окремий розділ: проформи (local з doc_type=PROFORMA) не змішуються зі звичайними ручними
+  const [originFilter, setOriginFilter] = useState<"" | "ksef" | "agreement" | "local" | "proforma">("");
   const [catFilter, setCatFilter] = useState(""); // ключ категорії з розбивки-чіпсів
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
+  const [editingCharge, setEditingCharge] = useState<Row | null>(null); // запис умови за місяць
   const [prefill, setPrefill] = useState<Partial<Row> | null>(null);
   const [scanFile, setScanFile] = useState<File | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -89,7 +92,7 @@ export default function CostInvoices() {
     setScanning(true);
     try {
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", await shrinkImageFile(file));
       const r = await fetch("/api/cost-invoices/scan", { method: "POST", body: fd, credentials: "include", headers: { "X-Requested-With": "grafik" } });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "scan failed");
@@ -124,7 +127,9 @@ export default function CostInvoices() {
   const rows = useMemo(() => {
     let r = d?.rows ?? [];
     if (status) r = r.filter(x => (status === "paid") === x.paid);
-    if (originFilter) r = r.filter(x => x.origin === originFilter);
+    if (originFilter === "proforma") r = r.filter(x => x.isProforma);
+    else if (originFilter === "local") r = r.filter(x => x.origin === "local" && !x.isProforma);
+    else if (originFilter) r = r.filter(x => x.origin === originFilter);
     if (catFilter) r = r.filter(x => x.category === catFilter);
     if (q.trim().length >= 2) {
       const needle = q.trim().toLowerCase();
@@ -464,7 +469,7 @@ export default function CostInvoices() {
                         )}
                       </td>
                       <td className="whitespace-nowrap px-2 py-1.5">
-                        {isAgreement ? <span className="text-xs text-slate-300">—</span> : (
+                        {(
                           <>
                             <button onClick={() => cycleMethod(r)}
                               className={`rounded px-1.5 py-0.5 text-sm ${r.paymentMethod === "gotowka" ? "bg-emerald-50 hover:bg-emerald-100" : r.paymentMethod === "przelew" ? "bg-sky-50 hover:bg-sky-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"}`}
@@ -482,11 +487,7 @@ export default function CostInvoices() {
                         )}
                       </td>
                       <td className="whitespace-nowrap px-2 py-1.5">
-                        {isAgreement ? (
-                          <span className="rounded bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-700" title={t("умови — нарахування щомісяця, статус оплати тут не трекається")}>
-                            {t("нарахування")}
-                          </span>
-                        ) : (
+                        {(
                           <>
                             <button onClick={() => togglePaid(r)}
                               className={`rounded px-1.5 py-0.5 text-xs font-medium ${r.paid ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
@@ -529,6 +530,10 @@ export default function CostInvoices() {
                           </>
                         )}
                         {isAgreement && (
+                          <button className="p-1 text-slate-300 hover:text-slate-600" title={t("Редагувати запис цього місяця (сума, оплата, спосіб)")}
+                            onClick={() => setEditingCharge(r)}><Pencil className="h-4 w-4" /></button>
+                        )}
+                        {isAgreement && (
                           <button className="p-1 text-slate-300 hover:text-rose-500" title={t("Видалити запис цього місяця (сама умова лишиться)")}
                             onClick={async () => {
                               if (!confirm(t("Видалити запис-витрату за {m}? Сама умова лишиться.", { m: r.serviceMonth ?? "" }))) return;
@@ -562,6 +567,11 @@ export default function CostInvoices() {
           onClose={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); }}
           onSaved={() => { setAdding(false); setEditing(null); setPrefill(null); setScanFile(null); invalidate(); }}
         />
+      )}
+
+      {editingCharge && (
+        <ChargeModal row={editingCharge} onClose={() => setEditingCharge(null)}
+          onSaved={() => { setEditingCharge(null); invalidate(); }} />
       )}
 
       {managingAgreements && (
@@ -711,9 +721,8 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, categories
       const saved = row ? await patch(`/cost-invoices/${row.id}`, body) : await post("/cost-invoices", body);
       if (file) {
         const fd = new FormData();
-        fd.append("file", file);
-        await fetch(`/api/cost-invoices/${saved.id ?? row?.id}/file`, { method: "POST", body: fd, credentials: "include", headers: { "X-Requested-With": "grafik" } })
-          .then(r => { if (!r.ok) throw new Error("upload failed"); });
+        fd.append("file", await shrinkImageFile(file));
+        await upload(`/cost-invoices/${saved.id ?? row?.id}/file`, fd); // кидає реальний текст помилки сервера
       }
       toast.success(row ? t("Збережено") : t("Фактуру додано"));
       onSaved();
@@ -811,6 +820,7 @@ interface AgreementCondition {
   id: number; companyId: number; firm: string | null;
   title: string; counterparty: string | null; category: string;
   kind: AgreementKind; amount: number; vatRate: VatRate;
+  paymentMethod: PayMethod; // дефолт для записів місяців (точково перебивається у списку)
   city: string | null; startMonth: string; endMonth: string | null;
   filePath: string | null; driveFileId: string | null; driveError: string | null; note: string | null;
   active: boolean; hasFile: boolean; status: "active" | "scheduled" | "ended" | "deleted";
@@ -834,6 +844,60 @@ function monthRangeClient(from: string, to: string): string[] {
     cur = `${y}-${String(m).padStart(2, "0")}`;
   }
   return out;
+}
+
+// Запис умови за місяць — форма як у ручної фактури: сума, нотатка, спосіб оплати,
+// «Оплачена» + дата. Сама умова (категорія, контрагент, термін) правиться в «Умови».
+function ChargeModal({ row, onClose, onSaved }: { row: Row; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const [f, setF] = useState({
+    amount: String(row.gross),
+    note: row.note ?? "",
+    paymentMethod: (row.paymentMethodSource === "manual" ? row.paymentMethod : "") ?? "",
+    paid: row.paid,
+    paidDate: row.paidDate ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k: string, v: any) => setF(p => ({ ...p, [k]: v }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      await patch(`/agreements/charges/${row.id}`, {
+        amount: f.amount, note: f.note.trim() || null,
+        paymentMethod: f.paymentMethod || null,
+        paid: f.paid, paidDate: f.paid ? (f.paidDate || undefined) : undefined,
+      });
+      toast.success(t("Збережено"));
+      onSaved();
+    } catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Modal open title={`${t("Запис умови")} · ${row.serviceMonth ?? ""}`} onClose={onClose}>
+      <div className="mb-3 text-sm text-slate-600">{row.seller ? `${row.seller} · ` : ""}{t("умова")} #{row.agreementId}</div>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Сума (брутто)")}</span>
+          <Input value={f.amount} onChange={e => set("amount", e.target.value)} title={t("клік — скоригувати суму за цей місяць (умова не змінюється)")} /></label>
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Спосіб оплати")}</span>
+          <Select value={f.paymentMethod} onChange={e => set("paymentMethod", e.target.value)}>
+            <option value="">{t("авто")}{row.paymentMethodSource === "auto" && row.paymentMethod ? ` (${row.paymentMethod === "gotowka" ? `💵 ${t("готівка")}` : `🏦 ${t("переказ")}`})` : ""}</option>
+            <option value="przelew">🏦 {t("переказ")}</option>
+            <option value="gotowka">💵 {t("готівка")}</option>
+          </Select></label>
+        <label className="col-span-2 block"><span className="mb-1 block text-xs text-slate-500">{t("Нотатка")}</span>
+          <Input value={f.note} onChange={e => set("note", e.target.value)} /></label>
+        <label className="col-span-2 flex items-center gap-2 pt-1 text-sm text-slate-600">
+          <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={f.paid} onChange={e => set("paid", e.target.checked)} />
+          {t("Оплачена")}
+          {f.paid && <Input type="date" value={f.paidDate} onChange={e => set("paidDate", e.target.value)} className="w-40" />}
+        </label>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+        <Button disabled={saving} onClick={save}>{t("Зберегти")}</Button>
+      </div>
+    </Modal>
+  );
 }
 
 function AgreementsModal({ companies, categories, onClose, onChanged }: {
@@ -903,7 +967,7 @@ function AgreementsModal({ companies, categories, onClose, onChanged }: {
                   <td className="whitespace-nowrap px-2 py-1.5 text-xs text-slate-500">{t(AGREEMENT_KIND_LABEL[a.kind])}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-xs text-slate-500">{catIcon(a.category)} {t(catLabel(a.category))}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right text-xs font-medium tabular-nums">
-                    {zl(a.amount)} <span className="text-[10px] font-normal text-slate-400">{t("брутто")} · {VAT_LABEL[a.vatRate]}</span>
+                    {zl(a.amount)} <span className="text-[10px] font-normal text-slate-400">{t("брутто")} · {VAT_LABEL[a.vatRate]}{a.paymentMethod === "gotowka" ? " · 💵" : a.paymentMethod === "przelew" ? " · 🏦" : ""}</span>
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-xs text-slate-500">
                     {a.startMonth}{a.kind !== "one_time" && ` – ${a.endMonth ?? "…"}`}
@@ -975,6 +1039,7 @@ function AgreementFormModal({ row, companies, categories, onClose, onSaved }: {
     kind: row?.kind ?? "fixed_term" as AgreementKind,
     amount: row ? String(row.amount) : "",
     vatRate: (row?.vatRate ?? "23") as VatRate,
+    paymentMethod: (row?.paymentMethod ?? "") as "" | "przelew" | "gotowka",
     city: row?.city ?? "",
     startMonth: row?.startMonth ?? thisMonth,
     endMonth: row?.endMonth ?? "",
@@ -1013,6 +1078,7 @@ function AgreementFormModal({ row, companies, categories, onClose, onSaved }: {
       const body: Record<string, unknown> = {
         companyId: Number(f.companyId), counterparty: f.counterparty.trim() || null,
         category: f.category, amount: f.amount, vatRate: f.vatRate,
+        paymentMethod: f.paymentMethod || null,
         city: f.city.trim() || null, note: f.note.trim() || null,
       };
       if (!row) {
@@ -1023,9 +1089,8 @@ function AgreementFormModal({ row, companies, categories, onClose, onSaved }: {
       const saved = row ? await patch(`/agreements/${row.id}`, body) : await post("/agreements", body);
       if (file) {
         const fd = new FormData();
-        fd.append("file", file);
-        await fetch(`/api/agreements/${saved.id ?? row?.id}/file`, { method: "POST", body: fd, credentials: "include", headers: { "X-Requested-With": "grafik" } })
-          .then(r => { if (!r.ok) throw new Error("upload failed"); });
+        fd.append("file", await shrinkImageFile(file));
+        await upload(`/agreements/${saved.id ?? row?.id}/file`, fd); // кидає реальний текст помилки сервера
       }
       toast.success(row ? t("Збережено") : t("Умову додано"));
       onSaved();
@@ -1075,6 +1140,13 @@ function AgreementFormModal({ row, companies, categories, onClose, onSaved }: {
             <option value="23">23%</option>
             <option value="8">8%</option>
             <option value="zw">{t("zwolnione (без ВАТ)")}</option>
+          </Select></label>
+        <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Спосіб оплати")}</span>
+          <Select value={f.paymentMethod} onChange={e => set("paymentMethod", e.target.value)}
+            title={t("дефолт для всіх місяців умови; окремий місяць можна перебити в списку фактур")}>
+            <option value="">—</option>
+            <option value="przelew">🏦 {t("переказ")}</option>
+            <option value="gotowka">💵 {t("готівка")}</option>
           </Select></label>
         <label className="block"><span className="mb-1 block text-xs text-slate-500">{t("Місто (cost-center для P&L)")}</span>
           <Input value={f.city} onChange={e => set("city", e.target.value)} /></label>

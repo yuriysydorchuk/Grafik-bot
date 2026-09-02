@@ -13,7 +13,7 @@ import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsT
 import { and, eq, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile, shrinkDocBuffer, SCAN_UPLOAD_LIMIT } from "../lib/uploads";
 import { lastSyncStatus, syncKsef } from "../services/ksef";
 import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile, upgradeArchiveNamesV2 } from "../services/invoiceArchive";
 import { logInvoiceAudit, auditDiff, invoiceAuditRows } from "../services/invoiceAudit";
@@ -204,17 +204,20 @@ router.get("/cost-invoices", async (req, res) => {
     .innerJoin(agreementConditionsTable, eq(agreementChargesTable.agreementId, agreementConditionsTable.id))
     .where(and(...aConds, ...(companyId ? [eq(agreementConditionsTable.companyId, companyId)] : [])));
   for (const { charge: a, cond: c } of chargeRows) {
+    // спосіб оплати: точковий на місяці ?? дефолт умови («авто» — як XML у KSeF)
+    const method: PayMethod = (a.paymentMethod as PayMethod) ?? (c.paymentMethod as PayMethod) ?? null;
     rows.push({
       key: `a${a.id}`, origin: "agreement", id: a.id, source: "agreement",
       companyId: c.companyId, firm: companies.get(c.companyId) ?? null,
       issueDate: `${a.month}-01`, number: null,
       seller: c.counterparty, sellerNip: null,
       gross: a.amount, dueDate: null,
-      paid: true, paidDate: null, paidSource: null, // умови — акруал, статус оплати не трекаємо
+      // оплата — лише ручна позначка кшєнгової на записі місяця (банк-матчингу для умов нема)
+      paid: a.paid, paidDate: a.paidDate, paidSource: a.paid ? "manual" : null,
       note: a.note ?? c.note, hasFile: !!c.filePath, dupOfKsefId: null,
       hostelId: null, vehicleId: null, city: c.city, serviceMonth: a.month,
-      paymentMethod: null, paymentMethodSource: null,
-      cashReport: false, cleaning: false, cleaningProjectId: null,
+      paymentMethod: method, paymentMethodSource: a.paymentMethod ? "manual" : method ? "auto" : null,
+      cashReport: a.cashReport, cleaning: false, cleaningProjectId: null,
       overdue: false,
       driveFileId: c.driveFileId, drivePdfId: null, driveError: c.driveError,
       addedBy: a.createdBy ? admins.get(a.createdBy) ?? null : null,
@@ -566,7 +569,8 @@ router.delete("/cost-invoices/:id", async (req, res) => {
 });
 
 // ── Файл (скан/фото фактури) ───────────────────────────────────────────────────
-const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// ліміт 60 МБ: великі PDF стискає shrinkDocBuffer (gs), фото зменшує браузер
+const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: SCAN_UPLOAD_LIMIT } });
 
 // Розпізнавання з сайту: файл → Document AI → чернетка полів (нічого не зберігає;
 // збереження — звичайним POST /cost-invoices + аплоуд файлу)
@@ -593,7 +597,7 @@ router.post("/cost-invoices/:id/file", uploadScan.single("file"), async (req, re
   const mime = sniffDocMime(req.file.buffer);
   if (!mime || mime.includes("msword") || mime.includes("wordprocessing")) return fail(res, 400, "Дозволені PDF або фото");
   const stored = makeStoredName(req.file.originalname || "scan");
-  fs.writeFileSync(path.join(INVOICES_DIR, stored), req.file.buffer);
+  fs.writeFileSync(path.join(INVOICES_DIR, stored), await shrinkDocBuffer(req.file.buffer, mime, logger));
   deleteStoredFile(row.filePath);
   const rel = path.join("invoices", stored);
   // новий файл = нова архівна копія: стару — в кошик, перезалив у фоні

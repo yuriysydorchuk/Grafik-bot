@@ -9,7 +9,8 @@ import multer from "multer";
 import { db, agreementConditionsTable, agreementChargesTable, companiesTable } from "@workspace/db";
 import { and, desc, eq } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
-import { UPLOADS_ROOT, AGREEMENTS_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { UPLOADS_ROOT, AGREEMENTS_DIR, sniffDocMime, makeStoredName, deleteStoredFile, shrinkDocBuffer, SCAN_UPLOAD_LIMIT } from "../lib/uploads";
+import { logger } from "../lib/logger";
 import { archiveAgreementLater, retireAgreementDriveFile } from "../services/agreementArchive";
 import { logAgreementAudit, agreementAuditDiff, agreementAuditRows, type AgreementEntity } from "../services/agreementAudit";
 import { VAT_RATES, currentMonthStr, backfillCondition, materializeMonth, materializeAgreementMonth, materializeSelectedMonths } from "../services/agreementConditions";
@@ -23,6 +24,14 @@ router.use("/agreements", requireAnyCap("viewFinance", "costInvoices"));
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
 const validMonth = (s: any) => typeof s === "string" && /^\d{4}-\d{2}$/.test(s);
+const validDate = (s: any) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+// спосіб оплати — той самий словник, що у фактур (przelew | gotowka | null)
+const validMethod = (v: any): v is "przelew" | "gotowka" | null => v === null || v === "przelew" || v === "gotowka";
+// дата-рядок локально (прод у Europe/Berlin — toISOString зрізав би день)
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 const KIND = new Set(["one_time", "fixed_term", "indefinite"]);
 
 async function validCategory(v: string): Promise<boolean> {
@@ -89,10 +98,12 @@ router.post("/agreements", async (req, res) => {
     if (String(b.endMonth) < startMonth) return fail(res, 400, "endMonth раніше startMonth");
     endMonth = String(b.endMonth);
   } else endMonth = null; // indefinite
+  const paymentMethod = b.paymentMethod === undefined ? null : b.paymentMethod;
+  if (!validMethod(paymentMethod)) return fail(res, 400, "paymentMethod: przelew | gotowka | null");
 
   const [row] = await db.insert(agreementConditionsTable).values({
     companyId, title, counterparty,
-    category, kind, amount, vatRate,
+    category, kind, amount, vatRate, paymentMethod,
     city: b.city !== undefined ? canonCity(b.city) : null,
     startMonth, endMonth,
     note: b.note ? String(b.note).trim() : null,
@@ -140,6 +151,10 @@ router.patch("/agreements/:id", async (req, res) => {
     const vatRate = String(b.vatRate);
     if (!VAT_RATES.includes(vatRate as any)) return fail(res, 400, "vatRate: 23 | 8 | zw");
     patch.vatRate = vatRate;
+  }
+  if (b.paymentMethod !== undefined) {
+    if (!validMethod(b.paymentMethod)) return fail(res, 400, "paymentMethod: przelew | gotowka | null");
+    patch.paymentMethod = b.paymentMethod;
   }
 
   // endMonth — дострокове завершення (у минуле) або продовження (у майбутнє);
@@ -196,7 +211,8 @@ router.post("/agreements/:id/generate", async (req, res) => {
 });
 
 // ── Файл (скан умови) ───────────────────────────────────────────────────────
-const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// ліміт 60 МБ: великі PDF стискає shrinkDocBuffer (gs), фото зменшує браузер
+const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: SCAN_UPLOAD_LIMIT } });
 
 router.post("/agreements/:id/file", uploadScan.single("file"), async (req, res) => {
   const id = Number(req.params.id);
@@ -206,7 +222,7 @@ router.post("/agreements/:id/file", uploadScan.single("file"), async (req, res) 
   const mime = sniffDocMime(req.file.buffer);
   if (!mime || mime.includes("msword") || mime.includes("wordprocessing")) return fail(res, 400, "Дозволені PDF або фото");
   const stored = makeStoredName(req.file.originalname || "umowa");
-  fs.writeFileSync(path.join(AGREEMENTS_DIR, stored), req.file.buffer);
+  fs.writeFileSync(path.join(AGREEMENTS_DIR, stored), await shrinkDocBuffer(req.file.buffer, mime, logger));
   deleteStoredFile(row.filePath);
   const rel = path.join("agreements", stored);
   await retireAgreementDriveFile(row.driveFileId);
@@ -239,13 +255,24 @@ router.patch("/agreements/charges/:id", async (req, res) => {
   if (!row) return fail(res, 404, "not found");
   if (row.status === "deleted") return fail(res, 400, "запис видалено");
   const b = req.body ?? {};
-  const patch: Record<string, unknown> = { source: "manual-edit", createdBy: (req as AuthedRequest).admin?.adminId ?? null, updatedAt: new Date() };
+  const patch: Record<string, unknown> = { createdBy: (req as AuthedRequest).admin?.adminId ?? null, updatedAt: new Date() };
   if (b.amount !== undefined) {
     const a = Number(String(b.amount).replace(/\s/g, "").replace(",", "."));
     if (!Number.isFinite(a) || a <= 0) return fail(res, 400, "amount > 0");
     patch.amount = a;
+    patch.source = "manual-edit"; // лише ручна сума «прилипає» при регенерації; оплата/нотатка — ні
   }
   if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
+  // оплата місяця — ручна позначка (дата: передана ?? наявна ?? сьогодні)
+  if (b.paid !== undefined) {
+    patch.paid = !!b.paid;
+    patch.paidDate = b.paid ? (validDate(b.paidDate) ? b.paidDate : row.paidDate ?? todayStr()) : null;
+  }
+  if (b.paymentMethod !== undefined) {
+    if (!validMethod(b.paymentMethod)) return fail(res, 400, "paymentMethod: przelew | gotowka | null");
+    patch.paymentMethod = b.paymentMethod; // null = назад на дефолт умови
+  }
+  if (b.cashReport !== undefined) patch.cashReport = !!b.cashReport;
   const [updated] = await db.update(agreementChargesTable).set(patch).where(eq(agreementChargesTable.id, id)).returning();
   const adm = (req as AuthedRequest).admin;
   const diff = agreementAuditDiff(row as any, patch);

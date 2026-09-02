@@ -5,6 +5,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
+import { execFile, execFileSync } from "node:child_process";
 
 // Root of the uploads tree. Defaults to <cwd>/uploads (cwd is the repo root
 // under pm2). Override with UPLOADS_DIR for a volume mount.
@@ -53,4 +55,49 @@ export function deleteStoredFile(relPath: string | null | undefined): void {
   const abs = path.resolve(UPLOADS_ROOT, relPath);
   if (!abs.startsWith(UPLOADS_ROOT)) return;
   fs.promises.rm(abs, { force: true }).catch(() => {});
+}
+
+// ── Стискання великих сканів ─────────────────────────────────────────────────
+// Скани умов/фактур з телефону чи МФУ легко переходять за 10–15 МБ. Фото
+// зменшує браузер (web/src/lib/shrinkFile.ts — canvas → JPEG), а PDF стискаємо
+// тут ghostscript-ом (/ebook: растр до 150 dpi), якщо він є на машині. Без gs —
+// файл лишається як є (лише лог), аплоуд не падає. Best-effort: береться
+// результат лише коли він реально менший.
+export const SCAN_UPLOAD_LIMIT = 60 * 1024 * 1024; // спільний ліміт multer для сканів
+const PDF_SHRINK_FROM = 4 * 1024 * 1024;           // менші PDF не чіпаємо
+
+let gsAvailable: boolean | null = null;
+function hasGhostscript(): boolean {
+  if (gsAvailable == null) {
+    try { execFileSync("gs", ["--version"], { stdio: "ignore", timeout: 5000 }); gsAvailable = true; }
+    catch { gsAvailable = false; }
+  }
+  return gsAvailable;
+}
+
+export async function shrinkDocBuffer(buf: Buffer, mime: string | null, log?: { warn: (o: any, m: string) => void; info: (o: any, m: string) => void }): Promise<Buffer> {
+  if (mime !== "application/pdf" || buf.length < PDF_SHRINK_FROM) return buf;
+  if (!hasGhostscript()) { log?.warn({ size: buf.length }, "large pdf kept as is — ghostscript not installed"); return buf; }
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "grafik-pdf-"));
+  const src = path.join(tmp, "in.pdf"), dst = path.join(tmp, "out.pdf");
+  try {
+    await fs.promises.writeFile(src, buf);
+    await new Promise<void>((resolve, reject) => execFile("gs", [
+      "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", "-dPDFSETTINGS=/ebook",
+      "-dNOPAUSE", "-dQUIET", "-dBATCH", `-sOutputFile=${dst}`, src,
+    ], { timeout: 120_000 }, (err) => err ? reject(err) : resolve()));
+    const out = await fs.promises.readFile(dst);
+    // gs інколи віддає більший файл (уже стиснений PDF) або порожній — тоді оригінал
+    if (out.length >= 1024 && out.length < buf.length) {
+      log?.info({ from: buf.length, to: out.length }, "pdf shrunk with ghostscript");
+      return out;
+    }
+    log?.info({ from: buf.length, to: out.length }, "pdf shrink gave no gain — kept original");
+    return buf;
+  } catch (e: any) {
+    log?.warn({ err: e?.message, size: buf.length }, "pdf shrink failed — kept original");
+    return buf;
+  } finally {
+    await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }

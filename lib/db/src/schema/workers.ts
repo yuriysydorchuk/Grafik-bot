@@ -1065,6 +1065,7 @@ export const agreementConditionsTable = pgTable("agreement_conditions", {
   city: text("city"),                           // cost-center місто (як invoices.city)
   startMonth: text("start_month").notNull(),    // YYYY-MM, «діє з»
   endMonth: text("end_month"),                  // YYYY-MM; one_time = startMonth; fixed_term задано; indefinite NULL
+  paymentMethod: text("payment_method"),        // przelew | gotowka | NULL — дефолт для записів місяців (charge.paymentMethod NULL = наслідує)
   filePath: text("file_path"),                  // скан умови (uploads/agreements/)
   driveFileId: text("drive_file_id"),           // архів Umowy/<фірма> на Google Drive
   driveError: text("drive_error"),
@@ -1088,6 +1089,11 @@ export const agreementChargesTable = pgTable("agreement_charges", {
   note: text("note"),
   source: text("source").notNull().default("auto"),   // auto | manual-edit
   status: text("status").notNull().default("active"), // active | deleted
+  // оплата місяця — ручна позначка кшєнгової (як manual_status у фактур; банк-матчингу нема)
+  paid: boolean("paid").notNull().default(false),
+  paidDate: date("paid_date"),
+  paymentMethod: text("payment_method"),        // przelew | gotowka | NULL = наслідує agreement_conditions.payment_method
+  cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий» — нотатка кшєнгової
   createdBy: integer("created_by").references(() => adminsTable.id), // хто скоригував (NULL для авто)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
