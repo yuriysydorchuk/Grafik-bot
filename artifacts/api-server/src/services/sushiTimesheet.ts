@@ -71,7 +71,7 @@ export interface StagingCommitCandidate {
   roundedStopTime: string;
   rawHours: number;
   roundedHours: number;
-  lineId: number;
+  lineId: number | null;
   roleId: number;
   supervisorId: number | null;
   isTraining?: boolean;
@@ -93,7 +93,7 @@ export interface PreparedInterval {
   roundedHours: number;
   billableHours: number;
   payableHours: number;
-  lineId: number;
+  lineId: number | null;
   roleId: number;
   supervisorId: number | null;
   appliedClientRate: number;

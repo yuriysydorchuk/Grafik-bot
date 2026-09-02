@@ -582,6 +582,10 @@ router.post("/sushi/staging/approve-all-valid", async (req, res) => {
   const defaultRole = roles.find((r) => r.code === "worker") || roles[0]!;
   const [fac] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId));
 
+  // Отримуємо або використовуємо першу наявну лінію для цієї фабрики як безпечний фолбек
+  const factoryLines = await db.select().from(sushiLinesTable).where(eq(sushiLinesTable.factoryId, factoryId));
+  const defaultLineId = factoryLines[0]?.id ?? null;
+
   const candidates = validEntries.map((e) => {
     const timeVal = validateTimeInterval(e.rawOd, e.rawDo);
     const roundedStart = timeVal.roundedStart || roundStartTime(e.rawOd || "06:00");
@@ -601,7 +605,7 @@ router.post("/sushi/staging/approve-all-valid", async (req, res) => {
       roundedStopTime: roundedStop,
       rawHours: parseFloat(e.rawRealneGodziny || "0") || roundedHours,
       roundedHours,
-      lineId: e.resolvedLineId || 1,
+      lineId: e.resolvedLineId || defaultLineId,
       roleId: e.resolvedRoleId || defaultRole.id,
       supervisorId: e.resolvedSupervisorId ?? null,
       isTraining: false,

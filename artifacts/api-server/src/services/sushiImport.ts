@@ -60,9 +60,9 @@ export function parseReportDate(raw: string | number | null | undefined): string
   if (raw === undefined || raw === null) return null;
 
   if (typeof raw === "number") {
-    // Excel date serial number
+    // Excel date serial number (обмежуємо реальними роками 2020..2035)
     const parsedDate = XLSX.SSF.parse_date_code(raw);
-    if (!parsedDate) return null;
+    if (!parsedDate || parsedDate.y < 2020 || parsedDate.y > 2035) return null;
     const y = parsedDate.y;
     const m = String(parsedDate.m).padStart(2, "0");
     const d = String(parsedDate.d).padStart(2, "0");
@@ -75,7 +75,8 @@ export function parseReportDate(raw: string | number | null | undefined): string
   // Match YYYY-MM-DD or YYYY/MM/DD
   const ymdMatch = cleaned.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
   if (ymdMatch) {
-    const y = ymdMatch[1];
+    const y = ymdMatch[1]!;
+    if (parseInt(y, 10) < 2020 || parseInt(y, 10) > 2035) return null;
     const m = String(parseInt(ymdMatch[2]!, 10)).padStart(2, "0");
     const d = String(parseInt(ymdMatch[3]!, 10)).padStart(2, "0");
     return `${y}-${m}-${d}`;
@@ -84,9 +85,10 @@ export function parseReportDate(raw: string | number | null | undefined): string
   // Match DD.MM.YYYY or DD/MM/YYYY
   const dmyMatch = cleaned.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
   if (dmyMatch) {
+    const y = dmyMatch[3]!;
+    if (parseInt(y, 10) < 2020 || parseInt(y, 10) > 2035) return null;
     const d = String(parseInt(dmyMatch[1]!, 10)).padStart(2, "0");
     const m = String(parseInt(dmyMatch[2]!, 10)).padStart(2, "0");
-    const y = dmyMatch[3];
     return `${y}-${m}-${d}`;
   }
 
