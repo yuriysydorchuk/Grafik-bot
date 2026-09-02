@@ -27,6 +27,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   // точне написання в Gratyfikant nexo — використовується лише в експорті naliczeń
   const [gratyfikantName, setGratyfikantName] = useState(worker?.gratyfikantName ?? "");
   const [pesel, setPesel] = useState(worker?.pesel ?? "");
+  const [middleName, setMiddleName] = useState(worker?.middleName ?? "");
   const [factoryId, setFactoryId] = useState(worker?.factoryId ? String(worker.factoryId) : "");
   const [companyId, setCompanyId] = useState(worker?.companyId ? String(worker.companyId) : "");
   const [positionId, setPositionId] = useState(worker?.positionId ? String(worker.positionId) : "");
@@ -61,7 +62,8 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
     positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null,
     telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport,
     selfTransportSince: selfSince || null, nationality: nationality || null,
-    gratyfikantName: gratyfikantName.trim() || null, pesel: pesel.trim() || null, ...finance,
+    gratyfikantName: gratyfikantName.trim() || null, pesel: pesel.trim() || null,
+    middleName: middleName.trim() || null, ...finance,
   };
   const save = useMutation({
     mutationFn: (force?: boolean) => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, force ? { ...base, force: true } : base),
@@ -127,6 +129,11 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
           <p className="mt-1 text-[11px] text-slate-400">{t("Точне написання з Gratyfikant nexo — тільки для файлів імпорту naliczeń.")}</p>
         </div>
         <div><Label>PESEL</Label><Input value={pesel} onChange={e => setPesel(e.target.value)} placeholder="11 цифр" maxLength={11} /></div>
+        <div>
+          <Label>{t("Друге ім'я (необов'язково)")}</Label>
+          <Input value={middleName} onChange={e => setMiddleName(e.target.value)} placeholder={t("напр. Paweł")} />
+          <p className="mt-1 text-[11px] text-slate-400">{t("Для Umowa (Drugie imię). Порожньо — не йде в документ.")}</p>
+        </div>
         <div><Label>{t("Фірма")}</Label>
           <Select value={companyId} onChange={e => setCompanyId(e.target.value)}>
             <option value="">{t("— без фірми —")}</option>

@@ -19,6 +19,16 @@ export const companiesTable = pgTable("companies", {
   name: text("name").notNull(),
   legalName: text("legal_name"),  // full registered name (e.g. "Eurosupport Group Sp. z o.o.")
   nip: text("nip"),               // Polish tax id (10 digits) — used for KSeF auth & invoice matching
+  // Реквізити KRS для документів (Umowa §worker-docs-signing) — окремі поля,
+  // бо шаблони підставляють їх нарізно (KRS/REGON/адреса частинами/представник),
+  // не одним рядком. Джерело — офіційний реєстр KRS (rejestr.io/aleo.com), не вигадані.
+  krs: text("krs"),
+  regon: text("regon"),
+  street: text("street"),
+  houseNumber: text("house_number"),
+  postalCode: text("postal_code"),
+  city: text("city"),
+  representative: text("representative"), // ПІБ + посада (напр. "Alona Kovalchuk – Prezes Zarządu")
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -56,6 +66,16 @@ export const workersTable = pgTable("workers", {
   // PESEL (11 цифр, текстом — провідні нулі!): найнадійніший ідентифікатор для
   // матчингу з Gratyfikant nexo (WartoscZArkusza P8="P"); джерело — картотеки nexo
   pesel: text("pesel"),
+  // Друге імʼя (напр. "Jan Paweł Kowalski" → middleName="Paweł") — необов'язкове,
+  // {%Drugie imię%} в Umowa (worker-docs-signing); NULL/порожньо → в документ не йде
+  middleName: text("middle_name"),
+  // Структуровані ім'я/прізвище зі сканування паспорта (MRZ givenNames/surname,
+  // worker-docs-signing) — {%Imię%}/{%Nazwisko%} в Umowa напряму, без крихкого
+  // split(fullName). NULL у старих профілів (заповнених до цієї фічі) —
+  // buildContractData() у services/contracts.ts фолбекає на split fullName.
+  // full_name лишається канонічним джерелом для сортування/матчингу/бота.
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   telegramId: text("telegram_id").unique(),
   workerCode: text("worker_code").unique(), // public sequential id (shown in lists/reports) — NOT a binding secret
   inviteCode: text("invite_code").unique(), // unguessable token for ?start=emp<code> Telegram binding
@@ -320,6 +340,8 @@ export const factoriesTable = pgTable("factories", {
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
   nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)
+  contractDuties: text("contract_duties"), // опис обов'язків для {%Czynności%} в Umowa (worker-docs-signing) — фолбек: назва посади працівника
+  contractRateBrutto: real("contract_rate_brutto"), // ставка для {%Wynagrodzenie%} в Umowa (worker-docs-signing) — окремо від rateBrutto (payroll); NULL → мінімальна крайова (KSIEG_STD_BRUTTO), override на рівні конкретної людини — при генерації документа
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -600,6 +622,7 @@ export const documentTypesTable = pgTable("document_types", {
   required: boolean("required").notNull().default(true),
   hasExpiry: boolean("has_expiry").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
+  icon: text("icon"), // ключ з фіксованого набору web/src/lib/docTypeIcons.tsx — null = загальна іконка-фолбек
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -617,6 +640,7 @@ export const workerDocumentsTable = pgTable("worker_documents", {
   fileName: text("file_name"),             // uploaded file: original name (download)
   fileMime: text("file_mime"),             // uploaded file: MIME type
   note: text("note"),
+  expiryWarnedAt: timestamp("expiry_warned_at"), // cron reminder dedup (bankApiConsentsTable.expiryWarnedAt pattern)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -1781,3 +1805,247 @@ export const insertWorkerSchema = createInsertSchema(workersTable).omit({ id: tr
 export const insertDriverSchema = createInsertSchema(driversTable).omit({ id: true, createdAt: true });
 export const insertFactorySchema = createInsertSchema(factoriesTable).omit({ id: true, createdAt: true });
 export type InsertWorker = z.infer<typeof insertWorkerSchema>;
+
+// ── Документи працівників і онлайн-підписання умов (модуль в розробці, /contracts, cap `workerDocs`) ──
+
+// Анкета працівника: паспортні й адміністративні дані для генерації umowa zlecenie.
+// OCR (Document AI) лише пропонує значення в status=draft — верифікація людиною
+// (verifiedBy/verifiedAt) обов'язкова перед генерацією умови.
+export const workerQuestionnairesTable = pgTable("worker_questionnaires", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("draft"), // draft | submitted | verified
+  passportNumber: text("passport_number"),
+  passportCountry: text("passport_country"),
+  passportIssuedAt: date("passport_issued_at"),
+  passportExpiresAt: date("passport_expires_at"),
+  birthPlace: text("birth_place"),
+  sex: text("sex"),
+  citizenship: text("citizenship"),
+  addressRegistered: text("address_registered"), // адреса замельдування (за замовч. за кордоном, може співпадати з addressPl)
+  addressPl: text("address_pl"),                 // адреса проживання в Польщі (вулиця, будинок)
+  postalCode: text("postal_code"),               // поштовий індекс адреси в Польщі (XX-XXX) — структуровано, під майбутній автопошук urzędu skarbowego
+  city: text("city"),                            // місто/gmina адреси в Польщі — структуровано, той самий привід
+  motherName: text("mother_name"),
+  fatherName: text("father_name"),
+  bankName: text("bank_name"),
+  bankIban: text("bank_iban"),
+  phone: text("phone"),
+  email: text("email"),
+  // urząd skarbowy визначається МІСЦЕМ ПРОПИСКИ ПРАЦІВНИКА (не фабрикою) —
+  // жодної автопідказки немає (ні офіційного, ні безкоштовного API для цього
+  // не існує, звірено 31.08.2026), просте текстове поле, вводить сам працівник/офіс.
+  taxOffice: text("tax_office"),
+  nfzBranch: text("nfz_branch"),
+  isStudent: boolean("is_student").notNull().default(false),
+  schoolName: text("school_name"),               // лише якщо isStudent — довідка додається окремим worker_documents (тип "student")
+  hasOtherEmployment: boolean("has_other_employment").notNull().default(false),
+  otherEmploymentNote: text("other_employment_note"),
+  isRegisteredUnemployed: boolean("is_registered_unemployed").notNull().default(false), // зареєстрований як безробітний в PL (urząd pracy)
+  seriaINumerDowodu: text("seria_i_numer_dowodu"), // серія й номер ID-картки (не паспорта) — окреме поле в кількох шаблонах HrAppka
+  payoutMethod: text("payout_method").notNull().default("konto"), // konto | reka — обирає, який Wniosek (na konto/do rąk) іде в сталий пакет
+  waivesTaxAdvance: boolean("waives_tax_advance").notNull().default(false), // «niepobieranie zaliczek» — опційно, дохід <30000 zł/рік, не для всіх
+  emergencyContact: text("emergency_contact"),
+  // NIP працівника — опційний (не всі його мають/потребують), для {%NIP pracownika%}
+  nip: text("nip"),
+  // Ulga dla młodych («zerowy PIT», до 26 років) — опційна декларація, вибирає сам
+  // працівник (не автопідставляється з віку); за замовч. НЕ вибрано.
+  pit0: boolean("pit0").notNull().default(false),
+  // Декларації {%Ankieta ...%} для Oświadczenie do celów ZUS — за замовч. НЕ
+  // відмічені (в т.ч. składka chorobowa — власник 02.09.2026: лише якщо
+  // працівник сам хоче), відмічає сам працівник/офіс.
+  ankietaInnyPracodawca: boolean("ankieta_inny_pracodawca").notNull().default(false),
+  ankietaEmeryt: boolean("ankieta_emeryt").notNull().default(false),
+  ankietaRencista: boolean("ankieta_rencista").notNull().default(false),
+  ankietaNiepelnosprawnosc: boolean("ankieta_niepelnosprawnosc").notNull().default(false),
+  ankietaSkladkaChorobowa: boolean("ankieta_skladka_chorobowa").notNull().default(false),
+  // Адреса податкової (для {%Urząd Skarbowy pracownika adres%}) — вводиться
+  // вручну (офіційного безкоштовного джерела для автопошуку немає, як і з taxOffice).
+  taxOfficeAddress: text("tax_office_address"),
+  // Структурована адреса ЗАМЕЛЬДУВАННЯ (окремо від addressRegistered — той
+  // лишається вільним текстом для {%Pełny adres pracownika%}, ці поля — під
+  // погранульні {%Województwo/Powiat/Gmina/... pracownika%} у Oświadczenie podatkowe)
+  regWojewodztwo: text("reg_wojewodztwo"),
+  regPowiat: text("reg_powiat"),
+  regGmina: text("reg_gmina"),
+  regMiejscowosc: text("reg_miejscowosc"),
+  regUlica: text("reg_ulica"),
+  regNumerDomu: text("reg_numer_domu"),
+  regKodPocztowy: text("reg_kod_pocztowy"),
+  // Те саме для адреси ПРОЖИВАННЯ (zamieszkania) — {%Zamieszkania ... pracownika%}
+  zamWojewodztwo: text("zam_wojewodztwo"),
+  zamPowiat: text("zam_powiat"),
+  zamGmina: text("zam_gmina"),
+  zamMiejscowosc: text("zam_miejscowosc"),
+  zamUlica: text("zam_ulica"),
+  zamNumerDomu: text("zam_numer_domu"),
+  zamKodPocztowy: text("zam_kod_pocztowy"),
+  ocrRaw: jsonb("ocr_raw"),                       // сирі сутності OCR (доказ походження, дебаг)
+  ocrDocId: integer("ocr_doc_id").references(() => workerDocumentsTable.id),
+  submittedAt: timestamp("submitted_at"),
+  verifiedBy: integer("verified_by").references(() => adminsTable.id),
+  verifiedAt: timestamp("verified_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, t => [uniqueIndex("worker_questionnaires_worker_uniq").on(t.workerId)]);
+
+// Бібліотека шаблонів документів — HTML з {%Плейсхолдер%} (формат джерела —
+// експорт з HrAppka.pl, проаналізовано 31.08–01.09.2026, див. план
+// worker-docs-signing §2.2/Додаток A). Один рядок = один тип документа
+// (Umowa/Regulamin/ZUS/…), тіло — окремо на кожну мову. Плейсхолдери НЕ
+// зберігаються окремим списком (як було в contract_templates.fields) —
+// добуваються з body регексом {%...%}, тіло саме собі документація.
+//
+// Прив'язка до фабрик — не M2M-таблиця, а сам рядок описує scope: де
+// застосовується. Резолюція при генерації (services/contracts.ts
+// resolveDocumentSet): серед активних шаблонів цього kind, що підходять
+// працівнику, береться НАЙСПЕЦИФІЧНІШИЙ — factory-scope > company-scope >
+// all-scope (не «зібрати всі підходящі», а один переможець на kind).
+export const documentTemplatesTable = pgTable("document_templates", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),
+  // umowa | regulamin | zus | tax | ppk | bhp | wniosek_konto | wniosek_reka |
+  // wniosek_zaliczki | andros_extra | sprzatanie_umowa | custom
+  title: text("title").notNull(), // людська назва в бібліотеці ("Umowa — AGRAM")
+  isBase: boolean("is_base").notNull().default(false), // «стандартний» шаблон типу — джерело для «створити на основі»
+  scope: text("scope").notNull().default("all"), // all | company | factory
+  scopeCompanyIds: jsonb("scope_company_ids").$type<number[]>().notNull().default([]),
+  scopeFactoryIds: jsonb("scope_factory_ids").$type<number[]>().notNull().default([]),
+  positionId: integer("position_id").references(() => positionsTable.id), // звужує andros_extra до конкретної посади
+  body: jsonb("body").$type<Record<string, string>>().notNull().default({}), // {pl,en,es,ru,uk} — HTML з {%Плейсхолдер%}, pl — канонічна мова
+  langIsManual: jsonb("lang_is_manual").$type<Record<string, boolean>>().notNull().default({}), // мова редагована вручну → автопереклад її не чіпає
+  langSourceHash: jsonb("lang_source_hash").$type<Record<string, string>>().notNull().default({}), // sha256(pl) на момент останнього перекладу цієї мови — чи PL відтоді змінився
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  updatedBy: integer("updated_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Пакет документів — версіонована сутність. factoryId NULL = «сталий» пакет
+// працівника (ZUS/tax/PPK/BHP/wniosek*, один активний на працівника, спільний
+// для всіх фабрик); factoryId задано = пакет під конкретну фабуку (Umowa/
+// Regulamin/andros_extra) — працівник може мати кілька одночасно активних
+// факторі-ланцюгів (по одному на фабрику), кожен версіонується незалежно.
+// supersedesId звʼязує ланцюг історії В МЕЖАХ того самого (workerId, factoryId)
+// (FK-обмеження — у SQL-міграції, self-FK у Drizzle схемі не заводимо). data —
+// снапшот підставлених значень на момент генерації: старий пакет рендериться
+// історично точно, навіть якщо анкета зміниться.
+export const contractsTable = pgTable("contracts", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id),
+  factoryId: integer("factory_id").references(() => factoriesTable.id), // NULL = сталий пакет (не факторі-специфічний)
+  payoutMethod: text("payout_method"), // konto | reka — знімок з анкети на момент генерації, релевантно лише для сталого пакету
+  status: text("status").notNull().default("draft"),
+  // draft | pending_approval | approved | sent | viewed | worker_signed | signed
+  // термінальні: declined | cancelled | superseded | expired | signed
+  // worker_signed — працівник підписав, компанія ще ні: печатка/підпис фірми
+  // накладається ЛИШЕ після worker_signed (finalizeContractSignature), не при
+  // approve — компанія не може підписати раніше за працівника.
+  dateFrom: date("date_from"),
+  dateTo: date("date_to"),
+  supersedesId: integer("supersedes_id"), // self-FK (contracts.id) — обмеження додається SQL-міграцією
+  data: jsonb("data").notNull().default({}),
+  generatedAt: timestamp("generated_at"),
+  approvedBy: integer("approved_by").references(() => adminsTable.id),
+  approvedAt: timestamp("approved_at"),
+  sentAt: timestamp("sent_at"),
+  firstViewedAt: timestamp("first_viewed_at"),
+  signedAt: timestamp("signed_at"), // коли підписав ПРАЦІВНИК (worker_signed)
+  workerSignaturePath: text("worker_signature_path"), // PNG підпису (доказова база) — потрібен повторно при companySign-рендері
+  companySignedBy: integer("company_signed_by").references(() => adminsTable.id),
+  companySignedAt: timestamp("company_signed_at"), // коли компанія завершила підпис (фінальний signed)
+  supersededAt: timestamp("superseded_at"),
+  declineReason: text("decline_reason"),
+  expiryWarnedAt: timestamp("expiry_warned_at"),
+  // Ставка "в умові" ЦІЄЇ конкретної людини (перекриває factories.contract_rate_brutto
+  // на момент генерації) — знімок, щоб дата-only перегенерація draft (updateContractDates)
+  // не губила ручний override, повертаючись до дефолту фабрики.
+  contractRateBrutto: real("contract_rate_brutto"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// PDF-файли пакета умови (умова + кожен додаток окремо, до і після підпису).
+export const contractFilesTable = pgTable("contract_files", {
+  id: serial("id").primaryKey(),
+  contractId: integer("contract_id").notNull().references(() => contractsTable.id, { onDelete: "cascade" }),
+  templateId: integer("template_id").references(() => documentTemplatesTable.id),
+  sortOrder: integer("sort_order").notNull().default(0),
+  title: text("title").notNull(),
+  unsignedPath: text("unsigned_path"),
+  unsignedSha256: text("unsigned_sha256"),
+  signedPath: text("signed_path"),
+  signedSha256: text("signed_sha256"),
+  pageCount: integer("page_count"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Одноразові токен-лінки на підписання (аналог lib/invite.ts randomInviteCode).
+export const signatureTokensTable = pgTable("signature_tokens", {
+  id: serial("id").primaryKey(),
+  token: text("token").notNull().unique(),
+  contractId: integer("contract_id").notNull().references(() => contractsTable.id, { onDelete: "cascade" }),
+  // Інші пакети ЦІЄЇ Ж людини, що були sendable (draft/pending_approval/approved)
+  // в момент відправки — надсилаються й підписуються ОДНІЄЮ сесією разом з
+  // contractId (власник 03.09.2026: комплект = одне підписання, не декілька
+  // окремих лінків, коли, напр., факторі-пакет генерується разом зі сталим).
+  extraContractIds: jsonb("extra_contract_ids").$type<number[]>(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  revokedAt: timestamp("revoked_at"),
+  viewCount: integer("view_count").notNull().default(0),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Immutable аудит-журнал підписання (шаблон: loginEventsTable) — доказова база
+// валідності простого е-підпису: хто, коли, звідки, що саме бачив/підписав.
+export const signatureEventsTable = pgTable("signature_events", {
+  id: serial("id").primaryKey(),
+  contractId: integer("contract_id").notNull().references(() => contractsTable.id, { onDelete: "cascade" }),
+  tokenId: integer("token_id").references(() => signatureTokensTable.id),
+  event: text("event").notNull(),
+  // token_created | opened | doc_viewed | consent_given | signed | declined | token_expired | token_revoked
+  at: timestamp("at").notNull().defaultNow(),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  device: text("device"),
+  geo: text("geo"),
+  docSha256: text("doc_sha256"),
+  extra: jsonb("extra"),
+});
+
+// Публічний токен-лінк на веб-сторінку сканування паспорта (/passport-scan/:token,
+// заміна фото-в-Telegram — камера прямо в браузері). Два джерела: офіс створює
+// для нового кандидата в боті («🪪 Паспорт → Новий кандидат», purpose=office,
+// factoryId/telegramId ще невідомі), або сам кандидат за лінком фабрики
+// (?start=fac<factoryId>, purpose=self, telegramId/language вже відомі — це
+// його чат). analyze() кладе файл у tempFilePath і чернетку в draftJson —
+// confirm() (після можливої корекції на сторінці) створює працівника.
+export const passportScanTokensTable = pgTable("passport_scan_tokens", {
+  id: serial("id").primaryKey(),
+  token: text("token").notNull().unique(),
+  purpose: text("purpose").notNull(), // office | self | anketa
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
+  telegramId: text("telegram_id"),
+  language: text("language"),
+  createdBy: integer("created_by").references(() => adminsTable.id), // офісний адмін для purpose=office
+  candidateId: integer("candidate_id").references(() => candidatesTable.id), // рекрутинг: конвертація кандидата — worker/stage прив'язується лише в confirm()
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  tempFilePath: text("temp_file_path"),
+  tempFileName: text("temp_file_name"),
+  tempFileMime: text("temp_file_mime"),
+  draftJson: jsonb("draft_json"), // чернетка OCR (PassportDraft) після analyze(), до confirm()
+  workerId: integer("worker_id").references(() => workersTable.id), // заповнюється після confirm()
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type WorkerQuestionnaire = typeof workerQuestionnairesTable.$inferSelect;
+export type DocumentTemplate = typeof documentTemplatesTable.$inferSelect;
+export type Contract = typeof contractsTable.$inferSelect;
+export type ContractFile = typeof contractFilesTable.$inferSelect;
+export type SignatureToken = typeof signatureTokensTable.$inferSelect;
+export type SignatureEvent = typeof signatureEventsTable.$inferSelect;
+export type PassportScanToken = typeof passportScanTokensTable.$inferSelect;

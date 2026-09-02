@@ -47,6 +47,10 @@ import Fuel from "./pages/Fuel";
 import Cleaning from "./pages/Cleaning";
 import Sushi from "./pages/Sushi";
 import Andros from "./pages/Andros";
+import Contracts from "./pages/Contracts";
+import DocumentTemplates from "./pages/DocumentTemplates";
+import Sign from "./pages/Sign";
+import PassportScan from "./pages/PassportScan";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
@@ -71,6 +75,14 @@ export default function App() {
   const t = useT();
   const { applyLang } = useLang();
   const onLogin = location.pathname.startsWith("/login");
+  // /sign/:token — публічна сторінка онлайн-підписання (§5 плану worker-docs-signing),
+  // токен у URL — єдина авторизація. Нема сесії й НЕ МАЄ бути запиту /auth/me
+  // (інакше 401 повернув би сюди working-employee на /login і зламав лінк).
+  const onSign = location.pathname.startsWith("/sign/");
+  // /passport-scan/:token — публічна сторінка сканування паспорта (камера в
+  // браузері замість фото в Telegram), той самий підхід: токен-авторизація,
+  // без /auth/me.
+  const onPassportScan = location.pathname.startsWith("/passport-scan/");
   // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
   // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
   const [tgReady, setTgReady] = useState(!isTelegramWebApp);
@@ -79,12 +91,14 @@ export default function App() {
     telegramLogin().finally(() => setTgReady(true));
   }, []);
   const { data: me, isLoading, isError } = useQuery<Me>({
-    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && tgReady,
+    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && tgReady,
   });
   // Server-stored language wins: the TG webview forgets localStorage between openings.
   const serverLang = me?.lang;
   useEffect(() => { if (serverLang) applyLang(serverLang); }, [serverLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (onSign) return <Sign />;
+  if (onPassportScan) return <PassportScan />;
   if (onLogin) return <Login />;
   if (!tgReady || isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
   if (isError || !me) return <Login />;
@@ -146,6 +160,8 @@ export default function App() {
         <Route path="/cleaning">{() => guard("/cleaning", <Cleaning />)}</Route>
         <Route path="/sushi">{() => guard("/sushi", <Sushi />)}</Route>
         <Route path="/andros">{() => guard("/andros", <Andros />)}</Route>
+        <Route path="/contracts">{() => guard("/contracts", <Contracts />)}</Route>
+        <Route path="/document-templates">{() => guard("/document-templates", <DocumentTemplates />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>

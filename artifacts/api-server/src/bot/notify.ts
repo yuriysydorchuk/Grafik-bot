@@ -196,6 +196,28 @@ export async function sendLoginCode(telegramId: string, code: string): Promise<b
   } catch { return false; }
 }
 
+// Токен-лінк на онлайн-підписання умови (worker-docs-signing, §5 плану) —
+// 5-мовний, як решта повідомлень працівникам. Best-effort: false = немає
+// telegramId або надсилання не вдалося (виклик з routes/contracts.ts не
+// падає на цьому — токен усе одно створюється, офіс може скопіювати лінк).
+export async function sendSignLink(telegramId: string, lang: string, link: string): Promise<boolean> {
+  try {
+    await bot.telegram.sendMessage(telegramId, t(asLang(lang), "sign.newContract", { link }));
+    return true;
+  } catch { return false; }
+}
+
+// Токен-лінк на скан паспорта+анкету для ІСНУЮЧОГО працівника (веб-панель:
+// «Запросити на скан+анкету» в профілі/масова дія у списку) — той самий
+// best-effort патерн, що sendSignLink: false = нема telegramId або
+// надсилання не вдалося, офіс копіює лінк вручну.
+export async function sendDocsInviteLink(telegramId: string, lang: string, link: string): Promise<boolean> {
+  try {
+    await bot.telegram.sendMessage(telegramId, t(asLang(lang), "docs.inviteExisting", { link }));
+    return true;
+  } catch { return false; }
+}
+
 // Manual broadcast: send a plain text message to a list of Telegram ids.
 export async function sendBroadcast(telegramIds: (string | null)[], text: string): Promise<{ notified: number; skipped: number }> {
   let notified = 0, skipped = 0;

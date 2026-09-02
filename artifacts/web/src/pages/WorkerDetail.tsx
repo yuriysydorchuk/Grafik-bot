@@ -1,16 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoute, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Building2, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt
+  ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye
 } from "lucide-react";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
-import { get, post, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
-import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label } from "../components/ui";
+import { get, post, put, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
+import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -18,6 +18,9 @@ import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
 import { NatFlag, NATIONALITIES } from "../lib/nationality";
 import { useClothingTypes } from "../lib/clothingTypes";
+import { docTypeIcon } from "../lib/docTypeIcons";
+import { TAX_OFFICES } from "../lib/taxOffices";
+import { NFZ_BRANCHES } from "../lib/nfzBranches";
 
 type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null };
 
@@ -27,7 +30,7 @@ interface WorkerProfile {
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   selfTransportSince?: string | null;
-  gratyfikantName?: string | null; pesel?: string | null;
+  gratyfikantName?: string | null; pesel?: string | null; middleName?: string | null; firstName?: string | null; lastName?: string | null;
   badania?: BadaniaEntry[];
   nationality?: string | null;
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
@@ -57,19 +60,28 @@ function Stat({ label, value, sub, tone }: { label: string; value: React.ReactNo
 }
 
 // Секція профілю: тонкий заголовок; без даних — один рядок тексту замість
-// повнорозмірної заглушки (сторінка з порожніми блоками лишається компактною)
-function Section({ icon: Icon, title, extra, action, empty, children }: {
+// повнорозмірної заглушки (сторінка з порожніми блоками лишається компактною).
+// Розгорнуто за замовчуванням (стара поведінка — 02.09.2026 власник відкотив
+// суцільний акордеон, «виглядає по дибільному»; акордеон лишається доступним
+// per-секційно через defaultOpen/шеврон, якщо колись знадобиться вибірково).
+function Section({ icon: Icon, title, extra, action, empty, children, defaultOpen = true, summary }: {
   icon?: any; title: string; extra?: React.ReactNode; action?: React.ReactNode; empty?: string; children: React.ReactNode | null;
+  defaultOpen?: boolean; summary?: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-2.5">
-        {Icon && <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
-        <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+      <div className={`flex flex-wrap items-center gap-2 px-5 py-2.5 ${open ? "border-b border-slate-100" : ""}`}>
+        <button type="button" onClick={() => setOpen(o => !o)} className="flex min-w-0 items-center gap-1.5 text-left">
+          {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
+          {Icon && <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
+          <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+        </button>
         {extra}
+        {!open && summary && <span className="truncate text-xs text-slate-400">{summary}</span>}
         {action && <div className="ml-auto flex shrink-0 items-center gap-2">{action}</div>}
       </div>
-      {children ?? <div className="px-5 py-2 text-sm text-slate-400">{empty}</div>}
+      {open && (children ?? <div className="px-5 py-2 text-sm text-slate-400">{empty}</div>)}
     </Card>
   );
 }
@@ -120,7 +132,7 @@ export default function WorkerDetail() {
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
     gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
     selfTransportSince: w.selfTransportSince ?? null, nationality: w.nationality ?? null,
-    gratyfikantName: w.gratyfikantName ?? null, pesel: w.pesel ?? null,
+    gratyfikantName: w.gratyfikantName ?? null, pesel: w.pesel ?? null, middleName: w.middleName ?? null,
     status: w.status, isActive: w.isActive, language: w.language,
     hourlyRate: w.hourlyRate, isStudent: w.isStudent, under26: w.under26,
   };
@@ -168,14 +180,27 @@ export default function WorkerDetail() {
                 </button>
               )}
               <NatFlag value={w.nationality} className="cursor-default text-lg" />
-              {w.gender && <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
+              <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={t("Стать")}>
+                <select value={w.gender ?? ""} onChange={e => wpatch.mutate({ gender: e.target.value || null })}
+                  className="w-6 cursor-pointer appearance-none border-0 bg-transparent text-center font-semibold focus:outline-none">
+                  <option value="">—</option>
+                  <option value="male">{genderIcon("male")}</option>
+                  <option value="female">{genderIcon("female")}</option>
+                </select>
+              </span>
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
             </h1>
+            {/* Фірма/фабрика/посада — редаговані прямо тут (badge-select), щоб
+                не дублювати те саме ще й рядками в групі «Робота» нижче. */}
             <div className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-500">
               {w.workerCode && <span className="font-mono">{w.workerCode}</span>}
               {w.positionName && <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span>}
-              {w.companyName && <Badge color="blue">{w.companyName}</Badge>}
-              {w.factoryName && <Badge color="red">{w.factoryName}</Badge>}
+              <InlineBadgeSelect value={w.companyId != null ? String(w.companyId) : ""} color="blue" none={t("— без фірми —")}
+                onChange={v => wpatch.mutate({ companyId: v ? Number(v) : null })}
+                options={companies.map(c => ({ value: String(c.id), label: c.name }))} />
+              <InlineBadgeSelect value={w.factoryId != null ? String(w.factoryId) : ""} color="red" none={t("— без фабрики —")}
+                onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
+                options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
             </div>
             {/* лічильники — текстовим рядком замість окремої стрічки тайлів */}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
@@ -195,22 +220,10 @@ export default function WorkerDetail() {
 
         <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 md:grid-cols-3 md:divide-x md:divide-y-0">
           <InfoGroup title={t("Робота")}>
-            <InfoRow icon={Building2} label={t("Фірма")}>
-              <InlineSelect value={w.companyId != null ? String(w.companyId) : ""} onChange={v => wpatch.mutate({ companyId: v ? Number(v) : null })}
-                options={companies.map(c => ({ value: String(c.id), label: c.name }))} />
-            </InfoRow>
-            <InfoRow icon={FactoryIcon} label={t("Фабрика")}>
-              <InlineSelect value={w.factoryId != null ? String(w.factoryId) : ""} onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
-                options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
-            </InfoRow>
             <InfoRow icon={Briefcase} label={t("Посада")}>
               <InlineSelect value={w.positionId != null ? String(w.positionId) : ""}
                 onChange={v => { const p = v ? Number(v) : null; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
                 options={posOptions} />
-            </InfoRow>
-            <InfoRow icon={Users} label={t("Стать")}>
-              <InlineSelect value={w.gender ?? ""} onChange={v => wpatch.mutate({ gender: v || null })}
-                options={[{ value: "male", label: t("Чоловік") }, { value: "female", label: t("Жінка") }]} />
             </InfoRow>
             <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
               <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
@@ -229,12 +242,25 @@ export default function WorkerDetail() {
               <Info icon={KeyRound} label={t("Ключі фабрики")}
                 value={w.factoryCodes!.map(c => `${c.code}${c.factoryName ? ` (${c.factoryName})` : ""}`).join(", ")} />
             )}
+            {/* Дата працевлаштування й поріг «нагадати про години» — про роботу
+                й графік, не про гроші; перенесено з «Фінанси» для балансу колонок. */}
+            <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
+            <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
             <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
-            <InfoRow icon={KeyRound} label="PESEL">
-              <InlineText value={w.pesel ?? ""} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} />
-            </InfoRow>
+            {/* Порожні PESEL/друге ім'я — не показуємо рядок (менше інфи в профілі);
+                заповнити все одно можна через «Редагувати» (WorkerModal). */}
+            {w.pesel && (
+              <InfoRow icon={KeyRound} label="PESEL">
+                <InlineText value={w.pesel} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} />
+              </InfoRow>
+            )}
+            {w.middleName && (
+              <InfoRow icon={IdCard} label={t("Друге ім'я")}>
+                <InlineText value={w.middleName} placeholder={t("необов'язково")} width="w-32" onSave={v => wpatch.mutate({ middleName: v.trim() || null })} />
+              </InfoRow>
+            )}
             <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
             <InfoRow icon={Users} label={t("Національність")}>
               <InlineSelect value={w.nationality ?? ""} onChange={v => wpatch.mutate({ nationality: v || null })}
@@ -269,8 +295,6 @@ export default function WorkerDetail() {
             ) : (
               (w.hourlyRate != null || w.effectiveRate != null) && <Info icon={Clock} label={t("Ставка")} value={`${w.effectiveRate ?? w.hourlyRate} zł/${t("год")}${w.hourlyRate == null ? " · " + t("авто") : ""}${w.positionRate != null ? " · " + t("за посадою") : ""}${w.isStudent ? " · " + t("Студент") : ""}${w.under26 ? " · <26" : ""}`} />
             )}
-            <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
-            <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
             {w.payoutPrefKind !== undefined && (
               <PayoutPrefRow workerId={w.id} kind={w.payoutPrefKind ?? null} value={w.payoutPrefValue ?? null} onRequest={requestChange} />
             )}
@@ -278,9 +302,9 @@ export default function WorkerDetail() {
               <AgramBonusRow workerId={w.id} staz={!!w.agramStazBonus} cash={!!w.agramCashBonus} startDate={w.employmentStartDate ?? null} cashOnly={!w.agramFactory} onRequest={requestChange} />
             )}
             <BadaniaRow workerId={w.id} entries={w.badania ?? []} />
-            {w.gratyfikantName !== undefined && (
+            {w.gratyfikantName && (
               <InfoRow icon={Briefcase} label={t("Імʼя в Gratyfikancie")}>
-                <InlineText value={w.gratyfikantName ?? ""} placeholder={t("вказати")} width="w-44" onSave={v => wpatch.mutate({ gratyfikantName: v.trim() || null })} />
+                <InlineText value={w.gratyfikantName} placeholder={t("вказати")} width="w-44" onSave={v => wpatch.mutate({ gratyfikantName: v.trim() || null })} />
               </InfoRow>
             )}
           </InfoGroup>
@@ -293,7 +317,7 @@ export default function WorkerDetail() {
         <div className="min-w-0 space-y-5">
           {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
           {(w.factoryHistory?.length ?? 0) > 0 && (
-            <Section icon={FactoryIcon} title={t("Історія по фабриках")}>
+            <Section icon={FactoryIcon} title={t("Історія по фабриках")} summary={t("{n} фабрик", { n: w.factoryHistory.length })}>
               <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
@@ -319,7 +343,8 @@ export default function WorkerDetail() {
           )}
 
           {/* Recent shifts */}
-          <Section icon={CalendarCheck} title={t("Останні зміни")} empty={t("Немає відпрацьованих змін")}>
+          <Section icon={CalendarCheck} title={t("Останні зміни")} empty={t("Немає відпрацьованих змін")}
+            summary={w.recent[0]?.date ? t("останнє {d}", { d: w.recent[0].date }) : undefined}>
             {!w.recent.length ? null : (
               <div className="max-h-96 overflow-auto">
                 <table className="w-full text-sm">
@@ -350,6 +375,7 @@ export default function WorkerDetail() {
         </div>
 
         <div className="min-w-0 space-y-5">
+          {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
           <WorkerDocuments workerId={w.id} />
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />
@@ -423,6 +449,22 @@ function InlineSelect({ value, options, onChange, none = "—" }: { value: strin
   );
 }
 
+// Той самий <select>, стилізований під бейдж — щоб фірма/фабрика/стать в
+// шапці-ідентичності лишались редаговані, не дублюючись ще й рядком у
+// «Робота» нижче (власник 03.09.2026: бейдж уже показує значення, другий
+// рядок з тим самим — зайвий).
+function InlineBadgeSelect({ value, options, onChange, color, none }: {
+  value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; color: "blue" | "red" | "slate"; none: string;
+}) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className={`rounded-full border-0 px-2 py-0.5 text-xs font-medium ${badgeClass(color)} cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-300`}>
+      <option value="">{none}</option>
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
 // ─── Documents ────────────────────────────────────────────────────────────────
 const DOC_STATUS: Record<string, { label: string; color: "green" | "rose" | "amber" | "slate" }> = {
   present: { label: "наявний", color: "green" },
@@ -432,6 +474,662 @@ const DOC_STATUS: Record<string, { label: string; color: "green" | "rose" | "amb
 };
 const isExpired = (iso?: string | null) => !!iso && new Date(iso + "T00:00:00").getTime() < Date.now();
 
+type Questionnaire = {
+  id: number; workerId: number; status: string;
+  passportNumber: string | null; passportCountry: string | null;
+  passportIssuedAt: string | null; passportExpiresAt: string | null;
+  birthPlace: string | null; sex: string | null; citizenship: string | null;
+  addressRegistered: string | null; addressPl: string | null; postalCode: string | null; city: string | null;
+  motherName: string | null; fatherName: string | null;
+  bankName: string | null; bankIban: string | null; phone: string | null; email: string | null;
+  taxOffice: string | null; nfzBranch: string | null;
+  isStudent: boolean; schoolName: string | null;
+  hasOtherEmployment: boolean; otherEmploymentNote: string | null;
+  isRegisteredUnemployed: boolean;
+  emergencyContact: string | null;
+  nip: string | null; pit0: boolean;
+  ankietaInnyPracodawca: boolean; ankietaEmeryt: boolean; ankietaRencista: boolean;
+  ankietaNiepelnosprawnosc: boolean; ankietaSkladkaChorobowa: boolean;
+  taxOfficeAddress: string | null;
+  regWojewodztwo: string | null; regPowiat: string | null; regGmina: string | null; regMiejscowosc: string | null;
+  regUlica: string | null; regNumerDomu: string | null; regKodPocztowy: string | null;
+  zamWojewodztwo: string | null; zamPowiat: string | null; zamGmina: string | null; zamMiejscowosc: string | null;
+  zamUlica: string | null; zamNumerDomu: string | null; zamKodPocztowy: string | null;
+  submittedAt: string | null; verifiedAt: string | null;
+};
+const QUESTIONNAIRE_STATUS: Record<string, { label: string; color: "slate" | "blue" | "green" }> = {
+  draft: { label: "чернетка", color: "slate" },
+  submitted: { label: "подано", color: "blue" },
+  verified: { label: "перевірено", color: "green" },
+};
+
+// Анкета працівника (паспорт + адмін-дані umowa zlecenie) — модуль
+// «Документи й підписання». Це ІНСТРУМЕНТ ЗБОРУ ДАНИХ для генератора
+// документів (здебільшого заповнює сам працівник лінком з бота), не окрема
+// «сторінка профілю» — тому на самому профілі лише компактний рядок зі
+// статусом і кнопкою, повна форма — в модалці (рішення власника 02.09.2026).
+function WorkerQuestionnaire({ workerId }: { workerId: number }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const { data: q, isLoading } = useQuery<Questionnaire | null>({ queryKey: ["worker-questionnaire", workerId], queryFn: () => get(`/workers/${workerId}/questionnaire`) });
+  const st = QUESTIONNAIRE_STATUS[q?.status ?? "draft"]!;
+
+  return (
+    <>
+      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setOpen(true)}>
+        <IdCard className="h-3.5 w-3.5" /> {t("Анкета")} {!isLoading && <Badge color={st.color}>{t(st.label)}</Badge>}
+      </Button>
+      {open && <QuestionnaireModal workerId={workerId} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data: q, isLoading } = useQuery<Questionnaire | null>({ queryKey: ["worker-questionnaire", workerId], queryFn: () => get(`/workers/${workerId}/questionnaire`) });
+  // Ім'я/по-батькові/прізвище — поля workersTable (той самий поділ, що в
+  // routes/passportScan.ts), не анкети; той самий "worker" кеш, що на сторінці
+  // профілю ["worker", id] — React Query дедублює запит.
+  const { data: worker } = useQuery<{ firstName?: string | null; middleName?: string | null; lastName?: string | null }>({ queryKey: ["worker", workerId], queryFn: () => get(`/workers/${workerId}`) });
+  const [form, setForm] = useState<Record<string, any>>({});
+  const [name, setName] = useState({ firstName: "", middleName: "", lastName: "" });
+  useEffect(() => { setForm(q ?? {}); }, [q]);
+  useEffect(() => { if (worker) setName({ firstName: worker.firstName ?? "", middleName: worker.middleName ?? "", lastName: worker.lastName ?? "" }); }, [worker]);
+  const inv = () => qc.invalidateQueries({ queryKey: ["worker-questionnaire", workerId] });
+  const save = useMutation({
+    mutationFn: () => put(`/workers/${workerId}/questionnaire`, { ...form, ...name }),
+    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker", workerId] }); toast.success(t("Анкету збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const verify = useMutation({
+    mutationFn: () => post(`/workers/${workerId}/questionnaire/verify`),
+    onSuccess: () => { inv(); toast.success(t("Анкету підтверджено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // OCR паспорта (Document AI): фото/скан → чернетка полів анкети. Не чіпає
+  // вже підтверджені (verified) дані — сервер лише додає ocrRaw для довідки.
+  const scanInputRef = useRef<HTMLInputElement>(null);
+  const scan = useMutation({
+    mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload<{ nameDraft?: { firstName: string | null; middleName: string | null; lastName: string | null } }>(`/workers/${workerId}/passport-scan`, fd); },
+    onSuccess: (r) => {
+      inv();
+      // Не перезаписуємо те, що вже вписано в цій сесії — лише добираємо порожнє.
+      if (r.nameDraft) setName(n => ({
+        firstName: n.firstName || r.nameDraft!.firstName || "",
+        middleName: n.middleName || r.nameDraft!.middleName || "",
+        lastName: n.lastName || r.nameDraft!.lastName || "",
+      }));
+      toast.success(t("Паспорт розпізнано — перевір поля анкети"));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
+  const setNameField = (k: keyof typeof name) => (v: string) => setName(n => ({ ...n, [k]: v }));
+  const st = QUESTIONNAIRE_STATUS[q?.status ?? "draft"]!;
+
+  return (
+    <Modal open onClose={onClose} title={t("Анкета")} size="lg">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Badge color={st.color}>{t(st.label)}</Badge>
+        <input ref={scanInputRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) scan.mutate(f); e.target.value = ""; }} />
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button variant="secondary" className="px-2 py-1 text-xs" disabled={scan.isPending} onClick={() => scanInputRef.current?.click()}>
+            <Upload className="h-3.5 w-3.5" /> {t("Сканувати паспорт")}
+          </Button>
+          <Button variant="secondary" className="px-2 py-1 text-xs" disabled={save.isPending} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+          {q && q.status !== "verified" && (
+            <Button className="px-2 py-1 text-xs" disabled={verify.isPending} onClick={() => verify.mutate()}><ShieldCheck className="h-3.5 w-3.5" /> {t("Підтвердити")}</Button>
+          )}
+        </div>
+      </div>
+      {isLoading ? <Spinner /> : (
+        <div className="grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto pb-1 sm:grid-cols-2">
+          <div><Label>{t("Ім'я")}</Label><Input value={name.firstName} onChange={e => setNameField("firstName")(e.target.value)} /></div>
+          <div><Label>{t("Прізвище")}</Label><Input value={name.lastName} onChange={e => setNameField("lastName")(e.target.value)} /></div>
+          <div><Label>{t("Друге ім'я")}</Label><Input value={name.middleName} onChange={e => setNameField("middleName")(e.target.value)} /></div>
+          <div><Label>{t("Номер паспорта")}</Label><Input value={form.passportNumber ?? ""} onChange={e => set("passportNumber", e.target.value)} /></div>
+          <div><Label>{t("Країна паспорта")}</Label><Input value={form.passportCountry ?? ""} onChange={e => set("passportCountry", e.target.value)} /></div>
+          <div><Label>{t("Паспорт видано")}</Label><Input type="date" value={form.passportIssuedAt ?? ""} onChange={e => set("passportIssuedAt", e.target.value)} /></div>
+          <div><Label>{t("Паспорт дійсний до")}</Label><Input type="date" value={form.passportExpiresAt ?? ""} onChange={e => set("passportExpiresAt", e.target.value)} /></div>
+          <div><Label>{t("Місце народження")}</Label><Input value={form.birthPlace ?? ""} onChange={e => set("birthPlace", e.target.value)} /></div>
+          <div>
+            <Label>{t("Стать (документ)")}</Label>
+            <Select value={form.sex ?? ""} onChange={e => set("sex", e.target.value)}>
+              <option value="">—</option><option value="M">{t("Чоловіча")}</option><option value="F">{t("Жіноча")}</option>
+            </Select>
+          </div>
+          <div><Label>{t("Громадянство")}</Label><Input value={form.citizenship ?? ""} onChange={e => set("citizenship", e.target.value)} /></div>
+          <div><Label>{t("Адреса в Польщі")}</Label><Input value={form.addressPl ?? ""} onChange={e => set("addressPl", e.target.value)} /></div>
+          <div><Label>{t("Поштовий індекс")}</Label><Input value={form.postalCode ?? ""} onChange={e => set("postalCode", e.target.value)} placeholder="00-000" /></div>
+          <div><Label>{t("Місто/gmina")}</Label><Input value={form.city ?? ""} onChange={e => set("city", e.target.value)} /></div>
+          <div>
+            <Label>{t("Адреса замельдування")}</Label>
+            <div className="flex gap-1.5">
+              <Input value={form.addressRegistered ?? ""} onChange={e => set("addressRegistered", e.target.value)} />
+              <button type="button" title={t("= адреса в Польщі")} onClick={() => set("addressRegistered", form.addressPl ?? "")}
+                className="shrink-0 rounded-lg border border-slate-300 px-2 text-xs text-slate-500 hover:bg-slate-50">=PL</button>
+            </div>
+          </div>
+          <div><Label>{t("Імʼя мами")}</Label><Input value={form.motherName ?? ""} onChange={e => set("motherName", e.target.value)} /></div>
+          <div><Label>{t("Імʼя тата")}</Label><Input value={form.fatherName ?? ""} onChange={e => set("fatherName", e.target.value)} /></div>
+          <div><Label>{t("Банк")}</Label><Input value={form.bankName ?? ""} onChange={e => set("bankName", e.target.value)} /></div>
+          <div><Label>IBAN</Label><Input value={form.bankIban ?? ""} onChange={e => set("bankIban", e.target.value)} /></div>
+          <div><Label>{t("Телефон")}</Label><Input value={form.phone ?? ""} onChange={e => set("phone", e.target.value)} /></div>
+          <div><Label>Email</Label><Input value={form.email ?? ""} onChange={e => set("email", e.target.value)} /></div>
+          <div><Label>{t("Urząd skarbowy")}</Label><SearchableSelect value={form.taxOffice ?? ""} onChange={v => set("taxOffice", v)} options={TAX_OFFICES} /></div>
+          <div><Label>NFZ</Label><SearchableSelect value={form.nfzBranch ?? ""} onChange={v => set("nfzBranch", v)} options={NFZ_BRANCHES} /></div>
+          <div className="sm:col-span-2"><Label>{t("Контакт для екстрених випадків")}</Label><Input value={form.emergencyContact ?? ""} onChange={e => set("emergencyContact", e.target.value)} /></div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" checked={!!form.isStudent} onChange={e => set("isStudent", e.target.checked)} id={`q-student-${workerId}`} />
+            <label htmlFor={`q-student-${workerId}`} className="text-sm text-slate-600">{t("Студент")}</label>
+          </div>
+          {form.isStudent && (
+            <div><Label>{t("Навчальний заклад")}</Label><Input value={form.schoolName ?? ""} onChange={e => set("schoolName", e.target.value)} /></div>
+          )}
+          <div className="flex items-center gap-2">
+            <input type="checkbox" checked={!!form.hasOtherEmployment} onChange={e => set("hasOtherEmployment", e.target.checked)} id={`q-otherjob-${workerId}`} />
+            <label htmlFor={`q-otherjob-${workerId}`} className="text-sm text-slate-600">{t("Є інша робота")}</label>
+          </div>
+          {form.hasOtherEmployment && (
+            <div className="sm:col-span-2"><Label>{t("Деталі іншої зайнятості")}</Label><Input value={form.otherEmploymentNote ?? ""} onChange={e => set("otherEmploymentNote", e.target.value)} /></div>
+          )}
+          <div className="flex items-center gap-2">
+            <input type="checkbox" checked={!!form.isRegisteredUnemployed} onChange={e => set("isRegisteredUnemployed", e.target.checked)} id={`q-unemployed-${workerId}`} />
+            <label htmlFor={`q-unemployed-${workerId}`} className="text-sm text-slate-600">{t("Зареєстрований(а) як безробітний(а) в PL")}</label>
+          </div>
+
+          <div className="sm:col-span-2 mt-2 border-t border-slate-100 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            {t("Для ZUS / podatkowe")}
+          </div>
+          <div><Label>{t("NIP (необов'язково)")}</Label><Input value={form.nip ?? ""} onChange={e => set("nip", e.target.value)} /></div>
+          <div><Label>{t("Адреса Urzędu Skarbowego")}</Label><Input value={form.taxOfficeAddress ?? ""} onChange={e => set("taxOfficeAddress", e.target.value)} /></div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" checked={!!form.pit0} onChange={e => set("pit0", e.target.checked)} id={`q-pit0-${workerId}`} />
+            <label htmlFor={`q-pit0-${workerId}`} className="text-sm text-slate-600">{t("Ulga dla młodych — 0% PIT (до 26 років)")}</label>
+          </div>
+          <div className="sm:col-span-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {([
+              ["ankietaInnyPracodawca", "Інший роботодавець (ZUS)"],
+              ["ankietaEmeryt", "Емерит"],
+              ["ankietaRencista", "Рецист (інвалідність — пенсія)"],
+              ["ankietaNiepelnosprawnosc", "Інвалідність"],
+              ["ankietaSkladkaChorobowa", "Хоче хворобову складку (добровільно)"],
+            ] as const).map(([k, label]) => (
+              <div key={k} className="flex items-center gap-2">
+                <input type="checkbox" checked={!!form[k]} onChange={e => set(k, e.target.checked)} id={`q-${k}-${workerId}`} />
+                <label htmlFor={`q-${k}-${workerId}`} className="text-sm text-slate-600">{t(label)}</label>
+              </div>
+            ))}
+          </div>
+
+          <div className="sm:col-span-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Адреса замельдування (гранульно)")}</div>
+          {([
+            ["regWojewodztwo", "Województwo"], ["regPowiat", "Powiat"], ["regGmina", "Gmina"], ["regMiejscowosc", "Miejscowość"],
+            ["regUlica", "Ulica"], ["regNumerDomu", "Numer domu"], ["regKodPocztowy", "Kod pocztowy"],
+          ] as const).map(([k, label]) => (
+            <div key={k}><Label>{label}</Label><Input value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
+          ))}
+
+          <div className="sm:col-span-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Адреса проживання (гранульно)")}</div>
+          {([
+            ["zamWojewodztwo", "Województwo"], ["zamPowiat", "Powiat"], ["zamGmina", "Gmina"], ["zamMiejscowosc", "Miejscowość"],
+            ["zamUlica", "Ulica"], ["zamNumerDomu", "Numer domu"], ["zamKodPocztowy", "Kod pocztowy"],
+          ] as const).map(([k, label]) => (
+            <div key={k}><Label>{label}</Label><Input value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+type ContractSummary = {
+  id: number; workerId: number; factoryId: number | null; status: string;
+  dateFrom: string | null; dateTo: string | null; generatedAt: string | null;
+  approvedAt: string | null; sentAt: string | null; signedAt: string | null;
+  companySignedAt: string | null; supersedesId: number | null;
+};
+type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedSha256: string | null; signedSha256: string | null };
+type DocSetItem = { id: number; kind: string; title: string };
+const KIND_LABEL: Record<string, string> = {
+  umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki",
+  andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", custom: "Інше",
+};
+
+// Компанія підписує ЛИШЕ після працівника (бізнес-правило) — worker_signed
+// між "sent" і фінальним "signed".
+const CONTRACT_STATUS: Record<string, { label: string; color: "slate" | "blue" | "green" | "amber" | "rose" }> = {
+  draft: { label: "чернетка", color: "slate" },
+  pending_approval: { label: "на розгляді", color: "amber" },
+  approved: { label: "затверджено", color: "blue" },
+  sent: { label: "надіслано", color: "blue" },
+  viewed: { label: "переглянуто", color: "blue" },
+  worker_signed: { label: "підписав працівник", color: "amber" },
+  signed: { label: "підписано", color: "green" },
+  declined: { label: "відхилено", color: "rose" },
+  cancelled: { label: "скасовано", color: "slate" },
+  superseded: { label: "замінено", color: "slate" },
+  expired: { label: "прострочено", color: "rose" },
+};
+
+// Умови (umowa zlecenie + załączniki) — модуль «Документи й підписання»
+// (/contracts) у розробці. Генерація вимагає підтверджену (verified) анкету
+// (WorkerQuestionnaire вище) і набір шаблонів; workflow: draft → (одна кнопка
+// «Надіслати на підпис») → sent → працівник підписує на /sign/:token →
+// worker_signed → (finalize, компанія) → signed. submit/pending_approval/
+// approve лишились на бекенді (окремі ендпоінти), але «Надіслати на підпис»
+// працює прямо з draft — без обов'язкових проміжних кліків. Компанія НЕ може
+// підписати раніше за працівника — «Підписати від компанії» з'являється лише
+// в статусі worker_signed.
+function WorkerContracts({ workerId, factoryId, factories }: { workerId: number; factoryId: number | null; factories: Factory[] }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { data: contracts = [], isLoading } = useQuery<ContractSummary[]>({ queryKey: ["worker-contracts", workerId], queryFn: () => get(`/workers/${workerId}/contracts`) });
+  const [showNew, setShowNew] = useState(false);
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const inv = () => qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] });
+
+  const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { inv(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
+  const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { inv(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
+  const send = useMutation({
+    mutationFn: (id: number) => post<{ notified: boolean; link: string | null; bundledCount: number }>(`/contracts/${id}/send`),
+    onSuccess: r => {
+      inv();
+      // bundledCount>0 — разом надіслано й інші sendable пакети цієї людини
+      // (одна сесія підписання на весь комплект, не окремі лінки).
+      const bundleNote = r.bundledCount > 0 ? ` (${t("разом з {n} іншим пакетом", { n: r.bundledCount })})` : "";
+      toast.success((r.notified ? t("Надіслано працівнику в Telegram") : t("Токен створено, але Telegram не надіслано — скопіюй лінк вручну")) + bundleNote);
+      if (r.link && !r.notified) navigator.clipboard?.writeText(r.link).catch(() => {});
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const renderRow = (c: ContractSummary) => {
+    const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
+    return (
+      <div key={c.id} className="border-b border-slate-50 last:border-0">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 text-sm">
+          <Badge color={st.color}>{t(st.label)}</Badge>
+          {!c.dateFrom && !["declined", "cancelled", "superseded", "expired"].includes(c.status) ? (
+            <EditContractDates contractId={c.id} onSaved={inv} />
+          ) : (
+            <span className="text-slate-600">{c.dateFrom ?? "—"}{c.dateTo ? ` → ${c.dateTo}` : ""}</span>
+          )}
+          {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {["draft", "pending_approval", "approved"].includes(c.status) && (
+              <button onClick={() => send.mutate(c.id)} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
+            )}
+            {c.status === "worker_signed" && (
+              <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
+            )}
+            {!["signed", "cancelled", "superseded", "expired", "declined"].includes(c.status) && (
+              <button onClick={async () => { if (await confirm({ title: t("Скасувати пакет?"), danger: true, confirmText: t("Скасувати") })) cancelMut.mutate(c.id); }}
+                className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Скасувати")}><Ban className="h-3.5 w-3.5" /></button>
+            )}
+            <button onClick={() => setExpanded(x => x === c.id ? null : c.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+              {expanded === c.id ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        </div>
+        {(c.signedAt || c.companySignedAt) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-4 pb-2 text-xs text-slate-400">
+            {c.signedAt && <span>{t("Підписав працівник")}: {new Date(c.signedAt).toLocaleString("uk-UA")}</span>}
+            {c.companySignedAt && <span>{t("Підписала компанія")}: {new Date(c.companySignedAt).toLocaleString("uk-UA")}</span>}
+          </div>
+        )}
+        {expanded === c.id && <ContractFilesList contractId={c.id} />}
+      </div>
+    );
+  };
+
+  // factoryId=null — сталий пакет (спільний для всіх фабрик, підписується
+  // раз); factoryId задано — окремий ланцюг конкретної фабрики. Працівник
+  // може мати кілька одночасно активних факторі-ланцюгів (§7 плану).
+  const standard = contracts.filter(c => c.factoryId == null);
+  // Дійсний = підписаний ПРАЦІВНИКОМ (worker_signed або вже фінальний signed)
+  // і не прострочений по даті — доки такого нема, модалка генерації факторі-
+  // пакета мусить пропонувати сталий пакет РАЗОМ (не лише окремим кроком).
+  const today = new Date().toISOString().slice(0, 10);
+  const validStandard = standard.find(c => (c.status === "worker_signed" || c.status === "signed") && (!c.dateTo || c.dateTo >= today));
+  const byFactory = new Map<number, ContractSummary[]>();
+  for (const c of contracts) if (c.factoryId != null) { const arr = byFactory.get(c.factoryId) ?? []; arr.push(c); byFactory.set(c.factoryId, arr); }
+
+  return (
+    <>
+      <Section icon={FileSignature} title={t("Умови (Umowa)")}
+        action={<>
+          <WorkerQuestionnaire workerId={workerId} />
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setShowNew(true)}><Plus className="h-3.5 w-3.5" /> {t("Згенерувати документи")}</Button>
+        </>}
+        empty={t("Документів ще немає.")}>
+        {isLoading ? <Spinner /> : contracts.length ? (
+          <div>
+            {standard.length > 0 && (
+              <div className="border-b border-slate-100">
+                <div className="bg-slate-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Стандартний пакет")} <span className="normal-case text-slate-400">({t("спільний для всіх фабрик")})</span></div>
+                {standard.map(renderRow)}
+              </div>
+            )}
+            {[...byFactory.entries()].map(([fid, list]) => (
+              <div key={fid} className="border-b border-slate-100 last:border-0">
+                <div className="bg-slate-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{factories.find(f => f.id === fid)?.name ?? `#${fid}`}</div>
+                {list.map(renderRow)}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Section>
+      {showNew && (
+        <GenerateDocumentsModal workerId={workerId} defaultFactoryId={factoryId} factories={factories}
+          standardValid={!!validStandard} standardValidUntil={validStandard?.dateTo ?? null}
+          onClose={() => setShowNew(false)} onSaved={() => { inv(); setShowNew(false); }} />
+      )}
+    </>
+  );
+}
+
+// Умову можна згенерувати й підписати без дат (дозвіл на роботу часто
+// оформлюють УЖЕ маючи підписану умову — дата стає відома постфактум) — тут
+// дописуємо, щойно з'явиться, на будь-якому нетермінальному статусі. У draft
+// це ще й перегенеровує PDF-файли; після — лише дані в БД, підписаний файл не
+// чіпається (services/contracts.ts:updateContractDates).
+function EditContractDates({ contractId, onSaved }: { contractId: number; onSaved: () => void }) {
+  const t = useT();
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const save = useMutation({
+    mutationFn: () => patch(`/contracts/${contractId}/dates`, { dateFrom, dateTo: dateTo || null }),
+    onSuccess: () => { toast.success(t("Дати збережено")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-7 w-32 text-xs" />
+      <span className="text-slate-400">→</span>
+      <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-7 w-32 text-xs" />
+      <button onClick={() => save.mutate()} disabled={!dateFrom || save.isPending}
+        className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50">
+        {t("Зберегти дати")}
+      </button>
+    </div>
+  );
+}
+
+// Клік по файлу розгортає PDF просто в рядку (canvas через pdf.js, як на
+// /sign/:token) — без нової вкладки/скачування, щоб офіс міг перевірити
+// зміст, не виходячи зі сторінки.
+function ContractFilesList({ contractId }: { contractId: number }) {
+  const t = useT();
+  const { data, isLoading } = useQuery<{ files: ContractFileRow[] }>({ queryKey: ["contract-detail", contractId], queryFn: () => get(`/contracts/${contractId}`) });
+  const [openFile, setOpenFile] = useState<number | null>(null);
+  if (isLoading) return <div className="px-4 py-2"><Spinner /></div>;
+  const files = data?.files ?? [];
+  if (!files.length) return <div className="px-4 pb-2 text-xs text-slate-400">{t("Файлів ще немає.")}</div>;
+  return (
+    <div className="space-y-1 bg-slate-50/60 px-4 py-2">
+      {files.map(f => (
+        <div key={f.id}>
+          <button type="button" onClick={() => setOpenFile(x => x === f.id ? null : f.id)}
+            className="flex w-full items-center gap-1.5 text-left text-xs text-red-600 hover:underline">
+            <Eye className="h-3 w-3" /> {f.title} {f.signedSha256 && <Badge color="green">{t("підписано")}</Badge>}
+            {openFile === f.id ? <ChevronUp className="h-3 w-3 text-slate-400" /> : <ChevronDown className="h-3 w-3 text-slate-400" />}
+          </button>
+          {openFile === f.id && <ContractPdfPreview url={`/api/contracts/${contractId}/files/${f.id}`} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// PDF рендеримо самі через pdf.js (канвасами) — вбудований переглядач браузера
+// може бути налаштований «скачувати PDF», і превʼю тоді не показується взагалі
+// (той самий підхід, що CostInvoices.tsx PdfPreview і /sign/:token PdfPages).
+function ContractPdfPreview({ url }: { url: string }) {
+  const t = useT();
+  const ref = useRef<HTMLDivElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url" as any)).default as string;
+        pdfjs.GlobalWorkerOptions.workerSrc = worker;
+        const doc = await pdfjs.getDocument({ url }).promise;
+        if (cancelled || !ref.current) return;
+        ref.current.innerHTML = "";
+        for (let i = 1; i <= doc.numPages; i++) {
+          const page = await doc.getPage(i);
+          const vp = page.getViewport({ scale: 1.4 });
+          const canvas = document.createElement("canvas");
+          canvas.width = vp.width; canvas.height = vp.height;
+          canvas.style.width = "100%";
+          canvas.className = "mb-2 rounded border border-slate-200 bg-white";
+          if (cancelled || !ref.current) return;
+          ref.current.appendChild(canvas);
+          await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp } as any).promise;
+        }
+      } catch (e: any) { if (!cancelled) setErr(String(e?.message ?? e).slice(0, 200)); }
+    })();
+    return () => { cancelled = true; };
+  }, [url]);
+  if (err) return <div className="px-1 py-2 text-xs text-rose-500">{t("Не вдалося показати PDF.")} {err}</div>;
+  return <div ref={ref} className="max-h-[70vh] overflow-y-auto px-1 py-2" />;
+}
+
+// Фабрика обирається тут, не обов'язково worker.factoryId (§7 плану —
+// декілька одночасно активних факторі-пакетів на працівника). "" у Select =
+// сталий пакет (factoryId=null): ZUS/tax/PPK/BHP/wniosek. Чекліст авторезолвиться
+// (factory > company > all), кожен пункт можна вручну зняти/додати перед генерацією.
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const yearAheadIso = () => { const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
+
+function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standardValid, standardValidUntil, onClose, onSaved }: {
+  workerId: number; defaultFactoryId: number | null; factories: Factory[];
+  standardValid: boolean; standardValidUntil: string | null;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const t = useT();
+  const [factoryId, setFactoryId] = useState<string>(defaultFactoryId ? String(defaultFactoryId) : "");
+  // Рік-наперед за замовчуванням — лише для сталого пакету (ZUS/tax/PPK/BHP/
+  // wniosek): факторі-пакет (Umowa, іноді разом з Regulamin) цілком легально
+  // йде БЕЗ дат (дата роботи невідома заздалегідь) — не форсувати тут дефолт.
+  const [dateFrom, setDateFrom] = useState(defaultFactoryId ? "" : todayIso());
+  const [dateTo, setDateTo] = useState(defaultFactoryId ? "" : yearAheadIso());
+  const [rateOverride, setRateOverride] = useState("");
+  const [payoutCash, setPayoutCash] = useState(false);
+  const [checkedFactory, setCheckedFactory] = useState<Set<number>>(new Set());
+  const [checkedStandard, setCheckedStandard] = useState<Set<number>>(new Set());
+  const isStandard = factoryId === "";
+  // Сталий пакет (ZUS/tax/PPK/BHP/wniosek) — спільний для ВСІХ фабрик; має
+  // з'являтись у комплекті кожного разу, коли його ще нема чинного підписаного
+  // варіанту, а не лише коли адмін явно обрав "— Стандартний пакет —".
+  const needsStandardToo = !isStandard && !standardValid;
+  const showStandardSection = isStandard || needsStandardToo;
+
+  const { data: allTemplates = [] } = useQuery<{ id: number; kind: string; title: string; isActive: boolean }[]>({
+    queryKey: ["document-templates-all"], queryFn: () => get("/document-templates"),
+  });
+  const factoryKinds = new Set(["umowa", "regulamin", "andros_extra", "sprzatanie_umowa"]);
+  const factoryCandidates = allTemplates.filter(tp => tp.isActive && factoryKinds.has(tp.kind));
+  const standardCandidates = allTemplates.filter(tp => tp.isActive && !factoryKinds.has(tp.kind));
+
+  const { data: autoSetFactory = [], isFetching: autoFactoryLoading } = useQuery<DocSetItem[]>({
+    queryKey: ["document-set", workerId, factoryId],
+    queryFn: () => get(`/workers/${workerId}/document-set?factoryId=${factoryId}`),
+    enabled: !isStandard,
+  });
+  const { data: autoSetStandard = [], isFetching: autoStandardLoading } = useQuery<DocSetItem[]>({
+    queryKey: ["document-set", workerId, "standard"],
+    queryFn: () => get(`/workers/${workerId}/document-set`),
+    enabled: showStandardSection,
+  });
+
+  // Перше завантаження чекліста для обраної фабрики — попередньо відмічаємо
+  // авторезолвлені пункти; повторні зміни адмін керує сам (не перезаписуємо
+  // його ручний вибір при кожному рефетчі). Факторі- і стандартний чекліст
+  // відмічаються незалежно (сталий може лишатись відміченим, поки перемикаєш
+  // фабрики, факторі — перевідмічається щоразу під нову фабрику).
+  const lastAutoFactoryKey = useRef<string | null>(null);
+  if (!isStandard && lastAutoFactoryKey.current !== factoryId && !autoFactoryLoading) {
+    lastAutoFactoryKey.current = factoryId;
+    setCheckedFactory(new Set(autoSetFactory.map(x => x.id)));
+  }
+  const lastAutoStandardKey = useRef<string | null>(null);
+  const standardKey = showStandardSection ? "on" : "off";
+  if (showStandardSection && lastAutoStandardKey.current !== standardKey && !autoStandardLoading) {
+    lastAutoStandardKey.current = standardKey;
+    setCheckedStandard(new Set(autoSetStandard.map(x => x.id)));
+  }
+
+  const toggleIn = (setFn: (fn: (prev: Set<number>) => Set<number>) => void, list: typeof factoryCandidates) => (id: number, kind: string) => {
+    setFn(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); return next; }
+      next.add(id);
+      // konto/reka взаємовиключні — галочка на одному знімає інший
+      if (kind === "wniosek_konto" || kind === "wniosek_reka") {
+        const other = list.find(c => c.id !== id && (c.kind === "wniosek_konto" || c.kind === "wniosek_reka"));
+        if (other) next.delete(other.id);
+      }
+      return next;
+    });
+  };
+  const toggleFactory = toggleIn(setCheckedFactory, factoryCandidates);
+  const toggleStandard = toggleIn(setCheckedStandard, standardCandidates);
+
+  const setPayoutMethod = useMutation({ mutationFn: (method: "konto" | "reka") => put(`/workers/${workerId}/questionnaire`, { payoutMethod: method }) });
+  const onTogglePayout = (cash: boolean) => {
+    setPayoutCash(cash);
+    setPayoutMethod.mutate(cash ? "reka" : "konto");
+    setCheckedStandard(prev => {
+      const next = new Set(prev);
+      const konto = standardCandidates.find(c => c.kind === "wniosek_konto");
+      const reka = standardCandidates.find(c => c.kind === "wniosek_reka");
+      if (cash) { if (konto) next.delete(konto.id); if (reka) next.add(reka.id); }
+      else { if (reka) next.delete(reka.id); if (konto) next.add(konto.id); }
+      return next;
+    });
+  };
+
+  // Факторі- і сталий пакет — окремі ланцюги (contracts.factory_id відрізняється),
+  // тож коли треба обидва разом — це два послідовні POST в одній дії адміна.
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!isStandard && checkedFactory.size > 0) {
+        await post(`/workers/${workerId}/contracts`, {
+          factoryId: Number(factoryId), templateIds: [...checkedFactory],
+          dateFrom: dateFrom || null, dateTo: dateTo || null,
+          contractRateBrutto: rateOverride.trim() === "" ? null : Number(rateOverride.replace(",", ".")),
+        });
+      }
+      if (showStandardSection && checkedStandard.size > 0) {
+        await post(`/workers/${workerId}/contracts`, {
+          factoryId: null, templateIds: [...checkedStandard],
+          dateFrom: dateFrom || null, dateTo: dateTo || null,
+        });
+      }
+    },
+    onSuccess: () => { toast.success(t("Документи згенеровано")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const totalChecked = (!isStandard ? checkedFactory.size : 0) + (showStandardSection ? checkedStandard.size : 0);
+
+  return (
+    <Modal open onClose={onClose} title={t("Згенерувати документи")} size="lg">
+      <div className="space-y-3">
+        <div>
+          <Label>{t("Фабрика")}</Label>
+          <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
+            <option value="">{t("— Стандартний пакет (без фабрики) —")}</option>
+            {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </Select>
+        </div>
+
+        {showStandardSection && (
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={payoutCash} onChange={e => onTogglePayout(e.target.checked)} />
+            {t("Виплата готівкою (замість «на konto»)")}
+          </label>
+        )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label>{t("Діє від")}</Label><Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></div>
+          <div><Label>{t("Діє до")}</Label><Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></div>
+        </div>
+        <div className="text-xs text-slate-400">
+          {isStandard
+            ? t("За замовчуванням — рік від сьогодні, можна відредагувати вручну.")
+            : t("Для умови дати можна лишити порожніми й дописати пізніше, коли вони стануть відомі.")}
+        </div>
+
+        {!isStandard && (
+          <div>
+            <Label>{t("Ставка в умові для цього працівника (zł/год брутто)")}</Label>
+            <Input value={rateOverride} onChange={e => setRateOverride(e.target.value)} placeholder={t("порожньо = ставка фабрики")} inputMode="decimal" className="w-40" />
+            <p className="mt-1 text-xs text-slate-400">{t("Перекриває ставку «в умові» з налаштувань фабрики лише для цієї людини й цього пакета.")}</p>
+          </div>
+        )}
+
+        {!isStandard && (
+          <div>
+            <Label>{t("Комплект документів фабрики")} {autoFactoryLoading && <Spinner />}</Label>
+            <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto rounded-lg border border-slate-200">
+              {factoryCandidates.length === 0 && <div className="px-3 py-3 text-sm text-slate-400">{t("Немає шаблонів цього типу в бібліотеці.")}</div>}
+              {factoryCandidates.map(c => (
+                <label key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50">
+                  <input type="checkbox" checked={checkedFactory.has(c.id)} onChange={() => toggleFactory(c.id, c.kind)} />
+                  <Badge color="slate">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
+                  <span className="truncate text-slate-700">{c.title}</span>
+                  {autoSetFactory.some(a => a.id === c.id) && <span className="ml-auto shrink-0 text-xs text-emerald-600">{t("авто")}</span>}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {showStandardSection && (
+          <div>
+            <Label>
+              {t("Стандартний пакет")} <span className="font-normal text-slate-400">({t("спільний для всіх фабрик")})</span>
+              {needsStandardToo && <span className="ml-1 font-normal text-amber-600">— {t("ще не підписаний, додається разом")}</span>}
+              {" "}{autoStandardLoading && <Spinner />}
+            </Label>
+            <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto rounded-lg border border-slate-200">
+              {standardCandidates.length === 0 && <div className="px-3 py-3 text-sm text-slate-400">{t("Немає шаблонів цього типу в бібліотеці.")}</div>}
+              {standardCandidates.map(c => (
+                <label key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50">
+                  <input type="checkbox" checked={checkedStandard.has(c.id)} onChange={() => toggleStandard(c.id, c.kind)} />
+                  <Badge color="slate">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
+                  <span className="truncate text-slate-700">{c.title}</span>
+                  {autoSetStandard.some(a => a.id === c.id) && <span className="ml-auto shrink-0 text-xs text-emerald-600">{t("авто")}</span>}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!isStandard && !needsStandardToo && (
+          <p className="text-xs text-emerald-600">
+            ✓ {t("Стандартний пакет уже підписаний")}{standardValidUntil ? ` — ${t("дійсний до")} ${standardValidUntil}` : ` (${t("безстроково")})`}.
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button disabled={totalChecked === 0 || save.isPending} onClick={() => save.mutate()}>{t("Згенерувати")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function WorkerDocuments({ workerId }: { workerId: number }) {
   const t = useT();
   const qc = useQueryClient();
@@ -440,8 +1138,20 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
   const { data: docs = [], isLoading } = useQuery<WorkerDocument[]>({ queryKey: ["worker-docs", workerId], queryFn: () => get(`/workers/${workerId}/documents`) });
   const [editing, setEditing] = useState<WorkerDocument | null>(null);
   const [addFor, setAddFor] = useState<DocumentType | null | "custom">(null);
+  const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-docs", workerId] });
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-documents/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
+  // Запросити на скан паспорта (якщо ще нема) + анкету — anketa-токен,
+  // routes/passportScan.ts сам вирішує чи показувати крок сканування.
+  // Той самий best-effort патерн, що «Надіслати на підпис» у WorkerContracts.
+  const docsInvite = useMutation({
+    mutationFn: () => post<{ notified: boolean; link: string }>(`/workers/${workerId}/docs-invite`),
+    onSuccess: r => {
+      toast.success(r.notified ? t("Надіслано працівнику в Telegram") : t("Токен створено, але Telegram не надіслано — скопіюй лінк вручну"));
+      if (r.link && !r.notified) navigator.clipboard?.writeText(r.link).catch(() => {});
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const docByType = new Map<number, WorkerDocument>();
   for (const d of docs) if (d.docTypeId != null) docByType.set(d.docTypeId, d);
@@ -453,15 +1163,23 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
     const expired = doc && (doc.status === "expired" || isExpired(doc.expiresAt));
     const status = doc ? (expired && doc.status === "present" ? "expired" : doc.status) : "missing";
     const s = DOC_STATUS[status] ?? DOC_STATUS.missing;
+    const Icon = docTypeIcon(type?.icon);
+    const hasFile = !!doc?.fileName;
     return (
       <div key={key} className="flex flex-wrap items-center gap-2 border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
-        <FileText className="h-4 w-4 shrink-0 text-slate-400" />
-        <span className="font-medium text-slate-700">{name}</span>
+        {hasFile ? (
+          <button type="button" onClick={() => setPreview(doc!)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
+            <Icon className="h-4 w-4" />
+          </button>
+        ) : <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
+        {hasFile ? (
+          <button type="button" onClick={() => setPreview(doc!)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{name}</button>
+        ) : <span className="font-medium text-slate-700">{name}</span>}
         {required && <span className="text-[10px] font-semibold uppercase text-amber-500">{t("обов'язковий")}</span>}
         <Badge color={s!.color}>{t(s!.label)}</Badge>
         {doc?.expiresAt && <span className={`text-xs ${isExpired(doc.expiresAt) ? "font-medium text-rose-600" : "text-slate-400"}`}>⏳ {doc.expiresAt}</span>}
         {doc?.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
-        {doc?.fileName && <a href={`/api/worker-documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline" title={doc.fileName}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
+        {hasFile && <a href={`/api/worker-documents/${doc!.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc!.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
         {doc?.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
         {doc?.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
         <div className="ml-auto flex shrink-0 gap-1">
@@ -480,7 +1198,12 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
     <>
       <Section icon={FileText} title={t("Документи")}
         extra={missingRequired > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-600"><AlertTriangle className="h-3 w-3" /> {t("бракує {n}", { n: missingRequired })}</span>}
-        action={<Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAddFor("custom")}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>}
+        action={
+          <div className="flex items-center gap-1.5">
+            <Button variant="secondary" className="px-2 py-1 text-xs" loading={docsInvite.isPending} onClick={() => docsInvite.mutate()}>{t("Запросити на скан+анкету")}</Button>
+            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAddFor("custom")}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>
+          </div>
+        }
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
         {isLoading ? <Spinner /> : (types.length || extras.length) ? (
           <div>
@@ -493,7 +1216,35 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
         <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types}
           onClose={() => { setAddFor(null); setEditing(null); }} onSaved={() => { inv(); setAddFor(null); setEditing(null); }} />
       )}
+      {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
     </>
+  );
+}
+
+// Клік по іконці/назві документа — перегляд одразу на сайті (фото/PDF —
+// вбудовано, без переходу в нову вкладку). filePath уже віддається сервером з
+// Content-Disposition: inline (routes/admin-api.ts), тож просте <img>/<iframe>
+// на цей самий URL не тригерить завантаження.
+function DocPreviewModal({ doc, onClose }: { doc: WorkerDocument; onClose: () => void }) {
+  const t = useT();
+  const url = `/api/worker-documents/${doc.id}/file`;
+  const isImage = !!doc.fileMime?.startsWith("image/");
+  const isPdf = doc.fileMime === "application/pdf";
+  return (
+    <Modal open onClose={onClose} title={doc.title} size="xl">
+      {isImage ? (
+        <img src={url} alt={doc.title} className="mx-auto max-h-[80vh] w-auto rounded-lg" />
+      ) : isPdf ? (
+        <iframe src={url} title={doc.title} className="h-[80vh] w-full rounded-lg border border-slate-200" />
+      ) : (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <p className="text-sm text-slate-500">{t("Перегляд неможливий для цього типу файлу.")}</p>
+          <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-red-600 hover:underline">
+            {t("Відкрити в новій вкладці")} <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1005,6 +1756,9 @@ function WorkerClothing({ workerId }: { workerId: number }) {
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-clothing", workerId] }); qc.invalidateQueries({ queryKey: ["clothing-stock"] }); };
   const rows = data?.rows ?? [];
   const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+  // Нічого не видавалось — секція взагалі не рендериться (менше інфи в
+  // профілі); видати перший одяг усе одно можна зі сторінки /clothing.
+  if (!rows.length) return null;
   return (
     <>
     <Section icon={Shirt} title={t("Одяг")} empty={t("Одяг не видавався")}
@@ -1240,6 +1994,8 @@ function WorkerAdvances({ workerId }: { workerId: number }) {
     rejected: { label: t("Відхилено"), color: "rose" }, paid: { label: t("Виплачено"), color: "green" },
   };
   const fmtD = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  // Авансів не було — секція взагалі не рендериться (менше інфи в профілі).
+  if (!rows.length) return null;
   return (
     <Section icon={Wallet} title={t("Аванси")} empty={t("Авансів ще не було")}
       extra={data != null && data.paidTotal > 0 ? <span className="text-xs text-slate-400">{t("виплачено разом")} <b className="text-slate-600">{data.paidTotal} zł</b></span> : undefined}

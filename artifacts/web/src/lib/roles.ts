@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -20,6 +20,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   fuel: "Пальне (фактури Orlen, аналітика по містах/водіях/авто)",
   hostelOps: "Хостели — операційне ведення (кімнати, проживання, платежі мешканців)",
   cleaning: "Прибирання — окремий бізнес (вспульноти: дохід, винагродження, видатки, P&L)",
+  workerDocs: "Документи й підписання (паспортні дані, анкети, умови працівників)",
 };
 
 // Pages a role can be granted access to (nav + route guards).
@@ -32,6 +33,8 @@ export const PAGE_LABEL: Record<string, string> = {
   "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
   "/drivers": "Водії", "/fleet": "Автопарк", "/transport": "Транспорт", "/clothing": "Одяг", "/factories": "Фабрики", "/admins": "Адміни",
   "/sushi": "Суші (проєкт)", "/andros": "Андрос (проєкт)",
+  "/contracts": "Документи й умови",
+  "/document-templates": "Бібліотека шаблонів документів",
 };
 export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 

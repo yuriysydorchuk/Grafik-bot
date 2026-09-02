@@ -43,7 +43,8 @@ export async function adminHasCap(admin: { role: string } | undefined, cap: Capa
 }
 
 // Головне меню офіс-адміна з урахуванням його капабіліті («📄 Фактура» — лише
-// з invoiceScan). Використовуй на головних входах у меню замість голого adminMenu.
+// з invoiceScan, «🪪 Паспорт» — лише з workerDocs). Використовуй на головних
+// входах у меню замість голого adminMenu.
 export async function adminMenuFor(admin: { role: string } | undefined, lang: Lang = "uk") {
-  return adminMenu(lang, { invoice: await adminHasCap(admin, "invoiceScan") });
+  return adminMenu(lang, { invoice: await adminHasCap(admin, "invoiceScan"), docs: await adminHasCap(admin, "workerDocs") });
 }

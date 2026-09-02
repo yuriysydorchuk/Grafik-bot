@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
+import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown, Landmark } from "lucide-react";
 import { toast } from "sonner";
 import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
-import { Card, Spinner, Input, Label, Button, Select, Badge, Empty } from "../components/ui";
+import { Card, Spinner, Input, Label, Button, Select, Badge, Empty, Modal } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { STAGE_COLORS, dotClass, badgeClass } from "../lib/colors";
+import { DOC_TYPE_ICONS, DOC_TYPE_ICON_KEYS, docTypeIcon } from "../lib/docTypeIcons";
 import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
@@ -294,13 +295,61 @@ function CompaniesSettings() {
 function CompanyRow({ co, onRename, onDelete }: { co: Company; onRename: (n: string) => void; onDelete: () => void }) {
   const t = useT();
   const [name, setName] = useState(co.name);
+  const [showRegistry, setShowRegistry] = useState(false);
   return (
     <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
       <Input value={name} onChange={e => setName(e.target.value)} className="flex-1" />
       <Badge color="slate">{co.workerCount ?? 0} {t("прац.")}</Badge>
       {name.trim() && name !== co.name && <Button variant="secondary" onClick={() => onRename(name.trim())}>{t("Зберегти")}</Button>}
+      <button onClick={() => setShowRegistry(true)} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Реквізити (KRS/REGON/адреса) — для документів")}><Landmark className="h-4 w-4" /></button>
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
+      {showRegistry && <CompanyRegistryModal co={co} onClose={() => setShowRegistry(false)} />}
     </div>
+  );
+}
+
+// Реквізити KRS — {%Nazwa firmy%}/{%NIP firmy%}/{%KRS firmy%}/{%REGON firmy%}/
+// адреса/{%Reprezentant firmy%} у шаблонах Umowa (worker-docs-signing). Дані
+// беруться з офіційного реєстру KRS, не вигадуються.
+function CompanyRegistryModal({ co, onClose }: { co: Company; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [f, setF] = useState({
+    legalName: co.legalName ?? "", nip: co.nip ?? "", krs: co.krs ?? "", regon: co.regon ?? "",
+    street: co.street ?? "", houseNumber: co.houseNumber ?? "", postalCode: co.postalCode ?? "", city: co.city ?? "",
+    representative: co.representative ?? "",
+  });
+  const save = useMutation({
+    mutationFn: () => patch(`/companies/${co.id}`, f),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["companies"] }); toast.success(t("Збережено")); onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF(v => ({ ...v, [k]: e.target.value }));
+  return (
+    <Modal open onClose={onClose} title={t("Реквізити — {name}", { name: co.name })}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-400">{t("Підставляються в Umowa та інші документи (бібліотека шаблонів). Джерело — офіційний реєстр KRS.")}</p>
+        <div><Label>{t("Повна юридична назва")}</Label><Input value={f.legalName} onChange={set("legalName")} placeholder="Eurosupport Group Sp. z o.o." /></div>
+        <div className="grid grid-cols-3 gap-2">
+          <div><Label>NIP</Label><Input value={f.nip} onChange={set("nip")} /></div>
+          <div><Label>KRS</Label><Input value={f.krs} onChange={set("krs")} /></div>
+          <div><Label>REGON</Label><Input value={f.regon} onChange={set("regon")} /></div>
+        </div>
+        <div className="grid grid-cols-[2fr_1fr] gap-2">
+          <div><Label>{t("Вулиця")}</Label><Input value={f.street} onChange={set("street")} /></div>
+          <div><Label>{t("Номер")}</Label><Input value={f.houseNumber} onChange={set("houseNumber")} /></div>
+        </div>
+        <div className="grid grid-cols-[1fr_2fr] gap-2">
+          <div><Label>{t("Індекс")}</Label><Input value={f.postalCode} onChange={set("postalCode")} placeholder="20-076" /></div>
+          <div><Label>{t("Місто")}</Label><Input value={f.city} onChange={set("city")} /></div>
+        </div>
+        <div><Label>{t("Представник (ПІБ + посада)")}</Label><Input value={f.representative} onChange={set("representative")} placeholder="Alona Kovalchuk – Prezes Zarządu" /></div>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => save.mutate()} loading={save.isPending}>{t("Зберегти")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -337,9 +386,15 @@ function DocTypesSettings() {
 function DocTypeRow({ d, onSave, onDelete }: { d: DocumentType; onSave: (p: any) => void; onDelete: () => void }) {
   const t = useT();
   const [name, setName] = useState(d.name);
+  const Icon = docTypeIcon(d.icon);
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
+      <Icon className="h-4 w-4 shrink-0 text-slate-400" />
       <Input value={name} onChange={e => setName(e.target.value)} className="min-w-40 flex-1" />
+      <Select value={d.icon ?? ""} onChange={e => onSave({ icon: e.target.value || null })} className="w-40" title={t("Іконка")}>
+        <option value="">{t("— без іконки —")}</option>
+        {DOC_TYPE_ICON_KEYS.map(k => <option key={k} value={k}>{t(DOC_TYPE_ICONS[k]!.label)}</option>)}
+      </Select>
       <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.required} onChange={e => onSave({ required: e.target.checked })} /> {t("обов'язковий")}</label>
       <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.hasExpiry} onChange={e => onSave({ hasExpiry: e.target.checked })} /> {t("має термін дії")}</label>
       {name.trim() && name !== d.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}

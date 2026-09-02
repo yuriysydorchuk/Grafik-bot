@@ -63,16 +63,22 @@ export interface AdvanceRequest {
   svodniMonth: string | null; // YYYY-MM сводної, куди перенесено (вкладка «У сводну»)
   createdAt: string;
 }
-export interface Company { id: number; name: string; workerCount?: number }
+export interface Company {
+  id: number; name: string; workerCount?: number;
+  legalName?: string | null; nip?: string | null;
+  krs?: string | null; regon?: string | null;
+  street?: string | null; houseNumber?: string | null; postalCode?: string | null; city?: string | null;
+  representative?: string | null;
+}
 export type Gender = "male" | "female";
 export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }
 // One requirement line in a factory order: how many workers of a position/gender.
 export interface OrderRequirement { positionId: number | null; gender: "any" | Gender; count: number }
-export interface DocumentType { id: number; name: string; required: boolean; hasExpiry: boolean; sortOrder: number }
+export interface DocumentType { id: number; name: string; required: boolean; hasExpiry: boolean; sortOrder: number; icon: string | null }
 export interface WorkerDocument {
   id: number; workerId: number; docTypeId: number | null; title: string;
   status: string; number: string | null; expiresAt: string | null; fileUrl: string | null; note: string | null;
-  fileName: string | null;
+  fileName: string | null; fileMime: string | null;
 }
 export interface Worker {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
@@ -88,6 +94,8 @@ export interface Worker {
   status: string; isActive: boolean; language?: string | null;
   gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
   pesel?: string | null; // 11 цифр текстом (з картотек nexo; матчинг ліст по PESEL)
+  middleName?: string | null; // необов'язкове; {%Drugie imię%} в Umowa — порожньо не йде в документ
+  firstName?: string | null; lastName?: string | null; // структуровані зі сканування паспорта/анкети; {%Imię%}/{%Nazwisko%} в Umowa
   hourlyRate?: number; isStudent?: boolean; under26?: boolean; // owner only
 }
 export interface Driver {

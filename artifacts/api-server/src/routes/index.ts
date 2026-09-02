@@ -23,10 +23,22 @@ import fleetRouter from "./fleet";
 import transportRouter from "./transport";
 import clothingRouter from "./clothing";
 import gratyfikantRouter from "./gratyfikant";
+import contractsRouter from "./contracts";
+import documentTemplatesRouter from "./documentTemplates";
+import signRouter from "./sign";
+import passportScanRouter from "./passportScan";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+// Публічні токен-роути підписання — БЕЗ authRequired (§5 плану worker-docs-
+// signing), свій rate-limit у sign.ts. МУСИТЬ монтуватись РАНІШЕ за будь-який
+// роутер з неупакованим router.use(authRequired)/requireCap(...) (fleet,
+// transport, svodni, contracts, …) — інакше їхній блоковий гейт перехоплює
+// /sign/* запити раніше, ніж вони дістануться сюди, і 401-ить публічну
+// сторінку (саме так і сталося при першому підключенні — фіксовано тестом).
+router.use(signRouter);
+router.use(passportScanRouter);
 router.use(authRouter);
 router.use(adminApiRouter);
 router.use(fleetRouter);
@@ -54,5 +66,7 @@ router.use(ksefRouter);
 router.use(cleaningRouter);
 router.use(fuelRouter);
 router.use(securityRouter);
+router.use(contractsRouter);
+router.use(documentTemplatesRouter);
 
 export default router;

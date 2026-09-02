@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2 } from "lucide-react";
+import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, type Worker, type Factory, type Company, type Position } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Empty, Modal } from "../components/ui";
@@ -35,6 +35,7 @@ export default function Workers() {
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
   const [firing, setFiring] = useState<Worker | null>(null);
+  const [scanInviteLink, setScanInviteLink] = useState<string | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
   const fire = useMutation({
@@ -60,6 +61,27 @@ export default function Workers() {
     onSuccess: (text, targets) => { navigator.clipboard?.writeText(text); toast.success(t("Скопійовано {n} посилань", { n: targets.length })); },
     onError: (e: any) => toast.error(e.message),
   });
+  // Живий онбординг — «Додати» шле на скан+анкету замість ручної форми
+  // (WorkerModal лишається другорядним фолбеком, кнопка «...або вручну»).
+  const scanInvite = useMutation({
+    mutationFn: () => post<{ link: string }>("/workers/scan-invite"),
+    onSuccess: (d) => setScanInviteLink(d.link),
+    onError: (e: any) => toast.error(e.message),
+  });
+  // Масове запрошення ІСНУЮЧИХ працівників на подачу паспорта+анкети —
+  // дзеркалить inviteAll: одна мутація на кожного, підсумковий toast.
+  const docsInviteAll = useMutation({
+    mutationFn: async (targets: Worker[]) => {
+      let notified = 0;
+      for (const w of targets) {
+        const r = await post<{ notified: boolean }>(`/workers/${w.id}/docs-invite`);
+        if (r.notified) notified++;
+      }
+      return { total: targets.length, notified };
+    },
+    onSuccess: (r) => toast.success(t("Запрошення надіслано {notified} з {total}", { notified: r.notified, total: r.total })),
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const filtered = useMemo(() => (workers ?? []).filter(w =>
     (showInactive ? !w.isActive : w.isActive) &&
@@ -80,7 +102,12 @@ export default function Workers() {
   return (
     <>
       <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${showInactive ? t("звільнених") : t("активних")}`}
-        action={<Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>} />
+        action={
+          <div className="flex items-center gap-3">
+            <Button loading={scanInvite.isPending} onClick={() => scanInvite.mutate()}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+            <button onClick={() => setAdding(true)} className="text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline">{t("...або вручну")}</button>
+          </div>
+        } />
 
       {/* Filters pinned under the top bar while the table scrolls (md+ only) —
           same pattern as Schedule: top-[52px] = desktop top-bar height − 1px,
@@ -122,6 +149,11 @@ export default function Workers() {
         {(() => { const targets = filtered.filter(w => w.isActive && !w.telegramId); return targets.length > 0 ? (
           <Button variant="secondary" loading={inviteAll.isPending} onClick={() => inviteAll.mutate(targets)}>
             <Link2 className="h-4 w-4" /> {t("Скопіювати всі посилання")} ({targets.length})
+          </Button>
+        ) : null; })()}
+        {(() => { const targets = filtered.filter(w => w.isActive); return targets.length > 0 ? (
+          <Button variant="secondary" loading={docsInviteAll.isPending} onClick={() => docsInviteAll.mutate(targets)}>
+            <FileText className="h-4 w-4" /> {t("Запросити на подачу документів")} ({targets.length})
           </Button>
         ) : null; })()}
       </div>
@@ -166,6 +198,8 @@ export default function Workers() {
       {(adding || edit) && <WorkerModal worker={edit} factories={factories} companies={companies} isOwner={isOwner} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { invalidate(); setAdding(false); setEdit(null); }} />}
 
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport) => fire.mutate({ id: firing.id, offerReport })} />}
+
+      {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}
     </>
   );
 }
@@ -192,6 +226,26 @@ function LegalCell({ w }: { w: Worker }) {
   return w.student
     ? <span title={t("Студент — форма легалізації не заповнена")} className="inline-block rounded bg-yellow-100 px-1.5 py-0.5 text-[11px] font-semibold text-yellow-700">{t("без форми")}</span>
     : <span title={t("Не оформлений — без форми легалізації")} className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">{t("без форми")}</span>;
+}
+
+// Лінк на скан+анкету для НОВОГО кандидата (POST /workers/scan-invite) —
+// відкрий на телефоні кандидата, профіль створиться сам після сканування.
+function ScanInviteModal({ link, onClose }: { link: string; onClose: () => void }) {
+  const t = useT();
+  return (
+    <Modal open onClose={onClose} title={t("Запросити кандидата на скан+анкету")}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">{t("Відкрий це посилання на телефоні кандидата — камера й анкета. Лінк дійсний 30 хвилин.")}</p>
+        <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+          <code className="flex-1 overflow-x-auto whitespace-nowrap text-xs text-slate-600">{link}</code>
+          <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(link); toast.success(t("Скопійовано")); }}>{t("Копіювати")}</Button>
+        </div>
+        <div className="flex justify-end">
+          <Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 // Firing confirm with the "offer a farewell report" option: the leaver gets inline

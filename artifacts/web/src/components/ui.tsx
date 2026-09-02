@@ -1,4 +1,4 @@
-import { type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, useEffect, useRef } from "react";
+import { type ReactNode, type ButtonHTMLAttributes, type InputHTMLAttributes, type SelectHTMLAttributes, type TextareaHTMLAttributes, type Ref, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -34,11 +34,56 @@ export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputEleme
   return <input className={cn("w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition-colors hover:border-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100", className)} {...rest} />;
 }
 
+export function Textarea({ className, ref, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { ref?: Ref<HTMLTextAreaElement> }) {
+  return <textarea ref={ref} className={cn("w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition-colors hover:border-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100", className)} {...rest} />;
+}
+
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select className={cn("w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition-colors hover:border-slate-400 focus:border-red-500 focus:ring-2 focus:ring-red-100", className)} {...rest}>
       {children}
     </select>
+  );
+}
+
+// Текстове поле з випадним списком-підказкою й пошуком по підрядку — не строгий
+// select (значення лишається вільним текстом, як і завжди в анкеті): клік по
+// варіанту підставляє його, але можна ввести й щось своє, якщо довідника
+// бракує. onMouseDown+preventDefault на пункті — щоб blur інпута не встиг
+// закрити список раніше за click (типовий рецепт combobox).
+export function SearchableSelect({ value, onChange, options, placeholder, className }: {
+  value: string; onChange: (v: string) => void; options: string[]; placeholder?: string; className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const q = value.trim().toLowerCase();
+  const filtered = (q ? options.filter(o => o.toLowerCase().includes(q)) : options).slice(0, 50);
+
+  return (
+    <div ref={boxRef} className="relative">
+      <Input value={value} placeholder={placeholder} className={className} autoComplete="off"
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)} />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+          {filtered.map(o => (
+            <button key={o} type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => { onChange(o); setOpen(false); }}
+              className="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-50">
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

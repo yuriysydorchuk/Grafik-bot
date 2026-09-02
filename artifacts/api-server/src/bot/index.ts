@@ -27,6 +27,7 @@ import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
+import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import { loadDateShiftOverrides, loadDatesShiftOverrides, loadWeekShiftOverrides, overrideFor, shiftOverrideKey, type ShiftOverrideMap } from "../services/shiftOverrides";
@@ -98,6 +99,8 @@ import { installChatTracking, recordBotMessage } from "./chat";
 installChatTracking();
 
 import { registerInvoiceScan } from "./handlers/invoiceScan";
+import { registerPassportScan } from "./handlers/passportScan";
+import { registerWorkerDocuments } from "./handlers/workerDocuments";
 
 bot.use(async (ctx, next) => {
   try {
@@ -119,6 +122,8 @@ bot.use(async (ctx, next) => {
 // ── Скан фактур (📄 Фактура) — реєструється ДО загальних photo/document/text
 // хендлерів (вони не кличуть next); чужі стани пропускає далі через next() ────
 registerInvoiceScan(bot as any);
+registerPassportScan(bot as any);
+registerWorkerDocuments(bot as any);
 
 // Time/view helpers live in ./time and ./views.
 
@@ -138,13 +143,6 @@ async function weekFactoryStats(factoryId: number | undefined, weekStart: string
   const relevant = avail.filter(a => factoryId == null || !a.wFactory || a.wFactory === factoryId);
   const availWorkers = new Set(relevant.map(a => a.workerId).filter(Boolean)).size;
   return { ordersTotal, daysWithOrders, availWorkers, availSlots: relevant.length };
-}
-
-// Next sequential 5-digit worker code (mirrors the web panel's generator)
-async function genWorkerCode(): Promise<string> {
-  const all = await db.select({ code: workersTable.workerCode }).from(workersTable);
-  const max = all.map(r => parseInt(r.code ?? "0", 10)).filter(n => !isNaN(n)).reduce((a, b) => Math.max(a, b), 0);
-  return String(max + 1).padStart(5, "0");
 }
 
 // Generate a unique crypto-random invite code for a driver (unguessable — used as ?start=drv<code>).
@@ -523,41 +521,18 @@ bot.hears(bhears("📥 Імпорт графіку (Excel)"), async (ctx) => {
   );
 });
 
+// Живий онбординг — той самий шлях, що «🪪 Паспорт → 🆕 Новий кандидат»
+// (bot/handlers/passportScan.ts): скан паспорта+анкета замість ручного
+// 4-крокового діалогу (звідси й раніше зникло ручне вбивання даних —
+// один спосіб завести працівника, не два паралельних).
 bot.hears(bhears("➕ Додати працівника"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
-  setState(tid, "add_worker", {});
-  return ctx.reply(tb(al, "Введіть повне ім'я працівника (Прізвище Ім'я):"), Markup.removeKeyboard());
+  const token = await createOfficeScanToken(admin.id);
+  return ctx.reply(tb(al,
+    "📷 Відкрий цю сторінку на телефоні кандидата (чи своєму) — там камера й рамка-підказка для паспорта, дійсна 30 хв:\n{link}\n\nПрофіль створиться автоматично після сканування, я напишу сюди, коли буде готово.",
+    { link: passportScanLink(token) }));
 });
-
-// Helper: show add_worker step prompt
-async function promptAddWorkerStep(ctx: Context, data: Record<string, any>, al: Lang = "uk") {
-  if (!data.name) {
-    return ctx.reply(tb(al, "Введіть повне ім'я працівника:"), Markup.removeKeyboard());
-  }
-  if (!("factoryId" in data)) {
-    const factories = await db.select().from(factoriesTable);
-    if (factories.length === 0) {
-      // No factories yet — skip factory selection
-      data.factoryId = null;
-      return ctx.reply(tb(al, "Введіть Telegram ID (або /skip):"), Markup.keyboard([["/skip"], [tb(al, "⬅️ Назад")]]).resize());
-    }
-    return ctx.reply(
-      tb(al, "Оберіть фабрику для *{name}*:", { name: data.name }),
-      { parse_mode: "Markdown", ...Markup.keyboard([...factories.map(f => [f.name]), [tb(al, "/skip — без фабрики")], [tb(al, "⬅️ Назад")]]).resize() },
-    );
-  }
-  if (!("telegramId" in data)) {
-    return ctx.reply(tb(al, "Введіть Telegram ID (або /skip):"), Markup.keyboard([["/skip"], [tb(al, "⬅️ Назад")]]).resize());
-  }
-  if (!("workerCode" in data)) {
-    return ctx.reply(
-      tb(al, "Введіть код працівника (тільки цифри) або /skip — автоматично:"),
-      Markup.keyboard([["/skip"], [tb(al, "⬅️ Назад")]]).resize(),
-    );
-  }
-  return;
-}
 
 bot.hears(bhears("📋 Список працівників"), async (ctx) => {
   const tid = String(ctx.from.id);
@@ -822,10 +797,14 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
     return ctx.reply(t(lang, firstPick ? "start.greet" : "lang.changed", { name: worker.fullName }), await workerMenuFor(worker, lang));
   }
   const st = getState(tid);
-  // Factory self-signup: language chosen → ask the name in it, carry lang through the flow.
+  // Factory self-signup: мова обрана → одразу лінк на веб-сканування паспорта
+  // (routes/passportScan.ts) — фото В ЧАТ більше не приймається (незручно,
+  // власник). telegramId уже відомий (це його чат) — профіль створиться і
+  // прив'яжеться відразу після сканування, без окремого emp-лінка.
   if (st?.action === "worker_signup:lang") {
-    setState(tid, "worker_signup", { ...st.data, lang });
-    return ctx.reply(t(lang, "signup.factory", { factory: mdSafe(st.data.factoryName) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+    clearState(tid);
+    const token = await createSelfScanToken({ factoryId: st.data.factoryId, telegramId: tid, language: lang });
+    return ctx.reply(t(lang, "signup.factory", { factory: mdSafe(st.data.factoryName), link: passportScanLink(token) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
   }
   // Referral signup: same — language first, then the application questions.
   if (st?.action === "candidate_signup:lang") {
@@ -3352,59 +3331,6 @@ bot.on("text", async (ctx) => {
     return ctx.reply(tb(al, "✅ *{name}* (`{id}`) додано як адміна.", { name, id: newTid }), { parse_mode: "Markdown", ...managementMenu(al) });
   }
 
-  // ── Worker self-signup via factory link ───────────────────────────
-  if (state?.action === "worker_signup") {
-    const { data } = state;
-    const lang = asLang(data.lang); // chosen on the language step before the name prompt
-    const fullName = text.trim().replace(/\s+/g, " ");
-    // names are stored in Latin (Polish alphabet) only — Cyrillic is rejected up front
-    if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
-      return ctx.reply(t(lang, "signup.badName"));
-    }
-    // double-check this Telegram isn't already linked to a worker
-    const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
-    if (existing) {
-      clearState(tid);
-      const wl = wlang(existing);
-      return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
-    }
-    // Дублікат-детект: якщо офіс уже завів схожу людину — профіль усе одно
-    // створюємо (людина одразу працює з ботом), а адмін отримує кнопки
-    // «Обʼєднати» / «Різні люди»: злиття — ЛИШЕ після ручного затвердження.
-    const dup = findLikelyDuplicate(fullName, await db.select().from(workersTable));
-    const code = await genWorkerCode();
-    const [freshWorker] = await db.insert(workersTable).values({
-      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code, language: lang,
-    }).returning();
-    clearState(tid);
-    // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
-    try {
-      const staff = await db.select().from(adminsTable);
-      const dupNote = dup
-        ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}${dup.isActive ? "" : " (звільнений)"}.`
-        : "";
-      const dupKb = dup && freshWorker ? {
-        inline_keyboard: [[
-          { text: `🔗 Обʼєднати (лишити №${dup.workerCode ?? dup.id})`, callback_data: `wmerge_${dup.id}_${freshWorker.id}` },
-          { text: "👥 Різні люди", callback_data: "wmerge_skip" },
-        ]],
-      } : undefined;
-      for (const a of staff) {
-        if (!a.telegramId) continue;
-        if (a.role !== "owner" && a.role !== "scheduler") continue;
-        await bot.telegram.sendMessage(
-          a.telegramId,
-          `🆕 Новий працівник зареєструвався сам:\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`,
-          { parse_mode: "HTML", ...(dupKb ? { reply_markup: dupKb } : {}) },
-        );
-      }
-    } catch { /* notification is best-effort */ }
-    return ctx.reply(
-      t(lang, "signup.done", { name: mdSafe(fullName), factory: mdSafe(data.factoryName) }),
-      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, lang)) },
-    );
-  }
-
   // ── Referral candidate signup: name ───────────────────────────────
   if (state?.action === "candidate_signup:name") {
     const lang = asLang(state.data.lang); // chosen on the language step before the name prompt
@@ -3584,81 +3510,6 @@ bot.on("text", async (ctx) => {
       ctx.chat.id,
       tb(al, "👷 *Працівники — {label} ({n})*:\n\n{list}\n\n✅ = Telegram прив'язаний  ⚠️ = не прив'язаний", { label: filterLabel, n: workers.length, list }),
       { parse_mode: "Markdown" },
-    );
-    return ctx.reply(tb(al, "Управління:"), managementMenu(al));
-  }
-
-  // ── Add worker (multi-step: name → factory → telegramId → code) ──
-  if (state?.action === "add_worker") {
-    const { data } = state;
-    const al = olang(await getAdmin(tid));
-
-    // Step 1: name
-    if (!data.name) {
-      data.name = text;
-      setState(tid, "add_worker", data);
-      // неблокуюче попередження про ймовірний дубль (та сама людина вже в базі)
-      const dup = findLikelyDuplicate(text, await db.select().from(workersTable));
-      if (dup) {
-        await ctx.reply(tb(al, "⚠️ Схожий працівник уже є: *{name}* (код {code}{fired}). Якщо це та сама людина — «✖️ Скасувати».", {
-          name: mdSafe(dup.fullName), code: dup.workerCode ?? String(dup.id), fired: dup.isActive ? "" : ", звільнений",
-        }), { parse_mode: "Markdown" });
-      }
-      return promptAddWorkerStep(ctx, data, al);
-    }
-
-    // Step 2: factory
-    if (!("factoryId" in data)) {
-      const factories = await db.select().from(factoriesTable);
-      const skipFactory = bhears("/skip — без фабрики").includes(text) || text === "/skip";
-      const matchFactory = factories.find(f => f.name === text);
-      if (!skipFactory && !matchFactory && factories.length > 0) {
-        return ctx.reply(tb(al, "Оберіть фабрику зі списку або /skip:"));
-      }
-      data.factoryId = matchFactory?.id ?? null;
-      setState(tid, "add_worker", data);
-      return promptAddWorkerStep(ctx, data, al);
-    }
-
-    // Step 3: telegramId
-    if (!("telegramId" in data)) {
-      data.telegramId = text === "/skip" ? null : text.trim();
-      setState(tid, "add_worker", data);
-      return promptAddWorkerStep(ctx, data, al);
-    }
-
-    // Step 4: code
-    const isSkip = text === "/skip";
-    let workerCode: string;
-    if (isSkip) {
-      const allCodes = await db.select({ code: workersTable.workerCode }).from(workersTable);
-      const maxCode = allCodes.map(r => parseInt(r.code ?? "0", 10)).filter(n => !isNaN(n)).reduce((a, b) => Math.max(a, b), 0);
-      workerCode = String(maxCode + 1).padStart(5, "0");
-    } else {
-      if (!/^\d+$/.test(text.trim())) {
-        return ctx.reply(tb(al, "❌ Код має містити тільки цифри. Введіть ще раз або /skip:"));
-      }
-      const existing = await db.select().from(workersTable).where(eq(workersTable.workerCode, text.trim()));
-      if (existing.length > 0) {
-        return ctx.reply(tb(al, "❌ Код `{code}` вже зайнятий. Введіть інший або /skip:", { code: text.trim() }), { parse_mode: "Markdown" });
-      }
-      workerCode = text.trim();
-    }
-
-    await db.insert(workersTable).values({
-      fullName: data.name,
-      factoryId: data.factoryId ?? undefined,
-      telegramId: data.telegramId ?? undefined,
-      workerCode,
-    });
-    clearState(tid);
-    const factoryInfo = data.factoryId
-      ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, data.factoryId)))[0]?.name ?? ""
-      : "—";
-    const inviteLink = `https://t.me/${ctx.botInfo.username}?start=${workerCode}`;
-    await ctx.reply(
-      tb(al, "✅ Працівник <b>{name}</b> доданий!\n🔑 Код: <code>{code}</code>\n🏭 Фабрика: {factory}", { name: escapeHtml(data.name), code: workerCode, factory: escapeHtml(factoryInfo) }) + `${data.telegramId ? `\n🔗 Telegram: <code>${escapeHtml(data.telegramId)}</code>` : ""}\n\n${tb(al, "📎 Посилання (натисніть щоб скопіювати):")}\n<code>${escapeHtml(inviteLink)}</code>`,
-      { parse_mode: "HTML" },
     );
     return ctx.reply(tb(al, "Управління:"), managementMenu(al));
   }

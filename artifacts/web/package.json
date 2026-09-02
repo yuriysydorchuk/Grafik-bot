@@ -13,7 +13,7 @@
     "@tanstack/react-query": "catalog:",
     "clsx": "catalog:",
     "lucide-react": "catalog:",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "5.4.624",
     "react": "catalog:",
     "react-dom": "catalog:",
     "recharts": "^2.15.4",

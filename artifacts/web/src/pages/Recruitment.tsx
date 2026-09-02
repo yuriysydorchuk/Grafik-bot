@@ -392,15 +392,30 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
 function ConvertModal({ candidate, factories, onClose, onDone }: { candidate: Candidate; factories: Factory[]; onClose: () => void; onDone: () => void }) {
   const t = useT();
   const [factoryId, setFactoryId] = useState(candidate.factoryId ? String(candidate.factoryId) : "");
+  // Живий онбординг: якщо цей Telegram кандидата ще не належить активному
+  // працівнику — сервер НЕ створює профіль одразу, а шле лінк на скан
+  // паспорта+анкету (worker/stage прив'яжуться лише після сканування).
+  // Якщо ж Telegram уже відомий системі (повторний реферал) — реактивує
+  // існуючий профіль миттєво, без скану.
   const convert = useMutation({
-    mutationFn: () => post(`/candidates/${candidate.id}/convert`, { factoryId: factoryId ? Number(factoryId) : null }),
-    onSuccess: () => { toast.success(t("{name} — тепер активний працівник", { name: candidate.fullName })); onDone(); },
+    mutationFn: () => post<{ notified: boolean; link: string | null }>(`/candidates/${candidate.id}/convert`, { factoryId: factoryId ? Number(factoryId) : null }),
+    onSuccess: (r) => {
+      if (!r.link) {
+        toast.success(t("{name} — тепер активний працівник", { name: candidate.fullName }));
+      } else if (r.notified) {
+        toast.success(t("Запрошення на скан паспорта+анкету надіслано {name} у Telegram", { name: candidate.fullName }));
+      } else {
+        navigator.clipboard?.writeText(r.link).catch(() => {});
+        toast.success(t("Запрошення створено — Telegram не надіслано, лінк скопійовано"));
+      }
+      onDone();
+    },
     onError: (e: any) => toast.error(e.message),
   });
   return (
     <Modal open onClose={onClose} title={t("Перевести в працівники")}>
       <div className="space-y-3">
-        <p className="text-sm text-slate-600">{t("Створити активного працівника")} <b>{candidate.fullName}</b>{candidate.telegramId ? t(" (з його Telegram)") : ""}. {t("Далі можна буде виписати бонус тому, хто запросив.")}</p>
+        <p className="text-sm text-slate-600">{t("Надіслати")} <b>{candidate.fullName}</b> {t("лінк на скан паспорта й анкету")}{candidate.telegramId ? t(" (у його Telegram)") : t(" (лінк для ручної передачі — Telegram кандидата невідомий)")}. {t("Далі можна буде виписати бонус тому, хто запросив.")}</p>
         <div><Label>{t("Фабрика")}</Label>
           <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
             <option value="">{t("— без фабрики —")}</option>

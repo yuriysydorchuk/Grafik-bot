@@ -12,6 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
+  contractsTable, passportScanTokensTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
@@ -32,7 +33,8 @@ import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/pa
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
-import { randomInviteCode } from "../lib/invite";
+import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
+import { createAnketaToken, createOfficeScanToken, createSelfScanToken, passportScanLink } from "./passportScan";
 import { LEGAL_STATUSES, normalizeProfileLegal } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
@@ -48,6 +50,8 @@ router.use(authRequired);
 
 // Read/write capability for owner + scheduler (driver is read-only / live-only)
 const RW = requireCap("editData");
+// Документи й підписання (паспорт-скан/анкета/умови) — той самий cap, що routes/contracts.ts.
+const WD = requireCap("workerDocs");
 
 // КАНОН статусу «студент до 26» (як у сводній): студент = чекбокс АБО
 // legalStatus="student"; вік — з дати народження, прапорець under26 — лише
@@ -83,7 +87,7 @@ function stripFactoryEcho(f: Record<string, unknown> | undefined, req: any) {
   if (!f || canFinance(req)) return f;
   const { clientNip, pnlLabel, ...rest } = f as any;
   if (canFactoryRates(req)) return rest;
-  const { invoiceRate, rateBrutto, rateNetto, nightAddon, ...rest2 } = rest;
+  const { invoiceRate, rateBrutto, rateNetto, nightAddon, contractRateBrutto, ...rest2 } = rest;
   return rest2;
 }
 
@@ -384,6 +388,7 @@ router.post("/workers", RW, async (req, res) => {
     nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
     gratyfikantName: strOrNull(req.body?.gratyfikantName),
     pesel: typeof req.body?.pesel === "string" && /^\d{11}$/.test(req.body.pesel.trim()) ? req.body.pesel.trim() : null,
+    middleName: strOrNull(req.body?.middleName),
   };
   if (canFinance(req)) {
     if (hourlyRate !== undefined) { const r = parseRate(hourlyRate); if (r != null) values.hourlyRate = r; }
@@ -438,6 +443,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
     if (p && !/^\d{11}$/.test(p)) return fail(res, 400, "PESEL — 11 цифр");
     patch.pesel = p;
   }
+  if (req.body?.middleName !== undefined) patch.middleName = strOrNull(req.body.middleName);
   if (factoryId !== undefined) patch.factoryId = factoryId ?? null;
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (positionId !== undefined) patch.positionId = positionId ?? null;
@@ -552,7 +558,18 @@ router.patch("/workers/:id", RW, async (req, res) => {
       .then(m => m.offerTransferReport(w.id, before.factoryId!))
       .catch(err => logger.error({ err }, "transfer report offer failed"));
   }
-  ok(res, stripWorkerEcho(w, req));
+  // worker-docs-signing §7: якщо на старій фабриці була ПІДПИСАНА умова — фронт
+  // пропонує згенерувати нову (POST /workers/:id/contracts з supersedesId).
+  // Стара умова НЕ чіпається тут — superseded виставляється лише при підписанні
+  // нової (Етап 5).
+  let supersedeContractId: number | null = null;
+  if (before?.factoryId && patch.factoryId !== undefined && patch.factoryId !== before.factoryId) {
+    const [signed] = await db.select({ id: contractsTable.id }).from(contractsTable)
+      .where(and(eq(contractsTable.workerId, id), eq(contractsTable.status, "signed"), eq(contractsTable.factoryId, before.factoryId)))
+      .orderBy(desc(contractsTable.id)).limit(1);
+    supersedeContractId = signed?.id ?? null;
+  }
+  ok(res, { ...stripWorkerEcho(w, req), supersedeContractId });
 });
 
 router.post("/workers/:id/fire", RW, async (req, res) => {
@@ -817,7 +834,7 @@ router.get("/workers/:id", RW, async (req, res) => {
     selfTransportSince: w.selfTransportSince,
     // без цих двох модалка редагування з профілю відкривалась би з порожніми
     // полями і затирала б їх при збереженні
-    gratyfikantName: w.gratyfikantName, pesel: w.pesel,
+    gratyfikantName: w.gratyfikantName, pesel: w.pesel, middleName: w.middleName,
     // залічки за бадання — список записів (окрема таблиця, CRUD нижче)
     badania: await db.select().from(workerBadaniaTable)
       .where(eq(workerBadaniaTable.workerId, id)).orderBy(desc(workerBadaniaTable.enteredAt), desc(workerBadaniaTable.id)),
@@ -982,6 +999,7 @@ router.post("/document-types", RW, async (req, res) => {
   const maxOrder = (await db.select().from(documentTypesTable)).reduce((m, d) => Math.max(m, d.sortOrder), 0);
   const [d] = await db.insert(documentTypesTable).values({
     name, required: req.body?.required !== false, hasExpiry: !!req.body?.hasExpiry, sortOrder: maxOrder + 1,
+    icon: req.body?.icon ? String(req.body.icon) : null,
   }).returning();
   ok(res, d);
 });
@@ -992,6 +1010,7 @@ router.patch("/document-types/:id", RW, async (req, res) => {
   if (req.body?.required !== undefined) patch.required = !!req.body.required;
   if (req.body?.hasExpiry !== undefined) patch.hasExpiry = !!req.body.hasExpiry;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
+  if (req.body?.icon !== undefined) patch.icon = req.body.icon ? String(req.body.icon) : null;
   const [d] = await db.update(documentTypesTable).set(patch).where(eq(documentTypesTable.id, id)).returning();
   ok(res, d);
 });
@@ -1128,17 +1147,35 @@ router.get("/workers/:id/invite", RW, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
-  let invite = w.inviteCode;
-  if (!invite) {
-    for (let i = 0; i < 50; i++) {
-      const c = randomInviteCode();
-      if ((await db.select().from(workersTable).where(eq(workersTable.inviteCode, c))).length === 0) { invite = c; break; }
-    }
-    invite = invite ?? randomInviteCode(16);
-    await db.update(workersTable).set({ inviteCode: invite }).where(eq(workersTable.id, id));
+  const invite = await ensureWorkerInviteCode(id);
+  ok(res, { code: w.workerCode, link: workerInviteLink(invite) });
+});
+
+// Запросити ІСНУЮЧОГО працівника подати паспорт (якщо ще нема на файлі) і/або
+// заповнити анкету — anketa-токен (routes/passportScan.ts сам вирішує на
+// GET /passport-scan/:token, чи показувати крок сканування). Best-effort
+// push у Telegram, як /contracts/:id/send — офіс копіює лінк, якщо не вийшло.
+router.post("/workers/:id/docs-invite", WD, async (req, res) => {
+  const id = Number(req.params.id);
+  const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
+  if (!w) return fail(res, 404, "Не знайдено");
+  const token = await createAnketaToken(id);
+  const link = passportScanLink(token);
+  let notified = false;
+  if (w.telegramId) {
+    const { sendDocsInviteLink } = await import("../bot/notify");
+    notified = await sendDocsInviteLink(w.telegramId, w.language ?? "uk", link);
   }
-  const username = process.env.TELEGRAM_BOT_USERNAME || "";
-  ok(res, { code: w.workerCode, link: username ? `https://t.me/${username}?start=emp${invite}` : `?start=emp${invite}` });
+  ok(res, { notified, link });
+});
+
+// Лінк для НОВОГО кандидата (веб-панель «Додати» → скан замість ручної
+// форми) — той самий office-токен, що бот «🪪 Паспорт → 🆕 Новий кандидат».
+router.post("/workers/scan-invite", WD, async (req, res) => {
+  const adminId = actingAdminId(req);
+  if (!adminId) return fail(res, 401, "Не авторизовано");
+  const token = await createOfficeScanToken(adminId);
+  ok(res, { link: passportScanLink(token) });
 });
 
 // ─── Manual broadcast + chat cleanup ───────────────────────────────────────────
@@ -1434,39 +1471,62 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
   if (c.workerId) return fail(res, 400, "Кандидат вже переведений у працівники");
   const factoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : c.factoryId;
 
-  let workerId: number;
-  // If this Telegram is already a worker, link to it; otherwise create a new worker.
+  // Telegram кандидата вже належить ІСНУЮЧОМУ активному працівнику — це не
+  // живий онбординг (паспорт/анкета вже мали пройти раніше), просто
+  // реактивуємо профіль одразу, без скану.
   const existingWorker = c.telegramId
     ? (await db.select().from(workersTable).where(eq(workersTable.telegramId, c.telegramId)))[0]
     : undefined;
+
   if (existingWorker) {
-    workerId = existingWorker.id;
-    await db.update(workersTable).set({ isActive: true, status: "active", factoryId: factoryId ?? existingWorker.factoryId }).where(eq(workersTable.id, workerId));
-  } else {
-    const codeNew = await nextWorkerCode();
-    const [w] = await db.insert(workersTable).values({
-      fullName: c.fullName, factoryId: factoryId ?? null,
-      telegramId: c.telegramId || null, workerCode: codeNew,
-    }).returning();
-    workerId = w!.id;
-  }
-  const [updated] = await db.update(candidatesTable)
-    .set({ workerId, stage: "hired", factoryId: factoryId ?? c.factoryId })
-    .where(eq(candidatesTable.id, id)).returning();
+    await db.update(workersTable).set({ isActive: true, status: "active", factoryId: factoryId ?? existingWorker.factoryId }).where(eq(workersTable.id, existingWorker.id));
+    const [updated] = await db.update(candidatesTable)
+      .set({ workerId: existingWorker.id, stage: "hired", factoryId: factoryId ?? c.factoryId })
+      .where(eq(candidatesTable.id, id)).returning();
 
-  // Notify the referrer their friend is now active.
-  try {
-    if (c.referrerWorkerId) {
-      const ref = (await db.select().from(workersTable).where(eq(workersTable.id, c.referrerWorkerId)))[0];
-      if (ref?.telegramId) {
-        const { sendCandidateActive } = await import("../bot/notify");
-        await sendCandidateActive(ref.telegramId, c.fullName, ref.language);
+    try {
+      if (c.referrerWorkerId) {
+        const ref = (await db.select().from(workersTable).where(eq(workersTable.id, c.referrerWorkerId)))[0];
+        if (ref?.telegramId) {
+          const { sendCandidateActive } = await import("../bot/notify");
+          await sendCandidateActive(ref.telegramId, c.fullName, ref.language);
+        }
       }
-    }
-  } catch (e) { logger.error({ err: e }, "notify referrer (convert) failed"); }
+    } catch (e) { logger.error({ err: e }, "notify referrer (convert) failed"); }
 
-  await logActivity(id, actingAdminId(req), "converted", "Переведено у працівники");
-  ok(res, updated);
+    await logActivity(id, actingAdminId(req), "converted", "Переведено у працівники (профіль уже існував)");
+    return ok(res, { notified: true, link: null, worker: updated });
+  }
+
+  // Живий новий кандидат — НЕ створюємо працівника напряму: шлемо лінк на
+  // скан паспорта+анкету (той самий шлях, що онбординг з веб-панелі/бота).
+  // worker/stage прив'язуються лише в POST /passport-scan/:token/confirm
+  // (candidateId на токені) — після того, як кандидат сам пройде сканування.
+  if (!factoryId) return fail(res, 400, "Потрібна фабрика для переведення");
+  const adminId = actingAdminId(req);
+  if (!adminId) return fail(res, 401, "Не авторизовано");
+
+  // Ідемпотентність: повторний клік на «Перевести» до того, як кандидат
+  // пройшов скан — не плодить другий токен/другого дубль-працівника при
+  // завершенні обох, а повертає той самий ще живий лінк.
+  const [liveToken] = await db.select().from(passportScanTokensTable)
+    .where(and(eq(passportScanTokensTable.candidateId, id), isNull(passportScanTokensTable.usedAt), gte(passportScanTokensTable.expiresAt, new Date())));
+  if (liveToken) return ok(res, { notified: false, link: passportScanLink(liveToken.token) });
+
+  let notified = false;
+  let link: string;
+  if (c.telegramId) {
+    const token = await createSelfScanToken({ factoryId, telegramId: c.telegramId, language: "uk", candidateId: id });
+    link = passportScanLink(token);
+    const { sendDocsInviteLink } = await import("../bot/notify");
+    notified = await sendDocsInviteLink(c.telegramId, "uk", link);
+  } else {
+    const token = await createOfficeScanToken(adminId, id);
+    link = passportScanLink(token);
+  }
+
+  await logActivity(id, adminId, "note", `📋 Запрошення на скан паспорта+анкету надіслано${notified ? "" : " (лінк для ручної передачі)"}`);
+  ok(res, { notified, link });
 });
 
 router.post("/candidates/:id/bonus", RW, async (req, res) => {
@@ -1616,7 +1676,7 @@ router.get("/companies", async (_req, res) => {
   const workers = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.isActive, true));
   const cnt = new Map<number, number>();
   for (const w of workers) if (w.companyId != null) cnt.set(w.companyId, (cnt.get(w.companyId) ?? 0) + 1);
-  ok(res, rows.map(c => ({ id: c.id, name: c.name, workerCount: cnt.get(c.id) ?? 0 })));
+  ok(res, rows.map(c => ({ ...c, workerCount: cnt.get(c.id) ?? 0 })));
 });
 router.post("/companies", RW, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
@@ -1624,10 +1684,16 @@ router.post("/companies", RW, async (req, res) => {
   const [c] = await db.insert(companiesTable).values({ name }).returning();
   ok(res, c);
 });
+const COMPANY_REGISTRY_FIELDS = ["legalName", "nip", "krs", "regon", "street", "houseNumber", "postalCode", "city", "representative"] as const;
 router.patch("/companies/:id", RW, async (req, res) => {
-  const name = String(req.body?.name ?? "").trim();
-  if (!name) return fail(res, 400, "Назва не може бути порожньою");
-  const [c] = await db.update(companiesTable).set({ name }).where(eq(companiesTable.id, Number(req.params.id))).returning();
+  const patch: Record<string, unknown> = {};
+  if (req.body?.name !== undefined) {
+    const name = String(req.body.name).trim();
+    if (!name) return fail(res, 400, "Назва не може бути порожньою");
+    patch.name = name;
+  }
+  for (const k of COMPANY_REGISTRY_FIELDS) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
+  const [c] = await db.update(companiesTable).set(patch).where(eq(companiesTable.id, Number(req.params.id))).returning();
   ok(res, c);
 });
 router.delete("/companies/:id", RW, async (req, res) => {
@@ -1666,7 +1732,7 @@ router.get("/factories", async (req, res) => {
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (fin) return ok(res, withCo);
   if (rates) return ok(res, withCo.map(({ clientNip, pnlLabel, ...rest }) => rest));
-  ok(res, withCo.map(({ invoiceRate, rateBrutto, rateNetto, nightAddon, clientNip, pnlLabel, ...rest }) => rest));
+  ok(res, withCo.map(({ invoiceRate, rateBrutto, rateNetto, nightAddon, contractRateBrutto, clientNip, pnlLabel, ...rest }) => rest));
 });
 
 // Replace a factory's position rows from a [{positionId, rate}] payload.
@@ -1741,6 +1807,7 @@ router.post("/factories", RW, async (req, res) => {
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
   if (req.body?.transportFeeMonthCap !== undefined) values.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
+  if (req.body?.contractDuties !== undefined) values.contractDuties = String(req.body.contractDuties ?? "").trim() || null;
   if (canFinance(req)) {
     if (req.body?.clientNip !== undefined) {
       const nip = String(req.body.clientNip ?? "").replace(/\D/g, "");
@@ -1751,7 +1818,7 @@ router.post("/factories", RW, async (req, res) => {
   }
   if (canFactoryRates(req)) {
     if (invoiceRate !== undefined) values.invoiceRate = parseRate(invoiceRate);
-    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
+    for (const k of ["rateBrutto", "rateNetto", "nightAddon", "contractRateBrutto"] as const) {
       if (req.body?.[k] !== undefined) values[k] = parseRate(req.body[k]);
     }
   }
@@ -1773,6 +1840,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (req.body?.paidTransport !== undefined) patch.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) patch.transportFeePerShift = parseRate(req.body.transportFeePerShift);
   if (req.body?.transportFeeMonthCap !== undefined) patch.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
+  if (req.body?.contractDuties !== undefined) patch.contractDuties = String(req.body.contractDuties ?? "").trim() || null;
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (canFinance(req)) {
     // привʼязка клієнта для P&L: NIP (матчинг фактур KSeF) + канонічний підпис
@@ -1785,7 +1853,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   }
   if (canFactoryRates(req)) {
     if (invoiceRate !== undefined) patch.invoiceRate = parseRate(invoiceRate);
-    for (const k of ["rateBrutto", "rateNetto", "nightAddon"] as const) {
+    for (const k of ["rateBrutto", "rateNetto", "nightAddon", "contractRateBrutto"] as const) {
       if (req.body?.[k] !== undefined) patch[k] = parseRate(req.body[k]);
     }
   }
@@ -1817,8 +1885,11 @@ router.patch("/factories/:id", RW, async (req, res) => {
   ok(res, stripFactoryEcho(f, req));
 });
 
-// Shared self-signup link for a factory — anyone who opens it registers themselves
-// as a worker of that factory (enters their name in the bot). Admins review/edit after.
+// Shared self-signup link for a factory — a fixed Telegram deep link
+// (t.me/<bot>?start=fac<id>, independent of WEB_APP_URL/token TTL, never
+// needs to change). Opening it starts bot/index.ts's worker_signup:lang flow,
+// which hands the candidate a passport-scan+questionnaire link
+// (createSelfScanToken) — office reviews the resulting profile after.
 router.get("/factories/:id/join-link", RW, async (req, res) => {
   const id = Number(req.params.id);
   const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];

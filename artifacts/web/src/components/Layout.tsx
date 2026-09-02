@@ -4,7 +4,7 @@ import {
   LayoutDashboard, CalendarRange, ClipboardList, CheckSquare,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
-  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, type LucideIcon,
+  PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { post, type Me } from "../lib/api";
@@ -59,6 +59,8 @@ const NAV: NavGroup[] = [
     title: "Персонал",
     items: [
       { href: "/workers", label: "Працівники", icon: Users },
+      { href: "/contracts", label: "Документи й умови", icon: FileText },
+      { href: "/document-templates", label: "Шаблони документів", icon: FileStack },
       { href: "/drivers", label: "Водії", icon: Truck },
       { href: "/fleet", label: "Автопарк", icon: CarFront },
       { href: "/transport", label: "Транспорт", icon: Bus },

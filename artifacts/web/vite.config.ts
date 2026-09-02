@@ -16,6 +16,10 @@ export default defineConfig({
   server: {
     port: 5173,
     host: "0.0.0.0",
+    // Vite 7 блокує невідомий Host-заголовок (403) — потрібно для локального
+    // тесту через cloudflared quick tunnel (випадковий *.trycloudflare.com
+    // піддомен щоразу; /sign/:token, Telegram Mini App).
+    allowedHosts: [".trycloudflare.com"],
     proxy: {
       "/api": { target: "http://localhost:8080", changeOrigin: true },
     },

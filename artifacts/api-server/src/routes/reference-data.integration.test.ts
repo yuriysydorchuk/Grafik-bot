@@ -64,6 +64,17 @@ test("document-types: create with flags; delete blocked while a worker document 
   assert.equal(blocked.status, 400);
 });
 
+test("document-types: icon — set on create, changed and cleared via patch", opts, async () => {
+  const dt = await request(app).post("/api/document-types").set("Cookie", owner).set(H).send({ name: "Karta pobytu", icon: "residence_card" });
+  assert.equal(dt.body.icon, "residence_card");
+
+  const changed = await request(app).patch(`/api/document-types/${dt.body.id}`).set("Cookie", owner).set(H).send({ icon: "decision" });
+  assert.equal(changed.body.icon, "decision");
+
+  const cleared = await request(app).patch(`/api/document-types/${dt.body.id}`).set("Cookie", owner).set(H).send({ icon: null });
+  assert.equal(cleared.body.icon, null);
+});
+
 test("drivers: create returns a crypto invite code; delete is a soft-delete", opts, async () => {
   const created = await request(app).post("/api/drivers").set("Cookie", owner).set(H).send({ name: "Kierowca", seats: 8 });
   assert.equal(created.status, 200);

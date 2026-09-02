@@ -2,10 +2,12 @@ import { Markup } from "telegraf";
 import { t, tb, type Lang } from "./i18n";
 
 // «📄 Фактура» (бот-сканер) — лише ролям з капою invoiceScan (opts.invoice).
-// Дефолт true: рендери меню всередині флоу не знають капи — реальний гейт стоїть
-// у самому флоу (bot/handlers/invoiceScan.ts), а головні входи в меню (start,
-// «Головне меню», зміна мови) передають точне значення через adminMenuFor.
-export const adminMenu = (lang: Lang = "uk", opts: { invoice?: boolean } = {}) => Markup.keyboard([
+// «🪪 Паспорт» — лише ролям з капою workerDocs (opts.docs; модуль worker-docs-signing
+// у розробці). Дефолт true: рендери меню всередині флоу не знають капи — реальний
+// гейт стоїть у самому флоу (bot/handlers/invoiceScan.ts, passportScan.ts), а
+// головні входи в меню (start, «Головне меню», зміна мови) передають точне
+// значення через adminMenuFor.
+export const adminMenu = (lang: Lang = "uk", opts: { invoice?: boolean; docs?: boolean } = {}) => Markup.keyboard([
   // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
   // (prod keeps it head-driver-only per owner's decision).
   ...(process.env.WEB_APP_ADMIN === "1" && webAppUrl() ? [[Markup.button.webApp(tb(lang, "🖥 Панель призначень"), `${webAppUrl()}/driver-shifts?tgapp=1`)]] : []),
@@ -13,6 +15,7 @@ export const adminMenu = (lang: Lang = "uk", opts: { invoice?: boolean } = {}) =
   [tb(lang, "✅ Перегляд графіків")],
   [tb(lang, "📥 Імпорт графіку (Excel)"), tb(lang, "👥 Управління")],
   opts.invoice === false ? [tb(lang, "📢 Розсилки")] : [tb(lang, "📢 Розсилки"), tb(lang, "📄 Фактура")],
+  ...(opts.docs ? [[tb(lang, "🪪 Паспорт")]] : []),
   [tb(lang, "🌐 Мова / Language")],
 ]).resize();
 
@@ -27,7 +30,8 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   rows.push(hours ? [t(lang, "menu.factoryInfo"), t(lang, "menu.myHours")] : [t(lang, "menu.factoryInfo")]);
   rows.push([t(lang, "menu.absence"), t(lang, "menu.myInfo")]);
   rows.push([t(lang, "menu.referral"), t(lang, "menu.report")]);
-  rows.push([t(lang, "menu.advance"), t(lang, "menu.language")]);
+  rows.push([t(lang, "menu.advance"), t(lang, "menu.documents")]);
+  rows.push([t(lang, "menu.language")]);
   return Markup.keyboard(rows).resize();
 };
 

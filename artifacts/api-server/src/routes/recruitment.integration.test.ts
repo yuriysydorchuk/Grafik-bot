@@ -1,11 +1,14 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db,
-  funnelsTable, candidatesTable, candidateActivityTable, workersTable,
+  funnelsTable, candidatesTable, candidateActivityTable, workersTable, factoriesTable, passportScanTokensTable,
 } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
+import { ensureUploadDirs, PASSPORT_SCAN_TMP_DIR } from "../lib/uploads.ts";
 
 // Recruitment CRM: funnels + candidates with stage validation, activity logging and
 // convert-to-worker.
@@ -68,19 +71,76 @@ test("candidate stage move is validated and logged", opts, async () => {
   assert.ok((await activity(id)).some(a => a.kind === "stage"), "a stage-move activity is logged");
 });
 
-test("convert creates a worker, marks the candidate hired, and blocks a second convert", opts, async () => {
+// convert() не створює працівника напряму (worker-docs-signing: живий
+// онбординг) — для кандидата без telegramId шле office-скан-токен і
+// прив'язку candidateId; worker/stage → hired лише після
+// POST /passport-scan/:token/confirm.
+test("convert (без telegramId) — шле office-скан-токен, НЕ створює працівника одразу; повторний convert повертає той самий живий лінк; confirm() прив'язує кандидата", opts, async () => {
+  ensureUploadDirs();
   const f = await mkFunnel();
   const id = await mkCandidate(f.id);
+  const [fac] = await db.insert(factoriesTable).values({ name: "Fabryka Testowa" }).returning({ id: factoriesTable.id });
+
+  const missingFactory = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
+  assert.equal(missingFactory.status, 400, "фабрика обов'язкова для нового кандидата");
+
+  const res = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.ok(res.body.link, "лінк на скан+анкету повертається");
+  assert.equal(res.body.notified, false, "телеграм кандидата невідомий — не надіслано");
+
+  const [candidateBefore] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, id));
+  assert.equal(candidateBefore!.workerId, null, "працівник ще НЕ прив'язаний — лише після сканування");
+  assert.equal(candidateBefore!.stage, f.firstKey, "стадія кандидата НЕ змінена одразу");
+  const workersBefore = (await db.select().from(workersTable)).length;
+  assert.equal(workersBefore, 0, "жодного профілю ще не створено");
+
+  // Ідемпотентність: повторний клік до сканування повертає той самий токен.
+  const again = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id });
+  assert.equal(again.status, 200);
+  assert.equal(again.body.link, res.body.link, "той самий живий лінк, не другий токен");
+  const liveTokens = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.candidateId, id));
+  assert.equal(liveTokens.length, 1, "жодного дубль-токена");
+
+  // Кандидат проходить сканування — симулюємо, як analyze() уже відпрацював.
+  const token = res.body.link.split("/").pop();
+  const storedName = `${Date.now()}-test.jpg`;
+  await fs.promises.writeFile(path.join(PASSPORT_SCAN_TMP_DIR, storedName), Buffer.from("\x89PNG\r\n\x1a\n", "latin1"));
+  await db.update(passportScanTokensTable).set({
+    tempFilePath: path.join("passport-scan-tmp", storedName), tempFileName: "passport.jpg", tempFileMime: "image/jpeg",
+    draftJson: { draft: { fullName: "Jan Kandydat" }, mrz: null },
+  }).where(eq(passportScanTokensTable.token, token));
+
+  const confirm = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kandydat" });
+  assert.equal(confirm.status, 200, JSON.stringify(confirm.body));
+
+  const [candidateAfter] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, id));
+  assert.equal(candidateAfter!.workerId, confirm.body.worker.id, "кандидат прив'язаний до щойно створеного працівника");
+  assert.equal(candidateAfter!.stage, "hired");
+});
+
+// Telegram кандидата вже належить АКТИВНОМУ працівнику (повторний реферал) —
+// це не живий онбординг, реактивація одразу без скану, стара синхронна
+// поведінка блокування повторного convert() лишається.
+test("convert (telegramId уже належить активному працівнику) — реактивує одразу, без скану; блокує повторний convert", opts, async () => {
+  const f = await mkFunnel();
+  const [w] = await db.insert(workersTable).values({ fullName: "Jan Kandydat", telegramId: "555", isActive: false, status: "fired" }).returning({ id: workersTable.id });
+  const id = await mkCandidate(f.id);
+  // POST /candidates не приймає telegramId з тіла (captured at signup через
+  // бот-реферал) — виставляємо напряму, як бот-флоу зробив би.
+  await db.update(candidatesTable).set({ telegramId: "555" }).where(eq(candidatesTable.id, id));
 
   const res = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
-  assert.equal(res.status, 200);
-  assert.equal(res.body.stage, "hired");
-  assert.ok(res.body.workerId, "a worker id is linked");
-  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, res.body.workerId));
-  assert.equal(w!.fullName, "Jan Kandydat");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.worker.id, w!.id, "прив'язується до ІСНУЮЧОГО профілю, не створює новий");
+  assert.equal(res.body.notified, true);
+  assert.equal(res.body.link, null);
+
+  const [reactivated] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(reactivated!.isActive, true);
 
   const again = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
-  assert.equal(again.status, 400);
+  assert.equal(again.status, 400, "кандидат уже переведений — повторний convert блокується");
 });
 
 test("bonus: marking it paid flips the flag and logs a bonus activity", opts, async () => {

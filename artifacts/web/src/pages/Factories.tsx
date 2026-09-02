@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Link2, Trash2, X, Eye } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode } from "../lib/api";
-import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge } from "../components/ui";
+import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge, Textarea } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
@@ -20,6 +20,8 @@ type FactoryX = Omit<Factory, "positions"> & {
   transportFeeMonthCap?: number | null;
   rateBrutto?: number | null; rateNetto?: number | null; nightAddon?: number | null;
   clientNip?: string | null; pnlLabel?: string | null;
+  contractDuties?: string | null;
+  contractRateBrutto?: number | null;
   positions: (FactoryPositionConf & { rateNetto?: number | null })[];
 };
 
@@ -120,6 +122,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     name: factory?.name ?? "", address: factory?.address ?? "",
     city: factory?.city ?? "",
     clientEmail: factory?.clientEmail ?? "",
+    contractDuties: factory?.contractDuties ?? "",
     companyId: factory?.companyId ? String(factory.companyId) : "",
     genMode: (factory?.genMode ?? "availability") as GenMode,
     usesPositions: factory?.usesPositions ?? false,
@@ -136,6 +139,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     rateBrutto: factory?.rateBrutto != null ? String(factory.rateBrutto) : "",
     rateNetto: factory?.rateNetto != null ? String(factory.rateNetto) : "",
     nightAddon: factory?.nightAddon != null ? String(factory.nightAddon) : "",
+    contractRateBrutto: factory?.contractRateBrutto != null ? String(factory.contractRateBrutto) : "",
     clientNip: factory?.clientNip ?? "",
     pnlLabel: factory?.pnlLabel ?? "",
   });
@@ -166,6 +170,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const num = (s: string) => s.trim() === "" ? null : Number(s.replace(",", "."));
   const payload = () => ({
     name: v.name.trim(), address: v.address, city: v.city.trim() || null, clientEmail: v.clientEmail,
+    contractDuties: v.contractDuties.trim() || null,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
@@ -176,7 +181,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
       ...(canRates ? { rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate) } : {}),
     })) : [],
     shifts, stops: stops.filter(s => s.name.trim()),
-    ...(canRates ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon) } : {}),
+    ...(canRates ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon), contractRateBrutto: num(v.contractRateBrutto) } : {}),
     ...(canInvoice ? { clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
   });
   const save = useMutation({
@@ -350,6 +355,18 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           <p className="mt-1 text-xs text-slate-400">{t("Час — коли працівник має бути на зупинці (необов'язково).")}</p>
         </div>
         <div><Label>{t("Email клієнта (для розсилки графіку)")}</Label><Input value={v.clientEmail} onChange={set("clientEmail")} type="email" /></div>
+        <div>
+          <Label>{t("Опис обов'язків для Umowa (Czynności)")}</Label>
+          <Textarea value={v.contractDuties} onChange={set("contractDuties")} rows={2} placeholder={t("напр. prace porządkowe i pomocnicze")} />
+          <p className="mt-1 text-xs text-slate-400">{t("Підставляється в умову-доручення (Umowa) при генерації документів. Порожньо — візьметься назва посади працівника.")}</p>
+        </div>
+        {canRates && (
+          <div>
+            <Label>{t("Ставка в умові працівника (zł/год брутто)")}</Label>
+            <Input value={v.contractRateBrutto} onChange={set("contractRateBrutto")} placeholder={t("порожньо = мінімальна крайова")} inputMode="decimal" />
+            <p className="mt-1 text-xs text-slate-400">{t("Wynagrodzenie в Umowa. Окрема від ставки сводної/фактури нижче. Порожньо — підставиться законодавча мінімальна ставка. Для окремого працівника можна змінити при генерації документів у його профілі.")}</p>
+          </div>
+        )}
         {canRates && (
           <div>
             <Label>{t("Ставка фактури (zł/год, нетто — для фінансів)")}</Label>
