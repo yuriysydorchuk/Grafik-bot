@@ -24,100 +24,78 @@ const F = (key: DocFieldKey, label: string, kind: DocField["kind"], o: Partial<D
 
 // код типу → поля модалки, у порядку показу. Дзеркалить DOCUMENT_TYPE_SEED
 // (services/legalizationCatalog.ts) — лише ті коди, де є специфічні поля.
+// Мінімальний набір (відгук власника 03.09.2026: «пододавав дані, яких я не
+// просив» — номер oświadczenia і подібні поля прибрані, лишились строки/справа/
+// роботодавець там, де вони справді потрібні).
 export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   passport: [
-    F("number", "Номер паспорта", "text", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
-    F("issuedAt", "Дата видачі", "date"),
-    F("issuer", "Країна видачі", "text"),
+    F("number", "Номер", "text"),
   ],
   id_card_pl: [
-    F("number", "Номер", "text", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
   id_card_eu: [
-    F("number", "Номер", "text", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
   visa_d: [
-    F("number", "Номер", "text"),
     F("validFrom", "Від", "date", { required: true }),
     F("expiresAt", "До", "date", { required: true }),
-    F("issuer", "Консульство", "text"),
   ],
   visa_c: [
-    F("number", "Номер", "text"),
     F("validFrom", "Від", "date", { required: true }),
     F("expiresAt", "До", "date", { required: true }),
-    F("issuer", "Консульство", "text"),
   ],
   visa_free: [
-    F("validFrom", "В'їзд", "date"),
     F("expiresAt", "До (90/180)", "date", { required: true }),
   ],
   trc: [
-    F("number", "Номер карти", "text", { required: true }),
     F("expiresAt", "Дійсна до", "date", { required: true }),
     F("laborMarketAccess", "Z dostępem do rynku pracy — дає й право на працю", "boolean"),
   ],
   zezwolenie_jednolite: [
-    F("number", "Номер", "text", { required: true }),
     F("employerCompanyId", "Роботодавець", "company", { required: true }),
-    F("validFrom", "Чинний з", "date"),
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
   karta_stalego_pobytu: [
-    F("number", "Номер", "text", { required: true }),
     F("expiresAt", "Карта дійсна до", "date", { required: true }),
   ],
   rezydent_ue: [
-    F("number", "Номер", "text", { required: true }),
     F("expiresAt", "Карта дійсна до", "date", { required: true }),
   ],
   stay_case_certificate: [
     F("submittedAt", "Подано", "date", { required: true }),
     F("caseStatus", "Статус справи", "caseStatus", { required: true }),
-    F("caseNumber", "№ справи", "text"),
-    F("issuer", "Urząd Wojewódzki", "text"),
-    F("decisionAt", "Рішення", "date"),
   ],
   status_ukr: [
-    F("number", "PESEL UKR", "text", { required: true }),
     F("expiresAt", "Дійсний до", "date", { auto: "ukrEnd", hint: "дата з правила global.ukr_status_end" }),
   ],
   karta_polaka: [
-    F("number", "Номер", "text", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
   oswiadczenie: [
-    F("number", "Номер oświadczenia", "text", { required: true }),
+    F("issuer", "PUP", "text", { required: true }),
     F("employerCompanyId", "Роботодавець", "company", { required: true }),
     F("validFrom", "Від", "date", { required: true }),
     F("expiresAt", "До", "date", { required: true, auto: "plus730" }),
-    F("issuer", "PUP", "text", { required: true }),
   ],
   zezwolenie_a: [
-    F("number", "Номер", "text", { required: true }),
     F("employerCompanyId", "Роботодавець", "company", { required: true }),
     F("validFrom", "Чинний з", "date", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
-    F("issuer", "Wojewoda", "text"),
   ],
   powiadomienie_ua: [
     F("employerCompanyId", "Роботодавець", "company", { required: true }),
     F("validFrom", "Праця від", "date", { required: true }),
     F("expiresAt", "Праця до", "date"),
-    F("submittedAt", "Подано на praca.gov.pl", "date", { required: true }),
-    F("number", "№ повідомлення", "text"),
   ],
   student_cert: [
     F("issuer", "Навчальний заклад", "text", { required: true }),
-    F("validFrom", "З", "date"),
-    F("expiresAt", "До (кінець семестру)", "date", { required: true }),
+    F("validFrom", "З", "date", { required: true }),
+    F("expiresAt", "До", "date", { required: true }),
   ],
   diploma: [
     F("issuer", "Навчальний заклад", "text", { required: true }),
-    F("issuedAt", "Дата видачі", "date"),
   ],
   medical_exam: [
     F("issuedAt", "Дата badań", "date", { required: true }),
@@ -130,15 +108,13 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
     F("issuedAt", "Дата шкільонного", "date", { required: true }),
   ],
   other: [
-    F("number", "Номер", "text"),
     F("expiresAt", "Дійсний до", "date"),
   ],
 };
 
-// Дефолт для кастомних типів (без code або невідомий у каталозі).
+// Дефолт для кастомних типів (без code або невідомий у каталозі) — назва вже
+// редагується окремим полем «Назва» в модалці (поза цим списком).
 const DEFAULT_FIELDS: DocField[] = [
-  F("number", "Номер", "text"),
-  F("issuer", "Видав", "text"),
   F("expiresAt", "Дійсний до", "date"),
 ];
 

@@ -3101,6 +3101,10 @@ const EN: Record<string, string> = {
   "Поза ЄС": "Non-EU",
   "Вимагає sanepid (książeczka sanepidowska)": "Requires sanepid (health book)",
 
+  // ── legalization: documents slot list ──
+  "запрошено {date}": "requested {date}",
+  "+ інший документ": "+ other document",
+
   // @i18n-append (new page translations get inserted above this line)
 };
 

@@ -1262,11 +1262,12 @@ function WorkerLegalitySection({ workerId }: { workerId: number }) {
   );
 }
 
-// ── Базові плитки документів (завжди видимі над списком) ────────────────────
-// Відгук власника 03.09.2026: «іконки базових документів мають світитися
-// завжди». «Karta pobytu» і «Zezwolenie/Oświadczenie» — не фіксований тип, а
-// «найкращий» (найпізніший строк) present-документ серед кількох кодів каталогу
-// (людина могла мати кілька підстав одночасно, або підстава змінилась).
+// ── Список документів: один слот = один рядок ───────────────────────────────
+// Відгук власника 03.09.2026: «бачу і плитки, і список — має бути щось одне,
+// легке, зрозуміле» — плитки прибрані, лишився єдиний список рядків. «Karta
+// pobytu» і «Zezwolenie/Oświadczenie» — не фіксований тип, а «найкращий»
+// (найпізніший строк) present-документ серед кількох кодів каталогу (людина
+// могла мати кілька підстав одночасно, або підстава змінилась).
 const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue", "status_ukr", "visa_d", "visa_c", "visa_free"];
 const KARTA_POBYTU_SHORT: Record<string, string> = {
   trc: "TRC", zezwolenie_jednolite: "Zezwolenie jednolite", karta_stalego_pobytu: "Karta stałego pobytu",
@@ -1274,99 +1275,195 @@ const KARTA_POBYTU_SHORT: Record<string, string> = {
 };
 const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
 const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };
+// Коди всіх 7 слотів — решта документів людини йде окремим списком «інші» нижче.
+const SLOT_CODES = new Set<string>(["passport", ...KARTA_POBYTU_CODES, "student_cert", "powiadomienie_ua", ...ZEZWOLENIE_CODES, "medical_exam", "sanepid"]);
 
-type SlotResult =
+type DocRowState =
   | { kind: "notneeded" }
-  | { kind: "empty" }
-  | { kind: "doc"; doc: WorkerDocument; type: DocumentType; expiresAt: string | null; indefinite: boolean; expired: boolean; pending: boolean };
+  | { kind: "empty"; requestedDoc: WorkerDocument | null }
+  | { kind: "doc"; doc: WorkerDocument; type: DocumentType | null; expiresAt: string | null; indefinite: boolean; expired: boolean; pending: boolean };
 
 // Найкращий документ слоту серед кодів: чинний (найпізніший строк) > прострочений
-// (найпізніший) > на перевірці > немає. status_ukr рахує ефективний строк з
+// (найпізніший) > на перевірці > запрошений (status=missing з POST .../request,
+// лишає requestedAt) > немає. status_ukr рахує ефективний строк з
 // globals.ukrStatusEnd, якщо в самого документа дата не проставлена.
-function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], codes: string[], globals?: LegalizationGlobals | null): SlotResult {
+function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], codes: string[], globals?: LegalizationGlobals | null): DocRowState {
   const cands = items.filter(it => it.type.code && codes.includes(it.type.code));
-  if (!cands.length) return { kind: "empty" };
-  const withMeta = cands.map(it => {
-    const expiresAt = it.type.code === "status_ukr" ? (it.doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : it.doc.expiresAt;
-    const pending = it.doc.status === "pending";
-    const expired = !pending && (it.doc.status === "expired" || isExpired(expiresAt));
-    const indefinite = !it.type.hasExpiry && !expiresAt;
-    return { ...it, expiresAt, pending, expired, indefinite };
-  });
-  const valid = withMeta.filter(m => !m.pending && !m.expired);
-  if (valid.length) {
-    valid.sort((a, b) => (a.indefinite !== b.indefinite ? (a.indefinite ? -1 : 1) : (b.expiresAt ?? "").localeCompare(a.expiresAt ?? "")));
-    const best = valid[0]!;
-    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: best.indefinite, expired: false, pending: false };
+  const real = cands.filter(it => it.doc.status !== "missing");
+  if (real.length) {
+    const withMeta = real.map(it => {
+      const expiresAt = it.type.code === "status_ukr" ? (it.doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : it.doc.expiresAt;
+      const pending = it.doc.status === "pending";
+      const expired = !pending && (it.doc.status === "expired" || isExpired(expiresAt));
+      const indefinite = !it.type.hasExpiry && !expiresAt;
+      return { ...it, expiresAt, pending, expired, indefinite };
+    });
+    const valid = withMeta.filter(m => !m.pending && !m.expired);
+    if (valid.length) {
+      valid.sort((a, b) => (a.indefinite !== b.indefinite ? (a.indefinite ? -1 : 1) : (b.expiresAt ?? "").localeCompare(a.expiresAt ?? "")));
+      const best = valid[0]!;
+      return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: best.indefinite, expired: false, pending: false };
+    }
+    const expiredOnes = withMeta.filter(m => !m.pending && m.expired);
+    if (expiredOnes.length) {
+      expiredOnes.sort((a, b) => (b.expiresAt ?? "").localeCompare(a.expiresAt ?? ""));
+      const best = expiredOnes[0]!;
+      return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: true, pending: false };
+    }
+    const pendingOnes = withMeta.filter(m => m.pending);
+    if (pendingOnes.length) {
+      const best = pendingOnes[0]!;
+      return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: false, pending: true };
+    }
   }
-  const expiredOnes = withMeta.filter(m => !m.pending && m.expired);
-  if (expiredOnes.length) {
-    expiredOnes.sort((a, b) => (b.expiresAt ?? "").localeCompare(a.expiresAt ?? ""));
-    const best = expiredOnes[0]!;
-    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: true, pending: false };
-  }
-  const pendingOnes = withMeta.filter(m => m.pending);
-  if (pendingOnes.length) {
-    const best = pendingOnes[0]!;
-    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: false, pending: true };
-  }
-  return { kind: "empty" };
+  // немає реального документа — можливо, є «запрошений» (порожній рядок з /request, status=missing)
+  const requested = cands.filter(it => it.doc.status === "missing" && it.doc.requestedAt).sort((a, b) => (b.doc.requestedAt ?? "").localeCompare(a.doc.requestedAt ?? ""));
+  return { kind: "empty", requestedDoc: requested[0]?.doc ?? null };
 }
 
-// Одна плитка: іконка + назва + рядок стану. Клікабельна, крім «не потрібно».
-function DocTile({ icon: Icon, name, shortName, result, onOpen, onRequest }: {
-  icon: any; name: string; shortName?: string | null; result: SlotResult; onOpen?: () => void; onRequest?: () => void;
-}) {
+// Документ поза слотами — рядок уже реально існує, навіть якщо статус missing
+// (напр. відхилений скан з бота лишає reviewNote — важливо не ховати причину).
+function otherDocState(doc: WorkerDocument, type: DocumentType | null, globals?: LegalizationGlobals | null): DocRowState {
+  const expiresAt = type?.code === "status_ukr" ? (doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : doc.expiresAt;
+  const pending = doc.status === "pending";
+  const expired = !pending && (doc.status === "expired" || isExpired(expiresAt));
+  const indefinite = !!type && !type.hasExpiry && !expiresAt;
+  return { kind: "doc", doc, type, expiresAt, indefinite, expired, pending };
+}
+
+const fmtDocDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
+const fmtShortDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600" } as const;
+
+function docTone(s: Extract<DocRowState, { kind: "doc" }>): keyof typeof DOC_TONE_CLS {
+  if (s.pending) return "pending";
+  if (s.expired) return "expired";
+  if (s.indefinite) return "muted";
+  if (!s.expiresAt) return "warn";
+  const dLeft = daysUntil(s.expiresAt);
+  return dLeft != null && dLeft <= 30 ? "soon" : "ok";
+}
+
+// Кнопка «Запросити» рядка: один тип-кандидат — надсилає одразу; кілька
+// (Karta pobytu/Zezwolenie без визначеного типу) — маленький inline-вибір.
+function SlotSendButton({ candidates, onPick, title }: { candidates: DocumentType[]; onPick: (docTypeId: number) => void; title: string }) {
   const t = useT();
-  if (result.kind === "notneeded") {
-    return (
-      <div className="rounded-lg border border-transparent bg-slate-50 p-2">
-        <Icon className="h-4 w-4 text-slate-300" />
-        <div className="mt-1 text-xs font-medium leading-tight text-slate-400" title={name}>{name}</div>
-        <div className="text-[11px] text-slate-300">{t("не потрібно")}</div>
-      </div>
-    );
+  const [open, setOpen] = useState(false);
+  const [pick, setPick] = useState<number | null>(candidates[0]?.id ?? null);
+  if (!candidates.length) return null;
+  if (candidates.length === 1 || !open) {
+    return <button type="button" onClick={() => (candidates.length === 1 ? onPick(candidates[0]!.id) : setOpen(true))} className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600" title={title}><Send className="h-3.5 w-3.5" /></button>;
   }
-  if (result.kind === "empty") {
-    return (
-      <button type="button" onClick={onOpen} className="relative w-full rounded-lg border border-dashed border-slate-300 p-2 text-left hover:border-slate-400 hover:bg-slate-50">
-        {onRequest && (
-          <span onClick={e => { e.stopPropagation(); onRequest(); }} title={t("Попросити подати")}
-            className="absolute right-1 top-1 rounded p-0.5 text-slate-300 hover:bg-blue-50 hover:text-blue-600">
-            <Send className="h-3 w-3" />
-          </span>
-        )}
-        <Plus className="h-4 w-4 text-slate-300" />
-        <div className="mt-1 text-xs font-medium leading-tight text-slate-400" title={name}>{name}</div>
-        <div className="text-[11px] text-slate-400">{t("немає")}</div>
-      </button>
-    );
-  }
-  const dLeft = result.expiresAt ? daysUntil(result.expiresAt) : null;
-  const tone: "ok" | "soon" | "expired" | "pending" = result.pending ? "pending" : result.expired ? "expired" : (dLeft != null && dLeft <= 30) ? "soon" : "ok";
-  const borderCls = { ok: "border-green-200 bg-green-50", soon: "border-yellow-200 bg-yellow-50", expired: "border-rose-200 bg-rose-50", pending: "border-blue-200 bg-blue-50" }[tone];
-  const iconCls = { ok: "text-green-600", soon: "text-yellow-600", expired: "text-rose-600", pending: "text-blue-600" }[tone];
-  const textCls = { ok: "text-green-700", soon: "text-yellow-700", expired: "text-rose-700", pending: "text-blue-700" }[tone];
-  const stateText = result.pending ? t("⏳ на перевірці")
-    : result.expired ? t("прострочено {date}", { date: result.expiresAt ?? "—" })
-    : result.indefinite ? t("безстроково")
-    : result.expiresAt ? (dLeft != null && dLeft <= 30 ? t("до {date} · {n} дн.", { date: result.expiresAt, n: dLeft }) : t("до {date}", { date: result.expiresAt }))
-    : t("дата не вказана");
   return (
-    <button type="button" onClick={onOpen} className={`w-full rounded-lg border p-2 text-left ${borderCls}`}>
-      <Icon className={`h-4 w-4 ${iconCls}`} />
-      <div className="mt-1 text-xs font-medium leading-tight text-slate-700" title={name}>{name}</div>
-      {shortName && <div className="truncate text-[10px] text-slate-500" title={shortName}>{shortName}</div>}
-      <div className={`text-[11px] font-medium ${textCls}`}>{stateText}</div>
-    </button>
+    <span className="inline-flex items-center gap-1">
+      <Select value={pick ?? ""} onChange={e => setPick(Number(e.target.value))} className="w-auto rounded px-1.5 py-0.5 text-xs">
+        {candidates.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </Select>
+      <button type="button" onClick={() => { if (pick) { onPick(pick); setOpen(false); } }} className="rounded p-1 text-blue-600 hover:bg-blue-50" title={title}><Send className="h-3.5 w-3.5" /></button>
+      <button type="button" onClick={() => setOpen(false)} className="rounded p-1 text-slate-400 hover:bg-slate-100" title={t("Скасувати")}><XCircle className="h-3.5 w-3.5" /></button>
+    </span>
   );
 }
 
-function BaseDocTiles({ types, docs, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest }: {
-  types: DocumentType[]; docs: WorkerDocument[]; nationality: string | null; requiresSanepid: boolean;
+// Один рядок документа: слот каталогу (кілька можливих типів) або вже наявний
+// документ поза слотами — один макет на все.
+function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview }: {
+  icon: any; label: string; subLabel?: string | null; state: DocRowState; canLegal: boolean; companies: Company[];
+  requestCandidates?: DocumentType[]; requestTitle?: string;
+  onAdd?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
+  onHistory?: (doc: WorkerDocument) => void; onDelete?: (doc: WorkerDocument) => void;
+  onVerify?: (doc: WorkerDocument) => void; onReject?: (doc: WorkerDocument) => void; onPreview?: (doc: WorkerDocument) => void;
+}) {
+  const t = useT();
+  if (state.kind === "notneeded") {
+    return (
+      <div className="flex items-center gap-2 border-b border-slate-50 px-4 py-2 text-sm text-slate-400 last:border-0">
+        <Icon className="h-4 w-4 shrink-0 text-slate-300" />
+        <span>{label}</span>
+        <span className="ml-auto text-xs">{t("не потрібно")}</span>
+      </div>
+    );
+  }
+  if (state.kind === "empty") {
+    const requestedAt = state.requestedDoc?.requestedAt ?? null;
+    const reviewNote = state.requestedDoc?.reviewNote ?? null;
+    return (
+      <div className="border-b border-slate-50 px-4 py-2 text-sm last:border-0">
+        <div className="flex items-center gap-2">
+          <Icon className="h-4 w-4 shrink-0 text-slate-300" />
+          <span className="font-medium text-slate-500">{label}</span>
+          <span className="ml-auto flex items-center gap-2">
+            <span className="text-xs text-slate-400">{t("немає")}</span>
+            {requestedAt && <span className="text-xs font-medium text-blue-600">{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}</span>}
+            <span className="flex items-center gap-0.5">
+              {onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}
+              {requestCandidates && onRequest && <SlotSendButton candidates={requestCandidates} onPick={onRequest} title={requestTitle ?? t("Попросити подати")} />}
+            </span>
+          </span>
+        </div>
+        {reviewNote && <div className="pl-6 pt-0.5 text-xs text-rose-500">📝 {reviewNote}</div>}
+      </div>
+    );
+  }
+  const { doc, type } = state;
+  const tone = docTone(state);
+  const toneCls = DOC_TONE_CLS[tone];
+  const dLeft = state.expiresAt ? daysUntil(state.expiresAt) : null;
+  const stateText = state.pending ? t("⏳ на перевірці")
+    : state.expired ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt!) })
+    : state.indefinite ? t("безстроково")
+    : state.expiresAt ? (dLeft != null && dLeft <= 30 ? t("до {date} · {n} дн.", { date: fmtDocDate(state.expiresAt), n: dLeft }) : t("до {date}", { date: fmtDocDate(state.expiresAt) }))
+    : t("дата не вказана");
+  const hasFile = !!doc.fileName;
+  const employerName = doc.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;
+  return (
+    <div className="border-b border-slate-50 px-4 py-2 text-sm last:border-0">
+      <div className="flex flex-wrap items-center gap-2">
+        {hasFile ? (
+          <button type="button" onClick={() => onPreview?.(doc)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
+            <Icon className={`h-4 w-4 ${toneCls}`} />
+          </button>
+        ) : <Icon className={`h-4 w-4 shrink-0 ${toneCls}`} />}
+        {hasFile ? (
+          <button type="button" onClick={() => onPreview?.(doc)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{label}</button>
+        ) : <span className="font-medium text-slate-700">{label}</span>}
+        {subLabel && subLabel !== label && <span className="text-xs text-slate-400">{subLabel}</span>}
+        {doc.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
+        {doc.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
+        {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
+        {doc.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
+        {hasFile && <a href={`/api/worker-documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
+        {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
+        {doc.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          <span className={`text-xs font-medium ${toneCls}`}>{stateText}</span>
+          <span className="flex items-center gap-0.5">
+            {canLegal && doc.status === "pending" && onVerify && onReject && (
+              <>
+                <button onClick={() => onVerify(doc)} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
+                <button onClick={() => onReject(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
+              </>
+            )}
+            {onEdit && <button onClick={() => onEdit(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>}
+            {canLegal && onHistory && <button onClick={() => onHistory(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Історія")}><History className="h-3.5 w-3.5" /></button>}
+            {onDelete && <button onClick={() => onDelete(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-3.5 w-3.5" /></button>}
+            {requestCandidates && onRequest && <SlotSendButton candidates={requestCandidates} onPick={onRequest} title={requestTitle ?? t("Попросити подати")} />}
+          </span>
+        </span>
+      </div>
+      {doc.reviewNote && <div className="pl-6 pt-0.5 text-xs text-rose-500">📝 {doc.reviewNote}</div>}
+    </div>
+  );
+}
+
+// Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
+// документів людини, що в слоти не потрапили. Один макет рядка на все.
+function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview }: {
+  types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
   onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
-  onRequest: (typeId: number) => void;
+  onRequest: (docTypeId: number) => void; onHistory: (doc: WorkerDocument) => void; onDelete: (doc: WorkerDocument) => void;
+  onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
 }) {
   const t = useT();
   const items = docs
@@ -1374,55 +1471,77 @@ function BaseDocTiles({ types, docs, nationality, requiresSanepid, globals, canL
     .filter((it): it is { doc: WorkerDocument; type: DocumentType } => !!it.type);
   const byCode = (code: string) => types.find(ty => ty.code === code) ?? null;
   const notNeeded = isEuNationality(nationality);
+  const requestTitle = t("Попросити подати");
 
-  const open = (result: SlotResult, type: DocumentType | null, restrictCodes?: string[]) =>
-    result.kind === "doc" ? () => onOpenDoc(result.doc) : () => onOpenEmpty(type, restrictCodes);
-  const reqBtn = (ty: DocumentType, slot: SlotResult) => (ty.required && slot.kind === "empty" && canLegal ? () => onRequest(ty.id) : undefined);
+  // Слот з фіксованим типом (Paszport/Student/Powiadomienie/Badania/Sanepid):
+  // «Запросити» завжди пропонує саме цей тип (і коли документ уже є — «попросити
+  // свіжий скан»); «Додати» редагує наявний missing-рядок запиту, якщо такий є,
+  // інакше створює новий документ.
+  const fixedSlot = (code: string, label: string) => {
+    const type = byCode(code);
+    if (!type) return null;
+    const state = resolveDocSlot(items, [code], globals);
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type);
+    return (
+      <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
+        requestCandidates={[type]} requestTitle={requestTitle}
+        onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+    );
+  };
 
-  const passportType = byCode("passport");
-  const passportSlot = passportType ? resolveDocSlot(items, ["passport"], globals) : null;
-  const studentType = byCode("student_cert");
-  const studentSlot = studentType ? resolveDocSlot(items, ["student_cert"], globals) : null;
-  const powType = byCode("powiadomienie_ua");
-  const powSlot = powType ? resolveDocSlot(items, ["powiadomienie_ua"], globals) : null;
-  const badaniaType = byCode("medical_exam");
-  const badaniaSlot = badaniaType ? resolveDocSlot(items, ["medical_exam"], globals) : null;
-  const sanepidType = byCode("sanepid");
-  const sanepidSlot = sanepidType ? resolveDocSlot(items, ["sanepid"], globals) : null;
-  const kartaSlot: SlotResult = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, KARTA_POBYTU_CODES, globals);
-  const zezwSlot: SlotResult = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, ZEZWOLENIE_CODES, globals);
-  const kartaIcon = kartaSlot.kind === "doc" ? docTypeIcon(kartaSlot.type.icon) : IdCard;
-  const zezwIcon = zezwSlot.kind === "doc" ? docTypeIcon(zezwSlot.type.icon) : FileSignature;
+  // Слот з кількома можливими типами (Karta pobytu/Zezwolenie): тип не
+  // фіксований — обирається серед кодів слоту (за замовчуванням ті, що
+  // підходять громадянству) або береться з наявного/раніше запрошеного.
+  const multiSlot = (key: string, label: string, codes: string[], shortNames: Record<string, string>, fallbackIcon: any) => {
+    const state: DocRowState = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, codes, globals);
+    const icon = state.kind === "doc" ? docTypeIcon(state.type?.icon) : fallbackIcon;
+    const subLabel = state.kind === "doc" && state.type?.code ? (shortNames[state.type.code] ?? state.type.name) : null;
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(null, codes);
+    const slotTypes = types.filter(ty => ty.code && codes.includes(ty.code) && ty.isActive !== false);
+    let candidates: DocumentType[] = [];
+    if (state.kind === "doc" && state.type) candidates = [state.type];
+    else if (state.kind === "empty" && state.requestedDoc?.docTypeId != null) candidates = slotTypes.filter(ty => ty.id === state.requestedDoc!.docTypeId);
+    else if (state.kind === "empty") {
+      const matching = slotTypes.filter(ty => typeMatchesNationality(ty, nationality));
+      candidates = matching.length ? matching : slotTypes;
+    }
+    return (
+      <DocRow key={key} icon={icon} label={label} subLabel={subLabel} state={state} canLegal={canLegal} companies={companies}
+        requestCandidates={candidates} requestTitle={requestTitle}
+        onAdd={state.kind !== "notneeded" ? onAdd : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+    );
+  };
 
-  // секція живе у вузькій правій колонці профілю — 3–4 плитки в ряд, назви переносяться (7 в ряд обрізало «Paszp…»)
+  const otherDocs = [...docs]
+    .filter(d => { const ty = d.docTypeId != null ? types.find(x => x.id === d.docTypeId) : null; return !ty?.code || !SLOT_CODES.has(ty.code); })
+    .sort((a, b) => {
+      const sa = types.find(ty => ty.id === a.docTypeId)?.sortOrder ?? 9999;
+      const sb = types.find(ty => ty.id === b.docTypeId)?.sortOrder ?? 9999;
+      return sa - sb || a.id - b.id;
+    });
+
   return (
-    <div className="grid grid-cols-2 gap-2 px-4 pt-3 sm:grid-cols-3 xl:grid-cols-4">
-      {passportType && passportSlot && (
-        <DocTile icon={docTypeIcon(passportType.icon)} name={t("Paszport")} result={passportSlot}
-          onOpen={open(passportSlot, passportType)} onRequest={reqBtn(passportType, passportSlot)} />
-      )}
-      <DocTile icon={kartaIcon} name={t("Karta pobytu")}
-        shortName={kartaSlot.kind === "doc" ? (KARTA_POBYTU_SHORT[kartaSlot.type.code ?? ""] ?? kartaSlot.type.name) : null}
-        result={kartaSlot} onOpen={kartaSlot.kind !== "notneeded" ? open(kartaSlot, null, KARTA_POBYTU_CODES) : undefined} />
-      {studentType && studentSlot && (
-        <DocTile icon={docTypeIcon(studentType.icon)} name={t("Student")} result={studentSlot}
-          onOpen={open(studentSlot, studentType)} onRequest={reqBtn(studentType, studentSlot)} />
-      )}
-      {powType && powSlot && nationality === "ukraine" && (
-        <DocTile icon={docTypeIcon(powType.icon)} name={t("Powiadomienie")} result={powSlot}
-          onOpen={open(powSlot, powType)} onRequest={reqBtn(powType, powSlot)} />
-      )}
-      <DocTile icon={zezwIcon} name={t("Zezwolenie / Oświadczenie")}
-        shortName={zezwSlot.kind === "doc" ? (ZEZWOLENIE_SHORT[zezwSlot.type.code ?? ""] ?? zezwSlot.type.name) : null}
-        result={zezwSlot} onOpen={zezwSlot.kind !== "notneeded" ? open(zezwSlot, null, ZEZWOLENIE_CODES) : undefined} />
-      {badaniaType && badaniaSlot && (
-        <DocTile icon={docTypeIcon(badaniaType.icon)} name={t("Badania")} result={badaniaSlot}
-          onOpen={open(badaniaSlot, badaniaType)} onRequest={reqBtn(badaniaType, badaniaSlot)} />
-      )}
-      {sanepidType && sanepidSlot && requiresSanepid && (
-        <DocTile icon={docTypeIcon(sanepidType.icon)} name={t("Sanepid")} result={sanepidSlot}
-          onOpen={open(sanepidSlot, sanepidType)} onRequest={reqBtn(sanepidType, sanepidSlot)} />
-      )}
+    <div>
+      {fixedSlot("passport", t("Paszport"))}
+      {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard)}
+      {fixedSlot("student_cert", t("Student"))}
+      {nationality === "ukraine" && fixedSlot("powiadomienie_ua", t("Powiadomienie"))}
+      {multiSlot("zezwolenie", t("Zezwolenie / Oświadczenie"), ZEZWOLENIE_CODES, ZEZWOLENIE_SHORT, FileSignature)}
+      {fixedSlot("medical_exam", t("Badania"))}
+      {requiresSanepid && fixedSlot("sanepid", t("Sanepid"))}
+      {otherDocs.map(doc => {
+        const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
+        return (
+          <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={otherDocState(doc, type, globals)}
+            canLegal={canLegal} companies={companies}
+            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+        );
+      })}
+      <button type="button" onClick={() => onOpenEmpty(null)} className="w-full px-4 py-1.5 text-left text-xs text-slate-400 hover:text-slate-600">
+        {t("+ інший документ")}
+      </button>
     </div>
   );
 }
@@ -1480,73 +1599,6 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   const docByType = new Map<number, WorkerDocument>();
   for (const d of docs) if (d.docTypeId != null) docByType.set(d.docTypeId, d);
   const missingRequired = types.filter(ty => ty.required && !docByType.has(ty.id)).length;
-  // Список — лише реальні документи людини (жодних «відсутній» рядків для
-  // типів каталогу — це тепер робота плиток вище). Сортуємо за sortOrder типу.
-  const sortedDocs = [...docs].sort((a, b) => {
-    const sa = types.find(ty => ty.id === a.docTypeId)?.sortOrder ?? 9999;
-    const sb = types.find(ty => ty.id === b.docTypeId)?.sortOrder ?? 9999;
-    return sa - sb || a.id - b.id;
-  });
-
-  const docRow = (doc: WorkerDocument) => {
-    const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
-    const expired = doc.status === "expired" || isExpired(doc.expiresAt);
-    const status = expired && doc.status === "present" ? "expired" : doc.status;
-    const s = DOC_STATUS[status] ?? DOC_STATUS.missing;
-    const Icon = docTypeIcon(type?.icon);
-    const hasFile = !!doc.fileName;
-    // Строк — завжди видно (вимога власника): для status_ukr дата — з
-    // globals.ukrStatusEnd, коли в самого документа вона не проставлена.
-    const effExpiry = type?.code === "status_ukr" ? (doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : doc.expiresAt;
-    const hasExpiryFlag = type ? type.hasExpiry : true;
-    const dLeft = effExpiry ? daysUntil(effExpiry) : null;
-    let expiryNode: React.ReactNode;
-    if (effExpiry) {
-      const cls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-yellow-600" : "text-green-600";
-      expiryNode = <span className={`text-xs ${cls}`}>{dLeft != null && dLeft < 0 ? t("прострочено {date}", { date: effExpiry }) : t("до {date}", { date: effExpiry })}</span>;
-    } else if (!hasExpiryFlag) {
-      expiryNode = <span className="text-xs text-slate-400">{t("безстроково")}</span>;
-    } else {
-      expiryNode = <span className="text-xs font-medium text-amber-600">{t("дата не вказана")}</span>;
-    }
-    const employerName = doc.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;
-    return (
-      <div key={doc.id} className="border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
-        <div className="flex flex-wrap items-center gap-2">
-          {hasFile ? (
-            <button type="button" onClick={() => setPreview(doc)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
-              <Icon className="h-4 w-4" />
-            </button>
-          ) : <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
-          {hasFile ? (
-            <button type="button" onClick={() => setPreview(doc)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{doc.title}</button>
-          ) : <span className="font-medium text-slate-700">{doc.title}</span>}
-          <Badge color={s!.color}>{t(s!.label)}</Badge>
-          {expiryNode}
-          {doc.status === "pending" && <span className="text-xs font-medium text-blue-600">{t("⏳ на перевірці")}</span>}
-          {doc.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
-          {doc.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
-          {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
-          {doc.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
-          {hasFile && <a href={`/api/worker-documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
-          {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
-          {doc.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
-          <div className="ml-auto flex shrink-0 gap-1">
-            {canLegal && doc.status === "pending" && (
-              <>
-                <button onClick={() => verify.mutate(doc.id)} disabled={verify.isPending} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
-                <button onClick={() => setRejecting(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
-              </>
-            )}
-            {canLegal && <button onClick={() => setAuditFor(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Історія")}><History className="h-3.5 w-3.5" /></button>}
-            <button onClick={() => setDocModal({ mode: "edit", doc })} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>
-            <button onClick={async () => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-3.5 w-3.5" /></button>
-          </div>
-        </div>
-        {doc.reviewNote && <div className="pl-6 pt-0.5 text-xs text-slate-400">📝 {doc.reviewNote}</div>}
-      </div>
-    );
-  };
 
   return (
     <>
@@ -1560,13 +1612,15 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
         }
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
         {isLoading ? <Spinner /> : (
-          <div>
-            <BaseDocTiles types={types} docs={docs} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
-              onOpenDoc={doc => setDocModal({ mode: "edit", doc })}
-              onOpenEmpty={(type, restrictCodes) => setDocModal({ mode: "add", type, restrictCodes })}
-              onRequest={typeId => request.mutate(typeId)} />
-            <div className="mt-2">{sortedDocs.map(docRow)}</div>
-          </div>
+          <DocSlotList types={types} docs={docs} companies={companies} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
+            onOpenDoc={doc => setDocModal({ mode: "edit", doc })}
+            onOpenEmpty={(type, restrictCodes) => setDocModal({ mode: "add", type, restrictCodes })}
+            onRequest={docTypeId => request.mutate(docTypeId)}
+            onHistory={doc => setAuditFor(doc)}
+            onDelete={async doc => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }}
+            onVerify={doc => verify.mutate(doc.id)}
+            onReject={doc => setRejecting(doc)}
+            onPreview={doc => setPreview(doc)} />
         )}
       </Section>
       {docModal && (
@@ -1754,9 +1808,12 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
   const fields = fieldsFor(selectedType);
-  // Тип-каталог показує свою назву замість поля «Назва»; редагована лишається
-  // лише для «власного» документа й типу other (лишили без фіксованої назви в каталозі).
-  const effectiveTitle = selectedType && selectedType.code !== "other" ? selectedType.name : title;
+  // «Власний» документ без каталожного типу або тип other — редагована назва
+  // й ручний статус (present/missing/expired/pending); для каталожних типів
+  // статус визначають дати й верифікація, поле ховаємо (відгук власника 03.09.2026).
+  const isCustomType = !selectedType || selectedType.code === "other";
+  const effectiveTitle = isCustomType ? title : selectedType!.name;
+  const hasNumberField = fields.some(f => f.key === "number");
 
   // Список типів: обмежений слотом (restrictCodes), активний АБО вже обраний,
   // і — за замовчуванням — той, що підходить громадянству (перемикач знімає фільтр).
@@ -1859,7 +1916,17 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
     );
   };
 
-  const body = () => ({ docTypeId: docTypeId ? Number(docTypeId) : null, title: effectiveTitle.trim(), status, number, expiresAt: expiresAt || null, fileUrl, note });
+  // number — лише для типів, де це поле є в DOC_FIELD_SPEC (відгук власника
+  // 03.09.2026: «не показувати й не надсилати» там, де його нема в специ).
+  // Статус для каталожних типів не редагується вручну (поле сховане) — але
+  // «запрошений» рядок (status=missing з /request), заповнений і збережений
+  // тут, автоматично стає present; pending/expired/present лишаються як є.
+  const body = () => ({
+    docTypeId: docTypeId ? Number(docTypeId) : null, title: effectiveTitle.trim(),
+    status: !isCustomType && status === "missing" ? "present" : status,
+    ...(hasNumberField ? { number } : {}),
+    expiresAt: expiresAt || null, fileUrl, note,
+  });
   const legalBody = () => ({
     validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: expiresAt || null,
     issuer: issuer.trim() || null, caseNumber: caseNumber.trim() || null,
@@ -1917,14 +1984,16 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
             <input type="checkbox" checked={showAllTypes} onChange={e => setShowAllTypes(e.target.checked)} /> {t("Показати всі типи")}
           </label>
         </div>
-        {(!selectedType || selectedType.code === "other") && (
-          <div><Label>{t("Назва")}</Label><Input value={title} onChange={e => setTitle(e.target.value)} placeholder={t("Назва документа")} /></div>
+        {isCustomType && (
+          <>
+            <div><Label>{t("Назва")}</Label><Input value={title} onChange={e => setTitle(e.target.value)} placeholder={t("Назва документа")} /></div>
+            <div><Label>{t("Статус")}</Label>
+              <Select value={status} onChange={e => setStatus(e.target.value)}>
+                {Object.entries(DOC_STATUS).map(([k, v]) => <option key={k} value={k}>{t(v.label)}</option>)}
+              </Select>
+            </div>
+          </>
         )}
-        <div><Label>{t("Статус")}</Label>
-          <Select value={status} onChange={e => setStatus(e.target.value)}>
-            {Object.entries(DOC_STATUS).map(([k, v]) => <option key={k} value={k}>{t(v.label)}</option>)}
-          </Select>
-        </div>
 
         {pairFields(fields).map((row, i) => (
           <div key={i} className={row.length === 2 ? "grid grid-cols-2 gap-2" : ""}>
