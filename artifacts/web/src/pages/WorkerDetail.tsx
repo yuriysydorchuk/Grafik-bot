@@ -13,19 +13,20 @@ import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../l
 import {
   get, post, put, patch, del, upload,
   type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender,
-  type WorkerLegality, type LegalityReason, type CaseStatus,
+  type WorkerLegality, type LegalityReason, type CaseStatus, type LegalizationGlobals,
 } from "../lib/api";
 import {
   LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, DOC_CATEGORY_LABEL,
-  MISMATCH_LABEL, REQUIRED_MISSING_LABEL, reasonText, daysUntil,
+  MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
+import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
-import { NatFlag, NATIONALITIES } from "../lib/nationality";
+import { NatFlag, NATIONALITIES, natLabel } from "../lib/nationality";
 import { useClothingTypes } from "../lib/clothingTypes";
 import { docTypeIcon } from "../lib/docTypeIcons";
 import { TAX_OFFICES } from "../lib/taxOffices";
@@ -386,7 +387,7 @@ export default function WorkerDetail() {
         <div className="min-w-0 space-y-5">
           {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
           <WorkerLegalitySection workerId={w.id} />
-          <WorkerDocuments workerId={w.id} companies={companies} />
+          <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />
           <WorkerAbsences workerId={w.id} />
@@ -1261,7 +1262,180 @@ function WorkerLegalitySection({ workerId }: { workerId: number }) {
   );
 }
 
-function WorkerDocuments({ workerId, companies }: { workerId: number; companies: Company[] }) {
+// ── Базові плитки документів (завжди видимі над списком) ────────────────────
+// Відгук власника 03.09.2026: «іконки базових документів мають світитися
+// завжди». «Karta pobytu» і «Zezwolenie/Oświadczenie» — не фіксований тип, а
+// «найкращий» (найпізніший строк) present-документ серед кількох кодів каталогу
+// (людина могла мати кілька підстав одночасно, або підстава змінилась).
+const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue", "status_ukr", "visa_d", "visa_c", "visa_free"];
+const KARTA_POBYTU_SHORT: Record<string, string> = {
+  trc: "TRC", zezwolenie_jednolite: "Zezwolenie jednolite", karta_stalego_pobytu: "Karta stałego pobytu",
+  rezydent_ue: "Rezydent UE", status_ukr: "Status UKR", visa_d: "Wiza D", visa_c: "Wiza C", visa_free: "Ruch bezwizowy",
+};
+const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
+const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };
+
+type SlotResult =
+  | { kind: "notneeded" }
+  | { kind: "empty" }
+  | { kind: "doc"; doc: WorkerDocument; type: DocumentType; expiresAt: string | null; indefinite: boolean; expired: boolean; pending: boolean };
+
+// Найкращий документ слоту серед кодів: чинний (найпізніший строк) > прострочений
+// (найпізніший) > на перевірці > немає. status_ukr рахує ефективний строк з
+// globals.ukrStatusEnd, якщо в самого документа дата не проставлена.
+function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], codes: string[], globals?: LegalizationGlobals | null): SlotResult {
+  const cands = items.filter(it => it.type.code && codes.includes(it.type.code));
+  if (!cands.length) return { kind: "empty" };
+  const withMeta = cands.map(it => {
+    const expiresAt = it.type.code === "status_ukr" ? (it.doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : it.doc.expiresAt;
+    const pending = it.doc.status === "pending";
+    const expired = !pending && (it.doc.status === "expired" || isExpired(expiresAt));
+    const indefinite = !it.type.hasExpiry && !expiresAt;
+    return { ...it, expiresAt, pending, expired, indefinite };
+  });
+  const valid = withMeta.filter(m => !m.pending && !m.expired);
+  if (valid.length) {
+    valid.sort((a, b) => (a.indefinite !== b.indefinite ? (a.indefinite ? -1 : 1) : (b.expiresAt ?? "").localeCompare(a.expiresAt ?? "")));
+    const best = valid[0]!;
+    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: best.indefinite, expired: false, pending: false };
+  }
+  const expiredOnes = withMeta.filter(m => !m.pending && m.expired);
+  if (expiredOnes.length) {
+    expiredOnes.sort((a, b) => (b.expiresAt ?? "").localeCompare(a.expiresAt ?? ""));
+    const best = expiredOnes[0]!;
+    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: true, pending: false };
+  }
+  const pendingOnes = withMeta.filter(m => m.pending);
+  if (pendingOnes.length) {
+    const best = pendingOnes[0]!;
+    return { kind: "doc", doc: best.doc, type: best.type, expiresAt: best.expiresAt, indefinite: false, expired: false, pending: true };
+  }
+  return { kind: "empty" };
+}
+
+// Одна плитка: іконка + назва + рядок стану. Клікабельна, крім «не потрібно».
+function DocTile({ icon: Icon, name, shortName, result, onOpen, onRequest }: {
+  icon: any; name: string; shortName?: string | null; result: SlotResult; onOpen?: () => void; onRequest?: () => void;
+}) {
+  const t = useT();
+  if (result.kind === "notneeded") {
+    return (
+      <div className="rounded-lg border border-transparent bg-slate-50 p-2">
+        <Icon className="h-4 w-4 text-slate-300" />
+        <div className="mt-1 text-xs font-medium leading-tight text-slate-400" title={name}>{name}</div>
+        <div className="text-[11px] text-slate-300">{t("не потрібно")}</div>
+      </div>
+    );
+  }
+  if (result.kind === "empty") {
+    return (
+      <button type="button" onClick={onOpen} className="relative w-full rounded-lg border border-dashed border-slate-300 p-2 text-left hover:border-slate-400 hover:bg-slate-50">
+        {onRequest && (
+          <span onClick={e => { e.stopPropagation(); onRequest(); }} title={t("Попросити подати")}
+            className="absolute right-1 top-1 rounded p-0.5 text-slate-300 hover:bg-blue-50 hover:text-blue-600">
+            <Send className="h-3 w-3" />
+          </span>
+        )}
+        <Plus className="h-4 w-4 text-slate-300" />
+        <div className="mt-1 text-xs font-medium leading-tight text-slate-400" title={name}>{name}</div>
+        <div className="text-[11px] text-slate-400">{t("немає")}</div>
+      </button>
+    );
+  }
+  const dLeft = result.expiresAt ? daysUntil(result.expiresAt) : null;
+  const tone: "ok" | "soon" | "expired" | "pending" = result.pending ? "pending" : result.expired ? "expired" : (dLeft != null && dLeft <= 30) ? "soon" : "ok";
+  const borderCls = { ok: "border-green-200 bg-green-50", soon: "border-yellow-200 bg-yellow-50", expired: "border-rose-200 bg-rose-50", pending: "border-blue-200 bg-blue-50" }[tone];
+  const iconCls = { ok: "text-green-600", soon: "text-yellow-600", expired: "text-rose-600", pending: "text-blue-600" }[tone];
+  const textCls = { ok: "text-green-700", soon: "text-yellow-700", expired: "text-rose-700", pending: "text-blue-700" }[tone];
+  const stateText = result.pending ? t("⏳ на перевірці")
+    : result.expired ? t("прострочено {date}", { date: result.expiresAt ?? "—" })
+    : result.indefinite ? t("безстроково")
+    : result.expiresAt ? (dLeft != null && dLeft <= 30 ? t("до {date} · {n} дн.", { date: result.expiresAt, n: dLeft }) : t("до {date}", { date: result.expiresAt }))
+    : t("дата не вказана");
+  return (
+    <button type="button" onClick={onOpen} className={`w-full rounded-lg border p-2 text-left ${borderCls}`}>
+      <Icon className={`h-4 w-4 ${iconCls}`} />
+      <div className="mt-1 text-xs font-medium leading-tight text-slate-700" title={name}>{name}</div>
+      {shortName && <div className="truncate text-[10px] text-slate-500" title={shortName}>{shortName}</div>}
+      <div className={`text-[11px] font-medium ${textCls}`}>{stateText}</div>
+    </button>
+  );
+}
+
+function BaseDocTiles({ types, docs, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest }: {
+  types: DocumentType[]; docs: WorkerDocument[]; nationality: string | null; requiresSanepid: boolean;
+  globals: LegalizationGlobals | undefined; canLegal: boolean;
+  onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
+  onRequest: (typeId: number) => void;
+}) {
+  const t = useT();
+  const items = docs
+    .map(d => ({ doc: d, type: types.find(ty => ty.id === d.docTypeId) }))
+    .filter((it): it is { doc: WorkerDocument; type: DocumentType } => !!it.type);
+  const byCode = (code: string) => types.find(ty => ty.code === code) ?? null;
+  const notNeeded = isEuNationality(nationality);
+
+  const open = (result: SlotResult, type: DocumentType | null, restrictCodes?: string[]) =>
+    result.kind === "doc" ? () => onOpenDoc(result.doc) : () => onOpenEmpty(type, restrictCodes);
+  const reqBtn = (ty: DocumentType, slot: SlotResult) => (ty.required && slot.kind === "empty" && canLegal ? () => onRequest(ty.id) : undefined);
+
+  const passportType = byCode("passport");
+  const passportSlot = passportType ? resolveDocSlot(items, ["passport"], globals) : null;
+  const studentType = byCode("student_cert");
+  const studentSlot = studentType ? resolveDocSlot(items, ["student_cert"], globals) : null;
+  const powType = byCode("powiadomienie_ua");
+  const powSlot = powType ? resolveDocSlot(items, ["powiadomienie_ua"], globals) : null;
+  const badaniaType = byCode("medical_exam");
+  const badaniaSlot = badaniaType ? resolveDocSlot(items, ["medical_exam"], globals) : null;
+  const sanepidType = byCode("sanepid");
+  const sanepidSlot = sanepidType ? resolveDocSlot(items, ["sanepid"], globals) : null;
+  const kartaSlot: SlotResult = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, KARTA_POBYTU_CODES, globals);
+  const zezwSlot: SlotResult = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, ZEZWOLENIE_CODES, globals);
+  const kartaIcon = kartaSlot.kind === "doc" ? docTypeIcon(kartaSlot.type.icon) : IdCard;
+  const zezwIcon = zezwSlot.kind === "doc" ? docTypeIcon(zezwSlot.type.icon) : FileSignature;
+
+  // секція живе у вузькій правій колонці профілю — 3–4 плитки в ряд, назви переносяться (7 в ряд обрізало «Paszp…»)
+  return (
+    <div className="grid grid-cols-2 gap-2 px-4 pt-3 sm:grid-cols-3 xl:grid-cols-4">
+      {passportType && passportSlot && (
+        <DocTile icon={docTypeIcon(passportType.icon)} name={t("Paszport")} result={passportSlot}
+          onOpen={open(passportSlot, passportType)} onRequest={reqBtn(passportType, passportSlot)} />
+      )}
+      <DocTile icon={kartaIcon} name={t("Karta pobytu")}
+        shortName={kartaSlot.kind === "doc" ? (KARTA_POBYTU_SHORT[kartaSlot.type.code ?? ""] ?? kartaSlot.type.name) : null}
+        result={kartaSlot} onOpen={kartaSlot.kind !== "notneeded" ? open(kartaSlot, null, KARTA_POBYTU_CODES) : undefined} />
+      {studentType && studentSlot && (
+        <DocTile icon={docTypeIcon(studentType.icon)} name={t("Student")} result={studentSlot}
+          onOpen={open(studentSlot, studentType)} onRequest={reqBtn(studentType, studentSlot)} />
+      )}
+      {powType && powSlot && nationality === "ukraine" && (
+        <DocTile icon={docTypeIcon(powType.icon)} name={t("Powiadomienie")} result={powSlot}
+          onOpen={open(powSlot, powType)} onRequest={reqBtn(powType, powSlot)} />
+      )}
+      <DocTile icon={zezwIcon} name={t("Zezwolenie / Oświadczenie")}
+        shortName={zezwSlot.kind === "doc" ? (ZEZWOLENIE_SHORT[zezwSlot.type.code ?? ""] ?? zezwSlot.type.name) : null}
+        result={zezwSlot} onOpen={zezwSlot.kind !== "notneeded" ? open(zezwSlot, null, ZEZWOLENIE_CODES) : undefined} />
+      {badaniaType && badaniaSlot && (
+        <DocTile icon={docTypeIcon(badaniaType.icon)} name={t("Badania")} result={badaniaSlot}
+          onOpen={open(badaniaSlot, badaniaType)} onRequest={reqBtn(badaniaType, badaniaSlot)} />
+      )}
+      {sanepidType && sanepidSlot && requiresSanepid && (
+        <DocTile icon={docTypeIcon(sanepidType.icon)} name={t("Sanepid")} result={sanepidSlot}
+          onOpen={open(sanepidSlot, sanepidType)} onRequest={reqBtn(sanepidType, sanepidSlot)} />
+      )}
+    </div>
+  );
+}
+
+// Модалка додавання/редагування: або редагуємо конкретний документ, або
+// додаємо новий — з фіксованим типом (клік по плитці фіксованого слоту) або
+// з обмеженим списком типів (клік по «Karta pobytu»/«Zezwolenie» — тип не
+// фіксований, обирається серед кодів слоту, restrictCodes).
+type DocModalState =
+  | { mode: "add"; type: DocumentType | null; restrictCodes?: string[] }
+  | { mode: "edit"; doc: WorkerDocument };
+
+function WorkerDocuments({ workerId, companies, nationality, factoryId }: { workerId: number; companies: Company[]; nationality: string | null; factoryId: number | null }) {
   const t = useT();
   const qc = useQueryClient();
   const me = useMe();
@@ -1269,8 +1443,10 @@ function WorkerDocuments({ workerId, companies }: { workerId: number; companies:
   const confirm = useConfirm();
   const { data: types = [] } = useQuery<DocumentType[]>({ queryKey: ["document-types"], queryFn: () => get("/document-types") });
   const { data: docs = [], isLoading } = useQuery<WorkerDocument[]>({ queryKey: ["worker-docs", workerId], queryFn: () => get(`/workers/${workerId}/documents`) });
-  const [editing, setEditing] = useState<WorkerDocument | null>(null);
-  const [addFor, setAddFor] = useState<DocumentType | null | "custom">(null);
+  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const { data: globals } = useQuery<LegalizationGlobals>({ queryKey: ["legalization-globals"], queryFn: () => get("/legalization/globals") });
+  const requiresSanepid = !!factories.find(f => f.id === factoryId)?.requiresSanepid;
+  const [docModal, setDocModal] = useState<DocModalState | null>(null);
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
@@ -1303,67 +1479,71 @@ function WorkerDocuments({ workerId, companies }: { workerId: number; companies:
 
   const docByType = new Map<number, WorkerDocument>();
   for (const d of docs) if (d.docTypeId != null) docByType.set(d.docTypeId, d);
-  const extras = docs.filter(d => d.docTypeId == null || !types.some(ty => ty.id === d.docTypeId));
-
   const missingRequired = types.filter(ty => ty.required && !docByType.has(ty.id)).length;
+  // Список — лише реальні документи людини (жодних «відсутній» рядків для
+  // типів каталогу — це тепер робота плиток вище). Сортуємо за sortOrder типу.
+  const sortedDocs = [...docs].sort((a, b) => {
+    const sa = types.find(ty => ty.id === a.docTypeId)?.sortOrder ?? 9999;
+    const sb = types.find(ty => ty.id === b.docTypeId)?.sortOrder ?? 9999;
+    return sa - sb || a.id - b.id;
+  });
 
-  const row = (key: string, name: string, required: boolean, doc: WorkerDocument | undefined, type: DocumentType | null) => {
-    const expired = doc && (doc.status === "expired" || isExpired(doc.expiresAt));
-    const status = doc ? (expired && doc.status === "present" ? "expired" : doc.status) : "missing";
+  const docRow = (doc: WorkerDocument) => {
+    const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
+    const expired = doc.status === "expired" || isExpired(doc.expiresAt);
+    const status = expired && doc.status === "present" ? "expired" : doc.status;
     const s = DOC_STATUS[status] ?? DOC_STATUS.missing;
     const Icon = docTypeIcon(type?.icon);
-    const hasFile = !!doc?.fileName;
-    // Термін дії — жовтий у межах 30 днів, rose коли вже минув (узгоджено з
-    // похідним статусом "expired" вище, який теж рахує з isExpired).
-    const dLeft = doc?.expiresAt ? daysUntil(doc.expiresAt) : null;
-    const expiryCls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-400";
-    const employerName = doc?.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;
+    const hasFile = !!doc.fileName;
+    // Строк — завжди видно (вимога власника): для status_ukr дата — з
+    // globals.ukrStatusEnd, коли в самого документа вона не проставлена.
+    const effExpiry = type?.code === "status_ukr" ? (doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : doc.expiresAt;
+    const hasExpiryFlag = type ? type.hasExpiry : true;
+    const dLeft = effExpiry ? daysUntil(effExpiry) : null;
+    let expiryNode: React.ReactNode;
+    if (effExpiry) {
+      const cls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-yellow-600" : "text-green-600";
+      expiryNode = <span className={`text-xs ${cls}`}>{dLeft != null && dLeft < 0 ? t("прострочено {date}", { date: effExpiry }) : t("до {date}", { date: effExpiry })}</span>;
+    } else if (!hasExpiryFlag) {
+      expiryNode = <span className="text-xs text-slate-400">{t("безстроково")}</span>;
+    } else {
+      expiryNode = <span className="text-xs font-medium text-amber-600">{t("дата не вказана")}</span>;
+    }
+    const employerName = doc.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;
     return (
-      <div key={key} className="border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
+      <div key={doc.id} className="border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
         <div className="flex flex-wrap items-center gap-2">
           {hasFile ? (
-            <button type="button" onClick={() => setPreview(doc!)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
+            <button type="button" onClick={() => setPreview(doc)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
               <Icon className="h-4 w-4" />
             </button>
           ) : <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
           {hasFile ? (
-            <button type="button" onClick={() => setPreview(doc!)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{name}</button>
-          ) : <span className="font-medium text-slate-700">{name}</span>}
-          {required && <span className="text-[10px] font-semibold uppercase text-amber-500">{t("обов'язковий")}</span>}
+            <button type="button" onClick={() => setPreview(doc)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{doc.title}</button>
+          ) : <span className="font-medium text-slate-700">{doc.title}</span>}
           <Badge color={s!.color}>{t(s!.label)}</Badge>
-          {doc?.status === "pending" && <span className="text-xs font-medium text-blue-600">{t("⏳ на перевірці")}</span>}
-          {doc?.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
-          {doc?.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
+          {expiryNode}
+          {doc.status === "pending" && <span className="text-xs font-medium text-blue-600">{t("⏳ на перевірці")}</span>}
+          {doc.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
+          {doc.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
           {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
-          {doc?.expiresAt && <span className={`text-xs ${expiryCls}`}>⏳ {doc.expiresAt}</span>}
-          {doc?.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
-          {hasFile && <a href={`/api/worker-documents/${doc!.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc!.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
-          {doc?.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
-          {doc?.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
+          {doc.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
+          {hasFile && <a href={`/api/worker-documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
+          {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
+          {doc.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
           <div className="ml-auto flex shrink-0 gap-1">
-            {doc ? (
+            {canLegal && doc.status === "pending" && (
               <>
-                {canLegal && doc.status === "pending" && (
-                  <>
-                    <button onClick={() => verify.mutate(doc.id)} disabled={verify.isPending} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
-                    <button onClick={() => setRejecting(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
-                  </>
-                )}
-                {canLegal && <button onClick={() => setAuditFor(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Історія")}><History className="h-3.5 w-3.5" /></button>}
-                <button onClick={() => setEditing(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>
-                <button onClick={async () => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-3.5 w-3.5" /></button>
-              </>
-            ) : (
-              <>
-                {type && required && canLegal && (
-                  <button onClick={() => request.mutate(type.id)} disabled={request.isPending} className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Попросити подати")}</button>
-                )}
-                <button onClick={() => setAddFor(type)} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"><Plus className="h-3.5 w-3.5" /> {t("Додати")}</button>
+                <button onClick={() => verify.mutate(doc.id)} disabled={verify.isPending} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
+                <button onClick={() => setRejecting(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
               </>
             )}
+            {canLegal && <button onClick={() => setAuditFor(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Історія")}><History className="h-3.5 w-3.5" /></button>}
+            <button onClick={() => setDocModal({ mode: "edit", doc })} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>
+            <button onClick={async () => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-3.5 w-3.5" /></button>
           </div>
         </div>
-        {doc?.reviewNote && <div className="pl-6 pt-0.5 text-xs text-slate-400">📝 {doc.reviewNote}</div>}
+        {doc.reviewNote && <div className="pl-6 pt-0.5 text-xs text-slate-400">📝 {doc.reviewNote}</div>}
       </div>
     );
   };
@@ -1375,23 +1555,27 @@ function WorkerDocuments({ workerId, companies }: { workerId: number; companies:
         action={
           <div className="flex items-center gap-1.5">
             <Button variant="secondary" className="px-2 py-1 text-xs" loading={docsInvite.isPending} onClick={() => docsInvite.mutate()}>{t("Запросити на скан+анкету")}</Button>
-            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAddFor("custom")}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>
+            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setDocModal({ mode: "add", type: null })}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>
           </div>
         }
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
-        {isLoading ? <Spinner /> : (types.length || extras.length) ? (
+        {isLoading ? <Spinner /> : (
           <div>
-            {/* каталог має ~24 типи (сід легалізації) — показуємо лише обов'язкові та ті, що є в людини;
-                решту додають через «+ Документ» (селект типу) */}
-            {types.filter(ty => ty.required || docByType.has(ty.id)).map(ty => row(`ty${ty.id}`, ty.name, ty.required, docByType.get(ty.id), ty))}
-            {extras.map(d => row(`ex${d.id}`, d.title, false, d, null))}
+            <BaseDocTiles types={types} docs={docs} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
+              onOpenDoc={doc => setDocModal({ mode: "edit", doc })}
+              onOpenEmpty={(type, restrictCodes) => setDocModal({ mode: "add", type, restrictCodes })}
+              onRequest={typeId => request.mutate(typeId)} />
+            <div className="mt-2">{sortedDocs.map(docRow)}</div>
           </div>
-        ) : null}
+        )}
       </Section>
-      {(addFor !== null || editing) && (
-        <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types} companies={companies}
-          allDocs={docs} canLegal={canLegal}
-          onClose={() => { setAddFor(null); setEditing(null); }} onSaved={() => { inv(); setAddFor(null); setEditing(null); }} />
+      {docModal && (
+        <DocModal workerId={workerId}
+          doc={docModal.mode === "edit" ? docModal.doc : null}
+          type={docModal.mode === "add" ? docModal.type : null}
+          restrictCodes={docModal.mode === "add" ? docModal.restrictCodes ?? null : null}
+          types={types} companies={companies} allDocs={docs} canLegal={canLegal} nationality={nationality} globals={globals}
+          onClose={() => setDocModal(null)} onSaved={() => { inv(); setDocModal(null); }} />
       )}
       {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
       {rejecting && (
@@ -1509,14 +1693,45 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
   );
 }
 
-function DocModal({ workerId, doc, type, types, companies, allDocs, canLegal, onClose, onSaved }: {
-  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; types: DocumentType[]; companies: Company[];
-  allDocs: WorkerDocument[]; canLegal: boolean; onClose: () => void; onSaved: () => void;
+// код.status_ukr + деякі legal-поля (validFrom/issuedAt/.../laborMarketAccess) —
+// шляються окремим PATCH .../legal і доступні лише canLegal; number/expiresAt/
+// title/status — базові поля документа, редагує будь-хто з доступом до профілю.
+const LEGAL_FIELD_KEYS = new Set<DocFieldKey>(["validFrom", "issuedAt", "issuer", "employerCompanyId", "caseStatus", "submittedAt", "caseNumber", "decisionAt", "laborMarketAccess"]);
+
+// Чиста календарна арифметика через UTC-якір (без toISOString() від "зараз" —
+// тут дата вже рядок, зсуву TZ немає; те саме, що daysUntil у lib/legality.ts).
+function addDaysStr(iso: string, days: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y!, m! - 1, d! + days)).toISOString().slice(0, 10);
+}
+
+// Поспарувати текст/дата-поля по 2 в рядок для компактності; company/caseStatus/
+// boolean завжди на весь рядок (не пасують до вузької колонки).
+function pairFields(fields: DocField[]): DocField[][] {
+  const rows: DocField[][] = [];
+  let buf: DocField[] = [];
+  for (const f of fields) {
+    if (f.kind === "text" || f.kind === "date") {
+      buf.push(f);
+      if (buf.length === 2) { rows.push(buf); buf = []; }
+    } else {
+      if (buf.length) { rows.push(buf); buf = []; }
+      rows.push([f]);
+    }
+  }
+  if (buf.length) rows.push(buf);
+  return rows;
+}
+
+function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLegal, nationality, globals, onClose, onSaved }: {
+  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; restrictCodes: string[] | null;
+  types: DocumentType[]; companies: Company[]; allDocs: WorkerDocument[]; canLegal: boolean;
+  nationality: string | null; globals: LegalizationGlobals | undefined; onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
   const isEdit = !!doc;
   const [docTypeId, setDocTypeId] = useState(doc?.docTypeId != null ? String(doc.docTypeId) : (type ? String(type.id) : ""));
-  const [title, setTitle] = useState(doc?.title ?? type?.name ?? "");
+  const [title, setTitle] = useState(doc?.title ?? "");
   const [status, setStatus] = useState(doc?.status ?? "present");
   const [number, setNumber] = useState(doc?.number ?? "");
   const [expiresAt, setExpiresAt] = useState(doc?.expiresAt ?? "");
@@ -1528,28 +1743,137 @@ function DocModal({ workerId, doc, type, types, companies, allDocs, canLegal, on
   const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? "");
   const [issuer, setIssuer] = useState(doc?.issuer ?? "");
   const [employerCompanyId, setEmployerCompanyId] = useState(doc?.employerCompanyId != null ? String(doc.employerCompanyId) : "");
-  const [caseStatus, setCaseStatus] = useState<CaseStatus | "">(doc?.caseStatus ?? "");
+  // caseStatus за замовчуванням "submitted" — лише для stay_case_certificate
+  // (єдиний тип із цим полем у каталозі), не для решти типів документа.
+  const [caseStatus, setCaseStatus] = useState<CaseStatus | "">(doc?.caseStatus ?? (!doc && type?.code === "stay_case_certificate" ? "submitted" : ""));
   const [submittedAt, setSubmittedAt] = useState(doc?.submittedAt ?? "");
   const [caseNumber, setCaseNumber] = useState(doc?.caseNumber ?? "");
   const [decisionAt, setDecisionAt] = useState(doc?.decisionAt ?? "");
-  const [replacesDocumentId, setReplacesDocumentId] = useState(doc?.replacesDocumentId != null ? String(doc.replacesDocumentId) : "");
+  const [replacesDocumentId] = useState(doc?.replacesDocumentId != null ? String(doc.replacesDocumentId) : "");
+  const [laborMarketAccess, setLaborMarketAccess] = useState<boolean>(!!(doc?.attrs?.laborMarketAccess));
+  const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
-  const hasLegalData = !!(doc && (doc.validFrom || doc.issuedAt || doc.issuer || doc.employerCompanyId != null || doc.caseStatus || doc.submittedAt || doc.caseNumber || doc.decisionAt || doc.replacesDocumentId != null));
-  const [legOpen, setLegOpen] = useState(selectedType?.category === "stay" || selectedType?.category === "work" || hasLegalData);
-  // Неактивні типи — не пропонувати для НОВОГО документа, але лишити наявний
-  // вибір видимим при редагуванні вже створеного документа цього типу.
-  const typeOptions = types.filter(ty => ty.isActive !== false || String(ty.id) === docTypeId);
+  const fields = fieldsFor(selectedType);
+  // Тип-каталог показує свою назву замість поля «Назва»; редагована лишається
+  // лише для «власного» документа й типу other (лишили без фіксованої назви в каталозі).
+  const effectiveTitle = selectedType && selectedType.code !== "other" ? selectedType.name : title;
 
-  const body = () => ({ docTypeId: docTypeId ? Number(docTypeId) : null, title: title.trim(), status, number, expiresAt: expiresAt || null, fileUrl, note });
+  // Список типів: обмежений слотом (restrictCodes), активний АБО вже обраний,
+  // і — за замовчуванням — той, що підходить громадянству (перемикач знімає фільтр).
+  const restrictSet = restrictCodes?.length ? new Set(restrictCodes) : null;
+  const typeOptions = types.filter(ty => {
+    if (String(ty.id) === docTypeId) return true;
+    if (ty.isActive === false) return false;
+    if (restrictSet && !restrictSet.has(ty.code ?? "")) return false;
+    if (!showAllTypes && !typeMatchesNationality(ty, nationality)) return false;
+    return true;
+  });
+  const CATEGORY_ORDER = Object.keys(DOC_CATEGORY_LABEL) as (keyof typeof DOC_CATEGORY_LABEL)[];
+  const groupedTypes = CATEGORY_ORDER.map(cat => ({ cat, list: typeOptions.filter(ty => ty.category === cat) })).filter(g => g.list.length > 0);
+  const natsText = (ty: DocumentType) => ty.appliesToNationalities?.length
+    ? ty.appliesToNationalities.map(g => t(NAT_GROUP_LABEL[g] ?? natLabel(g) ?? g)).join(", ")
+    : t("усіх");
+  const typeOptionLabel = (ty: DocumentType) => {
+    const marks = `${ty.grantsStay ? "🏠" : ""}${ty.grantsWork ? "💼" : ""}`;
+    return `${ty.name}${marks ? " " + marks : ""} — ${t("для")}: ${natsText(ty)}`;
+  };
+
+  const getStr = (key: DocFieldKey): string => {
+    switch (key) {
+      case "number": return number;
+      case "validFrom": return validFrom ?? "";
+      case "expiresAt": return expiresAt ?? "";
+      case "issuedAt": return issuedAt ?? "";
+      case "issuer": return issuer;
+      case "caseNumber": return caseNumber;
+      case "submittedAt": return submittedAt ?? "";
+      case "decisionAt": return decisionAt ?? "";
+      case "employerCompanyId": return employerCompanyId;
+      default: return "";
+    }
+  };
+  const setStr = (key: DocFieldKey, v: string) => {
+    switch (key) {
+      case "number": setNumber(v); break;
+      case "issuedAt": setIssuedAt(v); break;
+      case "issuer": setIssuer(v); break;
+      case "caseNumber": setCaseNumber(v); break;
+      case "submittedAt": setSubmittedAt(v); break;
+      case "decisionAt": setDecisionAt(v); break;
+      case "employerCompanyId": setEmployerCompanyId(v); break;
+      case "expiresAt": setExpiresAt(v); break;
+      case "validFrom": {
+        setValidFrom(v);
+        // oświadczenie: порожній «До» автопідставляється як «Від» + 730 днів.
+        const expField = fields.find(f => f.key === "expiresAt");
+        if (expField?.auto === "plus730" && !expiresAt && v) setExpiresAt(addDaysStr(v, 730));
+        break;
+      }
+    }
+  };
+  const fieldDisabled = (f: DocField) => LEGAL_FIELD_KEYS.has(f.key) && !canLegal;
+
+  const renderField = (f: DocField) => {
+    const req = f.required && <span className="ml-1 text-rose-500">*</span>;
+    if (f.auto === "ukrEnd") {
+      return (
+        <div key={f.key}>
+          <Label>{t(f.label)}</Label>
+          <Input value={globals?.ukrStatusEnd ?? ""} disabled />
+          {f.hint && <p className="mt-0.5 text-[11px] text-slate-400">{t(f.hint)}: {globals?.ukrStatusEnd ?? "—"}</p>}
+        </div>
+      );
+    }
+    if (f.kind === "boolean") {
+      return (
+        <label key={f.key} className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={laborMarketAccess} disabled={fieldDisabled(f)} onChange={e => setLaborMarketAccess(e.target.checked)} />
+          {t(f.label)}
+        </label>
+      );
+    }
+    if (f.kind === "company") {
+      return (
+        <div key={f.key}><Label>{t(f.label)}{req}</Label>
+          <Select value={employerCompanyId} disabled={fieldDisabled(f)} onChange={e => setEmployerCompanyId(e.target.value)}>
+            <option value="">—</option>
+            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </div>
+      );
+    }
+    if (f.kind === "caseStatus") {
+      return (
+        <div key={f.key}><Label>{t(f.label)}{req}</Label>
+          <Select value={caseStatus} disabled={fieldDisabled(f)} onChange={e => setCaseStatus(e.target.value as CaseStatus | "")}>
+            <option value="">—</option>
+            {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])}</option>)}
+          </Select>
+        </div>
+      );
+    }
+    return (
+      <div key={f.key}><Label>{t(f.label)}{req}</Label>
+        <Input type={f.kind === "date" ? "date" : "text"} value={getStr(f.key)} disabled={fieldDisabled(f)} onChange={e => setStr(f.key, e.target.value)} />
+      </div>
+    );
+  };
+
+  const body = () => ({ docTypeId: docTypeId ? Number(docTypeId) : null, title: effectiveTitle.trim(), status, number, expiresAt: expiresAt || null, fileUrl, note });
   const legalBody = () => ({
     validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: expiresAt || null,
     issuer: issuer.trim() || null, caseNumber: caseNumber.trim() || null,
     employerCompanyId: employerCompanyId ? Number(employerCompanyId) : null,
     caseStatus: caseStatus || null,
     replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
+    ...(fields.some(f => f.key === "laborMarketAccess") ? { attrs: { laborMarketAccess } } : {}),
   });
   const save = useMutation({
     mutationFn: async () => {
+      const missing = fields
+        .filter(f => f.required && f.auto !== "ukrEnd" && f.kind !== "boolean" && !fieldDisabled(f) && !getStr(f.key).trim())
+        .map(f => t(f.label));
+      if (missing.length) throw new Error(t("Заповніть обов'язкові поля: {list}", { list: missing.join(", ") }));
       const saved: WorkerDocument = isEdit ? await patch(`/worker-documents/${doc!.id}`, body()) : await post(`/workers/${workerId}/documents`, body());
       if (file) {
         const fd = new FormData();
@@ -1567,25 +1891,47 @@ function DocModal({ workerId, doc, type, types, companies, allDocs, canLegal, on
       <div className="space-y-3">
         <div><Label>{t("Тип документа")}</Label>
           <Select value={docTypeId} onChange={e => {
-            setDocTypeId(e.target.value);
-            const ty = types.find(x => String(x.id) === e.target.value);
-            if (ty && !title.trim()) setTitle(ty.name);
-            if (ty && (ty.category === "stay" || ty.category === "work")) setLegOpen(true);
+            const val = e.target.value;
+            setDocTypeId(val);
+            if (!isEdit && !caseStatus) {
+              const ty = types.find(x => String(x.id) === val);
+              if (ty?.code === "stay_case_certificate") setCaseStatus("submitted");
+            }
           }}>
-            <option value="">{t("— власний —")}</option>
-            {typeOptions.map(ty => <option key={ty.id} value={ty.id}>{ty.name} — {t(DOC_CATEGORY_LABEL[ty.category])}</option>)}
+            {!restrictSet && <option value="">{t("— власний —")}</option>}
+            {groupedTypes.map(g => (
+              <optgroup key={g.cat} label={t(DOC_CATEGORY_LABEL[g.cat])}>
+                {g.list.map(ty => <option key={ty.id} value={ty.id}>{typeOptionLabel(ty)}</option>)}
+              </optgroup>
+            ))}
+          </Select>
+          {selectedType && (
+            <p className="mt-1 text-xs text-slate-400">
+              {t("Дає: {grants} · для: {nats}", {
+                grants: [selectedType.grantsStay && t(AXIS_LABEL.stay), selectedType.grantsWork && t(AXIS_LABEL.work)].filter(Boolean).join(" / ") || "—",
+                nats: natsText(selectedType),
+              })}
+            </p>
+          )}
+          <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+            <input type="checkbox" checked={showAllTypes} onChange={e => setShowAllTypes(e.target.checked)} /> {t("Показати всі типи")}
+          </label>
+        </div>
+        {(!selectedType || selectedType.code === "other") && (
+          <div><Label>{t("Назва")}</Label><Input value={title} onChange={e => setTitle(e.target.value)} placeholder={t("Назва документа")} /></div>
+        )}
+        <div><Label>{t("Статус")}</Label>
+          <Select value={status} onChange={e => setStatus(e.target.value)}>
+            {Object.entries(DOC_STATUS).map(([k, v]) => <option key={k} value={k}>{t(v.label)}</option>)}
           </Select>
         </div>
-        <div><Label>{t("Назва")}</Label><Input value={title} onChange={e => setTitle(e.target.value)} placeholder={t("Назва документа")} /></div>
-        <div className="grid grid-cols-2 gap-2">
-          <div><Label>{t("Статус")}</Label>
-            <Select value={status} onChange={e => setStatus(e.target.value)}>
-              {Object.entries(DOC_STATUS).map(([k, v]) => <option key={k} value={k}>{t(v.label)}</option>)}
-            </Select>
+
+        {pairFields(fields).map((row, i) => (
+          <div key={i} className={row.length === 2 ? "grid grid-cols-2 gap-2" : ""}>
+            {row.map(renderField)}
           </div>
-          <div><Label>{t("Дійсний до")}</Label><Input type="date" value={expiresAt ?? ""} onChange={e => setExpiresAt(e.target.value)} /></div>
-        </div>
-        <div><Label>{t("Номер")}</Label><Input value={number} onChange={e => setNumber(e.target.value)} /></div>
+        ))}
+
         <div>
           <Label>{t("Файл")}</Label>
           <label className="flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50">
@@ -1597,59 +1943,9 @@ function DocModal({ workerId, doc, type, types, companies, allDocs, canLegal, on
         <div><Label>{t("Посилання на файл")}</Label><Input value={fileUrl} onChange={e => setFileUrl(e.target.value)} placeholder="https://drive…" /></div>
         <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
 
-        {canLegal ? (
-          <div className="rounded-lg border border-slate-200">
-            <button type="button" onClick={() => setLegOpen(o => !o)} className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-sm font-medium text-slate-600">
-              {legOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} <Scale className="h-3.5 w-3.5 text-slate-400" /> {t("Легалізація")}
-            </button>
-            {legOpen && (
-              <div className="space-y-2 border-t border-slate-100 p-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <div><Label>{t("Чинний з")}</Label><Input type="date" value={validFrom ?? ""} onChange={e => setValidFrom(e.target.value)} /></div>
-                  <div><Label>{t("Дата видачі")}</Label><Input type="date" value={issuedAt ?? ""} onChange={e => setIssuedAt(e.target.value)} /></div>
-                </div>
-                <div><Label>{t("Видав")}</Label><Input value={issuer} onChange={e => setIssuer(e.target.value)} /></div>
-                {selectedType?.requiresEmployerMatch && (
-                  <div><Label>{t("Роботодавець")}</Label>
-                    <Select value={employerCompanyId} onChange={e => setEmployerCompanyId(e.target.value)}>
-                      <option value="">—</option>
-                      {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </Select>
-                  </div>
-                )}
-                <div><Label>{t("Статус справи")}</Label>
-                  <Select value={caseStatus} onChange={e => setCaseStatus(e.target.value as CaseStatus | "")}>
-                    <option value="">—</option>
-                    {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])}</option>)}
-                  </Select>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div><Label>{t("Подано")}</Label><Input type="date" value={submittedAt ?? ""} onChange={e => setSubmittedAt(e.target.value)} /></div>
-                  <div><Label>{t("Рішення")}</Label><Input type="date" value={decisionAt ?? ""} onChange={e => setDecisionAt(e.target.value)} /></div>
-                </div>
-                <div><Label>{t("№ справи")}</Label><Input value={caseNumber} onChange={e => setCaseNumber(e.target.value)} /></div>
-                <div><Label>{t("Поновлює")}</Label>
-                  <Select value={replacesDocumentId} onChange={e => setReplacesDocumentId(e.target.value)}>
-                    <option value="">—</option>
-                    {allDocs.filter(d => d.id !== doc?.id).map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
-                  </Select>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : hasLegalData ? (
-          <div className="space-y-0.5 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-500">
-            {doc!.validFrom && <div>{t("Чинний з")}: {doc!.validFrom}</div>}
-            {doc!.issuedAt && <div>{t("Дата видачі")}: {doc!.issuedAt}</div>}
-            {doc!.issuer && <div>{t("Видав")}: {doc!.issuer}</div>}
-            {doc!.caseStatus && <div>{t("Статус справи")}: {t(CASE_STATUS_LABEL[doc!.caseStatus])}</div>}
-            {doc!.caseNumber && <div>{t("№ справи")}: {doc!.caseNumber}</div>}
-          </div>
-        ) : null}
-
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} onClick={() => title.trim() && save.mutate()}>{isEdit ? t("Зберегти") : t("Додати")}</Button>
+          <Button loading={save.isPending} onClick={() => effectiveTitle.trim() && save.mutate()}>{isEdit ? t("Зберегти") : t("Додати")}</Button>
         </div>
       </div>
     </Modal>

@@ -135,6 +135,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     usesScheduling: factory?.usesScheduling ?? true,
     showWorkerHours: factory?.showWorkerHours ?? true,
     showCode: factory?.showCode ?? true,
+    requiresSanepid: factory?.requiresSanepid ?? false,
     invoiceRate: factory?.invoiceRate != null ? String(factory.invoiceRate) : "",
     rateBrutto: factory?.rateBrutto != null ? String(factory.rateBrutto) : "",
     rateNetto: factory?.rateNetto != null ? String(factory.rateNetto) : "",
@@ -174,6 +175,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
+    requiresSanepid: v.requiresSanepid,
     paidTransport: v.paidTransport, transportFeePerShift: num(v.transportFeePerShift), transportFeeMonthCap: num(v.transportFeeMonthCap),
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
@@ -314,6 +316,10 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           </label>
           <p className="pl-6 text-xs text-slate-400">{t("Кнопка «Заповнити доступність» зʼявляється лише в режимі «Працівники заповнюють доступність».")}</p>
         </div>
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <input type="checkbox" checked={v.requiresSanepid} onChange={e => setV({ ...v, requiresSanepid: e.target.checked })} />
+          {t("Вимагає sanepid (książeczka sanepidowska)")}
+        </label>
         {/* Excel schedule columns */}
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Стовпчики Excel-графіку")}</p>
