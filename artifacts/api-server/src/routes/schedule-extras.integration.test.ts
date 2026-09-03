@@ -119,7 +119,13 @@ test("POST /schedule/entry без згенерованого тижня ство
   const entries = await db.select().from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, weeks[0]!.id));
   assert.deepEqual(entries.map(e => [e.workerId, e.dayOfWeek, e.shift, e.status]), [[w, "mon", "1", "scheduled"]]);
 
-  // повторне додавання того самого дня — старий гард лишився
+  // друга зміна того ж дня на тій самій фабриці — дозволена (1+2), але з попередженням
+  // restGapHours, бо між 06–14 і 14–22 паузи нема (< MIN_REST_HOURS)
+  const second = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H)
+    .send({ weekStart: WEEK, workerId: w, factoryId: f, day: "mon", shift: "2" });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(second.body.restGapHours, 0, "пауза між 1 і 2 змінами = 0 год");
+  // дубль тієї ж зміни — 400
   const dup = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H)
     .send({ weekStart: WEEK, workerId: w, factoryId: f, day: "mon", shift: "2" });
   assert.equal(dup.status, 400);

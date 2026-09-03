@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
+import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory, type EmailTemplate } from "../lib/api";
 import { Card, Spinner, Input, Label, Button, Select, Badge, Empty } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -399,48 +399,101 @@ function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any
 }
 
 // ─── Email templates (client-facing letters) ─────────────────────────────────
+// Глобальний список шаблонів листа з графіком; кожному отримувачу фабрики можна
+// призначити свій (Фабрики → Email клієнта). isDefault — для отримувачів без шаблону.
 type EmailTpl = { subject: string; body: string };
 
 function EmailTemplatesSettings() {
   const t = useT();
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery<{ schedule: EmailTpl; defaults: { schedule: EmailTpl } }>({
+  const confirm = useConfirm();
+  const { data, isLoading } = useQuery<{ templates: EmailTemplate[]; defaults: EmailTpl }>({
     queryKey: ["email-templates"], queryFn: () => get("/email-templates"),
   });
+  const templates = data?.templates ?? [];
+  const [selId, setSelId] = useState<number | "new" | null>(null);
+  const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
-  const [loaded, setLoaded] = useState(false);
+  const inv = () => qc.invalidateQueries({ queryKey: ["email-templates"] });
+  const pick = (tp: EmailTemplate | "new") => {
+    if (tp === "new") { setSelId("new"); setName(""); setSubject(data?.defaults.subject ?? ""); setBody(data?.defaults.body ?? ""); return; }
+    setSelId(tp.id); setName(tp.name); setSubject(tp.subject); setBody(tp.body);
+  };
+  // перший шаблон обирається автоматично після завантаження
   useEffect(() => {
-    if (data && !loaded) { setSubject(data.schedule.subject); setBody(data.schedule.body); setLoaded(true); }
-  }, [data, loaded]);
+    if (selId === null && templates.length) pick(templates.find(x => x.isDefault) ?? templates[0]!);
+  }, [templates, selId]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = useMutation({
-    mutationFn: () => put("/email-templates", { schedule: { subject, body } }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["email-templates"] }); toast.success(t("Збережено")); },
+    mutationFn: () => selId === "new"
+      ? post<EmailTemplate>("/email-templates", { name, subject, body })
+      : put<EmailTemplate>(`/email-templates/${selId}`, { name, subject, body }),
+    onSuccess: (row) => { inv(); setSelId(row.id); toast.success(t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const makeDefault = useMutation({
+    mutationFn: (id: number) => post(`/email-templates/${id}/default`),
+    onSuccess: () => { inv(); toast.success(t("Стандартний шаблон змінено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/email-templates/${id}`),
+    onSuccess: () => { inv(); setSelId(null); toast.success(t("Видалено")); },
     onError: (e: any) => toast.error(e.message),
   });
 
   if (isLoading || !data) return <Spinner />;
+  const current = typeof selId === "number" ? templates.find(x => x.id === selId) : undefined;
   return (
-    <Card className="max-w-2xl p-4">
-      <h3 className="mb-1 text-sm font-semibold text-slate-700">{t("Лист із графіком клієнту")}</h3>
-      <p className="mb-4 text-xs text-slate-500">{t("Використовується при надсиланні графіку на фабрику (день або тиждень). Лист — польською; графік додається Excel-файлом.")}</p>
-      <div className="space-y-3">
-        <div>
-          <Label>{t("Тема листа")}</Label>
-          <Input value={subject} onChange={e => setSubject(e.target.value)} />
+    <div className="flex max-w-4xl flex-col gap-3 md:flex-row">
+      <Card className="p-3 md:w-64 md:shrink-0">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-700">{t("Шаблони")}</h3>
+          <button type="button" onClick={() => pick("new")} className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50"><Plus className="h-3.5 w-3.5" /> {t("Новий")}</button>
         </div>
-        <div>
-          <Label>{t("Текст листа")}</Label>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={13}
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+        <div className="space-y-1">
+          {templates.map(tp => (
+            <button key={tp.id} type="button" onClick={() => pick(tp)}
+              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm ${selId === tp.id ? "bg-red-50 text-red-700" : "text-slate-700 hover:bg-slate-50"}`}>
+              <span className="truncate">{tp.name}</span>
+              {tp.isDefault && <Badge color="slate">{t("стандартний")}</Badge>}
+            </button>
+          ))}
+          {selId === "new" && <div className="rounded-lg bg-red-50 px-2.5 py-1.5 text-sm text-red-700">{t("Новий шаблон")}</div>}
         </div>
-        <p className="text-xs text-slate-400">{t("Плейсхолдери: {data} — дата дня або період тижня, {fabryka} — назва фабрики.")}</p>
-        <div className="flex gap-2">
-          <Button loading={save.isPending} disabled={!subject.trim() || !body.trim()} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
-          <Button variant="secondary" onClick={() => { setSubject(data.defaults.schedule.subject); setBody(data.defaults.schedule.body); }}>{t("Скинути до стандартного")}</Button>
-        </div>
-      </div>
-    </Card>
+      </Card>
+      <Card className="flex-1 p-4">
+        <p className="mb-3 text-xs text-slate-500">{t("Використовується при надсиланні графіку на фабрику (день або тиждень). Лист — польською; графік додається Excel-файлом. Кожному отримувачу фабрики можна призначити свій шаблон.")}</p>
+        {selId === null ? <p className="text-sm text-slate-400">{t("Оберіть шаблон або створіть новий.")}</p> : (
+          <div className="space-y-3">
+            <div>
+              <Label>{t("Назва шаблону")}</Label>
+              <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("напр. Standardowy / Dla kierownika zmiany")} />
+            </div>
+            <div>
+              <Label>{t("Тема листа")}</Label>
+              <Input value={subject} onChange={e => setSubject(e.target.value)} />
+            </div>
+            <div>
+              <Label>{t("Текст листа")}</Label>
+              <textarea value={body} onChange={e => setBody(e.target.value)} rows={13}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+            </div>
+            <p className="text-xs text-slate-400">{t("Плейсхолдери: {data} — дата дня або період тижня, {fabryka} — назва фабрики.")}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button loading={save.isPending} disabled={!name.trim() || !subject.trim() || !body.trim()} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+              <Button variant="secondary" onClick={() => { setSubject(data.defaults.subject); setBody(data.defaults.body); }}>{t("Скинути до стандартного")}</Button>
+              {current && !current.isDefault && <Button variant="secondary" onClick={() => makeDefault.mutate(current.id)}>{t("Зробити стандартним")}</Button>}
+              {current && !current.isDefault && (
+                <Button variant="secondary" onClick={async () => {
+                  if (await confirm({ title: t("Видалити шаблон «{name}»?", { name: current.name }), message: t("Отримувачі з цим шаблоном перейдуть на стандартний."), danger: true, confirmText: t("Видалити") })) remove.mutate(current.id);
+                }}><Trash2 className="h-4 w-4" /> {t("Видалити")}</Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }
 

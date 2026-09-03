@@ -84,3 +84,88 @@ test("absence: entering a reason for a specific shift creates a pending request"
   assert.equal(r!.dayOfWeek, "tue");
   assert.equal(r!.status, "pending");
 });
+
+// ── Аванс: фінансова довідка адміну (services/workerBalance.ts) ───────────────
+// Блок «Стан на сьогодні» бачить лише роль зі сторінкою /advances (owner — завжди);
+// адмін без неї отримує запит без цифр.
+test("advance: balance block goes only to admins with the /advances page", opts, async () => {
+  const { adminsTable, rolesTable, factoriesTable } = await import("../test/harness.ts");
+  const { sent } = await import("../test/botHarness.ts");
+  const { invalidateRolesCache } = await import("../lib/auth.ts");
+  const [f] = await db.insert(factoriesTable).values({ name: "BalFab", rateBrutto: 31.4, rateNetto: 25.35 }).returning({ id: factoriesTable.id });
+  const [w] = await db.insert(workersTable).values({ fullName: "Jan", telegramId: TID, isActive: true, factoryId: f!.id }).returning({ id: workersTable.id });
+  // незнята виплачена залічка — має зʼявитись у довідці
+  await db.insert(advanceRequestsTable).values({ workerId: w!.id, amount: 120, status: "paid", createdAt: new Date(Date.now() - 40 * 86400_000) });
+  await db.insert(rolesTable).values([
+    { key: "owner", label: "owner", caps: [], pages: [] },
+    { key: "clerk", label: "clerk", caps: ["editData"], pages: ["/schedule"] },
+  ]).onConflictDoNothing();
+  invalidateRolesCache();
+  await db.insert(adminsTable).values([
+    { name: "Owner", role: "owner", telegramId: "777001" },
+    { name: "Clerk", role: "clerk", telegramId: "777002" },
+  ]);
+  await pressButton(TID, "adv:new");
+  await sendText(TID, "200");
+  await sendText(TID, "-");
+  const toOwner = sent.filter(s => String(s.chatId) === "777001").map(s => s.text ?? "").join("\n");
+  const toClerk = sent.filter(s => String(s.chatId) === "777002").map(s => s.text ?? "").join("\n");
+  assert.match(toOwner, /Запит на аванс/);
+  assert.match(toOwner, /Стан на сьогодні/, "owner sees the balance block");
+  assert.match(toOwner, /Залічки незняті: 120 zł \(1\)/, "undeducted paid advance is listed");
+  assert.match(toOwner, /25.35 zł\/год нетто/, "factory net rate resolved");
+  assert.match(toClerk, /Запит на аванс/);
+  assert.doesNotMatch(toClerk, /Стан на сьогодні/, "role without /advances gets no financial data");
+});
+
+// ── Відпрошування: мінімум 48 год до зміни (03.09.2026, було 24) ─────────────
+test("absence: a whole-day request closer than 48h is refused with the rule text", opts, async () => {
+  const workerId = await seedWorker();
+  const { nowWarsaw } = await import("./time.ts");
+  const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const tomorrow = new Date(nowWarsaw()); tomorrow.setDate(tomorrow.getDate() + 1);
+  const in4days = new Date(nowWarsaw()); in4days.setDate(in4days.getDate() + 4);
+  setState(TID, "absence:pick", { workerId, lang: "uk", factoryId: null, items: [] });
+  await pressButton(TID, `absday:${ymd(tomorrow)}`);
+  assert.match(sentText(), /запізно/, "tomorrow (< 48h before a 06:00 shift) is refused");
+  assert.match(sentText(), /48 годин/, "worker sees the rule");
+  assert.equal((await db.select().from(absenceRequestsTable)).length, 0);
+  resetSent();
+  setState(TID, "absence:pick", { workerId, lang: "uk", factoryId: null, items: [] });
+  await pressButton(TID, `absday:${ymd(in4days)}`);
+  assert.match(sentText(), /причин/i, "4 days ahead → asks for the reason");
+});
+
+test("absence: the menu text and the day picker carry the 48h rule", opts, async () => {
+  await seedWorker();
+  await sendText(TID, "🏖 Взяти вихідний");
+  assert.match(sentText(), /за 48 годин/);
+  await pressButton(TID, "absother");
+  assert.match(sentText(), /≥ 48 годин/);
+});
+
+test("advance balance: other deductions come from the svodni row (prev month) and deduction tables (current month)", opts, async () => {
+  const { factoriesTable, svodniRowsTable, transportDeductionsTable } = await import("../test/harness.ts");
+  const { computeWorkerBalance } = await import("../services/workerBalance.ts");
+  const { nowWarsaw } = await import("./time.ts");
+  const [f] = await db.insert(factoriesTable).values({ name: "DedFab", city: "Люблін", rateBrutto: 31.4, rateNetto: 25.35 }).returning({ id: factoriesTable.id });
+  const [w] = await db.insert(workersTable).values({ fullName: "Jan", telegramId: TID, isActive: true, factoryId: f!.id }).returning({ id: workersTable.id });
+  const now = nowWarsaw();
+  const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const cur = ym(now), prev = ym(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  await db.insert(svodniRowsTable).values({ periodMonth: prev, city: "Люблін", factoryLabel: "DedFab", factoryId: f!.id, workerId: w!.id, rawName: "Jan", potracenia: 50, hostel: 300, dojazd: 40, kaucja: 100, doWyplaty: 100, extras: { karaKlient: 25 } } as any);
+  await db.insert(transportDeductionsTable).values({ periodMonth: cur, workerId: w!.id, factoryId: f!.id, amount: 60 });
+  const b = (await computeWorkerBalance(w!.id, { factoryId: f!.id }))!;
+  const byLabel = (m: string, label: string) => b.other.find(o => o.month === m && o.label === label)?.amount;
+  if (now.getDate() <= 15) {
+    assert.equal(byLabel(prev, "Potrącenia"), 50);
+    assert.equal(byLabel(prev, "Hostel"), 300);
+    assert.equal(byLabel(prev, "Dojazd"), 40);
+    assert.equal(byLabel(prev, "Kaucja"), 100);
+    assert.equal(byLabel(prev, "Kara klient"), 25);
+  } else {
+    assert.equal(b.other.filter(o => o.month === prev).length, 0, "prev month shown only on days 1–15");
+  }
+  assert.equal(byLabel(cur, "Dojazd"), 60, "current month without a svodni row → transport_deductions");
+  assert.equal(b.estimate, (b.earnedTotal ?? 0) - b.otherTotal, "estimate subtracts other deductions");
+});

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy, Eraser } from "lucide-react";
 import { toast } from "sonner";
@@ -45,6 +46,9 @@ const SHIFT_CODES: ShiftCode[] = ["1", "2", "3", "4", "5", "6"];
 const gridColsClass = (n: number) =>
   n <= 1 ? "md:grid-cols-1" : n === 2 ? "md:grid-cols-2" : n === 3 ? "md:grid-cols-3" : "md:grid-cols-3 lg:grid-cols-4";
 
+// Мінімальна пауза між змінами (год); менше — помаранчеве попередження (= services/restGap.ts)
+const MIN_REST_HOURS = 5;
+
 const shiftDot: Record<ShiftCode, string> = { "1": "bg-sky-500", "2": "bg-amber-500", "3": "bg-violet-500", "4": "bg-emerald-500", "5": "bg-pink-500", "6": "bg-cyan-500" };
 
 
@@ -59,6 +63,14 @@ export default function Schedule() {
   const [factoryId, setFactoryId] = usePersisted<string>("sel.factory", "");
   const urlWeek = new URLSearchParams(location.search).get("week") ?? "";
   const [weekStart, setWeekStart] = useState(urlWeek || upcomingWeeks()[0]!.value);
+  // тиждень — в URL (?week=), щоб повернення з профілю працівника (?from=) відкривало той самий тиждень
+  useEffect(() => {
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("week") === weekStart) return;
+    u.searchParams.set("week", weekStart);
+    window.history.replaceState(null, "", u.pathname + u.search);
+  }, [weekStart]);
+  const profileHref = (workerId: number) => `/workers/${workerId}?from=${encodeURIComponent(`/schedule?week=${weekStart}`)}`;
   const [over, setOver] = useState("");
   const [approveOpen, setApproveOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
@@ -121,6 +133,35 @@ export default function Schedule() {
     d.setHours(h ?? 0, m ?? 0, 0, 0);
     return warsawNowMs() >= d.getTime();
   };
+  // Замалий відпочинок між змінами одного працівника (< MIN_REST_HOURS год між кінцем
+  // однієї і стартом іншої, в т.ч. нічна → ранкова): картка помаранчева. Дзеркало
+  // серверної логіки services/restGap.ts (тут — лише зміни цієї фабрики за тиждень).
+  const restGapByEntry = useMemo(() => {
+    const toMin = (x: string) => { const [h, m] = x.split(":").map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+    const interval = (di: number, tm: { start: string; end: string }) => {
+      const start = di * 24 * 60 + toMin(tm.start);
+      let dur = toMin(tm.end) - toMin(tm.start);
+      if (dur <= 0) dur += 24 * 60;
+      return { start, end: start + dur };
+    };
+    const byWorker = new Map<number, { id: number; start: number; end: number }[]>();
+    for (const e of data?.entries ?? []) {
+      if (e.status === "absent") continue;
+      const tm = shiftOverrides[`${e.day}-${e.shift}`] ?? factoryShiftsArr[Number(e.shift) - 1];
+      if (!tm) continue;
+      (byWorker.get(e.workerId) ?? byWorker.set(e.workerId, []).get(e.workerId)!).push({ id: e.id, ...interval(DAYS.indexOf(e.day as DayCode), tm) });
+    }
+    const out = new Map<number, number>();
+    for (const list of byWorker.values()) {
+      if (list.length < 2) continue;
+      for (const a of list) for (const b of list) {
+        if (a.id === b.id) continue;
+        const gap = Math.max(b.start - a.end, a.start - b.end) / 60;
+        if (gap < MIN_REST_HOURS && (!out.has(a.id) || gap < out.get(a.id)!)) out.set(a.id, Math.round(gap * 10) / 10);
+      }
+    }
+    return out;
+  }, [data?.entries, shiftOverrides, factoryShiftsArr]);
   const usesAvailability = data?.factory?.usesAvailability ?? factory?.usesAvailability ?? true;
   const usesPositions = data?.factory?.usesPositions ?? factory?.usesPositions ?? false;
   const usesGender = data?.factory?.usesGender ?? factory?.usesGender ?? false;
@@ -207,7 +248,14 @@ export default function Schedule() {
     onSuccess: (msgs) => { reload(); setDayApprove(null); toast.success(t("Затверджено"), { description: msgs.join(" · ") }); },
     onError: (e: any) => toast.error(e.message),
   });
-  const addEntry = useMutation({ mutationFn: (v: { workerId: number; day: DayCode; shift: ShiftCode }) => post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
+  const addEntry = useMutation({
+    mutationFn: (v: { workerId: number; day: DayCode; shift: ShiftCode }) => post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v }),
+    onSuccess: (r: any) => {
+      reload();
+      if (r?.restGapHours != null) toast.warning(t("Замало часу на відпочинок між змінами: {h} год", { h: r.restGapHours }), { description: t("Людина стоїть у двох змінах поспіль — перевірте, чи це свідомо.") });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   const moveEntry = useMutation({ mutationFn: (v: { id: number; shift: ShiftCode }) => patch(`/schedule/entry/${v.id}`, { shift: v.shift }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const removeEntry = useMutation({ mutationFn: (id: number) => del(`/schedule/entry/${id}`), onSuccess: reload });
   const setStatus = useMutation({ mutationFn: (v: { id: number; status: string }) => patch(`/schedule/entry/${v.id}/status`, { status: v.status }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
@@ -486,7 +534,7 @@ export default function Schedule() {
                                 <div key={e.id} title={e.pickedUpByName ? t("Забрав: {name}", { name: e.pickedUpByName }) : undefined}
                                   className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm ${tint}`}>
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
-                                  <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{e.workerName}</span>
+                                  <Link href={profileHref(e.workerId)} className="min-w-0 flex-1 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{e.workerName}</Link>
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {cellEditing ? (
@@ -551,15 +599,20 @@ export default function Schedule() {
                                 const abs = absenceByWorker[`${e.workerId}-${day}-${shift}`];
                                 const subFor = substituteFor[`${e.workerId}-${day}-${shift}`];
                                 const off = abs && (abs.status === "accepted" || abs.status === "substituted"); // confirmed absence
-                                const tip = off ? `${t("Відсутній")}${abs?.reason ? ` — ${abs.reason}` : ""}` : abs?.status === "pending" ? `${t("Відпрошується (не підтверджено)")}${abs.reason ? ` — ${abs.reason}` : ""}` : subFor ? t("Замість {name}", { name: subFor }) : undefined;
+                                const restGap = restGapByEntry.get(e.id); // замалий відпочинок між змінами (год)
+                                const restTip = restGap != null ? t("Замало часу на відпочинок між змінами: {h} год", { h: restGap }) : undefined;
+                                const tip = off ? `${t("Відсутній")}${abs?.reason ? ` — ${abs.reason}` : ""}` : abs?.status === "pending" ? `${t("Відпрошується (не підтверджено)")}${abs.reason ? ` — ${abs.reason}` : ""}` : subFor ? t("Замість {name}", { name: subFor }) : restTip;
+                                const tint = off ? "border-rose-200 bg-rose-50/40" : subFor ? "border-emerald-200 bg-emerald-50/30" : restGap != null ? "border-orange-300 bg-orange-50" : "border-slate-200 bg-white";
                                 return (
                                 <div key={e.id} draggable={editable} onDragStart={ev => startDrag(ev, { kind: "entry", id: e.id, day, shift })} onDragEnd={() => setOver("")}
                                   title={tip}
-                                  className={`group flex items-center gap-1.5 rounded-lg border px-2 py-1 text-sm ${off ? "border-rose-200 bg-rose-50/40" : subFor ? "border-emerald-200 bg-emerald-50/30" : "border-slate-200 bg-white"} ${editable ? "cursor-grab hover:border-red-300 active:cursor-grabbing" : ""}`}>
+                                  className={`group flex items-center gap-1.5 rounded-lg border px-2 py-1 text-sm ${tint} ${editable ? "cursor-grab hover:border-red-300 active:cursor-grabbing" : ""}`}>
                                   <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
-                                  <span className={`min-w-0 flex-1 truncate ${off ? "text-rose-600 line-through decoration-rose-400" : "text-slate-700"}`}>{e.workerName}</span>
+                                  <Link href={profileHref(e.workerId)} draggable={false} onClick={ev => ev.stopPropagation()}
+                                    className={`min-w-0 flex-1 truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
+                                  {restGap != null && <span className="shrink-0 text-xs" title={restTip}>⚠️</span>}
                                   {abs?.status === "pending" && <span className="shrink-0 text-xs" title={tip}>🙋</span>}
                                   {subFor && <span className="shrink-0 truncate text-[11px] text-emerald-600" style={{ maxWidth: "6.5rem" }}>↪ {subFor.split(" ")[0]}</span>}
                                   {editable && <button onClick={() => removeEntry.mutate(e.id)} className="shrink-0 rounded p-0.5 text-slate-300 opacity-0 transition group-hover:opacity-100 hover:bg-rose-50 hover:text-rose-500"><X className="h-3.5 w-3.5" /></button>}
@@ -581,7 +634,7 @@ export default function Schedule() {
                                   className={`flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm ${editable ? "cursor-grab hover:border-emerald-300 active:cursor-grabbing" : ""}`}>
                                   <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
                                   {usesPositions && r.positionId != null && <span title={posName(r.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(r.positionId))}`} />}
-                                  <span className="min-w-0 flex-1 truncate text-slate-600">{r.name}</span>
+                                  <Link href={profileHref(r.workerId)} draggable={false} className="min-w-0 flex-1 truncate text-slate-600 hover:text-red-600 hover:underline">{r.name}</Link>
                                   {usesGender && r.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(r.gender)}`}>{genderIcon(r.gender)}</span>}
                                   {editable && <button onClick={() => addEntry.mutate({ workerId: r.workerId, day, shift })} className="shrink-0 rounded px-1 text-xs text-emerald-600 hover:bg-emerald-50">+</button>}
                                 </div>
@@ -604,7 +657,7 @@ export default function Schedule() {
                         <div key={w.workerId} draggable={editable} onDragStart={ev => startDrag(ev, { kind: "available", workerId: w.workerId, day })} onDragEnd={() => setOver("")}
                           className={`flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 ${editable ? "cursor-grab hover:border-red-300 active:cursor-grabbing" : ""}`}>
                           <GripVertical className="h-3 w-3 shrink-0 text-slate-300" />
-                          <span className="truncate">{w.name}</span>
+                          <Link href={profileHref(w.workerId)} draggable={false} className="truncate hover:text-red-600 hover:underline">{w.name}</Link>
                         </div>
                       ))}
                     </div>

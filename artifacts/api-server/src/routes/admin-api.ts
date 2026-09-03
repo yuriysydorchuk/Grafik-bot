@@ -12,6 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
+  emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
@@ -1662,10 +1663,14 @@ router.get("/factories", async (req, res) => {
     if (rates) { entry.rate = p.rate; entry.rateNetto = p.rateNetto; entry.invoiceRate = p.invoiceRate; }
     (posByFactory.get(p.factoryId) ?? posByFactory.set(p.factoryId, []).get(p.factoryId)!).push(entry);
   }
+  // отримувачі графіку (email + шаблон); clientEmail лишається кешем «усі через кому»
+  const { factoryEmailMap } = await import("../services/email");
+  const recipients = await factoryEmailMap(rows.map(r => r.id), new Map(rows.map(r => [r.id, r.clientEmail])));
   const withCo = rows.map(r => ({
     ...r,
     companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
     positions: posByFactory.get(r.id) ?? [],
+    emailRecipients: recipients.get(r.id) ?? [],
   }));
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (fin) return ok(res, withCo);
@@ -1812,6 +1817,11 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (usesScheduling !== undefined) patch.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) patch.showCode = !!showCode;
+  // мінімум днів доступності на тиждень (1–7; ""/null/0 = без правила)
+  if (req.body?.minDaysPerWeek !== undefined) {
+    const n = Number(req.body.minDaysPerWeek);
+    patch.minDaysPerWeek = Number.isInteger(n) && n >= 1 ? Math.min(7, n) : null;
+  }
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
   const [f] = Object.keys(patch).length
@@ -1819,6 +1829,23 @@ router.patch("/factories/:id", RW, async (req, res) => {
     : await db.select().from(factoriesTable).where(eq(factoriesTable.id, id));
   if (positions !== undefined) await setFactoryPositions(id, positions, canFactoryRates(req));
   ok(res, stripFactoryEcho(f, req));
+});
+
+// Отримувачі графіку фабрики: повна заміна списку [{email, name?, templateId?}]
+router.put("/factories/:id/email-recipients", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];
+  if (!f) return fail(res, 404, "Не знайдено");
+  const list = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+  const { isEmail, setFactoryRecipients } = await import("../services/email");
+  for (const r of list) {
+    if (!isEmail(String(r?.email ?? "").trim())) return fail(res, 400, `Невірний email: ${String(r?.email ?? "")}`);
+  }
+  const saved = await setFactoryRecipients(id, list.map((r: any) => ({
+    email: String(r.email), name: r.name != null ? String(r.name) : null,
+    templateId: Number.isInteger(Number(r.templateId)) && Number(r.templateId) > 0 ? Number(r.templateId) : null,
+  })));
+  ok(res, saved);
 });
 
 // Shared self-signup link for a factory — anyone who opens it registers themselves
@@ -2011,11 +2038,12 @@ router.get("/schedule", async (req, res) => {
   const available: Record<string, { workerId: number; name: string; code: string | null; positionId: number | null; gender: string | null }[]> = {};
   let factoryInfo: { shiftCount: number; usesAvailability: boolean; genMode: string; usesPositions: boolean; usesGender: boolean; shiftTimes: { start: string; end: string }[] } | null = null;
   if (factoryId != null) {
-    // who is assigned each day (any shift)
+    // who is assigned each day (any shift) / each day+shift
     const assignedThatDay = new Map<string, Set<number>>(); // day -> workerIds
+    const assignedThatShift = new Set<string>(); // "day-shift-workerId"
     for (const e of entries) {
       if (!assignedThatDay.has(e.day)) assignedThatDay.set(e.day, new Set());
-      if (e.workerId) assignedThatDay.get(e.day)!.add(e.workerId);
+      if (e.workerId) { assignedThatDay.get(e.day)!.add(e.workerId); assignedThatShift.add(`${e.day}-${e.shift}-${e.workerId}`); }
     }
 
     const av = await db
@@ -2028,8 +2056,10 @@ router.get("/schedule", async (req, res) => {
     for (const a of av) {
       if (a.workerId == null) continue;
       if (a.wFactory && a.wFactory !== factoryId) continue; // other factory's worker
-      if (assignedThatDay.get(a.day)?.has(a.workerId)) continue; // already working that day
       const key = `${a.day}-${a.shift}`;
+      // Запас — по зміні, не по дню: людина на 1-й зміні лишається в запасі 2-ї (друга
+      // зміна того ж дня дозволена; веб підсвітить замалий відпочинок помаранчевим)
+      if (assignedThatShift.has(`${key}-${a.workerId}`)) continue;
       const dedup = `${key}-${a.workerId}`;
       if (seen.has(dedup)) continue; seen.add(dedup);
       (reserve[key] ??= []).push({ workerId: a.workerId, name: a.name ?? "—", code: a.code, positionId: a.positionId, gender: a.gender });
@@ -2361,10 +2391,33 @@ router.post("/schedule/entry", RW, async (req, res) => {
   // draft-рядок, щоб графік можна було зібрати вручну ще до «Згенерувати»
   // (дзеркально призначенню водіїв наперед у PUT /schedule/driver-assignments).
   const week = await ensureWeekRow(String(weekStart));
-  // avoid duplicate / two shifts same day
-  const existing = await db.select().from(scheduleEntriesTable)
-    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.dayOfWeek, day)));
-  if (existing.length) return fail(res, 400, "Працівник уже має зміну цього дня");
+  // Дві зміни в один день на ТІЙ САМІЙ фабриці — дозволено (1+2 тощо), але з
+  // попередженням restGapHours, якщо пауза між змінами < MIN_REST_HOURS (веб підсвічує
+  // помаранчевим). Дубль тієї ж зміни й зміна на іншій фабриці того дня — блок.
+  const workerWeek = await db.select().from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId)));
+  const sameDay = workerWeek.filter(e => e.dayOfWeek === day);
+  if (sameDay.some(e => e.factoryId === factoryId && e.shift === shift)) return fail(res, 400, "Працівник уже в цій зміні");
+  if (sameDay.some(e => e.factoryId !== factoryId)) return fail(res, 400, "Працівник уже має зміну цього дня на іншій фабриці");
+  let restGapHours: number | null = null;
+  if (workerWeek.length) {
+    const facIds = [...new Set([factoryId, ...workerWeek.map(e => e.factoryId)])];
+    const facs = await db.select().from(factoriesTable).where(inArray(factoriesTable.id, facIds));
+    const facById = new Map(facs.map(f => [f.id, f]));
+    const ov = await loadWeekShiftOverrides(String(weekStart));
+    const timeOf = (fid: number, d: string, s: string) =>
+      overrideFor(ov, fid, String(weekStart), d, s) ?? factoryShifts(facById.get(fid))[Number(s) - 1];
+    const tTime = timeOf(factoryId, String(day), String(shift));
+    if (tTime) {
+      const { shiftIntervalMin, minRestGapHours, MIN_REST_HOURS } = await import("../services/restGap");
+      const others = workerWeek.flatMap(e => {
+        const tm = timeOf(e.factoryId, e.dayOfWeek, e.shift);
+        return tm ? [shiftIntervalMin(DAYS.indexOf(e.dayOfWeek), tm)] : [];
+      });
+      const gap = minRestGapHours(shiftIntervalMin(DAYS.indexOf(day), tTime), others);
+      if (gap !== null && gap < MIN_REST_HOURS) restGapHours = gap;
+    }
+  }
   // Клітинка з разовим override часу → фіксуємо його тривалість у hoursOverride,
   // щоб облік годин не взяв дефолтні 8 для зміни поза конфігом фабрики.
   const [cellOv] = await db.select().from(factoryShiftOverridesTable).where(and(
@@ -2376,7 +2429,7 @@ router.post("/schedule/entry", RW, async (req, res) => {
     weekId: week.id, workerId, factoryId, dayOfWeek: day, shift, status: "scheduled",
     hoursOverride: cellOv ? shiftDurationHours(cellOv.start, cellOv.end) : null,
   }).returning();
-  ok(res, e);
+  ok(res, { ...e, restGapHours });
 });
 
 router.delete("/schedule/entry/:id", RW, async (req, res) => {
@@ -2652,18 +2705,61 @@ router.post("/schedule/email", RW, async (req, res) => {
   }
 });
 
-// Email templates (settings-backed). Scenario "schedule" = client schedule email.
+// Email templates — глобальний список шаблонів листа з графіком (таблиця email_templates).
+// Кожен отримувач фабрики може мати свій; isDefault — для отримувачів без шаблону.
 router.get("/email-templates", RW, async (_req, res) => {
-  const { getScheduleEmailTemplate, SCHEDULE_EMAIL_DEFAULTS } = await import("../services/email");
-  ok(res, { schedule: await getScheduleEmailTemplate(), defaults: { schedule: SCHEDULE_EMAIL_DEFAULTS } });
+  const { listEmailTemplates, SCHEDULE_EMAIL_DEFAULTS } = await import("../services/email");
+  ok(res, { templates: await listEmailTemplates(), defaults: SCHEDULE_EMAIL_DEFAULTS });
 });
 
-router.put("/email-templates", RW, async (req, res) => {
-  const { subject, body } = req.body?.schedule ?? {};
-  if (typeof subject !== "string" || !subject.trim() || typeof body !== "string" || !body.trim())
-    return fail(res, 400, "Тема і текст листа обовʼязкові");
-  const { saveScheduleEmailTemplate } = await import("../services/email");
-  await saveScheduleEmailTemplate(subject.trim(), body.trim());
+type TemplateInput = { name: string; subject: string; body: string };
+// null = невалідно (причина у другому елементі)
+const cleanTemplateBody = (b: any): [TemplateInput | null, string] => {
+  const name = String(b?.name ?? "").trim();
+  const subject = String(b?.subject ?? "").trim();
+  const body = String(b?.body ?? "").trim();
+  if (!name) return [null, "Вкажіть назву шаблону"];
+  if (!subject || !body) return [null, "Тема і текст листа обовʼязкові"];
+  return [{ name: name.slice(0, 80), subject, body }, ""];
+};
+
+router.post("/email-templates", RW, async (req, res) => {
+  const [c, err] = cleanTemplateBody(req.body);
+  if (!c) return fail(res, 400, err);
+  await (await import("../services/email")).ensureDefaultTemplate();
+  const [row] = await db.insert(emailTemplatesTable).values(c).returning();
+  ok(res, row);
+});
+
+router.put("/email-templates/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [c, err] = cleanTemplateBody(req.body);
+  if (!c) return fail(res, 400, err);
+  const [row] = await db.update(emailTemplatesTable).set({ ...c, updatedAt: new Date() })
+    .where(eq(emailTemplatesTable.id, id)).returning();
+  if (!row) return fail(res, 404, "Не знайдено");
+  ok(res, row);
+});
+
+// Зробити стандартним (рівно один isDefault)
+router.post("/email-templates/:id/default", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const exists = (await db.select({ id: emailTemplatesTable.id }).from(emailTemplatesTable).where(eq(emailTemplatesTable.id, id)))[0];
+  if (!exists) return fail(res, 404, "Не знайдено");
+  await db.transaction(async (tx) => {
+    await tx.update(emailTemplatesTable).set({ isDefault: false });
+    await tx.update(emailTemplatesTable).set({ isDefault: true }).where(eq(emailTemplatesTable.id, id));
+  });
+  ok(res, {});
+});
+
+// Видалити (не стандартний; отримувачі з цим шаблоном переходять на стандартний через ON DELETE SET NULL)
+router.delete("/email-templates/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const row = (await db.select().from(emailTemplatesTable).where(eq(emailTemplatesTable.id, id)))[0];
+  if (!row) return fail(res, 404, "Не знайдено");
+  if (row.isDefault) return fail(res, 400, "Стандартний шаблон видалити не можна — спершу зробіть стандартним інший");
+  await db.delete(emailTemplatesTable).where(eq(emailTemplatesTable.id, id));
   ok(res, {});
 });
 
@@ -3678,7 +3774,9 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   const attachWorkerIds: number[] = Array.isArray(req.body?.attachWorkerIds) ? req.body.attachWorkerIds.map(Number).filter(Boolean) : [];
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return fail(res, 400, "Некоректний email отримувача");
+  // кілька адрес через кому (clientEmail фабрики тепер — список отримувачів)
+  const toList = to.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+  if (!toList.length || toList.some(a => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a))) return fail(res, 400, "Некоректний email отримувача");
   // PDF-рапорти вибраних працівників по цій фабриці (докази розбіжностей)
   const attachments: { filename: string; content: Buffer }[] = [];
   const missing: string[] = [];
@@ -3700,7 +3798,7 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   }
   try {
     const { sendEmailWithAttachments } = await import("../services/email");
-    await sendEmailWithAttachments(to, subject, body, attachments);
+    await sendEmailWithAttachments(toList.join(", "), subject, body, attachments);
   } catch (e: any) {
     logger.error({ err: e }, "discrepancy email failed");
     return fail(res, 500, e?.message ?? "Помилка надсилання email");
@@ -4347,6 +4445,20 @@ router.get("/advances/gratyfikant", requireCap("svodniSensitive"), async (req, r
 // ── Перенесення виплачених залічок у сводну (вкладка «У сводну») ──────────────
 // Список кандидатів: виплачені аванси, ще не перенесені (svodni_month IS NULL).
 // Саме перенесення/відміна — POST /svodni/apply-zaliczki | /svodni/undo-zaliczka.
+// Фінансова довідка до запиту авансу: години/нараховано за конвенцією сводної,
+// незняті залічки, kary, badania, борг M−1 (services/workerBalance.ts). Гейт —
+// той самий, що й на розділ «Аванси» (RW): рішення про аванс ухвалює саме ця роль.
+router.get("/advances/:id/balance", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [r] = await db.select({ id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId, factoryId: advanceRequestsTable.factoryId })
+    .from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id));
+  if (!r) return fail(res, 404, "Не знайдено");
+  const { computeWorkerBalance } = await import("../services/workerBalance");
+  const bal = await computeWorkerBalance(r.workerId, { factoryId: r.factoryId ?? null, excludeAdvanceId: r.id });
+  if (!bal) return fail(res, 404, "Працівника не знайдено");
+  ok(res, bal);
+});
+
 router.get("/advances/svodni-pending", RW, async (_req, res) => {
   const rows = await db.select({
     id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,

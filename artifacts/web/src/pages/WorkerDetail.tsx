@@ -139,7 +139,17 @@ export default function WorkerDetail() {
 
   return (
     <>
-      <Link href="/workers" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"><ArrowLeft className="h-4 w-4" /> {t("До працівників")}</Link>
+      {/* ?from=/schedule?week=… — повернення у графік, звідки клікнули по імені
+          (тільки внутрішні шляхи, без відкритого редиректу) */}
+      {(() => {
+        const from = new URLSearchParams(window.location.search).get("from") ?? "";
+        const isSchedule = from.startsWith("/schedule");
+        return (
+          <Link href={isSchedule ? from : "/workers"} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
+            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : t("До працівників")}
+          </Link>
+        );
+      })()}
 
       {/* Єдина шапка-картка: ідентичність + лічильники текстом + групи полів.
           Всі поля редагуються інлайн; свод-релевантні (посада/ставка/студент,

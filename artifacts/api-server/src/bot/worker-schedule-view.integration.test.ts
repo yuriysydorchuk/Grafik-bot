@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { hasTestDb, resetDb, closeDb, db, sendText, pressButton, resetSent, sentText } from "../test/botHarness.ts";
 import {
   workersTable, adminsTable, factoriesTable, scheduleWeeksTable, scheduleEntriesTable,
-  scheduleApprovalsTable, availabilityTable, notificationsTable,
+  scheduleApprovalsTable, availabilityTable, notificationsTable, rolesTable,
 } from "../test/harness.ts";
+import { invalidateRolesCache } from "../lib/auth.ts";
 import { getCurrentMonday, getNextMonday } from "../services/scheduleGenerator.ts";
 import { setState } from "./state.ts";
 import { eq } from "drizzle-orm";
@@ -69,6 +70,9 @@ test("per-day: sent day → shift, released empty day → day off, unsent day �
 test("availability top-up after first submission pings the scheduler", opts, async () => {
   const { factoryId, workerId } = await seedWorkerWithFactory();
   await db.insert(adminsTable).values({ name: "Owner", role: "owner", telegramId: "999888" });
+  // Telegram-пінг іде лише ролям, у чиїх notify-префах є цей тип (bba28e1)
+  await db.insert(rolesTable).values({ key: "owner", label: "owner", caps: [], pages: [], notify: ["availability_change"] }).onConflictDoNothing();
+  invalidateRolesCache();
   const weekStart = getNextMonday();
   // тиждень уже затверджений для фабрики працівника
   const [wk] = await db.insert(scheduleWeeksTable)
@@ -94,4 +98,42 @@ test("availability top-up after first submission pings the scheduler", opts, asy
   assert.equal(notifs[0]!.type, "availability_change");
   assert.match(sentText(), /Диспозиційність/, "Telegram ping about the change went out");
   assert.match(sentText(), /затверджений\/розісланий/, "warning that the schedule is already in work");
+});
+
+// ── Мінімум днів доступності (factories.min_days_per_week) ────────────────────
+test("availability confirm below the factory's min days is rejected and nothing is saved", opts, async () => {
+  const { factoryId, workerId } = await seedWorkerWithFactory();
+  await db.update(factoriesTable).set({ minDaysPerWeek: 3 }).where(eq(factoriesTable.id, factoryId));
+  const weekStart = getNextMonday();
+  setState(TID, "avail:filling", {
+    weekStart, shiftCount: 3, lang: "uk", locked: [], minDays: 3, factoryName: "SchedFab",
+    responses: { mon: ["1"], tue: ["2"], wed: null, thu: null, fri: null, sat: null, sun: null },
+  });
+  await pressButton(TID, `avail_confirm_${weekStart}`);
+  assert.match(sentText(), /мінімум на \*3\* дні/, "explains the factory rule");
+  assert.match(sentText(), /Ви обрали: \*2\*/, "shows how many days were picked");
+  const rows = await db.select().from(availabilityTable).where(eq(availabilityTable.workerId, workerId));
+  assert.equal(rows.length, 0, "nothing saved");
+  // достатньо днів → зберігається (Ср..Нд вихідні → екран підтвердження вихідних → зберегти)
+  resetSent();
+  setState(TID, "avail:filling", {
+    weekStart, shiftCount: 3, lang: "uk", locked: [], minDays: 3, factoryName: "SchedFab",
+    responses: { mon: ["1"], tue: ["2"], wed: ["1"], thu: null, fri: null, sat: null, sun: null },
+  });
+  await pressButton(TID, `avail_confirm_${weekStart}`);
+  assert.doesNotMatch(sentText(), /Замало днів/);
+  await pressButton(TID, `avail_save_${weekStart}`);
+  assert.equal((await db.select().from(availabilityTable).where(eq(availabilityTable.workerId, workerId))).length, 3);
+});
+
+test("availability toggle accepts shifts 4–6 (factory with 6 shifts)", opts, async () => {
+  await seedWorkerWithFactory();
+  const weekStart = getNextMonday();
+  setState(TID, "avail:filling", {
+    weekStart, shiftCount: 6, lang: "uk", locked: [],
+    responses: { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null },
+  });
+  await pressButton(TID, "avail_mon_5");
+  const { getState } = await import("./state.ts");
+  assert.deepEqual(getState(TID)?.data.responses.mon, ["5"]);
 });

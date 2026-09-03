@@ -4,7 +4,7 @@ import type { Worker, Driver } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
 import type { Context } from "telegraf";
 import { loadRolesCache } from "../lib/auth";
-import { hasCap, CAP_KEYS, type Capability, type NotifyType } from "../lib/roles";
+import { hasCap, CAP_KEYS, OWNER, type Capability, type NotifyType } from "../lib/roles";
 import { adminMenu, managementMenu } from "./menus";
 import { tb, type Lang } from "./i18n";
 
@@ -54,6 +54,16 @@ export async function adminWantsNotify(admin: { role: string } | undefined, type
   if (!admin || admin.role === "driver") return false;
   const cache = await loadRolesCache();
   return (cache.get(admin.role)?.notify ?? []).includes(type);
+}
+
+// Чи має роль адміна доступ до сторінки веб-панелі (roles.pages; owner — усе).
+// Використовується для фінансових вставок у бот-сповіщення (напр. баланс у
+// запиті авансу — лише тим, хто бачить розділ «Аванси»).
+export async function adminHasPage(admin: { role: string } | undefined, page: string): Promise<boolean> {
+  if (!admin || admin.role === "driver") return false;
+  if (admin.role === OWNER) return true;
+  const cache = await loadRolesCache();
+  return (cache.get(admin.role)?.pages ?? []).includes(page);
 }
 
 // Повний набір capability адміна одним зверненням до кешу ролей — база для

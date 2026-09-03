@@ -2,6 +2,7 @@ import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import {
   scheduleEntriesTable, scheduleWeeksTable, factoriesTable, settingsTable,
+  emailTemplatesTable, factoryEmailRecipientsTable,
   type DayOfWeek,
 } from "@workspace/db";
 import { eq, and, ne, desc, inArray } from "drizzle-orm";
@@ -28,22 +29,100 @@ Viber: +48 530 878 711
 NIP: 9462698100; Regon: 386387801`,
 } as const;
 
+// Legacy: до 09.2026 єдиний глобальний шаблон жив у settings під цими ключами.
+// Тепер шаблони — таблиця email_templates; старі значення сідуть у перший
+// («стандартний») шаблон при першому зверненні (ensureDefaultTemplate).
 const TPL_KEYS = { subject: "email_tpl_schedule_subject", body: "email_tpl_schedule_body" } as const;
 
-export async function getScheduleEmailTemplate(): Promise<{ subject: string; body: string }> {
-  const rows = await db.select().from(settingsTable).where(inArray(settingsTable.key, [TPL_KEYS.subject, TPL_KEYS.body]));
-  const byKey = new Map(rows.map(r => [r.key, r.value]));
-  return {
-    subject: byKey.get(TPL_KEYS.subject)?.trim() || SCHEDULE_EMAIL_DEFAULTS.subject,
-    body: byKey.get(TPL_KEYS.body)?.trim() || SCHEDULE_EMAIL_DEFAULTS.body,
-  };
+export type EmailTemplateRow = typeof emailTemplatesTable.$inferSelect;
+
+// Гарантує, що є хоча б один шаблон і рівно один isDefault. Повертає стандартний.
+export async function ensureDefaultTemplate(): Promise<EmailTemplateRow> {
+  const all = await db.select().from(emailTemplatesTable).orderBy(emailTemplatesTable.id);
+  if (all.length === 0) {
+    const rows = await db.select().from(settingsTable).where(inArray(settingsTable.key, [TPL_KEYS.subject, TPL_KEYS.body]));
+    const byKey = new Map(rows.map(r => [r.key, r.value]));
+    const [created] = await db.insert(emailTemplatesTable).values({
+      name: "Standardowy",
+      subject: byKey.get(TPL_KEYS.subject)?.trim() || SCHEDULE_EMAIL_DEFAULTS.subject,
+      body: byKey.get(TPL_KEYS.body)?.trim() || SCHEDULE_EMAIL_DEFAULTS.body,
+      isDefault: true,
+    }).returning();
+    return created!;
+  }
+  const def = all.find(t => t.isDefault);
+  if (def) return def;
+  const [fixed] = await db.update(emailTemplatesTable).set({ isDefault: true }).where(eq(emailTemplatesTable.id, all[0]!.id)).returning();
+  return fixed!;
 }
 
-export async function saveScheduleEmailTemplate(subject: string, body: string): Promise<void> {
-  for (const [value, key] of [[subject, TPL_KEYS.subject], [body, TPL_KEYS.body]] as const) {
-    await db.insert(settingsTable).values({ key, value })
-      .onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+export async function listEmailTemplates(): Promise<EmailTemplateRow[]> {
+  await ensureDefaultTemplate();
+  return db.select().from(emailTemplatesTable).orderBy(emailTemplatesTable.id);
+}
+
+// Стандартний шаблон (для сумісності зі старими викликами)
+export async function getScheduleEmailTemplate(): Promise<{ subject: string; body: string }> {
+  const def = await ensureDefaultTemplate();
+  return { subject: def.subject, body: def.body };
+}
+
+export type FactoryRecipient = { id: number; email: string; name: string | null; templateId: number | null };
+
+// Отримувачі графіку фабрики. Якщо таблиця для фабрики порожня, а legacy
+// factories.client_email заповнений — повертаємо його як єдиного отримувача
+// (id = 0), щоб старі дані працювали до міграції в UI.
+export async function factoryEmailRecipients(factoryId: number, legacyEmail?: string | null): Promise<FactoryRecipient[]> {
+  const rows = await db.select({
+    id: factoryEmailRecipientsTable.id, email: factoryEmailRecipientsTable.email,
+    name: factoryEmailRecipientsTable.name, templateId: factoryEmailRecipientsTable.templateId,
+  }).from(factoryEmailRecipientsTable).where(eq(factoryEmailRecipientsTable.factoryId, factoryId)).orderBy(factoryEmailRecipientsTable.id);
+  if (rows.length) return rows;
+  const legacy = legacyEmail?.trim();
+  return legacy ? [{ id: 0, email: legacy, name: null, templateId: null }] : [];
+}
+
+export const isEmail = (v: string) => /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(v);
+
+// Замінює список отримувачів фабрики. factories.client_email тримаємо як
+// денормалізований кеш «усі адреси через кому» — його читають старі поверхні
+// (approve-роут, бот-затвердження, /hours). Повертає збережений список.
+export async function setFactoryRecipients(
+  factoryId: number,
+  input: { email: string; name?: string | null; templateId?: number | null }[],
+): Promise<FactoryRecipient[]> {
+  const seen = new Set<string>();
+  const clean = input
+    .map(r => ({ email: String(r.email ?? "").trim().toLowerCase(), name: r.name?.trim() || null, templateId: r.templateId ?? null }))
+    .filter(r => isEmail(r.email) && !seen.has(r.email) && seen.add(r.email))
+    .slice(0, 20);
+  await db.transaction(async (tx) => {
+    await tx.delete(factoryEmailRecipientsTable).where(eq(factoryEmailRecipientsTable.factoryId, factoryId));
+    if (clean.length) await tx.insert(factoryEmailRecipientsTable).values(clean.map(r => ({ factoryId, ...r })));
+    await tx.update(factoriesTable).set({ clientEmail: clean.length ? clean.map(r => r.email).join(", ") : null }).where(eq(factoriesTable.id, factoryId));
+  });
+  return factoryEmailRecipients(factoryId);
+}
+
+// Мапа factoryId → список email-ів (для списків фабрик / модалок графіку)
+export async function factoryEmailMap(factoryIds: number[], legacy: Map<number, string | null>): Promise<Map<number, FactoryRecipient[]>> {
+  const out = new Map<number, FactoryRecipient[]>();
+  if (factoryIds.length === 0) return out;
+  const rows = await db.select({
+    id: factoryEmailRecipientsTable.id, factoryId: factoryEmailRecipientsTable.factoryId, email: factoryEmailRecipientsTable.email,
+    name: factoryEmailRecipientsTable.name, templateId: factoryEmailRecipientsTable.templateId,
+  }).from(factoryEmailRecipientsTable).where(inArray(factoryEmailRecipientsTable.factoryId, factoryIds)).orderBy(factoryEmailRecipientsTable.id);
+  for (const r of rows) {
+    const list = out.get(r.factoryId) ?? [];
+    list.push({ id: r.id, email: r.email, name: r.name, templateId: r.templateId });
+    out.set(r.factoryId, list);
   }
+  for (const fid of factoryIds) {
+    if (out.has(fid)) continue;
+    const l = legacy.get(fid)?.trim();
+    if (l) out.set(fid, [{ id: 0, email: l, name: null, templateId: null }]);
+  }
+  return out;
 }
 
 const fillTemplate = (tpl: string, params: Record<string, string>) => {
@@ -95,12 +174,14 @@ export async function sendEmailWithAttachments(
   });
 }
 
-// Send schedule for one factory to its client email — whole week, or a single day when `day` is given.
+// Send schedule for one factory to all its recipients — whole week, or a single day when `day` is given.
+// Отримувачі групуються по шаблону: одна група = один лист (спільний Excel у вкладенні).
 // Returns a human-readable status string.
 export async function sendScheduleEmail(factoryId: number, weekStart: string, day?: DayOfWeek | null): Promise<string> {
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   if (!factory) return "фабрику не знайдено";
-  if (!factory.clientEmail) return "email клієнта не вказано";
+  const recipients = await factoryEmailRecipients(factoryId, factory.clientEmail);
+  if (recipients.length === 0) return "email клієнта не вказано";
 
   const candidates = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, weekStart)).orderBy(desc(scheduleWeeksTable.id));
   const week = candidates.find(w => w.status === "approved") ?? candidates[0];
@@ -118,14 +199,21 @@ export async function sendScheduleEmail(factoryId: number, weekStart: string, da
   if (entries.length === 0) return day ? "на цей день немає змін" : "на цей тиждень немає змін";
 
   const params = { data: dataLabel(weekStart, day), fabryka: factory.name };
-  const tpl = await getScheduleEmailTemplate();
-  const subject = fillTemplate(tpl.subject, params);
-  const text = fillTemplate(tpl.body, params);
+  const defaultTpl = await ensureDefaultTemplate();
+  const templates = new Map((await db.select().from(emailTemplatesTable)).map(t => [t.id, t]));
+  // template id → адреси; отримувач без шаблону (або з видаленим) іде стандартним
+  const groups = new Map<number, string[]>();
+  for (const r of recipients) {
+    const tpl = (r.templateId != null && templates.get(r.templateId)) || defaultTpl;
+    groups.set(tpl.id, [...(groups.get(tpl.id) ?? []), r.email]);
+  }
+  const allTo = recipients.map(r => r.email).join(", ");
 
   const tx = getTransporter();
   if (!tx) {
-    logger.warn({ factory: factory.name, to: factory.clientEmail }, "SMTP not configured — email not sent (preview logged)");
-    logger.info({ subject, textPreview: text.slice(0, 200) }, "Email preview");
+    logger.warn({ factory: factory.name, to: allTo }, "SMTP not configured — email not sent (preview logged)");
+    const preview = fillTemplate(defaultTpl.body, params);
+    logger.info({ subject: fillTemplate(defaultTpl.subject, params), textPreview: preview.slice(0, 200) }, "Email preview");
     return "⚠️ SMTP не налаштовано (лист не надіслано)";
   }
 
@@ -139,18 +227,26 @@ export async function sendScheduleEmail(factoryId: number, weekStart: string, da
     logger.error({ err: e }, "Failed to build Excel attachment for schedule email");
   }
 
-  try {
-    await tx.sendMail({
-      from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
-      to: factory.clientEmail,
-      subject,
-      text,
-      attachments,
-    });
-    logger.info({ factory: factory.name, to: factory.clientEmail, day: day ?? "week" }, "Schedule email sent");
-    return `✅ надіслано на ${factory.clientEmail}`;
-  } catch (e) {
-    logger.error({ err: e }, "Failed to send schedule email");
-    return "❌ помилка надсилання email";
+  const sent: string[] = [];
+  const failed: string[] = [];
+  for (const [tplId, to] of groups) {
+    const tpl = templates.get(tplId) ?? defaultTpl;
+    try {
+      await tx.sendMail({
+        from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+        to: to.join(", "),
+        subject: fillTemplate(tpl.subject, params),
+        text: fillTemplate(tpl.body, params),
+        attachments,
+      });
+      logger.info({ factory: factory.name, to, template: tpl.name, day: day ?? "week" }, "Schedule email sent");
+      sent.push(...to);
+    } catch (e) {
+      logger.error({ err: e, to }, "Failed to send schedule email");
+      failed.push(...to);
+    }
   }
+  if (failed.length === 0) return `✅ надіслано на ${sent.join(", ")}`;
+  if (sent.length === 0) return "❌ помилка надсилання email";
+  return `⚠️ надіслано на ${sent.join(", ")}; не вдалося: ${failed.join(", ")}`;
 }

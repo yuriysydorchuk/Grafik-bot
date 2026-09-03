@@ -1306,10 +1306,29 @@ bot.action("hrv:x", async (ctx) => {
 });
 
 // A day off can be requested three ways: off a concrete ASSIGNED shift (approved
-// schedule, ≥24h ahead), off a day with FILLED AVAILABILITY (schedule not made yet),
-// or off any calendar day within the next 2 weeks. The scheduler approves/rejects
-// all of them; whole-day requests are stored with shift = NULL.
+// schedule, ≥ABS_MIN_HOURS ahead), off a day with FILLED AVAILABILITY (schedule not
+// made yet), or off any calendar day within the next 2 weeks. The scheduler
+// approves/rejects all of them; whole-day requests are stored with shift = NULL.
+// Правило «мінімум 48 год до зміни» (03.09.2026, було 24): для цілого дня рахуємо
+// від старту 1-ї зміни фабрики працівника (фолбек 06:00).
 const ABS_DAY_HORIZON = 14;
+const ABS_MIN_HOURS = 48;
+// Перший календарний день, на який ще можна попросити вихідний цілком.
+function absFirstAllowedDay(now: Date, shift1Start: string): Date {
+  const [hh, mm] = shift1Start.split(":").map(Number);
+  const d = new Date(now); d.setHours(0, 0, 0, 0);
+  for (let i = 0; i < ABS_DAY_HORIZON + 2; i++) {
+    const start = new Date(d); start.setHours(hh || 6, mm || 0, 0, 0);
+    if ((start.getTime() - now.getTime()) / 3600000 >= ABS_MIN_HOURS) return d;
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+async function absShift1Start(workerFactoryId: number | null): Promise<string> {
+  if (workerFactoryId == null) return "06:00";
+  const [f] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, workerFactoryId));
+  return f ? factoryShiftStart(f, "1") : "06:00";
+}
 const absYmd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const absDateOf = (weekStart: string, day: string): Date => {
   const d = new Date(weekStart + "T00:00:00");
@@ -1364,21 +1383,21 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     };
   }).sort((a, b) => a._t - b._t);
 
-  const eligible = items.filter(i => i.hoursUntil >= 24 && !taken.has(i.dateStr));
-  const tooClose = items.filter(i => i.hoursUntil >= 0 && i.hoursUntil < 24);
+  const eligible = items.filter(i => i.hoursUntil >= ABS_MIN_HOURS && !taken.has(i.dateStr));
+  const tooClose = items.filter(i => i.hoursUntil >= 0 && i.hoursUntil < ABS_MIN_HOURS);
   const shiftDates = new Set(items.filter(i => i.hoursUntil >= 0).map(i => i.dateStr));
 
   // 2) Days with filled availability (this + next week), no assigned shift there.
   const avail = await db.select({ weekStart: availabilityTable.weekStart, day: availabilityTable.dayOfWeek })
     .from(availabilityTable)
     .where(and(eq(availabilityTable.workerId, worker.id), inArray(availabilityTable.weekStart, [curMon, nextMon])));
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(worker.factoryId));
   const seenDays = new Set<string>();
   const dayItems: { date: string; label: string; day: DayOfWeek }[] = [];
   for (const a of avail) {
     const d = absDateOf(String(a.weekStart), a.day);
     const ds = absYmd(d);
-    if (d < tomorrow || seenDays.has(ds) || shiftDates.has(ds) || taken.has(ds)) continue;
+    if (d < firstDay || seenDays.has(ds) || shiftDates.has(ds) || taken.has(ds)) continue;
     seenDays.add(ds);
     dayItems.push({ date: ds, day: a.day as DayOfWeek, label: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) });
   }
@@ -1395,7 +1414,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     ...dayItems.map(dI => [{ text: `📋 ${dI.label} ${dayShort(lang, dI.day)} — ${t(lang, "abs.dayAvail")}`, callback_data: `absday:${dI.date}` }]),
     [{ text: t(lang, "abs.otherDay"), callback_data: "absother" }],
   ];
-  setState(tid, "absence:pick", { workerId: worker.id, lang, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
+  setState(tid, "absence:pick", { workerId: worker.id, lang, factoryId: worker.factoryId ?? null, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
   return ctx.reply(msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } });
 });
 
@@ -1407,17 +1426,18 @@ bot.action("absother", async (ctx) => {
   const lang = asLang(st.data.lang);
   const taken = await absTakenDates(st.data.workerId);
   const now = nowWarsaw();
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(st.data.factoryId ?? null));
   const btns: { text: string; callback_data: string }[] = [];
   for (let i = 1; i <= ABS_DAY_HORIZON; i++) {
     const d = new Date(now); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0);
     const ds = absYmd(d);
-    if (taken.has(ds)) continue;
+    if (taken.has(ds) || d < firstDay) continue;
     const dayName = DAYS[(d.getDay() + 6) % 7]!;
     btns.push({ text: `${d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })} ${dayShort(lang, dayName)}`, callback_data: `absday:${ds}` });
   }
   const kb: typeof btns[] = [];
   for (let i = 0; i < btns.length; i += 2) kb.push(btns.slice(i, i + 2));
-  return ctx.reply(t(lang, "abs.pickDay"), { reply_markup: { inline_keyboard: kb } });
+  return ctx.reply(t(lang, "abs.pickDay") + t(lang, "abs.ruleHint"), { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } });
 });
 
 // Whole-day pick (from the availability list or the 14-day picker).
@@ -1429,9 +1449,10 @@ bot.action(/^absday:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const dateStr = (ctx.match as RegExpMatchArray)[1]!;
   const d = new Date(dateStr + "T00:00:00");
   const now = nowWarsaw();
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(st.data.factoryId ?? null));
   const limit = new Date(now); limit.setDate(limit.getDate() + ABS_DAY_HORIZON); limit.setHours(23, 59, 59, 0);
-  if (d < tomorrow || d > limit) return;
+  if (d > limit) return;
+  if (d < firstDay) return ctx.reply(t(lang, "abs.tooLateDay", { date: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) }), { parse_mode: "Markdown" });
   const dayIdx = (d.getDay() + 6) % 7;
   const mon = new Date(d); mon.setDate(mon.getDate() - dayIdx);
   const weekStart = absYmd(mon);
@@ -1651,11 +1672,13 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
   if (!worker) return ctx.reply(t(lang, "notRegistered"));
   // Manual factories: workers don't fill availability — admins set the schedule
   let shiftCount = 3;
+  let minDays: number | null = null; // правило фабрики: мінімум днів доступності на тиждень
+  let factoryName = "";
   if (worker.factoryId) {
-    const [f] = await db.select({ shiftCount: factoriesTable.shiftCount, usesAvailability: factoriesTable.usesAvailability })
+    const [f] = await db.select({ name: factoriesTable.name, shiftCount: factoriesTable.shiftCount, usesAvailability: factoriesTable.usesAvailability, minDaysPerWeek: factoriesTable.minDaysPerWeek })
       .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
     if (f && f.usesAvailability === false) return ctx.reply(t(lang, "av.manual"));
-    if (f) shiftCount = f.shiftCount;
+    if (f) { shiftCount = f.shiftCount; minDays = f.minDaysPerWeek; factoryName = f.name; }
   }
   const weekStart = getNextMonday();
   const responses: Record<string, Shift[] | null> = {};
@@ -1670,7 +1693,7 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
   const alreadyFilled = existing.length > 0;
   // Already-submitted shifts are locked: the worker may ADD more, but can't remove/change these.
   const locked = existing.map(a => `${a.day}-${a.shift}`);
-  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked });
+  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked, minDays, factoryName });
   await ctx.reply(
     alreadyFilled ? t(lang, "av.already", { week: formatWeekStart(weekStart) }) : t(lang, "av.intro", { week: formatWeekStart(weekStart) }),
     { parse_mode: "Markdown" },
@@ -1680,7 +1703,8 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
 
 
 // Availability day selection callback: avail_MON_1 toggles a shift; avail_MON_off = day off
-bot.action(/^avail_([a-z]+)_(1|2|3|off)$/, async (ctx) => {
+// (зміни 1–6 — клавіатура малює до shiftCount фабрики, див. views.ts)
+bot.action(/^avail_([a-z]+)_(1|2|3|4|5|6|off)$/, async (ctx) => {
   const tid = String(ctx.from.id);
   const state = getState(tid);
   if (state?.action !== "avail:filling") { await ctx.answerCbQuery(); return; }
@@ -1713,6 +1737,21 @@ bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const lang = asLang(state.data.lang);
   const responses = state.data.responses as Record<string, Shift[] | null>;
   const offDays = DAYS.filter(d => { const s = responses[d]; return !Array.isArray(s) || s.length === 0; });
+  // Правило фабрики «мінімум N днів на тиждень»: рахуємо дні з хоча б однією зміною
+  // (погоджений вихідний не зараховується). Менше — не приймаємо, повертаємо до вибору.
+  const minDays: number | null = state.data.minDays ?? null;
+  const picked = DAYS.length - offDays.length;
+  if (minDays && picked < minDays) {
+    await ctx.answerCbQuery();
+    const word = (n: number) => t(lang, n === 1 ? "av.days1" : n >= 2 && n <= 4 ? "av.days2" : "av.days5");
+    try {
+      await ctx.editMessageText(t(lang, "av.minDays", { factory: mdSafe(state.data.factoryName || "—"), min: minDays, minWord: word(minDays), picked }), {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[{ text: t(lang, "av.confirmEdit"), callback_data: "avail_edit" }]] },
+      });
+    } catch { /* ignore */ }
+    return;
+  }
   if (offDays.length > 0) {
     await ctx.answerCbQuery();
     const days = offDays.map(d => dayShort(lang, d)).join(", ");
@@ -3336,18 +3375,21 @@ bot.on("text", async (ctx) => {
   if (state?.action === "factory_email:enter") {
     const { data } = state;
     const al = olang(await getAdmin(tid));
+    const { isEmail, setFactoryRecipients } = await import("../services/email");
     if (text === "/clear") {
-      await db.update(factoriesTable).set({ clientEmail: null }).where(eq(factoriesTable.id, data.factoryId));
+      await setFactoryRecipients(data.factoryId, []);
       clearState(tid);
       return ctx.reply(tb(al, "✅ Email для *{name}* прибрано.", { name: data.factoryName }), { parse_mode: "Markdown", ...managementMenu(al) });
     }
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text.trim())) {
+    // кілька адрес через кому — список отримувачів фабрики (шаблон — стандартний; змінити у веб-панелі)
+    const emails = text.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    if (!emails.length || emails.some(e => !isEmail(e))) {
       return ctx.reply(tb(al, "❌ Невірний формат email. Введіть ще раз або /clear:"));
     }
-    await db.update(factoriesTable).set({ clientEmail: text.trim() }).where(eq(factoriesTable.id, data.factoryId));
+    const saved = await setFactoryRecipients(data.factoryId, emails.map(email => ({ email })));
     clearState(tid);
     return ctx.reply(
-      tb(al, "✅ Email клієнта для *{name}* збережено:\n{email}\n\nПісля затвердження графіку лист надсилатиметься автоматично.", { name: data.factoryName, email: text.trim() }),
+      tb(al, "✅ Email клієнта для *{name}* збережено:\n{email}\n\nПісля затвердження графіку лист надсилатиметься автоматично.", { name: data.factoryName, email: saved.map(r => r.email).join(", ") }),
       { parse_mode: "Markdown", ...managementMenu(al) },
     );
   }
@@ -4418,13 +4460,26 @@ bot.on("text", async (ctx) => {
     const facName = data.factoryId != null
       ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, data.factoryId)))[0]?.name ?? null
       : null;
-    await notifyAdmins(
-      `💰 *Запит на аванс*\n\n👷 *${wname}*${facName ? `\n🏭 ${mdSafe(facName)}` : ""}\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${comment}` : ""}`,
-      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
-        [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
-        [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],
-      ] } },
-    );
+    const baseText = `💰 *Запит на аванс*\n\n👷 *${wname}*${facName ? `\n🏭 ${mdSafe(facName)}` : ""}\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${mdSafe(comment)}` : ""}`;
+    const advKb = { inline_keyboard: [
+      [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
+      [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],
+    ] };
+    // Фінансова довідка (години/нараховано/незняті залічки, kary, badania, борг M−1) —
+    // лише адмінам із доступом до розділу «Аванси»; решта бачить запит без цифр.
+    let balanceMd = "";
+    try {
+      const { computeWorkerBalance, formatWorkerBalanceMd } = await import("../services/workerBalance");
+      const bal = await computeWorkerBalance(data.workerId, { factoryId: data.factoryId ?? null, excludeAdvanceId: reqId });
+      if (bal) balanceMd = `\n\n📊 *Стан на сьогодні*\n${formatWorkerBalanceMd(bal)}`;
+    } catch (e) { logger.error({ err: e, workerId: data.workerId }, "advance balance"); }
+    const { adminHasPage } = await import("./roles");
+    for (const admin of await db.select().from(adminsTable)) {
+      if (!admin.telegramId || admin.role === "driver") continue;
+      const withBalance = balanceMd && await adminHasPage(admin, "/advances");
+      try { await bot.telegram.sendMessage(admin.telegramId, baseText + (withBalance ? balanceMd : ""), { parse_mode: "Markdown", reply_markup: advKb }); }
+      catch { /* individual failure should not stop others */ }
+    }
     await notifyRoles("scheduler", { type: "advance", title: `💰 Запит на аванс: ${wname}`, body: `${data.amount} zł${comment ? ` · ${comment}` : ""}` });
     return ctx.reply(t(lang, "adv.sent", { amount: String(data.amount) }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
@@ -4949,9 +5004,16 @@ bot.action(/^absence_approve_(\d+)$/, async (ctx) => {
         .where(and(eq(scheduleEntriesTable.weekId, wk.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled")));
     }
   } else {
+    // лише запис ТОГО Ж тижня (weekStart запиту) — без фільтра по тижню можна було
+    // позначити absent зміну іншого тижня (веб-approve фільтрує по weekId)
     const entries = await db.select({ id: scheduleEntriesTable.id })
       .from(scheduleEntriesTable)
-      .where(and(eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+      .innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+      .where(and(
+        eq(scheduleWeeksTable.weekStart, String(r.weekStart)),
+        eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift),
+      ))
+      .orderBy(desc(scheduleEntriesTable.id));
     if (entries[0]) {
       await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined }).where(eq(scheduleEntriesTable.id, entries[0].id));
     }

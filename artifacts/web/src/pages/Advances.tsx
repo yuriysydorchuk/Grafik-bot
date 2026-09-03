@@ -219,6 +219,7 @@ export default function Advances() {
                   <div className="text-sm font-medium text-slate-700">{r.name ?? "—"} {r.factory && <Badge color="slate">{r.factory}</Badge>}</div>
                   <div className="text-sm text-slate-500">{fmtDate(r.createdAt)} · <span className="font-semibold text-slate-700">{r.amount} zł</span></div>
                   {r.comment && <div className="mt-0.5 text-sm text-slate-600">📝 {r.comment}</div>}
+                  <AdvanceBalance id={r.id} />
                 </div>
                 <div className="flex shrink-0 gap-1">
                   <button onClick={() => act.mutate({ id: r.id, action: "approve" })} disabled={act.isPending} className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><Check className="h-4 w-4" /> {t("Затвердити")}</button>
@@ -363,6 +364,49 @@ const fmtDateStr = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(
 // Історія знятих: місяць сводної, дата, кнопка «↩ Відмінити» — віднімає суму
 // з клітинки Zaliczka BD тієї сводної (залочена вкладка — відмова) і повертає
 // запис у «до зняття». Зняте вручну (без місяця) відміняється в профілі.
+// ── Стан працівника на сьогодні (довідка до запиту авансу) ───────────────────
+// GET /advances/:id/balance — години/нараховано за конвенцією сводної, незняті
+// залічки, kary, badania, борг M−1 (services/workerBalance.ts). Розгортається кліком.
+type WorkerBalance = {
+  factoryName: string | null; stud26: boolean;
+  months: { month: string; hours: number; shifts: number; rateNetto: number | null; earned: number | null }[];
+  earnedTotal: number | null;
+  advances: { id: number; amount: number; status: string }[]; advancesTotal: number; pendingAdvances: number;
+  penaltiesTotal: number; absencePenaltiesTotal: number; absencePenaltiesCount: number; badaniaTotal: number;
+  debtPrev: { month: string; total: number } | null;
+  other: { month: string; label: string; amount: number }[]; otherTotal: number; estimate: number | null;
+};
+function AdvanceBalance({ id }: { id: number }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const { data: b, isLoading } = useQuery<WorkerBalance>({ queryKey: ["advance-balance", id], queryFn: () => get(`/advances/${id}/balance`), enabled: open });
+  const zl = (n: number) => `${n.toLocaleString("pl-PL", { maximumFractionDigits: 2 })} zł`;
+  return (
+    <div className="mt-1.5">
+      <button type="button" onClick={() => setOpen(o => !o)} className="text-xs font-medium text-slate-500 hover:text-red-600">
+        📊 {open ? t("Сховати стан") : t("Стан на сьогодні")}
+      </button>
+      {open && (isLoading || !b ? <div className="mt-1 text-xs text-slate-400">…</div> : (
+        <div className="mt-1.5 grid gap-x-4 gap-y-0.5 text-xs text-slate-600 sm:grid-cols-2">
+          {b.factoryName && <div className="sm:col-span-2 text-slate-400">🏭 {b.factoryName} · {t("живі зміни")}</div>}
+          {b.months.map(m => (
+            <div key={m.month} className="sm:col-span-2">⏱ {m.month}: <b>{m.hours} {t("год")}</b> ({m.shifts} {t("зм.")}){m.rateNetto != null && <span className="text-slate-400"> × {m.rateNetto} zł/{t("год")} {t("нетто")}{b.stud26 ? `, ${t("студент")}` : ""}</span>} = <b>{m.earned != null ? zl(m.earned) : "—"}</b></div>
+          ))}
+          {b.months.length > 1 && b.earnedTotal != null && <div className="sm:col-span-2">💵 {t("Нараховано разом:")} <b>{zl(b.earnedTotal)}</b></div>}
+          {b.advancesTotal > 0 && <div>➖ {t("Залічки незняті:")} {zl(b.advancesTotal)} ({b.advances.length})</div>}
+          {b.pendingAdvances > 0 && <div>⏳ {t("Інші запити на розгляді:")} {zl(b.pendingAdvances)}</div>}
+          {b.penaltiesTotal > 0 && <div>➖ Kary: {zl(b.penaltiesTotal)}</div>}
+          {b.absencePenaltiesTotal > 0 && <div>➖ {t("Штрафи за пропуски:")} {zl(b.absencePenaltiesTotal)} ({b.absencePenaltiesCount})</div>}
+          {b.badaniaTotal > 0 && <div>➖ {t("Залічка на badania:")} {zl(b.badaniaTotal)}</div>}
+          {b.debtPrev && <div>➖ {t("Борг з {month}:", { month: b.debtPrev.month })} {zl(b.debtPrev.total)}</div>}
+          {b.other.map((o, i) => <div key={i}>➖ {o.label} {o.month}: {zl(o.amount)}</div>)}
+          {b.estimate != null && <div className="sm:col-span-2 font-semibold text-slate-700">≈ {t("До виплати на сьогодні:")} {zl(b.estimate)}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function BadaniaDeductedList() {
   const t = useT();
   const qc = useQueryClient();

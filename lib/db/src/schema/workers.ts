@@ -312,7 +312,10 @@ export const factoriesTable = pgTable("factories", {
   usesScheduling: boolean("uses_scheduling").notNull().default(true),  // false = фабрика лише зарплатна (Лодзь/Познань): без замовлень/графіків/доступності
   showWorkerHours: boolean("show_worker_hours").notNull().default(true), // show the "My hours" button to workers
   showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule
-  clientEmail: text("client_email"), // where to send approved schedule
+  clientEmail: text("client_email"), // legacy single recipient — superseded by factory_email_recipients (kept as fallback)
+  // Мінімум днів доступності на тиждень (правило фабрики): бот не приймає доступність,
+  // у якій менше днів із хоча б однією зміною. NULL = без правила.
+  minDaysPerWeek: integer("min_days_per_week"),
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
@@ -748,6 +751,30 @@ export const botMessagesTable = pgTable("bot_messages", {
   messageId: integer("message_id").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ─── Email-шаблони графіку та отримувачі фабрик ───────────────────────────────
+// Глобальний список шаблонів листа з графіком (плейсхолдери {data}, {fabryka}).
+// Один шаблон позначений isDefault — ним ідуть отримувачі без явного template_id.
+export const emailTemplatesTable = pgTable("email_templates", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Адреси, на які фабриці розсилається затверджений графік; кожен отримувач може мати
+// власний шаблон (NULL = стандартний). Замінює одиночне factories.client_email.
+export const factoryEmailRecipientsTable = pgTable("factory_email_recipients", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  name: text("name"), // кому (для підпису/підказки в UI), необовʼязково
+  templateId: integer("template_id").references(() => emailTemplatesTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("factory_email_recipients_uq").on(t.factoryId, t.email)]);
 
 // Key-value settings store (Drive folder IDs, etc.)
 export const settingsTable = pgTable("settings", {

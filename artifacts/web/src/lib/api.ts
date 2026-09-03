@@ -95,11 +95,17 @@ export interface Driver {
   seats: number | null; inviteCode: string | null; isHeadDriver: boolean; isActive: boolean;
 }
 export type GenMode = "availability" | "orders" | "all";
+// Отримувач графіку фабрики; templateId null = стандартний шаблон
+export interface EmailRecipient { id: number; email: string; name: string | null; templateId: number | null }
+export interface EmailTemplate { id: number; name: string; subject: string; body: string; isDefault: boolean }
 export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null }
 export interface Factory {
   id: number; name: string; address: string | null;
   companyId?: number | null; companyName?: string | null;
-  shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; clientEmail: string | null;
+  shift1Start: string | null; shift2Start: string | null; shift3Start: string | null;
+  clientEmail: string | null; // кеш «усі адреси через кому» — джерело правди emailRecipients
+  emailRecipients?: EmailRecipient[];
+  minDaysPerWeek?: number | null; // мінімум днів доступності на тиждень (null = без правила)
   shiftCount: number; usesAvailability: boolean;
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;
   usesTransport: boolean; usesScheduling: boolean; showWorkerHours: boolean; showCode: boolean;
