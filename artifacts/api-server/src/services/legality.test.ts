@@ -277,8 +277,10 @@ test("payrollHints.studentByProfile дзеркалить stud26Of; studentCertMi
   const old = run({ isStudent: true, birthDate: "1990-01-01" }, [doc("status_ukr"), doc("student_cert", { expiresAt: "2027-02-28" })]);
   assert.equal(old.payrollHints.studentByProfile, false); assert.equal(old.payrollHints.studentCertMissingOrExpired, false);
 });
-test("nationality невідома → reviewRequired + вимоги застосовуються", () => {
+test("nationality невідома → причина + вимоги застосовуються; без жодного документа reviewRequired=false (немає даних ≠ потребує перевірки)", () => {
   const r = run({ nationality: null }, []);
-  assert.ok(has(r, "nationality_unknown")); assert.equal(r.reviewRequired, true);
+  assert.ok(has(r, "nationality_unknown")); assert.equal(r.reviewRequired, false);
   assert.ok(r.requiredMissing.includes("stay_basis"));
+  const withDoc = run({ nationality: null }, [doc("trc", { expiresAt: "2027-06-01" })]);
+  assert.equal(withDoc.reviewRequired, true, "є документ → невідоме громадянство вже треба перевірити");
 });

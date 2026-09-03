@@ -414,6 +414,9 @@ export function computeLegality(input: LegalityInput): LegalityResult {
 
   const legacy = deriveLegacy({ stay, work }, worker, documents, today, g);
   if (legacy.legacyMappingRequiresReview) review = true;
+  // Порожній профіль (жодного документа) — це «немає даних», а не «потребує перевірки»:
+  // перевіряти нема чого, reviewRequired на 400 людей без документів був би шумом.
+  if (documents.length === 0 && overall === "unknown") review = false;
 
   // ── контрольні підказки (НЕ вхід payroll) ──
   const under26 = isUnder26At(worker.birthDate, today);

@@ -74,12 +74,65 @@ export type Gender = "male" | "female";
 export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }
 // One requirement line in a factory order: how many workers of a position/gender.
 export interface OrderRequirement { positionId: number | null; gender: "any" | Gender; count: number }
-export interface DocumentType { id: number; name: string; required: boolean; hasExpiry: boolean; sortOrder: number; icon: string | null }
+export type DocCategory = "identity" | "stay" | "work" | "payroll" | "medical" | "other";
+export interface DocumentType {
+  id: number; name: string; required: boolean; hasExpiry: boolean; sortOrder: number; icon: string | null;
+  // легалізація (02.09.2026): тип = каталог evidence; що документ «дає» — прапорці; code — стабільний ключ сіду (не правиться)
+  code: string | null; category: DocCategory; grantsStay: boolean; grantsWork: boolean; requiresEmployerMatch: boolean;
+  defaultValidityDays: number | null; renewalLeadDays: number | null; appliesToNationalities: string[] | null;
+  isActive: boolean; isSystem: boolean;
+}
+export type CaseStatus = "to_submit" | "submitted" | "in_progress" | "decision_positive" | "decision_negative" | "withdrawn";
 export interface WorkerDocument {
   id: number; workerId: number; docTypeId: number | null; title: string;
   status: string; number: string | null; expiresAt: string | null; fileUrl: string | null; note: string | null;
   fileName: string | null; fileMime: string | null;
+  // легалізація: строки/справа/роботодавець/верифікація (PATCH /worker-documents/:id/legal, cap legalization)
+  validFrom: string | null; issuedAt: string | null; issuer: string | null; employerCompanyId: number | null;
+  caseStatus: CaseStatus | null; submittedAt: string | null; caseNumber: string | null; decisionAt: string | null;
+  verifiedBy: number | null; verifiedAt: string | null; reviewNote: string | null;
+  source: "office" | "worker_bot" | "ocr" | "import"; replacesDocumentId: number | null;
+  requestedAt: string | null; requestedBy: number | null;
 }
+// Результат движка легальності (кеш worker_legality; GET /workers/:id/legality — будь-яка роль)
+export type LegalityStatus = "legal" | "pending" | "expiring" | "illegal" | "unknown";
+export interface LegalityReason { code: string; axis: "stay" | "work" | "overall"; severity: "info" | "warn" | "block"; params?: Record<string, unknown> }
+export interface LegalityAxis { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null }
+export interface WorkerLegality {
+  workerId: number; stay: LegalityStatus; work: LegalityStatus; overall: LegalityStatus;
+  reviewRequired: boolean; reasons: LegalityReason[];
+  nextExpiryAt: string | null; nextExpiryDocId: number | null; requiredMissing: string[];
+  axes: { stay?: LegalityAxis; work?: LegalityAxis } | null;
+  obligations: { code: string; dueAt: string; overdue: boolean; satisfied: boolean; params?: Record<string, unknown> }[];
+  derivedLegalStatus: string | null; derivedPayrollClass: string | null;
+  legacyMappingRequiresReview: boolean; legacyMismatchKind: "none" | "within_class" | "cross_class" | "no_proposal";
+  payrollHints: { studentByProfile: boolean; studentCertMissingOrExpired: boolean; notifyHoursWithoutBasis: boolean; hoursExceedNotify: boolean | null; workBasisMissing: boolean } | null;
+  computedAt: string;
+}
+// Короткий зріз для списку /workers (усім ролям)
+export interface WorkerLegalityBrief { overall: LegalityStatus; stay: LegalityStatus; work: LegalityStatus; nextExpiryAt: string | null; reviewRequired: boolean; derivedLegalStatus: string | null; legacyMismatchKind: string | null }
+// Рядок дашборду GET /legalization (cap legalization)
+export interface LegalizationRow {
+  id: number; fullName: string; workerCode: string | null; nationality: string | null; legalStatus: string | null;
+  factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
+  legality: (Pick<WorkerLegality, "stay" | "work" | "overall" | "reviewRequired" | "nextExpiryAt" | "nextExpiryDocId" | "requiredMissing" | "derivedLegalStatus" | "legacyMismatchKind" | "legacyMappingRequiresReview" | "reasons" | "computedAt">) | null;
+  stayBasis: { label: string | null; until: string | null; docId: number | null } | null;
+  workBasis: { label: string | null; until: string | null; docId: number | null } | null;
+  pendingDocs: number;
+}
+export interface LegalizationDashboard {
+  today: string;
+  summary: { total: number; legal: number; pending: number; expiring: number; illegal: number; unknown: number; notComputed: number; review: number; pendingDocs: number };
+  rows: LegalizationRow[];
+}
+// Версійоване правило легальності (GET/POST/PATCH /legal-rules)
+export interface LegalRule {
+  id: number; code: string; kind: "basis_by_nationality" | "requirement" | "obligation" | "precedence" | "global";
+  axis: "stay" | "work" | "both" | null; conditions: Record<string, unknown>;
+  effectiveFrom: string; effectiveTo: string | null; source: string | null;
+  verifiedAt: string | null; verifiedBy: number | null; note: string | null; isActive: boolean; createdBy: number | null; createdAt: string;
+}
+export interface DocumentAuditEntry { id: number; documentId: number; workerId: number; action: string; changes: { field: string; from?: unknown; to?: unknown }[] | null; adminId: number | null; adminName: string | null; source: string | null; createdAt: string }
 export interface Worker {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
   factoryId: number | null; factoryName: string | null;
@@ -89,6 +142,7 @@ export interface Worker {
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми
+  legality?: WorkerLegalityBrief | null; // світлофори за документами (кеш worker_legality; null = ще не рахувалось)
   student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)
   stud26?: boolean; // похідне: студент І до 26 (вік з birth_date, фолбек under26)
   status: string; isActive: boolean; language?: string | null;

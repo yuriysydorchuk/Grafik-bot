@@ -1,25 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown, Landmark } from "lucide-react";
+import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown, Landmark, Scale, Check, ShieldQuestion, History } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory } from "../lib/api";
-import { Card, Spinner, Input, Label, Button, Select, Badge, Empty, Modal } from "../components/ui";
+import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory, type DocCategory, type LegalRule } from "../lib/api";
+import { Card, Spinner, Input, Label, Button, Select, Badge, Empty, Modal, Textarea } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { STAGE_COLORS, dotClass, badgeClass } from "../lib/colors";
 import { DOC_TYPE_ICONS, DOC_TYPE_ICON_KEYS, docTypeIcon } from "../lib/docTypeIcons";
+import { DOC_CATEGORY_LABEL, NAT_GROUP_LABEL } from "../lib/legality";
+import { NATIONALITIES } from "../lib/nationality";
 import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "funnels" | "email" | "gratyfikant" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "funnels" | "email" | "gratyfikant" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
   { id: "factories", label: "Фабрики", show: m => can(m, "editData") },
   { id: "positions", label: "Посади", show: m => can(m, "editData") },
   { id: "documents", label: "Документи", show: m => can(m, "editData") },
+  { id: "legalRules", label: "Правила легальності", show: m => can(m, "legalization") },
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
   { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
   { id: "gratyfikant", label: "Gratyfikant", show: m => can(m, "svodniSensitive") },
@@ -55,6 +58,7 @@ export default function Settings() {
       {active === "factories" && <Factories />}
       {active === "positions" && <PositionsSettings />}
       {active === "documents" && <DocTypesSettings />}
+      {active === "legalRules" && <LegalRulesSettings />}
       {active === "funnels" && <FunnelsSettings />}
       {active === "email" && <EmailTemplatesSettings />}
       {active === "gratyfikant" && <GratyfikantSettings />}
@@ -388,18 +392,279 @@ function DocTypeRow({ d, onSave, onDelete }: { d: DocumentType; onSave: (p: any)
   const [name, setName] = useState(d.name);
   const Icon = docTypeIcon(d.icon);
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
-      <Icon className="h-4 w-4 shrink-0 text-slate-400" />
-      <Input value={name} onChange={e => setName(e.target.value)} className="min-w-40 flex-1" />
-      <Select value={d.icon ?? ""} onChange={e => onSave({ icon: e.target.value || null })} className="w-40" title={t("Іконка")}>
-        <option value="">{t("— без іконки —")}</option>
-        {DOC_TYPE_ICON_KEYS.map(k => <option key={k} value={k}>{t(DOC_TYPE_ICONS[k]!.label)}</option>)}
-      </Select>
-      <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.required} onChange={e => onSave({ required: e.target.checked })} /> {t("обов'язковий")}</label>
-      <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.hasExpiry} onChange={e => onSave({ hasExpiry: e.target.checked })} /> {t("має термін дії")}</label>
-      {name.trim() && name !== d.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
-      <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
+    <div className="flex flex-col gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Icon className="h-4 w-4 shrink-0 text-slate-400" />
+        <Input value={name} onChange={e => setName(e.target.value)} className="min-w-40 flex-1" />
+        <Select value={d.icon ?? ""} onChange={e => onSave({ icon: e.target.value || null })} className="w-40" title={t("Іконка")}>
+          <option value="">{t("— без іконки —")}</option>
+          {DOC_TYPE_ICON_KEYS.map(k => <option key={k} value={k}>{t(DOC_TYPE_ICONS[k]!.label)}</option>)}
+        </Select>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.required} onChange={e => onSave({ required: e.target.checked })} /> {t("обов'язковий")}</label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.hasExpiry} onChange={e => onSave({ hasExpiry: e.target.checked })} /> {t("має термін дії")}</label>
+        {name.trim() && name !== d.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
+        {!d.isSystem && <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>}
+      </div>
+      {/* Легалізація (02.09.2026): що документ «дає» + строки + для кого. code — стабільний ключ сіду, не правиться. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
+        {d.code && <span className="rounded bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-400" title={t("Стабільний ключ (не редагується)")}>{d.code}</span>}
+        <Select value={d.category} onChange={e => onSave({ category: e.target.value })} className="w-36" title={t("Категорія")}>
+          {(Object.keys(DOC_CATEGORY_LABEL) as DocCategory[]).map(c => <option key={c} value={c}>{t(DOC_CATEGORY_LABEL[c])}</option>)}
+        </Select>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.grantsStay} onChange={e => onSave({ grantsStay: e.target.checked })} /> {t("підстава перебування")}</label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.grantsWork} onChange={e => onSave({ grantsWork: e.target.checked })} /> {t("підстава праці")}</label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={d.requiresEmployerMatch} onChange={e => onSave({ requiresEmployerMatch: e.target.checked })} /> {t("на роботодавця")}</label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500">
+          {t("нагадувати за")}
+          <Input type="number" min={0} value={d.renewalLeadDays ?? ""} placeholder="—"
+            onChange={e => onSave({ renewalLeadDays: e.target.value === "" ? null : Number(e.target.value) })} className="w-16 py-1 text-center" />
+          {t("дн.")}
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500">
+          {t("типовий строк")}
+          <Input type="number" min={0} value={d.defaultValidityDays ?? ""} placeholder="—"
+            onChange={e => onSave({ defaultValidityDays: e.target.value === "" ? null : Number(e.target.value) })} className="w-16 py-1 text-center" />
+          {t("дн.")}
+        </label>
+        <NatMultiSelect value={d.appliesToNationalities} onChange={v => onSave({ appliesToNationalities: v })} />
+        <label className="ml-auto flex items-center gap-1.5 text-xs font-medium text-slate-600">
+          <input type="checkbox" checked={d.isActive} onChange={e => onSave({ isActive: e.target.checked })} /> {t("активний")}
+        </label>
+      </div>
     </div>
+  );
+}
+
+// Мультивибір національностей (групи ua/eu/non_eu + каталог) для appliesToNationalities.
+// Порожньо = застосовується до всіх. Компактний dropdown у стилі SearchableSelect.
+function NatMultiSelect({ value, onChange }: { value: string[] | null; onChange: (v: string[] | null) => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+  const sel = new Set(value ?? []);
+  const toggle = (v: string) => {
+    const n = new Set(sel);
+    n.has(v) ? n.delete(v) : n.add(v);
+    onChange(n.size === 0 ? null : [...n]);
+  };
+  const label = !value || value.length === 0 ? t("усі") : `${value.length} ${t("обрано")}`;
+  return (
+    <div ref={boxRef} className="relative">
+      <button type="button" onClick={() => setOpen(v => !v)}
+        className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:border-slate-400">
+        {t("Громадянство")}: {label}
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-72 w-56 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Групи")}</div>
+          {Object.entries(NAT_GROUP_LABEL).map(([g, lbl]) => (
+            <label key={g} className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-600 hover:bg-slate-50">
+              <input type="checkbox" checked={sel.has(g)} onChange={() => toggle(g)} /> {t(lbl)}
+            </label>
+          ))}
+          <div className="mb-1 mt-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Каталог")}</div>
+          {NATIONALITIES.map(n => (
+            <label key={n.value} className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-600 hover:bg-slate-50">
+              <input type="checkbox" checked={sel.has(n.value)} onChange={() => toggle(n.value)} /> {n.flag} {t(n.label)}
+            </label>
+          ))}
+          <button type="button" onClick={() => onChange(null)} className="mt-1 w-full rounded px-1.5 py-1 text-left text-xs text-red-600 hover:bg-red-50">{t("Скинути (= усі)")}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Правила легальності (legal_rules, cap `legalization`) ───────────────────
+// Версійований журнал: попередня чинна версія коду автоматично закривається
+// датою нової (POST /legal-rules). Тут — тільки перегляд+нова версія+точкові
+// PATCH (verified/note/source/isActive/effectiveTo); умови/код/kind/вісь
+// правляться лише новою версією.
+const RULE_KIND_LABEL: Record<LegalRule["kind"], string> = {
+  basis_by_nationality: "підстава за громадянством", requirement: "вимога", obligation: "обов'язок",
+  precedence: "пріоритет", global: "глобальний параметр",
+};
+const RULE_AXIS_LABEL: Record<string, string> = { stay: "Перебування", work: "Праця", both: "обидві", none: "—" };
+const today = () => new Date().toLocaleDateString("sv-SE");
+
+function LegalRulesSettings() {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data: rules = [], isLoading } = useQuery<LegalRule[]>({ queryKey: ["legal-rules"], queryFn: () => get("/legal-rules") });
+  const [modal, setModal] = useState<{ mode: "newRule" } | { mode: "newVersion"; rule: LegalRule } | null>(null);
+
+  // рядки вже відсортовані бекендом по code, effectiveFrom desc — групуємо по code, зберігаючи порядок
+  const groups: [string, LegalRule[]][] = [];
+  { const m = new Map<string, LegalRule[]>(); for (const r of rules) { if (!m.has(r.code)) { m.set(r.code, []); groups.push([r.code, m.get(r.code)!]); } m.get(r.code)!.push(r); } }
+
+  const globalUkr = rules.find(r => r.code === "global.ukr_status_end" && r.effectiveTo === null && r.effectiveFrom <= today());
+
+  if (isLoading) return <Spinner />;
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="max-w-2xl text-sm text-slate-500">
+          {t("Джерело правди для движка легальності (громадянство, обов'язки роботодавця, строки, глобальні дати). Кожна зміна — нова версія з датою «діє з»; попередня закривається автоматично. Неперевірене правило позначає результат «потребує перевірки».")}
+        </p>
+        <Button onClick={() => setModal({ mode: "newRule" })}><Plus className="h-4 w-4" /> {t("Нове правило")}</Button>
+      </div>
+
+      {globalUkr && (
+        <Card className="flex flex-wrap items-center gap-3 border-amber-200 bg-amber-50/60 p-3 text-sm">
+          <Scale className="h-4 w-4 shrink-0 text-amber-600" />
+          <span className="text-amber-800">
+            {t("Глобальна дата кінця статусу UKR: {date} (правило global.ukr_status_end)", { date: String(globalUkr.conditions?.date ?? "—") })}
+          </span>
+          <Button variant="secondary" className="ml-auto" onClick={() => setModal({ mode: "newVersion", rule: globalUkr })}>{t("Змінити")}</Button>
+        </Card>
+      )}
+
+      {!groups.length ? <Empty>{t("Немає правил")}</Empty> : (
+        <div className="space-y-2">
+          {groups.map(([code, versions]) => (
+            <RuleGroup key={code} code={code} versions={versions} onNewVersion={r => setModal({ mode: "newVersion", rule: r })} />
+          ))}
+        </div>
+      )}
+
+      {modal && (
+        <RuleModal mode={modal.mode} rule={modal.mode === "newVersion" ? modal.rule : undefined}
+          onClose={() => setModal(null)}
+          onSaved={() => { qc.invalidateQueries({ queryKey: ["legal-rules"] }); setModal(null); }} />
+      )}
+    </div>
+  );
+}
+
+function RuleGroup({ code, versions, onNewVersion }: { code: string; versions: LegalRule[]; onNewVersion: (r: LegalRule) => void }) {
+  const t = useT();
+  const [showOld, setShowOld] = useState(false);
+  const td = today();
+  const current = versions.find(r => r.effectiveTo === null && r.effectiveFrom <= td) ?? versions[0]!;
+  const old = versions.filter(r => r.id !== current.id);
+  return (
+    <Card className="overflow-hidden">
+      <RuleRow r={current} isCurrent onNewVersion={() => onNewVersion(current)} />
+      {old.length > 0 && (
+        <>
+          <button onClick={() => setShowOld(v => !v)} className="flex w-full items-center gap-1.5 border-t border-slate-100 px-3 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-50">
+            <History className="h-3.5 w-3.5" /> {showOld ? t("Сховати старі версії") : t("Старі версії")} ({old.length})
+          </button>
+          {showOld && old.map(r => <RuleRow key={r.id} r={r} onNewVersion={() => onNewVersion(r)} />)}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function RuleRow({ r, isCurrent, onNewVersion }: { r: LegalRule; isCurrent?: boolean; onNewVersion: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [note, setNote] = useState(r.note ?? "");
+  const inv = () => qc.invalidateQueries({ queryKey: ["legal-rules"] });
+  const patchRule = useMutation({ mutationFn: (p: any) => patch(`/legal-rules/${r.id}`, p), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  return (
+    <div className={`flex flex-wrap items-start gap-x-3 gap-y-1.5 border-t border-slate-100 px-3 py-2 text-sm first:border-t-0 ${isCurrent ? "" : "bg-slate-50/60 text-slate-500"}`}>
+      <div className="min-w-0">
+        <div className="font-mono text-xs font-semibold text-slate-700">{r.code}</div>
+        <div className="text-xs text-slate-400">{t(RULE_KIND_LABEL[r.kind])} · {t(RULE_AXIS_LABEL[r.axis ?? "none"] ?? r.axis ?? "—")}</div>
+      </div>
+      <code className="min-w-0 flex-1 truncate rounded bg-slate-50 px-1.5 py-0.5 text-xs text-slate-600" title={JSON.stringify(r.conditions)}>{JSON.stringify(r.conditions)}</code>
+      <div className="shrink-0 text-xs text-slate-500">{r.effectiveFrom} → {r.effectiveTo ?? t("чинне")}</div>
+      <div className="shrink-0 text-xs">
+        {r.source ? (/^https?:\/\//.test(r.source) ? <a href={r.source} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{t("джерело")}</a> : <span className="text-slate-500">{r.source}</span>) : <span className="text-slate-300">—</span>}
+      </div>
+      <div className="shrink-0">
+        {r.verifiedAt ? (
+          <button onClick={() => patchRule.mutate({ verified: false })} className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100" title={t("Зняти підтвердження")}>
+            <Check className="h-3 w-3" /> {new Date(r.verifiedAt).toLocaleDateString()}
+          </button>
+        ) : (
+          <button onClick={() => patchRule.mutate({ verified: true })} className="flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-100">
+            <ShieldQuestion className="h-3 w-3" /> {t("не перевірено — Підтвердити")}
+          </button>
+        )}
+      </div>
+      <Input value={note} onChange={e => setNote(e.target.value)} onBlur={() => note !== (r.note ?? "") && patchRule.mutate({ note: note.trim() || null })}
+        placeholder={t("примітка")} className="w-40 py-1 text-xs" />
+      <label className="flex shrink-0 items-center gap-1 text-xs text-slate-500">
+        <input type="checkbox" checked={r.isActive} onChange={e => patchRule.mutate({ isActive: e.target.checked })} /> {t("активне")}
+      </label>
+      <Button variant="secondary" className="ml-auto shrink-0 px-2 py-1 text-xs" onClick={onNewVersion}>{t("Нова версія")}</Button>
+    </div>
+  );
+}
+
+// Модалка створення нового правила (mode "newRule") або нової версії наявного
+// (mode "newVersion" — code/kind/axis успадковуються, умови попередньо заповнені).
+function RuleModal({ mode, rule, onClose, onSaved }: { mode: "newRule" | "newVersion"; rule: LegalRule | undefined; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const [code, setCode] = useState(rule?.code ?? "");
+  const [kind, setKind] = useState<LegalRule["kind"]>(rule?.kind ?? "requirement");
+  const [axis, setAxis] = useState<string>(rule?.axis ?? "none");
+  const [effectiveFrom, setEffectiveFrom] = useState(today());
+  const [effectiveTo, setEffectiveTo] = useState("");
+  const [conditions, setConditions] = useState(JSON.stringify(rule?.conditions ?? {}, null, 2));
+  const [source, setSource] = useState(rule?.source ?? "");
+  const [note, setNote] = useState("");
+  const [verified, setVerified] = useState(false);
+  const create = useMutation({
+    mutationFn: () => {
+      let parsed: unknown;
+      try { parsed = JSON.parse(conditions); } catch { throw new Error(t("Умови — некоректний JSON")); }
+      return post("/legal-rules", {
+        code: code.trim(), kind, axis: axis === "none" ? null : axis, conditions: parsed,
+        effectiveFrom, effectiveTo: effectiveTo || undefined, source: source.trim() || undefined, note: note.trim() || undefined, verified,
+      });
+    },
+    onSuccess: () => { toast.success(t("Версію збережено")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={mode === "newVersion" ? t("Нова версія — {code}", { code }) : t("Нове правило")}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label>{t("Код (група.назва)")}</Label>
+            <Input value={code} onChange={e => setCode(e.target.value)} placeholder="stay.pl_citizen" disabled={mode === "newVersion"} />
+          </div>
+          <div>
+            <Label>{t("Вид")}</Label>
+            <Select value={kind} onChange={e => setKind(e.target.value as LegalRule["kind"])} disabled={mode === "newVersion"}>
+              {(Object.keys(RULE_KIND_LABEL) as LegalRule["kind"][]).map(k => <option key={k} value={k}>{t(RULE_KIND_LABEL[k])}</option>)}
+            </Select>
+          </div>
+        </div>
+        <div>
+          <Label>{t("Вісь")}</Label>
+          <Select value={axis} onChange={e => setAxis(e.target.value)} className="w-40">
+            {["none", "stay", "work", "both"].map(a => <option key={a} value={a}>{t(RULE_AXIS_LABEL[a]!)}</option>)}
+          </Select>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label>{t("Діє з")}</Label><Input type="date" value={effectiveFrom} onChange={e => setEffectiveFrom(e.target.value)} /></div>
+          <div><Label>{t("Діє до (необов'язково)")}</Label><Input type="date" value={effectiveTo} onChange={e => setEffectiveTo(e.target.value)} /></div>
+        </div>
+        <div>
+          <Label>{t("Умови (JSON)")}</Label>
+          <Textarea value={conditions} onChange={e => setConditions(e.target.value)} rows={6} className="font-mono text-xs" />
+        </div>
+        <div><Label>{t("Джерело (URL або назва акта)")}</Label><Input value={source} onChange={e => setSource(e.target.value)} /></div>
+        <div><Label>{t("Примітка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
+        <label className="flex items-center gap-1.5 text-sm text-slate-600">
+          <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} /> {t("перевірено")}
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={create.isPending} disabled={!code.trim()} onClick={() => create.mutate()}>{t("Зберегти")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

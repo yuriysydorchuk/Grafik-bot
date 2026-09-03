@@ -12,6 +12,7 @@ import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
+import { LEGALITY_STATUSES, LEGALITY_LABEL, LEGALITY_DOT, daysUntil } from "../lib/legality";
 import { NATIONALITIES, NatFlag } from "../lib/nationality";
 
 export default function Workers() {
@@ -31,6 +32,10 @@ export default function Workers() {
   const [legFilter, setLegFilter] = useState("");
   const [natFilter, setNatFilter] = useState("");
   const [stud26Only, setStud26Only] = useState(false);
+  // Легалізація за документами (движок worker_legality) — окремо від старого
+  // поля «Форма легалізації» (legFilter вище, не чіпати).
+  const [docLegFilter, setDocLegFilter] = useState("");
+  const [expiringOnly, setExpiringOnly] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
@@ -94,8 +99,10 @@ export default function Workers() {
         : w.legalStatus === legFilter)) &&
     (!natFilter || (natFilter === "none" ? !w.nationality : w.nationality === natFilter)) &&
     (!stud26Only || !!w.stud26) &&
+    (!docLegFilter || (docLegFilter === "none" ? !w.legality : w.legality?.overall === docLegFilter)) &&
+    (!expiringOnly || (() => { const d = daysUntil(w.legality?.nextExpiryAt); return d != null && d <= 30; })()) &&
     (!q || w.fullName.toLowerCase().includes(q.toLowerCase()) || (w.workerCode ?? "").includes(q))
-  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, showInactive]);
+  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, expiringOnly, showInactive]);
 
   if (isLoading) return <Spinner />;
 
@@ -143,6 +150,14 @@ export default function Workers() {
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={stud26Only} onChange={e => setStud26Only(e.target.checked)} /> {t("Студ. до 26")}
         </label>
+        <Select value={docLegFilter} onChange={e => setDocLegFilter(e.target.value)} className="w-52">
+          <option value="">{t("Легалізація (док.): всі")}</option>
+          <option value="none">{t("Ще не рахувалось")}</option>
+          {LEGALITY_STATUSES.map(s => <option key={s} value={s}>{t(LEGALITY_LABEL[s])}</option>)}
+        </Select>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={expiringOnly} onChange={e => setExpiringOnly(e.target.checked)} /> {t("Строк ≤ 30 днів")}
+        </label>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> {t("Звільнені")}
         </label>
@@ -162,7 +177,7 @@ export default function Workers() {
         {filtered.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : (
           <table className="w-full min-w-150 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
+              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Легалізація (док.)")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filtered.map(w => (
@@ -175,6 +190,7 @@ export default function Workers() {
                   <td className="px-4 py-2.5 font-mono text-slate-500">{w.workerCode ?? "—"}</td>
                   <td className="px-4 py-2.5">{w.positionName ? <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5"><LegalCell w={w} /></td>
+                  <td className="px-4 py-2.5"><DocLegalityCell w={w} /></td>
                   <td className="px-4 py-2.5">{w.companyName ? <Badge color="blue">{w.companyName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.factoryName ? <Badge color="red">{w.factoryName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.telegramId ? <Badge color="green">✓</Badge> : <Badge color="amber">{t("не приєднаний")}</Badge>}</td>
@@ -226,6 +242,25 @@ function LegalCell({ w }: { w: Worker }) {
   return w.student
     ? <span title={t("Студент — форма легалізації не заповнена")} className="inline-block rounded bg-yellow-100 px-1.5 py-0.5 text-[11px] font-semibold text-yellow-700">{t("без форми")}</span>
     : <span title={t("Не оформлений — без форми легалізації")} className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">{t("без форми")}</span>;
+}
+
+// Легалізація за документами (движок worker_legality, фаза 2) — окрема
+// колонка поряд зі старою LegalCell (стару НЕ чіпаємо). Світлофор overall +
+// найближчий термін + мітка «потребує перевірки».
+function DocLegalityCell({ w }: { w: Worker }) {
+  const t = useT();
+  const leg = w.legality;
+  if (!leg) return <span className="text-slate-300">—</span>;
+  const dLeft = daysUntil(leg.nextExpiryAt);
+  const expiryCls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-400";
+  return (
+    <div className="flex items-center gap-1.5 whitespace-nowrap">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[leg.overall]}`} title={t(LEGALITY_LABEL[leg.overall])} />
+      <span className="text-xs text-slate-600">{t(LEGALITY_LABEL[leg.overall])}</span>
+      {leg.nextExpiryAt && <span className={`text-xs ${expiryCls}`}>{t("{n} дн.", { n: dLeft ?? "—" })}</span>}
+      {leg.reviewRequired && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{t("перевірка")}</span>}
+    </div>
+  );
 }
 
 // Лінк на скан+анкету для НОВОГО кандидата (POST /workers/scan-invite) —

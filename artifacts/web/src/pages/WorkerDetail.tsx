@@ -4,13 +4,22 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle
 } from "lucide-react";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
+import { DocumentAuditModal } from "../components/DocumentAuditModal";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
-import { get, post, put, patch, del, upload, type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender } from "../lib/api";
-import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect } from "../components/ui";
+import {
+  get, post, put, patch, del, upload,
+  type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender,
+  type WorkerLegality, type LegalityReason, type CaseStatus,
+} from "../lib/api";
+import {
+  LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, DOC_CATEGORY_LABEL,
+  MISMATCH_LABEL, REQUIRED_MISSING_LABEL, reasonText, daysUntil,
+} from "../lib/legality";
+import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -376,7 +385,8 @@ export default function WorkerDetail() {
 
         <div className="min-w-0 space-y-5">
           {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
-          <WorkerDocuments workerId={w.id} />
+          <WorkerLegalitySection workerId={w.id} />
+          <WorkerDocuments workerId={w.id} companies={companies} />
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />
           <WorkerAbsences workerId={w.id} />
@@ -1130,17 +1140,155 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
   );
 }
 
-function WorkerDocuments({ workerId }: { workerId: number }) {
+// Легалізація за документами (движок worker_legality) — три світлофори
+// (перебування/праця/загалом), причини движка, найближчий термін, обов'язки
+// (напр. powiadomienie), та підказка до старого поля «Форма легалізації»
+// (LegalStatusRow нижче лишається окремим — легасі-поле НЕ автозаповнюється).
+// Доступно на перегляд усім ролям (як GET .../legality); «Перерахувати» — cap legalization.
+function WorkerLegalitySection({ workerId }: { workerId: number }) {
   const t = useT();
   const qc = useQueryClient();
+  const me = useMe();
+  const canLegal = can(me, "legalization");
+  const { data: legality, isLoading } = useQuery<WorkerLegality | null>({
+    queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`),
+  });
+  const recompute = useMutation({
+    mutationFn: () => post<WorkerLegality>(`/workers/${workerId}/legality/recompute`),
+    onSuccess: (data) => { qc.setQueryData(["worker-legality", workerId], data); toast.success(t("Перераховано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const recomputeBtn = canLegal && (
+    <Button variant="secondary" className="px-2 py-1 text-xs" loading={recompute.isPending} onClick={() => recompute.mutate()}>
+      <RefreshCw className="h-3.5 w-3.5" /> {t("Перерахувати")}
+    </Button>
+  );
+
+  if (isLoading) return <Section icon={Scale} title={t("Легалізація")}><Spinner /></Section>;
+
+  if (!legality) {
+    return <Section icon={Scale} title={t("Легалізація")} action={recomputeBtn} empty={t("Ще не рахувалось")}>{null}</Section>;
+  }
+
+  const reasonsByAxis: Record<string, LegalityReason[]> = {};
+  for (const r of legality.reasons) (reasonsByAxis[r.axis] ??= []).push(r);
+  const severityCls = (sev: LegalityReason["severity"]) => sev === "block" ? "text-rose-600" : sev === "warn" ? "text-amber-600" : "text-slate-500";
+  const dLeft = daysUntil(legality.nextExpiryAt);
+  const ph = legality.payrollHints;
+  const hints: string[] = [];
+  if (ph) {
+    // studentCertMissingOrExpired лише має сенс разом з studentByProfile — інакше «студент без zaświadczenia» вводить в оману нестудента
+    if (ph.studentByProfile && ph.studentCertMissingOrExpired) hints.push(t("студент за профілем без чинного zaświadczenia"));
+    if (ph.notifyHoursWithoutBasis) hints.push(t("години повідомлення без документа"));
+    if (ph.hoursExceedNotify === true) hints.push(t("години > повідомлення"));
+    if (ph.workBasisMissing) hints.push(t("оформлений без документа праці"));
+  }
+
+  return (
+    <Section icon={Scale} title={t("Легалізація")} action={recomputeBtn}
+      extra={legality.reviewRequired && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600">
+          <AlertTriangle className="h-3 w-3" /> {t("потребує перевірки")}
+        </span>
+      )}>
+      <div className="space-y-3 px-4 py-3">
+        <div className="flex flex-wrap gap-2">
+          {(["stay", "work", "overall"] as const).map(axis => (
+            <div key={axis} className="flex items-center gap-1.5 rounded-lg border border-slate-100 px-2.5 py-1.5 text-sm">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[legality[axis]]}`} />
+              <span className="text-xs text-slate-400">{t(AXIS_LABEL[axis])}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${LEGALITY_BADGE[legality[axis]]}`}>{t(LEGALITY_LABEL[legality[axis]])}</span>
+            </div>
+          ))}
+        </div>
+
+        {legality.reasons.length > 0 && (
+          <div className="space-y-1.5">
+            {(["stay", "work", "overall"] as const).filter(ax => reasonsByAxis[ax]?.length).map(ax => (
+              <div key={ax}>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t(AXIS_LABEL[ax])}</div>
+                {reasonsByAxis[ax]!.map((r, i) => <div key={i} className={`text-xs ${severityCls(r.severity)}`}>• {reasonText(t, r)}</div>)}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(legality.nextExpiryAt || legality.requiredMissing.length > 0) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            {legality.nextExpiryAt && (
+              <span className={dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-500"}>
+                {t("Наступний термін: {date} ({n} дн.)", { date: legality.nextExpiryAt, n: dLeft ?? "—" })}
+              </span>
+            )}
+            {legality.requiredMissing.length > 0 && (
+              <span className="font-medium text-rose-600">
+                {t("Бракує: {list}", { list: legality.requiredMissing.map(m => t(REQUIRED_MISSING_LABEL[m] ?? m)).join(", ") })}
+              </span>
+            )}
+          </div>
+        )}
+
+        {legality.obligations.length > 0 && (
+          <div className="space-y-0.5">
+            {legality.obligations.map((o, i) => {
+              const label = o.params?.docCode === "powiadomienie_ua" ? t("Powiadomienie о працю UA: термін {dueAt}", { dueAt: o.dueAt }) : o.code;
+              const stTxt = o.satisfied ? t("подано") : o.overdue ? t("прострочено") : t("очікує");
+              const cls = o.satisfied ? "text-emerald-600" : o.overdue ? "text-rose-600" : "text-amber-600";
+              return <div key={i} className="text-xs text-slate-600">{label} — <span className={`font-medium ${cls}`}>{stTxt}</span></div>;
+            })}
+          </div>
+        )}
+
+        {legality.derivedLegalStatus && (
+          <div className={`rounded-lg border px-2.5 py-1.5 text-xs ${legality.legacyMismatchKind === "cross_class" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-slate-100 bg-slate-50 text-slate-500"}`}>
+            {t("За документами: {status} — {mismatch}", {
+              status: t(LEGAL_LABEL[legality.derivedLegalStatus as LegalStatus] ?? legality.derivedLegalStatus),
+              mismatch: t(MISMATCH_LABEL[legality.legacyMismatchKind] ?? legality.legacyMismatchKind),
+            })}
+            {legality.legacyMappingRequiresReview && (
+              <span className="ml-2 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{t("потребує перевірки")}</span>
+            )}
+          </div>
+        )}
+
+        {hints.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {hints.map((h, i) => <span key={i} className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">{h}</span>)}
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function WorkerDocuments({ workerId, companies }: { workerId: number; companies: Company[] }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const me = useMe();
+  const canLegal = can(me, "legalization");
   const confirm = useConfirm();
   const { data: types = [] } = useQuery<DocumentType[]>({ queryKey: ["document-types"], queryFn: () => get("/document-types") });
   const { data: docs = [], isLoading } = useQuery<WorkerDocument[]>({ queryKey: ["worker-docs", workerId], queryFn: () => get(`/workers/${workerId}/documents`) });
   const [editing, setEditing] = useState<WorkerDocument | null>(null);
   const [addFor, setAddFor] = useState<DocumentType | null | "custom">(null);
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
-  const inv = () => qc.invalidateQueries({ queryKey: ["worker-docs", workerId] });
+  const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
+  const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
+  // «Легалізація» на профілі рахує на льоту з кешу — будь-яка зміна документа
+  // (нова, дата, статус, верифікація, відхилення) мусить скинути й цей кеш.
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-documents/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
+  const verify = useMutation({ mutationFn: (id: number) => post(`/worker-documents/${id}/verify`), onSuccess: () => { inv(); toast.success(t("Підтверджено")); }, onError: (e: any) => toast.error(e.message) });
+  const reject = useMutation({
+    mutationFn: (v: { id: number; note: string }) => post(`/worker-documents/${v.id}/reject`, { note: v.note }),
+    onSuccess: () => { inv(); setRejecting(null); toast.success(t("Відхилено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const request = useMutation({
+    mutationFn: (docTypeId: number) => post(`/workers/${workerId}/documents/request`, { docTypeId }),
+    onSuccess: () => { inv(); toast.success(t("Запит на подання надіслано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   // Запросити на скан паспорта (якщо ще нема) + анкету — anketa-токен,
   // routes/passportScan.ts сам вирішує чи показувати крок сканування.
   // Той самий best-effort патерн, що «Надіслати на підпис» у WorkerContracts.
@@ -1165,31 +1313,57 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
     const s = DOC_STATUS[status] ?? DOC_STATUS.missing;
     const Icon = docTypeIcon(type?.icon);
     const hasFile = !!doc?.fileName;
+    // Термін дії — жовтий у межах 30 днів, rose коли вже минув (узгоджено з
+    // похідним статусом "expired" вище, який теж рахує з isExpired).
+    const dLeft = doc?.expiresAt ? daysUntil(doc.expiresAt) : null;
+    const expiryCls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-400";
+    const employerName = doc?.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;
     return (
-      <div key={key} className="flex flex-wrap items-center gap-2 border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
-        {hasFile ? (
-          <button type="button" onClick={() => setPreview(doc!)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
-            <Icon className="h-4 w-4" />
-          </button>
-        ) : <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
-        {hasFile ? (
-          <button type="button" onClick={() => setPreview(doc!)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{name}</button>
-        ) : <span className="font-medium text-slate-700">{name}</span>}
-        {required && <span className="text-[10px] font-semibold uppercase text-amber-500">{t("обов'язковий")}</span>}
-        <Badge color={s!.color}>{t(s!.label)}</Badge>
-        {doc?.expiresAt && <span className={`text-xs ${isExpired(doc.expiresAt) ? "font-medium text-rose-600" : "text-slate-400"}`}>⏳ {doc.expiresAt}</span>}
-        {doc?.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
-        {hasFile && <a href={`/api/worker-documents/${doc!.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc!.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
-        {doc?.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
-        {doc?.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
-        <div className="ml-auto flex shrink-0 gap-1">
-          {doc
-            ? <>
+      <div key={key} className="border-b border-slate-50 px-4 py-2.5 text-sm last:border-0">
+        <div className="flex flex-wrap items-center gap-2">
+          {hasFile ? (
+            <button type="button" onClick={() => setPreview(doc!)} className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-red-600" title={t("Відкрити")}>
+              <Icon className="h-4 w-4" />
+            </button>
+          ) : <Icon className="h-4 w-4 shrink-0 text-slate-400" />}
+          {hasFile ? (
+            <button type="button" onClick={() => setPreview(doc!)} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{name}</button>
+          ) : <span className="font-medium text-slate-700">{name}</span>}
+          {required && <span className="text-[10px] font-semibold uppercase text-amber-500">{t("обов'язковий")}</span>}
+          <Badge color={s!.color}>{t(s!.label)}</Badge>
+          {doc?.status === "pending" && <span className="text-xs font-medium text-blue-600">{t("⏳ на перевірці")}</span>}
+          {doc?.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
+          {doc?.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
+          {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
+          {doc?.expiresAt && <span className={`text-xs ${expiryCls}`}>⏳ {doc.expiresAt}</span>}
+          {doc?.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
+          {hasFile && <a href={`/api/worker-documents/${doc!.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc!.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
+          {doc?.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
+          {doc?.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
+          <div className="ml-auto flex shrink-0 gap-1">
+            {doc ? (
+              <>
+                {canLegal && doc.status === "pending" && (
+                  <>
+                    <button onClick={() => verify.mutate(doc.id)} disabled={verify.isPending} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => setRejecting(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
+                  </>
+                )}
+                {canLegal && <button onClick={() => setAuditFor(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Історія")}><History className="h-3.5 w-3.5" /></button>}
                 <button onClick={() => setEditing(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>
                 <button onClick={async () => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-3.5 w-3.5" /></button>
               </>
-            : <button onClick={() => setAddFor(type)} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"><Plus className="h-3.5 w-3.5" /> {t("Додати")}</button>}
+            ) : (
+              <>
+                {type && required && canLegal && (
+                  <button onClick={() => request.mutate(type.id)} disabled={request.isPending} className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Попросити подати")}</button>
+                )}
+                <button onClick={() => setAddFor(type)} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"><Plus className="h-3.5 w-3.5" /> {t("Додати")}</button>
+              </>
+            )}
+          </div>
         </div>
+        {doc?.reviewNote && <div className="pl-6 pt-0.5 text-xs text-slate-400">📝 {doc.reviewNote}</div>}
       </div>
     );
   };
@@ -1207,17 +1381,44 @@ function WorkerDocuments({ workerId }: { workerId: number }) {
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
         {isLoading ? <Spinner /> : (types.length || extras.length) ? (
           <div>
-            {types.map(ty => row(`ty${ty.id}`, ty.name, ty.required, docByType.get(ty.id), ty))}
+            {/* каталог має ~24 типи (сід легалізації) — показуємо лише обов'язкові та ті, що є в людини;
+                решту додають через «+ Документ» (селект типу) */}
+            {types.filter(ty => ty.required || docByType.has(ty.id)).map(ty => row(`ty${ty.id}`, ty.name, ty.required, docByType.get(ty.id), ty))}
             {extras.map(d => row(`ex${d.id}`, d.title, false, d, null))}
           </div>
         ) : null}
       </Section>
       {(addFor !== null || editing) && (
-        <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types}
+        <DocModal workerId={workerId} doc={editing} type={addFor === "custom" ? null : addFor} types={types} companies={companies}
+          allDocs={docs} canLegal={canLegal}
           onClose={() => { setAddFor(null); setEditing(null); }} onSaved={() => { inv(); setAddFor(null); setEditing(null); }} />
       )}
       {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
+      {rejecting && (
+        <RejectDocModal doc={rejecting} loading={reject.isPending} onClose={() => setRejecting(null)}
+          onReject={note => reject.mutate({ id: rejecting.id, note })} />
+      )}
+      {auditFor && <DocumentAuditModal documentId={auditFor.id} title={auditFor.title} onClose={() => setAuditFor(null)} />}
     </>
+  );
+}
+
+// Відхилення документа на перевірці — причина обов'язкова (services/*: reject
+// вимагає note, статус повертається на missing, щоб рядок знову засвітився).
+function RejectDocModal({ doc, loading, onClose, onReject }: { doc: WorkerDocument; loading: boolean; onClose: () => void; onReject: (note: string) => void }) {
+  const t = useT();
+  const [note, setNote] = useState("");
+  return (
+    <Modal open onClose={onClose} title={t("Відхилити документ")}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">{doc.title}</p>
+        <div><Label>{t("Причина відхилення")}</Label><Textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder={t("Що не так із документом")} /></div>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant="danger" loading={loading} disabled={!note.trim()} onClick={() => onReject(note.trim())}>{t("Відхилити")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1308,8 +1509,9 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
   );
 }
 
-function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
-  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; types: DocumentType[]; onClose: () => void; onSaved: () => void;
+function DocModal({ workerId, doc, type, types, companies, allDocs, canLegal, onClose, onSaved }: {
+  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; types: DocumentType[]; companies: Company[];
+  allDocs: WorkerDocument[]; canLegal: boolean; onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
   const isEdit = !!doc;
@@ -1321,7 +1523,31 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
   const [fileUrl, setFileUrl] = useState(doc?.fileUrl ?? "");
   const [note, setNote] = useState(doc?.note ?? "");
   const [file, setFile] = useState<File | null>(null);
+  // Легалізація: строки/справа/роботодавець — окремий PATCH .../legal (cap legalization).
+  const [validFrom, setValidFrom] = useState(doc?.validFrom ?? "");
+  const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? "");
+  const [issuer, setIssuer] = useState(doc?.issuer ?? "");
+  const [employerCompanyId, setEmployerCompanyId] = useState(doc?.employerCompanyId != null ? String(doc.employerCompanyId) : "");
+  const [caseStatus, setCaseStatus] = useState<CaseStatus | "">(doc?.caseStatus ?? "");
+  const [submittedAt, setSubmittedAt] = useState(doc?.submittedAt ?? "");
+  const [caseNumber, setCaseNumber] = useState(doc?.caseNumber ?? "");
+  const [decisionAt, setDecisionAt] = useState(doc?.decisionAt ?? "");
+  const [replacesDocumentId, setReplacesDocumentId] = useState(doc?.replacesDocumentId != null ? String(doc.replacesDocumentId) : "");
+  const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
+  const hasLegalData = !!(doc && (doc.validFrom || doc.issuedAt || doc.issuer || doc.employerCompanyId != null || doc.caseStatus || doc.submittedAt || doc.caseNumber || doc.decisionAt || doc.replacesDocumentId != null));
+  const [legOpen, setLegOpen] = useState(selectedType?.category === "stay" || selectedType?.category === "work" || hasLegalData);
+  // Неактивні типи — не пропонувати для НОВОГО документа, але лишити наявний
+  // вибір видимим при редагуванні вже створеного документа цього типу.
+  const typeOptions = types.filter(ty => ty.isActive !== false || String(ty.id) === docTypeId);
+
   const body = () => ({ docTypeId: docTypeId ? Number(docTypeId) : null, title: title.trim(), status, number, expiresAt: expiresAt || null, fileUrl, note });
+  const legalBody = () => ({
+    validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: expiresAt || null,
+    issuer: issuer.trim() || null, caseNumber: caseNumber.trim() || null,
+    employerCompanyId: employerCompanyId ? Number(employerCompanyId) : null,
+    caseStatus: caseStatus || null,
+    replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
+  });
   const save = useMutation({
     mutationFn: async () => {
       const saved: WorkerDocument = isEdit ? await patch(`/worker-documents/${doc!.id}`, body()) : await post(`/workers/${workerId}/documents`, body());
@@ -1330,6 +1556,7 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
         fd.append("file", file);
         await upload(`/worker-documents/${saved.id}/file`, fd);
       }
+      if (canLegal) await patch(`/worker-documents/${saved.id}/legal`, legalBody());
       return saved;
     },
     onSuccess: () => { toast.success(isEdit ? t("Збережено") : t("Додано")); onSaved(); },
@@ -1339,9 +1566,14 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
     <Modal open onClose={onClose} title={isEdit ? t("Редагувати документ") : t("Новий документ")}>
       <div className="space-y-3">
         <div><Label>{t("Тип документа")}</Label>
-          <Select value={docTypeId} onChange={e => { setDocTypeId(e.target.value); const ty = types.find(x => String(x.id) === e.target.value); if (ty && !title.trim()) setTitle(ty.name); }}>
+          <Select value={docTypeId} onChange={e => {
+            setDocTypeId(e.target.value);
+            const ty = types.find(x => String(x.id) === e.target.value);
+            if (ty && !title.trim()) setTitle(ty.name);
+            if (ty && (ty.category === "stay" || ty.category === "work")) setLegOpen(true);
+          }}>
             <option value="">{t("— власний —")}</option>
-            {types.map(ty => <option key={ty.id} value={ty.id}>{ty.name}</option>)}
+            {typeOptions.map(ty => <option key={ty.id} value={ty.id}>{ty.name} — {t(DOC_CATEGORY_LABEL[ty.category])}</option>)}
           </Select>
         </div>
         <div><Label>{t("Назва")}</Label><Input value={title} onChange={e => setTitle(e.target.value)} placeholder={t("Назва документа")} /></div>
@@ -1364,6 +1596,57 @@ function DocModal({ workerId, doc, type, types, onClose, onSaved }: {
         </div>
         <div><Label>{t("Посилання на файл")}</Label><Input value={fileUrl} onChange={e => setFileUrl(e.target.value)} placeholder="https://drive…" /></div>
         <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
+
+        {canLegal ? (
+          <div className="rounded-lg border border-slate-200">
+            <button type="button" onClick={() => setLegOpen(o => !o)} className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-sm font-medium text-slate-600">
+              {legOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} <Scale className="h-3.5 w-3.5 text-slate-400" /> {t("Легалізація")}
+            </button>
+            {legOpen && (
+              <div className="space-y-2 border-t border-slate-100 p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>{t("Чинний з")}</Label><Input type="date" value={validFrom ?? ""} onChange={e => setValidFrom(e.target.value)} /></div>
+                  <div><Label>{t("Дата видачі")}</Label><Input type="date" value={issuedAt ?? ""} onChange={e => setIssuedAt(e.target.value)} /></div>
+                </div>
+                <div><Label>{t("Видав")}</Label><Input value={issuer} onChange={e => setIssuer(e.target.value)} /></div>
+                {selectedType?.requiresEmployerMatch && (
+                  <div><Label>{t("Роботодавець")}</Label>
+                    <Select value={employerCompanyId} onChange={e => setEmployerCompanyId(e.target.value)}>
+                      <option value="">—</option>
+                      {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </Select>
+                  </div>
+                )}
+                <div><Label>{t("Статус справи")}</Label>
+                  <Select value={caseStatus} onChange={e => setCaseStatus(e.target.value as CaseStatus | "")}>
+                    <option value="">—</option>
+                    {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])}</option>)}
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>{t("Подано")}</Label><Input type="date" value={submittedAt ?? ""} onChange={e => setSubmittedAt(e.target.value)} /></div>
+                  <div><Label>{t("Рішення")}</Label><Input type="date" value={decisionAt ?? ""} onChange={e => setDecisionAt(e.target.value)} /></div>
+                </div>
+                <div><Label>{t("№ справи")}</Label><Input value={caseNumber} onChange={e => setCaseNumber(e.target.value)} /></div>
+                <div><Label>{t("Поновлює")}</Label>
+                  <Select value={replacesDocumentId} onChange={e => setReplacesDocumentId(e.target.value)}>
+                    <option value="">—</option>
+                    {allDocs.filter(d => d.id !== doc?.id).map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
+                  </Select>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : hasLegalData ? (
+          <div className="space-y-0.5 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-500">
+            {doc!.validFrom && <div>{t("Чинний з")}: {doc!.validFrom}</div>}
+            {doc!.issuedAt && <div>{t("Дата видачі")}: {doc!.issuedAt}</div>}
+            {doc!.issuer && <div>{t("Видав")}: {doc!.issuer}</div>}
+            {doc!.caseStatus && <div>{t("Статус справи")}: {t(CASE_STATUS_LABEL[doc!.caseStatus])}</div>}
+            {doc!.caseNumber && <div>{t("№ справи")}: {doc!.caseNumber}</div>}
+          </div>
+        ) : null}
+
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} onClick={() => title.trim() && save.mutate()}>{isEdit ? t("Зберегти") : t("Додати")}</Button>

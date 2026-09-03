@@ -48,6 +48,7 @@ import Cleaning from "./pages/Cleaning";
 import Sushi from "./pages/Sushi";
 import Andros from "./pages/Andros";
 import Contracts from "./pages/Contracts";
+import Legalization from "./pages/Legalization";
 import DocumentTemplates from "./pages/DocumentTemplates";
 import Sign from "./pages/Sign";
 import PassportScan from "./pages/PassportScan";
@@ -161,6 +162,7 @@ export default function App() {
         <Route path="/sushi">{() => guard("/sushi", <Sushi />)}</Route>
         <Route path="/andros">{() => guard("/andros", <Andros />)}</Route>
         <Route path="/contracts">{() => guard("/contracts", <Contracts />)}</Route>
+        <Route path="/legalization">{() => guard("/legalization", <Legalization />)}</Route>
         <Route path="/document-templates">{() => guard("/document-templates", <DocumentTemplates />)}</Route>
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>

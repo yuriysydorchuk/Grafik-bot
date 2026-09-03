@@ -60,6 +60,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/workers", label: "Працівники", icon: Users },
       { href: "/contracts", label: "Документи й умови", icon: FileText },
+      { href: "/legalization", label: "Легалізація", icon: ShieldCheck },
       { href: "/document-templates", label: "Шаблони документів", icon: FileStack },
       { href: "/drivers", label: "Водії", icon: Truck },
       { href: "/fleet", label: "Автопарк", icon: CarFront },
