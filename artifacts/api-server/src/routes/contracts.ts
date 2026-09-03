@@ -23,7 +23,7 @@ import {
 } from "@workspace/db";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
-import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime } from "../lib/uploads";
+import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
@@ -197,23 +197,26 @@ const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize:
 
 const PASSPORT_DRAFT_FIELDS = ["passportNumber", "passportCountry", "passportIssuedAt", "passportExpiresAt", "citizenship", "sex"] as const;
 
-export async function applyPassportScan(workerId: number, buffer: Buffer, originalName: string): Promise<{
+export async function applyPassportScan(workerId: number, rawBuffer: Buffer, rawName: string): Promise<{
   documentId: number; questionnaire: typeof workerQuestionnairesTable.$inferSelect; draft: PassportDraft; mrz: MrzResult | null;
   nameDraft: { firstName: string | null; middleName: string | null; lastName: string | null };
 }> {
-  const realMime = sniffDocMime(buffer);
-  if (!realMime || !SCAN_MIME_WHITELIST.has(realMime)) throw new Error("Тип файлу не підтверджено вмістом");
+  const rawMime = sniffDocMime(rawBuffer);
+  if (!rawMime || !SCAN_MIME_WHITELIST.has(rawMime)) throw new Error("Тип файлу не підтверджено вмістом");
+  // на диск — стиснута копія; OCR нижче отримує оригінал (normalizeForOcr робить своє)
+  const { buffer: storedBuffer, mime: realMime, fileName: originalName } = await compressUploadImage(rawBuffer, rawMime, rawName);
+  const buffer = rawBuffer;
 
   const docType = await ensureDocumentType("passport");
 
   const storedName = makeStoredName(originalName);
-  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), buffer);
+  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), storedBuffer);
   const [doc] = await db.insert(workerDocumentsTable).values({
     workerId, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
     filePath: path.join("worker-documents", storedName), fileName: originalName, fileMime: realMime,
   }).returning();
 
-  const { draft, mrz } = await processPassport(buffer, realMime);
+  const { draft, mrz } = await processPassport(buffer, rawMime);
   logger.info({ workerId, documentId: doc!.id, mrzValid: mrz?.documentNumberValid ?? null }, "passport scan applied");
 
   // OCR ніколи не перезаписує вже ПІДТВЕРДЖЕНУ анкету — лише прикладає сирий

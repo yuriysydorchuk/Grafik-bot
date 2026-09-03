@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import sharp from "sharp";
 
 // Root of the uploads tree. Defaults to <cwd>/uploads (cwd is the repo root
 // under pm2). Override with UPLOADS_DIR for a volume mount.
@@ -42,6 +43,30 @@ export function sniffDocMime(buf: Buffer): string | null {
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   if (buf.length >= 8 && buf.toString("hex", 0, 8) === "d0cf11e0a1b11ae1") return "application/msword";
   return null;
+}
+
+// Фото документів з телефона — 5–10 МБ на кадр; на диску такий розмір нічого не
+// дає (читає людина або OCR, якому досить ~2000 px по довшій стороні). Перед
+// записом: EXIF-поворот (щоб не лежало боком у переглядачі), довша сторона до
+// 2000 px, JPEG 85 → типово 300–600 КБ. PDF/Word — без змін. HEIC prebuilt-sharp
+// без HEVC-декодера не читає → лишається як є (Telegram і так шле JPEG).
+// Ім'я файла отримує .jpg, якщо формат змінився.
+export const UPLOAD_IMAGE_MAX_SIDE = 2000;
+export async function compressUploadImage(
+  buffer: Buffer, mime: string, originalName: string,
+): Promise<{ buffer: Buffer; mime: string; fileName: string }> {
+  if (!/^image\/(jpeg|png|webp|heic)$/.test(mime)) return { buffer, mime, fileName: originalName };
+  try {
+    const out = await sharp(buffer).rotate()
+      .resize({ width: UPLOAD_IMAGE_MAX_SIDE, height: UPLOAD_IMAGE_MAX_SIDE, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 85, mozjpeg: true }).toBuffer();
+    // не міняємо файл, якщо «стиснення» його не зменшило (маленький PNG-скан тощо)
+    if (out.length >= buffer.length && mime === "image/jpeg") return { buffer, mime, fileName: originalName };
+    const fileName = originalName.replace(/\.[a-zA-Z0-9]{1,5}$/, "") + ".jpg";
+    return { buffer: out, mime: "image/jpeg", fileName };
+  } catch {
+    return { buffer, mime, fileName: originalName }; // HEIC/пошкоджене — зберігаємо оригінал
+  }
 }
 
 // A collision-proof on-disk name that preserves the original extension.

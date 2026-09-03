@@ -21,7 +21,7 @@ import {
   documentTypesTable, factoriesTable, adminsTable, candidatesTable,
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { UPLOADS_ROOT, WORKER_DOCS_DIR, PASSPORT_SCAN_TMP_DIR, makeStoredName, sniffDocMime, deleteStoredFile } from "../lib/uploads";
+import { UPLOADS_ROOT, WORKER_DOCS_DIR, PASSPORT_SCAN_TMP_DIR, makeStoredName, sniffDocMime, deleteStoredFile, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, mrzDiagnostics, type PassportDraft } from "../services/docai";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
 import { nextWorkerCode } from "../lib/workerCode";
@@ -141,12 +141,14 @@ router.post("/passport-scan/:token/analyze", uploadScan.single("file"), async (r
     }
 
     deleteStoredFile(row.tempFilePath);
-    const originalName = Buffer.from(req.file.originalname ?? "passport", "latin1").toString("utf8");
-    const storedName = makeStoredName(originalName || "passport.jpg");
-    await fs.promises.writeFile(path.join(PASSPORT_SCAN_TMP_DIR, storedName), req.file.buffer);
+    const rawName = Buffer.from(req.file.originalname ?? "passport", "latin1").toString("utf8") || "passport.jpg";
+    // на диск (і далі в профіль при confirm) — стиснута копія; OCR вище вже відпрацював на оригіналі
+    const stored = await compressUploadImage(req.file.buffer, realMime, rawName);
+    const storedName = makeStoredName(stored.fileName);
+    await fs.promises.writeFile(path.join(PASSPORT_SCAN_TMP_DIR, storedName), stored.buffer);
 
     await db.update(passportScanTokensTable).set({
-      tempFilePath: path.join("passport-scan-tmp", storedName), tempFileName: originalName, tempFileMime: realMime,
+      tempFilePath: path.join("passport-scan-tmp", storedName), tempFileName: stored.fileName, tempFileMime: stored.mime,
       draftJson: { draft, mrz },
     }).where(eq(passportScanTokensTable.id, row.id));
 

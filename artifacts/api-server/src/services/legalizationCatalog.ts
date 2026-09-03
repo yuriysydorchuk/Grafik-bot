@@ -28,6 +28,17 @@ export const DOCUMENT_TYPE_SEED: DocTypeSeed[] = [
   T("rezydent_ue", "Karta rezydenta długoterminowego UE", "stay", 160, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 90, appliesToNationalities: ["non_eu"] }),
   T("stay_case_certificate", "Zaświadczenie o złożeniu wniosku (dawniej stempel)", "stay", 170, "decision", { appliesToNationalities: ["non_eu"] }),
   T("status_ukr", "Status UKR (PESEL UKR, specustawa)", "stay", 180, "residence_card", { grantsStay: true, renewalLeadDays: 90, appliesToNationalities: ["ua"] }),
+  // Гуманітарні підстави (рішення власника 03.09.2026): усі дають і побут, і працю
+  // без zezwolenia (ustawa o promocji zatrudnienia art. 87 ust. 1 pkt 1–5, 87 ust. 2
+  // pkt 4c для wizy humanitarnej BY). Не привʼязані до роботодавця. TZTC (шукач
+  // захисту) свідомо не сідиться — право на працю там залежить від тривалості
+  // провадження, окреме рішення з юристом.
+  T("humanitarian_visa", "Wiza humanitarna (obywatele Białorusi)", "stay", 181, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 30, appliesToNationalities: ["belarus"] }),
+  T("refugee_status", "Status uchodźcy (karta pobytu)", "stay", 182, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),
+  T("subsidiary_protection", "Ochrona uzupełniająca (karta pobytu)", "stay", 183, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),
+  T("humanitarian_stay", "Zgoda na pobyt ze względów humanitarnych", "stay", 184, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),
+  T("tolerated_stay", "Zgoda na pobyt tolerowany", "stay", 185, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),
+  T("eu_family_member_card", "Karta pobytu członka rodziny obywatela UE", "stay", 186, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),
   T("karta_polaka", "Karta Polaka", "work", 190, "karta_polaka", { hasExpiry: true, grantsWork: true, renewalLeadDays: 90, appliesToNationalities: ["non_eu"] }),
   T("oswiadczenie", "Oświadczenie o powierzeniu wykonywania pracy", "work", 200, "permit", { hasExpiry: true, grantsWork: true, requiresEmployerMatch: true, defaultValidityDays: 730, renewalLeadDays: 30, appliesToNationalities: ["ukraine", "belarus", "moldova"] }),
   T("zezwolenie_a", "Zezwolenie na pracę typ A", "work", 210, "permit", { hasExpiry: true, grantsWork: true, requiresEmployerMatch: true, renewalLeadDays: 60, appliesToNationalities: ["non_eu"] }),

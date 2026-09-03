@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { eq, and, isNull } from "drizzle-orm";
 import { db, documentTypesTable, workerDocumentsTable } from "@workspace/db";
-import { WORKER_DOCS_DIR, makeStoredName, sniffDocMime } from "../lib/uploads";
+import { WORKER_DOCS_DIR, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { logger } from "../lib/logger";
 import { DOCUMENT_TYPE_SEED } from "./legalizationCatalog";
 
@@ -43,9 +43,10 @@ export async function ensureDocumentType(code: string) {
 // Самозавантажений документ завжди йде в статус pending — офіс перевіряє й
 // підтверджує (аналог questionnaire: worker-подані дані ніколи не стають
 // «офіційними» автоматично). source='worker_bot' — для аудиту/движка легальності.
-export async function applyWorkerDocumentUpload(workerId: number, docTypeId: number, buffer: Buffer, originalName: string): Promise<{ documentId: number; title: string }> {
-  const realMime = sniffDocMime(buffer);
-  if (!realMime || !DOC_MIME_WHITELIST.has(realMime)) throw new Error("Тип файлу не підтверджено вмістом");
+export async function applyWorkerDocumentUpload(workerId: number, docTypeId: number, rawBuffer: Buffer, rawName: string): Promise<{ documentId: number; title: string }> {
+  const rawMime = sniffDocMime(rawBuffer);
+  if (!rawMime || !DOC_MIME_WHITELIST.has(rawMime)) throw new Error("Тип файлу не підтверджено вмістом");
+  const { buffer, mime: realMime, fileName: originalName } = await compressUploadImage(rawBuffer, rawMime, rawName);
 
   const [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.id, docTypeId));
   if (!docType) throw new Error("Тип документа не знайдено");

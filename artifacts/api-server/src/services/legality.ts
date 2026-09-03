@@ -475,6 +475,10 @@ export function deriveLegacy(
     switch (d.typeCode) {
       case "karta_stalego_pobytu": cands.push({ status: "staly_pobyt", cls: "C_registered", review: false, evidence: ev }); break;
       case "rezydent_ue": cands.push({ status: null, cls: "C_registered", review: true, evidence: ev }); break;
+      // гуманітарні підстави: legacy-мапи в payroll-коді немає → без пропозиції, review
+      case "humanitarian_visa": case "refugee_status": case "subsidiary_protection":
+      case "humanitarian_stay": case "tolerated_stay": case "eu_family_member_card":
+        cands.push({ status: null, cls: "C_registered", review: true, evidence: ev }); break;
       case "trc": case "zezwolenie_jednolite":
         if (d.typeCode === "zezwolenie_jednolite" && !empOk(d)) break;
         cands.push({ status: "karta_pobytu", cls: "C_registered", review: false, evidence: ev }); break;

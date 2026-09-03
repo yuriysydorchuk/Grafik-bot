@@ -165,6 +165,17 @@ test("L15 два чинних stay-документи → береться пі�
   const r = run({ nationality: "georgia" }, docs);
   assert.equal(r.stay.basisDocId, docs[1]!.id); assert.equal(r.stay.status, "legal");
 });
+test("L16b гуманітарні підстави: wiza humanitarna BY → stay+work legal без роботодавця; legacy без пропозиції + review", () => {
+  const docs = [doc("humanitarian_visa", { validFrom: "2026-01-01", expiresAt: "2027-01-01" })];
+  const r = run({ nationality: "belarus" }, docs);
+  assert.equal(r.stay.status, "legal"); assert.equal(r.work.status, "legal"); assert.equal(r.work.basisDocId, docs[0]!.id);
+  assert.equal(r.legacy.derivedLegalStatus, null); assert.equal(r.legacy.legacyMappingRequiresReview, true);
+  const r2 = run({ nationality: "georgia" }, [doc("refugee_status", { expiresAt: "2028-01-01" })]);
+  assert.equal(r2.overall, "legal");
+  // wiza humanitarna — лише для громадян BY: для UA документ рахується, але з попередженням
+  const r3 = run({ nationality: "ukraine" }, [doc("humanitarian_visa", { expiresAt: "2027-01-01" })]);
+  assert.ok(has(r3, "doc_nationality_mismatch"));
+});
 test("L16 has_expiry тип без дати → legal + review expiry_missing", () => {
   const r = run({ nationality: "georgia" }, [doc("trc", { expiresAt: null })]);
   assert.equal(r.stay.status, "legal"); assert.ok(has(r, "expiry_missing")); assert.equal(r.reviewRequired, true);

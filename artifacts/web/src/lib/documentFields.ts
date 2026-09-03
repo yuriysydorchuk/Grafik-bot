@@ -66,6 +66,16 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   rezydent_ue: [
     F("expiresAt", "Карта дійсна до", "date", { required: true }),
   ],
+  // гуманітарні підстави — побут + праця без zezwolenia, лише строк дії
+  humanitarian_visa: [
+    F("validFrom", "Від", "date", { required: true }),
+    F("expiresAt", "До", "date", { required: true }),
+  ],
+  refugee_status: [F("expiresAt", "Карта дійсна до", "date", { required: true })],
+  subsidiary_protection: [F("expiresAt", "Карта дійсна до", "date", { required: true })],
+  humanitarian_stay: [F("expiresAt", "Карта дійсна до", "date", { required: true })],
+  tolerated_stay: [F("expiresAt", "Карта дійсна до", "date", { required: true })],
+  eu_family_member_card: [F("expiresAt", "Карта дійсна до", "date", { required: true })],
   stay_case_certificate: [
     F("submittedAt", "Подано", "date", { required: true }),
     F("caseStatus", "Статус справи", "caseStatus", { required: true }),

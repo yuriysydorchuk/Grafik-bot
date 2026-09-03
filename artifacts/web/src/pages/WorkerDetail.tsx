@@ -1272,10 +1272,13 @@ function WorkerLegalitySection({ workerId }: { workerId: number }) {
 // pobytu» і «Zezwolenie/Oświadczenie» — не фіксований тип, а «найкращий»
 // (найпізніший строк) present-документ серед кількох кодів каталогу (людина
 // могла мати кілька підстав одночасно, або підстава змінилась).
-const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue", "status_ukr", "visa_d", "visa_c", "visa_free"];
+const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue", "status_ukr", "visa_d", "visa_c", "visa_free",
+  "humanitarian_visa", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"];
 const KARTA_POBYTU_SHORT: Record<string, string> = {
   trc: "TRC", zezwolenie_jednolite: "Zezwolenie jednolite", karta_stalego_pobytu: "Karta stałego pobytu",
   rezydent_ue: "Rezydent UE", status_ukr: "Status UKR", visa_d: "Wiza D", visa_c: "Wiza C", visa_free: "Ruch bezwizowy",
+  humanitarian_visa: "Wiza humanitarna", refugee_status: "Status uchodźcy", subsidiary_protection: "Ochrona uzupełniająca",
+  humanitarian_stay: "Pobyt humanitarny", tolerated_stay: "Pobyt tolerowany", eu_family_member_card: "Rodzina obywatela UE",
 };
 const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
 const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };

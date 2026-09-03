@@ -30,7 +30,7 @@ import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateS
 import { loadWeekShiftOverrides, loadDateShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
-import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime } from "../lib/uploads";
+import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
@@ -1180,16 +1180,17 @@ router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
 router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (req, res) => {
   const id = Number(req.params.id);
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
-  const realMime = sniffDocMime(req.file.buffer);
-  if (!realMime || !DOC_MIME_WHITELIST.has(realMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
+  const rawMime = sniffDocMime(req.file.buffer);
+  if (!rawMime || !DOC_MIME_WHITELIST.has(rawMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
   const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc) return fail(res, 404, "Документ не знайдено");
 
-  const storedName = makeStoredName(req.file.originalname);
-  const relPath = path.join("worker-documents", storedName);
-  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), req.file.buffer);
   // Original filename arrives latin1-encoded from multipart — decode to UTF-8.
-  const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+  const rawName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+  const { buffer, mime: realMime, fileName: originalName } = await compressUploadImage(req.file.buffer, rawMime, rawName);
+  const storedName = makeStoredName(originalName);
+  const relPath = path.join("worker-documents", storedName);
+  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), buffer);
 
   const [d] = await db.update(workerDocumentsTable).set({
     filePath: relPath,
