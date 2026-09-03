@@ -7,6 +7,7 @@ import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge } from
 import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
+import { useConfirm } from "../components/confirm";
 import { badgeClass, dotClass } from "../lib/colors";
 import { can } from "../lib/roles";
 
@@ -191,6 +192,32 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     ...(canRates ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon) } : {}),
     ...(canInvoice ? { clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
   });
+  const confirm = useConfirm();
+  // «Кардинальні» зміни налаштувань наявної фабрики — ті, що ховають її з поверхонь
+  // або міняють режим роботи (графік/замовлення/бот). Без підтвердження не зберігаємо:
+  // випадково знята галочка «Планування» прибирала фабрику з графіку (BIMIZ, 09.2026).
+  const cardinalChanges = (): string[] => {
+    if (!factory) return [];
+    const out: string[] = [];
+    if (factory.usesScheduling !== false && !v.usesScheduling) out.push(t("Вимкнути планування графіків — фабрика зникне зі сторінок «Графік» і «Замовлення», працівники перестануть подавати доступність"));
+    if (v.genMode !== factory.genMode) out.push(t("Змінити режим генерації: «{from}» → «{to}»", { from: t(GEN_MODE_LABEL[factory.genMode] ?? GEN_MODE_LABEL.availability), to: t(GEN_MODE_LABEL[v.genMode]) }));
+    if (shifts.length < (factory.shiftCount ?? 3)) out.push(t("Зменшити кількість змін: {from} → {to}", { from: String(factory.shiftCount ?? 3), to: String(shifts.length) }));
+    if (factory.usesTransport !== false && !v.usesTransport) out.push(t("Вимкнути довіз — фабрика випаде з водійського флоу (посадка, забір, зупинки)"));
+    if (factory.usesPositions && !v.usesPositions) out.push(t("Вимкнути посади — замовлення й генерація перестануть враховувати посади"));
+    if (factory.usesGender && !v.usesGender) out.push(t("Вимкнути поділ за статтю"));
+    if (String(factory.companyId ?? "") !== v.companyId) out.push(t("Змінити фірму фабрики (впливає на фінанси та фактури)"));
+    return out;
+  };
+  const submit = async () => {
+    if (!v.name.trim() || !shiftsOk) return;
+    const changes = cardinalChanges();
+    if (changes.length && !(await confirm({
+      title: t("Змінити налаштування фабрики «{name}»?", { name: factory!.name }),
+      message: `${t("Ці зміни впливають на графік, бот або фінанси:")}\n• ${changes.join("\n• ")}`,
+      confirmText: t("Так, зберегти"), danger: true,
+    }))) return;
+    save.mutate();
+  };
   const save = useMutation({
     mutationFn: async () => {
       const list = recipients.map(r => ({ ...r, email: r.email.trim() })).filter(r => r.email);
@@ -304,6 +331,11 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           <input type="checkbox" checked={v.usesScheduling} onChange={e => setV({ ...v, usesScheduling: e.target.checked })} />
           {t("Планування графіків (замовлення/генерація/доступність)")}
         </label>
+        {!v.usesScheduling && (
+          <p className="-mt-1 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            ⚠️ {t("Без планування фабрика зникне зі сторінок «Графік» і «Замовлення», а її працівники не зможуть подавати доступність у боті. Вимикайте лише для зарплатних фабрик без графіку.")}
+          </p>
+        )}
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Що бачить працівник у боті")}</p>
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -439,7 +471,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
         {factory && canPayoutView && <PayoutRulesBlock factoryId={factory.id} canEdit={canPayoutEdit} />}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} disabled={!v.name.trim() || !shiftsOk} onClick={() => v.name.trim() && shiftsOk && save.mutate()}>{t("Зберегти")}</Button>
+          <Button loading={save.isPending} disabled={!v.name.trim() || !shiftsOk} onClick={submit}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>

@@ -28,7 +28,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               </div>
               <div className="flex-1">
                 <h3 className="text-base font-semibold text-slate-800">{state.opts.title}</h3>
-                {state.opts.message && <p className="mt-1 text-sm text-slate-500">{state.opts.message}</p>}
+                {state.opts.message && <p className="mt-1 whitespace-pre-line text-sm text-slate-500">{state.opts.message}</p>}
               </div>
             </div>
             <div className="mt-5 flex justify-end gap-2">
