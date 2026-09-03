@@ -111,10 +111,12 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   if (body.status !== undefined) patch.status = body.status;
   if (body.status === "submitted") patch.submittedAt = new Date();
 
-  const [existing] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  const [existing] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const [q] = existing
     ? await db.update(workerQuestionnairesTable).set(patch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...patch }).returning();
+  // поля, які людина реально змінила цим збереженням — їх значення виграє над профілем
+  const changed = new Set(["citizenship", "sex"].filter(k => existing ? (existing as any)[k] !== (patch as any)[k] && patch[k] !== undefined : patch[k] != null));
 
   // Ім'я/по-батькові/прізвище — поля workersTable, не анкети (той самий поділ,
   // що routes/passportScan.ts) — офіс редагує напряму, fullName НЕ чіпаємо
@@ -124,25 +126,35 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   if (body.middleName !== undefined) namePatch.middleName = String(body.middleName).trim() || null;
   if (body.lastName !== undefined) namePatch.lastName = String(body.lastName).trim() || null;
   if (Object.keys(namePatch).length) await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
-  // громадянство з паспорта → national profile field (лише якщо порожнє) + перерахунок світлофорів легальності
-  await syncNationalityFromQuestionnaire(workerId, q?.citizenship ?? null);
+  // анкета → профіль (громадянство/стать) + перерахунок світлофорів легальності
+  await syncProfileFromQuestionnaire(workerId, { citizenship: q?.citizenship ?? null, sex: q?.sex ?? null }, changed);
 
   ok(res, q);
 });
 
-// Національність профілю — з громадянства анкети (MRZ), лише коли поле ще порожнє:
-// ручне значення не перезаписуємо (розбіжність покаже движок легальності як
-// nationality_conflict). Після цього — перерахунок worker_legality (best-effort).
-async function syncNationalityFromQuestionnaire(workerId: number, citizenship: string | null): Promise<void> {
+// Анкета — джерело фактів про особу; поля-двійники профілю (nationality ← citizenship
+// MRZ, gender ← sex, birthDate ← MRZ при скані) підтягуються самі (рішення власника
+// 03.09.2026: «поля анкети мають бути зв'язані з полями профілю»). Правило, щоб не
+// затирати ручні правки профілю OCR-помилкою: пишемо, якщо поле профілю порожнє АБО
+// саме це поле щойно змінили в анкеті (changed). is_student анкети НЕ синкається —
+// це payroll-поле профілю (інваріант listy płac). Після синку — перерахунок worker_legality.
+async function syncProfileFromQuestionnaire(
+  workerId: number, src: { citizenship: string | null; sex: string | null; birthDate?: string | null },
+  changed: Set<string> = new Set(),
+): Promise<void> {
   try {
-    const nat = mrzNationalityToCatalog(citizenship);
-    if (nat) {
-      const [w] = await db.select({ nationality: workersTable.nationality }).from(workersTable).where(eq(workersTable.id, workerId));
-      if (w && !w.nationality) await db.update(workersTable).set({ nationality: nat }).where(eq(workersTable.id, workerId));
-    }
+    const [w] = await db.select({ nationality: workersTable.nationality, gender: workersTable.gender, birthDate: workersTable.birthDate }).from(workersTable).where(eq(workersTable.id, workerId));
+    if (!w) return;
+    const patch: Record<string, unknown> = {};
+    const nat = mrzNationalityToCatalog(src.citizenship);
+    if (nat && (!w.nationality || changed.has("citizenship")) && nat !== w.nationality) patch.nationality = nat;
+    const gender = src.sex === "M" ? "male" : src.sex === "F" ? "female" : null;
+    if (gender && (!w.gender || changed.has("sex")) && gender !== w.gender) patch.gender = gender;
+    if (src.birthDate && /^\d{4}-\d{2}-\d{2}$/.test(src.birthDate) && !w.birthDate) patch.birthDate = src.birthDate;
+    if (Object.keys(patch).length) await db.update(workersTable).set(patch).where(eq(workersTable.id, workerId));
     const { workerLegalityChanged } = await import("../services/documentEvents");
     await workerLegalityChanged(workerId);
-  } catch (e) { logger.warn({ err: String(e), workerId }, "nationality sync from questionnaire failed"); }
+  } catch (e) { logger.warn({ err: String(e), workerId }, "profile sync from questionnaire failed"); }
 }
 
 router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, res) => {
@@ -152,7 +164,7 @@ router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, 
   const [q] = await db.update(workerQuestionnairesTable).set({
     status: "verified", verifiedBy: req.admin?.adminId ?? null, verifiedAt: new Date(), updatedAt: new Date(),
   }).where(eq(workerQuestionnairesTable.workerId, workerId)).returning();
-  await syncNationalityFromQuestionnaire(workerId, q?.citizenship ?? null);
+  await syncProfileFromQuestionnaire(workerId, { citizenship: q?.citizenship ?? null, sex: q?.sex ?? null });
   ok(res, q);
 });
 
@@ -197,8 +209,10 @@ export async function applyPassportScan(workerId: number, buffer: Buffer, origin
 
   // строк паспорта з MRZ → на документ (плитка/список документів і движок легальності читають expires_at)
   if (draft.passportExpiresAt) await db.update(workerDocumentsTable).set({ expiresAt: draft.passportExpiresAt }).where(eq(workerDocumentsTable.id, doc!.id));
-  // громадянство з MRZ → nationality профілю (лише якщо порожнє) + перерахунок світлофорів
-  await syncNationalityFromQuestionnaire(workerId, draft.citizenship ?? questionnaire?.citizenship ?? null);
+  // MRZ → профіль (громадянство/стать/дата народження — лише порожні поля; OCR ще не підтверджений) + перерахунок
+  await syncProfileFromQuestionnaire(workerId, {
+    citizenship: draft.citizenship ?? questionnaire?.citizenship ?? null, sex: draft.sex ?? questionnaire?.sex ?? null, birthDate: draft.birthDate,
+  });
 
   // Ім'я/по-батькові/прізвище — поля workersTable, не анкети (той самий поділ,
   // що routes/passportScan.ts) — офіс підтверджує/править у QuestionnaireModal,
