@@ -323,9 +323,8 @@ export default function WorkerDetail() {
       </Card>
 
       {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
-      {/* Легалізація і документи — на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
-      <div className="mb-5 space-y-5">
-        <WorkerLegalitySection workerId={w.id} />
+      {/* Легалізація і документи — один блок на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
+      <div className="mb-5">
         <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
       </div>
 
@@ -1150,30 +1149,18 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
 // (напр. powiadomienie), та підказка до старого поля «Форма легалізації»
 // (LegalStatusRow нижче лишається окремим — легасі-поле НЕ автозаповнюється).
 // Доступно на перегляд усім ролям (як GET .../legality); «Перерахувати» — cap legalization.
-function WorkerLegalitySection({ workerId }: { workerId: number }) {
+// Шапка блоку «Легалізація і документи» (один блок із списком документів —
+// рішення власника 03.09.2026: «легалізація док і легалізація — одне й те саме»).
+// Світлофори побут/праця/разом, причини, наступний строк, обовʼязки. Без власної
+// картки — рендериться всередині Section у WorkerDocuments.
+function LegalitySummary({ workerId }: { workerId: number }) {
   const t = useT();
-  const qc = useQueryClient();
-  const me = useMe();
-  const canLegal = can(me, "legalization");
   const { data: legality, isLoading } = useQuery<WorkerLegality | null>({
     queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`),
   });
-  const recompute = useMutation({
-    mutationFn: () => post<WorkerLegality>(`/workers/${workerId}/legality/recompute`),
-    onSuccess: (data) => { qc.setQueryData(["worker-legality", workerId], data); toast.success(t("Перераховано")); },
-    onError: (e: any) => toast.error(e.message),
-  });
-  const recomputeBtn = canLegal && (
-    <Button variant="secondary" className="px-2 py-1 text-xs" loading={recompute.isPending} onClick={() => recompute.mutate()}>
-      <RefreshCw className="h-3.5 w-3.5" /> {t("Перерахувати")}
-    </Button>
-  );
 
-  if (isLoading) return <Section icon={Scale} title={t("Легалізація")}><Spinner /></Section>;
-
-  if (!legality) {
-    return <Section icon={Scale} title={t("Легалізація")} action={recomputeBtn} empty={t("Ще не рахувалось")}>{null}</Section>;
-  }
+  if (isLoading) return <div className="px-4 py-3"><Spinner /></div>;
+  if (!legality) return <div className="px-4 py-2 text-sm text-slate-400">{t("Легальність ще не рахувалась")}</div>;
 
   const reasonsByAxis: Record<string, LegalityReason[]> = {};
   for (const r of legality.reasons) (reasonsByAxis[r.axis] ??= []).push(r);
@@ -1190,21 +1177,20 @@ function WorkerLegalitySection({ workerId }: { workerId: number }) {
   }
 
   return (
-    <Section icon={Scale} title={t("Легалізація")} action={recomputeBtn}
-      extra={legality.reviewRequired && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600">
-          <AlertTriangle className="h-3 w-3" /> {t("потребує перевірки")}
-        </span>
-      )}>
-      <div className="space-y-3 px-4 py-3">
-        <div className="flex flex-wrap gap-2">
+      <div className="space-y-3 bg-slate-50/60 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
           {(["stay", "work", "overall"] as const).map(axis => (
-            <div key={axis} className="flex items-center gap-1.5 rounded-lg border border-slate-100 px-2.5 py-1.5 text-sm">
+            <div key={axis} className="flex items-center gap-1.5 rounded-lg border border-slate-100 bg-white px-2.5 py-1.5 text-sm">
               <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[legality[axis]]}`} />
               <span className="text-xs text-slate-400">{t(AXIS_LABEL[axis])}</span>
               <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${LEGALITY_BADGE[legality[axis]]}`}>{t(LEGALITY_LABEL[legality[axis]])}</span>
             </div>
           ))}
+          {legality.reviewRequired && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600">
+              <AlertTriangle className="h-3 w-3" /> {t("потребує перевірки")}
+            </span>
+          )}
         </div>
 
         {legality.reasons.length > 0 && (
@@ -1262,7 +1248,6 @@ function WorkerLegalitySection({ workerId }: { workerId: number }) {
           </div>
         )}
       </div>
-    </Section>
   );
 }
 
@@ -1603,21 +1588,34 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
     onError: (e: any) => toast.error(e.message),
   });
 
+  const recompute = useMutation({
+    mutationFn: () => post<WorkerLegality>(`/workers/${workerId}/legality/recompute`),
+    onSuccess: (data) => { qc.setQueryData(["worker-legality", workerId], data); toast.success(t("Перераховано")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
   const docByType = new Map<number, WorkerDocument>();
   for (const d of docs) if (d.docTypeId != null) docByType.set(d.docTypeId, d);
   const missingRequired = types.filter(ty => ty.required && !docByType.has(ty.id)).length;
 
   return (
     <>
-      <Section icon={FileText} title={t("Документи")}
+      <Section icon={Scale} title={t("Легалізація і документи")}
         extra={missingRequired > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-600"><AlertTriangle className="h-3 w-3" /> {t("бракує {n}", { n: missingRequired })}</span>}
         action={
           <div className="flex items-center gap-1.5">
+            {canLegal && (
+              <Button variant="secondary" className="px-2 py-1 text-xs" loading={recompute.isPending} onClick={() => recompute.mutate()}>
+                <RefreshCw className="h-3.5 w-3.5" /> {t("Перерахувати")}
+              </Button>
+            )}
             <Button variant="secondary" className="px-2 py-1 text-xs" loading={docsInvite.isPending} onClick={() => docsInvite.mutate()}>{t("Запросити на скан+анкету")}</Button>
             <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setDocModal({ mode: "add", type: null })}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>
           </div>
         }
         empty={t("Немає документів. Додайте типи в Налаштуваннях → Документи.")}>
+        <LegalitySummary workerId={workerId} />
+        <div className="border-t border-slate-100" />
         {isLoading ? <Spinner /> : (
           <DocSlotList types={types} docs={docs} companies={companies} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
             onOpenDoc={doc => setDocModal({ mode: "edit", doc })}

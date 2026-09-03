@@ -2922,6 +2922,8 @@ const EN: Record<string, string> = {
   "Інша (поза ЄС)": "Other (non-EU)",
   "Перерахувати": "Recompute",
   "Ще не рахувалось": "Not computed yet",
+  "Легалізація і документи": "Legalization & documents",
+  "Легальність ще не рахувалась": "Legality not computed yet",
   "потребує перевірки": "needs review",
   "перевірка": "review",
   "Наступний термін: {date} ({n} дн.)": "Next deadline: {date} ({n} d.)",
