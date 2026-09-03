@@ -126,6 +126,22 @@ test("дашборд + Excel + /attention", opts, async () => {
   assert.equal(typeof att.body.pendingDocUploads, "number");
 });
 
+test("GET /workers: зріз умов — umowa на фірму працівника (через фабрику) + сталий комплект", opts, async () => {
+  const owner = await seedAdmin({ role: "owner" });
+  const { w, es, eso } = await seedUa();
+  const [fabEso] = await db.insert(factoriesTable).values({ name: "LST", companyId: eso.id }).returning();
+  const { contractsTable } = await import("../test/harness.ts");
+  await db.insert(contractsTable).values([
+    { workerId: w.id, factoryId: fabEso!.id, status: "signed", dateTo: "2027-01-31" },   // інша фірма (ESO) — не рахується
+    { workerId: w.id, factoryId: w.factoryId!, status: "worker_signed", dateTo: "2026-12-31" }, // ES — на підписі компанією
+    { workerId: w.id, factoryId: null, status: "signed" },                                 // сталий комплект
+  ]);
+  const list = await request(app).get("/api/workers").set("Cookie", owner.cookie);
+  const me = list.body.find((x: any) => x.id === w.id);
+  assert.equal(me.contracts.umowa.status, "worker_signed"); assert.equal(me.contracts.umowa.factoryName, "AGRAM"); assert.equal(me.contracts.umowa.expired, false);
+  assert.equal(me.contracts.package.status, "signed");
+});
+
 test("document-types: нові поля легалізації правляться; системний тип не видаляється, лише вимикається", opts, async () => {
   const owner = await seedAdmin({ role: "owner" });
   const id = await typeId("medical_exam");

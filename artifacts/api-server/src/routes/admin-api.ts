@@ -323,6 +323,25 @@ router.get("/workers", RW, async (req, res) => {
   const coMap = new Map(companies.map(c => [c.id, c.name]));
   const positions = await db.select().from(positionsTable);
   const posMap = new Map(positions.map(p => [p.id, p]));
+  // Зріз умов з модуля підпису для колонки «Легалізація»: остання жива umowa (факторі-пакет),
+  // чия фабрика належить фірмі працівника, + сталий підписаний комплект. Фірма на умові не
+  // зберігається — беремо через factories.company_id.
+  const CONTRACT_LIVE = ["approved", "sent", "viewed", "worker_signed", "signed"];
+  const contractRows = await db.select({
+      id: contractsTable.id, workerId: contractsTable.workerId, factoryId: contractsTable.factoryId, status: contractsTable.status,
+      dateTo: contractsTable.dateTo, factoryCompanyId: factoriesTable.companyId, factoryName: factoriesTable.name,
+    }).from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+    .where(inArray(contractsTable.status, CONTRACT_LIVE)).orderBy(desc(contractsTable.id));
+  const todayStr = warsawDateStr();
+  const contractsOf = (workerId: number, companyId: number | null) => {
+    const mine = contractRows.filter(c => c.workerId === workerId);
+    const umowa = mine.find(c => c.factoryId != null && (companyId == null || c.factoryCompanyId === companyId)) ?? null;
+    const pkg = mine.find(c => c.factoryId == null) ?? null;
+    return {
+      umowa: umowa ? { id: umowa.id, status: umowa.status, dateTo: umowa.dateTo, factoryName: umowa.factoryName, expired: !!umowa.dateTo && umowa.dateTo < todayStr } : null,
+      package: pkg ? { id: pkg.id, status: pkg.status } : null,
+    };
+  };
   const rows = (await db
     .select({
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
@@ -354,6 +373,7 @@ router.get("/workers", RW, async (req, res) => {
         student: s26.isStudent,
         stud26: s26.isStudent && s26.under26,
         legality: lgOverall ? { overall: lgOverall, stay: lgStay, work: lgWork, nextExpiryAt: lgNextExpiry, reviewRequired: !!lgReview, derivedLegalStatus: lgDerived, legacyMismatchKind: lgMismatch } : null,
+        contracts: contractsOf(r.id, r.companyId),
         companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
         positionName: r.positionId ? (posMap.get(r.positionId)?.name ?? null) : null,
         positionColor: r.positionId ? (posMap.get(r.positionId)?.color ?? null) : null,

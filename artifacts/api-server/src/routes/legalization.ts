@@ -238,11 +238,14 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
     if (b.attrs === null) patch.attrs = null;
     else if (typeof b.attrs !== "object" || Array.isArray(b.attrs)) return fail(res, 400, "attrs: обʼєкт");
     else {
-      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean" };
+      // laborMarketAccess — TRC z dostępem do rynku pracy; studyMode — тип навчання (stationary дає працю; part_time/school — лише ставка студента)
+      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string" };
+      const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"] };
       const clean: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(b.attrs)) {
         if (!(k in ALLOWED)) return fail(res, 400, `attrs.${k}: невідомий атрибут`);
         if (v !== null && typeof v !== ALLOWED[k]) return fail(res, 400, `attrs.${k}: очікується ${ALLOWED[k]}`);
+        if (v !== null && ENUMS[k] && !ENUMS[k].includes(String(v))) return fail(res, 400, `attrs.${k}: одне з ${ENUMS[k].join("|")}`);
         if (v !== null) clean[k] = v;
       }
       patch.attrs = Object.keys(clean).length ? clean : null;

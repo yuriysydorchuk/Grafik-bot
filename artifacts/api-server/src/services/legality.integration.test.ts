@@ -71,6 +71,17 @@ test("TRC «z dostępem do rynku pracy» (attrs.laborMarketAccess) дає й п�
   assert.equal(access?.legacy.derivedLegalStatus, "karta_pobytu");
 });
 
+test("zaświadczenie студента: лише stationary дає працю; part_time/school — ні (payroll-ставка окремо)", opts, async () => {
+  const [w] = await db.insert(workersTable).values({ fullName: "Student Georgia", nationality: "georgia", isActive: true }).returning();
+  const [cert] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: await typeId("student_cert"), title: "Student", status: "present", expiresAt: "2027-02-28" }).returning();
+  assert.equal((await recomputeWorkerLegality(w!.id, "2026-09-03"))?.work.status, "unknown", "без типу навчання — не підстава");
+  await db.update(workerDocumentsTable).set({ attrs: { studyMode: "school" } }).where(eq(workerDocumentsTable.id, cert!.id));
+  assert.equal((await recomputeWorkerLegality(w!.id, "2026-09-03"))?.work.status, "unknown", "школа/policealna — не підстава");
+  await db.update(workerDocumentsTable).set({ attrs: { studyMode: "stationary" } }).where(eq(workerDocumentsTable.id, cert!.id));
+  const r = await recomputeWorkerLegality(w!.id, "2026-09-03");
+  assert.equal(r?.work.status, "legal"); assert.equal(r?.work.basisDocId, cert!.id);
+});
+
 test("recomputeAllActive: рахує активних, прибирає кеш звільнених, не чіпає workers.legal_status", opts, async () => {
   const [a, b] = await db.insert(workersTable).values([
     { fullName: "Active PL", nationality: "poland", isActive: true, legalStatus: "zus" },

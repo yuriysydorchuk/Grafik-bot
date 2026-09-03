@@ -111,6 +111,13 @@ export interface WorkerLegality {
   payrollHints: { studentByProfile: boolean; studentCertMissingOrExpired: boolean; notifyHoursWithoutBasis: boolean; hoursExceedNotify: boolean | null; workBasisMissing: boolean } | null;
   computedAt: string;
 }
+// Зріз умов (contracts) для списку /workers: umowa — останній факторі-пакет, чия фабрика належить
+// фірмі працівника; package — сталий пакет (ZUS/PPK/BHP/wnioski). status: approved|sent|viewed|worker_signed|signed
+export type ContractBriefStatus = "approved" | "sent" | "viewed" | "worker_signed" | "signed";
+export interface WorkerContractsBrief {
+  umowa: { id: number; status: ContractBriefStatus; dateTo: string | null; factoryName: string | null; expired: boolean } | null;
+  package: { id: number; status: ContractBriefStatus } | null;
+}
 // Короткий зріз для списку /workers (усім ролям)
 export interface WorkerLegalityBrief { overall: LegalityStatus; stay: LegalityStatus; work: LegalityStatus; nextExpiryAt: string | null; reviewRequired: boolean; derivedLegalStatus: string | null; legacyMismatchKind: string | null }
 // Рядок дашборду GET /legalization (cap legalization)
@@ -145,6 +152,7 @@ export interface Worker {
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми
   legality?: WorkerLegalityBrief | null; // світлофори за документами (кеш worker_legality; null = ще не рахувалось)
+  contracts?: WorkerContractsBrief; // зріз умов з модуля підпису: актуальна umowa на фірму працівника + сталий комплект
   student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)
   stud26?: boolean; // похідне: студент І до 26 (вік з birth_date, фолбек under26)
   status: string; isActive: boolean; language?: string | null;

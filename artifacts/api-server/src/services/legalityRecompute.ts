@@ -34,8 +34,12 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     id: d.id, typeCode: t?.code ?? null, category: t?.category ?? "other",
     status: (d.status as LegalityDocument["status"]) ?? "present",
     hasExpiry: t?.hasExpiry ?? false, grantsStay: t?.grantsStay ?? false,
-    // TRC «z dostępem do rynku pracy» (attrs.laborMarketAccess) дає й працю — атрибут документа, не типу
-    grantsWork: (t?.grantsWork ?? false) || (t?.code === "trc" && (d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true),
+    // Атрибути документа перекривають прапорець типу: TRC «z dostępem do rynku pracy» дає й працю;
+    // zaświadczenie студента дає право на працю ЛИШЕ для стаціонару університету (attrs.studyMode='stationary') —
+    // заочне/школа/policealna дають тільки студентську ставку (payroll), не work-basis (рішення власника 03.09.2026)
+    grantsWork: t?.code === "student_cert"
+      ? (d.attrs as Record<string, unknown> | null)?.studyMode === "stationary"
+      : (t?.grantsWork ?? false) || (t?.code === "trc" && (d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true),
     requiresEmployerMatch: t?.requiresEmployerMatch ?? false,
     validFrom: dateStr(d.validFrom), expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
     appliesToNationalities: t?.appliesToNationalities ?? null,
