@@ -25,6 +25,7 @@ import clothingRouter from "./clothing";
 import gratyfikantRouter from "./gratyfikant";
 import contractsRouter from "./contracts";
 import documentTemplatesRouter from "./documentTemplates";
+import legalizationRouter from "./legalization";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
 
@@ -68,5 +69,6 @@ router.use(fuelRouter);
 router.use(securityRouter);
 router.use(contractsRouter);
 router.use(documentTemplatesRouter);
+router.use(legalizationRouter);
 
 export default router;

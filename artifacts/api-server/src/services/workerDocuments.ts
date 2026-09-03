@@ -65,5 +65,8 @@ export async function applyWorkerDocumentUpload(workerId: number, docTypeId: num
     : await db.insert(workerDocumentsTable).values({ workerId, docTypeId, ...patch }).returning();
 
   logger.info({ workerId, docTypeId, documentId: doc!.id }, "worker self-uploaded document");
+  // журнал + перерахунок світлофорів (best-effort; lazy import — не тягнути движок у бот-код при старті)
+  const { documentChanged } = await import("./documentEvents");
+  await documentChanged({ id: doc!.id, workerId }, existing ? "file" : "created", { source: "worker_bot" });
   return { documentId: doc!.id, title: docType.name };
 }

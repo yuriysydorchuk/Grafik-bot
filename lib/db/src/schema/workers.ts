@@ -2117,6 +2117,8 @@ export const workerLegalityTable = pgTable("worker_legality", {
   nextExpiryAt: date("next_expiry_at"),
   nextExpiryDocId: integer("next_expiry_doc_id"),
   requiredMissing: jsonb("required_missing").$type<string[]>().notNull().default([]), // коди типів документів
+  // підстава по осях: {stay:{basisDocId,basisRuleCode,expiresAt}, work:{…}} — для дашборду/Excel
+  axes: jsonb("axes").$type<Record<string, { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null }>>(),
   obligations: jsonb("obligations").$type<{ code: string; dueAt: string; overdue: boolean; params?: Record<string, unknown> }[]>().notNull().default([]),
   // Пропозиція для легасі-поля (§4.2 плану): NULL = нема доведеної мапи. НІКОЛИ не пишеться у workers.legal_status автоматично.
   derivedLegalStatus: text("derived_legal_status"),

@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS worker_legality (
   next_expiry_at date,
   next_expiry_doc_id integer,
   required_missing jsonb NOT NULL DEFAULT '[]'::jsonb,
+  axes jsonb,
   obligations jsonb NOT NULL DEFAULT '[]'::jsonb,
   derived_legal_status text,
   derived_payroll_class text,
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS worker_legality (
   rules_hash text,
   computed_at timestamp NOT NULL
 );
+ALTER TABLE worker_legality ADD COLUMN IF NOT EXISTS axes jsonb; -- для баз, де таблиця створена до цієї колонки
 CREATE INDEX IF NOT EXISTS worker_legality_overall_idx ON worker_legality(overall);
 CREATE INDEX IF NOT EXISTS worker_legality_next_expiry_idx ON worker_legality(next_expiry_at);
 

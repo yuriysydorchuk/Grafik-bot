@@ -69,6 +69,10 @@ export async function saveLegality(workerId: number, input: LegalityInput, r: Le
     reviewRequired: r.reviewRequired, reasons: r.reasons,
     nextExpiryAt: r.nextExpiry?.date ?? null, nextExpiryDocId: r.nextExpiry?.docId ?? null,
     requiredMissing: r.requiredMissing, obligations: r.obligations,
+    axes: {
+      stay: { basisDocId: r.stay.basisDocId, basisRuleCode: r.stay.basisRuleCode, expiresAt: r.stay.expiresAt },
+      work: { basisDocId: r.work.basisDocId, basisRuleCode: r.work.basisRuleCode, expiresAt: r.work.expiresAt },
+    },
     derivedLegalStatus: r.legacy.derivedLegalStatus, derivedPayrollClass: r.legacy.derivedPayrollClass,
     legacyMappingRequiresReview: r.legacy.legacyMappingRequiresReview, legacyMismatchKind: r.legacy.legacyMismatchKind,
     payrollHints: r.payrollHints as unknown as Record<string, unknown>,

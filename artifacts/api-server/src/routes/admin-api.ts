@@ -12,7 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
-  contractsTable, passportScanTokensTable,
+  contractsTable, passportScanTokensTable, workerLegalityTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
@@ -35,6 +35,8 @@ import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
 import { createAnketaToken, createOfficeScanToken, createSelfScanToken, passportScanLink } from "./passportScan";
+import { documentChanged, workerLegalityChanged, LEGALITY_PROFILE_FIELDS } from "../services/documentEvents";
+import { documentAuditDiff } from "../services/documentAudit";
 import { LEGAL_STATUSES, normalizeProfileLegal } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
@@ -298,9 +300,19 @@ router.get("/attention", async (_req, res) => {
   const { findDataDrift, driftTotal } = await import("../services/dataDrift");
   const dataDrift = driftTotal(await findDataDrift());
 
+  // легалізація (кеш worker_legality, лише активні): без підстави/даних, строки ≤14 днів, аплоуди з бота на перевірці
+  const [legalityIllegal, legalityExpiring, pendingDocUploads] = await Promise.all([
+    count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable).where(inArray(workerLegalityTable.overall, ["illegal", "unknown"]))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable)
+      .where(and(gte(workerLegalityTable.nextExpiryAt, today), lte(workerLegalityTable.nextExpiryAt, addDaysStr(today, 14))))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(workerDocumentsTable).innerJoin(workersTable, eq(workerDocumentsTable.workerId, workersTable.id))
+      .where(and(eq(workerDocumentsTable.status, "pending"), eq(workersTable.isActive, true)))),
+  ]);
+
   ok(res, {
     pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned,
     unmarkedAttendance, driverGaps, availabilityMissing, dataDrift,
+    legalityIllegal, legalityExpiring, pendingDocUploads,
   });
 });
 
@@ -322,11 +334,16 @@ router.get("/workers", RW, async (req, res) => {
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
       legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
+      // світлофори легалізації з кешу worker_legality (усім ролям — без деталей документів, D6)
+      lgOverall: workerLegalityTable.overall, lgStay: workerLegalityTable.stay, lgWork: workerLegalityTable.work,
+      lgNextExpiry: workerLegalityTable.nextExpiryAt, lgReview: workerLegalityTable.reviewRequired,
+      lgDerived: workerLegalityTable.derivedLegalStatus, lgMismatch: workerLegalityTable.legacyMismatchKind,
     })
     .from(workersTable)
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+    .leftJoin(workerLegalityTable, eq(workerLegalityTable.workerId, workersTable.id))
     .orderBy(workersTable.fullName))
-    .map(({ birthDate, ...r }) => {
+    .map(({ birthDate, lgOverall, lgStay, lgWork, lgNextExpiry, lgReview, lgDerived, lgMismatch, ...r }) => {
       // форма легалізації + похідні статуси для фільтрів/підсвітки списку —
       // доступні всім ролям (як і в профілі); сирі payroll-поля лишаються owner-only
       const legalStatus = normalizeProfileLegal(r.legalStatus) ?? r.legalStatus;
@@ -336,6 +353,7 @@ router.get("/workers", RW, async (req, res) => {
         legalStatus,
         student: s26.isStudent,
         stud26: s26.isStudent && s26.under26,
+        legality: lgOverall ? { overall: lgOverall, stay: lgStay, work: lgWork, nextExpiryAt: lgNextExpiry, reviewRequired: !!lgReview, derivedLegalStatus: lgDerived, legacyMismatchKind: lgMismatch } : null,
         companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
         positionName: r.positionId ? (posMap.get(r.positionId)?.name ?? null) : null,
         positionColor: r.positionId ? (posMap.get(r.positionId)?.color ?? null) : null,
@@ -552,6 +570,8 @@ router.patch("/workers/:id", RW, async (req, res) => {
     ? await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning()
     : await db.select().from(workersTable).where(eq(workersTable.id, id));
   if (before) await journalWorkerChanges(id, before as any, patch, (req as AuthedRequest).admin?.adminId ?? null);
+  // зміна полів, від яких залежить легальність (фірма/національність/дати/легасі-статус) → перерахунок кешу (best-effort)
+  if (LEGALITY_PROFILE_FIELDS.some(f => f in patch)) void workerLegalityChanged(id);
   // Mid-month factory change: offer a report for the OLD factory right away
   // (fire-and-forget; only sent if they actually worked there this month).
   if (before?.factoryId && patch.factoryId !== undefined && patch.factoryId !== before.factoryId && w?.telegramId) {
@@ -998,12 +1018,34 @@ router.post("/document-types", RW, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return fail(res, 400, "Вкажіть назву документа");
   const maxOrder = (await db.select().from(documentTypesTable)).reduce((m, d) => Math.max(m, d.sortOrder), 0);
+  const legal = docTypeLegalPatch(req.body);
+  if (typeof legal === "string") return fail(res, 400, legal);
   const [d] = await db.insert(documentTypesTable).values({
     name, required: req.body?.required !== false, hasExpiry: !!req.body?.hasExpiry, sortOrder: maxOrder + 1,
-    icon: req.body?.icon ? String(req.body.icon) : null,
+    icon: req.body?.icon ? String(req.body.icon) : null, ...legal,
   }).returning();
   ok(res, d);
 });
+// Поля легалізації типу документа (02.09.2026): категорія, «що дає», роботодавець, строки, національності.
+// `code` з API не правиться (стабільний ключ сіду/правил).
+const DOC_CATEGORIES = new Set(["identity", "stay", "work", "payroll", "medical", "other"]);
+const NAT_GROUPS = new Set(["ua", "eu", "non_eu", ...NATIONALITIES]);
+function docTypeLegalPatch(b: any): Record<string, unknown> | string {
+  const p: Record<string, unknown> = {};
+  if (b?.category !== undefined) { if (!DOC_CATEGORIES.has(String(b.category))) return "Невідома категорія документа"; p.category = String(b.category); }
+  for (const f of ["grantsStay", "grantsWork", "requiresEmployerMatch", "isActive"] as const) if (b?.[f] !== undefined) p[f] = !!b[f];
+  for (const f of ["defaultValidityDays", "renewalLeadDays"] as const) {
+    if (b?.[f] === undefined) continue;
+    if (b[f] === null || b[f] === "") { p[f] = null; continue; }
+    const n = Number(b[f]); if (!Number.isInteger(n) || n < 0) return `${f}: ціле число днів ≥ 0`; p[f] = n;
+  }
+  if (b?.appliesToNationalities !== undefined) {
+    if (b.appliesToNationalities === null || (Array.isArray(b.appliesToNationalities) && b.appliesToNationalities.length === 0)) p.appliesToNationalities = null;
+    else if (!Array.isArray(b.appliesToNationalities) || !b.appliesToNationalities.every((x: unknown) => NAT_GROUPS.has(String(x)))) return "Національності: список кодів каталогу або груп ua/eu/non_eu";
+    else p.appliesToNationalities = b.appliesToNationalities.map(String);
+  }
+  return p;
+}
 router.patch("/document-types/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const patch: any = {};
@@ -1012,11 +1054,20 @@ router.patch("/document-types/:id", RW, async (req, res) => {
   if (req.body?.hasExpiry !== undefined) patch.hasExpiry = !!req.body.hasExpiry;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
   if (req.body?.icon !== undefined) patch.icon = req.body.icon ? String(req.body.icon) : null;
+  const legal = docTypeLegalPatch(req.body);
+  if (typeof legal === "string") return fail(res, 400, legal);
+  Object.assign(patch, legal);
   const [d] = await db.update(documentTypesTable).set(patch).where(eq(documentTypesTable.id, id)).returning();
+  // прапорці «що дає»/строки впливають на світлофори всіх, хто має цей тип → перерахунок (best-effort)
+  if (["category", "grantsStay", "grantsWork", "requiresEmployerMatch", "renewalLeadDays", "appliesToNationalities", "hasExpiry"].some(k => k in patch)) {
+    import("../services/legalityRecompute").then(m => m.recomputeAllActiveLegality()).catch(err => logger.warn({ err: String(err) }, "recompute after doc-type change failed"));
+  }
   ok(res, d);
 });
 router.delete("/document-types/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
+  const [t] = await db.select({ isSystem: documentTypesTable.isSystem }).from(documentTypesTable).where(eq(documentTypesTable.id, id));
+  if (t?.isSystem) return fail(res, 400, "Системний тип (сід легалізації) не видаляється — вимкніть його (isActive)");
   const used = (await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable).where(eq(workerDocumentsTable.docTypeId, id))).length;
   if (used > 0) return fail(res, 400, `Документ використовується у ${used} працівників — спочатку приберіть`);
   await db.delete(documentTypesTable).where(eq(documentTypesTable.id, id));
@@ -1043,6 +1094,8 @@ router.post("/workers/:id/documents", RW, async (req, res) => {
     fileUrl: req.body?.fileUrl?.trim() || null,
     note: req.body?.note?.trim() || null,
   }).returning();
+  // журнал document_audit + перерахунок світлофорів легальності (services/documentEvents.ts)
+  await documentChanged({ id: d!.id, workerId }, "created", { adminId: actingAdminId(req) });
   ok(res, d);
 });
 router.patch("/worker-documents/:id", RW, async (req, res) => {
@@ -1051,14 +1104,17 @@ router.patch("/worker-documents/:id", RW, async (req, res) => {
   for (const k of ["title", "status", "number", "fileUrl", "note"]) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
   if (patch.title === null) return fail(res, 400, "Назва не може бути порожньою");
   if (req.body?.expiresAt !== undefined) patch.expiresAt = req.body.expiresAt || null;
+  const [before] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   const [d] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, id)).returning();
+  if (before && d) await documentChanged({ id, workerId: before.workerId }, "updated", { adminId: actingAdminId(req) }, documentAuditDiff(before, patch));
   ok(res, d);
 });
 router.delete("/worker-documents/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, workerId: workerDocumentsTable.workerId, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   await db.delete(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   deleteStoredFile(doc?.filePath);
+  if (doc) await documentChanged({ id, workerId: doc.workerId }, "deleted", { adminId: actingAdminId(req) }, [{ field: "title", from: doc.title, to: null }]);
   ok(res, { ok: true });
 });
 
@@ -1106,7 +1162,7 @@ router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (r
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
   const realMime = sniffDocMime(req.file.buffer);
   if (!realMime || !DOC_MIME_WHITELIST.has(realMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
-  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc) return fail(res, 404, "Документ не знайдено");
 
   const storedName = makeStoredName(req.file.originalname);
@@ -1122,6 +1178,7 @@ router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (r
     updatedAt: new Date(),
   }).where(eq(workerDocumentsTable.id, id)).returning();
   deleteStoredFile(doc.filePath); // remove the previous file, if any
+  await documentChanged({ id, workerId: doc.workerId }, "file", { adminId: actingAdminId(req) }, [{ field: "fileName", to: originalName }]);
   ok(res, d);
 });
 
