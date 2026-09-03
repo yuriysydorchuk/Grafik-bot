@@ -323,6 +323,12 @@ export default function WorkerDetail() {
       </Card>
 
       {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
+      {/* Легалізація і документи — на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
+      <div className="mb-5 space-y-5">
+        <WorkerLegalitySection workerId={w.id} />
+        <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
+      </div>
+
       <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
         <div className="min-w-0 space-y-5">
           {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
@@ -386,8 +392,6 @@ export default function WorkerDetail() {
 
         <div className="min-w-0 space-y-5">
           {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
-          <WorkerLegalitySection workerId={w.id} />
-          <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />
           <WorkerAbsences workerId={w.id} />
