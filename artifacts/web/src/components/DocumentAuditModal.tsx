@@ -15,7 +15,7 @@ const FIELD: Record<string, string> = {
 const ACTION: Record<string, string> = {
   created: "додано документ", updated: "змінено", file: "додано/замінено файл",
   verified: "підтверджено", rejected: "відхилено", case: "оновлено справу",
-  requested: "запрошено подати", deleted: "видалено",
+  requested: "запрошено подати", deleted: "видалено", sent: "надіслано працівнику",
 };
 
 export function DocumentAuditModal({ documentId, title, onClose }: { documentId: number; title: string; onClose: () => void }) {

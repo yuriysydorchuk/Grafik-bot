@@ -1215,7 +1215,9 @@ router.get("/worker-documents/:id/file", RW, async (req, res) => {
   // browser can't reinterpret the response as an executable type.
   res.setHeader("X-Content-Type-Options", "nosniff");
   const downloadName = encodeURIComponent(doc.fileName || `document-${id}`);
-  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${downloadName}`);
+  // ?download=1 — кнопка «Скачати» в профілі; без нього — перегляд у вкладці/модалці
+  const disposition = req.query.download === "1" ? "attachment" : "inline";
+  res.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${downloadName}`);
   fs.createReadStream(abs).pipe(res);
 });
 

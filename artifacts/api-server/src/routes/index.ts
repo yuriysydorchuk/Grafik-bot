@@ -26,6 +26,7 @@ import gratyfikantRouter from "./gratyfikant";
 import contractsRouter from "./contracts";
 import documentTemplatesRouter from "./documentTemplates";
 import legalizationRouter from "./legalization";
+import documentDeliveryRouter from "./documentDelivery";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
 
@@ -70,5 +71,6 @@ router.use(securityRouter);
 router.use(contractsRouter);
 router.use(documentTemplatesRouter);
 router.use(legalizationRouter);
+router.use(documentDeliveryRouter);
 
 export default router;

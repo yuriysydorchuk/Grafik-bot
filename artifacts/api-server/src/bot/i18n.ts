@@ -61,6 +61,7 @@ const D: Dict = {
 
   // ── документи й анкета (worker-docs-signing, §6 плану) ──
   "docs.title":        { uk: "📄 Твої документи:", en: "📄 Your documents:", es: "📄 Tus documentos:", ru: "📄 Твои документы:", pl: "📄 Twoje dokumenty:" },
+  "docs.fileFromOffice": { uk: "📎 Документ від офісу: {title}", en: "📎 Document from the office: {title}", es: "📎 Documento de la oficina: {title}", ru: "📎 Документ от офиса: {title}", pl: "📎 Dokument z biura: {title}" },
   "docs.status.present":  { uk: "✅ є", en: "✅ on file", es: "✅ presente", ru: "✅ есть", pl: "✅ jest" },
   "docs.status.missing":  { uk: "❌ відсутній", en: "❌ missing", es: "❌ falta", ru: "❌ отсутствует", pl: "❌ brak" },
   "docs.status.expired":  { uk: "⚠️ протермінований", en: "⚠️ expired", es: "⚠️ caducado", ru: "⚠️ просрочен", pl: "⚠️ przeterminowany" },

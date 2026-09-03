@@ -4,8 +4,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
-  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle
+  FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
+  Download, Printer, Mail,
 } from "lucide-react";
+import { SendFileModal, printFile } from "../components/SendFileModal";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { DocumentAuditModal } from "../components/DocumentAuditModal";
 import { can } from "../lib/roles";
@@ -796,7 +798,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
             {c.companySignedAt && <span>{t("Підписала компанія")}: {new Date(c.companySignedAt).toLocaleString("uk-UA")}</span>}
           </div>
         )}
-        {expanded === c.id && <ContractFilesList contractId={c.id} />}
+        {expanded === c.id && <ContractFilesList contractId={c.id} workerId={workerId} />}
       </div>
     );
   };
@@ -877,25 +879,37 @@ function EditContractDates({ contractId, onSaved }: { contractId: number; onSave
 // Клік по файлу розгортає PDF просто в рядку (canvas через pdf.js, як на
 // /sign/:token) — без нової вкладки/скачування, щоб офіс міг перевірити
 // зміст, не виходячи зі сторінки.
-function ContractFilesList({ contractId }: { contractId: number }) {
+// Праворуч у рядку файла — скачати / друк / надіслати працівнику (Telegram або
+// email; рішення власника 03.09.2026).
+function ContractFilesList({ contractId, workerId }: { contractId: number; workerId: number }) {
   const t = useT();
   const { data, isLoading } = useQuery<{ files: ContractFileRow[] }>({ queryKey: ["contract-detail", contractId], queryFn: () => get(`/contracts/${contractId}`) });
   const [openFile, setOpenFile] = useState<number | null>(null);
+  const [sendFor, setSendFor] = useState<ContractFileRow | null>(null);
   if (isLoading) return <div className="px-4 py-2"><Spinner /></div>;
   const files = data?.files ?? [];
   if (!files.length) return <div className="px-4 pb-2 text-xs text-slate-400">{t("Файлів ще немає.")}</div>;
+  const fileUrl = (f: ContractFileRow) => `/api/contracts/${contractId}/files/${f.id}`;
   return (
     <div className="space-y-1 bg-slate-50/60 px-4 py-2">
       {files.map(f => (
         <div key={f.id}>
-          <button type="button" onClick={() => setOpenFile(x => x === f.id ? null : f.id)}
-            className="flex w-full items-center gap-1.5 text-left text-xs text-red-600 hover:underline">
-            <Eye className="h-3 w-3" /> {f.title} {f.signedSha256 && <Badge color="green">{t("підписано")}</Badge>}
-            {openFile === f.id ? <ChevronUp className="h-3 w-3 text-slate-400" /> : <ChevronDown className="h-3 w-3 text-slate-400" />}
-          </button>
-          {openFile === f.id && <ContractPdfPreview url={`/api/contracts/${contractId}/files/${f.id}`} />}
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={() => setOpenFile(x => x === f.id ? null : f.id)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs text-red-600 hover:underline">
+              <Eye className="h-3 w-3 shrink-0" /> <span className="truncate">{f.title}</span> {f.signedSha256 && <Badge color="green">{t("підписано")}</Badge>}
+              {openFile === f.id ? <ChevronUp className="h-3 w-3 shrink-0 text-slate-400" /> : <ChevronDown className="h-3 w-3 shrink-0 text-slate-400" />}
+            </button>
+            <span className="flex shrink-0 items-center gap-0.5">
+              <a href={`${fileUrl(f)}?download=1`} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Скачати")}><Download className="h-3.5 w-3.5" /></a>
+              <button type="button" onClick={() => printFile(fileUrl(f), "application/pdf")} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Друк")}><Printer className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => setSendFor(f)} className="rounded p-1 text-slate-400 hover:bg-sky-50 hover:text-sky-600" title={t("Надіслати працівнику")}><Mail className="h-3.5 w-3.5" /></button>
+            </span>
+          </div>
+          {openFile === f.id && <ContractPdfPreview url={fileUrl(f)} />}
         </div>
       ))}
+      {sendFor && <SendFileModal workerId={workerId} title={sendFor.title} endpoint={`/contracts/${contractId}/files/${sendFor.id}/send`} onClose={() => setSendFor(null)} />}
     </div>
   );
 }
@@ -1359,12 +1373,13 @@ function SlotSendButton({ candidates, onPick, title }: { candidates: DocumentTyp
 
 // Один рядок документа: слот каталогу (кілька можливих типів) або вже наявний
 // документ поза слотами — один макет на все.
-function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview }: {
+function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend }: {
   icon: any; label: string; subLabel?: string | null; state: DocRowState; canLegal: boolean; companies: Company[];
   requestCandidates?: DocumentType[]; requestTitle?: string;
   onAdd?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
   onHistory?: (doc: WorkerDocument) => void; onDelete?: (doc: WorkerDocument) => void;
   onVerify?: (doc: WorkerDocument) => void; onReject?: (doc: WorkerDocument) => void; onPreview?: (doc: WorkerDocument) => void;
+  onSend?: (doc: WorkerDocument) => void;
 }) {
   const t = useT();
   if (state.kind === "notneeded") {
@@ -1424,7 +1439,6 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
         {doc.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
         {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
         {doc.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
-        {hasFile && <a href={`/api/worker-documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-slate-400 hover:text-red-600 hover:underline" title={doc.fileName ?? undefined}>{t("файл")} <ExternalLink className="h-3 w-3" /></a>}
         {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
         {doc.note && <span className="truncate text-xs text-slate-400" title={doc.note}>📝 {doc.note}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-2">
@@ -1434,6 +1448,13 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
               <>
                 <button onClick={() => onVerify(doc)} className="rounded p-1 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Підтвердити")}><ShieldCheck className="h-3.5 w-3.5" /></button>
                 <button onClick={() => onReject(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
+              </>
+            )}
+            {hasFile && (
+              <>
+                <a href={`/api/worker-documents/${doc.id}/file?download=1`} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Скачати")}><Download className="h-3.5 w-3.5" /></a>
+                <button onClick={() => printFile(`/api/worker-documents/${doc.id}/file`, doc.fileMime)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Друк")}><Printer className="h-3.5 w-3.5" /></button>
+                {onSend && <button onClick={() => onSend(doc)} className="rounded p-1 text-slate-400 hover:bg-sky-50 hover:text-sky-600" title={t("Надіслати працівнику")}><Mail className="h-3.5 w-3.5" /></button>}
               </>
             )}
             {onEdit && <button onClick={() => onEdit(doc)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-3.5 w-3.5" /></button>}
@@ -1450,12 +1471,13 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
 
 // Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
-function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview }: {
+function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
   onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
   onRequest: (docTypeId: number) => void; onHistory: (doc: WorkerDocument) => void; onDelete: (doc: WorkerDocument) => void;
   onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
+  onSend: (doc: WorkerDocument) => void;
 }) {
   const t = useT();
   const items = docs
@@ -1478,7 +1500,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
       <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
         onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
-        onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
     );
   };
 
@@ -1502,7 +1524,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
       <DocRow key={key} icon={icon} label={label} subLabel={subLabel} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={candidates} requestTitle={requestTitle}
         onAdd={state.kind !== "notneeded" ? onAdd : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
-        onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
     );
   };
 
@@ -1528,7 +1550,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
         return (
           <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={otherDocState(doc, type, globals)}
             canLegal={canLegal} companies={companies}
-            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} />
+            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
         );
       })}
       <button type="button" onClick={() => onOpenEmpty(null)} className="w-full px-4 py-1.5 text-left text-xs text-slate-400 hover:text-slate-600">
@@ -1561,6 +1583,7 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
+  const [sendFor, setSendFor] = useState<WorkerDocument | null>(null);
   // «Легалізація» на профілі рахує на льоту з кешу — будь-яка зміна документа
   // (нова, дата, статус, верифікація, відхилення) мусить скинути й цей кеш.
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
@@ -1625,9 +1648,11 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
             onDelete={async doc => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }}
             onVerify={doc => verify.mutate(doc.id)}
             onReject={doc => setRejecting(doc)}
-            onPreview={doc => setPreview(doc)} />
+            onPreview={doc => setPreview(doc)}
+            onSend={doc => setSendFor(doc)} />
         )}
       </Section>
+      {sendFor && <SendFileModal workerId={workerId} title={sendFor.title} endpoint={`/worker-documents/${sendFor.id}/send`} onClose={() => setSendFor(null)} />}
       {docModal && (
         <DocModal workerId={workerId}
           doc={docModal.mode === "edit" ? docModal.doc : null}

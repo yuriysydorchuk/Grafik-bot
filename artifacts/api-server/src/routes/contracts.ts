@@ -429,7 +429,8 @@ router.get("/contracts/:id/files/:fileId", WD, async (req, res) => {
   if (!fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено на диску");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="${file.title.replace(/[^\w.\- ]/g, "_")}.pdf"`);
+  const disposition = req.query.download === "1" ? "attachment" : "inline"; // ?download=1 — «Скачати» в профілі
+  res.setHeader("Content-Disposition", `${disposition}; filename="${file.title.replace(/[^\w.\- ]/g, "_")}.pdf"`);
   fs.createReadStream(abs).pipe(res);
 });
 

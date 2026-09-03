@@ -6,7 +6,7 @@ import { db, documentAuditTable, adminsTable } from "@workspace/db";
 import { desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
-export type DocumentAuditAction = "created" | "updated" | "file" | "verified" | "rejected" | "case" | "requested" | "deleted";
+export type DocumentAuditAction = "created" | "updated" | "file" | "verified" | "rejected" | "case" | "requested" | "deleted" | "sent";
 export type DocumentAuditSource = "office" | "worker_bot" | "ocr" | "system";
 export interface DocumentAuditChange { field: string; from?: unknown; to?: unknown }
 
