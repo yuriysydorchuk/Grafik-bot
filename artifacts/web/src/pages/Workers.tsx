@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, del, type Worker, type Factory, type Company, type Position } from "../lib/api";
+import { get, post, del, type Worker, type Factory, type Company, type Position, type WorkerContractsBrief } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Empty, Modal } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
 import { PageHeader } from "../components/Layout";
@@ -35,6 +35,8 @@ export default function Workers() {
   // Легалізація за документами (движок worker_legality) — окремо від старого
   // поля «Форма легалізації» (legFilter вище, не чіпати).
   const [docLegFilter, setDocLegFilter] = useState("");
+  // Умова (контракти з модуля підпису): signed/pending/none/expired — по w.contracts.umowa.
+  const [umowaFilter, setUmowaFilter] = useState("");
   const [expiringOnly, setExpiringOnly] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [edit, setEdit] = useState<Worker | null>(null);
@@ -100,9 +102,17 @@ export default function Workers() {
     (!natFilter || (natFilter === "none" ? !w.nationality : w.nationality === natFilter)) &&
     (!stud26Only || !!w.stud26) &&
     (!docLegFilter || (docLegFilter === "none" ? !w.legality : w.legality?.overall === docLegFilter)) &&
+    (!umowaFilter || (() => {
+      const um = w.contracts?.umowa ?? null;
+      if (umowaFilter === "none") return !um;
+      if (umowaFilter === "expired") return !!um?.expired;
+      if (umowaFilter === "signed") return um?.status === "signed" && !um.expired;
+      if (umowaFilter === "pending") return !!um && !um.expired && um.status !== "signed";
+      return true;
+    })()) &&
     (!expiringOnly || (() => { const d = daysUntil(w.legality?.nextExpiryAt); return d != null && d <= 30; })()) &&
     (!q || w.fullName.toLowerCase().includes(q.toLowerCase()) || (w.workerCode ?? "").includes(q))
-  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, expiringOnly, showInactive]);
+  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, showInactive]);
 
   if (isLoading) return <Spinner />;
 
@@ -137,7 +147,7 @@ export default function Workers() {
           {positions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </Select>
         <Select value={legFilter} onChange={e => setLegFilter(e.target.value)} className="w-48">
-          <option value="">{t("Легалізація: всі")}</option>
+          <option value="">{t("Форма (сводна): всі")}</option>
           <option value="problem">{t("⚠️ Проблемні (без форми / не зголошені)")}</option>
           <option value="none">{t("Без форми")}</option>
           {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
@@ -151,13 +161,20 @@ export default function Workers() {
           <input type="checkbox" checked={stud26Only} onChange={e => setStud26Only(e.target.checked)} /> {t("Студ. до 26")}
         </label>
         <Select value={docLegFilter} onChange={e => setDocLegFilter(e.target.value)} className="w-52">
-          <option value="">{t("Легалізація (док.): всі")}</option>
+          <option value="">{t("Легалізація: всі")}</option>
           <option value="none">{t("Ще не рахувалось")}</option>
           {LEGALITY_STATUSES.map(s => <option key={s} value={s}>{t(LEGALITY_LABEL[s])}</option>)}
         </Select>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={expiringOnly} onChange={e => setExpiringOnly(e.target.checked)} /> {t("Строк ≤ 30 днів")}
         </label>
+        <Select value={umowaFilter} onChange={e => setUmowaFilter(e.target.value)} className="w-44">
+          <option value="">{t("Умова: всі")}</option>
+          <option value="signed">{t("є підписана")}</option>
+          <option value="pending">{t("на підписі")}</option>
+          <option value="none">{t("без umowy")}</option>
+          <option value="expired">{t("прострочена")}</option>
+        </Select>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> {t("Звільнені")}
         </label>
@@ -177,7 +194,7 @@ export default function Workers() {
         {filtered.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : (
           <table className="w-full min-w-150 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Легалізація (док.)")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
+              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filtered.map(w => (
@@ -189,8 +206,7 @@ export default function Workers() {
                   </td>
                   <td className="px-4 py-2.5 font-mono text-slate-500">{w.workerCode ?? "—"}</td>
                   <td className="px-4 py-2.5">{w.positionName ? <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span> : <span className="text-slate-300">—</span>}</td>
-                  <td className="px-4 py-2.5"><LegalCell w={w} /></td>
-                  <td className="px-4 py-2.5"><DocLegalityCell w={w} /></td>
+                  <td className="px-4 py-2.5"><LegalizationCell w={w} /></td>
                   <td className="px-4 py-2.5">{w.companyName ? <Badge color="blue">{w.companyName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.factoryName ? <Badge color="red">{w.factoryName}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5">{w.telegramId ? <Badge color="green">✓</Badge> : <Badge color="amber">{t("не приєднаний")}</Badge>}</td>
@@ -228,39 +244,59 @@ const rowTint = (w: Worker) =>
   : !w.legalStatus ? (w.student ? "bg-yellow-50/60 hover:bg-yellow-50" : "bg-amber-50/60 hover:bg-amber-50")
   : "hover:bg-slate-50";
 
-// Бейдж форми легалізації: канонічні статуси — компактні бейджі сводної
-// (zus там свідомо без бейджа — у списку показуємо нейтральний «ZUS», щоб
-// стандартний випадок не виглядав як «без форми»)
-function LegalCell({ w }: { w: Worker }) {
-  const t = useT();
-  const s = w.legalStatus as LegalStatus | null | undefined;
-  if (s && (LEGAL_STATUSES as readonly string[]).includes(s)) {
-    const b = LEGAL_BADGE[s as LegalStatus];
-    return <span title={t(LEGAL_LABEL[s as LegalStatus])} className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-semibold ${b ? b.cls : "bg-slate-100 text-slate-600"}`}>{b ? b.short : "ZUS"}</span>;
-  }
-  if (s) return <span className="text-xs text-slate-500">{s}</span>; // legacy-статус поза каталогом — показуємо як є
-  return w.student
-    ? <span title={t("Студент — форма легалізації не заповнена")} className="inline-block rounded bg-yellow-100 px-1.5 py-0.5 text-[11px] font-semibold text-yellow-700">{t("без форми")}</span>
-    : <span title={t("Не оформлений — без форми легалізації")} className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700">{t("без форми")}</span>;
-}
-
-// Легалізація за документами (движок worker_legality, фаза 2) — окрема
-// колонка поряд зі старою LegalCell (стару НЕ чіпаємо). Світлофор overall +
-// найближчий термін + мітка «потребує перевірки».
-function DocLegalityCell({ w }: { w: Worker }) {
+// Одна колонка «Легалізація» (відгук власника 03.09.2026: «легалізація док і
+// легалізація — одне й те саме, лиши одну колонку») — три рядки зверху вниз:
+// 1) світлофор за документами (движок worker_legality) — головний індикатор;
+// 2) дрібний бейдж старої форми (legalStatus) — досі рахує сводні, не чіпати;
+// 3) дрібні чипи умов (umowa/комплект) з модуля підпису.
+function LegalizationCell({ w }: { w: Worker }) {
   const t = useT();
   const leg = w.legality;
-  if (!leg) return <span className="text-slate-300">—</span>;
-  const dLeft = daysUntil(leg.nextExpiryAt);
+  const dLeft = daysUntil(leg?.nextExpiryAt);
   const expiryCls = dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-400";
+  const s = w.legalStatus as LegalStatus | null | undefined;
+  const known = !!s && (LEGAL_STATUSES as readonly string[]).includes(s);
+  const badge = known ? LEGAL_BADGE[s as LegalStatus] : null;
+  const um = w.contracts?.umowa ?? null;
+  const pkg = w.contracts?.package ?? null;
   return (
-    <div className="flex items-center gap-1.5 whitespace-nowrap">
-      <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[leg.overall]}`} title={t(LEGALITY_LABEL[leg.overall])} />
-      <span className="text-xs text-slate-600">{t(LEGALITY_LABEL[leg.overall])}</span>
-      {leg.nextExpiryAt && <span className={`text-xs ${expiryCls}`}>{t("{n} дн.", { n: dLeft ?? "—" })}</span>}
-      {leg.reviewRequired && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{t("перевірка")}</span>}
+    <div className="space-y-0.5 py-0.5">
+      {leg ? (
+        <div className="flex items-center gap-1.5 whitespace-nowrap">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[leg.overall]}`} title={t(LEGALITY_LABEL[leg.overall])} />
+          <span className="text-xs text-slate-600">{t(LEGALITY_LABEL[leg.overall])}</span>
+          {leg.nextExpiryAt && <span className={`text-xs ${expiryCls}`}>· {t("{n} дн.", { n: dLeft ?? "—" })}</span>}
+          {leg.reviewRequired && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{t("перевірка")}</span>}
+        </div>
+      ) : <span className="text-xs text-slate-300">—</span>}
+      {s && (
+        <div className="text-[11px]" title={t("Форма для сводної (вручну)")}>
+          {known
+            ? <span className={`inline-block rounded px-1 font-semibold ${badge ? badge.cls : "bg-slate-100 text-slate-600"}`}>{badge ? badge.short : "ZUS"}</span>
+            : <span className="text-slate-500">{s}</span>}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-1 text-[11px]" title={um?.factoryName ?? undefined}>
+        {umowaChip(t, um)}
+        {packageChip(t, pkg)}
+      </div>
     </div>
   );
+}
+
+const fmtContractDate = (d: string | null) => d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "";
+
+function umowaChip(t: ReturnType<typeof useT>, um: WorkerContractsBrief["umowa"]) {
+  if (!um) return <span className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-500">{t("без umowy")}</span>;
+  if (um.expired) return <span className="rounded bg-rose-100 px-1.5 py-0.5 font-medium text-rose-700">{t("umowa прострочена {date}", { date: fmtContractDate(um.dateTo) })}</span>;
+  if (um.status === "signed") return <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-700">{t("umowa ✓ до {date}", { date: fmtContractDate(um.dateTo) })}</span>;
+  return <span className="rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-700">{t("umowa на підписі")}</span>;
+}
+
+function packageChip(t: ReturnType<typeof useT>, pkg: WorkerContractsBrief["package"]) {
+  if (!pkg) return <span className="rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-500">{t("без комплекту")}</span>;
+  if (pkg.status === "signed") return <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-700">{t("комплект ✓")}</span>;
+  return <span className="rounded bg-blue-100 px-1.5 py-0.5 font-medium text-blue-700">{t("комплект на підписі")}</span>;
 }
 
 // Лінк на скан+анкету для НОВОГО кандидата (POST /workers/scan-invite) —

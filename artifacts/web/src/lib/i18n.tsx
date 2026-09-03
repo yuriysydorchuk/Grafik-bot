@@ -3105,6 +3105,25 @@ const EN: Record<string, string> = {
   "запрошено {date}": "requested {date}",
   "+ інший документ": "+ other document",
 
+  // ── legalization: merged column / study mode ──
+  "Форма (сводна): всі": "Form (payroll): all",
+  "Умова: всі": "Contract: all",
+  "є підписана": "signed",
+  "на підписі": "pending signature",
+  "без umowy": "no umowa",
+  "Форма для сводної (вручну)": "Form for payroll (manual)",
+  "umowa ✓ до {date}": "umowa ✓ until {date}",
+  "umowa на підписі": "umowa pending signature",
+  "umowa прострочена {date}": "umowa overdue since {date}",
+  "без комплекту": "no packet",
+  "комплект ✓": "packet ✓",
+  "комплект на підписі": "packet pending signature",
+  "Тип навчання": "Study mode",
+  "Стаціонар (університет) — дає право на працю без zezwolenia": "Full-time (university) — grants the right to work without zezwolenie",
+  "Заочно/вечірньо (університет) — лише ставка студента": "Part-time/evening (university) — student rate only",
+  "Школа / policealna — лише ставка студента": "School / policealna — student rate only",
+  "Право на працю без zezwolenia дає лише стаціонар університету; інші форми — студентська ставка (до 26 років) за прапорцем у профілі": "Only full-time university study grants the right to work without a zezwolenie; other forms — student rate (under 26) via the profile flag",
+
   // @i18n-append (new page translations get inserted above this line)
 };
 

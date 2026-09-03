@@ -1805,6 +1805,9 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   const [decisionAt, setDecisionAt] = useState(doc?.decisionAt ?? "");
   const [replacesDocumentId] = useState(doc?.replacesDocumentId != null ? String(doc.replacesDocumentId) : "");
   const [laborMarketAccess, setLaborMarketAccess] = useState<boolean>(!!(doc?.attrs?.laborMarketAccess));
+  // Тип навчання (student_cert, attrs.studyMode) — select-поле, читається/пишеться
+  // через getStr/setStr нижче, як звичайне текстове поле (щоб потрапляти в required-перевірку).
+  const [studyMode, setStudyMode] = useState<string>((doc?.attrs?.studyMode as string | undefined) ?? "");
   const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
   const fields = fieldsFor(selectedType);
@@ -1846,6 +1849,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "submittedAt": return submittedAt ?? "";
       case "decisionAt": return decisionAt ?? "";
       case "employerCompanyId": return employerCompanyId;
+      case "studyMode": return studyMode;
       default: return "";
     }
   };
@@ -1858,6 +1862,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "submittedAt": setSubmittedAt(v); break;
       case "decisionAt": setDecisionAt(v); break;
       case "employerCompanyId": setEmployerCompanyId(v); break;
+      case "studyMode": setStudyMode(v); break;
       case "expiresAt": setExpiresAt(v); break;
       case "validFrom": {
         setValidFrom(v);
@@ -1887,6 +1892,17 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
           <input type="checkbox" checked={laborMarketAccess} disabled={fieldDisabled(f)} onChange={e => setLaborMarketAccess(e.target.checked)} />
           {t(f.label)}
         </label>
+      );
+    }
+    if (f.kind === "select") {
+      return (
+        <div key={f.key}><Label>{t(f.label)}{req}</Label>
+          <Select value={getStr(f.key)} disabled={fieldDisabled(f)} onChange={e => setStr(f.key, e.target.value)}>
+            <option value="">—</option>
+            {f.options?.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+          </Select>
+          {f.hint && <p className="mt-0.5 text-[11px] text-slate-400">{t(f.hint)}</p>}
+        </div>
       );
     }
     if (f.kind === "company") {
@@ -1934,6 +1950,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
     caseStatus: caseStatus || null,
     replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
     ...(fields.some(f => f.key === "laborMarketAccess") ? { attrs: { laborMarketAccess } } : {}),
+    ...(fields.some(f => f.key === "studyMode") ? { attrs: { studyMode: studyMode || null } } : {}),
   });
   const save = useMutation({
     mutationFn: async () => {

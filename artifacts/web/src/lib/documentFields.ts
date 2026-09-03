@@ -7,14 +7,17 @@ import type { DocumentType } from "./api";
 export type DocFieldKey =
   | "number" | "validFrom" | "expiresAt" | "issuedAt" | "issuer"
   | "employerCompanyId" | "caseStatus" | "submittedAt" | "caseNumber" | "decisionAt"
-  | "laborMarketAccess";
+  | "laborMarketAccess" | "studyMode";
+
+export interface DocFieldOption { value: string; label: string }
 
 export interface DocField {
   key: DocFieldKey;
   label: string;
   required?: boolean;
-  kind: "text" | "date" | "company" | "caseStatus" | "boolean";
+  kind: "text" | "date" | "company" | "caseStatus" | "boolean" | "select";
   hint?: string;
+  options?: DocFieldOption[]; // лише для kind: "select"
   // "ukrEnd" — значення читається з LegalizationGlobals.ukrStatusEnd, поле read-only й НЕ шлеться на сервер;
   // "plus730" — якщо порожнє, підставляється validFrom + 730 днів при зміні validFrom (oświadczenie).
   auto?: "ukrEnd" | "plus730";
@@ -90,6 +93,18 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
     F("expiresAt", "Праця до", "date"),
   ],
   student_cert: [
+    // Тип навчання — зберігається в attrs.studyMode (як laborMarketAccess у TRC):
+    // лише стаціонар університету дає право на працю без zezwolenia, решта форм —
+    // студентська ставка за прапорцем у профілі (відгук власника 03.09.2026).
+    F("studyMode", "Тип навчання", "select", {
+      required: true,
+      options: [
+        { value: "stationary", label: "Стаціонар (університет) — дає право на працю без zezwolenia" },
+        { value: "part_time", label: "Заочно/вечірньо (університет) — лише ставка студента" },
+        { value: "school", label: "Школа / policealna — лише ставка студента" },
+      ],
+      hint: "Право на працю без zezwolenia дає лише стаціонар університету; інші форми — студентська ставка (до 26 років) за прапорцем у профілі",
+    }),
     F("issuer", "Навчальний заклад", "text", { required: true }),
     F("validFrom", "З", "date", { required: true }),
     F("expiresAt", "До", "date", { required: true }),
