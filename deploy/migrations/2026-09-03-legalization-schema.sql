@@ -48,6 +48,8 @@ ALTER TABLE worker_documents ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAU
 ALTER TABLE worker_documents ADD COLUMN IF NOT EXISTS replaces_document_id integer REFERENCES worker_documents(id);
 ALTER TABLE worker_documents ADD COLUMN IF NOT EXISTS requested_at timestamp;
 ALTER TABLE worker_documents ADD COLUMN IF NOT EXISTS requested_by integer REFERENCES admins(id);
+ALTER TABLE worker_documents ADD COLUMN IF NOT EXISTS attrs jsonb; -- типоспецифічні атрибути (TRC: laborMarketAccess)
+ALTER TABLE factories ADD COLUMN IF NOT EXISTS requires_sanepid boolean NOT NULL DEFAULT false; -- плитка Sanepid у документах працівника
 CREATE INDEX IF NOT EXISTS worker_documents_worker_type_idx ON worker_documents(worker_id, doc_type_id);
 CREATE INDEX IF NOT EXISTS worker_documents_expires_present_idx ON worker_documents(expires_at) WHERE status = 'present';
 CREATE INDEX IF NOT EXISTS worker_documents_pending_idx ON worker_documents(status) WHERE status = 'pending';

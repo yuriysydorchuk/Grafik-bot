@@ -60,6 +60,17 @@ test("recompute: UA + status_ukr + powiadomienie на нашу фірму → к
   assert.equal(row2?.work, "illegal"); assert.notEqual(row2?.inputHash, row1?.inputHash);
 });
 
+test("TRC «z dostępem do rynku pracy» (attrs.laborMarketAccess) дає й працю; без атрибута — лише перебування", opts, async () => {
+  const [w] = await db.insert(workersTable).values({ fullName: "Trc Georgia", nationality: "georgia", isActive: true }).returning();
+  const [trc] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: await typeId("trc"), title: "TRC", status: "present", expiresAt: "2027-06-01" }).returning();
+  const plain = await recomputeWorkerLegality(w!.id, "2026-09-03");
+  assert.equal(plain?.stay.status, "legal"); assert.equal(plain?.work.status, "unknown");
+  await db.update(workerDocumentsTable).set({ attrs: { laborMarketAccess: true } }).where(eq(workerDocumentsTable.id, trc!.id));
+  const access = await recomputeWorkerLegality(w!.id, "2026-09-03");
+  assert.equal(access?.work.status, "legal"); assert.equal(access?.work.basisDocId, trc!.id);
+  assert.equal(access?.legacy.derivedLegalStatus, "karta_pobytu");
+});
+
 test("recomputeAllActive: рахує активних, прибирає кеш звільнених, не чіпає workers.legal_status", opts, async () => {
   const [a, b] = await db.insert(workersTable).values([
     { fullName: "Active PL", nationality: "poland", isActive: true, legalStatus: "zus" },

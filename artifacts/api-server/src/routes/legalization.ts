@@ -57,6 +57,17 @@ router.post("/workers/:id/legality/recompute", LG, async (req, res) => {
   ok(res, row);
 });
 
+// Глобальні параметри для UI (будь-яка роль): дата кінця UKR (ефективний строк status_ukr у списку документів),
+// дефолтний lead — без розкриття решти правил.
+router.get("/legalization/globals", async (_req, res) => {
+  const rows = await db.select().from(legalRulesTable).where(and(eq(legalRulesTable.isActive, true), inArray(legalRulesTable.code, ["global.ukr_status_end", "defaults.lead_days"])));
+  const today = warsawToday();
+  const live = rows.filter(r => r.effectiveFrom <= today && (!r.effectiveTo || r.effectiveTo > today));
+  const ukr = live.find(r => r.code === "global.ukr_status_end");
+  const lead = live.find(r => r.code === "defaults.lead_days");
+  ok(res, { today, ukrStatusEnd: (ukr?.conditions as any)?.date ?? null, defaultLeadDays: (lead?.conditions as any)?.defaultLeadDays ?? 30 });
+});
+
 // ── Дашборд ──
 async function dashboardRows() {
   const rows = await db.select({
@@ -221,6 +232,21 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
   if (b.caseStatus !== undefined) {
     if (b.caseStatus !== null && b.caseStatus !== "" && !CASE_STATUSES.has(b.caseStatus)) return fail(res, 400, "Невідомий статус справи");
     patch.caseStatus = b.caseStatus || null;
+  }
+  // типоспецифічні атрибути — білий список ключів (web/src/lib/documentFields.ts)
+  if (b.attrs !== undefined) {
+    if (b.attrs === null) patch.attrs = null;
+    else if (typeof b.attrs !== "object" || Array.isArray(b.attrs)) return fail(res, 400, "attrs: обʼєкт");
+    else {
+      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean" };
+      const clean: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(b.attrs)) {
+        if (!(k in ALLOWED)) return fail(res, 400, `attrs.${k}: невідомий атрибут`);
+        if (v !== null && typeof v !== ALLOWED[k]) return fail(res, 400, `attrs.${k}: очікується ${ALLOWED[k]}`);
+        if (v !== null) clean[k] = v;
+      }
+      patch.attrs = Object.keys(clean).length ? clean : null;
+    }
   }
   if (b.replacesDocumentId !== undefined) {
     if (b.replacesDocumentId === null || b.replacesDocumentId === "") patch.replacesDocumentId = null;

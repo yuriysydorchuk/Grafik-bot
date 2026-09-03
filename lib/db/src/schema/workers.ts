@@ -345,6 +345,7 @@ export const factoriesTable = pgTable("factories", {
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
   multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (Sushi&Food: ES + ESO) — сводна пише фірму працівника в svodni_rows.firm (групи в одній вкладці)
+  requiresSanepid: boolean("requires_sanepid").notNull().default(false), // фабрика вимагає książeczkę sanepidowską → плитка «Sanepid» у документах працівника (легалізація, 03.09.2026)
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
   nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)
@@ -678,6 +679,9 @@ export const workerDocumentsTable = pgTable("worker_documents", {
   replacesDocumentId: integer("replaces_document_id").references((): AnyPgColumn => workerDocumentsTable.id), // ланцюг поновлень (у межах одного роботодавця)
   requestedAt: timestamp("requested_at"), // офіс попросив працівника подати цей документ (гейт кнопки в боті)
   requestedBy: integer("requested_by").references(() => adminsTable.id),
+  // Типоспецифічні атрибути (web/src/lib/documentFields.ts): напр. TRC {laborMarketAccess:true} =
+  // карта «z dostępem do rynku pracy» → дає і працю (движок: grantsWork override у legalityRecompute)
+  attrs: jsonb("attrs").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

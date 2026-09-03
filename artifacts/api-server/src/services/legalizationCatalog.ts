@@ -34,8 +34,7 @@ export const DOCUMENT_TYPE_SEED: DocTypeSeed[] = [
   T("powiadomienie_ua", "Powiadomienie o powierzeniu pracy obywatelowi UA", "work", 220, "notification", { grantsWork: true, requiresEmployerMatch: true, appliesToNationalities: ["ua"] }),
   T("student_cert", "Zaświadczenie studenta (studia stacjonarne)", "work", 230, "student", { hasExpiry: true, grantsWork: true, renewalLeadDays: 30 }),
   T("diploma", "Dyplom ukończenia studiów stacjonarnych w PL", "work", 240, "student", { grantsWork: true }),
-  T("umowa_zlecenie", "Umowa zlecenie", "payroll", 300, "contract", { hasExpiry: true, renewalLeadDays: 30 }),
-  T("oswiadczenie_podatkowe", "Oświadczenie do celów podatkowych (PIT-2 / do 26)", "payroll", 310, "contract"),
+  // umowa zlecenie / PIT-2 / wnioski — НЕ в каталозі: живуть у модулі підпису (contracts/document_templates), рішення 03.09.2026
   T("medical_exam", "Badania lekarskie", "medical", 400, "medical", { hasExpiry: true, renewalLeadDays: 30 }),
   T("sanepid", "Książeczka sanepidowska", "medical", 410, "medical", { hasExpiry: true, renewalLeadDays: 30 }),
   T("bhp", "Szkolenie BHP", "medical", 420, "medical"),

@@ -36,9 +36,7 @@ INSERT INTO document_types (code, name, required, has_expiry, sort_order, icon, 
   ('powiadomienie_ua',      'Powiadomienie o powierzeniu pracy obywatelowi UA',    false, false, 220, 'notification',   'work',     false, true,  true,  null, null,'["ua"]'::jsonb,                        true),
   ('student_cert',          'Zaświadczenie studenta (studia stacjonarne)',         false, true,  230, 'student',        'work',     false, true,  false, null, 30,  null,                                   true),
   ('diploma',               'Dyplom ukończenia studiów stacjonarnych w PL',        false, false, 240, 'student',        'work',     false, true,  false, null, null, null,                                  true),
-  -- payroll
-  ('umowa_zlecenie',        'Umowa zlecenie',                                      false, true,  300, 'contract',       'payroll',  false, false, false, null, 30,  null,                                   true),
-  ('oswiadczenie_podatkowe','Oświadczenie do celów podatkowych (PIT-2 / do 26)',   false, false, 310, 'contract',       'payroll',  false, false, false, null, null, null,                                  true),
+  -- (umowa zlecenie / PIT-2 / wnioski — НЕ тут: живуть у модулі підпису contracts/document_templates; рішення 03.09.2026)
   -- medical
   ('medical_exam',          'Badania lekarskie',                                   false, true,  400, 'medical',        'medical',  false, false, false, null, 30,  null,                                   true),
   ('sanepid',               'Książeczka sanepidowska',                             false, true,  410, 'medical',        'medical',  false, false, false, null, 30,  null,                                   true),
@@ -46,6 +44,9 @@ INSERT INTO document_types (code, name, required, has_expiry, sort_order, icon, 
   -- other
   ('other',                 'Inny dokument',                                       false, false, 900, null,             'other',    false, false, false, null, null, null,                                  true)
 ON CONFLICT (code) DO NOTHING;
+-- прибрати сід-типи умов/PIT з ранніх накатів (їх веде модуль підпису); лише якщо документів на них нема
+DELETE FROM document_types t WHERE t.code IN ('umowa_zlecenie', 'oswiadczenie_podatkowe')
+  AND NOT EXISTS (SELECT 1 FROM worker_documents d WHERE d.doc_type_id = t.id);
 
 -- 3) Правила легальності. Джерела перевірені 02.09.2026 (див. звіт фази 0 §1.4);
 --    verified_at стоїть лише там, де є публічне джерело або рішення власника.

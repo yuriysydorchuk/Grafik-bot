@@ -1860,6 +1860,7 @@ router.post("/factories", RW, async (req, res) => {
   if (usesScheduling !== undefined) values.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
+  if (req.body?.requiresSanepid !== undefined) values.requiresSanepid = !!req.body.requiresSanepid;
   if (req.body?.city !== undefined) values.city = canonCity(req.body.city); // не String(null)="null"
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
@@ -1934,6 +1935,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (usesScheduling !== undefined) patch.usesScheduling = !!usesScheduling;
   if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) patch.showCode = !!showCode;
+  if (req.body?.requiresSanepid !== undefined) patch.requiresSanepid = !!req.body.requiresSanepid;
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
   const [f] = Object.keys(patch).length

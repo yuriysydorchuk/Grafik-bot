@@ -93,7 +93,9 @@ export interface WorkerDocument {
   verifiedBy: number | null; verifiedAt: string | null; reviewNote: string | null;
   source: "office" | "worker_bot" | "ocr" | "import"; replacesDocumentId: number | null;
   requestedAt: string | null; requestedBy: number | null;
+  attrs: Record<string, unknown> | null; // типоспецифічні атрибути (lib/documentFields.ts): TRC {laborMarketAccess}
 }
+export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number }
 // Результат движка легальності (кеш worker_legality; GET /workers/:id/legality — будь-яка роль)
 export type LegalityStatus = "legal" | "pending" | "expiring" | "illegal" | "unknown";
 export interface LegalityReason { code: string; axis: "stay" | "work" | "overall"; severity: "info" | "warn" | "block"; params?: Record<string, unknown> }
@@ -165,6 +167,7 @@ export interface Factory {
   shiftCount: number; usesAvailability: boolean;
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;
   usesTransport: boolean; usesScheduling: boolean; showWorkerHours: boolean; showCode: boolean;
+  requiresSanepid?: boolean; // фабрика вимагає książeczkę sanepidowską → плитка Sanepid у документах працівника
   positions: FactoryPositionConf[];
   shifts: { start: string; end: string }[];
   stops?: { name: string; time: string }[];
