@@ -5,9 +5,10 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail,
+  Download, Printer, Mail, ScanLine,
 } from "lucide-react";
 import { SendFileModal, printFile } from "../components/SendFileModal";
+import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { DocumentAuditModal } from "../components/DocumentAuditModal";
 import { can } from "../lib/roles";
@@ -1373,13 +1374,14 @@ function SlotSendButton({ candidates, onPick, title }: { candidates: DocumentTyp
 
 // Один рядок документа: слот каталогу (кілька можливих типів) або вже наявний
 // документ поза слотами — один макет на все.
-function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend }: {
+function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScan }: {
   icon: any; label: string; subLabel?: string | null; state: DocRowState; canLegal: boolean; companies: Company[];
   requestCandidates?: DocumentType[]; requestTitle?: string;
   onAdd?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
   onHistory?: (doc: WorkerDocument) => void; onDelete?: (doc: WorkerDocument) => void;
   onVerify?: (doc: WorkerDocument) => void; onReject?: (doc: WorkerDocument) => void; onPreview?: (doc: WorkerDocument) => void;
   onSend?: (doc: WorkerDocument) => void;
+  onScan?: () => void; // «Сканувати карту» — лише слот Karta pobytu
 }) {
   const t = useT();
   if (state.kind === "notneeded") {
@@ -1403,6 +1405,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
             <span className="text-xs text-slate-400">{t("немає")}</span>
             {requestedAt && <span className="text-xs font-medium text-blue-600">{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}</span>}
             <span className="flex items-center gap-0.5">
+              {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
               {onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}
               {requestCandidates && onRequest && <SlotSendButton candidates={requestCandidates} onPick={onRequest} title={requestTitle ?? t("Попросити подати")} />}
             </span>
@@ -1450,6 +1453,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
                 <button onClick={() => onReject(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
               </>
             )}
+            {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
             {hasFile && (
               <>
                 <a href={`/api/worker-documents/${doc.id}/file?download=1`} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Скачати")}><Download className="h-3.5 w-3.5" /></a>
@@ -1471,13 +1475,14 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
 
 // Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
-function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend }: {
+function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
   onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
   onRequest: (docTypeId: number) => void; onHistory: (doc: WorkerDocument) => void; onDelete: (doc: WorkerDocument) => void;
   onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
   onSend: (doc: WorkerDocument) => void;
+  onScanCard: () => void;
 }) {
   const t = useT();
   const items = docs
@@ -1507,7 +1512,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
   // Слот з кількома можливими типами (Karta pobytu/Zezwolenie): тип не
   // фіксований — обирається серед кодів слоту (за замовчуванням ті, що
   // підходять громадянству) або береться з наявного/раніше запрошеного.
-  const multiSlot = (key: string, label: string, codes: string[], shortNames: Record<string, string>, fallbackIcon: any) => {
+  const multiSlot = (key: string, label: string, codes: string[], shortNames: Record<string, string>, fallbackIcon: any, onScan?: () => void) => {
     const state: DocRowState = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, codes, globals);
     const icon = state.kind === "doc" ? docTypeIcon(state.type?.icon) : fallbackIcon;
     const subLabel = state.kind === "doc" && state.type?.code ? (shortNames[state.type.code] ?? state.type.name) : null;
@@ -1524,7 +1529,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
       <DocRow key={key} icon={icon} label={label} subLabel={subLabel} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={candidates} requestTitle={requestTitle}
         onAdd={state.kind !== "notneeded" ? onAdd : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
-        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={state.kind !== "notneeded" ? onScan : undefined} />
     );
   };
 
@@ -1539,7 +1544,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
   return (
     <div>
       {fixedSlot("passport", t("Paszport"))}
-      {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard)}
+      {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard)}
       {fixedSlot("student_cert", t("Student"))}
       {nationality === "ukraine" && fixedSlot("powiadomienie_ua", t("Powiadomienie"))}
       {multiSlot("zezwolenie", t("Zezwolenie / Oświadczenie"), ZEZWOLENIE_CODES, ZEZWOLENIE_SHORT, FileSignature)}
@@ -1584,6 +1589,7 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
   const [sendFor, setSendFor] = useState<WorkerDocument | null>(null);
+  const [scanCard, setScanCard] = useState(false);
   // «Легалізація» на профілі рахує на льоту з кешу — будь-яка зміна документа
   // (нова, дата, статус, верифікація, відхилення) мусить скинути й цей кеш.
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
@@ -1649,10 +1655,12 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
             onVerify={doc => verify.mutate(doc.id)}
             onReject={doc => setRejecting(doc)}
             onPreview={doc => setPreview(doc)}
-            onSend={doc => setSendFor(doc)} />
+            onSend={doc => setSendFor(doc)}
+            onScanCard={() => setScanCard(true)} />
         )}
       </Section>
       {sendFor && <SendFileModal workerId={workerId} title={sendFor.title} endpoint={`/worker-documents/${sendFor.id}/send`} onClose={() => setSendFor(null)} />}
+      {scanCard && <ResidenceCardScanModal workerId={workerId} types={types} onClose={() => setScanCard(false)} onSaved={() => { inv(); setScanCard(false); }} />}
       {docModal && (
         <DocModal workerId={workerId}
           doc={docModal.mode === "edit" ? docModal.doc : null}
@@ -1838,6 +1846,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   // Тип навчання (student_cert, attrs.studyMode) — select-поле, читається/пишеться
   // через getStr/setStr нижче, як звичайне текстове поле (щоб потрапляти в required-перевірку).
   const [studyMode, setStudyMode] = useState<string>((doc?.attrs?.studyMode as string | undefined) ?? "");
+  const [purpose, setPurpose] = useState<string>((doc?.attrs?.purpose as string | undefined) ?? ""); // мета TRC (attrs.purpose)
   const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
   const fields = fieldsFor(selectedType);
@@ -1880,6 +1889,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "decisionAt": return decisionAt ?? "";
       case "employerCompanyId": return employerCompanyId;
       case "studyMode": return studyMode;
+      case "purpose": return purpose;
       default: return "";
     }
   };
@@ -1893,6 +1903,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "decisionAt": setDecisionAt(v); break;
       case "employerCompanyId": setEmployerCompanyId(v); break;
       case "studyMode": setStudyMode(v); break;
+      case "purpose": setPurpose(v); break;
       case "expiresAt": setExpiresAt(v); break;
       case "validFrom": {
         setValidFrom(v);
@@ -1979,8 +1990,14 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
     employerCompanyId: employerCompanyId ? Number(employerCompanyId) : null,
     caseStatus: caseStatus || null,
     replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
-    ...(fields.some(f => f.key === "laborMarketAccess") ? { attrs: { laborMarketAccess } } : {}),
-    ...(fields.some(f => f.key === "studyMode") ? { attrs: { studyMode: studyMode || null } } : {}),
+    // усі типоспецифічні атрибути — одним обʼєктом (окремі spread-и затирали б один одного)
+    ...(fields.some(f => f.key === "laborMarketAccess" || f.key === "studyMode" || f.key === "purpose") ? {
+      attrs: {
+        ...(fields.some(f => f.key === "laborMarketAccess") ? { laborMarketAccess } : {}),
+        ...(fields.some(f => f.key === "studyMode") ? { studyMode: studyMode || null } : {}),
+        ...(fields.some(f => f.key === "purpose") ? { purpose: purpose || null } : {}),
+      },
+    } : {}),
   });
   const save = useMutation({
     mutationFn: async () => {

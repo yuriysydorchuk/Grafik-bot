@@ -239,8 +239,9 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
     else if (typeof b.attrs !== "object" || Array.isArray(b.attrs)) return fail(res, 400, "attrs: обʼєкт");
     else {
       // laborMarketAccess — TRC z dostępem do rynku pracy; studyMode — тип навчання (stationary дає працю; part_time/school — лише ставка студента)
-      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string" };
-      const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"] };
+      // purpose — мета перебування карти (з decyzji, на карті не друкується): інформаційно + для задач офісу
+      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string", purpose: "string" };
+      const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"], purpose: ["work", "study", "family", "business", "other"] };
       const clean: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(b.attrs)) {
         if (!(k in ALLOWED)) return fail(res, 400, `attrs.${k}: невідомий атрибут`);

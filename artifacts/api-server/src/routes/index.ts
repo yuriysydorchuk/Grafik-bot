@@ -27,6 +27,7 @@ import contractsRouter from "./contracts";
 import documentTemplatesRouter from "./documentTemplates";
 import legalizationRouter from "./legalization";
 import documentDeliveryRouter from "./documentDelivery";
+import residenceCardScanRouter from "./residenceCardScan";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
 
@@ -72,5 +73,6 @@ router.use(contractsRouter);
 router.use(documentTemplatesRouter);
 router.use(legalizationRouter);
 router.use(documentDeliveryRouter);
+router.use(residenceCardScanRouter);
 
 export default router;

@@ -7,7 +7,7 @@ import type { DocumentType } from "./api";
 export type DocFieldKey =
   | "number" | "validFrom" | "expiresAt" | "issuedAt" | "issuer"
   | "employerCompanyId" | "caseStatus" | "submittedAt" | "caseNumber" | "decisionAt"
-  | "laborMarketAccess" | "studyMode";
+  | "laborMarketAccess" | "studyMode" | "purpose";
 
 export interface DocFieldOption { value: string; label: string }
 
@@ -24,6 +24,14 @@ export interface DocField {
 }
 
 const F = (key: DocFieldKey, label: string, kind: DocField["kind"], o: Partial<DocField> = {}): DocField => ({ key, label, kind, ...o });
+
+export const TRC_PURPOSE_OPTIONS: DocFieldOption[] = [
+  { value: "work", label: "Праця" },
+  { value: "study", label: "Навчання" },
+  { value: "family", label: "Возз'єднання сім'ї" },
+  { value: "business", label: "Бізнес" },
+  { value: "other", label: "Інше" },
+];
 
 // код типу → поля модалки, у порядку показу. Дзеркалить DOCUMENT_TYPE_SEED
 // (services/legalizationCatalog.ts) — лише ті коди, де є специфічні поля.
@@ -55,6 +63,8 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   trc: [
     F("expiresAt", "Дійсна до", "date", { required: true }),
     F("laborMarketAccess", "Z dostępem do rynku pracy — дає й право на працю", "boolean"),
+    // мета перебування — з decyzji (на карті не друкується), інформаційно + для задач офісу
+    F("purpose", "Мета перебування (з decyzji)", "select", { options: TRC_PURPOSE_OPTIONS }),
   ],
   zezwolenie_jednolite: [
     F("employerCompanyId", "Роботодавець", "company", { required: true }),

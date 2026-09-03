@@ -191,7 +191,8 @@ function mrzCheckDigit(s: string): number {
   for (let i = 0; i < s.length; i++) sum += MRZ_CHAR_VALUE(s[i]!) * MRZ_WEIGHTS[i % 3]!;
   return sum % 10;
 }
-const mrzValid = (data: string, check: string): boolean => /^[0-9]$/.test(check) && mrzCheckDigit(data) === Number(check);
+export const mrzValid = (data: string, check: string): boolean => /^[0-9]$/.test(check) && mrzCheckDigit(data) === Number(check);
+export { mrzCheckDigit, mrzYearToIso };
 
 export type MrzResult = {
   documentNumber: string; issuingCountry: string; nationality: string;
@@ -292,7 +293,7 @@ export async function processInvoice(buffer: Buffer, mimeType: string): Promise<
   return { draft, fullText };
 }
 
-async function callVisionOcr(buffer: Buffer): Promise<string> {
+export async function callVisionOcr(buffer: Buffer): Promise<string> {
   const keyFile = process.env.GOOGLE_DOCAI_KEY_FILE;
   if (!keyFile || !fs.existsSync(keyFile)) throw new Error("OCR паспорта не налаштований (GOOGLE_DOCAI_KEY_FILE)");
   const auth = new google.auth.GoogleAuth({ keyFile, scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
