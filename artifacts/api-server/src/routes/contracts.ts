@@ -127,7 +127,10 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   if (body.lastName !== undefined) namePatch.lastName = String(body.lastName).trim() || null;
   if (Object.keys(namePatch).length) await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
   // анкета → профіль (громадянство/стать) + перерахунок світлофорів легальності
-  await syncProfileFromQuestionnaire(workerId, { citizenship: q?.citizenship ?? null, sex: q?.sex ?? null }, changed);
+  await syncProfileFromQuestionnaire(workerId, {
+    citizenship: q?.citizenship ?? null, sex: q?.sex ?? null,
+    passportNumber: q?.passportNumber ?? null, passportExpiresAt: q?.passportExpiresAt ?? null,
+  }, changed);
 
   ok(res, q);
 });
@@ -139,7 +142,7 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
 // саме це поле щойно змінили в анкеті (changed). is_student анкети НЕ синкається —
 // це payroll-поле профілю (інваріант listy płac). Після синку — перерахунок worker_legality.
 async function syncProfileFromQuestionnaire(
-  workerId: number, src: { citizenship: string | null; sex: string | null; birthDate?: string | null },
+  workerId: number, src: { citizenship: string | null; sex: string | null; birthDate?: string | null; passportNumber?: string | null; passportExpiresAt?: string | null },
   changed: Set<string> = new Set(),
 ): Promise<void> {
   try {
@@ -152,6 +155,20 @@ async function syncProfileFromQuestionnaire(
     if (gender && (!w.gender || changed.has("sex")) && gender !== w.gender) patch.gender = gender;
     if (src.birthDate && /^\d{4}-\d{2}-\d{2}$/.test(src.birthDate) && !w.birthDate) patch.birthDate = src.birthDate;
     if (Object.keys(patch).length) await db.update(workersTable).set(patch).where(eq(workersTable.id, workerId));
+    // паспорт як документ: номер і строк з анкети → рядок «Paszport» (present), щоб список документів
+    // і движок бачили строк без ручного дублювання
+    if (src.passportNumber !== undefined || src.passportExpiresAt !== undefined) {
+      const [pdoc] = await db.select({ id: workerDocumentsTable.id, number: workerDocumentsTable.number, expiresAt: workerDocumentsTable.expiresAt })
+        .from(workerDocumentsTable).innerJoin(documentTypesTable, eq(workerDocumentsTable.docTypeId, documentTypesTable.id))
+        .where(and(eq(workerDocumentsTable.workerId, workerId), eq(documentTypesTable.code, "passport"), ne(workerDocumentsTable.status, "missing")))
+        .orderBy(desc(workerDocumentsTable.id)).limit(1);
+      if (pdoc) {
+        const dp: Record<string, unknown> = {};
+        if (src.passportNumber && src.passportNumber !== pdoc.number) dp.number = src.passportNumber;
+        if (src.passportExpiresAt && /^\d{4}-\d{2}-\d{2}$/.test(src.passportExpiresAt) && src.passportExpiresAt !== pdoc.expiresAt) dp.expiresAt = src.passportExpiresAt;
+        if (Object.keys(dp).length) await db.update(workerDocumentsTable).set({ ...dp, updatedAt: new Date() }).where(eq(workerDocumentsTable.id, pdoc.id));
+      }
+    }
     const { workerLegalityChanged } = await import("../services/documentEvents");
     await workerLegalityChanged(workerId);
   } catch (e) { logger.warn({ err: String(e), workerId }, "profile sync from questionnaire failed"); }
@@ -164,7 +181,10 @@ router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, 
   const [q] = await db.update(workerQuestionnairesTable).set({
     status: "verified", verifiedBy: req.admin?.adminId ?? null, verifiedAt: new Date(), updatedAt: new Date(),
   }).where(eq(workerQuestionnairesTable.workerId, workerId)).returning();
-  await syncProfileFromQuestionnaire(workerId, { citizenship: q?.citizenship ?? null, sex: q?.sex ?? null });
+  await syncProfileFromQuestionnaire(workerId, {
+    citizenship: q?.citizenship ?? null, sex: q?.sex ?? null,
+    passportNumber: q?.passportNumber ?? null, passportExpiresAt: q?.passportExpiresAt ?? null,
+  });
   ok(res, q);
 });
 
@@ -207,8 +227,11 @@ export async function applyPassportScan(workerId: number, buffer: Buffer, origin
     ? await db.update(workerQuestionnairesTable).set(ocrPatch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...ocrPatch }).returning();
 
-  // строк паспорта з MRZ → на документ (плитка/список документів і движок легальності читають expires_at)
-  if (draft.passportExpiresAt) await db.update(workerDocumentsTable).set({ expiresAt: draft.passportExpiresAt }).where(eq(workerDocumentsTable.id, doc!.id));
+  // номер і строк паспорта з MRZ → на документ (список документів і движок легальності читають number/expires_at)
+  const docPatch: Record<string, unknown> = {};
+  if (draft.passportExpiresAt) docPatch.expiresAt = draft.passportExpiresAt;
+  if (draft.passportNumber) docPatch.number = draft.passportNumber;
+  if (Object.keys(docPatch).length) await db.update(workerDocumentsTable).set(docPatch).where(eq(workerDocumentsTable.id, doc!.id));
   // MRZ → профіль (громадянство/стать/дата народження — лише порожні поля; OCR ще не підтверджений) + перерахунок
   await syncProfileFromQuestionnaire(workerId, {
     citizenship: draft.citizenship ?? questionnaire?.citizenship ?? null, sex: draft.sex ?? questionnaire?.sex ?? null, birthDate: draft.birthDate,

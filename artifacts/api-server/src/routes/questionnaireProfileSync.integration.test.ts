@@ -35,6 +35,14 @@ test("PUT questionnaire: citizenship P0L (OCR) → nationality poland, sex M →
   const [after4] = await db.select({ nationality: workersTable.nationality }).from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(after4?.nationality, "poland", "явна зміна громадянства в анкеті виграє");
 
+  // номер і строк паспорта з анкети → рядок документа «Paszport»
+  const { documentTypesTable, workerDocumentsTable } = await import("../test/harness.ts");
+  const [pt] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "passport"));
+  const [pdoc] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: pt!.id, title: "Paszport", status: "present" }).returning();
+  await request(app).put(`/api/workers/${w!.id}/questionnaire`).set("Cookie", owner.cookie).set(H).send({ passportNumber: "FE1234567", passportExpiresAt: "2033-05-11" });
+  const [pAfter] = await db.select({ number: workerDocumentsTable.number, expiresAt: workerDocumentsTable.expiresAt }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, pdoc!.id));
+  assert.equal(pAfter?.number, "FE1234567"); assert.equal(pAfter?.expiresAt, "2033-05-11");
+
   // isStudent анкети не чіпає payroll-поле профілю
   await request(app).put(`/api/workers/${w!.id}/questionnaire`).set("Cookie", owner.cookie).set(H).send({ isStudent: true });
   const [after5] = await db.select({ isStudent: workersTable.isStudent }).from(workersTable).where(eq(workersTable.id, w!.id));

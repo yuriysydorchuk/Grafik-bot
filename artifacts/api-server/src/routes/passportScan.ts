@@ -219,7 +219,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     await fs.promises.rename(tmpAbs, path.join(WORKER_DOCS_DIR, storedName));
     const [doc] = await db.insert(workerDocumentsTable).values({
       workerId: worker.id, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
-      expiresAt: passportExpiresAt,
+      expiresAt: passportExpiresAt, number: passportNumber, // номер і строк — з MRZ (підтверджені людиною на кроці confirm)
       filePath: finalRel, fileName: row.tempFileName, fileMime: row.tempFileMime,
     }).returning();
 
