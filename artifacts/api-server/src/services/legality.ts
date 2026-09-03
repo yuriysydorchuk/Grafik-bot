@@ -59,6 +59,10 @@ export interface LegalRuleInput {
 }
 
 export interface LegalityFacts {
+  /** громадянство з паспорта (MRZ анкети) у кодах каталогу; null = анкети/скану нема */
+  passportNationality?: string | null;
+  /** true = worker.nationality порожнє, взято з паспорта (loader) */
+  nationalityFromPassport?: boolean;
   hoursThisMonth?: number | null;
   /** зовнішній факт подання powiadomienia (напр. з праці.gov.pl), якщо документа ще нема */
   notificationSubmittedAt?: string | null;
@@ -220,6 +224,11 @@ export function computeLegality(input: LegalityInput): LegalityResult {
   const flag = (r: Reason, needsReview = false) => { reasons.push(r); if (needsReview) review = true; };
 
   if (!worker.nationality) flag({ code: "nationality_unknown", axis: "overall", severity: "warn" }, true);
+  else if (input.facts?.nationalityFromPassport) flag({ code: "nationality_from_passport", axis: "overall", severity: "info", params: { nationality: worker.nationality } });
+  // профіль каже одне громадянство, паспорт — інше: не вирішуємо самі, лише review
+  else if (input.facts?.passportNationality && input.facts.passportNationality !== worker.nationality) {
+    flag({ code: "nationality_conflict", axis: "overall", severity: "warn", params: { profile: worker.nationality, passport: input.facts.passportNationality } }, true);
+  }
 
   // ефективна дата закінчення документа (status_ukr → глобальна дата)
   const effExpiry = (d: LegalityDocument): string | null => {

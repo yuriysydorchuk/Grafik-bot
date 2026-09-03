@@ -7,9 +7,10 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
-  db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable,
+  db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable, workerQuestionnairesTable,
 } from "@workspace/db";
 import { computeLegality, type LegalityInput, type LegalityResult, type LegalityDocument, type LegalRuleInput, type LegalityWorker } from "./legality";
+import { mrzNationalityToCatalog } from "./docai";
 import { logger } from "../lib/logger";
 
 export const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
@@ -57,12 +58,19 @@ export async function employerSinceOf(worker: { id: number; employmentStartDate:
 export async function loadLegalityInput(workerId: number, today = warsawToday(), rules?: LegalRuleInput[]): Promise<LegalityInput | null> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return null;
+  // громадянство з паспорта (MRZ анкети): фолбек, коли профіль порожній; інакше — факт для звірки (nationality_conflict)
+  const [q] = await db.select({ citizenship: workerQuestionnairesTable.citizenship }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  const passportNationality = mrzNationalityToCatalog(q?.citizenship ?? null);
+  const nationality = w.nationality ?? passportNationality;
   const worker: LegalityWorker = {
-    id: w.id, nationality: w.nationality, birthDate: dateStr(w.birthDate), companyId: w.companyId,
+    id: w.id, nationality, birthDate: dateStr(w.birthDate), companyId: w.companyId,
     employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate) }),
     isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
   };
-  return { today, worker, documents: await loadWorkerDocuments(workerId), rules: rules ?? await loadLegalRules() };
+  return {
+    today, worker, documents: await loadWorkerDocuments(workerId), rules: rules ?? await loadLegalRules(),
+    facts: { passportNationality, nationalityFromPassport: !w.nationality && !!passportNationality },
+  };
 }
 
 export async function saveLegality(workerId: number, input: LegalityInput, r: LegalityResult): Promise<void> {

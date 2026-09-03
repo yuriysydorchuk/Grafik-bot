@@ -50,6 +50,8 @@ export const REQUIRED_MISSING_LABEL: Record<string, string> = {
 // Причини движка → людською мовою. {param} підставляються з reason.params.
 export const REASON_LABEL: Record<string, string> = {
   nationality_unknown: "Не вказано громадянство — вимоги застосовано як для не-ЄС",
+  nationality_from_passport: "Громадянство взято з паспорта (анкета): {nationality} — у профілі поле порожнє",
+  nationality_conflict: "Громадянство в профілі ({profile}) не збігається з паспортом ({passport})",
   rule_unverified: "Правило {rule} ще не підтверджене — результат потребує перевірки",
   evidence_unverified: "Документ надіслано працівником, офіс ще не перевірив — підставою не рахується",
   employer_mismatch: "Документ видано на іншу фірму, ніж роботодавець працівника",

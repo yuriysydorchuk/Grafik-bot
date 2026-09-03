@@ -154,6 +154,12 @@ test("mrzNationalityToCatalog: відомі ICAO3-коди мапляться н
   assert.equal(mrzNationalityToCatalog("ROM"), "romania", "старий і новий ICAO-код Румунії — обидва");
 });
 
+test("mrzNationalityToCatalog: OCR-плутанина цифр («P0L», «5RB») нормалізується перед мапою", () => {
+  assert.equal(mrzNationalityToCatalog("P0L"), "poland", "реальний кейс 02.09.2026 — нуль замість O");
+  assert.equal(mrzNationalityToCatalog("UKR"), "ukraine");
+  assert.equal(mrzNationalityToCatalog("GE0"), "georgia");
+});
+
 test("mrzNationalityToCatalog: невідомий код або null → null (офіс доставить вручну)", () => {
   assert.equal(mrzNationalityToCatalog("USA"), null);
   assert.equal(mrzNationalityToCatalog(null), null);

@@ -277,6 +277,14 @@ test("payrollHints.studentByProfile дзеркалить stud26Of; studentCertMi
   const old = run({ isStudent: true, birthDate: "1990-01-01" }, [doc("status_ukr"), doc("student_cert", { expiresAt: "2027-02-28" })]);
   assert.equal(old.payrollHints.studentByProfile, false); assert.equal(old.payrollHints.studentCertMissingOrExpired, false);
 });
+test("громадянство з паспорта: профіль порожній → info; профіль ≠ паспорт → nationality_conflict + review", () => {
+  const fromPassport = run({ nationality: "poland" }, [], { facts: { passportNationality: "poland", nationalityFromPassport: true } });
+  assert.equal(fromPassport.overall, "legal"); assert.ok(has(fromPassport, "nationality_from_passport")); assert.equal(fromPassport.reviewRequired, false);
+  const conflict = run({ nationality: "ukraine" }, [doc("status_ukr")], { facts: { passportNationality: "poland" } });
+  assert.ok(has(conflict, "nationality_conflict")); assert.equal(conflict.reviewRequired, true);
+  assert.equal(conflict.stay.status, "legal", "рахуємо за профілем, не за паспортом — конфлікт лише підсвічуємо");
+});
+
 test("nationality невідома → причина + вимоги застосовуються; без жодного документа reviewRequired=false (немає даних ≠ потребує перевірки)", () => {
   const r = run({ nationality: null }, []);
   assert.ok(has(r, "nationality_unknown")); assert.equal(r.reviewRequired, false);

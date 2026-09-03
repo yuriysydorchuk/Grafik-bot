@@ -348,8 +348,15 @@ const MRZ_NATIONALITY_TO_CATALOG: Record<string, string> = {
   UKR: "ukraine", BLR: "belarus", POL: "poland", MDA: "moldova",
   ROU: "romania", ROM: "romania", GEO: "georgia", AZE: "azerbaijan", TUR: "turkey",
 };
-export const mrzNationalityToCatalog = (code: string | null): string | null =>
-  code ? (MRZ_NATIONALITY_TO_CATALOG[code.toUpperCase()] ?? null) : null;
+// OCR плутає цифри з літерами в MRZ-коді країни («P0L» замість «POL», «5RB», «8GR»)
+// — нормалізуємо перед мапою (реальний кейс 02.09.2026: власний паспорт зчитався як P0L).
+const MRZ_OCR_FIX: Record<string, string> = { "0": "O", "1": "I", "5": "S", "8": "B", "2": "Z" };
+export const normalizeMrzCountry = (code: string | null): string | null =>
+  code ? code.toUpperCase().replace(/[01582]/g, ch => MRZ_OCR_FIX[ch] ?? ch) : null;
+export const mrzNationalityToCatalog = (code: string | null): string | null => {
+  const norm = normalizeMrzCountry(code);
+  return norm ? (MRZ_NATIONALITY_TO_CATALOG[norm] ?? null) : null;
+};
 
 // mimeType лишається в сигнатурі для узгодженості виклику з боту/роуту —
 // формат реально визначається з байтів (toVisionCompatible/sniffDocMime).

@@ -24,7 +24,7 @@ import {
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime } from "../lib/uploads";
-import { processPassport, passportOcrConfigured, type PassportDraft, type MrzResult } from "../services/docai";
+import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { randomInviteCode } from "../lib/invite";
@@ -124,9 +124,26 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   if (body.middleName !== undefined) namePatch.middleName = String(body.middleName).trim() || null;
   if (body.lastName !== undefined) namePatch.lastName = String(body.lastName).trim() || null;
   if (Object.keys(namePatch).length) await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
+  // громадянство з паспорта → national profile field (лише якщо порожнє) + перерахунок світлофорів легальності
+  await syncNationalityFromQuestionnaire(workerId, q?.citizenship ?? null);
 
   ok(res, q);
 });
+
+// Національність профілю — з громадянства анкети (MRZ), лише коли поле ще порожнє:
+// ручне значення не перезаписуємо (розбіжність покаже движок легальності як
+// nationality_conflict). Після цього — перерахунок worker_legality (best-effort).
+async function syncNationalityFromQuestionnaire(workerId: number, citizenship: string | null): Promise<void> {
+  try {
+    const nat = mrzNationalityToCatalog(citizenship);
+    if (nat) {
+      const [w] = await db.select({ nationality: workersTable.nationality }).from(workersTable).where(eq(workersTable.id, workerId));
+      if (w && !w.nationality) await db.update(workersTable).set({ nationality: nat }).where(eq(workersTable.id, workerId));
+    }
+    const { workerLegalityChanged } = await import("../services/documentEvents");
+    await workerLegalityChanged(workerId);
+  } catch (e) { logger.warn({ err: String(e), workerId }, "nationality sync from questionnaire failed"); }
+}
 
 router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, res) => {
   const workerId = Number(req.params.id);
@@ -135,6 +152,7 @@ router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, 
   const [q] = await db.update(workerQuestionnairesTable).set({
     status: "verified", verifiedBy: req.admin?.adminId ?? null, verifiedAt: new Date(), updatedAt: new Date(),
   }).where(eq(workerQuestionnairesTable.workerId, workerId)).returning();
+  await syncNationalityFromQuestionnaire(workerId, q?.citizenship ?? null);
   ok(res, q);
 });
 
@@ -176,6 +194,11 @@ export async function applyPassportScan(workerId: number, buffer: Buffer, origin
   const [questionnaire] = existing
     ? await db.update(workerQuestionnairesTable).set(ocrPatch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...ocrPatch }).returning();
+
+  // строк паспорта з MRZ → на документ (плитка/список документів і движок легальності читають expires_at)
+  if (draft.passportExpiresAt) await db.update(workerDocumentsTable).set({ expiresAt: draft.passportExpiresAt }).where(eq(workerDocumentsTable.id, doc!.id));
+  // громадянство з MRZ → nationality профілю (лише якщо порожнє) + перерахунок світлофорів
+  await syncNationalityFromQuestionnaire(workerId, draft.citizenship ?? questionnaire?.citizenship ?? null);
 
   // Ім'я/по-батькові/прізвище — поля workersTable, не анкети (той самий поділ,
   // що routes/passportScan.ts) — офіс підтверджує/править у QuestionnaireModal,
