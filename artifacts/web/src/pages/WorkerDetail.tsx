@@ -1281,6 +1281,10 @@ const KARTA_POBYTU_SHORT: Record<string, string> = {
   humanitarian_visa: "Wiza humanitarna", refugee_status: "Status uchodźcy", subsidiary_protection: "Ochrona uzupełniająca",
   humanitarian_stay: "Pobyt humanitarny", tolerated_stay: "Pobyt tolerowany", eu_family_member_card: "Rodzina obywatela UE",
 };
+// Паспорт і карти побиту додаються ЛИШЕ через скан (рішення власника 04.09.2026):
+// «+» у цих слотах відкриває сканер, у модалці «Документ» цих типів немає.
+// Редагування вже доданого документа — як завжди.
+const SCAN_ONLY_CODES = new Set<string>(["passport", "trc", "karta_stalego_pobytu", "rezydent_ue", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"]);
 const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
 const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };
 // Коди всіх 7 слотів — решта документів людини йде окремим списком «інші» нижче.
@@ -1503,11 +1507,12 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
     const type = byCode(code);
     if (!type) return null;
     const state = resolveDocSlot(items, [code], globals);
-    const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type);
+    const scanOnly = SCAN_ONLY_CODES.has(code) && !!onScan;
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc && !scanOnly) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type);
     return (
       <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
-        onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onAdd={scanOnly ? undefined : onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={onScan} scanTitle={scanTitle} />
     );
   };
@@ -1519,7 +1524,10 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
     const state: DocRowState = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, codes, globals);
     const icon = state.kind === "doc" ? docTypeIcon(state.type?.icon) : fallbackIcon;
     const subLabel = state.kind === "doc" && state.type?.code ? (shortNames[state.type.code] ?? state.type.name) : null;
-    const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(null, codes);
+    // «+» у слоті карти — лише не-карткові підстави (status UKR, візи, безвіз); самі карти — сканером
+    const manualCodes = codes.filter(c => !SCAN_ONLY_CODES.has(c));
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc && !SCAN_ONLY_CODES.has(types.find(ty => ty.id === state.requestedDoc!.docTypeId)?.code ?? ""))
+      ? onOpenDoc(state.requestedDoc) : onOpenEmpty(null, manualCodes);
     const slotTypes = types.filter(ty => ty.code && codes.includes(ty.code) && ty.isActive !== false);
     let candidates: DocumentType[] = [];
     if (state.kind === "doc" && state.type) candidates = [state.type];
@@ -1880,6 +1888,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   const typeOptions = types.filter(ty => {
     if (String(ty.id) === docTypeId) return true;
     if (ty.isActive === false) return false;
+    if (!doc && SCAN_ONLY_CODES.has(ty.code ?? "")) return false; // новий паспорт/карта — лише через скан
     if (restrictSet && !restrictSet.has(ty.code ?? "")) return false;
     if (!showAllTypes && !typeMatchesNationality(ty, nationality)) return false;
     return true;
