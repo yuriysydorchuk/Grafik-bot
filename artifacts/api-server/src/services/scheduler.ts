@@ -161,6 +161,8 @@ export function startScheduler() {
     async () => {
       try { const { pruneOldMessageRows } = await import("../bot/chat"); await pruneOldMessageRows(); } catch { /* ignore */ }
       await pruneNotifications();
+      // протухлі тимчасові скани karta pobytu (analyze без confirm, >24 год)
+      try { const { cleanupResidenceCardTmp } = await import("../routes/residenceCardScan"); cleanupResidenceCardTmp(); } catch { /* best-effort */ }
       try {
         const { findDataDrift, driftSummary } = await import("./dataDrift");
         const summary = driftSummary(await findDataDrift());
