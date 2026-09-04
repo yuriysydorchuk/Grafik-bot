@@ -5097,6 +5097,9 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
 
   let entries: { factoryId: number; day: string; shift: string }[] = [];
+  // Self-transport people per cell — NOT in headcount, but shown so the driver
+  // understands why the board count is lower than the factory schedule list.
+  let selfEntries: { factoryId: number; day: string; shift: string }[] = [];
   let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null; kind: string }[] = [];
   const cancelledSet = new Set<string>();
   if (week) {
@@ -5110,6 +5113,10 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       .from(scheduleEntriesTable)
       .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
       .where(and(eq(scheduleEntriesTable.weekId, week.id), ne(workersTable.selfTransport, true)));
+    selfEntries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
+      .from(scheduleEntriesTable)
+      .innerJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+      .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(workersTable.selfTransport, true)));
     assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name, kind: driverShiftAssignmentsTable.kind })
       .from(driverShiftAssignmentsTable).leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(eq(driverShiftAssignmentsTable.weekId, week.id));
@@ -5123,6 +5130,7 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
     const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
     const effTime = (day: string, s: number) => overrideFor(boardOv, f.id, weekStart, day, s) ?? fShifts[s - 1];
     const headcountOf = (day: string, sc: string) => entries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
+    const selfCountOf = (day: string, sc: string) => selfEntries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
     const cellAssigns = (day: string, sc: string, kind: string) =>
       assigns.filter(a => a.factoryId === f.id && a.day === day && a.shift === sc && a.kind === kind).map(a => ({ id: a.driverId, name: a.driverName }));
 
@@ -5156,12 +5164,13 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       for (let s = 1; s <= 6; s++) {
         const sc = String(s);
         const headcount = headcountOf(day, sc);
+        const selfCount = selfCountOf(day, sc);
         const cellDrivers = cellAssigns(day, sc, "delivery");
         const pickupDrivers = cellAssigns(day, sc, "pickup");
-        if (headcount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
+        if (headcount === 0 && selfCount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
         const st = effTime(day, s);
         const cancelled = cancelledSet.has(`${f.id}-${day}-${sc}`);
-        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
+        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, selfCount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
       }
     }
     return { id: f.id, name: f.name, shiftCount: n, cells };

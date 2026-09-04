@@ -33,6 +33,20 @@ test("driver-board lists only factories with agency transport", opts, async () =
   assert.deepEqual(names, [withBus.name], "фабрика без довозу не має потрапляти на борд");
 });
 
+// Хто доїжджає сам — не в headcount (його не везуть), але окремо в selfCount,
+// щоб водій розумів, чому на борді менше людей, ніж у списку графіку фабрики.
+test("driver-board splits self-transport workers into selfCount", opts, async () => {
+  const { withBus, week } = await seedTwoFactories();
+  const [selfW] = await db.insert(workersTable).values({ fullName: "Cezary Sam", selfTransport: true }).returning();
+  await db.insert(scheduleEntriesTable).values({ weekId: week.id, workerId: selfW!.id, factoryId: withBus.id, dayOfWeek: "mon", shift: "1" });
+  const { cookie } = await seedAdmin();
+  const res = await request(app).get("/api/driver-board?weekStart=2026-07-20").set("Cookie", cookie);
+  assert.equal(res.status, 200);
+  const cell = res.body.factories[0].cells.find((c: any) => c.day === "mon" && c.shift === "1");
+  assert.equal(cell.headcount, 1, "самотранспортний не рахується до посадки");
+  assert.equal(cell.selfCount, 1, "але показується окремо");
+});
+
 test("pickup-gap detector ignores factories without agency transport", opts, async () => {
   const { withBus, week } = await seedTwoFactories();
   const gaps = await detectPickupGaps(week.id, "mon");

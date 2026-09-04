@@ -530,6 +530,7 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
     .select({
       workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language,
+      selfTransport: workersTable.selfTransport,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
@@ -569,8 +570,14 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
       if (dayRows.length === 0) continue;
       msg += `*${DAY_NAMES_UK[d]}:*\n`;
       for (const s of ["1", "2", "3", "4", "5", "6"] as Shift[]) {
-        const names = dayRows.filter(r => r.shift === s).map(r => r.name);
-        if (names.length) msg += `  ${SHIFT_SHORT[s]} (${names.length}): ${names.join(", ")}\n`;
+        const shiftRows = dayRows.filter(r => r.shift === s);
+        if (!shiftRows.length) continue;
+        // Self-transport workers stay in the list (they ARE on the shift) but are
+        // marked and subtracted, so the count matches the driver board headcount.
+        const selfCount = shiftRows.filter(r => r.selfTransport).length;
+        const names = shiftRows.map(r => r.selfTransport ? `${r.name} 🚶` : r.name);
+        const count = selfCount ? `${shiftRows.length - selfCount} + ${selfCount} 🚶 самі` : `${shiftRows.length}`;
+        msg += `  ${SHIFT_SHORT[s]} (${count}): ${names.join(", ")}\n`;
       }
     }
     try { await sendLongMessage(hd.telegramId, msg, { parse_mode: "Markdown" }); driverNotified = true; } catch { /* ignore */ }

@@ -611,6 +611,7 @@ export default function Schedule() {
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
                                   <Link href={profileHref(e.workerId)} draggable={false} onClick={ev => ev.stopPropagation()}
                                     className={`min-w-0 flex-1 truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
+                                  {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {restGap != null && <span className="shrink-0 text-xs" title={restTip}>⚠️</span>}
                                   {abs?.status === "pending" && <span className="shrink-0 text-xs" title={tip}>🙋</span>}
