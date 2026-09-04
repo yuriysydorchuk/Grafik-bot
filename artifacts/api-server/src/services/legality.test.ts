@@ -39,10 +39,10 @@ test("normalizeLegacyStatus дзеркалить svodni.normalizeProfileLegal", 
     assert.equal(normalizeLegacyStatus(s), normalizeProfileLegal(s), `розійшлись на "${s}"`);
   }
 });
-test("payrollClassOf: A=oczekuje, B=student, N=NULL, решта C", () => {
+test("payrollClassOf: A=oczekuje і NULL (без статусу = не зголошений), B=student, решта C", () => {
   assert.equal(payrollClassOf("oczekuje"), "A_cash"); assert.equal(payrollClassOf("nieoformiony"), "A_cash");
   assert.equal(payrollClassOf("student"), "B_student"); assert.equal(payrollClassOf("do26"), "B_student");
-  assert.equal(payrollClassOf(null), "N_none"); assert.equal(payrollClassOf("garbage"), "N_none");
+  assert.equal(payrollClassOf(null), "A_cash"); assert.equal(payrollClassOf("garbage"), "A_cash");
   for (const s of ["dyplom", "powiadomienie", "zus", "karta_pobytu", "staly_pobyt", "polak", "zezwolenie", "oswiadczenie"]) assert.equal(payrollClassOf(s), "C_registered", s);
 });
 test("дати: daysBetween/addDaysStr/isUnder26At (26-річчя вже НЕ до 26)", () => {
@@ -79,8 +79,12 @@ test("L3 africa без документів → unknown/unknown, requiredMissing
   const r = run({ nationality: "africa" }, []);
   assert.equal(r.stay.status, "unknown"); assert.equal(r.work.status, "unknown");
   assert.deepEqual(r.requiredMissing, ["passport", "stay_basis", "work_basis"]);
-  assert.equal(r.legacy.derivedLegalStatus, null);
-  assert.equal(r.legacy.legacyMismatchKind, "no_proposal");
+  // ані статусу, ані документів → не зголошений (готівка), без review; NULL і oczekuje — одна група
+  assert.equal(r.legacy.derivedLegalStatus, "oczekuje"); assert.equal(r.legacy.derivedPayrollClass, "A_cash");
+  assert.equal(r.legacy.legacyMismatchKind, "within_class"); assert.equal(r.legacy.legacyMappingRequiresReview, false);
+  // старий статус є, документів нема → пропозиції немає (резолвер бере старий блок)
+  const withStatus = run({ nationality: "africa", legalStatus: "zus" }, []);
+  assert.equal(withStatus.legacy.derivedLegalStatus, null); assert.equal(withStatus.legacy.legacyMismatchKind, "no_proposal");
 });
 
 // ── L4–L7: UA, роботодавець ──
@@ -253,13 +257,18 @@ test("L28 лише status_ukr → null + review", () => {
   const r = run({}, [doc("status_ukr")]);
   assert.equal(r.legacy.derivedLegalStatus, null); assert.equal(r.legacy.legacyMappingRequiresReview, true);
 });
-test("L29 student_cert → student як пропозиція, review завжди, клас B", () => {
-  const r = run({ nationality: "georgia", legalStatus: "zus" }, [doc("trc", { expiresAt: "2027-06-01" }), doc("student_cert", { expiresAt: "2027-02-28" })]);
-  // TRC (karta_pobytu) + student_cert (student) — два кандидати різних класів → null + review
-  assert.equal(r.legacy.derivedLegalStatus, null); assert.equal(r.legacy.legacyMappingRequiresReview, true);
-  const only = run({ nationality: "georgia", legalStatus: "zus" }, [doc("student_cert", { expiresAt: "2027-02-28" })]);
+test("L29 student_cert: до 26 → student сильніший за C (усе на konto); після 26 — не впливає; без дати народження — review", () => {
+  const docs = () => [doc("trc", { expiresAt: "2027-06-01" }), doc("student_cert", { expiresAt: "2027-02-28" })];
+  const young = run({ nationality: "georgia", legalStatus: "zus", birthDate: "2005-03-03" }, docs());
+  assert.equal(young.legacy.derivedLegalStatus, "student"); assert.equal(young.legacy.derivedPayrollClass, "B_student");
+  assert.equal(young.legacy.legacyMappingRequiresReview, false); assert.equal(young.legacy.legacyMismatchKind, "cross_class");
+  const old = run({ nationality: "georgia", legalStatus: "zus" }, docs()); // 1990 → ≥26: довідка на виплати не впливає
+  assert.equal(old.legacy.derivedLegalStatus, "karta_pobytu"); assert.equal(old.legacy.derivedPayrollClass, "C_registered");
+  const noBirth = run({ nationality: "georgia", legalStatus: "zus", birthDate: null }, [doc("student_cert", { expiresAt: "2027-02-28" })]);
+  assert.equal(noBirth.legacy.derivedLegalStatus, "student"); assert.equal(noBirth.legacy.legacyMappingRequiresReview, true);
+  const only = run({ nationality: "georgia", legalStatus: "zus", birthDate: "2005-03-03" }, [doc("student_cert", { expiresAt: "2027-02-28" })]);
   assert.equal(only.legacy.derivedLegalStatus, "student"); assert.equal(only.legacy.derivedPayrollClass, "B_student");
-  assert.equal(only.legacy.legacyMappingRequiresReview, true); assert.equal(only.legacy.legacyMismatchKind, "cross_class");
+  assert.equal(only.legacy.legacyMappingRequiresReview, false); assert.equal(only.legacy.legacyMismatchKind, "cross_class");
 });
 test("L30 work pending без підстави, ручний zus → oczekuje, review, cross_class", () => {
   const r = run({ nationality: "georgia", legalStatus: "zus" }, [doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2026-08-15" })]);
@@ -272,9 +281,6 @@ test("L32 TRC + diploma (два C) → karta_pobytu за пріоритетом;
   assert.equal(r.legacy.derivedLegalStatus, "karta_pobytu"); assert.equal(r.legacy.legacyMismatchKind, "within_class");
   assert.equal(run({ nationality: "georgia", legalStatus: "karta_pobytu" }, docs).legacy.legacyMismatchKind, "none");
   assert.equal(run({ nationality: "georgia", legalStatus: null }, docs).legacy.legacyMismatchKind, "cross_class");
-  // різні групи (C + student) — пріоритету немає → null + review
-  const mixed = run({ nationality: "georgia" }, [doc("trc", { expiresAt: "2027-06-01" }), doc("student_cert", { expiresAt: "2027-02-28" })]);
-  assert.equal(mixed.legacy.derivedLegalStatus, null); assert.equal(mixed.legacy.legacyMappingRequiresReview, true);
 });
 
 // ── L34–L35: кілька фірм ──

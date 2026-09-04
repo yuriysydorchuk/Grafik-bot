@@ -12,11 +12,11 @@
 import type { LegacyStatus, PayrollClass } from "./legality";
 
 export interface PayrollGroupInfo { code: PayrollClass; label: string; money: string }
+// Уточнення власника 04.09.2026: «без статусу» = «не зголошений» (група A), окремої групи немає.
 export const PAYROLL_GROUPS: PayrollGroupInfo[] = [
   { code: "C_registered", label: "Оформлений", money: "konto за правилами фабрики, готівка лише за правилом/бонусом" },
-  { code: "B_student", label: "Студент", money: "студентський податковий клас (до 26 років); право на працю — окремо" },
-  { code: "A_cash", label: "Не зголошений", money: "усе готівкою, без ZUS" },
-  { code: "N_none", label: "Без статусу", money: "як «оформлений» без пільг — потребує уваги" },
+  { code: "B_student", label: "Студент", money: "довідка студента/учня (будь-яка форма) + вік до 26 → усе на konto, без ZUS" },
+  { code: "A_cash", label: "Не зголошений", money: "усе готівкою, без ZUS; сюди ж — без статусу і без документів" },
 ];
 
 export interface LegacyStatusInfo {
@@ -36,8 +36,11 @@ export const LEGACY_STATUS_MAP: LegacyStatusInfo[] = [
   { status: "zus", group: "C_registered", precedence: 4, manualOnly: false, note: "zezwolenie na pracę typ A на нашу фірму" },
   { status: "dyplom", group: "C_registered", precedence: 5, manualOnly: false, note: "dyplom studiów stacjonarnych w PL" },
   { status: "powiadomienie", group: "C_registered", precedence: 6, manualOnly: false, note: "powiadomienie UA або oświadczenie на нашу фірму" },
-  { status: "student", group: "B_student", precedence: 90, manualOnly: true, note: "для виплат — прапорець «Студент» + вік до 26, НЕ довідка; zaświadczenie стаціонару дає лише право на працю" },
-  { status: "oczekuje", group: "A_cash", precedence: 99, manualOnly: true, note: "справа в toku без права на працю — лише ручне рішення, автоматично на готівку не переводимо" },
+  // Студент — сильніший за всі C-підстави (уточнення власника 04.09.2026: довідка студента
+  // або учня будь-якої форми + вік до 26 → усе на konto). Право на працю без zezwolenia
+  // дає лише стаціонар — це окрема вісь (work), не група виплат.
+  { status: "student", group: "B_student", precedence: 0, manualOnly: false, note: "довідка студента/учня (будь-яка форма навчання) + вік до 26 за датою народження; без дати народження — потребує перевірки" },
+  { status: "oczekuje", group: "A_cash", precedence: 99, manualOnly: false, note: "справа в toku без права на працю, або немає ані статусу, ані документів, ані умов" },
 ];
 
 export interface DocTypeStatusInfo {
@@ -57,7 +60,7 @@ export const DOC_TYPE_STATUS_MAP: DocTypeStatusInfo[] = [
   { typeCode: "powiadomienie_ua", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: "лише громадяни UA" },
   { typeCode: "oswiadczenie", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
   { typeCode: "zezwolenie_a", status: "zus", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
-  { typeCode: "student_cert", status: "student", group: "B_student", review: true, requiresEmployerMatch: false, condition: "стаціонар дає працю; група виплат — за прапорцем і віком" },
+  { typeCode: "student_cert", status: "student", group: "B_student", review: false, requiresEmployerMatch: false, condition: "будь-яка форма навчання + вік до 26; після 26 довідка на виплати не впливає" },
   { typeCode: "karta_polaka", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "право на працю є, статусу-відповідника немає" },
   { typeCode: "humanitarian_visa", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "гуманітарні підстави — відповідника немає" },
   { typeCode: "refugee_status", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "гуманітарні підстави — відповідника немає" },

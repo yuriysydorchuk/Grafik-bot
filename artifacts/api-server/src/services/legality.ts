@@ -141,7 +141,7 @@ export function normalizeLegacyStatus(status: string | null | undefined): Legacy
 // oczekuje → все готівкою; student → податковий клас; NULL → без статусу; решта — «оформлений».
 export function payrollClassOf(status: string | null | undefined): PayrollClass {
   const s = normalizeLegacyStatus(status);
-  if (s == null) return "N_none";
+  if (s == null) return "A_cash"; // без статусу = не зголошений (уточнення власника 04.09.2026)
   if (s === "oczekuje") return "A_cash";
   if (s === "student") return "B_student";
   return "C_registered";
@@ -478,6 +478,14 @@ export function deriveLegacy(
     const ev = { kind: "document" as const, id: d.id, code: d.typeCode };
     if (d.typeCode === "status_ukr") { ukrOnly = true; continue; }
     if (d.typeCode === "stay_case_certificate") continue;
+    if (d.typeCode === "student_cert") {
+      // студент для виплат: довідка будь-якої форми + до 26 за датою народження;
+      // без дати — пропозиція з review; після 26 — довідка на групу не впливає
+      const u26 = isUnder26At(worker.birthDate, today);
+      if (u26 === false) continue;
+      cands.push({ status: "student", cls: "B_student", review: u26 === null, evidence: ev });
+      continue;
+    }
     const m = docTypeStatus(d.typeCode);
     if (!m) continue;
     if (m.requiresEmployerMatch && !empOk(d)) continue;
@@ -491,9 +499,14 @@ export function deriveLegacy(
         legacyMismatchKind: kindOverride ?? "no_proposal", evidence: c?.evidence ?? null,
       };
     }
-    const kind: LegacyDerivation["legacyMismatchKind"] = c.status === current ? "none" : c.cls === currentClass && c.cls === "C_registered" ? "within_class" : "cross_class";
+    // та сама група виплат = гроші без змін (у т.ч. NULL ↔ oczekuje — обидва група A)
+    const kind: LegacyDerivation["legacyMismatchKind"] = c.status === current ? "none" : c.cls === currentClass ? "within_class" : "cross_class";
     return { derivedLegalStatus: c.status, derivedPayrollClass: c.cls, currentPayrollClass: currentClass, legacyMappingRequiresReview: c.review, legacyMismatchKind: kind, evidence: c.evidence };
   };
+
+  // студент до 26 — сильніший за будь-яку C-підставу: усе на konto (уточнення власника 04.09.2026)
+  const student = cands.find(c => c.status === "student");
+  if (student) return finish(student);
 
   const proposals = cands.filter(c => c.status != null);
   const distinct = new Set(proposals.map(c => c.status));
@@ -511,6 +524,11 @@ export function deriveLegacy(
   // справа в toku без жодної робочої підстави → oczekuje (клас A, завжди review)
   if (axes.work.status === "pending" || (axes.work.status === "unknown" && axes.work.basisDocId != null)) {
     return finish({ status: "oczekuje", cls: "A_cash", review: true, evidence: { kind: "case", id: axes.work.basisDocId ?? undefined } });
+  }
+  // ані статусу, ані чинних документів → не зголошений, усе готівкою (уточнення власника 04.09.2026);
+  // зі старим статусом і без документів — пропозиції немає, резолвер бере старий блок
+  if (current == null && !documents.some(d => valid(d))) {
+    return finish({ status: "oczekuje", cls: "A_cash", review: false, evidence: null });
   }
   return finish(null);
 }
