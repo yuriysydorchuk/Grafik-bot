@@ -100,6 +100,9 @@ export interface LegalizationGlobals { today: string; ukrStatusEnd: string | nul
 export type PayrollGroupCode = "A_cash" | "B_student" | "C_registered" | "N_none";
 export interface LegalStatusMap {
   groups: { code: PayrollGroupCode; label: string; money: string }[];
+  studentMaxAge: number;
+  overridden: boolean; // є чинне правило payroll.status_map (інакше — дефолти коду)
+  rule: { id: number; effectiveFrom: string; verifiedAt: string | null; note: string | null } | null;
   statuses: { status: string; group: PayrollGroupCode; precedence: number; manualOnly: boolean; note: string; docTypes: { code: string; name: string }[] }[];
   docTypes: { typeCode: string; name: string; inCatalog: boolean; status: string | null; group: PayrollGroupCode; review: boolean; requiresEmployerMatch: boolean; condition: string | null }[];
 }

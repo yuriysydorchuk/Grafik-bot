@@ -88,6 +88,20 @@ test("verify/reject: pending-аплоуд стає підставою лише �
   assert.deepEqual(actions, ["verified", "rejected"]);
 });
 
+test("status-map: без правила — дефолти коду; версія payroll.status_map перекриває studentMaxAge/manualOnly", opts, async () => {
+  const owner = await seedAdmin({ role: "owner" });
+  const before = await request(app).get("/api/legalization/status-map").set("Cookie", owner.cookie);
+  assert.equal(before.status, 200); assert.equal(before.body.overridden, false); assert.equal(before.body.studentMaxAge, 26);
+  assert.equal(before.body.statuses.find((s: any) => s.status === "student").manualOnly, false);
+  const c = await request(app).post("/api/legal-rules").set("Cookie", owner.cookie).set(H)
+    .send({ code: "payroll.status_map", kind: "global", axis: null, conditions: { studentMaxAge: 30, statuses: [{ status: "student", manualOnly: true }] }, effectiveFrom: "2026-01-01" });
+  assert.equal(c.status, 200, JSON.stringify(c.body));
+  const after = await request(app).get("/api/legalization/status-map").set("Cookie", owner.cookie);
+  assert.equal(after.body.overridden, true); assert.equal(after.body.studentMaxAge, 30); assert.equal(after.body.rule.id, c.body.id);
+  assert.equal(after.body.statuses.find((s: any) => s.status === "student").manualOnly, true);
+  assert.equal(after.body.statuses.find((s: any) => s.status === "polak").precedence, 1, "незгадані статуси — з дефолтів");
+});
+
 test("правила: нова версія закриває попередню; PATCH править лише verified/note/isActive; умови — тільки версією", opts, async () => {
   const owner = await seedAdmin({ role: "owner" });
   const c = await request(app).post("/api/legal-rules").set("Cookie", owner.cookie).set(H)

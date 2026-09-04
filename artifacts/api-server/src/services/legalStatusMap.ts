@@ -72,6 +72,59 @@ export const DOC_TYPE_STATUS_MAP: DocTypeStatusInfo[] = [
   { typeCode: "stay_case_certificate", status: "oczekuje", group: "A_cash", review: true, requiresEmployerMatch: false, condition: "справа в toku без попереднього права на працю" },
 ];
 
-export const docTypeStatus = (typeCode: string): DocTypeStatusInfo | undefined => DOC_TYPE_STATUS_MAP.find(m => m.typeCode === typeCode);
-export const legacyStatusInfo = (status: LegacyStatus): LegacyStatusInfo => LEGACY_STATUS_MAP.find(m => m.status === status)!;
-export const precedenceOf = (status: LegacyStatus | null): number => status ? legacyStatusInfo(status).precedence : 999;
+// ── Налаштовувана мапа (рішення власника 04.09.2026: «мапу статусів теж до
+// налаштувань»). Константи вище — значення за замовчуванням; правило
+// legal_rules.code = "payroll.status_map" (kind global) перекриває їх повністю
+// або частково (conditions = StatusMapConfig, версійовано як усі правила).
+export interface StatusMapConfig {
+  studentMaxAge: number;                                  // «до 26» → вік, з якого довідка на виплати не впливає
+  statuses: Pick<LegacyStatusInfo, "status" | "group" | "precedence" | "manualOnly">[];
+  docTypes: Pick<DocTypeStatusInfo, "typeCode" | "status" | "group" | "review" | "requiresEmployerMatch">[];
+}
+export const STUDENT_MAX_AGE_DEFAULT = 26;
+const GROUPS = new Set<PayrollClass>(["A_cash", "B_student", "C_registered", "N_none"]);
+const STATUSES = new Set<string>(LEGACY_STATUS_MAP.map(s => s.status));
+
+export interface ResolvedStatusMap {
+  studentMaxAge: number;
+  statuses: LegacyStatusInfo[];
+  docTypes: DocTypeStatusInfo[];
+  overridden: boolean; // є чинне правило payroll.status_map
+}
+
+// Злиття правила з дефолтами: невалідні/невідомі записи ігноруються (движок не
+// має падати від зіпсованого JSON у правилі), відсутні — беруться з коду.
+export function resolveStatusMap(conditions: Record<string, unknown> | null | undefined): ResolvedStatusMap {
+  const c = (conditions ?? {}) as Partial<StatusMapConfig>;
+  const studentMaxAge = typeof c.studentMaxAge === "number" && c.studentMaxAge >= 16 && c.studentMaxAge <= 40 ? c.studentMaxAge : STUDENT_MAX_AGE_DEFAULT;
+  const sOver = new Map((Array.isArray(c.statuses) ? c.statuses : []).filter(s => s && STATUSES.has(String(s.status))).map(s => [s.status, s]));
+  const statuses = LEGACY_STATUS_MAP.map(base => {
+    const o = sOver.get(base.status);
+    if (!o) return base;
+    return {
+      ...base,
+      group: GROUPS.has(o.group as PayrollClass) ? (o.group as PayrollClass) : base.group,
+      precedence: typeof o.precedence === "number" ? o.precedence : base.precedence,
+      manualOnly: typeof o.manualOnly === "boolean" ? o.manualOnly : base.manualOnly,
+    };
+  });
+  const dOver = new Map((Array.isArray(c.docTypes) ? c.docTypes : []).filter(d => d && typeof d.typeCode === "string").map(d => [d.typeCode, d]));
+  const docTypes = DOC_TYPE_STATUS_MAP.map(base => {
+    const o = dOver.get(base.typeCode);
+    if (!o) return base;
+    const status = o.status === null || (typeof o.status === "string" && STATUSES.has(o.status)) ? (o.status as LegacyStatus | null) : base.status;
+    const statusGroup = status ? statuses.find(s => s.status === status)?.group : undefined;
+    return {
+      ...base, status,
+      group: statusGroup ?? (GROUPS.has(o.group as PayrollClass) ? (o.group as PayrollClass) : base.group),
+      review: typeof o.review === "boolean" ? o.review : base.review,
+      requiresEmployerMatch: typeof o.requiresEmployerMatch === "boolean" ? o.requiresEmployerMatch : base.requiresEmployerMatch,
+    };
+  });
+  return { studentMaxAge, statuses, docTypes, overridden: !!conditions && Object.keys(conditions).length > 0 };
+}
+export const DEFAULT_STATUS_MAP: ResolvedStatusMap = resolveStatusMap(null);
+
+export const docTypeStatus = (typeCode: string, map: ResolvedStatusMap = DEFAULT_STATUS_MAP): DocTypeStatusInfo | undefined => map.docTypes.find(m => m.typeCode === typeCode);
+export const legacyStatusInfo = (status: LegacyStatus, map: ResolvedStatusMap = DEFAULT_STATUS_MAP): LegacyStatusInfo => map.statuses.find(m => m.status === status)!;
+export const precedenceOf = (status: LegacyStatus | null, map: ResolvedStatusMap = DEFAULT_STATUS_MAP): number => status ? legacyStatusInfo(status, map).precedence : 999;

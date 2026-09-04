@@ -15,7 +15,7 @@ import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
 import { documentAuditDiff, documentAuditRows } from "../services/documentAudit";
 import { documentChanged } from "../services/documentEvents";
-import { PAYROLL_GROUPS, LEGACY_STATUS_MAP, DOC_TYPE_STATUS_MAP } from "../services/legalStatusMap";
+import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
 
@@ -70,13 +70,22 @@ router.get("/legalization/globals", async (_req, res) => {
 });
 
 // Мапа статусів (services/legalStatusMap.ts) + назви типів з каталогу — вкладка «Правила легальності».
+// Чинна мапа = правило payroll.status_map (якщо є) поверх дефолтів коду.
 router.get("/legalization/status-map", async (_req, res) => {
   const types = await db.select({ code: documentTypesTable.code, name: documentTypesTable.name, isActive: documentTypesTable.isActive }).from(documentTypesTable);
   const nameOf = new Map(types.map(t => [t.code, t.name]));
+  const today = warsawToday();
+  const [rule] = await db.select().from(legalRulesTable)
+    .where(and(eq(legalRulesTable.code, "payroll.status_map"), eq(legalRulesTable.isActive, true), sql`${legalRulesTable.effectiveFrom} <= ${today}`, sql`(${legalRulesTable.effectiveTo} IS NULL OR ${legalRulesTable.effectiveTo} > ${today})`))
+    .orderBy(desc(legalRulesTable.effectiveFrom)).limit(1);
+  const m = resolveStatusMap(rule?.conditions as Record<string, unknown> | undefined);
   ok(res, {
     groups: PAYROLL_GROUPS,
-    statuses: LEGACY_STATUS_MAP.map(s => ({ ...s, docTypes: DOC_TYPE_STATUS_MAP.filter(d => d.status === s.status).map(d => ({ code: d.typeCode, name: nameOf.get(d.typeCode) ?? d.typeCode })) })),
-    docTypes: DOC_TYPE_STATUS_MAP.map(d => ({ ...d, name: nameOf.get(d.typeCode) ?? d.typeCode, inCatalog: nameOf.has(d.typeCode) })),
+    studentMaxAge: m.studentMaxAge,
+    overridden: m.overridden,
+    rule: rule ? { id: rule.id, effectiveFrom: rule.effectiveFrom, verifiedAt: rule.verifiedAt, note: rule.note } : null,
+    statuses: m.statuses.map(s => ({ ...s, docTypes: m.docTypes.filter(d => d.status === s.status).map(d => ({ code: d.typeCode, name: nameOf.get(d.typeCode) ?? d.typeCode })) })),
+    docTypes: m.docTypes.map(d => ({ ...d, name: nameOf.get(d.typeCode) ?? d.typeCode, inCatalog: nameOf.has(d.typeCode) })),
   });
 });
 

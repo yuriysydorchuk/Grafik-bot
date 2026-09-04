@@ -180,6 +180,24 @@ test("L16b гуманітарні підстави: wiza humanitarna BY → stay
   const r3 = run({ nationality: "ukraine" }, [doc("humanitarian_visa", { expiresAt: "2027-01-01" })]);
   assert.ok(has(r3, "doc_nationality_mismatch"));
 });
+test("L16c правило payroll.status_map перекриває мапу: studentMaxAge, manualOnly, статус документа", () => {
+  const mapRule: LegalRuleInput = {
+    code: "payroll.status_map", kind: "global", axis: null, effectiveFrom: "2026-01-01", effectiveTo: null, verifiedAt: "2026-09-04T00:00:00Z",
+    conditions: { studentMaxAge: 30, statuses: [{ status: "zus", manualOnly: true }], docTypes: [{ typeCode: "diploma", status: "zus" }] },
+  };
+  const rs = [...rules(), mapRule];
+  // 28 років: за дефолтом (26) довідка не впливає, з межею 30 — студент
+  const r = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia", birthDate: "1998-01-01", legalStatus: "zus" }), documents: [doc("student_cert", { expiresAt: "2027-02-28" })], rules: rs });
+  assert.equal(r.legacy.derivedLegalStatus, "student");
+  const def = run({ nationality: "georgia", birthDate: "1998-01-01", legalStatus: "zus" }, [doc("student_cert", { expiresAt: "2027-02-28" })]);
+  assert.equal(def.legacy.derivedLegalStatus, null);
+  // zus — лише вручну: zezwolenie_a більше не пропонує zus; diploma перемаплена на zus → теж пропускається
+  const z = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia" }), documents: [doc("zezwolenie_a", { employerCompanyId: 1, expiresAt: "2027-06-01" }), doc("diploma")], rules: rs });
+  assert.equal(z.legacy.derivedLegalStatus, null);
+  // зіпсований JSON у правилі → дефолти, без падіння
+  const broken = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia", birthDate: "2005-01-01" }), documents: [doc("student_cert", { expiresAt: "2027-02-28" })], rules: [...rules(), { ...mapRule, conditions: { studentMaxAge: "x", statuses: "no", docTypes: [null] } as any }] });
+  assert.equal(broken.legacy.derivedLegalStatus, "student");
+});
 test("L16 has_expiry тип без дати → legal + review expiry_missing", () => {
   const r = run({ nationality: "georgia" }, [doc("trc", { expiresAt: null })]);
   assert.equal(r.stay.status, "legal"); assert.ok(has(r, "expiry_missing")); assert.equal(r.reviewRequired, true);

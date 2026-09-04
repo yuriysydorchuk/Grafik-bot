@@ -148,7 +148,7 @@ export function payrollClassOf(status: string | null | undefined): PayrollClass 
 }
 
 export const EU_NATIONALITIES = new Set(["poland", "romania", "eu_other"]);
-import { docTypeStatus, precedenceOf } from "./legalStatusMap";
+import { docTypeStatus, precedenceOf, legacyStatusInfo, resolveStatusMap, DEFAULT_STATUS_MAP, type ResolvedStatusMap } from "./legalStatusMap";
 export const UA_NATIONALITIES = new Set(["ukraine"]);
 
 /** true/false — відомо; null — національність невідома */
@@ -176,13 +176,14 @@ export function addDaysStr(d: string, n: number): string {
   return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
 }
 // Дзеркало services/svodniSync.ts isUnder26: день 26-річчя вже НЕ «до 26».
-export function isUnder26At(birthDate: string | null, at: string): boolean | null {
+export function isUnderAgeAt(birthDate: string | null, at: string, maxAge: number): boolean | null {
   if (!birthDate || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) return null;
   const [by, bm, bd] = birthDate.split("-").map(Number);
   const [ay, am, ad] = at.split("-").map(Number);
   const age = ay! - by! - ((am! < bm!) || (am === bm && ad! < bd!) ? 1 : 0);
-  return age < 26;
+  return age < maxAge;
 }
+export const isUnder26At = (birthDate: string | null, at: string): boolean | null => isUnderAgeAt(birthDate, at, 26);
 
 // ─── Правила ─────────────────────────────────────────────────────────────────
 export function activeRules(rules: LegalRuleInput[], today: string): LegalRuleInput[] {
@@ -198,10 +199,13 @@ interface Globals {
   unverifiedCountsAsBasis: boolean;
   ukrStatusEnd: string | null;
   ukrRuleVerified: boolean;
+  statusMap: ResolvedStatusMap; // мапа виплат — правило payroll.status_map або дефолти з коду
 }
+const DEFAULT_GLOBALS: Globals = { defaultLeadDays: 30, unverifiedCountsAsBasis: false, ukrStatusEnd: null, ukrRuleVerified: false, statusMap: DEFAULT_STATUS_MAP };
 function readGlobals(rules: LegalRuleInput[]): Globals {
-  const g: Globals = { defaultLeadDays: 30, unverifiedCountsAsBasis: false, ukrStatusEnd: null, ukrRuleVerified: false };
+  const g: Globals = { ...DEFAULT_GLOBALS };
   for (const r of rules) {
+    if (r.code === "payroll.status_map" && r.conditions && typeof r.conditions === "object") g.statusMap = resolveStatusMap(r.conditions as Record<string, unknown>);
     if (r.code === "defaults.lead_days" && typeof r.conditions.defaultLeadDays === "number") g.defaultLeadDays = r.conditions.defaultLeadDays as number;
     if (r.code === "defaults.evidence" && typeof r.conditions.unverifiedCountsAsBasis === "boolean") g.unverifiedCountsAsBasis = r.conditions.unverifiedCountsAsBasis as boolean;
     if (r.code === "global.ukr_status_end" && typeof r.conditions.date === "string") { g.ukrStatusEnd = r.conditions.date as string; g.ukrRuleVerified = !!r.verifiedAt; }
@@ -457,7 +461,9 @@ export function deriveLegacy(
   today: string,
   globals?: Globals,
 ): LegacyDerivation {
-  const g = globals ?? { defaultLeadDays: 30, unverifiedCountsAsBasis: false, ukrStatusEnd: null, ukrRuleVerified: false };
+  const g = globals ?? DEFAULT_GLOBALS;
+  const map = g.statusMap;
+  const manualOnly = (s: LegacyStatus | null) => !!s && legacyStatusInfo(s, map).manualOnly;
   const current = normalizeLegacyStatus(worker.legalStatus);
   const currentClass = payrollClassOf(worker.legalStatus);
   const valid = (d: LegalityDocument) => d.status === "present" && (!d.validFrom || d.validFrom <= today)
@@ -479,16 +485,18 @@ export function deriveLegacy(
     if (d.typeCode === "status_ukr") { ukrOnly = true; continue; }
     if (d.typeCode === "stay_case_certificate") continue;
     if (d.typeCode === "student_cert") {
-      // студент для виплат: довідка будь-якої форми + до 26 за датою народження;
-      // без дати — пропозиція з review; після 26 — довідка на групу не впливає
-      const u26 = isUnder26At(worker.birthDate, today);
-      if (u26 === false) continue;
-      cands.push({ status: "student", cls: "B_student", review: u26 === null, evidence: ev });
+      // студент для виплат: довідка будь-якої форми + вік до studentMaxAge (26) за датою
+      // народження; без дати — пропозиція з review; старший — довідка на групу не впливає
+      if (manualOnly("student")) continue;
+      const young = isUnderAgeAt(worker.birthDate, today, map.studentMaxAge);
+      if (young === false) continue;
+      cands.push({ status: "student", cls: legacyStatusInfo("student", map).group, review: young === null, evidence: ev });
       continue;
     }
-    const m = docTypeStatus(d.typeCode);
+    const m = docTypeStatus(d.typeCode, map);
     if (!m) continue;
     if (m.requiresEmployerMatch && !empOk(d)) continue;
+    if (manualOnly(m.status)) continue;
     cands.push({ status: m.status, cls: m.group, review: m.review, evidence: ev });
   }
   const finish = (c: Cand | null, kindOverride?: LegacyDerivation["legacyMismatchKind"]): LegacyDerivation => {
@@ -515,7 +523,7 @@ export function deriveLegacy(
     // пріоритетом мапи (рішення власника 04.09.2026: детермінований статус, без review);
     // різні групи (напр. C + student) — пріоритету немає → null + review
     const allC = proposals.every(c => c.cls === "C_registered");
-    if (allC) return finish([...proposals].sort((a, b) => precedenceOf(a.status) - precedenceOf(b.status))[0]!);
+    if (allC) return finish([...proposals].sort((a, b) => precedenceOf(a.status, map) - precedenceOf(b.status, map))[0]!);
     return finish({ status: null, cls: null as unknown as PayrollClass, review: true, evidence: null }, "no_proposal");
   }
   if (proposals.length === 1) return finish(proposals[0]!);
