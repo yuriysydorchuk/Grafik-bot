@@ -238,7 +238,8 @@ test("L25 oświadczenie → powiadomienie (НЕ zus)", () => {
 });
 test("L26 zezwolenie_a → zus", () => {
   const r = run({ nationality: "georgia" }, [doc("trc", { expiresAt: "2027-06-01" }), doc("zezwolenie_a", { employerCompanyId: 1, expiresAt: "2027-06-01" })]);
-  assert.equal(r.legacy.derivedLegalStatus, null, "TRC + zezwolenie_a — дві різні C-підстави → null");
+  assert.equal(r.legacy.derivedLegalStatus, "karta_pobytu", "TRC + zezwolenie_a — обидві C: за пріоритетом мапи karta_pobytu (#3) сильніша за zus (#4)");
+  assert.equal(r.legacy.legacyMappingRequiresReview, false);
   const only = run({ nationality: "georgia" }, [doc("zezwolenie_a", { employerCompanyId: 1, expiresAt: "2027-06-01" })]);
   assert.equal(only.legacy.derivedLegalStatus, "zus");
 });
@@ -265,10 +266,15 @@ test("L30 work pending без підстави, ручний zus → oczekuje, r
   assert.equal(r.legacy.derivedLegalStatus, "oczekuje"); assert.equal(r.legacy.legacyMismatchKind, "cross_class");
   assert.equal(r.legacy.legacyMappingRequiresReview, true);
 });
-test("L32 TRC + diploma (два C) → null; ручний zus → within_class, ручний NULL → no_proposal", () => {
+test("L32 TRC + diploma (два C) → karta_pobytu за пріоритетом; ручний zus → within_class, ручний NULL → cross_class", () => {
   const docs = [doc("trc", { expiresAt: "2027-06-01" }), doc("diploma")];
-  assert.equal(run({ nationality: "georgia", legalStatus: "zus" }, docs).legacy.legacyMismatchKind, "within_class");
-  assert.equal(run({ nationality: "georgia", legalStatus: null }, docs).legacy.legacyMismatchKind, "no_proposal");
+  const r = run({ nationality: "georgia", legalStatus: "zus" }, docs);
+  assert.equal(r.legacy.derivedLegalStatus, "karta_pobytu"); assert.equal(r.legacy.legacyMismatchKind, "within_class");
+  assert.equal(run({ nationality: "georgia", legalStatus: "karta_pobytu" }, docs).legacy.legacyMismatchKind, "none");
+  assert.equal(run({ nationality: "georgia", legalStatus: null }, docs).legacy.legacyMismatchKind, "cross_class");
+  // різні групи (C + student) — пріоритету немає → null + review
+  const mixed = run({ nationality: "georgia" }, [doc("trc", { expiresAt: "2027-06-01" }), doc("student_cert", { expiresAt: "2027-02-28" })]);
+  assert.equal(mixed.legacy.derivedLegalStatus, null); assert.equal(mixed.legacy.legacyMappingRequiresReview, true);
 });
 
 // ── L34–L35: кілька фірм ──

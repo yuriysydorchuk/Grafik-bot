@@ -96,6 +96,13 @@ export interface WorkerDocument {
   attrs: Record<string, unknown> | null; // типоспецифічні атрибути (lib/documentFields.ts): TRC {laborMarketAccess}
 }
 export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number }
+// Мапа «група виплат ↔ старий статус ↔ типи документів» (GET /legalization/status-map, services/legalStatusMap.ts)
+export type PayrollGroupCode = "A_cash" | "B_student" | "C_registered" | "N_none";
+export interface LegalStatusMap {
+  groups: { code: PayrollGroupCode; label: string; money: string }[];
+  statuses: { status: string; group: PayrollGroupCode; precedence: number; manualOnly: boolean; note: string; docTypes: { code: string; name: string }[] }[];
+  docTypes: { typeCode: string; name: string; inCatalog: boolean; status: string | null; group: PayrollGroupCode; review: boolean; requiresEmployerMatch: boolean; condition: string | null }[];
+}
 // Результат движка легальності (кеш worker_legality; GET /workers/:id/legality — будь-яка роль)
 export type LegalityStatus = "legal" | "pending" | "expiring" | "illegal" | "unknown";
 export interface LegalityReason { code: string; axis: "stay" | "work" | "overall"; severity: "info" | "warn" | "block"; params?: Record<string, unknown> }

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Percent, Plus, Trash2, GripVertical, ChevronUp, ChevronDown, Landmark, Scale, Check, ShieldQuestion, History } from "lucide-react";
 import { toast } from "sonner";
-import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory, type DocCategory, type LegalRule } from "../lib/api";
+import { get, put, post, patch, del, upload, type Funnel, type FunnelStage, type Company, type DocumentType, type Position, type Me, type Factory, type DocCategory, type LegalRule, type LegalStatusMap } from "../lib/api";
+import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
 import { Card, Spinner, Input, Label, Button, Select, Badge, Empty, Modal, Textarea } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -514,6 +515,8 @@ function LegalRulesSettings() {
         <Button onClick={() => setModal({ mode: "newRule" })}><Plus className="h-4 w-4" /> {t("Нове правило")}</Button>
       </div>
 
+      <StatusMapSection />
+
       {globalUkr && (
         <Card className="flex flex-wrap items-center gap-3 border-amber-200 bg-amber-50/60 p-3 text-sm">
           <Scale className="h-4 w-4 shrink-0 text-amber-600" />
@@ -538,6 +541,102 @@ function LegalRulesSettings() {
           onSaved={() => { qc.invalidateQueries({ queryKey: ["legal-rules"] }); setModal(null); }} />
       )}
     </div>
+  );
+}
+
+// ─── Мапа статусів: група виплат ↔ старий статус ↔ документи ────────────────
+// Читається з коду (services/legalStatusMap.ts) — це доведені payroll-кодом
+// відповідності, не юридичні правила, тому без редагування: змінюється лише
+// разом із логікою виплат. Рішення власника 04.09.2026: виплати рахуються за
+// документами, якщо вони є, інакше за старим блоком; мапа — спільний словник.
+const GROUP_BADGE: Record<string, "green" | "blue" | "amber" | "slate"> = { C_registered: "green", B_student: "blue", A_cash: "amber", N_none: "slate" };
+
+function StatusMapSection() {
+  const t = useT();
+  const { data, isLoading } = useQuery<LegalStatusMap>({ queryKey: ["legal-status-map"], queryFn: () => get("/legalization/status-map") });
+  const [open, setOpen] = useState(true);
+  const [showDocs, setShowDocs] = useState(false);
+  if (isLoading || !data) return null;
+  const groupLabel = (code: string) => data.groups.find(g => g.code === code)?.label ?? code;
+  return (
+    <Card className="overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left">
+        {open ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+        <span className="text-sm font-semibold text-slate-700">{t("Мапа статусів: група виплат ↔ статус легалізації ↔ документи")}</span>
+        <span className="ml-auto text-xs text-slate-400">{t("лише перегляд, з коду виплат")}</span>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100">
+          <p className="px-4 pt-3 text-xs text-slate-500">
+            {t("Якщо в людини є підтверджені документи — статус і група виплат виводяться з них за цією мапою; якщо документів немає — береться статус зі старого блоку профілю. «Студент» і «Не зголошений» ніколи не виводяться автоматично.")}
+          </p>
+          <div className="flex flex-wrap gap-2 px-4 pt-3">
+            {data.groups.map(g => (
+              <div key={g.code} className="flex items-center gap-2 rounded-lg border border-slate-100 px-2.5 py-1.5 text-xs">
+                <Badge color={GROUP_BADGE[g.code] ?? "slate"}>{t(g.label)}</Badge>
+                <span className="text-slate-500">{t(g.money)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-x-auto px-4 py-3">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400">
+                  <th className="py-1 pr-3 font-semibold">{t("Старий статус")}</th>
+                  <th className="py-1 pr-3 font-semibold">{t("Група виплат")}</th>
+                  <th className="py-1 pr-3 font-semibold">{t("Виводиться з документів")}</th>
+                  <th className="py-1 pr-3 font-semibold">{t("Примітка")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.statuses.map(s => (
+                  <tr key={s.status} className="border-t border-slate-50 align-top">
+                    <td className="py-1.5 pr-3 whitespace-nowrap">
+                      <span className="font-medium text-slate-700">{t(LEGAL_LABEL[s.status as LegalStatus] ?? s.status)}</span>
+                      {!s.manualOnly && <span className="ml-1 text-[10px] text-slate-400">#{s.precedence}</span>}
+                    </td>
+                    <td className="py-1.5 pr-3"><Badge color={GROUP_BADGE[s.group] ?? "slate"}>{t(groupLabel(s.group))}</Badge></td>
+                    <td className="py-1.5 pr-3 text-slate-600">
+                      {s.manualOnly ? <span className="text-amber-600">{t("лише вручну")}</span>
+                        : s.docTypes.length ? s.docTypes.map(d => d.name).join(", ") : <span className="text-slate-400">{t("громадянство з профілю")}</span>}
+                    </td>
+                    <td className="py-1.5 pr-3 text-xs text-slate-500">{t(s.note)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="pt-2 text-[11px] text-slate-400">{t("#n — пріоритет, коли документи дають кілька статусів однієї групи «Оформлений»: береться сильніший (менший номер); гроші при цьому не змінюються.")}</p>
+          </div>
+          <button type="button" onClick={() => setShowDocs(v => !v)} className="flex w-full items-center gap-1.5 border-t border-slate-100 px-4 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-50">
+            {showDocs ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />} {t("По типах документів")} ({data.docTypes.length})
+          </button>
+          {showDocs && (
+            <div className="overflow-x-auto px-4 pb-3">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400">
+                    <th className="py-1 pr-3 font-semibold">{t("Документ")}</th>
+                    <th className="py-1 pr-3 font-semibold">{t("Старий статус")}</th>
+                    <th className="py-1 pr-3 font-semibold">{t("Група виплат")}</th>
+                    <th className="py-1 pr-3 font-semibold">{t("Умова")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.docTypes.map(d => (
+                    <tr key={d.typeCode} className="border-t border-slate-50 align-top">
+                      <td className="py-1.5 pr-3 text-slate-700">{d.name}{!d.inCatalog && <span className="ml-1 text-[10px] text-rose-500">{t("немає в каталозі")}</span>}</td>
+                      <td className="py-1.5 pr-3 whitespace-nowrap">{d.status ? t(LEGAL_LABEL[d.status as LegalStatus] ?? d.status) : <span className="text-slate-400">—</span>}{d.review && <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[10px] text-amber-700">{t("потребує перевірки")}</span>}</td>
+                      <td className="py-1.5 pr-3"><Badge color={GROUP_BADGE[d.group] ?? "slate"}>{t(groupLabel(d.group))}</Badge></td>
+                      <td className="py-1.5 pr-3 text-xs text-slate-500">{[d.requiresEmployerMatch ? t("лише на нашу фірму") : null, d.condition ? t(d.condition) : null].filter(Boolean).join(" · ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 

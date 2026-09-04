@@ -15,6 +15,7 @@ import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
 import { documentAuditDiff, documentAuditRows } from "../services/documentAudit";
 import { documentChanged } from "../services/documentEvents";
+import { PAYROLL_GROUPS, LEGACY_STATUS_MAP, DOC_TYPE_STATUS_MAP } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
 
@@ -66,6 +67,17 @@ router.get("/legalization/globals", async (_req, res) => {
   const ukr = live.find(r => r.code === "global.ukr_status_end");
   const lead = live.find(r => r.code === "defaults.lead_days");
   ok(res, { today, ukrStatusEnd: (ukr?.conditions as any)?.date ?? null, defaultLeadDays: (lead?.conditions as any)?.defaultLeadDays ?? 30 });
+});
+
+// Мапа статусів (services/legalStatusMap.ts) + назви типів з каталогу — вкладка «Правила легальності».
+router.get("/legalization/status-map", async (_req, res) => {
+  const types = await db.select({ code: documentTypesTable.code, name: documentTypesTable.name, isActive: documentTypesTable.isActive }).from(documentTypesTable);
+  const nameOf = new Map(types.map(t => [t.code, t.name]));
+  ok(res, {
+    groups: PAYROLL_GROUPS,
+    statuses: LEGACY_STATUS_MAP.map(s => ({ ...s, docTypes: DOC_TYPE_STATUS_MAP.filter(d => d.status === s.status).map(d => ({ code: d.typeCode, name: nameOf.get(d.typeCode) ?? d.typeCode })) })),
+    docTypes: DOC_TYPE_STATUS_MAP.map(d => ({ ...d, name: nameOf.get(d.typeCode) ?? d.typeCode, inCatalog: nameOf.has(d.typeCode) })),
+  });
 });
 
 // ── Дашборд ──

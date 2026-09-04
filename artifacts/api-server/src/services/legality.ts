@@ -148,6 +148,7 @@ export function payrollClassOf(status: string | null | undefined): PayrollClass 
 }
 
 export const EU_NATIONALITIES = new Set(["poland", "romania", "eu_other"]);
+import { docTypeStatus, precedenceOf } from "./legalStatusMap";
 export const UA_NATIONALITIES = new Set(["ukraine"]);
 
 /** true/false — відомо; null — національність невідома */
@@ -469,28 +470,18 @@ export function deriveLegacy(
     cands.push({ status: "polak", cls: "C_registered", review: false, evidence: { kind: "nationality", rule: "stay.pl_citizen" } });
   }
   let ukrOnly = false;
+  // Тип документа → статус/група — з мапи services/legalStatusMap.ts (спільний
+  // словник з вкладкою Налаштувань). Справа (stay_case_certificate) — не кандидат,
+  // а фолбек через axes.work нижче; status_ukr — лише побут.
   for (const d of documents) {
     if (!valid(d) || !d.typeCode) continue;
     const ev = { kind: "document" as const, id: d.id, code: d.typeCode };
-    switch (d.typeCode) {
-      case "karta_stalego_pobytu": cands.push({ status: "staly_pobyt", cls: "C_registered", review: false, evidence: ev }); break;
-      case "rezydent_ue": cands.push({ status: null, cls: "C_registered", review: true, evidence: ev }); break;
-      // гуманітарні підстави: legacy-мапи в payroll-коді немає → без пропозиції, review
-      case "humanitarian_visa": case "refugee_status": case "subsidiary_protection":
-      case "humanitarian_stay": case "tolerated_stay": case "eu_family_member_card":
-        cands.push({ status: null, cls: "C_registered", review: true, evidence: ev }); break;
-      case "trc": case "zezwolenie_jednolite":
-        if (d.typeCode === "zezwolenie_jednolite" && !empOk(d)) break;
-        cands.push({ status: "karta_pobytu", cls: "C_registered", review: false, evidence: ev }); break;
-      case "diploma": cands.push({ status: "dyplom", cls: "C_registered", review: false, evidence: ev }); break;
-      case "powiadomienie_ua": case "oswiadczenie":
-        if (empOk(d)) cands.push({ status: "powiadomienie", cls: "C_registered", review: false, evidence: ev }); break;
-      case "zezwolenie_a":
-        if (empOk(d)) cands.push({ status: "zus", cls: "C_registered", review: false, evidence: ev }); break;
-      case "student_cert": cands.push({ status: "student", cls: "B_student", review: true, evidence: ev }); break;
-      case "status_ukr": ukrOnly = true; break;
-      default: break;
-    }
+    if (d.typeCode === "status_ukr") { ukrOnly = true; continue; }
+    if (d.typeCode === "stay_case_certificate") continue;
+    const m = docTypeStatus(d.typeCode);
+    if (!m) continue;
+    if (m.requiresEmployerMatch && !empOk(d)) continue;
+    cands.push({ status: m.status, cls: m.group, review: m.review, evidence: ev });
   }
   const finish = (c: Cand | null, kindOverride?: LegacyDerivation["legacyMismatchKind"]): LegacyDerivation => {
     if (!c || c.status == null) {
@@ -507,11 +498,12 @@ export function deriveLegacy(
   const proposals = cands.filter(c => c.status != null);
   const distinct = new Set(proposals.map(c => c.status));
   if (distinct.size > 1) {
-    // кілька різних підстав — пріоритет із коду не випливає → null + review;
-    // якщо всі кандидати і ручне значення — клас C, гроші не міняються
+    // кілька різних підстав однієї групи C — гроші однакові, беремо сильнішу за
+    // пріоритетом мапи (рішення власника 04.09.2026: детермінований статус, без review);
+    // різні групи (напр. C + student) — пріоритету немає → null + review
     const allC = proposals.every(c => c.cls === "C_registered");
-    return finish({ status: null, cls: allC ? "C_registered" : null as unknown as PayrollClass, review: true, evidence: null },
-      allC && currentClass === "C_registered" ? "within_class" : "no_proposal");
+    if (allC) return finish([...proposals].sort((a, b) => precedenceOf(a.status) - precedenceOf(b.status))[0]!);
+    return finish({ status: null, cls: null as unknown as PayrollClass, review: true, evidence: null }, "no_proposal");
   }
   if (proposals.length === 1) return finish(proposals[0]!);
   if (cands.length) return finish(cands[0]!); // лише rezydent → null + review
