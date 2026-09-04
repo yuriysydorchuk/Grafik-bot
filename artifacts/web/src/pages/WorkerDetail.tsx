@@ -788,7 +788,8 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
               <button onClick={async () => { if (await confirm({ title: t("Скасувати пакет?"), danger: true, confirmText: t("Скасувати") })) cancelMut.mutate(c.id); }}
                 className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Скасувати")}><Ban className="h-3.5 w-3.5" /></button>
             )}
-            <button onClick={() => setExpanded(x => x === c.id ? null : c.id)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <button onClick={() => setExpanded(x => x === c.id ? null : c.id)} className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700" title={t("Файли пакета: перегляд, скачати, друк, надіслати")}>
+              <FileText className="h-3.5 w-3.5" /> {t("файли")}
               {expanded === c.id ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             </button>
           </div>
@@ -1374,14 +1375,15 @@ function SlotSendButton({ candidates, onPick, title }: { candidates: DocumentTyp
 
 // Один рядок документа: слот каталогу (кілька можливих типів) або вже наявний
 // документ поза слотами — один макет на все.
-function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScan }: {
+function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScan, scanTitle }: {
   icon: any; label: string; subLabel?: string | null; state: DocRowState; canLegal: boolean; companies: Company[];
   requestCandidates?: DocumentType[]; requestTitle?: string;
   onAdd?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
   onHistory?: (doc: WorkerDocument) => void; onDelete?: (doc: WorkerDocument) => void;
   onVerify?: (doc: WorkerDocument) => void; onReject?: (doc: WorkerDocument) => void; onPreview?: (doc: WorkerDocument) => void;
   onSend?: (doc: WorkerDocument) => void;
-  onScan?: () => void; // «Сканувати карту» — лише слот Karta pobytu
+  onScan?: () => void; // «Сканувати» — слоти Paszport і Karta pobytu
+  scanTitle?: string;
 }) {
   const t = useT();
   if (state.kind === "notneeded") {
@@ -1405,7 +1407,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
             <span className="text-xs text-slate-400">{t("немає")}</span>
             {requestedAt && <span className="text-xs font-medium text-blue-600">{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}</span>}
             <span className="flex items-center gap-0.5">
-              {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
+              {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={scanTitle ?? t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
               {onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}
               {requestCandidates && onRequest && <SlotSendButton candidates={requestCandidates} onPick={onRequest} title={requestTitle ?? t("Попросити подати")} />}
             </span>
@@ -1453,7 +1455,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
                 <button onClick={() => onReject(doc)} className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відхилити")}><XCircle className="h-3.5 w-3.5" /></button>
               </>
             )}
-            {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
+            {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={scanTitle ?? t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
             {hasFile && (
               <>
                 <a href={`/api/worker-documents/${doc.id}/file?download=1`} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Скачати")}><Download className="h-3.5 w-3.5" /></a>
@@ -1475,7 +1477,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
 
 // Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
-function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard }: {
+function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
   onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
@@ -1483,6 +1485,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
   onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
   onSend: (doc: WorkerDocument) => void;
   onScanCard: () => void;
+  onScanPassport: () => void;
 }) {
   const t = useT();
   const items = docs
@@ -1496,7 +1499,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
   // «Запросити» завжди пропонує саме цей тип (і коли документ уже є — «попросити
   // свіжий скан»); «Додати» редагує наявний missing-рядок запиту, якщо такий є,
   // інакше створює новий документ.
-  const fixedSlot = (code: string, label: string) => {
+  const fixedSlot = (code: string, label: string, onScan?: () => void, scanTitle?: string) => {
     const type = byCode(code);
     if (!type) return null;
     const state = resolveDocSlot(items, [code], globals);
@@ -1505,7 +1508,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
       <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
         onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
-        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={onScan} scanTitle={scanTitle} />
     );
   };
 
@@ -1543,7 +1546,7 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
 
   return (
     <div>
-      {fixedSlot("passport", t("Paszport"))}
+      {fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"))}
       {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard)}
       {fixedSlot("student_cert", t("Student"))}
       {nationality === "ukraine" && fixedSlot("powiadomienie_ua", t("Powiadomienie"))}
@@ -1590,6 +1593,16 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
   const [sendFor, setSendFor] = useState<WorkerDocument | null>(null);
   const [scanCard, setScanCard] = useState(false);
+  const passportInputRef = useRef<HTMLInputElement>(null);
+  const passportScan = useMutation({
+    mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload(`/workers/${workerId}/passport-scan`, fd); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] });
+      qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-questionnaire", workerId] });
+      toast.success(t("Паспорт розпізнано — документ і анкета оновлені"));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   // «Легалізація» на профілі рахує на льоту з кешу — будь-яка зміна документа
   // (нова, дата, статус, верифікація, відхилення) мусить скинути й цей кеш.
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
@@ -1656,8 +1669,12 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
             onReject={doc => setRejecting(doc)}
             onPreview={doc => setPreview(doc)}
             onSend={doc => setSendFor(doc)}
-            onScanCard={() => setScanCard(true)} />
+            onScanCard={() => setScanCard(true)}
+            onScanPassport={() => passportInputRef.current?.click()} />
         )}
+        {/* скан паспорта зі слоту — той самий POST /workers/:id/passport-scan, що в анкеті (OCR → документ + анкета + профіль) */}
+        <input ref={passportInputRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) passportScan.mutate(f); e.target.value = ""; }} />
       </Section>
       {sendFor && <SendFileModal workerId={workerId} title={sendFor.title} endpoint={`/worker-documents/${sendFor.id}/send`} onClose={() => setSendFor(null)} />}
       {scanCard && <ResidenceCardScanModal workerId={workerId} types={types} onClose={() => setScanCard(false)} onSaved={() => { inv(); setScanCard(false); }} />}

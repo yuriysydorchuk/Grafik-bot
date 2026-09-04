@@ -106,6 +106,13 @@
 .dark .bg-sky-600 { background-color: oklch(58.8% 0.158 241.966); }
 .dark .hover\:bg-sky-700:hover { background-color: oklch(50% 0.134 242.749); }
 .dark .to-red-700 { --tw-gradient-to: #bd170f; }
+/* Неактивні solid-кнопки: unlayered-фікси вище перебивали utilities-варіант
+   disabled:bg-*-300 — у темній темі disabled виглядала як звичайна яскрава
+   (баг 04.09.2026). Приглушені заливки, як у світлій темі. */
+.dark .bg-red-600:disabled, .dark .disabled\:bg-red-300:disabled { background-color: #7f342d; color: #d3a5a1; }
+.dark .bg-rose-600:disabled, .dark .disabled\:bg-rose-300:disabled { background-color: oklch(42.3% 0.132 13.697); color: #d3a5a1; }
+.dark .bg-emerald-600:disabled, .dark .disabled\:bg-emerald-300:disabled { background-color: oklch(37% 0.08 163); color: #a9c9b8; }
+.dark .bg-sky-600:disabled { background-color: oklch(38% 0.09 242); color: #a9bfd3; }
 
 /* Row hover for every data table. Lives in the base layer so any explicit
    bg-* utility on a row still wins (utilities layer overrides base). */
