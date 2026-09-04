@@ -76,8 +76,9 @@ export async function resetDb(): Promise<void> {
 
 // Insert a role with the given capabilities/pages, then invalidate the auth role cache so
 // authRequired resolves it on the next request.
-export async function seedRole(key: string, caps: string[] = [], pages: string[] = []): Promise<void> {
-  await db.insert(rolesTable).values({ key, label: key, caps, pages }).onConflictDoNothing();
+// `notify` — bot notification types the role opts into (bot notifyAdmins/notifyRoles are gated by it).
+export async function seedRole(key: string, caps: string[] = [], pages: string[] = [], notify: string[] = []): Promise<void> {
+  await db.insert(rolesTable).values({ key, label: key, caps, pages, notify }).onConflictDoNothing();
   invalidateRolesCache();
 }
 

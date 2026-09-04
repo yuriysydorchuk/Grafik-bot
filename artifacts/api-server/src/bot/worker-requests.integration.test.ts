@@ -97,8 +97,9 @@ test("advance: balance block goes only to admins with the /advances page", opts,
   // незнята виплачена залічка — має зʼявитись у довідці
   await db.insert(advanceRequestsTable).values({ workerId: w!.id, amount: 120, status: "paid", createdAt: new Date(Date.now() - 40 * 86400_000) });
   await db.insert(rolesTable).values([
-    { key: "owner", label: "owner", caps: [], pages: [] },
-    { key: "clerk", label: "clerk", caps: ["editData"], pages: ["/schedule"] },
+    // notify — опт-ін по ролі: без "advance" запит на аванс не дійде (див. notify-prefs.integration.test.ts)
+    { key: "owner", label: "owner", caps: [], pages: [], notify: ["advance"] },
+    { key: "clerk", label: "clerk", caps: ["editData"], pages: ["/schedule"], notify: ["advance"] },
   ]).onConflictDoNothing();
   invalidateRolesCache();
   await db.insert(adminsTable).values([

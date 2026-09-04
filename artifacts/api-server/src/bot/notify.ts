@@ -115,11 +115,16 @@ export async function offerTransferReport(workerId: number, oldFactoryId: number
   });
 }
 
-export async function notifyAdmins(text: string, options: Record<string, unknown> = {}) {
+// Офісний бродкаст (детальне повідомлення, часто з inline-кнопками). Кожне
+// повідомлення має NotifyType — адмін отримує його лише якщо тип увімкнений
+// у notify-префах його ролі (roles.notify); adminWantsNotify також відсіює
+// role=driver і невідомі ролі. Нетипізованого «всім адмінам» більше немає —
+// інакше вимкнені в налаштуваннях ролі сповіщення все одно доходили.
+export async function notifyAdmins(type: NotifyType, text: string, options: Record<string, unknown> = {}) {
   const admins = await db.select().from(adminsTable);
   for (const admin of admins) {
     if (!admin.telegramId) continue; // invited/pending admins have no Telegram yet
-    if (admin.role === "driver") continue; // web-only driver role — not office staff
+    if (!(await adminWantsNotify(admin, type))) continue;
     try { await bot.telegram.sendMessage(admin.telegramId, text, options as any); }
     catch { /* individual failure should not stop others */ }
   }
@@ -139,10 +144,13 @@ export async function notifyByType(type: NotifyType, text: string, options: Reco
 }
 
 // Role-targeted notification: stores an on-site notification (bell) AND sends Telegram
-// to the matching web users (by role) + the head driver when "driver"/"both" is targeted.
+// to the matching web users (by role notify prefs) + the head driver when "driver"/"both"
+// is targeted. `adminsNotified: true` — детальне повідомлення (з кнопками) адмінам уже
+// пішло через notifyAdmins того ж типу, тож тут лише дзвіночок + головний водій
+// (без прапорця адміни отримували одну подію двічі).
 export async function notifyRoles(
   audience: "scheduler" | "driver" | "both",
-  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance" | "substitution" | "availability_change"; title: string; body?: string },
+  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance" | "substitution" | "availability_change"; title: string; body?: string; adminsNotified?: boolean },
 ) {
   // 1) on-site notification
   try {
@@ -151,7 +159,7 @@ export async function notifyRoles(
 
   // 2) Telegram recipients
   const recipients = new Set<string>();
-  if (audience === "scheduler" || audience === "both") {
+  if ((audience === "scheduler" || audience === "both") && !msg.adminsNotified) {
     const admins = await db.select().from(adminsTable);
     for (const a of admins) {
       if (!a.telegramId) continue;
