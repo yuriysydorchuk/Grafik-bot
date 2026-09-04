@@ -38,9 +38,10 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   const rows: string[][] = [[t(lang, "menu.schedule")]];
   if (availability) rows.push([t(lang, "menu.availability")]);
   rows.push(hours ? [t(lang, "menu.factoryInfo"), t(lang, "menu.myHours")] : [t(lang, "menu.factoryInfo")]);
-  rows.push([t(lang, "menu.absence"), t(lang, "menu.myInfo")]);
-  rows.push([t(lang, "menu.referral"), t(lang, "menu.report")]);
-  rows.push([t(lang, "menu.advance"), t(lang, "menu.language")]);
+  rows.push([t(lang, "menu.absence"), t(lang, "menu.myAbsences")]);
+  rows.push([t(lang, "menu.myInfo"), t(lang, "menu.referral")]);
+  rows.push([t(lang, "menu.report"), t(lang, "menu.advance")]);
+  rows.push([t(lang, "menu.language")]);
   return Markup.keyboard(rows).resize();
 };
 

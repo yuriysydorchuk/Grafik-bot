@@ -98,6 +98,7 @@ import { installChatTracking, recordBotMessage } from "./chat";
 installChatTracking();
 
 import { registerInvoiceScan } from "./handlers/invoiceScan";
+import { registerWorkerAbsences } from "./handlers/absences";
 
 bot.use(async (ctx, next) => {
   try {
@@ -119,6 +120,8 @@ bot.use(async (ctx, next) => {
 // ── Скан фактур (📄 Фактура) — реєструється ДО загальних photo/document/text
 // хендлерів (вони не кличуть next); чужі стани пропускає далі через next() ────
 registerInvoiceScan(bot as any);
+// «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
+registerWorkerAbsences(bot as any, workerMenuFor);
 
 // Time/view helpers live in ./time and ./views.
 
@@ -4613,20 +4616,7 @@ bot.on("text", async (ctx) => {
     );
   }
 
-  // ── Absent worker: explain reason ─────────────────────────────────
-  if (state?.action === "absent:explain_reason") {
-    const { data } = state;
-    clearState(tid);
-    // Save reason to schedule entry
-    await db.update(scheduleEntriesTable).set({ absenceReason: text }).where(eq(scheduleEntriesTable.id, data.entryId));
-    // Notify admin
-    await notifyAdmins("no_show",
-      `📝 *Пояснення відсутності*\n\n👷 *${data.name}*\n📅 ${DAY_NAMES_UK[data.day as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}\n\nПричина: ${text}`,
-      { parse_mode: "Markdown" },
-    );
-    const w = await getWorker(tid);
-    return ctx.reply("✅ Дякуємо. Вашу причину передано адміністратору.", await workerMenuFor(w, wlang(w)));
-  }
+  // ── Absent worker: explain reason → bot/handlers/absences.ts ──────
 
   // ── Fire worker ───────────────────────────────────────────────────
   if (state?.action === "fire_worker:select") {

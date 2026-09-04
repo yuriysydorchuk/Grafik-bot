@@ -11,6 +11,7 @@ import { logger } from "../lib/logger";
 import { adminWantsNotify } from "./roles";
 import type { NotifyType } from "../lib/roles";
 import { setState } from "./state";
+import { entryDateStr } from "../lib/dates";
 import { DAY_UK, SHIFT_SHORT, splitMessage, mdSafe } from "./display";
 import { t, asLang, dayShort, DATE_LOCALE, type Lang } from "./i18n";
 import { nowWarsaw } from "./time";
@@ -127,6 +128,20 @@ export async function notifyAdmins(type: NotifyType, text: string, options: Reco
     if (!(await adminWantsNotify(admin, type))) continue;
     try { await bot.telegram.sendMessage(admin.telegramId, text, options as any); }
     catch { /* individual failure should not stop others */ }
+  }
+}
+
+// Переслати адмінам файл по Telegram file_id (довідки до пропусків): фото — sendPhoto,
+// решта — sendDocument (file_id фото не приймається sendDocument і навпаки).
+export async function notifyAdminsFile(type: NotifyType, fileId: string, kind: "photo" | "document", caption?: string) {
+  const admins = await db.select().from(adminsTable);
+  for (const admin of admins) {
+    if (!admin.telegramId) continue;
+    if (!(await adminWantsNotify(admin, type))) continue;
+    try {
+      if (kind === "photo") await bot.telegram.sendPhoto(admin.telegramId, fileId, { caption });
+      else await bot.telegram.sendDocument(admin.telegramId, fileId, { caption });
+    } catch { /* individual failure should not stop others */ }
   }
 }
 
@@ -464,9 +479,11 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
       name: workersTable.fullName,
       language: workersTable.language,
       shift: scheduleEntriesTable.shift,
+      weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(eq(scheduleEntriesTable.id, entryId));
 
   const row = rows[0];
@@ -481,7 +498,8 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
         t(lang, "notif.absentPrompt", { name: row.name ?? "", day: lDay(lang, day), shift: lShift(lang, row.shift as Shift) }),
         { parse_mode: "Markdown" },
       );
-      setState(row.telegramId, "absent:explain_reason", { entryId, day, shift: row.shift, name: row.name });
+      // далі флоу веде bot/handlers/absences.ts (причина → довідки → сповіщення адмінам)
+      setState(row.telegramId, "absent:explain_reason", { entryId, day, shift: row.shift, name: row.name, date: row.weekStart ? entryDateStr(String(row.weekStart), day) : null });
     } catch (e) {
       logger.error({ err: e }, "Error notifying absent worker");
     }
@@ -491,7 +509,6 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
   if (row.workerId) {
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-    const { scheduleWeeksTable } = await import("@workspace/db");
     const absenceRows = await db
       .select({ id: scheduleEntriesTable.id })
       .from(scheduleEntriesTable)

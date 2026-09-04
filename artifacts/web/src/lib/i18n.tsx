@@ -1407,6 +1407,11 @@ const EN: Record<string, string> = {
   "Анулювати": "Annul",
   "Повернути стандартний штраф": "Restore the default penalty",
   "— без причини —": "— no reason —",
+  "фото": "photo",
+  "пояснено": "explained",
+  "Підтвердження пропуску": "Absence proof",
+  "Відкрити в новій вкладці": "Open in a new tab",
+  "Дата внесення пояснення працівником": "Date the worker submitted the explanation",
 
   // ── Broadcast ──
   "Надіслати повідомлення працівникам у Telegram": "Send a message to workers on Telegram",

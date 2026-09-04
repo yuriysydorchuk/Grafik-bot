@@ -381,6 +381,8 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   // «Виправдана» відсутність: адмін визнав пропуск поважним — не рахується
   // у кількість пропусків працівника і не тягне штраф.
   absenceExcused: boolean("absence_excused").notNull().default(false),
+  // Коли працівник вніс пояснення в боті (може бути значно пізніше за дату пропуску).
+  absenceExplainedAt: timestamp("absence_explained_at"),
   // Штраф за пропуск, zł: NULL = стандартний (200), число = override (0 = анульовано).
   absencePenalty: real("absence_penalty"),
   // Перенесення штрафу в Kara сводної: місяць/дата + сума на момент переносу
@@ -501,6 +503,21 @@ export const absenceRequestsTable = pgTable("absence_requests", {
   status: text("status").notNull().default("pending"), // pending | substituted | rejected | accepted
   rejectReason: text("reject_reason"),                  // чому відхилено (опційно; йде у сповіщення працівнику)
   substituteWorkerId: integer("substitute_worker_id").references(() => workersTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Підтвердження пропуску (довідка від лікаря, скріншот), які працівник прикріпив
+// у боті разом із поясненням. Файл на диску в UPLOADS_DIR/absence-attachments;
+// tg_file_id — щоб переслати адмінам у бот без повторного аплоаду.
+export const absenceAttachmentsTable = pgTable("absence_attachments", {
+  id: serial("id").primaryKey(),
+  entryId: integer("entry_id").notNull().references(() => scheduleEntriesTable.id, { onDelete: "cascade" }),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  filePath: text("file_path").notNull(),   // відносний шлях у UPLOADS_ROOT
+  fileName: text("file_name"),
+  fileMime: text("file_mime"),
+  tgFileId: text("tg_file_id"),
+  tgKind: text("tg_kind"),                 // photo | document — яким методом пересилати file_id
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1763,6 +1780,7 @@ export type ShiftCancellation = typeof shiftCancellationsTable.$inferSelect;
 export type FactoryShiftOverride = typeof factoryShiftOverridesTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
+export type AbsenceAttachment = typeof absenceAttachmentsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;

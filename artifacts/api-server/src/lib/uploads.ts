@@ -17,12 +17,14 @@ export const UPLOADS_ROOT = process.env.UPLOADS_DIR
 export const WORKER_DOCS_DIR = path.join(UPLOADS_ROOT, "worker-documents");
 export const INVOICES_DIR = path.join(UPLOADS_ROOT, "invoices"); // скани фактур (бот + сайт)
 export const AGREEMENTS_DIR = path.join(UPLOADS_ROOT, "agreements"); // скани умов (/cost-invoices)
+export const ABSENCE_DOCS_DIR = path.join(UPLOADS_ROOT, "absence-attachments"); // довідки до пропусків (бот працівника)
 
 // Create the upload directories once at startup.
 export function ensureUploadDirs(): void {
   fs.mkdirSync(WORKER_DOCS_DIR, { recursive: true });
   fs.mkdirSync(INVOICES_DIR, { recursive: true });
   fs.mkdirSync(AGREEMENTS_DIR, { recursive: true });
+  fs.mkdirSync(ABSENCE_DOCS_DIR, { recursive: true });
 }
 
 // The multipart MIME is client-declared and NOT trustworthy. Sniff magic bytes so a
@@ -99,5 +101,30 @@ export async function shrinkDocBuffer(buf: Buffer, mime: string | null, log?: { 
     return buf;
   } finally {
     await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// ── Стискання фото з бота ────────────────────────────────────────────────────
+// Довідки/скріншоти, надіслані в бот «як файл», приходять у повному розмірі
+// (10+ МБ з камери). Зменшуємо до 1600px по більшій стороні і перекодуємо у
+// JPEG q80 (sharp — external у build.mjs). Best-effort: без sharp або при
+// помилці лишаємо оригінал. Повертає буфер + фактичний MIME (HEIC/PNG → jpeg).
+const IMG_SHRINK_FROM = 400 * 1024; // менші фото не чіпаємо
+export async function shrinkImageBuffer(buf: Buffer, mime: string | null, log?: { warn: (o: any, m: string) => void; info: (o: any, m: string) => void }): Promise<{ buf: Buffer; mime: string | null }> {
+  // (sharp повертає Buffer<ArrayBufferLike>; приводимо явно, щоб не тягнути generic у виклики)
+  if (!mime?.startsWith("image/") || buf.length < IMG_SHRINK_FROM) return { buf, mime };
+  try {
+    const sharp = (await import("sharp")).default;
+    const out: Buffer = await sharp(buf, { failOn: "none" }).rotate()
+      .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 80, mozjpeg: true }).toBuffer() as Buffer;
+    if (out.length >= 1024 && out.length < buf.length) {
+      log?.info({ from: buf.length, to: out.length }, "image shrunk with sharp");
+      return { buf: out, mime: "image/jpeg" };
+    }
+    return { buf, mime };
+  } catch (e: any) {
+    log?.warn({ err: e?.message, size: buf.length }, "image shrink failed — kept original");
+    return { buf, mime };
   }
 }

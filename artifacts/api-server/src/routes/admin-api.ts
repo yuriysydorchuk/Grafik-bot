@@ -9,7 +9,7 @@ import {
   driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
-  documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
+  documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable, absenceAttachmentsTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
   emailTemplatesTable,
@@ -894,6 +894,17 @@ router.get("/workers/:id/advances", WORKERS_RO, async (req, res) => {
   });
 });
 
+// Довідки/скріншоти до пропусків, прикріплені працівником у боті: мапа entryId → файли
+type AbsenceFile = { id: number; fileName: string | null; fileMime: string | null; createdAt: Date };
+async function absenceFilesFor(entryIds: number[]): Promise<Map<number, AbsenceFile[]>> {
+  const map = new Map<number, AbsenceFile[]>();
+  if (!entryIds.length) return map;
+  const rows = await db.select({ id: absenceAttachmentsTable.id, entryId: absenceAttachmentsTable.entryId, fileName: absenceAttachmentsTable.fileName, fileMime: absenceAttachmentsTable.fileMime, createdAt: absenceAttachmentsTable.createdAt })
+    .from(absenceAttachmentsTable).where(inArray(absenceAttachmentsTable.entryId, entryIds)).orderBy(absenceAttachmentsTable.id);
+  for (const r of rows) { const arr = map.get(r.entryId) ?? []; arr.push({ id: r.id, fileName: r.fileName, fileMime: r.fileMime, createdAt: r.createdAt }); map.set(r.entryId, arr); }
+  return map;
+}
+
 // Пропуски працівника з усіх затверджених тижнів — блок на сторінці профілю
 router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
@@ -901,7 +912,7 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
     .select({
       entryId: scheduleEntriesTable.id, factory: factoriesTable.name,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
-      reason: scheduleEntriesTable.absenceReason,
+      reason: scheduleEntriesTable.absenceReason, explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
       weekStart: scheduleWeeksTable.weekStart,
@@ -913,12 +924,14 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
   const absences = rows
     .map(r => ({
       entryId: r.entryId, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), shift: r.shift,
-      reason: r.reason, excused: !!r.reason, justified: !!r.excusedFlag,
+      reason: r.reason, explainedAt: r.explainedAt, excused: !!r.reason, justified: !!r.excusedFlag,
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
       deductedMonth: r.deductedMonth, deductedAmount: r.deductedAmount,
     }))
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 60);
+  const files = await absenceFilesFor(absences.map(a => a.entryId));
+  for (const a of absences as any[]) a.attachments = files.get(a.entryId) ?? [];
   const counted = absences.filter(a => !a.justified);
   const penaltyTotal = Math.round(absences.reduce((s, a) => s + a.penalty, 0) * 100) / 100;
   ok(res, { total: counted.length, justified: absences.length - counted.length, penaltyTotal, absences });
@@ -4087,6 +4100,7 @@ router.get("/absences", RW, async (req, res) => {
       entryId: scheduleEntriesTable.id, workerId: scheduleEntriesTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name, city: factoriesTable.city,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, reason: scheduleEntriesTable.absenceReason,
+      explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
       weekStart: scheduleWeeksTable.weekStart,
@@ -4100,6 +4114,7 @@ router.get("/absences", RW, async (req, res) => {
     .map(r => ({
       entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory, city: r.city,
       date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason,
+      explainedAt: r.explainedAt, // коли працівник вніс пояснення в боті (NULL = причину поставив адмін/водій)
       excused: !!r.reason,
       justified: !!r.excusedFlag, // «виправдано» адміном: не рахується в кількість/штраф
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
@@ -4109,6 +4124,8 @@ router.get("/absences", RW, async (req, res) => {
     }))
     .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
+  const files = await absenceFilesFor(absences.map(a => a.entryId));
+  for (const a of absences as any[]) a.attachments = files.get(a.entryId) ?? [];
   // Кількісні підсумки рахуються БЕЗ виправданих (justified) пропусків
   const counted = absences.filter(a => !a.justified);
   const noShow = counted.filter(a => !a.excused).length;
@@ -4147,6 +4164,27 @@ router.patch("/absences/:entryId", RW, async (req, res) => {
     entryId: e!.id, justified: e!.absenceExcused, penaltyOverride: e!.absencePenalty,
     penalty: absencePenaltyOf({ absenceExcused: e!.absenceExcused, absencePenalty: e!.absencePenalty }),
   });
+});
+
+// Файл довідки до пропуску (за авторизацією; особисті документи — nosniff, inline)
+router.get("/absence-attachments/:id/file", WORKERS_RO, async (req, res) => {
+  const id = Number(req.params.id);
+  const [f] = await db.select().from(absenceAttachmentsTable).where(eq(absenceAttachmentsTable.id, id));
+  if (!f) return fail(res, 404, "Файл не знайдено");
+  const abs = path.resolve(UPLOADS_ROOT, f.filePath);
+  if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
+  if (f.fileMime) res.type(f.fileMime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.fileName || `absence-${id}`)}`);
+  fs.createReadStream(abs).pipe(res);
+});
+
+router.delete("/absence-attachments/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [f] = await db.delete(absenceAttachmentsTable).where(eq(absenceAttachmentsTable.id, id)).returning();
+  if (!f) return fail(res, 404, "Файл не знайдено");
+  deleteStoredFile(f.filePath);
+  ok(res, { id });
 });
 
 // ─── Absence requests (worker self-reported) — approve / reject on the site ──────

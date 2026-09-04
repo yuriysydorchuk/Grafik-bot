@@ -4,7 +4,7 @@ import { hasTestDb, resetDb, closeDb, db, sent, sendText, pressButton, resetSent
 import { workersTable, adminsTable, rolesTable, absenceRequestsTable } from "../test/harness.ts";
 import { invalidateRolesCache } from "../lib/auth.ts";
 import { setState } from "./state.ts";
-import { notifyAdmins, notifyRoles } from "./notify.ts";
+import { notifyAdmins, notifyAdminsFile, notifyRoles } from "./notify.ts";
 
 // Офісні сповіщення бота мусять поважати roles.notify: адмін отримує подію лише якщо
 // її тип увімкнений у його ролі. Регресія 09.2026: notifyAdmins слав усім адмінам
@@ -51,6 +51,15 @@ test("notifyAdmins: only roles with the type enabled receive it; driver never do
   assert.equal(to(ALL_ON).length, 1);
   assert.equal(to(ONLY_ADV).length, 1, "the one type it opted into");
   assert.equal(to(MUTED).length, 0);
+  assert.equal(to(DRIVER).length, 0);
+});
+
+test("notifyAdminsFile: same gating as notifyAdmins", opts, async () => {
+  await seedAdmins();
+  await notifyAdminsFile("no_show", "FILE1", "photo", "📎 doc");
+  assert.equal(to(ALL_ON).filter(s => s.method === "sendPhoto").length, 1);
+  assert.equal(to(MUTED).length, 0);
+  assert.equal(to(ONLY_ADV).length, 0);
   assert.equal(to(DRIVER).length, 0);
 });
 
