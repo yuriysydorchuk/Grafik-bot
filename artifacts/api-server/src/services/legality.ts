@@ -25,7 +25,22 @@ export interface LegalityWorker {
   isStudent: boolean;
   legalStatus: string | null;         // легасі-поле — лише для порівняння
   notifyHours: number | null;
+  factoryId?: number | null;          // основна фабрика (workers.factory_id) — ціль осі «умова»
+  positionIsOffice?: boolean;         // офісна посада: умова = пакет без фабрики (BIURO)
 }
+
+// Умова з модуля підпису (contracts): для осі «умова». hasUmowa — у пакеті є
+// документ виду umowa (сталий пакет ZUS/PPK без umowy умовою не є).
+export interface LegalityContract {
+  id: number;
+  factoryId: number | null;
+  status: string;                     // draft | … | worker_signed | signed | cancelled | superseded | expired
+  dateFrom: string | null;
+  dateTo: string | null;
+  hasUmowa: boolean;
+}
+// Додаткова фабрика працівника (worker_factories) — умова потрібна на кожну активну сьогодні
+export interface LegalityFactory { factoryId: number; name: string | null; validFrom: string | null; validTo: string | null }
 
 export interface LegalityDocument {
   id: number;
@@ -68,6 +83,10 @@ export interface LegalityFacts {
   notificationSubmittedAt?: string | null;
   /** фірма останніх рядків сводної (мультифірмові вкладки) — для employer_ambiguous */
   lastSvodniCompanyId?: number | null;
+  /** фабрики зі змінами в графіку за останні ~30 днів — підказка «зміни на фабриці поза списком» */
+  scheduleFactories?: { factoryId: number; name: string | null }[];
+  /** назви фабрик для причин осі «умова» (основна + додаткові) */
+  factoryNames?: Record<number, string | null>;
 }
 
 export interface LegalityInput {
@@ -76,9 +95,11 @@ export interface LegalityInput {
   documents: LegalityDocument[];
   rules: LegalRuleInput[];
   facts?: LegalityFacts;
+  contracts?: LegalityContract[];     // модуль підпису; відсутнє = не завантажено → вісь «умова» unknown
+  factories?: LegalityFactory[];      // додаткові фабрики (worker_factories)
 }
 
-export interface Reason { code: string; axis: Axis | "overall"; severity: ReasonSeverity; params?: Record<string, unknown> }
+export interface Reason { code: string; axis: Axis | "contract" | "overall"; severity: ReasonSeverity; params?: Record<string, unknown> }
 export interface AxisResult {
   status: LegalityStatus;
   basisDocId: number | null;
@@ -108,6 +129,7 @@ export interface PayrollHints {
 export interface LegalityResult {
   stay: AxisResult;
   work: AxisResult;
+  contract: AxisResult;               // чинна умова на кожну фабрику (basisDocId = id умови-підстави основної фабрики)
   overall: LegalityStatus;
   reviewRequired: boolean;
   reasons: Reason[];
@@ -424,13 +446,19 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     if (!nextExpiry || e < nextExpiry.date) nextExpiry = { docId: d.id, typeCode: d.typeCode, date: e, daysLeft: daysBetween(today, e) };
   }
 
-  const overall = worst(stay.status, work.status);
+  // ── вісь «умова»: чинний підписаний пакет на кожну фабрику (або BIURO для офісу) ──
+  const contract = computeContractAxis(input, g);
+  for (const r of contract.reasons) flag(r, r.code === "schedule_outside_factories");
+
+  // Вісь «умова» тягне overall лише коли є що звіряти: unknown (немає даних про умови
+  // або фабрики в профілі) — це прогалина даних з власною причиною, не юридичний дефект
+  const overall = contract.status !== "unknown" ? worst(worst(stay.status, work.status), contract.status) : worst(stay.status, work.status);
 
   const legacy = deriveLegacy({ stay, work }, worker, documents, today, g);
   if (legacy.legacyMappingRequiresReview) review = true;
   // Порожній профіль (жодного документа) — це «немає даних», а не «потребує перевірки»:
   // перевіряти нема чого, reviewRequired на 400 людей без документів був би шумом.
-  if (documents.length === 0 && overall === "unknown") review = false;
+  if (documents.length === 0 && worst(stay.status, work.status) === "unknown") review = false;
 
   // ── контрольні підказки (НЕ вхід payroll) ──
   const under26 = isUnder26At(worker.birthDate, today);
@@ -445,7 +473,75 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     workBasisMissing: payrollClassOf(worker.legalStatus) === "C_registered" && work.basisDocId == null && work.basisRuleCode == null,
   };
 
-  return { stay, work, overall, reviewRequired: review, reasons, nextExpiry, requiredMissing, obligations, legacy, payrollHints };
+  return { stay, work, contract, overall, reviewRequired: review, reasons, nextExpiry, requiredMissing, obligations, legacy, payrollHints };
+}
+
+// ─── Вісь «умова» (рішення власника 04.09.2026) ───────────────────────────────
+// Оформлений = перебування + праця + чинна умова. Цілі: офісна посада → пакет
+// без фабрики з umową (BIURO); інакше основна фабрика + кожна активна сьогодні
+// додаткова (worker_factories). Чинна = status signed, dateTo не в минулому
+// (без дати — чинна, дати дописують постфактум). worker_signed = чекає підпису
+// компанії → pending. Найгірша фабрика визначає статус осі; причини — по фабриках.
+const CONTRACT_VALID = new Set(["signed"]);
+const CONTRACT_PENDING = new Set(["worker_signed"]);
+export function computeContractAxis(input: LegalityInput, g: Globals): AxisResult {
+  const { today, worker } = input;
+  const reasons: Reason[] = [];
+  const push = (code: string, severity: ReasonSeverity, params?: Record<string, unknown>) => reasons.push({ code, axis: "contract", severity, params });
+  const names = input.facts?.factoryNames ?? {};
+  const nameOf = (fid: number | null) => fid == null ? "Biuro" : (names[fid] ?? `#${fid}`);
+
+  if (!input.contracts) return { status: "unknown", basisDocId: null, basisRuleCode: null, expiresAt: null, reasons };
+
+  // цілі
+  const targets: (number | null)[] = [];
+  if (worker.positionIsOffice) targets.push(null);
+  else {
+    if (worker.factoryId != null) targets.push(worker.factoryId);
+    for (const f of input.factories ?? []) {
+      if (f.validFrom && f.validFrom > today) continue;
+      if (f.validTo && f.validTo < today) continue;
+      if (!targets.includes(f.factoryId)) targets.push(f.factoryId);
+    }
+  }
+  if (!targets.length) {
+    push("contract_no_factory", "warn");
+    return { status: "unknown", basisDocId: null, basisRuleCode: null, expiresAt: null, reasons };
+  }
+
+  let status: LegalityStatus = "legal";
+  let basisDocId: number | null = null;
+  let expiresAt: string | null = null;
+  for (const target of targets) {
+    const mine = input.contracts.filter(c => c.factoryId === target && (target != null || c.hasUmowa));
+    const live = mine.filter(c => (CONTRACT_VALID.has(c.status) || CONTRACT_PENDING.has(c.status)) && (!c.dateTo || c.dateTo >= today) && (!c.dateFrom || c.dateFrom <= today || CONTRACT_PENDING.has(c.status)));
+    // найкраща: signed > worker_signed; далі — найпізніша dateTo (безстрокова найкраща)
+    live.sort((a, b) => (CONTRACT_VALID.has(b.status) ? 1 : 0) - (CONTRACT_VALID.has(a.status) ? 1 : 0) || (a.dateTo == null ? -1 : b.dateTo == null ? 1 : b.dateTo.localeCompare(a.dateTo)));
+    const best = live[0];
+    const fname = nameOf(target);
+    if (!best) {
+      const expired = mine.filter(c => CONTRACT_VALID.has(c.status) && c.dateTo && c.dateTo < today).sort((a, b) => b.dateTo!.localeCompare(a.dateTo!))[0];
+      if (expired) push("contract_expired", "block", { factoryId: target, factory: fname, expiresAt: expired.dateTo, contractId: expired.id });
+      else push("contract_missing", "block", { factoryId: target, factory: fname });
+      status = "illegal";
+      continue;
+    }
+    if (CONTRACT_PENDING.has(best.status)) {
+      push("contract_awaiting_company", "warn", { factoryId: target, factory: fname, contractId: best.id });
+      if (status !== "illegal") status = "pending";
+    } else if (best.dateTo && daysBetween(today, best.dateTo) <= g.defaultLeadDays) {
+      push("contract_expiring", "warn", { factoryId: target, factory: fname, expiresAt: best.dateTo, daysLeft: daysBetween(today, best.dateTo), contractId: best.id });
+      if (status === "legal") status = "expiring";
+    }
+    if (target === (worker.positionIsOffice ? null : worker.factoryId) || basisDocId == null) basisDocId = best.id;
+    if (best.dateTo && (!expiresAt || best.dateTo < expiresAt)) expiresAt = best.dateTo;
+  }
+
+  // зміни в графіку на фабриці поза списком — підказка офісу (не міняє статус)
+  for (const sf of input.facts?.scheduleFactories ?? []) {
+    if (!worker.positionIsOffice && !targets.includes(sf.factoryId)) push("schedule_outside_factories", "warn", { factoryId: sf.factoryId, factory: sf.name ?? nameOf(sf.factoryId) });
+  }
+  return { status, basisDocId, basisRuleCode: null, expiresAt, reasons };
 }
 
 // ─── Legacy-адаптер (§4.2 плану): лише доведені існуючою логікою мапи ────────

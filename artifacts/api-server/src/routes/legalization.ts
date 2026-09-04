@@ -9,12 +9,12 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable,
-  factoriesTable, companiesTable,
+  factoriesTable, companiesTable, workerFactoriesTable, contractsTable,
 } from "@workspace/db";
-import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
 import { documentAuditDiff, documentAuditRows } from "../services/documentAudit";
-import { documentChanged } from "../services/documentEvents";
+import { documentChanged, workerLegalityChanged } from "../services/documentEvents";
 import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
@@ -37,7 +37,8 @@ const NAT_PL: Record<string, string> = {
 const STATUS_PL: Record<string, string> = { legal: "OK", pending: "W toku", expiring: "Wygasa", illegal: "BRAK PODSTAWY", unknown: "Brak danych" };
 const RULE_LABEL_PL: Record<string, string> = { "stay.pl_citizen": "Obywatel PL", "stay.eu_citizen": "Obywatel UE/EOG" };
 
-type Axes = { stay?: { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null }; work?: { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null } };
+type AxisBasis = { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null };
+type Axes = { stay?: AxisBasis; work?: AxisBasis; contract?: AxisBasis };
 
 // ── Світлофори одного працівника (будь-яка роль) ──
 router.get("/workers/:id/legality", async (req, res) => {
@@ -70,6 +71,52 @@ router.get("/legalization/globals", async (_req, res) => {
 });
 
 // Мапа статусів (services/legalStatusMap.ts) + назви типів з каталогу — вкладка «Правила легальності».
+// ── Додаткові фабрики працівника (worker_factories) — вісь «умова» вимагає пакет на кожну ──
+const WF = requireAnyCap("editData", "legalization");
+router.get("/workers/:id/factories", async (req, res) => {
+  const workerId = Number(req.params.id);
+  const rows = await db.select({ id: workerFactoriesTable.id, factoryId: workerFactoriesTable.factoryId, factoryName: factoriesTable.name, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo, note: workerFactoriesTable.note })
+    .from(workerFactoriesTable).leftJoin(factoriesTable, eq(workerFactoriesTable.factoryId, factoriesTable.id))
+    .where(eq(workerFactoriesTable.workerId, workerId)).orderBy(factoriesTable.name);
+  ok(res, rows);
+});
+router.post("/workers/:id/factories", WF, async (req, res) => {
+  const workerId = Number(req.params.id);
+  const b = req.body ?? {};
+  const factoryId = Number(b.factoryId);
+  if (!Number.isInteger(factoryId)) return fail(res, 400, "factoryId");
+  if (b.validFrom != null && b.validFrom !== "" && !isDate(b.validFrom)) return fail(res, 400, "validFrom: YYYY-MM-DD");
+  if (b.validTo != null && b.validTo !== "" && !isDate(b.validTo)) return fail(res, 400, "validTo: YYYY-MM-DD");
+  const [w] = await db.select({ id: workersTable.id, factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w) return fail(res, 404, "Працівника не знайдено");
+  if (w.factoryId === factoryId) return fail(res, 400, "Це основна фабрика працівника — вона вже в списку");
+  const [f] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!f) return fail(res, 404, "Фабрику не знайдено");
+  const [row] = await db.insert(workerFactoriesTable).values({ workerId, factoryId, validFrom: b.validFrom || null, validTo: b.validTo || null, note: typeof b.note === "string" && b.note.trim() ? b.note.trim() : null })
+    .onConflictDoUpdate({ target: [workerFactoriesTable.workerId, workerFactoriesTable.factoryId], set: { validFrom: b.validFrom || null, validTo: b.validTo || null } }).returning();
+  await workerLegalityChanged(workerId);
+  ok(res, row);
+});
+router.patch("/worker-factories/:id", WF, async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body ?? {};
+  const patch: Record<string, unknown> = {};
+  if (b.validFrom !== undefined) { if (b.validFrom && !isDate(b.validFrom)) return fail(res, 400, "validFrom"); patch.validFrom = b.validFrom || null; }
+  if (b.validTo !== undefined) { if (b.validTo && !isDate(b.validTo)) return fail(res, 400, "validTo"); patch.validTo = b.validTo || null; }
+  if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
+  const [row] = await db.update(workerFactoriesTable).set(patch).where(eq(workerFactoriesTable.id, id)).returning();
+  if (!row) return fail(res, 404, "Не знайдено");
+  await workerLegalityChanged(row.workerId);
+  ok(res, row);
+});
+router.delete("/worker-factories/:id", WF, async (req, res) => {
+  const id = Number(req.params.id);
+  const [row] = await db.delete(workerFactoriesTable).where(eq(workerFactoriesTable.id, id)).returning();
+  if (!row) return fail(res, 404, "Не знайдено");
+  await workerLegalityChanged(row.workerId);
+  ok(res, { ok: true });
+});
+
 // Чинна мапа = правило payroll.status_map (якщо є) поверх дефолтів коду.
 router.get("/legalization/status-map", async (_req, res) => {
   const types = await db.select({ code: documentTypesTable.code, name: documentTypesTable.name, isActive: documentTypesTable.isActive }).from(documentTypesTable);
@@ -118,18 +165,28 @@ async function dashboardRows() {
     .where(eq(workerDocumentsTable.status, "pending")).groupBy(workerDocumentsTable.workerId)) pendingCounts.set(p.workerId, p.n);
   const basis = (a?: Axes["stay"]) => !a ? null : a.basisDocId ? { label: docName.get(a.basisDocId) ?? null, until: a.expiresAt, docId: a.basisDocId }
     : a.basisRuleCode ? { label: RULE_LABEL_PL[a.basisRuleCode] ?? a.basisRuleCode, until: null, docId: null } : null;
+  // вісь «умова»: basisDocId = id умови; підпис — фабрика умови або «Biuro»
+  const contractIds = new Set<number>();
+  for (const r of rows) { const c = ((r.lg?.axes ?? {}) as Axes).contract; if (c?.basisDocId) contractIds.add(c.basisDocId); }
+  const contractLabel = new Map<number, string>();
+  if (contractIds.size) {
+    const cs = await db.select({ id: contractsTable.id, factoryName: factoriesTable.name })
+      .from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id)).where(inArray(contractsTable.id, [...contractIds]));
+    for (const c of cs) contractLabel.set(c.id, c.factoryName ? `Umowa — ${c.factoryName}` : "Umowa — Biuro");
+  }
+  const contractBasis = (a?: Axes["contract"]) => !a || !a.basisDocId ? null : { label: contractLabel.get(a.basisDocId) ?? "Umowa", until: a.expiresAt, docId: null };
   return rows.map(r => {
     const a = (r.lg?.axes ?? {}) as Axes;
     return {
       id: r.id, fullName: r.fullName, workerCode: r.workerCode, nationality: r.nationality, legalStatus: r.legalStatus,
       factoryId: r.factoryId, factoryName: r.factoryName, companyId: r.companyId, companyName: r.companyName,
       legality: r.lg ? {
-        stay: r.lg.stay, work: r.lg.work, overall: r.lg.overall, reviewRequired: r.lg.reviewRequired,
+        stay: r.lg.stay, work: r.lg.work, contract: r.lg.contract, overall: r.lg.overall, reviewRequired: r.lg.reviewRequired,
         nextExpiryAt: r.lg.nextExpiryAt, nextExpiryDocId: r.lg.nextExpiryDocId, requiredMissing: r.lg.requiredMissing,
         derivedLegalStatus: r.lg.derivedLegalStatus, legacyMismatchKind: r.lg.legacyMismatchKind,
         legacyMappingRequiresReview: r.lg.legacyMappingRequiresReview, reasons: r.lg.reasons, computedAt: r.lg.computedAt,
       } : null,
-      stayBasis: basis(a.stay), workBasis: basis(a.work),
+      stayBasis: basis(a.stay), workBasis: basis(a.work), contractBasis: contractBasis(a.contract),
       pendingDocs: pendingCounts.get(r.id) ?? 0,
     };
   });
@@ -165,6 +222,8 @@ router.get("/legalization/excel", LG, async (_req, res) => {
     { key: "stayTo", header: "Pobyt do", get: (r: any) => r.stayBasis?.until ?? "" },
     { key: "work", header: "Podstawa pracy", get: (r: any) => r.workBasis?.label ?? "" },
     { key: "workTo", header: "Praca do", get: (r: any) => r.workBasis?.until ?? "" },
+    { key: "umowa", header: "Umowa", get: (r: any) => (r.legality ? STATUS_PL[r.legality.contract] ?? r.legality.contract : "") },
+    { key: "umowaTo", header: "Umowa do", get: (r: any) => r.contractBasis?.until ?? "" },
     { key: "status", header: "Status", get: (r: any) => (r.legality ? STATUS_PL[r.legality.overall] ?? r.legality.overall : "Brak danych") },
     { key: "next", header: "Najbliższy termin", get: (r: any) => r.legality?.nextExpiryAt ?? "" },
     { key: "resp", header: "Odpowiedzialny", get: () => "" }, // відповідальний фабрики — фаза 3 (D7)

@@ -71,7 +71,9 @@ export interface Company {
   representative?: string | null;
 }
 export type Gender = "male" | "female";
-export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }
+export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean; isOffice?: boolean }
+// Додаткова фабрика працівника (worker_factories): умова потрібна на кожну активну
+export interface WorkerFactory { id: number; factoryId: number; factoryName: string | null; validFrom: string | null; validTo: string | null; note: string | null }
 // One requirement line in a factory order: how many workers of a position/gender.
 export interface OrderRequirement { positionId: number | null; gender: "any" | Gender; count: number }
 export type DocCategory = "identity" | "stay" | "work" | "payroll" | "medical" | "other";
@@ -111,10 +113,10 @@ export type LegalityStatus = "legal" | "pending" | "expiring" | "illegal" | "unk
 export interface LegalityReason { code: string; axis: "stay" | "work" | "overall"; severity: "info" | "warn" | "block"; params?: Record<string, unknown> }
 export interface LegalityAxis { basisDocId: number | null; basisRuleCode: string | null; expiresAt: string | null }
 export interface WorkerLegality {
-  workerId: number; stay: LegalityStatus; work: LegalityStatus; overall: LegalityStatus;
+  workerId: number; stay: LegalityStatus; work: LegalityStatus; contract: LegalityStatus; overall: LegalityStatus;
   reviewRequired: boolean; reasons: LegalityReason[];
   nextExpiryAt: string | null; nextExpiryDocId: number | null; requiredMissing: string[];
-  axes: { stay?: LegalityAxis; work?: LegalityAxis } | null;
+  axes: { stay?: LegalityAxis; work?: LegalityAxis; contract?: LegalityAxis } | null;
   obligations: { code: string; dueAt: string; overdue: boolean; satisfied: boolean; params?: Record<string, unknown> }[];
   derivedLegalStatus: string | null; derivedPayrollClass: string | null;
   legacyMappingRequiresReview: boolean; legacyMismatchKind: "none" | "within_class" | "cross_class" | "no_proposal";
@@ -134,9 +136,10 @@ export interface WorkerLegalityBrief { overall: LegalityStatus; stay: LegalitySt
 export interface LegalizationRow {
   id: number; fullName: string; workerCode: string | null; nationality: string | null; legalStatus: string | null;
   factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
-  legality: (Pick<WorkerLegality, "stay" | "work" | "overall" | "reviewRequired" | "nextExpiryAt" | "nextExpiryDocId" | "requiredMissing" | "derivedLegalStatus" | "legacyMismatchKind" | "legacyMappingRequiresReview" | "reasons" | "computedAt">) | null;
+  legality: (Pick<WorkerLegality, "stay" | "work" | "contract" | "overall" | "reviewRequired" | "nextExpiryAt" | "nextExpiryDocId" | "requiredMissing" | "derivedLegalStatus" | "legacyMismatchKind" | "legacyMappingRequiresReview" | "reasons" | "computedAt">) | null;
   stayBasis: { label: string | null; until: string | null; docId: number | null } | null;
   workBasis: { label: string | null; until: string | null; docId: number | null } | null;
+  contractBasis: { label: string | null; until: string | null; docId: number | null } | null;
   pendingDocs: number;
 }
 export interface LegalizationDashboard {

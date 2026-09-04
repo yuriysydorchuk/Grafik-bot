@@ -16,7 +16,7 @@ import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../l
 import {
   get, post, put, patch, del, upload,
   type DocumentType, type WorkerDocument, type Worker, type Factory, type Company, type Gender,
-  type WorkerLegality, type LegalityReason, type CaseStatus, type LegalizationGlobals,
+  type WorkerLegality, type LegalityReason, type CaseStatus, type LegalizationGlobals, type WorkerFactory,
 } from "../lib/api";
 import {
   LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, DOC_CATEGORY_LABEL,
@@ -214,6 +214,7 @@ export default function WorkerDetail() {
               <InlineBadgeSelect value={w.factoryId != null ? String(w.factoryId) : ""} color="red" none={t("— без фабрики —")}
                 onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
                 options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
+              <WorkerFactoriesChips workerId={w.id} factories={factories} primaryFactoryId={w.factoryId} />
             </div>
             {/* лічильники — текстовим рядком замість окремої стрічки тайлів */}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
@@ -746,6 +747,12 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   const qc = useQueryClient();
   const confirm = useConfirm();
   const { data: contracts = [], isLoading } = useQuery<ContractSummary[]>({ queryKey: ["worker-contracts", workerId], queryFn: () => get(`/workers/${workerId}/contracts`) });
+  // Вісь «умова» движка каже, на яку фабрику умови бракує — пропонуємо її в модалці генерації першою
+  const { data: lgForSuggest } = useQuery<WorkerLegality | null>({ queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`) });
+  const suggestedFactoryId = (() => {
+    const r = lgForSuggest?.reasons.find(x => (x.code === "contract_missing" || x.code === "contract_expired") && typeof x.params?.factoryId === "number");
+    return r ? (r.params!.factoryId as number) : undefined;
+  })();
   const [showNew, setShowNew] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] });
@@ -843,7 +850,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
         ) : null}
       </Section>
       {showNew && (
-        <GenerateDocumentsModal workerId={workerId} defaultFactoryId={factoryId} factories={factories}
+        <GenerateDocumentsModal workerId={workerId} defaultFactoryId={suggestedFactoryId ?? factoryId} factories={factories}
           standardValid={!!validStandard} standardValidUntil={validStandard?.dateTo ?? null}
           onClose={() => setShowNew(false)} onSaved={() => { inv(); setShowNew(false); }} />
       )}
@@ -1165,6 +1172,47 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
 // (напр. powiadomienie), та підказка до старого поля «Форма легалізації»
 // (LegalStatusRow нижче лишається окремим — легасі-поле НЕ автозаповнюється).
 // Доступно на перегляд усім ролям (як GET .../legality); «Перерахувати» — cap legalization.
+// Додаткові фабрики працівника (worker_factories) — чипи поруч з основною фабрикою
+// в шапці профілю. Умова потрібна на кожну активну (вісь «умова» движка); зміни в
+// графіку на фабриці поза списком — попередження в блоці легалізації.
+function WorkerFactoriesChips({ workerId, factories, primaryFactoryId }: { workerId: number; factories: Factory[]; primaryFactoryId: number | null }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const me = useMe();
+  const canEdit = can(me, "editData") || can(me, "legalization");
+  const { data: rows = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`) });
+  const [adding, setAdding] = useState(false);
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-factories", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
+  const add = useMutation({ mutationFn: (factoryId: number) => post(`/workers/${workerId}/factories`, { factoryId }), onSuccess: () => { inv(); setAdding(false); }, onError: (e: any) => toast.error(e.message) });
+  const remove = useMutation({ mutationFn: (id: number) => del(`/worker-factories/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const today = new Date().toLocaleDateString("sv-SE");
+  const options = factories.filter(f => f.id !== primaryFactoryId && !rows.some(r => r.factoryId === f.id));
+  return (
+    <>
+      {rows.map(r => {
+        const inactive = (r.validFrom && r.validFrom > today) || (r.validTo && r.validTo < today);
+        return (
+          <span key={r.id} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${inactive ? "bg-slate-100 text-slate-400" : "bg-red-50 text-red-700"}`}
+            title={[r.validFrom ? `${t("від")} ${r.validFrom}` : null, r.validTo ? `${t("до")} ${r.validTo}` : null, r.note].filter(Boolean).join(" · ") || t("додаткова фабрика")}>
+            +{r.factoryName ?? `#${r.factoryId}`}
+            {canEdit && <button type="button" onClick={() => remove.mutate(r.id)} className="text-red-300 hover:text-rose-600" title={t("Прибрати фабрику")}>×</button>}
+          </span>
+        );
+      })}
+      {canEdit && (adding ? (
+        <Select autoFocus value="" onChange={e => { if (e.target.value) add.mutate(Number(e.target.value)); else setAdding(false); }} onBlur={() => setAdding(false)} className="h-6 w-44 py-0 text-xs">
+          <option value="">{t("— оберіть фабрику —")}</option>
+          {options.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </Select>
+      ) : (
+        <button type="button" onClick={() => setAdding(true)} className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-400 hover:border-slate-400 hover:text-slate-600" title={t("Ще одна фабрика: умова потрібна на кожну")}>
+          + {t("фабрика")}
+        </button>
+      ))}
+    </>
+  );
+}
+
 // Шапка блоку «Легалізація і документи» (один блок із списком документів —
 // рішення власника 03.09.2026: «легалізація док і легалізація — одне й те саме»).
 // Світлофори побут/праця/разом, причини, наступний строк, обовʼязки. Без власної
@@ -1195,7 +1243,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   return (
       <div className="space-y-3 bg-slate-50/60 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          {(["stay", "work", "overall"] as const).map(axis => (
+          {(["stay", "work", "contract", "overall"] as const).map(axis => (
             <div key={axis} className="flex items-center gap-1.5 rounded-lg border border-slate-100 bg-white px-2.5 py-1.5 text-sm">
               <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[legality[axis]]}`} />
               <span className="text-xs text-slate-400">{t(AXIS_LABEL[axis])}</span>
@@ -1211,7 +1259,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
 
         {legality.reasons.length > 0 && (
           <div className="space-y-1.5">
-            {(["stay", "work", "overall"] as const).filter(ax => reasonsByAxis[ax]?.length).map(ax => (
+            {(["stay", "work", "contract", "overall"] as const).filter(ax => reasonsByAxis[ax]?.length).map(ax => (
               <div key={ax}>
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t(AXIS_LABEL[ax])}</div>
                 {reasonsByAxis[ax]!.map((r, i) => <div key={i} className={`text-xs ${severityCls(r.severity)}`}>• {reasonText(t, r)}</div>)}

@@ -39,6 +39,7 @@ export default function Legalization() {
   const [status, setStatus] = useState(init.status);
   const [soon, setSoon] = useState(init.soon);
   const [reviewOnly, setReviewOnly] = useState(init.review);
+  const [noContract, setNoContract] = useState(false); // вісь «умова» не legal (нема/закінчилась/чекає компанії)
   const [sort, setSort] = useState<SortKey>("expiry");
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -73,6 +74,7 @@ export default function Legalization() {
       // «потребують перевірки» = або движок питає підтвердження, або є аплоуд з бота, що
       // чекає офіс (той самий query-параметр ?review=1 веде сюди з плитки «на перевірці»)
       if (reviewOnly && !r.legality?.reviewRequired && r.pendingDocs === 0) return false;
+      if (noContract && (!r.legality || r.legality.contract === "legal")) return false;
       return true;
     });
     const cmp: Record<SortKey, (a: LegalizationRow, b: LegalizationRow) => number> = {
@@ -87,13 +89,13 @@ export default function Legalization() {
       status: (a, b) => (a.legality?.overall ?? "zzz").localeCompare(b.legality?.overall ?? "zzz"),
     };
     return [...list].sort((a, b) => sortDir * cmp[sort](a, b));
-  }, [rows, q, factory, company, status, soon, reviewOnly, sort, sortDir]);
+  }, [rows, q, factory, company, status, soon, reviewOnly, noContract, sort, sortDir]);
 
   const toggleRow = (id: number) => setExpanded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const clickSort = (k: SortKey) => { if (sort === k) setSortDir(d => (d === 1 ? -1 : 1)); else { setSort(k); setSortDir(1); } };
   const sortIcon = (k: SortKey) => sort !== k ? null : (sortDir === 1 ? <ChevronUp className="inline h-3 w-3" /> : <ChevronDown className="inline h-3 w-3" />);
-  const resetFilters = () => { setQ(""); setFactory(""); setCompany(""); setStatus(""); setSoon(false); setReviewOnly(false); };
-  const filtersActive = !!(q || factory || company || status || soon || reviewOnly);
+  const resetFilters = () => { setQ(""); setFactory(""); setCompany(""); setStatus(""); setSoon(false); setReviewOnly(false); setNoContract(false); };
+  const filtersActive = !!(q || factory || company || status || soon || reviewOnly || noContract);
 
   return (
     <div>
@@ -151,7 +153,10 @@ export default function Legalization() {
             <label className="flex items-center gap-1.5 text-sm text-slate-600">
               <input type="checkbox" checked={reviewOnly} onChange={e => setReviewOnly(e.target.checked)} /> {t("потребують перевірки")}
             </label>
-            {filtersActive && <button onClick={resetFilters} className="ml-auto text-xs text-slate-400 hover:text-slate-600">{t("Скинути фільтри")}</button>}
+            <label className="flex items-center gap-1.5 text-sm text-slate-600">
+              <input type="checkbox" checked={noContract} onChange={e => setNoContract(e.target.checked)} /> {t("без чинної умови")}
+            </label>
+            {filtersActive &&<button onClick={resetFilters} className="ml-auto text-xs text-slate-400 hover:text-slate-600">{t("Скинути фільтри")}</button>}
           </Card>
 
           <Card className="overflow-hidden">
@@ -165,6 +170,7 @@ export default function Legalization() {
                       <th className="px-3 py-2 whitespace-nowrap">{t("Фабрика")}</th>
                       <th className="px-3 py-2 whitespace-nowrap">{t(AXIS_LABEL.stay)}</th>
                       <th className="px-3 py-2 whitespace-nowrap">{t(AXIS_LABEL.work)}</th>
+                      <th className="px-3 py-2 whitespace-nowrap">{t(AXIS_LABEL.contract)}</th>
                       <th className="cursor-pointer select-none px-3 py-2 whitespace-nowrap" onClick={() => clickSort("status")}>{t(AXIS_LABEL.overall)} {sortIcon("status")}</th>
                       <th className="cursor-pointer select-none px-3 py-2 whitespace-nowrap" onClick={() => clickSort("expiry")}>{t("Наступний термін")} {sortIcon("expiry")}</th>
                       <th className="px-3 py-2 whitespace-nowrap">{t("Форма легалізації")}</th>
@@ -202,6 +208,7 @@ function RowGroup({ r, open, onToggle, t }: { r: LegalizationRow; open: boolean;
         <td className="px-3 py-2 text-slate-500">{r.factoryName ?? "—"}</td>
         <td className="px-3 py-2"><AxisCell status={lg?.stay} basis={r.stayBasis} t={t} /></td>
         <td className="px-3 py-2"><AxisCell status={lg?.work} basis={r.workBasis} t={t} /></td>
+        <td className="px-3 py-2"><AxisCell status={lg?.contract} basis={r.contractBasis} t={t} /></td>
         <td className="px-3 py-2">
           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${lg ? LEGALITY_BADGE[lg.overall] : NOT_COMPUTED_BADGE}`}>
             {lg ? t(LEGALITY_LABEL[lg.overall]) : t("не рахувалось")}

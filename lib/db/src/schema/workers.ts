@@ -42,8 +42,24 @@ export const positionsTable = pgTable("positions", {
   color: text("color").notNull().default("slate"), // tailwind color key for badges/grouping
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
+  // Офісна посада (BIURO): умова звіряється не з фабрикою, а з пакетом без фабрики; фабрика в профілі не обовʼязкова
+  isOffice: boolean("is_office").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Додаткові фабрики працівника (крім основної workers.factory_id): людина
+// працює на кількох фабриках одночасно — умова потрібна на кожну активну
+// (рішення власника 04.09.2026). Веде офіс у профілі; зміни в графіку на
+// фабриці поза списком — попередження движка (schedule_outside_factories).
+export const workerFactoriesTable = pgTable("worker_factories", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  validFrom: date("valid_from"),
+  validTo: date("valid_to"),
+  note: text("note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("worker_factories_worker_factory_uniq").on(t.workerId, t.factoryId)]);
 
 // Which positions a factory uses + the pay rate (gross PLN/hour) for that position there.
 export const factoryPositionsTable = pgTable("factory_positions", {
@@ -2115,6 +2131,7 @@ export const workerLegalityTable = pgTable("worker_legality", {
   workerId: integer("worker_id").primaryKey().references(() => workersTable.id, { onDelete: "cascade" }),
   stay: text("stay").notNull(),        // legal | pending | expiring | illegal | unknown
   work: text("work").notNull(),
+  contract: text("contract").notNull().default("unknown"), // третя вісь: чинна умова на кожну фабрику працівника (04.09.2026)
   overall: text("overall").notNull(),
   reviewRequired: boolean("review_required").notNull().default(false),
   reasons: jsonb("reasons").$type<{ code: string; axis: string; severity: string; params?: Record<string, unknown> }[]>().notNull().default([]),

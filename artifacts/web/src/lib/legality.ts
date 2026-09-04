@@ -26,7 +26,7 @@ export const LEGALITY_ROW: Record<LegalityStatus, string> = {
   legal: "", pending: "bg-blue-50", expiring: "bg-yellow-50", illegal: "bg-rose-50", unknown: "bg-amber-50",
 };
 
-export const AXIS_LABEL = { stay: "Перебування", work: "Праця", overall: "Загалом" } as const;
+export const AXIS_LABEL = { stay: "Перебування", work: "Праця", contract: "Умова", overall: "Загалом" } as const;
 
 export const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
   to_submit: "До подання", submitted: "Подано", in_progress: "У провадженні",
@@ -68,6 +68,13 @@ export const REASON_LABEL: Record<string, string> = {
   employment_start_unknown: "Не вказано дату початку праці — строк повідомлення не рахується",
   notification_overdue: "Прострочено повідомлення про працю (термін {dueAt})",
   notification_late: "Повідомлення подано із запізненням (термін {dueAt}, подано {submittedAt})",
+  // вісь «умова»
+  contract_missing: "Немає чинної умови на {factory}",
+  contract_expired: "Умова на {factory} закінчилась {expiresAt}",
+  contract_expiring: "Умова на {factory} спливає {expiresAt} (за {daysLeft} дн.)",
+  contract_awaiting_company: "Умову на {factory} підписав працівник, чекає підпису компанії",
+  contract_no_factory: "У профілі немає фабрики — умову звірити ні з чим (для офісу постав офісну посаду)",
+  schedule_outside_factories: "Зміни в графіку на {factory}, якої немає в списку фабрик працівника",
 };
 
 export function reasonText(t: (s: string, p?: Record<string, string | number>) => string, r: LegalityReason): string {

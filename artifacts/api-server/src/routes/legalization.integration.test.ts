@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import {
   app, hasTestDb, resetDb, closeDb, seedAdmin, seedRole, db,
   workersTable, companiesTable, factoriesTable, documentTypesTable, workerDocumentsTable, workerLegalityTable, legalRulesTable, documentAuditTable,
+  documentTemplatesTable, contractsTable, contractFilesTable,
 } from "../test/harness.ts";
 import { seedLegalizationCatalog } from "../services/legalizationSeed.ts";
 
@@ -22,6 +23,10 @@ async function seedUa() {
   const [es, eso] = await db.insert(companiesTable).values([{ name: "ES" }, { name: "ESO" }]).returning();
   const [fab] = await db.insert(factoriesTable).values({ name: "AGRAM", companyId: es!.id }).returning();
   const [w] = await db.insert(workersTable).values({ fullName: "Kowal Anna", nationality: "ukraine", companyId: es!.id, factoryId: fab!.id, employmentStartDate: "2026-01-10", isActive: true, legalStatus: "zus" }).returning();
+  // підписана umowa на AGRAM — щоб вісь «умова» не тягнула overall у цих тестах (окремо — workerFactories.integration.test.ts)
+  const [tpl] = await db.insert(documentTemplatesTable).values({ kind: "umowa", title: "Umowa AGRAM", scope: "all", body: { pl: "<p>x</p>" } as any }).returning();
+  const [c] = await db.insert(contractsTable).values({ workerId: w!.id, factoryId: fab!.id, status: "signed", dateFrom: "2026-01-10" }).returning();
+  await db.insert(contractFilesTable).values({ contractId: c!.id, templateId: tpl!.id, title: tpl!.title, sortOrder: 1 });
   return { es: es!, eso: eso!, w: w! };
 }
 

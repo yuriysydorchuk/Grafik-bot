@@ -1007,7 +1007,7 @@ router.post("/positions", RW, async (req, res) => {
   if (!name) return fail(res, 400, "Вкажіть назву посади");
   const maxOrder = (await db.select().from(positionsTable)).reduce((m, p) => Math.max(m, p.sortOrder), 0);
   const [p] = await db.insert(positionsTable).values({
-    name, color: String(req.body?.color ?? "slate"), sortOrder: maxOrder + 1,
+    name, color: String(req.body?.color ?? "slate"), sortOrder: maxOrder + 1, isOffice: !!req.body?.isOffice,
   }).returning();
   ok(res, p);
 });
@@ -1018,7 +1018,13 @@ router.patch("/positions/:id", RW, async (req, res) => {
   if (req.body?.color !== undefined) patch.color = String(req.body.color);
   if (req.body?.isActive !== undefined) patch.isActive = !!req.body.isActive;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
+  if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // офісна посада → умова = пакет без фабрики
   const [p] = await db.update(positionsTable).set(patch).where(eq(positionsTable.id, id)).returning();
+  if (req.body?.isOffice !== undefined) {
+    // ознака впливає на вісь «умова» всіх людей на цій посаді — перерахувати
+    const ws = await db.select({ id: workersTable.id }).from(workersTable).where(and(eq(workersTable.positionId, id), eq(workersTable.isActive, true)));
+    for (const w of ws) workerLegalityChanged(w.id).catch(() => {});
+  }
   ok(res, p);
 });
 router.delete("/positions/:id", RW, async (req, res) => {
