@@ -73,8 +73,11 @@ export const REASON_LABEL: Record<string, string> = {
   contract_expired: "Умова на {factory} закінчилась {expiresAt}",
   contract_expiring: "Умова на {factory} спливає {expiresAt} (за {daysLeft} дн.)",
   contract_awaiting_company: "Умову на {factory} підписав працівник, чекає підпису компанії",
-  contract_no_factory: "У профілі немає фабрики — умову звірити ні з чим (для офісу постав офісну посаду)",
+  contract_wrong_company: "Умова на {factory} від іншої нашої фірми — роботодавець там {company}",
+  no_factory: "У профілі немає фабрики — без фабрики посади не буває (для офісу — фабрика «Biuro»)",
   schedule_outside_factories: "Зміни в графіку на {factory}, якої немає в списку фабрик працівника",
+  work_basis_missing_for_company: "Немає підстави праці для фірми {company} (документ на цю фірму або незалежна підстава)",
+  main_company_not_employer: "Фірма в профілі не збігається з жодним роботодавцем зі списку фабрик",
 };
 
 export function reasonText(t: (s: string, p?: Record<string, string | number>) => string, r: LegalityReason): string {

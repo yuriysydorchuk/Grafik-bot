@@ -214,7 +214,7 @@ export default function WorkerDetail() {
               <InlineBadgeSelect value={w.factoryId != null ? String(w.factoryId) : ""} color="red" none={t("— без фабрики —")}
                 onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
                 options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
-              <WorkerFactoriesChips workerId={w.id} factories={factories} primaryFactoryId={w.factoryId} />
+              <WorkerFactoriesChips workerId={w.id} factories={factories} companies={companies} primaryFactoryId={w.factoryId} />
             </div>
             {/* лічильники — текстовим рядком замість окремої стрічки тайлів */}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
@@ -973,6 +973,17 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
 }) {
   const t = useT();
   const [factoryId, setFactoryId] = useState<string>(defaultFactoryId ? String(defaultFactoryId) : "");
+  // Фірма в умові (05.09.2026): звичайна фабрика — фірма фабрики (зафіксовано);
+  // мультифірмова (Sushi) — вибір, за замовчуванням фірма з профілю
+  const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
+  const { data: profile } = useQuery<{ companyId: number | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
+  const [companyId, setCompanyId] = useState<string>("");
+  const selFactory = factories.find(f => String(f.id) === factoryId);
+  const companyLocked = !!selFactory && !selFactory.multiFirm;
+  useEffect(() => {
+    if (!selFactory) { setCompanyId(profile?.companyId ? String(profile.companyId) : ""); return; }
+    setCompanyId(selFactory.multiFirm ? (profile?.companyId ? String(profile.companyId) : (selFactory.companyId ? String(selFactory.companyId) : "")) : (selFactory.companyId ? String(selFactory.companyId) : ""));
+  }, [factoryId, selFactory?.id, profile?.companyId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Рік-наперед за замовчуванням — лише для сталого пакету (ZUS/tax/PPK/BHP/
   // wniosek): факторі-пакет (Umowa, іноді разом з Regulamin) цілком легально
   // йде БЕЗ дат (дата роботи невідома заздалегідь) — не форсувати тут дефолт.
@@ -1063,6 +1074,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
           factoryId: Number(factoryId), templateIds: [...checkedFactory],
           dateFrom: dateFrom || null, dateTo: dateTo || null,
           contractRateBrutto: rateOverride.trim() === "" ? null : Number(rateOverride.replace(",", ".")),
+          companyId: companyId ? Number(companyId) : null,
         });
       }
       if (showStandardSection && checkedStandard.size > 0) {
@@ -1088,6 +1100,16 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
             {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
           </Select>
         </div>
+        {selFactory && (
+          <div>
+            <Label>{t("Фірма в умові")}</Label>
+            <Select value={companyId} onChange={e => setCompanyId(e.target.value)} disabled={companyLocked}>
+              <option value="">—</option>
+              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+            <div className="pt-0.5 text-xs text-slate-400">{companyLocked ? t("фірма фабрики") : t("мультифірмова фабрика — обери, від якої фірми умова")}</div>
+          </div>
+        )}
 
         {showStandardSection && (
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -1175,32 +1197,45 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
 // Додаткові фабрики працівника (worker_factories) — чипи поруч з основною фабрикою
 // в шапці профілю. Умова потрібна на кожну активну (вісь «умова» движка); зміни в
 // графіку на фабриці поза списком — попередження в блоці легалізації.
-function WorkerFactoriesChips({ workerId, factories, primaryFactoryId }: { workerId: number; factories: Factory[]; primaryFactoryId: number | null }) {
+function WorkerFactoriesChips({ workerId, factories, companies, primaryFactoryId }: { workerId: number; factories: Factory[]; companies: Company[]; primaryFactoryId: number | null }) {
   const t = useT();
   const qc = useQueryClient();
   const me = useMe();
   const canEdit = can(me, "editData") || can(me, "legalization");
   const { data: rows = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`) });
   const [adding, setAdding] = useState(false);
+  const [pickFactory, setPickFactory] = useState<number | null>(null); // мультифірмова фабрика: другий крок — фірма
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-factories", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
-  const add = useMutation({ mutationFn: (factoryId: number) => post(`/workers/${workerId}/factories`, { factoryId }), onSuccess: () => { inv(); setAdding(false); }, onError: (e: any) => toast.error(e.message) });
+  const add = useMutation({
+    mutationFn: (v: { factoryId: number; companyId?: number }) => post(`/workers/${workerId}/factories`, v),
+    onSuccess: () => { inv(); setAdding(false); setPickFactory(null); }, onError: (e: any) => toast.error(e.message),
+  });
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-factories/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
   const today = new Date().toLocaleDateString("sv-SE");
   const options = factories.filter(f => f.id !== primaryFactoryId && !rows.some(r => r.factoryId === f.id));
+  const onPickFactory = (id: number) => {
+    const f = factories.find(x => x.id === id);
+    if (f?.multiFirm) setPickFactory(id); else add.mutate({ factoryId: id });
+  };
   return (
     <>
       {rows.map(r => {
         const inactive = (r.validFrom && r.validFrom > today) || (r.validTo && r.validTo < today);
         return (
           <span key={r.id} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${inactive ? "bg-slate-100 text-slate-400" : "bg-red-50 text-red-700"}`}
-            title={[r.validFrom ? `${t("від")} ${r.validFrom}` : null, r.validTo ? `${t("до")} ${r.validTo}` : null, r.note].filter(Boolean).join(" · ") || t("додаткова фабрика")}>
-            +{r.factoryName ?? `#${r.factoryId}`}
+            title={[r.companyName ? `${t("роботодавець")}: ${r.companyName}` : null, r.validFrom ? `${t("від")} ${r.validFrom}` : null, r.validTo ? `${t("до")} ${r.validTo}` : null, r.note].filter(Boolean).join(" · ") || t("додаткова фабрика")}>
+            +{r.factoryName ?? `#${r.factoryId}`}{r.companyName && <span className="font-normal opacity-70">· {r.companyName}</span>}
             {canEdit && <button type="button" onClick={() => remove.mutate(r.id)} className="text-red-300 hover:text-rose-600" title={t("Прибрати фабрику")}>×</button>}
           </span>
         );
       })}
-      {canEdit && (adding ? (
-        <Select autoFocus value="" onChange={e => { if (e.target.value) add.mutate(Number(e.target.value)); else setAdding(false); }} onBlur={() => setAdding(false)} className="h-6 w-44 py-0 text-xs">
+      {canEdit && (pickFactory != null ? (
+        <Select autoFocus value="" onChange={e => { if (e.target.value) add.mutate({ factoryId: pickFactory, companyId: Number(e.target.value) }); else setPickFactory(null); }} onBlur={() => setPickFactory(null)} className="h-6 w-44 py-0 text-xs" title={t("Мультифірмова фабрика: яка наша фірма — роботодавець")}>
+          <option value="">{t("— фірма на цій фабриці —")}</option>
+          {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+      ) : adding ? (
+        <Select autoFocus value="" onChange={e => { if (e.target.value) onPickFactory(Number(e.target.value)); else setAdding(false); }} onBlur={() => { if (pickFactory == null) setAdding(false); }} className="h-6 w-44 py-0 text-xs">
           <option value="">{t("— оберіть фабрику —")}</option>
           {options.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </Select>

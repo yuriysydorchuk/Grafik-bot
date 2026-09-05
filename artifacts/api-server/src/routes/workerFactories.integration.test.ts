@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import {
-  app, hasTestDb, resetDb, closeDb, seedAdmin, db, workersTable, workerLegalityTable, factoriesTable, positionsTable, contractsTable, contractFilesTable, documentTemplatesTable,
+  app, hasTestDb, resetDb, closeDb, seedAdmin, db, workersTable, workerLegalityTable, factoriesTable, companiesTable, contractsTable, contractFilesTable, documentTemplatesTable,
 } from "../test/harness.ts";
 import { seedLegalizationCatalog } from "../services/legalizationSeed.ts";
 
@@ -14,10 +14,10 @@ beforeEach(async () => { if (hasTestDb) { await resetDb(); await seedLegalizatio
 after(async () => { if (hasTestDb) await closeDb(); });
 const H = { "X-Requested-With": "grafik" };
 
-async function factory(name: string) { const [f] = await db.insert(factoriesTable).values({ name }).returning(); return f!; }
-async function signedUmowa(workerId: number, factoryId: number | null, dateTo: string | null = null) {
+async function factory(name: string, extra: Partial<typeof factoriesTable.$inferInsert> = {}) { const [f] = await db.insert(factoriesTable).values({ name, ...extra }).returning(); return f!; }
+async function signedUmowa(workerId: number, factoryId: number | null, dateTo: string | null = null, companyId: number | null = null) {
   const [tpl] = await db.insert(documentTemplatesTable).values({ kind: "umowa", title: `Umowa ${factoryId ?? "biuro"}`, scope: "all", body: { pl: "<p>x</p>" } as any }).returning();
-  const [c] = await db.insert(contractsTable).values({ workerId, factoryId, status: "signed", dateFrom: "2026-01-01", dateTo }).returning();
+  const [c] = await db.insert(contractsTable).values({ workerId, factoryId, companyId, status: "signed", dateFrom: "2026-01-01", dateTo }).returning();
   await db.insert(contractFilesTable).values({ contractId: c!.id, templateId: tpl!.id, title: tpl!.title, sortOrder: 1 });
   return c!;
 }
@@ -60,20 +60,48 @@ test("умова на основну фабрику → contract legal; дода
   assert.equal((await request(app).delete(`/api/worker-factories/${add.body.id}`).set("Cookie", owner.cookie).set(H)).status, 200);
 });
 
-test("офісна посада: без фабрики не «unknown», умова = пакет без фабрики з umową; ознака посади перераховує людей", opts, async () => {
+test("без фабрики → червоне no_factory; офіс = фабрика Biuro (is_office) — умова на неї як на будь-яку", opts, async () => {
   const owner = await seedAdmin({ role: "owner" });
-  const [pos] = await db.insert(positionsTable).values({ name: "Biuro" }).returning();
-  const [w] = await db.insert(workersTable).values({ fullName: "Test Office", isActive: true, nationality: "poland", factoryId: null, positionId: pos!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Test Office", isActive: true, nationality: "poland", factoryId: null }).returning();
   await request(app).post(`/api/workers/${w!.id}/legality/recompute`).set("Cookie", owner.cookie).set(H);
-  assert.equal((await lg(w!.id))?.contract, "unknown", "звичайна посада без фабрики — умову звірити ні з чим");
+  let l = await lg(w!.id);
+  assert.equal(l?.contract, "illegal"); assert.equal(l?.overall, "illegal");
+  assert.ok((l?.reasons ?? []).some(r => r.code === "no_factory"));
 
-  const p = await request(app).patch(`/api/positions/${pos!.id}`).set("Cookie", owner.cookie).set(H).send({ isOffice: true });
-  assert.equal(p.status, 200); assert.equal(p.body.isOffice, true);
-  await new Promise(r => setTimeout(r, 300)); // перерахунок людей на посаді — fire-and-forget
-  assert.equal((await lg(w!.id))?.contract, "illegal", "офіс без пакета BIURO — без умови");
-
-  await signedUmowa(w!.id, null);
+  const biuro = await factory("Biuro", { isOffice: true });
+  const f = await request(app).patch(`/api/factories/${biuro.id}`).set("Cookie", owner.cookie).set(H).send({ isOffice: true });
+  assert.equal(f.status, 200); assert.equal(f.body.isOffice, true);
+  await request(app).patch(`/api/workers/${w!.id}`).set("Cookie", owner.cookie).set(H).send({ factoryId: biuro.id });
   await request(app).post(`/api/workers/${w!.id}/legality/recompute`).set("Cookie", owner.cookie).set(H);
-  const l = await lg(w!.id);
+  assert.equal((await lg(w!.id))?.contract, "illegal", "офіс без пакета на Biuro — без умови");
+
+  await signedUmowa(w!.id, biuro.id);
+  await request(app).post(`/api/workers/${w!.id}/legality/recompute`).set("Cookie", owner.cookie).set(H);
+  l = await lg(w!.id);
   assert.equal(l?.contract, "legal"); assert.equal(l?.overall, "legal");
+});
+
+test("роботодавці: мультифірмова фабрика вимагає фірму; умова від іншої фірми → contract_wrong_company; UA без powiadomienia на другу фірму → work illegal", opts, async () => {
+  const owner = await seedAdmin({ role: "owner" });
+  const [es, eso] = await db.insert(companiesTable).values([{ name: "ES" }, { name: "ESO" }]).returning();
+  const agram = await factory("AGRAM", { companyId: es!.id }); const sushi = await factory("SUSHI", { companyId: es!.id, multiFirm: true });
+  const [w] = await db.insert(workersTable).values({ fullName: "Test Firms", isActive: true, nationality: "poland", companyId: es!.id, factoryId: agram.id }).returning();
+  await signedUmowa(w!.id, agram.id, null, es!.id);
+  assert.equal((await request(app).post(`/api/workers/${w!.id}/factories`).set("Cookie", owner.cookie).set(H).send({ factoryId: sushi.id })).status, 400, "мультифірмова без фірми");
+  const add = await request(app).post(`/api/workers/${w!.id}/factories`).set("Cookie", owner.cookie).set(H).send({ factoryId: sushi.id, companyId: eso!.id });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  const list = await request(app).get(`/api/workers/${w!.id}/factories`).set("Cookie", owner.cookie);
+  assert.equal(list.body[0].companyName, "ESO");
+  let l = await lg(w!.id);
+  assert.equal((l?.reasons ?? []).find(r => r.code === "contract_missing")?.params?.factory, "SUSHI");
+  // умова на SUSHI, але від ES → не та фірма
+  const wrong = await signedUmowa(w!.id, sushi.id, null, es!.id);
+  await request(app).post(`/api/workers/${w!.id}/legality/recompute`).set("Cookie", owner.cookie).set(H);
+  l = await lg(w!.id);
+  assert.equal(l?.contract, "illegal"); assert.equal((l?.reasons ?? []).find(r => r.code === "contract_wrong_company")?.params?.company, "ESO");
+  await db.delete(contractsTable).where(eq(contractsTable.id, wrong.id));
+  await signedUmowa(w!.id, sushi.id, null, eso!.id);
+  await request(app).post(`/api/workers/${w!.id}/legality/recompute`).set("Cookie", owner.cookie).set(H);
+  l = await lg(w!.id);
+  assert.equal(l?.contract, "legal"); assert.equal(l?.overall, "legal", "PL-громадянин — підстава праці незалежна від роботодавця");
 });

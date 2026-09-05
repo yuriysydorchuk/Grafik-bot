@@ -71,9 +71,10 @@ export interface Company {
   representative?: string | null;
 }
 export type Gender = "male" | "female";
-export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean; isOffice?: boolean }
-// Додаткова фабрика працівника (worker_factories): умова потрібна на кожну активну
-export interface WorkerFactory { id: number; factoryId: number; factoryName: string | null; validFrom: string | null; validTo: string | null; note: string | null }
+export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }
+// Додаткова фабрика працівника (worker_factories): умова потрібна на кожну активну;
+// companyId — ефективна наша фірма-роботодавець на ній (обрана або фірма фабрики)
+export interface WorkerFactory { id: number; factoryId: number; factoryName: string | null; multiFirm?: boolean; companyId: number | null; companyName: string | null; validFrom: string | null; validTo: string | null; note: string | null }
 // One requirement line in a factory order: how many workers of a position/gender.
 export interface OrderRequirement { positionId: number | null; gender: "any" | Gender; count: number }
 export type DocCategory = "identity" | "stay" | "work" | "payroll" | "medical" | "other";
@@ -184,6 +185,8 @@ export interface FactoryPositionConf { positionId: number; name?: string | null;
 export interface Factory {
   id: number; name: string; address: string | null;
   companyId?: number | null; companyName?: string | null;
+  multiFirm?: boolean; // кілька наших фірм на одній фабриці (Sushi): фірма умови/роботодавця обирається
+  isOffice?: boolean;  // «Biuro» — фабрика офісних працівників
   shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; clientEmail: string | null;
   shiftCount: number; usesAvailability: boolean;
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;

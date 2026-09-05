@@ -526,9 +526,6 @@ function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any
       <Select value={p.color} onChange={e => onSave({ color: e.target.value })} className="w-28">
         {STAGE_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
       </Select>
-      <label className="flex items-center gap-1 text-xs text-slate-500" title={t("Офісна посада: умова звіряється з пакетом без фабрики (BIURO), фабрика в профілі не обовʼязкова")}>
-        <input type="checkbox" checked={!!p.isOffice} onChange={e => onSave({ isOffice: e.target.checked })} /> {t("офісна")}
-      </label>
       {name.trim() && name !== p.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
     </div>

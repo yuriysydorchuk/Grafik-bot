@@ -42,8 +42,6 @@ export const positionsTable = pgTable("positions", {
   color: text("color").notNull().default("slate"), // tailwind color key for badges/grouping
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
-  // Офісна посада (BIURO): умова звіряється не з фабрикою, а з пакетом без фабрики; фабрика в профілі не обовʼязкова
-  isOffice: boolean("is_office").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -51,10 +49,13 @@ export const positionsTable = pgTable("positions", {
 // працює на кількох фабриках одночасно — умова потрібна на кожну активну
 // (рішення власника 04.09.2026). Веде офіс у профілі; зміни в графіку на
 // фабриці поза списком — попередження движка (schedule_outside_factories).
+// company_id — наша фірма-роботодавець на ЦІЙ фабриці (05.09.2026: «роботодавці»);
+// NULL = фірма фабрики; для мультифірмової (Sushi) обирається при додаванні.
 export const workerFactoriesTable = pgTable("worker_factories", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
   factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  companyId: integer("company_id").references(() => companiesTable.id),
   validFrom: date("valid_from"),
   validTo: date("valid_to"),
   note: text("note"),
@@ -361,6 +362,7 @@ export const factoriesTable = pgTable("factories", {
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
   multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (Sushi&Food: ES + ESO) — сводна пише фірму працівника в svodni_rows.firm (групи в одній вкладці)
+  isOffice: boolean("is_office").notNull().default(false), // «Biuro»: офісні працівники (рішення 05.09.2026: без фабрики посади не буває) — умова на неї як на будь-яку фабрику
   requiresSanepid: boolean("requires_sanepid").notNull().default(false), // фабрика вимагає książeczkę sanepidowską → плитка «Sanepid» у документах працівника (легалізація, 03.09.2026)
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
@@ -1992,6 +1994,7 @@ export const contractsTable = pgTable("contracts", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id),
   factoryId: integer("factory_id").references(() => factoriesTable.id), // NULL = сталий пакет (не факторі-специфічний)
+  companyId: integer("company_id").references(() => companiesTable.id), // наша фірма в умові (реквізити/шаблони); мультифірмова фабрика — вибір при генерації (05.09.2026)
   payoutMethod: text("payout_method"), // konto | reka — знімок з анкети на момент генерації, релевантно лише для сталого пакету
   status: text("status").notNull().default("draft"),
   // draft | pending_approval | approved | sent | viewed | worker_signed | signed

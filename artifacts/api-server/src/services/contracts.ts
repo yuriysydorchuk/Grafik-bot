@@ -106,10 +106,23 @@ export function substitutePlaceholders(
 // zameldowania/zamieszkania по woj./powiat/gmina — план §13, буде дороблено
 // разом із конкретним документом, що це реально використовує). Такий ключ
 // заблокує генерацію лише для шаблону, що його реально містить.
+// Фірма в умові (рішення 05.09.2026): явно обрана при генерації (мультифірмова
+// фабрика) → фірма фабрики → фірма профілю. Стара евристика «профіль → фабрика»
+// лишається лише для сталого пакету без фабрики.
+export async function resolveContractCompanyId(workerId: number, factoryId: number | null, explicit?: number | null): Promise<number | null> {
+  if (explicit != null) return explicit;
+  const [worker] = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (factoryId == null) return worker?.companyId ?? null;
+  const [factory] = await db.select({ companyId: factoriesTable.companyId, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (factory?.multiFirm) return worker?.companyId ?? factory.companyId ?? null;
+  return factory?.companyId ?? worker?.companyId ?? null;
+}
+
 export async function buildContractData(
   workerId: number, factoryId: number | null,
   dates: { dateFrom?: string | null; dateTo?: string | null } = {},
   rateOverride?: number | null,
+  companyIdOverride?: number | null,
 ): Promise<Record<string, string>> {
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!worker) throw new Error("Працівника не знайдено");
@@ -125,7 +138,7 @@ export async function buildContractData(
   // року», той самий KSIEG_STD_BRUTTO) — Wynagrodzenie ніколи не лишається пустим.
   const rate = rateOverride ?? factory?.contractRateBrutto ?? KSIEG_STD_BRUTTO();
 
-  const companyId = worker.companyId ?? factory?.companyId ?? null;
+  const companyId = await resolveContractCompanyId(workerId, factoryId, companyIdOverride);
   const [company] = companyId ? await db.select().from(companiesTable).where(eq(companiesTable.id, companyId)) : [undefined];
 
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -216,15 +229,16 @@ export function missingFields(data: Record<string, string>, keys: string[]): str
 }
 
 // ── Резолюція комплекту документів (§2.2 плану: factory > company > all) ─────
-export async function resolveDocumentSet(workerId: number, factoryId: number | null): Promise<DocumentTemplate[]> {
+export async function resolveDocumentSet(workerId: number, factoryId: number | null, companyIdOverride?: number | null): Promise<DocumentTemplate[]> {
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!worker) throw new Error("Працівника не знайдено");
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  const companyId = await resolveContractCompanyId(workerId, factoryId, companyIdOverride); // company-scope шаблони — за фірмою умови
 
   const all = await db.select().from(documentTemplatesTable).where(eq(documentTemplatesTable.isActive, true));
   const specificity = (t: DocumentTemplate): number => {
     if (t.scope === "factory" && factoryId != null && (t.scopeFactoryIds as number[]).includes(factoryId)) return 3;
-    if (t.scope === "company" && worker.companyId != null && (t.scopeCompanyIds as number[]).includes(worker.companyId)) return 2;
+    if (t.scope === "company" && companyId != null && (t.scopeCompanyIds as number[]).includes(companyId)) return 2;
     if (t.scope === "all") return 1;
     return 0;
   };
@@ -327,6 +341,8 @@ export async function generateContract(opts: {
   dateFrom?: string | null; dateTo?: string | null; supersedesId?: number | null;
   /** Ставка "в умові" для цієї конкретної людини — перекриває factories.contract_rate_brutto */
   contractRateBrutto?: number | null;
+  /** Наша фірма в умові (мультифірмова фабрика — вибір адміна); null = за фабрикою/профілем */
+  companyId?: number | null;
 }): Promise<Contract> {
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, opts.workerId));
   if (!questionnaire || questionnaire.status !== "verified") {
@@ -337,10 +353,11 @@ export async function generateContract(opts: {
 
   const templates = opts.templateIds?.length
     ? await db.select().from(documentTemplatesTable).where(inArray(documentTemplatesTable.id, opts.templateIds))
-    : await resolveDocumentSet(opts.workerId, opts.factoryId);
+    : await resolveDocumentSet(opts.workerId, opts.factoryId, opts.companyId ?? null);
   if (!templates.length) throw new Error("Не знайдено жодного шаблону для цього комплекту — прив'яжіть шаблони у бібліотеці");
 
-  const data = await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null);
+  const companyId = await resolveContractCompanyId(opts.workerId, opts.factoryId, opts.companyId ?? null);
+  const data = await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null, companyId);
   const lang = asLang(worker.language);
 
   const missing = new Set<string>();
@@ -351,7 +368,7 @@ export async function generateContract(opts: {
   if (missing.size) throw new Error(`Бракує даних для генерації: ${[...missing].join(", ")}`);
 
   const [contract] = await db.insert(contractsTable).values({
-    workerId: opts.workerId, factoryId: opts.factoryId,
+    workerId: opts.workerId, factoryId: opts.factoryId, companyId,
     payoutMethod: opts.factoryId == null ? questionnaire.payoutMethod : null,
     status: "draft", dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null,
     supersedesId: opts.supersedesId ?? null, data, generatedAt: new Date(),

@@ -1007,7 +1007,7 @@ router.post("/positions", RW, async (req, res) => {
   if (!name) return fail(res, 400, "Вкажіть назву посади");
   const maxOrder = (await db.select().from(positionsTable)).reduce((m, p) => Math.max(m, p.sortOrder), 0);
   const [p] = await db.insert(positionsTable).values({
-    name, color: String(req.body?.color ?? "slate"), sortOrder: maxOrder + 1, isOffice: !!req.body?.isOffice,
+    name, color: String(req.body?.color ?? "slate"), sortOrder: maxOrder + 1,
   }).returning();
   ok(res, p);
 });
@@ -1018,13 +1018,7 @@ router.patch("/positions/:id", RW, async (req, res) => {
   if (req.body?.color !== undefined) patch.color = String(req.body.color);
   if (req.body?.isActive !== undefined) patch.isActive = !!req.body.isActive;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
-  if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // офісна посада → умова = пакет без фабрики
   const [p] = await db.update(positionsTable).set(patch).where(eq(positionsTable.id, id)).returning();
-  if (req.body?.isOffice !== undefined) {
-    // ознака впливає на вісь «умова» всіх людей на цій посаді — перерахувати
-    const ws = await db.select({ id: workersTable.id }).from(workersTable).where(and(eq(workersTable.positionId, id), eq(workersTable.isActive, true)));
-    for (const w of ws) workerLegalityChanged(w.id).catch(() => {});
-  }
   ok(res, p);
 });
 router.delete("/positions/:id", RW, async (req, res) => {
@@ -1890,6 +1884,7 @@ router.post("/factories", RW, async (req, res) => {
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) values.requiresSanepid = !!req.body.requiresSanepid;
+  if (req.body?.isOffice !== undefined) values.isOffice = !!req.body.isOffice;
   if (req.body?.city !== undefined) values.city = canonCity(req.body.city); // не String(null)="null"
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
@@ -1965,6 +1960,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) patch.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) patch.requiresSanepid = !!req.body.requiresSanepid;
+  if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // «Biuro» — офісні працівники
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
   const [f] = Object.keys(patch).length

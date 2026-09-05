@@ -24,10 +24,13 @@ async function seedUa() {
   const [fab] = await db.insert(factoriesTable).values({ name: "AGRAM", companyId: es!.id }).returning();
   const [w] = await db.insert(workersTable).values({ fullName: "Kowal Anna", nationality: "ukraine", companyId: es!.id, factoryId: fab!.id, employmentStartDate: "2026-01-10", isActive: true, legalStatus: "zus" }).returning();
   // підписана umowa на AGRAM — щоб вісь «умова» не тягнула overall у цих тестах (окремо — workerFactories.integration.test.ts)
-  const [tpl] = await db.insert(documentTemplatesTable).values({ kind: "umowa", title: "Umowa AGRAM", scope: "all", body: { pl: "<p>x</p>" } as any }).returning();
-  const [c] = await db.insert(contractsTable).values({ workerId: w!.id, factoryId: fab!.id, status: "signed", dateFrom: "2026-01-10" }).returning();
+  await signedUmowaFor(w!.id, fab!.id, es!.id);
+  return { es: es!, eso: eso!, w: w!, fab: fab! };
+}
+async function signedUmowaFor(workerId: number, factoryId: number, companyId: number | null) {
+  const [tpl] = await db.insert(documentTemplatesTable).values({ kind: "umowa", title: `Umowa ${factoryId}`, scope: "all", body: { pl: "<p>x</p>" } as any }).returning();
+  const [c] = await db.insert(contractsTable).values({ workerId, factoryId, companyId, status: "signed", dateFrom: "2026-01-10" }).returning();
   await db.insert(contractFilesTable).values({ contractId: c!.id, templateId: tpl!.id, title: tpl!.title, sortOrder: 1 });
-  return { es: es!, eso: eso!, w: w! };
 }
 
 test("гейти: світлофори — будь-якій ролі; дашборд/правила/юр-поля — лише cap legalization", opts, async () => {
@@ -123,8 +126,9 @@ test("правила: нова версія закриває попередню;
 
 test("дашборд + Excel + /attention", opts, async () => {
   const owner = await seedAdmin({ role: "owner" });
-  const { w } = await seedUa();
-  await db.insert(workersTable).values({ fullName: "Nowak Jan", nationality: "poland", isActive: true });
+  const { w, fab, es } = await seedUa();
+  const [nowak] = await db.insert(workersTable).values({ fullName: "Nowak Jan", nationality: "poland", isActive: true, factoryId: fab.id, companyId: es.id }).returning();
+  await signedUmowaFor(nowak!.id, fab.id, es.id);
   const plus7 = new Date(Date.now() + 7 * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
   await db.insert(workerDocumentsTable).values({ workerId: w.id, docTypeId: await typeId("trc"), title: "TRC", status: "present", expiresAt: plus7 });
   const ra = await request(app).post("/api/legalization/recompute-all").set("Cookie", owner.cookie).set(H);

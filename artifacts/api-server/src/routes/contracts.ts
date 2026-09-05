@@ -270,10 +270,10 @@ router.post("/workers/:id/passport-scan", WD, uploadScan.single("file"), async (
 // чекліста (§2.2 плану), інакше автовибір через resolveDocumentSet.
 router.post("/workers/:id/contracts", WD, async (req, res) => {
   const workerId = Number(req.params.id);
-  const { factoryId, templateIds, dateFrom, dateTo, supersedesId, contractRateBrutto } = req.body ?? {};
+  const { factoryId, templateIds, dateFrom, dateTo, supersedesId, contractRateBrutto, companyId } = req.body ?? {};
   try {
     const contract = await generateContract({
-      workerId, factoryId: factoryId ? Number(factoryId) : null,
+      workerId, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
       templateIds: Array.isArray(templateIds) ? templateIds.map(Number) : undefined,
       dateFrom: dateFrom ? String(dateFrom) : null, dateTo: dateTo ? String(dateTo) : null,
       supersedesId: supersedesId ? Number(supersedesId) : null,

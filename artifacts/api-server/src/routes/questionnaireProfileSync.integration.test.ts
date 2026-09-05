@@ -21,7 +21,7 @@ test("PUT questionnaire: citizenship P0L (OCR) → nationality poland, sex M →
   const [after1] = await db.select({ nationality: workersTable.nationality, gender: workersTable.gender, isStudent: workersTable.isStudent }).from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(after1?.nationality, "poland"); assert.equal(after1?.gender, "male");
   const [lg] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, w!.id));
-  assert.equal(lg?.overall, "legal", "громадянин PL → легально одразу після збереження анкети");
+  assert.equal(lg?.stay, "legal"); assert.equal(lg?.work, "legal", "громадянин PL → побут/праця легально одразу після збереження анкети (умова — окрема вісь)");
 
   // ручна правка профілю живе, поки саме це поле анкети не змінили
   await db.update(workersTable).set({ nationality: "ukraine" }).where(eq(workersTable.id, w!.id));

@@ -136,6 +136,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     showWorkerHours: factory?.showWorkerHours ?? true,
     showCode: factory?.showCode ?? true,
     requiresSanepid: factory?.requiresSanepid ?? false,
+    isOffice: factory?.isOffice ?? false,
     invoiceRate: factory?.invoiceRate != null ? String(factory.invoiceRate) : "",
     rateBrutto: factory?.rateBrutto != null ? String(factory.rateBrutto) : "",
     rateNetto: factory?.rateNetto != null ? String(factory.rateNetto) : "",
@@ -176,6 +177,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
     requiresSanepid: v.requiresSanepid,
+    isOffice: v.isOffice,
     paidTransport: v.paidTransport, transportFeePerShift: num(v.transportFeePerShift), transportFeeMonthCap: num(v.transportFeeMonthCap),
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
@@ -319,6 +321,10 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
           <input type="checkbox" checked={v.requiresSanepid} onChange={e => setV({ ...v, requiresSanepid: e.target.checked })} />
           {t("Вимагає sanepid (książeczka sanepidowska)")}
+        </label>
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-700" title={t("Офісні працівники (Biuro): фабрика для умов і легалізації, без графіків")}>
+          <input type="checkbox" checked={v.isOffice} onChange={e => setV({ ...v, isOffice: e.target.checked })} />
+          {t("Офіс (Biuro) — фабрика для офісних працівників")}
         </label>
         {/* Excel schedule columns */}
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">

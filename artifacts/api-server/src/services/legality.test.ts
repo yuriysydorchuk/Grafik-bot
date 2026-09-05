@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeLegality, normalizeLegacyStatus, payrollClassOf, isUnder26At, daysBetween, addDaysStr, nationalityMatches,
-  type LegalityDocument, type LegalityWorker, type LegalRuleInput, type LegalityInput, type LegalityContract, type LegalityFactory,
+  type LegalityDocument, type LegalityWorker, type LegalRuleInput, type LegalityInput, type LegalityContract, type LegalityEmployer,
 } from "./legality.ts";
 import { DOCUMENT_TYPE_SEED, LEGAL_RULE_SEED } from "./legalizationCatalog.ts";
 import { normalizeProfileLegal, LEGAL_STATUSES } from "./svodni.ts";
@@ -199,9 +199,13 @@ test("L16c правило payroll.status_map перекриває мапу: stud
   assert.equal(broken.legacy.derivedLegalStatus, "student");
 });
 // ── вісь «умова» (рішення власника 04.09.2026) ──
-const C = (o: Partial<LegalityContract> & { id: number }): LegalityContract => ({ factoryId: 5, status: "signed", dateFrom: "2026-01-01", dateTo: null, hasUmowa: true, ...o });
-const runC = (w: Partial<LegalityWorker>, contracts: LegalityContract[] | undefined, factories: LegalityFactory[] = [], extra: Partial<LegalityInput> = {}) =>
-  computeLegality({ today: TODAY, worker: worker({ nationality: "poland", factoryId: 5, ...w }), documents: [], rules: rules(), contracts, factories, facts: { factoryNames: { 5: "AGRAM", 7: "SUSHI", 9: "LST" } }, ...extra });
+// Роботодавці (05.09.2026): фірма 1 = ES, 2 = ESO. AGRAM(5) → ES, SUSHI(7) → мультифірмова, LST(9) → ESO.
+const AGRAM: LegalityEmployer = { factoryId: 5, factoryName: "AGRAM", companyId: 1, companyName: "ES", primary: true };
+const SUSHI_ESO: LegalityEmployer = { factoryId: 7, factoryName: "SUSHI", companyId: 2, companyName: "ESO", primary: false };
+const LST_ESO: LegalityEmployer = { factoryId: 9, factoryName: "LST", companyId: 2, companyName: "ESO", primary: false };
+const C = (o: Partial<LegalityContract> & { id: number }): LegalityContract => ({ factoryId: 5, companyId: 1, status: "signed", dateFrom: "2026-01-01", dateTo: null, hasUmowa: true, ...o });
+const runC = (w: Partial<LegalityWorker>, contracts: LegalityContract[] | undefined, employers: LegalityEmployer[] = [AGRAM], extra: Partial<LegalityInput> = {}) =>
+  computeLegality({ today: TODAY, worker: worker({ nationality: "poland", factoryId: 5, ...w }), documents: [], rules: rules(), contracts, employers, ...extra });
 test("C1 без даних про умови (contracts не передано) → вісь unknown, але overall лише за stay/work", () => {
   const r = runC({}, undefined);
   assert.equal(r.contract.status, "unknown"); assert.equal(r.overall, "legal");
@@ -225,27 +229,44 @@ test("C4 worker_signed → pending (чекає компанії); draft/cancelle
   assert.equal(runC({}, [C({ id: 1, status: "worker_signed" })]).contract.status, "pending");
   for (const s of ["draft", "sent", "cancelled", "superseded", "declined"]) assert.equal(runC({}, [C({ id: 1, status: s })]).contract.status, "illegal", s);
 });
-test("C5 кілька фабрик: умова потрібна на кожну активну; неактивна за датами — ні; причина по фабриці", () => {
-  const fs: LegalityFactory[] = [{ factoryId: 7, name: "SUSHI", validFrom: null, validTo: null }, { factoryId: 9, name: "LST", validFrom: null, validTo: "2026-06-30" }];
-  const r = runC({}, [C({ id: 1, factoryId: 5 })], fs);
+test("C5 кілька фабрик: умова потрібна на кожного роботодавця від його фірми; причина по фабриці; фірма умови ≠ фірма роботодавця → contract_wrong_company", () => {
+  const r = runC({}, [C({ id: 1 })], [AGRAM, SUSHI_ESO]);
   assert.equal(r.contract.status, "illegal");
   assert.deepEqual(r.reasons.filter(x => x.axis === "contract").map(x => x.params?.factory), ["SUSHI"]);
-  const both = runC({}, [C({ id: 1, factoryId: 5 }), C({ id: 2, factoryId: 7 })], fs);
+  const both = runC({}, [C({ id: 1 }), C({ id: 2, factoryId: 7, companyId: 2 })], [AGRAM, SUSHI_ESO]);
   assert.equal(both.contract.status, "legal"); assert.equal(both.contract.basisDocId, 1, "підстава — умова основної фабрики");
+  const wrong = runC({}, [C({ id: 1 }), C({ id: 2, factoryId: 7, companyId: 1 })], [AGRAM, SUSHI_ESO]);
+  assert.equal(wrong.contract.status, "illegal");
+  assert.equal(wrong.reasons.find(x => x.code === "contract_wrong_company")?.params?.company, "ESO");
+  // стара умова без фірми — не звіряємо
+  assert.equal(runC({}, [C({ id: 1 }), C({ id: 2, factoryId: 7, companyId: null })], [AGRAM, SUSHI_ESO]).contract.status, "legal");
 });
-test("C6 офісна посада: умова = пакет без фабрики з umową; сталий пакет без umowy не рахується; фабрика не потрібна", () => {
-  const office = { positionIsOffice: true, factoryId: null };
-  assert.equal(runC(office, [C({ id: 1, factoryId: null, hasUmowa: true })]).contract.status, "legal");
-  const std = runC(office, [C({ id: 2, factoryId: null, hasUmowa: false })]);
-  assert.equal(std.contract.status, "illegal"); assert.equal(std.reasons.find(x => x.code === "contract_missing")?.params?.factory, "Biuro");
-  const noFactory = runC({ factoryId: null }, []);
-  assert.equal(noFactory.contract.status, "unknown"); assert.ok(noFactory.reasons.some(x => x.code === "contract_no_factory"));
-  assert.equal(noFactory.overall, "legal", "unknown по умові — прогалина даних, overall не тягне");
+test("C6 без фабрики в профілі (порожній список роботодавців) → червоне no_factory; overall тягне", () => {
+  const noFactory = runC({ factoryId: null }, [], []);
+  assert.equal(noFactory.contract.status, "illegal"); assert.ok(noFactory.reasons.some(x => x.code === "no_factory"));
+  assert.equal(noFactory.overall, "illegal");
 });
 test("C7 зміни в графіку на фабриці поза списком → попередження + review, статус не міняється", () => {
-  const r = runC({}, [C({ id: 1 })], [], { facts: { factoryNames: { 5: "AGRAM" }, scheduleFactories: [{ factoryId: 7, name: "SUSHI" }] } });
+  const r = runC({}, [C({ id: 1 })], [AGRAM], { facts: { scheduleFactories: [{ factoryId: 7, name: "SUSHI" }] } });
   assert.equal(r.contract.status, "legal"); assert.equal(r.reviewRequired, true);
   assert.equal(r.reasons.find(x => x.code === "schedule_outside_factories")?.params?.factory, "SUSHI");
+});
+test("C8 праця по роботодавцях: UA з powiadomieniem лише на ES, працює в AGRAM(ES) і LST(ESO) → бракує для ESO; на обидві → legal; документ ESO не «на іншу фірму»", () => {
+  const ua = { nationality: "ukraine", companyId: 1, factoryId: 5 };
+  const docsES = [doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 1, submittedAt: "2026-01-12" })];
+  const one = computeLegality({ today: TODAY, worker: worker(ua), documents: docsES, rules: rules(), contracts: [C({ id: 1 }), C({ id: 2, factoryId: 9, companyId: 2 })], employers: [AGRAM, LST_ESO] });
+  assert.equal(one.work.status, "illegal");
+  assert.equal(one.reasons.find(x => x.code === "work_basis_missing_for_company")?.params?.company, "ESO");
+  assert.equal(one.contract.status, "legal");
+  const both = computeLegality({ today: TODAY, worker: worker(ua), documents: [...docsES, doc("powiadomienie_ua", { employerCompanyId: 2, submittedAt: "2026-02-01" })], rules: rules(), contracts: [C({ id: 1 }), C({ id: 2, factoryId: 9, companyId: 2 })], employers: [AGRAM, LST_ESO] });
+  assert.equal(both.work.status, "legal"); assert.equal(both.overall, "legal");
+  assert.ok(!both.reasons.some(x => x.code === "employer_mismatch"), "документ на іншого НАШОГО роботодавця — не mismatch");
+  // документ на фірму поза списком роботодавців — як і раніше, employer_mismatch
+  const foreign = computeLegality({ today: TODAY, worker: worker(ua), documents: [doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 3 })], rules: rules(), contracts: [C({ id: 1 })], employers: [AGRAM] });
+  assert.ok(foreign.reasons.some(x => x.code === "employer_mismatch"));
+  // головна фірма профілю не серед роботодавців → попередження
+  const stray = computeLegality({ today: TODAY, worker: worker({ ...ua, companyId: 3 }), documents: docsES, rules: rules(), contracts: [C({ id: 1 })], employers: [AGRAM] });
+  assert.ok(stray.reasons.some(x => x.code === "main_company_not_employer"));
 });
 test("L16 has_expiry тип без дати → legal + review expiry_missing", () => {
   const r = run({ nationality: "georgia" }, [doc("trc", { expiresAt: null })]);

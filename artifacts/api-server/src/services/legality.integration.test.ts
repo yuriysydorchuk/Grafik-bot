@@ -43,9 +43,11 @@ test("recompute: UA + status_ukr + powiadomienie на нашу фірму → к
     { workerId: w!.id, docTypeId: await typeId("powiadomienie_ua"), title: "POW", status: "present", employerCompanyId: es!.id, submittedAt: "2026-01-12" },
   ]);
   const r1 = await recomputeWorkerLegality(w!.id, "2026-09-02");
-  assert.equal(r1?.overall, "legal");
+  // без фабрики в профілі вісь «умова» червона (no_factory) і тягне overall — тут перевіряємо побут/працю
+  assert.equal(r1?.stay, undefined === undefined ? r1?.stay : r1?.stay); assert.equal(r1?.stay.status, "legal"); assert.equal(r1?.work.status, "legal");
+  assert.equal(r1?.contract.status, "illegal"); assert.ok(r1?.reasons.some(x => x.code === "no_factory"));
   const [row1] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, w!.id));
-  assert.equal(row1?.overall, "legal"); assert.equal(row1?.derivedLegalStatus, "powiadomienie"); assert.equal(row1?.nextExpiryAt, "2027-03-04");
+  assert.equal(row1?.work, "legal"); assert.equal(row1?.derivedLegalStatus, "powiadomienie"); assert.equal(row1?.nextExpiryAt, "2027-03-04");
   assert.equal(row1?.legacyMismatchKind, "cross_class"); // ручне NULL
 
   // перехід у ESO з 28.08 (журнал companyId) — старе powiadomienie більше не підстава
@@ -89,7 +91,7 @@ test("recomputeAllActive: рахує активних, прибирає кеш �
   ]).returning();
   await db.insert(workerLegalityTable).values({ workerId: b!.id, stay: "legal", work: "legal", overall: "legal", computedAt: new Date() });
   const s = await recomputeAllActiveLegality("2026-09-02");
-  assert.equal(s.total, 1); assert.equal(s.byOverall.legal, 1);
+  assert.equal(s.total, 1); assert.equal(s.byOverall.illegal, 1, "без фабрики в профілі — no_factory (посади без фабрики не буває)");
   const rows = await db.select().from(workerLegalityTable);
   assert.deepEqual(rows.map(r => r.workerId), [a!.id]);
   assert.equal(rows[0]?.derivedLegalStatus, "polak"); assert.equal(rows[0]?.legacyMismatchKind, "within_class");

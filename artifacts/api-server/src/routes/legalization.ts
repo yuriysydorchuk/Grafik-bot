@@ -75,11 +75,24 @@ router.get("/legalization/globals", async (_req, res) => {
 const WF = requireAnyCap("editData", "legalization");
 router.get("/workers/:id/factories", async (req, res) => {
   const workerId = Number(req.params.id);
-  const rows = await db.select({ id: workerFactoriesTable.id, factoryId: workerFactoriesTable.factoryId, factoryName: factoriesTable.name, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo, note: workerFactoriesTable.note })
+  // companyId/companyName — ефективна фірма-роботодавець на цій фабриці (worker_factories.company_id ?? фірма фабрики)
+  const rows = await db.select({
+      id: workerFactoriesTable.id, factoryId: workerFactoriesTable.factoryId, factoryName: factoriesTable.name, multiFirm: factoriesTable.multiFirm,
+      companyId: sql<number | null>`coalesce(${workerFactoriesTable.companyId}, ${factoriesTable.companyId})`, companyName: companiesTable.name,
+      validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo, note: workerFactoriesTable.note,
+    })
     .from(workerFactoriesTable).leftJoin(factoriesTable, eq(workerFactoriesTable.factoryId, factoriesTable.id))
+    .leftJoin(companiesTable, eq(companiesTable.id, sql`coalesce(${workerFactoriesTable.companyId}, ${factoriesTable.companyId})`))
     .where(eq(workerFactoriesTable.workerId, workerId)).orderBy(factoriesTable.name);
   ok(res, rows);
 });
+const parseCompany = async (v: unknown): Promise<number | null | "bad"> => {
+  if (v == null || v === "") return null;
+  const id = Number(v);
+  if (!Number.isInteger(id)) return "bad";
+  const [c] = await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, id));
+  return c ? id : "bad";
+};
 router.post("/workers/:id/factories", WF, async (req, res) => {
   const workerId = Number(req.params.id);
   const b = req.body ?? {};
@@ -87,13 +100,17 @@ router.post("/workers/:id/factories", WF, async (req, res) => {
   if (!Number.isInteger(factoryId)) return fail(res, 400, "factoryId");
   if (b.validFrom != null && b.validFrom !== "" && !isDate(b.validFrom)) return fail(res, 400, "validFrom: YYYY-MM-DD");
   if (b.validTo != null && b.validTo !== "" && !isDate(b.validTo)) return fail(res, 400, "validTo: YYYY-MM-DD");
+  const companyId = await parseCompany(b.companyId);
+  if (companyId === "bad") return fail(res, 400, "companyId: фірму не знайдено");
   const [w] = await db.select({ id: workersTable.id, factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return fail(res, 404, "Працівника не знайдено");
   if (w.factoryId === factoryId) return fail(res, 400, "Це основна фабрика працівника — вона вже в списку");
-  const [f] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  const [f] = await db.select({ id: factoriesTable.id, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
   if (!f) return fail(res, 404, "Фабрику не знайдено");
-  const [row] = await db.insert(workerFactoriesTable).values({ workerId, factoryId, validFrom: b.validFrom || null, validTo: b.validTo || null, note: typeof b.note === "string" && b.note.trim() ? b.note.trim() : null })
-    .onConflictDoUpdate({ target: [workerFactoriesTable.workerId, workerFactoriesTable.factoryId], set: { validFrom: b.validFrom || null, validTo: b.validTo || null } }).returning();
+  if (f.multiFirm && companyId == null) return fail(res, 400, "Мультифірмова фабрика — вкажіть, яка наша фірма є роботодавцем на ній");
+  const set = { validFrom: b.validFrom || null, validTo: b.validTo || null, companyId: f.multiFirm ? companyId : null };
+  const [row] = await db.insert(workerFactoriesTable).values({ workerId, factoryId, ...set, note: typeof b.note === "string" && b.note.trim() ? b.note.trim() : null })
+    .onConflictDoUpdate({ target: [workerFactoriesTable.workerId, workerFactoriesTable.factoryId], set }).returning();
   await workerLegalityChanged(workerId);
   ok(res, row);
 });
@@ -104,6 +121,7 @@ router.patch("/worker-factories/:id", WF, async (req, res) => {
   if (b.validFrom !== undefined) { if (b.validFrom && !isDate(b.validFrom)) return fail(res, 400, "validFrom"); patch.validFrom = b.validFrom || null; }
   if (b.validTo !== undefined) { if (b.validTo && !isDate(b.validTo)) return fail(res, 400, "validTo"); patch.validTo = b.validTo || null; }
   if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
+  if (b.companyId !== undefined) { const c = await parseCompany(b.companyId); if (c === "bad") return fail(res, 400, "companyId"); patch.companyId = c; }
   const [row] = await db.update(workerFactoriesTable).set(patch).where(eq(workerFactoriesTable.id, id)).returning();
   if (!row) return fail(res, 404, "Не знайдено");
   await workerLegalityChanged(row.workerId);

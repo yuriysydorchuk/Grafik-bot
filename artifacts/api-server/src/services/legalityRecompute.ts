@@ -8,11 +8,11 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable, workerQuestionnairesTable,
-  contractsTable, contractFilesTable, documentTemplatesTable, workerFactoriesTable, positionsTable, factoriesTable, scheduleEntriesTable, scheduleWeeksTable,
+  contractsTable, contractFilesTable, documentTemplatesTable, workerFactoriesTable, factoriesTable, companiesTable, scheduleEntriesTable, scheduleWeeksTable,
 } from "@workspace/db";
 import {
   computeLegality, type LegalityInput, type LegalityResult, type LegalityDocument, type LegalRuleInput, type LegalityWorker,
-  type LegalityContract, type LegalityFactory,
+  type LegalityContract, type LegalityEmployer,
 } from "./legality";
 import { mrzNationalityToCatalog } from "./docai";
 import { logger } from "../lib/logger";
@@ -66,21 +66,37 @@ export async function employerSinceOf(worker: { id: number; employmentStartDate:
 // Умови працівника для осі «умова»: hasUmowa — у пакеті є файл із шаблону виду umowa
 // (сталий пакет ZUS/PPK/BHP без umowy умовою не є — важливо для офісного пакета без фабрики).
 export async function loadWorkerContracts(workerId: number): Promise<LegalityContract[]> {
-  const rows = await db.select({ id: contractsTable.id, factoryId: contractsTable.factoryId, status: contractsTable.status, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo })
+  const rows = await db.select({ id: contractsTable.id, factoryId: contractsTable.factoryId, companyId: contractsTable.companyId, status: contractsTable.status, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo })
     .from(contractsTable).where(eq(contractsTable.workerId, workerId));
   if (!rows.length) return [];
   const umowa = await db.select({ contractId: contractFilesTable.contractId })
     .from(contractFilesTable).innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
     .where(and(inArray(contractFilesTable.contractId, rows.map(r => r.id)), inArray(documentTemplatesTable.kind, ["umowa", "sprzatanie_umowa"])));
   const withUmowa = new Set(umowa.map(u => u.contractId));
-  return rows.map(r => ({ id: r.id, factoryId: r.factoryId, status: r.status, dateFrom: dateStr(r.dateFrom), dateTo: dateStr(r.dateTo), hasUmowa: withUmowa.has(r.id) }));
+  return rows.map(r => ({ id: r.id, factoryId: r.factoryId, companyId: r.companyId, status: r.status, dateFrom: dateStr(r.dateFrom), dateTo: dateStr(r.dateTo), hasUmowa: withUmowa.has(r.id) }));
 }
 
-export async function loadWorkerFactories(workerId: number): Promise<LegalityFactory[]> {
-  const rows = await db.select({ factoryId: workerFactoriesTable.factoryId, name: factoriesTable.name, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo })
+// Роботодавці: основна фабрика (фірма фабрики) + активні сьогодні додаткові
+// (worker_factories.company_id, інакше фірма фабрики). Назви фірм — для причин.
+export async function loadWorkerEmployers(worker: { id: number; factoryId: number | null }, today: string): Promise<LegalityEmployer[]> {
+  const out: LegalityEmployer[] = [];
+  const companyName = new Map<number, string>();
+  for (const c of await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable)) companyName.set(c.id, c.name);
+  if (worker.factoryId != null) {
+    const [f] = await db.select({ id: factoriesTable.id, name: factoriesTable.name, companyId: factoriesTable.companyId }).from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
+    if (f) out.push({ factoryId: f.id, factoryName: f.name, companyId: f.companyId, companyName: f.companyId != null ? companyName.get(f.companyId) ?? null : null, primary: true });
+  }
+  const rows = await db.select({ factoryId: workerFactoriesTable.factoryId, name: factoriesTable.name, factoryCompanyId: factoriesTable.companyId, companyId: workerFactoriesTable.companyId, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo })
     .from(workerFactoriesTable).leftJoin(factoriesTable, eq(workerFactoriesTable.factoryId, factoriesTable.id))
-    .where(eq(workerFactoriesTable.workerId, workerId));
-  return rows.map(r => ({ factoryId: r.factoryId, name: r.name, validFrom: dateStr(r.validFrom), validTo: dateStr(r.validTo) }));
+    .where(eq(workerFactoriesTable.workerId, worker.id));
+  for (const r of rows) {
+    const from = dateStr(r.validFrom), to = dateStr(r.validTo);
+    if ((from && from > today) || (to && to < today)) continue;
+    if (out.some(e => e.factoryId === r.factoryId)) continue;
+    const cid = r.companyId ?? r.factoryCompanyId ?? null;
+    out.push({ factoryId: r.factoryId, factoryName: r.name, companyId: cid, companyName: cid != null ? companyName.get(cid) ?? null : null, primary: false });
+  }
+  return out;
 }
 
 // Фабрики зі змінами в графіку за останні ~30 днів (тижні з week_start ≥ today−37):
@@ -103,25 +119,17 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
   const [q] = await db.select({ citizenship: workerQuestionnairesTable.citizenship }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const passportNationality = mrzNationalityToCatalog(q?.citizenship ?? null);
   const nationality = w.nationality ?? passportNationality;
-  const [pos] = w.positionId != null ? await db.select({ isOffice: positionsTable.isOffice }).from(positionsTable).where(eq(positionsTable.id, w.positionId)) : [];
   const worker: LegalityWorker = {
     id: w.id, nationality, birthDate: dateStr(w.birthDate), companyId: w.companyId,
     employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate) }),
     isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
-    factoryId: w.factoryId, positionIsOffice: !!pos?.isOffice,
+    factoryId: w.factoryId,
   };
-  const [contracts, factories, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerFactories(workerId), scheduleFactoriesOf(workerId, today)]);
-  const factoryNames: Record<number, string | null> = {};
-  for (const f of factories) factoryNames[f.factoryId] = f.name;
-  for (const f of scheduleFactories) factoryNames[f.factoryId] = f.name;
-  if (w.factoryId != null && !(w.factoryId in factoryNames)) {
-    const [f] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, w.factoryId));
-    factoryNames[w.factoryId] = f?.name ?? null;
-  }
+  const [contracts, employers, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerEmployers({ id: w.id, factoryId: w.factoryId }, today), scheduleFactoriesOf(workerId, today)]);
   return {
     today, worker, documents: await loadWorkerDocuments(workerId), rules: rules ?? await loadLegalRules(),
-    contracts, factories,
-    facts: { passportNationality, nationalityFromPassport: !w.nationality && !!passportNationality, scheduleFactories, factoryNames },
+    contracts, employers,
+    facts: { passportNationality, nationalityFromPassport: !w.nationality && !!passportNationality, scheduleFactories },
   };
 }
 
@@ -139,7 +147,7 @@ export async function saveLegality(workerId: number, input: LegalityInput, r: Le
     derivedLegalStatus: r.legacy.derivedLegalStatus, derivedPayrollClass: r.legacy.derivedPayrollClass,
     legacyMappingRequiresReview: r.legacy.legacyMappingRequiresReview, legacyMismatchKind: r.legacy.legacyMismatchKind,
     payrollHints: r.payrollHints as unknown as Record<string, unknown>,
-    inputHash: sha1({ w: input.worker, d: input.documents, c: input.contracts ?? null, f: input.factories ?? null }), rulesHash: sha1(input.rules), computedAt: new Date(),
+    inputHash: sha1({ w: input.worker, d: input.documents, c: input.contracts ?? null, e: input.employers ?? null }), rulesHash: sha1(input.rules), computedAt: new Date(),
   };
   await db.insert(workerLegalityTable).values(values).onConflictDoUpdate({ target: workerLegalityTable.workerId, set: values });
 }
