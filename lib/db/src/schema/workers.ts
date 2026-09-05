@@ -29,6 +29,9 @@ export const companiesTable = pgTable("companies", {
   postalCode: text("postal_code"),
   city: text("city"),
   representative: text("representative"), // ПІБ + посада (напр. "Alona Kovalchuk – Prezes Zarządu")
+  // Укладає умови з працівниками. false — приватні підприємці власників (RS/TS):
+  // фінблок/фактури так, але не роботодавець → не в списках «фабрика · фірма» (05.09.2026)
+  employsWorkers: boolean("employs_workers").notNull().default(true),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

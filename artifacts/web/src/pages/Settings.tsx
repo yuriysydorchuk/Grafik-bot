@@ -278,6 +278,7 @@ function CompaniesSettings() {
   const inv = () => { qc.invalidateQueries({ queryKey: ["companies"] }); qc.invalidateQueries({ queryKey: ["factories"] }); qc.invalidateQueries({ queryKey: ["workers"] }); };
   const create = useMutation({ mutationFn: () => post("/companies", { name: name.trim() }), onSuccess: () => { setName(""); inv(); toast.success(t("Додано")); }, onError: (e: any) => toast.error(e.message) });
   const rename = useMutation({ mutationFn: (v: { id: number; name: string }) => patch(`/companies/${v.id}`, { name: v.name }), onSuccess: () => { inv(); toast.success(t("Збережено")); }, onError: (e: any) => toast.error(e.message) });
+  const setEmploys = useMutation({ mutationFn: (v: { id: number; employsWorkers: boolean }) => patch(`/companies/${v.id}`, { employsWorkers: v.employsWorkers }), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
   const remove = useMutation({ mutationFn: (id: number) => del(`/companies/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
   if (isLoading) return <Spinner />;
   return (
@@ -290,7 +291,7 @@ function CompaniesSettings() {
       </div>
       {!companies.length ? <Empty>{t("Немає фірм")}</Empty> : (
         <div className="space-y-1.5">
-          {companies.map(co => <CompanyRow key={co.id} co={co} onRename={(n) => rename.mutate({ id: co.id, name: n })}
+          {companies.map(co => <CompanyRow key={co.id} co={co} onRename={(n) => rename.mutate({ id: co.id, name: n })} onEmploys={v => setEmploys.mutate({ id: co.id, employsWorkers: v })}
             onDelete={async () => { if (await confirm({ title: t("Видалити фірму «{name}»?", { name: co.name }), danger: true, confirmText: t("Видалити") })) remove.mutate(co.id); }} />)}
         </div>
       )}
@@ -298,7 +299,7 @@ function CompaniesSettings() {
   );
 }
 
-function CompanyRow({ co, onRename, onDelete }: { co: Company; onRename: (n: string) => void; onDelete: () => void }) {
+function CompanyRow({ co, onRename, onDelete, onEmploys }: { co: Company; onRename: (n: string) => void; onDelete: () => void; onEmploys: (v: boolean) => void }) {
   const t = useT();
   const [name, setName] = useState(co.name);
   const [showRegistry, setShowRegistry] = useState(false);
@@ -306,6 +307,9 @@ function CompanyRow({ co, onRename, onDelete }: { co: Company; onRename: (n: str
     <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
       <Input value={name} onChange={e => setName(e.target.value)} className="flex-1" />
       <Badge color="slate">{co.workerCount ?? 0} {t("прац.")}</Badge>
+      <label className="flex shrink-0 items-center gap-1 text-xs text-slate-500" title={t("Зняти для приватних підприємців власників (RS/TS): вони не укладають умов і не показуються як роботодавець")}>
+        <input type="checkbox" checked={co.employsWorkers !== false} onChange={e => onEmploys(e.target.checked)} /> {t("роботодавець")}
+      </label>
       {name.trim() && name !== co.name && <Button variant="secondary" onClick={() => onRename(name.trim())}>{t("Зберегти")}</Button>}
       <button onClick={() => setShowRegistry(true)} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Реквізити (KRS/REGON/адреса) — для документів")}><Landmark className="h-4 w-4" /></button>
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>

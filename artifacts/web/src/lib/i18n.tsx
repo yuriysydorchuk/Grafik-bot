@@ -2967,6 +2967,8 @@ const EN: Record<string, string> = {
   "скасовані, замінені, прострочені": "cancelled, superseded, expired",
   "нова версія": "new version",
   "ще {n} у роботі": "{n} more in progress",
+  "док.": "docs",
+  "Зняти для приватних підприємців власників (RS/TS): вони не укладають умов і не показуються як роботодавець": "Untick for the owners' sole proprietorships (RS/TS): they sign no contracts and are not listed as an employer",
   "без дат": "no dates",
   "дати не вказані": "dates not set",
   "працівник підписав": "worker signed",

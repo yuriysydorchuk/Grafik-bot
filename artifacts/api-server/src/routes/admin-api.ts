@@ -1774,6 +1774,7 @@ router.patch("/companies/:id", RW, async (req, res) => {
     patch.name = name;
   }
   for (const k of COMPANY_REGISTRY_FIELDS) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
+  if (req.body?.employsWorkers !== undefined) patch.employsWorkers = !!req.body.employsWorkers; // RS/TS (JDG власників) — не роботодавці
   const [c] = await db.update(companiesTable).set(patch).where(eq(companiesTable.id, Number(req.params.id))).returning();
   ok(res, c);
 });

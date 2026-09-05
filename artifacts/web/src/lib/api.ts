@@ -69,6 +69,7 @@ export interface Company {
   krs?: string | null; regon?: string | null;
   street?: string | null; houseNumber?: string | null; postalCode?: string | null; city?: string | null;
   representative?: string | null;
+  employsWorkers?: boolean; // false — приватний підприємець власника (RS/TS): не роботодавець, не в списках «фабрика · фірма»
 }
 export type Gender = "male" | "female";
 export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }

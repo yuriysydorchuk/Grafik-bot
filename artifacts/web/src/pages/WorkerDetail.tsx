@@ -328,8 +328,10 @@ export default function WorkerDetail() {
 
       {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
       {/* Легалізація і документи — один блок на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
-      <div className="mb-5">
+      <div className="mb-5 space-y-5">
         <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
+        {/* Умови — теж на всю ширину, одразу під легалізацією (рішення власника 05.09.2026) */}
+        {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
@@ -394,7 +396,6 @@ export default function WorkerDetail() {
         </div>
 
         <div className="min-w-0 space-y-5">
-          {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />
           <WorkerAbsences workerId={w.id} />
@@ -769,8 +770,9 @@ type EmployerRef = { factoryId: number; factoryName: string; companyId: number |
 // мультифірмова (Sushi) — "21:3" (по рядку на кожну нашу фірму). Один список
 // замість двох послідовних селектів (зауваження власника 05.09.2026).
 type EmployerOption = { value: string; label: string; factoryId: number; companyId: number | null };
-function employerOptions(factories: Factory[], companies: Company[]): EmployerOption[] {
+function employerOptions(factories: Factory[], allCompanies: Company[]): EmployerOption[] {
   const out: EmployerOption[] = [];
+  const companies = allCompanies.filter(c => c.employsWorkers !== false); // RS/TS (JDG власників) умов не укладають
   for (const f of factories) {
     if (f.multiFirm) {
       for (const c of companies) out.push({ value: `${f.id}:${c.id}`, label: `${f.name} · ${c.name}`, factoryId: f.id, companyId: c.id });
@@ -841,11 +843,8 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
         </>}>
         {isLoading ? <div className="px-5 py-3"><Spinner /></div> : (
           <div className="divide-y divide-slate-100">
-            {/* Сталий пакет — тихий рядок над картками фабрик (підписується раз, спільний) */}
-            <ContractChain workerId={workerId} muted
-              title={t("Стандартний пакет")} subtitle={`ZUS · PIT · PPK · BHP · wniosek — ${t("спільний для всіх фабрик")}`}
-              list={standard} onSaved={inv}
-              emptyText={t("ще не підписаний — додається до першої умови")} onGenerate={() => openNew(null, null)} />
+            {/* Сталий пакет — один рядок «підписаний / ні», деталі за розгортанням (підписується раз, спільний) */}
+            <StandardPackageRow workerId={workerId} list={standard} onSaved={inv} onGenerate={() => openNew(null, null)} />
             {[...factoryIdsShown].map(fid => {
               const list = byFactory.get(fid) ?? [];
               const emp = employerOf(fid);
@@ -890,7 +889,47 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   );
 }
 
-// Картка одного роботодавця (або сталого пакету): шапка «фабрика · фірма» +
+// Стандартний пакет (ZUS/PIT/PPK/BHP/wniosek) підписується за раз — тому один
+// рядок: підписаний чи ні, коли, скільки документів; повні рядки з чипами і
+// файлами — лише за розгортанням (зауваження власника 05.09.2026).
+function StandardPackageRow({ workerId, list, onSaved, onGenerate }: { workerId: number; list: ContractSummary[]; onSaved: () => void; onGenerate: () => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const main = list.find(c => c.status === "signed") ?? list.find(c => c.status === "worker_signed") ?? [...list].sort((a, b) => b.id - a.id)[0] ?? null;
+  const st = main ? (CONTRACT_STATUS[main.status] ?? CONTRACT_STATUS.draft!) : null;
+  const summary = main ? [
+    main.signedAt ? `${t("підписано")} ${fmtDocDate(main.signedAt.slice(0, 10))}` : main.sentAt ? `${t("надіслано")} ${fmtDocDate(main.sentAt.slice(0, 10))}` : main.generatedAt ? `${t("згенеровано")} ${fmtDocDate(main.generatedAt.slice(0, 10))}` : null,
+    main.status === "signed" || main.status === "worker_signed" ? (main.dateTo ? `${t("дійсний до")} ${fmtDocDate(main.dateTo)}` : t("безстроково")) : null,
+    `${main.files.length} ${t("док.")}`,
+    list.length > 1 ? t("ще {n} у роботі", { n: list.length - 1 }) : null,
+  ].filter(Boolean).join(" · ") : null;
+  return (
+    <div className="bg-slate-50/50 px-5 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <button type="button" onClick={() => main && setOpen(o => !o)} className={`flex items-center gap-1.5 text-left ${main ? "" : "cursor-default"}`}>
+          {main ? (open ? <ChevronDown className="h-3.5 w-3.5 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 text-slate-400" />) : <FileText className="h-4 w-4 text-slate-400" />}
+          <span className="font-semibold text-slate-600">{t("Стандартний пакет")}</span>
+        </button>
+        <span className="text-xs text-slate-400">ZUS · PIT · PPK · BHP · wniosek</span>
+        {st && main && <Badge color={st.color}>{t(st.label)}</Badge>}
+        {summary && <span className="text-xs text-slate-500">{summary}</span>}
+        {!main && (
+          <span className="ml-auto flex items-center gap-2 text-xs text-slate-400">
+            {t("ще не підписаний — додається до першої умови")}
+            <button type="button" onClick={onGenerate} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200">{t("Згенерувати")}</button>
+          </span>
+        )}
+      </div>
+      {open && main && (
+        <div className="mt-2 space-y-2">
+          {[...list].sort((a, b) => (a.status === "signed" ? -1 : b.status === "signed" ? 1 : b.id - a.id)).map(c => <ContractRow key={c.id} c={c} workerId={workerId} onSaved={onSaved} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Картка одного роботодавця: шапка «фабрика · фірма» +
 // рядки чинних умов. Підписана чинна + нова версія в роботі — обидві в тій самій
 // картці (нова позначена «нова версія»).
 function ContractChain({ workerId, title, subtitle, companyName, badge, list, muted, emptyText, emptyTone, onGenerate, onSaved }: {
