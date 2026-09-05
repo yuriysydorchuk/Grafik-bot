@@ -708,6 +708,8 @@ type ContractSummary = {
   dateFrom: string | null; dateTo: string | null; generatedAt: string | null;
   approvedAt: string | null; sentAt: string | null; signedAt: string | null;
   companySignedAt: string | null; supersedesId: number | null;
+  companyId: number | null; factoryName: string | null; companyName: string | null;
+  files: { id: number; title: string; signed: boolean }[];
 };
 type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedSha256: string | null; signedSha256: string | null };
 type DocSetItem = { id: number; kind: string; title: string };
@@ -742,27 +744,215 @@ const CONTRACT_STATUS: Record<string, { label: string; color: "slate" | "blue" |
 // працює прямо з draft — без обов'язкових проміжних кліків. Компанія НЕ може
 // підписати раніше за працівника — «Підписати від компанії» з'являється лише
 // в статусі worker_signed.
+// Блок «Умови» (перероблено 05.09.2026 за зауваженням власника: «чинні й архів
+// окремо, вигляд як в аналогічних системах»). Патерн Personio/BambooHR/HRappka:
+// одна картка на роботодавця (фабрика · фірма) з ЧИННОЮ умовою, статусом,
+// періодом, підписами і документами пакета; усе скасоване/замінене/прострочене —
+// згорнутий «Архів» з лічильником. Фабрики працівника без чинної умови теж
+// показуються карткою-заглушкою «немає чинної умови → Згенерувати», бо саме
+// це підсвічує вісь «умова» движка легальності.
+const CONTRACT_ARCHIVE_STATUSES = new Set(["declined", "cancelled", "superseded", "expired"]);
+const CONTRACT_IN_PROGRESS = new Set(["draft", "pending_approval", "approved", "sent", "viewed", "worker_signed"]);
+const isCurrentContract = (c: ContractSummary, today: string) =>
+  !CONTRACT_ARCHIVE_STATUSES.has(c.status) && !(c.status === "signed" && !!c.dateTo && c.dateTo < today);
+const fmtTs = (iso: string) => {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}, ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const fmtPeriod = (c: { dateFrom: string | null; dateTo: string | null }) =>
+  c.dateFrom ? `${fmtDocDate(c.dateFrom)} – ${c.dateTo ? fmtDocDate(c.dateTo) : "∞"}` : null;
+
+type EmployerRef = { factoryId: number; factoryName: string; companyId: number | null; companyName: string | null; primary: boolean };
+
+// Значення селекта «фабрика · фірма» одним кроком: звичайна фабрика — "12",
+// мультифірмова (Sushi) — "21:3" (по рядку на кожну нашу фірму). Один список
+// замість двох послідовних селектів (зауваження власника 05.09.2026).
+type EmployerOption = { value: string; label: string; factoryId: number; companyId: number | null };
+function employerOptions(factories: Factory[], companies: Company[]): EmployerOption[] {
+  const out: EmployerOption[] = [];
+  for (const f of factories) {
+    if (f.multiFirm) {
+      for (const c of companies) out.push({ value: `${f.id}:${c.id}`, label: `${f.name} · ${c.name}`, factoryId: f.id, companyId: c.id });
+    } else {
+      const cn = f.companyName ?? companies.find(c => c.id === f.companyId)?.name ?? null;
+      out.push({ value: String(f.id), label: cn ? `${f.name} · ${cn}` : f.name, factoryId: f.id, companyId: f.companyId ?? null });
+    }
+  }
+  return out;
+}
+const employerValue = (factoryId: number | null, companyId: number | null, factories: Factory[]) => {
+  if (factoryId == null) return "";
+  const f = factories.find(x => x.id === factoryId);
+  return f?.multiFirm && companyId != null ? `${factoryId}:${companyId}` : String(factoryId);
+};
+
 function WorkerContracts({ workerId, factoryId, factories }: { workerId: number; factoryId: number | null; factories: Factory[] }) {
   const t = useT();
   const qc = useQueryClient();
-  const confirm = useConfirm();
   const { data: contracts = [], isLoading } = useQuery<ContractSummary[]>({ queryKey: ["worker-contracts", workerId], queryFn: () => get(`/workers/${workerId}/contracts`) });
+  const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
+  const { data: profile } = useQuery<{ companyId: number | null; companyName: string | null; factoryName: string | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
+  const { data: extraFactories = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`) });
   // Вісь «умова» движка каже, на яку фабрику умови бракує — пропонуємо її в модалці генерації першою
   const { data: lgForSuggest } = useQuery<WorkerLegality | null>({ queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`) });
   const suggestedFactoryId = (() => {
     const r = lgForSuggest?.reasons.find(x => (x.code === "contract_missing" || x.code === "contract_expired") && typeof x.params?.factoryId === "number");
     return r ? (r.params!.factoryId as number) : undefined;
   })();
-  const [showNew, setShowNew] = useState(false);
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [newFor, setNewFor] = useState<{ factoryId: number | null; companyId: number | null } | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] });
 
-  const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { inv(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
-  const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { inv(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
+  const today = new Date().toLocaleDateString("sv-SE");
+  const current = contracts.filter(c => isCurrentContract(c, today));
+  const archive = contracts.filter(c => !isCurrentContract(c, today));
+  const standard = current.filter(c => c.factoryId == null);
+  const validStandard = standard.find(c => c.status === "worker_signed" || c.status === "signed");
+  const byFactory = new Map<number, ContractSummary[]>();
+  for (const c of current) if (c.factoryId != null) { const arr = byFactory.get(c.factoryId) ?? []; arr.push(c); byFactory.set(c.factoryId, arr); }
+
+  // Роботодавці працівника: основна фабрика (фірма — з профілю) + активні додаткові
+  const employers: EmployerRef[] = [];
+  if (factoryId != null) {
+    const f = factories.find(x => x.id === factoryId);
+    const cid = f?.multiFirm ? (profile?.companyId ?? null) : (f?.companyId ?? profile?.companyId ?? null);
+    employers.push({ factoryId, factoryName: f?.name ?? profile?.factoryName ?? `#${factoryId}`, companyId: cid, companyName: companies.find(c => c.id === cid)?.name ?? null, primary: true });
+  }
+  for (const r of extraFactories) {
+    const inactive = (r.validFrom && r.validFrom > today) || (r.validTo && r.validTo < today);
+    if (inactive || employers.some(e => e.factoryId === r.factoryId)) continue;
+    employers.push({ factoryId: r.factoryId, factoryName: r.factoryName ?? `#${r.factoryId}`, companyId: r.companyId, companyName: r.companyName, primary: false });
+  }
+  const factoryIdsShown = new Set<number>([...employers.map(e => e.factoryId), ...byFactory.keys()]);
+  const inProgressCount = current.filter(c => CONTRACT_IN_PROGRESS.has(c.status)).length;
+  const signedCount = current.filter(c => c.status === "signed").length;
+  const summary = [`${t("чинних")} ${signedCount}`, inProgressCount ? `${t("в роботі")} ${inProgressCount}` : null, archive.length ? `${t("архів")} ${archive.length}` : null].filter(Boolean).join(" · ");
+
+  const openNew = (fid: number | null, cid: number | null) => setNewFor({ factoryId: fid, companyId: cid });
+  const employerOf = (fid: number) => employers.find(e => e.factoryId === fid);
+
+  return (
+    <>
+      <Section icon={FileSignature} title={t("Умови (Umowa)")} summary={summary}
+        action={<>
+          <WorkerQuestionnaire workerId={workerId} />
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => openNew(suggestedFactoryId ?? factoryId, null)}><Plus className="h-3.5 w-3.5" /> {t("Згенерувати документи")}</Button>
+        </>}>
+        {isLoading ? <div className="px-5 py-3"><Spinner /></div> : (
+          <div className="divide-y divide-slate-100">
+            {/* Сталий пакет — тихий рядок над картками фабрик (підписується раз, спільний) */}
+            <ContractChain workerId={workerId} muted
+              title={t("Стандартний пакет")} subtitle={`ZUS · PIT · PPK · BHP · wniosek — ${t("спільний для всіх фабрик")}`}
+              list={standard} onSaved={inv}
+              emptyText={t("ще не підписаний — додається до першої умови")} onGenerate={() => openNew(null, null)} />
+            {[...factoryIdsShown].map(fid => {
+              const list = byFactory.get(fid) ?? [];
+              const emp = employerOf(fid);
+              const f = factories.find(x => x.id === fid);
+              const companyName = emp?.companyName ?? list[0]?.companyName ?? null;
+              return (
+                <ContractChain key={fid} workerId={workerId}
+                  title={f?.name ?? list[0]?.factoryName ?? `#${fid}`} companyName={companyName}
+                  badge={emp?.primary ? t("основна") : emp ? t("додаткова") : t("не в списку фабрик")}
+                  list={list} onSaved={inv}
+                  emptyText={t("немає чинної умови")} emptyTone="warn"
+                  onGenerate={() => openNew(fid, emp?.companyId ?? null)} />
+              );
+            })}
+            {contracts.length === 0 && employers.length === 0 && (
+              <div className="px-5 py-3 text-sm text-slate-400">{t("Документів ще немає.")}</div>
+            )}
+            {archive.length > 0 && (
+              <div>
+                <button type="button" onClick={() => setArchiveOpen(o => !o)} className="flex w-full items-center gap-1.5 px-5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 hover:bg-slate-50">
+                  {archiveOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  {t("Архів")} <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-slate-500">{archive.length}</span>
+                  <span className="font-normal normal-case tracking-normal">· {t("скасовані, замінені, прострочені")}</span>
+                </button>
+                {archiveOpen && (
+                  <div className="divide-y divide-slate-50 border-t border-slate-100 bg-slate-50/40">
+                    {archive.map(c => <ContractRow key={c.id} c={c} workerId={workerId} onSaved={inv} archived showTarget />)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
+      {newFor && (
+        <GenerateDocumentsModal workerId={workerId} defaultFactoryId={newFor.factoryId} defaultCompanyId={newFor.companyId}
+          factories={factories} employers={employers}
+          standardValid={!!validStandard} standardValidUntil={validStandard?.dateTo ?? null}
+          onClose={() => setNewFor(null)} onSaved={() => { inv(); setNewFor(null); }} />
+      )}
+    </>
+  );
+}
+
+// Картка одного роботодавця (або сталого пакету): шапка «фабрика · фірма» +
+// рядки чинних умов. Підписана чинна + нова версія в роботі — обидві в тій самій
+// картці (нова позначена «нова версія»).
+function ContractChain({ workerId, title, subtitle, companyName, badge, list, muted, emptyText, emptyTone, onGenerate, onSaved }: {
+  workerId: number; title: string; subtitle?: string; companyName?: string | null; badge?: string;
+  list: ContractSummary[]; muted?: boolean; emptyText: string; emptyTone?: "warn"; onGenerate: () => void; onSaved: () => void;
+}) {
+  const t = useT();
+  const [showOlder, setShowOlder] = useState(false);
+  const signed = list.filter(c => c.status === "signed");
+  const rest = list.filter(c => c.status !== "signed").sort((a, b) => b.id - a.id);
+  // є підписана чинна + кілька версій у роботі — показуємо лише найновішу, решту за кліком
+  const olderHidden = signed.length > 0 && !showOlder ? rest.slice(1) : [];
+  const ordered = [...signed, ...(olderHidden.length ? rest.slice(0, 1) : rest)];
+  const empty = list.length === 0;
+  return (
+    <div className={`px-5 py-3 ${muted ? "bg-slate-50/50" : ""}`}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {muted ? <FileText className="h-4 w-4 shrink-0 text-slate-400" /> : <FactoryIcon className="h-4 w-4 shrink-0 text-slate-400" />}
+        <span className={`text-sm font-semibold ${muted ? "text-slate-600" : "text-slate-800"}`}>{title}</span>
+        {companyName && <Badge color="blue">{companyName}</Badge>}
+        {badge && <span className="text-xs text-slate-400">{badge}</span>}
+        {subtitle && <span className="text-xs text-slate-400">{subtitle}</span>}
+        {empty && (
+          <span className={`ml-auto flex items-center gap-2 text-xs ${emptyTone === "warn" ? "text-amber-600" : "text-slate-400"}`}>
+            {emptyTone === "warn" && <AlertTriangle className="h-3.5 w-3.5" />}
+            {emptyText}
+            <button type="button" onClick={onGenerate} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200">{t("Згенерувати")}</button>
+          </span>
+        )}
+      </div>
+      {!empty && (
+        <div className="mt-2 space-y-2">
+          {ordered.map(c => <ContractRow key={c.id} c={c} workerId={workerId} onSaved={onSaved} newVersion={signed.length > 0 && c.status !== "signed"} />)}
+          {olderHidden.length > 0 && (
+            <button type="button" onClick={() => setShowOlder(true)} className="text-xs text-slate-500 hover:text-slate-700 hover:underline">
+              {t("ще {n} у роботі", { n: olderHidden.length })}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Один рядок умови: статус · період (або «дати не вказані · вказати») · дії;
+// нижче — підписи і документи пакета (чипи), «файли» розгортає перегляд/скачати/
+// друк/надіслати. В архіві той самий рядок компактніший і з назвою фабрики.
+function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }: {
+  c: ContractSummary; workerId: number; onSaved: () => void; newVersion?: boolean; archived?: boolean; showTarget?: boolean;
+}) {
+  const t = useT();
+  const confirm = useConfirm();
+  const [expanded, setExpanded] = useState(false);
+  const [editDates, setEditDates] = useState(false);
+  const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
+  const terminal = ["signed", "cancelled", "superseded", "expired", "declined"].includes(c.status);
+  const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { onSaved(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
+  const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
   const send = useMutation({
     mutationFn: (id: number) => post<{ notified: boolean; link: string | null; bundledCount: number }>(`/contracts/${id}/send`),
     onSuccess: r => {
-      inv();
+      onSaved();
       // bundledCount>0 — разом надіслано й інші sendable пакети цієї людини
       // (одна сесія підписання на весь комплект, не окремі лінки).
       const bundleNote = r.bundledCount > 0 ? ` (${t("разом з {n} іншим пакетом", { n: r.bundledCount })})` : "";
@@ -771,90 +961,67 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
     },
     onError: (e: any) => toast.error(e.message),
   });
-
-  const renderRow = (c: ContractSummary) => {
-    const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
-    return (
-      <div key={c.id} className="border-b border-slate-50 last:border-0">
-        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 text-sm">
-          <Badge color={st.color}>{t(st.label)}</Badge>
-          {!c.dateFrom && !["declined", "cancelled", "superseded", "expired"].includes(c.status) ? (
-            <EditContractDates contractId={c.id} onSaved={inv} />
-          ) : (
-            <span className="text-slate-600">{c.dateFrom ?? "—"}{c.dateTo ? ` → ${c.dateTo}` : ""}</span>
-          )}
-          {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {["draft", "pending_approval", "approved"].includes(c.status) && (
-              <button onClick={() => send.mutate(c.id)} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
-            )}
-            {c.status === "worker_signed" && (
-              <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
-            )}
-            {!["signed", "cancelled", "superseded", "expired", "declined"].includes(c.status) && (
-              <button onClick={async () => { if (await confirm({ title: t("Скасувати пакет?"), danger: true, confirmText: t("Скасувати") })) cancelMut.mutate(c.id); }}
-                className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Скасувати")}><Ban className="h-3.5 w-3.5" /></button>
-            )}
-            <button onClick={() => setExpanded(x => x === c.id ? null : c.id)} className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700" title={t("Файли пакета: перегляд, скачати, друк, надіслати")}>
-              <FileText className="h-3.5 w-3.5" /> {t("файли")}
-              {expanded === c.id ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-        </div>
-        {(c.signedAt || c.companySignedAt) && (
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-4 pb-2 text-xs text-slate-400">
-            {c.signedAt && <span>{t("Підписав працівник")}: {new Date(c.signedAt).toLocaleString("uk-UA")}</span>}
-            {c.companySignedAt && <span>{t("Підписала компанія")}: {new Date(c.companySignedAt).toLocaleString("uk-UA")}</span>}
-          </div>
-        )}
-        {expanded === c.id && <ContractFilesList contractId={c.id} workerId={workerId} />}
-      </div>
-    );
-  };
-
-  // factoryId=null — сталий пакет (спільний для всіх фабрик, підписується
-  // раз); factoryId задано — окремий ланцюг конкретної фабрики. Працівник
-  // може мати кілька одночасно активних факторі-ланцюгів (§7 плану).
-  const standard = contracts.filter(c => c.factoryId == null);
-  // Дійсний = підписаний ПРАЦІВНИКОМ (worker_signed або вже фінальний signed)
-  // і не прострочений по даті — доки такого нема, модалка генерації факторі-
-  // пакета мусить пропонувати сталий пакет РАЗОМ (не лише окремим кроком).
-  const today = new Date().toISOString().slice(0, 10);
-  const validStandard = standard.find(c => (c.status === "worker_signed" || c.status === "signed") && (!c.dateTo || c.dateTo >= today));
-  const byFactory = new Map<number, ContractSummary[]>();
-  for (const c of contracts) if (c.factoryId != null) { const arr = byFactory.get(c.factoryId) ?? []; arr.push(c); byFactory.set(c.factoryId, arr); }
-
+  const period = fmtPeriod(c);
+  const signLine = [
+    c.signedAt ? `${t("працівник підписав")} ${fmtTs(c.signedAt)}` : null,
+    c.companySignedAt ? `${t("компанія")} ${fmtTs(c.companySignedAt)}` : null,
+    !c.signedAt && c.sentAt ? `${t("надіслано")} ${fmtTs(c.sentAt)}` : null,
+    !c.signedAt && !c.sentAt && c.generatedAt ? `${t("згенеровано")} ${fmtTs(c.generatedAt)}` : null,
+  ].filter(Boolean).join(" · ");
+  const files = c.files ?? [];
+  const cls = archived ? "px-5 py-2" : `rounded-lg border px-3 py-2 ${c.status === "signed" ? "border-emerald-200 bg-emerald-50/40" : newVersion ? "border-dashed border-slate-300 bg-white" : "border-slate-200 bg-white"}`;
   return (
-    <>
-      <Section icon={FileSignature} title={t("Умови (Umowa)")}
-        action={<>
-          <WorkerQuestionnaire workerId={workerId} />
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setShowNew(true)}><Plus className="h-3.5 w-3.5" /> {t("Згенерувати документи")}</Button>
-        </>}
-        empty={t("Документів ще немає.")}>
-        {isLoading ? <Spinner /> : contracts.length ? (
-          <div>
-            {standard.length > 0 && (
-              <div className="border-b border-slate-100">
-                <div className="bg-slate-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Стандартний пакет")} <span className="normal-case text-slate-400">({t("спільний для всіх фабрик")})</span></div>
-                {standard.map(renderRow)}
-              </div>
-            )}
-            {[...byFactory.entries()].map(([fid, list]) => (
-              <div key={fid} className="border-b border-slate-100 last:border-0">
-                <div className="bg-slate-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{factories.find(f => f.id === fid)?.name ?? `#${fid}`}</div>
-                {list.map(renderRow)}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </Section>
-      {showNew && (
-        <GenerateDocumentsModal workerId={workerId} defaultFactoryId={suggestedFactoryId ?? factoryId} factories={factories}
-          standardValid={!!validStandard} standardValidUntil={validStandard?.dateTo ?? null}
-          onClose={() => setShowNew(false)} onSaved={() => { inv(); setShowNew(false); }} />
+    <div className={cls}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <Badge color={st.color}>{t(st.label)}</Badge>
+        {newVersion && <span className="text-xs text-slate-500">{t("нова версія")}</span>}
+        {showTarget && <span className="text-xs text-slate-600">{c.factoryId == null ? t("Стандартний пакет") : (c.factoryName ?? `#${c.factoryId}`)}{c.companyName ? ` · ${c.companyName}` : ""}</span>}
+        {period ? (
+          <span className="tabular-nums text-slate-700">{period}</span>
+        ) : archived ? (
+          <span className="text-xs text-slate-400">{t("без дат")}</span>
+        ) : editDates ? (
+          <EditContractDates contractId={c.id} onSaved={() => { setEditDates(false); onSaved(); }} onCancel={() => setEditDates(false)} />
+        ) : (
+          <span className="text-xs text-slate-400">
+            {t("дати не вказані")}
+            {!terminal && <> · <button type="button" onClick={() => setEditDates(true)} className="text-red-600 hover:underline">{t("вказати")}</button></>}
+          </span>
+        )}
+        {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
+            <button onClick={() => send.mutate(c.id)} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
+          )}
+          {!archived && c.status === "worker_signed" && (
+            <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
+          )}
+          {!archived && !terminal && (
+            <button onClick={async () => { if (await confirm({ title: t("Скасувати пакет?"), danger: true, confirmText: t("Скасувати") })) cancelMut.mutate(c.id); }}
+              className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Скасувати")}><Ban className="h-3.5 w-3.5" /></button>
+          )}
+          <button onClick={() => setExpanded(x => !x)} className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700" title={t("Файли пакета: перегляд, скачати, друк, надіслати")}>
+            <FileText className="h-3.5 w-3.5" /> {t("файли")}
+            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+      {(signLine || files.length > 0) && !archived && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+          {signLine && <span>{signLine}</span>}
+          {files.length > 0 && (
+            <span className="flex flex-wrap items-center gap-1">
+              {files.map(f => (
+                <span key={f.id} className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 ${f.signed ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"}`} title={f.signed ? t("підписано") : t("без підпису")}>
+                  {f.signed && <ShieldCheck className="h-3 w-3" />}{f.title}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
       )}
-    </>
+      {expanded && <div className="-mx-3 mt-1"><ContractFilesList contractId={c.id} workerId={workerId} /></div>}
+    </div>
   );
 }
 
@@ -863,7 +1030,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
 // дописуємо, щойно з'явиться, на будь-якому нетермінальному статусі. У draft
 // це ще й перегенеровує PDF-файли; після — лише дані в БД, підписаний файл не
 // чіпається (services/contracts.ts:updateContractDates).
-function EditContractDates({ contractId, onSaved }: { contractId: number; onSaved: () => void }) {
+function EditContractDates({ contractId, onSaved, onCancel }: { contractId: number; onSaved: () => void; onCancel?: () => void }) {
   const t = useT();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -874,13 +1041,14 @@ function EditContractDates({ contractId, onSaved }: { contractId: number; onSave
   });
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-7 w-32 text-xs" />
+      <Input type="date" autoFocus value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-7 w-32 text-xs" />
       <span className="text-slate-400">→</span>
       <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-7 w-32 text-xs" />
       <button onClick={() => save.mutate()} disabled={!dateFrom || save.isPending}
         className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50">
         {t("Зберегти дати")}
       </button>
+      {onCancel && <button type="button" onClick={onCancel} className="rounded p-1 text-slate-400 hover:text-slate-600" title={t("Скасувати")}><XCircle className="h-3.5 w-3.5" /></button>}
     </div>
   );
 }
@@ -966,24 +1134,35 @@ function ContractPdfPreview({ url }: { url: string }) {
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const yearAheadIso = () => { const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
 
-function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standardValid, standardValidUntil, onClose, onSaved }: {
-  workerId: number; defaultFactoryId: number | null; factories: Factory[];
+function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, factories, employers, standardValid, standardValidUntil, onClose, onSaved }: {
+  workerId: number; defaultFactoryId: number | null; defaultCompanyId?: number | null; factories: Factory[]; employers: EmployerRef[];
   standardValid: boolean; standardValidUntil: string | null;
   onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
-  const [factoryId, setFactoryId] = useState<string>(defaultFactoryId ? String(defaultFactoryId) : "");
-  // Фірма в умові (05.09.2026): звичайна фабрика — фірма фабрики (зафіксовано);
-  // мультифірмова (Sushi) — вибір, за замовчуванням фірма з профілю
+  // Фабрика і фірма умови — один селект (05.09.2026): звичайна фабрика — рядок
+  // «Фабрика · фірма фабрики», мультифірмова (Sushi) — по рядку на кожну нашу
+  // фірму. Фабрики працівника — зверху окремою групою.
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: profile } = useQuery<{ companyId: number | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
-  const [companyId, setCompanyId] = useState<string>("");
-  const selFactory = factories.find(f => String(f.id) === factoryId);
-  const companyLocked = !!selFactory && !selFactory.multiFirm;
+  const allOptions = employerOptions(factories, companies);
+  const mineValues = new Set(employers.map(e => employerValue(e.factoryId, e.companyId, factories)));
+  const mineOptions = allOptions.filter(o => mineValues.has(o.value));
+  const otherOptions = allOptions.filter(o => !mineValues.has(o.value));
+  const defaultFactory = factories.find(f => f.id === defaultFactoryId);
+  const defaultCid = defaultCompanyId ?? employers.find(e => e.factoryId === defaultFactoryId)?.companyId ?? (defaultFactory?.multiFirm ? profile?.companyId : defaultFactory?.companyId) ?? null;
+  const [sel, setSel] = useState<string>(employerValue(defaultFactoryId, defaultCid, factories));
+  // мультифірмова фабрика без обраної фірми у профілі — дефолт підтягується, щойно профіль завантажився
   useEffect(() => {
-    if (!selFactory) { setCompanyId(profile?.companyId ? String(profile.companyId) : ""); return; }
-    setCompanyId(selFactory.multiFirm ? (profile?.companyId ? String(profile.companyId) : (selFactory.companyId ? String(selFactory.companyId) : "")) : (selFactory.companyId ? String(selFactory.companyId) : ""));
-  }, [factoryId, selFactory?.id, profile?.companyId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (sel === "" || sel.includes(":")) return;
+    const f = factories.find(x => String(x.id) === sel);
+    if (f?.multiFirm) setSel(employerValue(f.id, defaultCid ?? profile?.companyId ?? companies[0]?.id ?? null, factories));
+  }, [sel, profile?.companyId, companies.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selOption = allOptions.find(o => o.value === sel);
+  const factoryId = selOption ? String(selOption.factoryId) : "";
+  const companyId = selOption?.companyId != null ? String(selOption.companyId) : "";
+  const [showAllFactory, setShowAllFactory] = useState(false);
+  const [showAllStandard, setShowAllStandard] = useState(false);
   // Рік-наперед за замовчуванням — лише для сталого пакету (ZUS/tax/PPK/BHP/
   // wniosek): факторі-пакет (Umowa, іноді разом з Regulamin) цілком легально
   // йде БЕЗ дат (дата роботи невідома заздалегідь) — не форсувати тут дефолт.
@@ -1094,22 +1273,25 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
     <Modal open onClose={onClose} title={t("Згенерувати документи")} size="lg">
       <div className="space-y-3">
         <div>
-          <Label>{t("Фабрика")}</Label>
-          <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
+          <Label>{t("Фабрика · фірма в умові")}</Label>
+          <Select value={sel} onChange={e => setSel(e.target.value)}>
             <option value="">{t("— Стандартний пакет (без фабрики) —")}</option>
-            {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            {mineOptions.length > 0 && (
+              <optgroup label={t("Фабрики працівника")}>
+                {mineOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </optgroup>
+            )}
+            <optgroup label={mineOptions.length > 0 ? t("Інші фабрики") : t("Фабрики")}>
+              {otherOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </optgroup>
           </Select>
+          {selOption && (
+            <div className="pt-0.5 text-xs text-slate-400">
+              {t("Реквізити в умові")}: <b className="font-medium text-slate-600">{companies.find(c => String(c.id) === companyId)?.name ?? "—"}</b>
+              {factories.find(f => String(f.id) === factoryId)?.multiFirm && ` · ${t("мультифірмова фабрика — фірму обрано в списку вище")}`}
+            </div>
+          )}
         </div>
-        {selFactory && (
-          <div>
-            <Label>{t("Фірма в умові")}</Label>
-            <Select value={companyId} onChange={e => setCompanyId(e.target.value)} disabled={companyLocked}>
-              <option value="">—</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-            <div className="pt-0.5 text-xs text-slate-400">{companyLocked ? t("фірма фабрики") : t("мультифірмова фабрика — обери, від якої фірми умова")}</div>
-          </div>
-        )}
 
         {showStandardSection && (
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -1139,17 +1321,8 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
         {!isStandard && (
           <div>
             <Label>{t("Комплект документів фабрики")} {autoFactoryLoading && <Spinner />}</Label>
-            <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto rounded-lg border border-slate-200">
-              {factoryCandidates.length === 0 && <div className="px-3 py-3 text-sm text-slate-400">{t("Немає шаблонів цього типу в бібліотеці.")}</div>}
-              {factoryCandidates.map(c => (
-                <label key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50">
-                  <input type="checkbox" checked={checkedFactory.has(c.id)} onChange={() => toggleFactory(c.id, c.kind)} />
-                  <Badge color="slate">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
-                  <span className="truncate text-slate-700">{c.title}</span>
-                  {autoSetFactory.some(a => a.id === c.id) && <span className="ml-auto shrink-0 text-xs text-emerald-600">{t("авто")}</span>}
-                </label>
-              ))}
-            </div>
+            <TemplateChecklist candidates={factoryCandidates} auto={autoSetFactory} checked={checkedFactory} onToggle={toggleFactory}
+              showAll={showAllFactory} onShowAll={() => setShowAllFactory(true)} loading={autoFactoryLoading} />
           </div>
         )}
 
@@ -1160,17 +1333,8 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
               {needsStandardToo && <span className="ml-1 font-normal text-amber-600">— {t("ще не підписаний, додається разом")}</span>}
               {" "}{autoStandardLoading && <Spinner />}
             </Label>
-            <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto rounded-lg border border-slate-200">
-              {standardCandidates.length === 0 && <div className="px-3 py-3 text-sm text-slate-400">{t("Немає шаблонів цього типу в бібліотеці.")}</div>}
-              {standardCandidates.map(c => (
-                <label key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50">
-                  <input type="checkbox" checked={checkedStandard.has(c.id)} onChange={() => toggleStandard(c.id, c.kind)} />
-                  <Badge color="slate">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
-                  <span className="truncate text-slate-700">{c.title}</span>
-                  {autoSetStandard.some(a => a.id === c.id) && <span className="ml-auto shrink-0 text-xs text-emerald-600">{t("авто")}</span>}
-                </label>
-              ))}
-            </div>
+            <TemplateChecklist candidates={standardCandidates} auto={autoSetStandard} checked={checkedStandard} onToggle={toggleStandard}
+              showAll={showAllStandard} onShowAll={() => setShowAllStandard(true)} loading={autoStandardLoading} />
           </div>
         )}
 
@@ -1189,6 +1353,38 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, factories, standar
   );
 }
 
+// Чекліст шаблонів: за замовчуванням лише підібраний комплект (авто) і те, що
+// адмін уже відмітив; решта бібліотеки — за «додати інший шаблон» (інакше для
+// Sushi у списку висіли всі 8 інструктажів Andros без галочок — зауваження 05.09.2026).
+function TemplateChecklist({ candidates, auto, checked, onToggle, showAll, onShowAll, loading }: {
+  candidates: { id: number; kind: string; title: string }[]; auto: DocSetItem[]; checked: Set<number>;
+  onToggle: (id: number, kind: string) => void; showAll: boolean; onShowAll: () => void; loading: boolean;
+}) {
+  const t = useT();
+  const isAuto = (id: number) => auto.some(a => a.id === id);
+  const visible = showAll ? candidates : candidates.filter(c => isAuto(c.id) || checked.has(c.id));
+  const hidden = candidates.length - visible.length;
+  return (
+    <div className="max-h-56 divide-y divide-slate-50 overflow-y-auto rounded-lg border border-slate-200">
+      {candidates.length === 0 && <div className="px-3 py-3 text-sm text-slate-400">{t("Немає шаблонів цього типу в бібліотеці.")}</div>}
+      {candidates.length > 0 && visible.length === 0 && !loading && <div className="px-3 py-3 text-sm text-slate-400">{t("Для цієї фабрики шаблон не підібрано — додай вручну.")}</div>}
+      {visible.map(c => (
+        <label key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50">
+          <input type="checkbox" checked={checked.has(c.id)} onChange={() => onToggle(c.id, c.kind)} />
+          <Badge color="slate">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
+          <span className="truncate text-slate-700">{c.title}</span>
+          {isAuto(c.id) && <span className="ml-auto shrink-0 text-xs text-emerald-600">{t("авто")}</span>}
+        </label>
+      ))}
+      {!showAll && hidden > 0 && (
+        <button type="button" onClick={onShowAll} className="flex w-full items-center gap-1 px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700">
+          <Plus className="h-3 w-3" /> {t("додати інший шаблон")} <span className="text-slate-400">({hidden})</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Легалізація за документами (движок worker_legality) — три світлофори
 // (перебування/праця/загалом), причини движка, найближчий термін, обов'язки
 // (напр. powiadomienie), та підказка до старого поля «Форма легалізації»
@@ -1204,19 +1400,16 @@ function WorkerFactoriesChips({ workerId, factories, companies, primaryFactoryId
   const canEdit = can(me, "editData") || can(me, "legalization");
   const { data: rows = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`) });
   const [adding, setAdding] = useState(false);
-  const [pickFactory, setPickFactory] = useState<number | null>(null); // мультифірмова фабрика: другий крок — фірма
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-factories", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
   const add = useMutation({
     mutationFn: (v: { factoryId: number; companyId?: number }) => post(`/workers/${workerId}/factories`, v),
-    onSuccess: () => { inv(); setAdding(false); setPickFactory(null); }, onError: (e: any) => toast.error(e.message),
+    onSuccess: () => { inv(); setAdding(false); }, onError: (e: any) => toast.error(e.message),
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-factories/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
   const today = new Date().toLocaleDateString("sv-SE");
-  const options = factories.filter(f => f.id !== primaryFactoryId && !rows.some(r => r.factoryId === f.id));
-  const onPickFactory = (id: number) => {
-    const f = factories.find(x => x.id === id);
-    if (f?.multiFirm) setPickFactory(id); else add.mutate({ factoryId: id });
-  };
+  // Один крок: мультифірмова фабрика розкладена на «Фабрика · Фірма» по рядку
+  // на кожну нашу фірму, звичайна — з фірмою фабрики в тому ж рядку.
+  const options = employerOptions(factories.filter(f => f.id !== primaryFactoryId && !rows.some(r => r.factoryId === f.id)), companies);
   return (
     <>
       {rows.map(r => {
@@ -1229,15 +1422,13 @@ function WorkerFactoriesChips({ workerId, factories, companies, primaryFactoryId
           </span>
         );
       })}
-      {canEdit && (pickFactory != null ? (
-        <Select autoFocus value="" onChange={e => { if (e.target.value) add.mutate({ factoryId: pickFactory, companyId: Number(e.target.value) }); else setPickFactory(null); }} onBlur={() => setPickFactory(null)} className="h-6 w-44 py-0 text-xs" title={t("Мультифірмова фабрика: яка наша фірма — роботодавець")}>
-          <option value="">{t("— фірма на цій фабриці —")}</option>
-          {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </Select>
-      ) : adding ? (
-        <Select autoFocus value="" onChange={e => { if (e.target.value) onPickFactory(Number(e.target.value)); else setAdding(false); }} onBlur={() => { if (pickFactory == null) setAdding(false); }} className="h-6 w-44 py-0 text-xs">
-          <option value="">{t("— оберіть фабрику —")}</option>
-          {options.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+      {canEdit && (adding ? (
+        <Select autoFocus value="" onChange={e => {
+          const o = options.find(x => x.value === e.target.value);
+          if (o) add.mutate({ factoryId: o.factoryId, companyId: o.companyId ?? undefined }); else setAdding(false);
+        }} onBlur={() => setAdding(false)} className="h-6 w-56 py-0 text-xs" title={t("Ще одна фабрика: умова потрібна на кожну")}>
+          <option value="">{t("— фабрика · фірма —")}</option>
+          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </Select>
       ) : (
         <button type="button" onClick={() => setAdding(true)} className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-xs text-slate-400 hover:border-slate-400 hover:text-slate-600" title={t("Ще одна фабрика: умова потрібна на кожну")}>

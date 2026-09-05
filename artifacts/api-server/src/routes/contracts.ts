@@ -19,7 +19,7 @@ import fs from "node:fs";
 import {
   db, workerQuestionnairesTable, workerDocumentsTable, documentTypesTable,
   contractsTable, contractFilesTable, signatureTokensTable, signatureEventsTable,
-  workersTable, factoriesTable,
+  workersTable, factoriesTable, companiesTable,
 } from "@workspace/db";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
@@ -302,10 +302,25 @@ router.patch("/contracts/:id/dates", WD, async (req, res) => {
   }
 });
 
+// Список умов працівника з назвами фабрики/фірми і файлами пакета — картка в
+// профілі показує документи пакета одразу, без окремого запиту на кожну умову.
 router.get("/workers/:id/contracts", WD, async (req, res) => {
   const workerId = Number(req.params.id);
-  const rows = await db.select().from(contractsTable).where(eq(contractsTable.workerId, workerId)).orderBy(desc(contractsTable.id));
-  ok(res, rows);
+  const rows = await db.select({
+    c: contractsTable, factoryName: factoriesTable.name, companyName: companiesTable.name,
+  }).from(contractsTable)
+    .leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+    .leftJoin(companiesTable, eq(contractsTable.companyId, companiesTable.id))
+    .where(eq(contractsTable.workerId, workerId)).orderBy(desc(contractsTable.id));
+  const ids = rows.map(r => r.c.id);
+  const files = ids.length ? await db.select({
+    id: contractFilesTable.id, contractId: contractFilesTable.contractId, title: contractFilesTable.title,
+    sortOrder: contractFilesTable.sortOrder, signedSha256: contractFilesTable.signedSha256,
+  }).from(contractFilesTable).where(inArray(contractFilesTable.contractId, ids)).orderBy(contractFilesTable.sortOrder) : [];
+  ok(res, rows.map(r => ({
+    ...r.c, factoryName: r.factoryName, companyName: r.companyName,
+    files: files.filter(f => f.contractId === r.c.id).map(f => ({ id: f.id, title: f.title, signed: !!f.signedSha256 })),
+  })));
 });
 
 router.get("/contracts/:id", WD, async (req, res) => {
