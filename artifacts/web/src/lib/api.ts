@@ -182,7 +182,7 @@ export interface Driver {
   seats: number | null; inviteCode: string | null; isHeadDriver: boolean; isActive: boolean;
 }
 export type GenMode = "availability" | "orders" | "all";
-export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null }
+export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null; contractDuties?: string | null }
 export interface Factory {
   id: number; name: string; address: string | null;
   companyId?: number | null; companyName?: string | null;

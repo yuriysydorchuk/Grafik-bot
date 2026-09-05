@@ -8,10 +8,10 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import puppeteer, { type Browser } from "puppeteer";
 import {
-  db, workersTable, factoriesTable, companiesTable, positionsTable, workerQuestionnairesTable,
+  db, workersTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, workerQuestionnairesTable,
   contractsTable, documentTemplatesTable, contractFilesTable, type Contract, type DocumentTemplate,
 } from "@workspace/db";
 import { KSIEG_STD_BRUTTO } from "./svodni";
@@ -118,6 +118,29 @@ export async function resolveContractCompanyId(workerId: number, factoryId: numb
   return factory?.companyId ?? worker?.companyId ?? null;
 }
 
+// {%Czynności%} — обов'язки в умові (рішення власника 05.09.2026: розписуються
+// в налаштуваннях фабрики ПІД КОЖНУ ПОСАДУ): посада працівника на цій фабриці
+// (factory_positions.contract_duties) → поле фабрики (factories.contract_duties)
+// → назва посади. `source` — щоб модалка генерації показала, звідки текст,
+// і попередила, коли для посади нічого не розписано.
+export type ContractDutiesSource = "position" | "factory" | "position_name" | "none";
+export async function resolveContractDuties(positionId: number | null, factoryId: number | null): Promise<{ text: string; source: ContractDutiesSource }> {
+  if (factoryId != null && positionId != null) {
+    const [fp] = await db.select({ d: factoryPositionsTable.contractDuties }).from(factoryPositionsTable)
+      .where(and(eq(factoryPositionsTable.factoryId, factoryId), eq(factoryPositionsTable.positionId, positionId)));
+    if (fp?.d) return { text: fp.d, source: "position" };
+  }
+  if (factoryId != null) {
+    const [f] = await db.select({ d: factoriesTable.contractDuties }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+    if (f?.d) return { text: f.d, source: "factory" };
+  }
+  if (positionId != null) {
+    const [p] = await db.select({ name: positionsTable.name }).from(positionsTable).where(eq(positionsTable.id, positionId));
+    if (p?.name) return { text: p.name, source: "position_name" };
+  }
+  return { text: "", source: "none" };
+}
+
 export async function buildContractData(
   workerId: number, factoryId: number | null,
   dates: { dateFrom?: string | null; dateTo?: string | null } = {},
@@ -197,10 +220,7 @@ export async function buildContractData(
     "Zamieszkania numer domu pracownika": questionnaire?.zamNumerDomu ?? "",
     "Zamieszkania kod pocztowy pracownika": questionnaire?.zamKodPocztowy ?? "",
     "Stanowisko": position?.name ?? "",
-    // Czynności — рішення власника 01.09.2026: задається в налаштуваннях
-    // фабрики (factories.contract_duties), не per-worker/per-generation;
-    // фолбек на назву посади, якщо фабрика ще не заповнила опис.
-    "Czynności": factory?.contractDuties || position?.name || "",
+    "Czynności": (await resolveContractDuties(worker.positionId, factoryId)).text,
     "Wynagrodzenie": `${String(rate).replace(".", ",")} zł`,
     "Wynagrodzenie kwota i typ": `${String(rate).replace(".", ",")} zł brutto za godzinę`,
     "Nazwa Klienta": factory?.name ?? "",

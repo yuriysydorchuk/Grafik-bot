@@ -113,7 +113,7 @@ const initialShifts = (f: FactoryX | null): ShiftTime[] => {
   return DEFAULT_SHIFTS.slice(0, f?.shiftCount ?? 3);
 };
 
-type PosRow = { positionId: number; rate: string; rateNetto: string; invoiceRate: string };
+type PosRow = { positionId: number; rate: string; rateNetto: string; invoiceRate: string; contractDuties: string };
 function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutEdit, onClose, onSaved }: { factory: FactoryX | null; canRates: boolean; canInvoice: boolean; canPayoutView: boolean; canPayoutEdit: boolean; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
@@ -146,12 +146,12 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     pnlLabel: factory?.pnlLabel ?? "",
   });
   const [posRows, setPosRows] = useState<PosRow[]>(
-    (factory?.positions ?? []).map(p => ({ positionId: p.positionId, rate: p.rate != null ? String(p.rate) : "", rateNetto: p.rateNetto != null ? String(p.rateNetto) : "", invoiceRate: p.invoiceRate != null ? String(p.invoiceRate) : "" }))
+    (factory?.positions ?? []).map(p => ({ positionId: p.positionId, rate: p.rate != null ? String(p.rate) : "", rateNetto: p.rateNetto != null ? String(p.rateNetto) : "", invoiceRate: p.invoiceRate != null ? String(p.invoiceRate) : "", contractDuties: p.contractDuties ?? "" }))
   );
   const addPosRow = () => {
     const used = new Set(posRows.map(r => r.positionId));
     const next = allPositions.find(p => !used.has(p.id));
-    if (next) setPosRows(rows => [...rows, { positionId: next.id, rate: "", rateNetto: "", invoiceRate: "" }]);
+    if (next) setPosRows(rows => [...rows, { positionId: next.id, rate: "", rateNetto: "", invoiceRate: "", contractDuties: "" }]);
   };
   const setPosRow = (i: number, patch: Partial<PosRow>) => setPosRows(rows => rows.map((r, j) => j === i ? { ...r, ...patch } : r));
   const removePosRow = (i: number) => setPosRows(rows => rows.filter((_, j) => j !== i));
@@ -181,7 +181,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     paidTransport: v.paidTransport, transportFeePerShift: num(v.transportFeePerShift), transportFeeMonthCap: num(v.transportFeeMonthCap),
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
-      positionId: r.positionId,
+      positionId: r.positionId, contractDuties: r.contractDuties.trim() || null,
       ...(canRates ? { rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate) } : {}),
     })) : [],
     shifts, stops: stops.filter(s => s.name.trim()),
@@ -250,20 +250,25 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
               {canRates && posRows.length > 0 && (
                 <div className="flex items-center gap-2 pr-9 text-[10px] font-medium uppercase tracking-wide text-slate-400">
                   <span className="flex-1">{t("Посада")}</span>
-                  <span className="w-20 text-center">{t("Платимо")}</span>
-                  <span className="w-20 text-center">{t("Нетто")}</span>
-                  <span className="w-20 text-center">{t("Клієнт")}</span>
+                  <span className="w-16 text-center">{t("Платимо")}</span>
+                  <span className="w-16 text-center">{t("Нетто")}</span>
+                  <span className="w-16 text-center">{t("Клієнт")}</span>
                 </div>
               )}
               {posRows.map((r, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Select value={String(r.positionId)} onChange={e => setPosRow(i, { positionId: Number(e.target.value) })} className="flex-1">
-                    {allPositions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </Select>
-                  {canRates && <Input value={r.rate} onChange={e => setPosRow(i, { rate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
-                  {canRates && <Input value={r.rateNetto} onChange={e => setPosRow(i, { rateNetto: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
-                  {canRates && <Input value={r.invoiceRate} onChange={e => setPosRow(i, { invoiceRate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-20 text-center" />}
-                  <button type="button" onClick={() => removePosRow(i)} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><X className="h-4 w-4" /></button>
+                <div key={i} className="space-y-1 border-b border-slate-100 pb-1.5 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <Select value={String(r.positionId)} onChange={e => setPosRow(i, { positionId: Number(e.target.value) })} className="min-w-0 flex-1">
+                      {allPositions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </Select>
+                    {canRates && <Input value={r.rate} onChange={e => setPosRow(i, { rate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-16 shrink-0 px-1 text-center" />}
+                    {canRates && <Input value={r.rateNetto} onChange={e => setPosRow(i, { rateNetto: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-16 shrink-0 px-1 text-center" />}
+                    {canRates && <Input value={r.invoiceRate} onChange={e => setPosRow(i, { invoiceRate: e.target.value })} placeholder={t("zł/год")} inputMode="decimal" className="w-16 shrink-0 px-1 text-center" />}
+                    <button type="button" onClick={() => removePosRow(i)} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><X className="h-4 w-4" /></button>
+                  </div>
+                  {/* Обов'язки в умові (Czynności) для ЦІЄЇ посади на цій фабриці — рішення власника 05.09.2026 */}
+                  <Textarea value={r.contractDuties} onChange={e => setPosRow(i, { contractDuties: e.target.value })} rows={1}
+                    placeholder={t("Обов'язки в умові (Czynności) для цієї посади")} className="text-xs" />
                 </div>
               ))}
               {posRows.length < allPositions.length && (
@@ -370,7 +375,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
         <div>
           <Label>{t("Опис обов'язків для Umowa (Czynności)")}</Label>
           <Textarea value={v.contractDuties} onChange={set("contractDuties")} rows={2} placeholder={t("напр. prace porządkowe i pomocnicze")} />
-          <p className="mt-1 text-xs text-slate-400">{t("Підставляється в умову-доручення (Umowa) при генерації документів. Порожньо — візьметься назва посади працівника.")}</p>
+          <p className="mt-1 text-xs text-slate-400">{t("Загальний текст для фабрики — підставляється в Umowa, якщо для посади працівника вище не розписано свій. Порожньо — візьметься назва посади.")}</p>
         </div>
         {canRates && (
           <div>

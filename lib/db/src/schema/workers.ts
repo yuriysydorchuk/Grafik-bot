@@ -74,6 +74,9 @@ export const factoryPositionsTable = pgTable("factory_positions", {
   rateNetto: real("rate_netto"), // net PLN/hour pair (netto/brutto пари нестандартні — тримаємо обидві)
   invoiceRate: real("invoice_rate"), // net PLN/hour we bill the client for this position (null = factory default invoiceRate)
   sortOrder: integer("sort_order").notNull().default(0),
+  // Обов'язки для {%Czynności%} в Umowa саме на цій посаді цієї фабрики (05.09.2026);
+  // фолбек — factories.contract_duties, далі назва посади
+  contractDuties: text("contract_duties"),
 });
 
 export const workersTable = pgTable("workers", {

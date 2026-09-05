@@ -5,12 +5,12 @@ import { PDFDocument } from "pdf-lib";
 import {
   app, hasTestDb, resetDb, closeDb, seedAdmin, seedRole, db,
   workersTable, factoriesTable, companiesTable, workerQuestionnairesTable, contractFilesTable,
-  documentTemplatesTable,
+  documentTemplatesTable, positionsTable, factoryPositionsTable,
 } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 import { ensureUploadDirs } from "../lib/uploads.ts";
 import { seedTestDocumentTemplates } from "../services/testTemplateFixtures.ts";
-import { closeBrowser } from "../services/contracts.ts";
+import { closeBrowser, resolveContractDuties, buildContractData } from "../services/contracts.ts";
 
 // Генерація пакета документів з бібліотеки шаблонів (§4/§12 Етап 3 плану
 // worker-docs-signing): повнота даних (анкета verified + всі плейсхолдери
@@ -29,6 +29,32 @@ beforeEach(async () => {
   await seedTestDocumentTemplates();
 });
 after(async () => { if (hasTestDb) { await closeBrowser(); await closeDb(); } });
+
+// {%Czynności%}: посада на фабриці → поле фабрики → назва посади (рішення 05.09.2026)
+test("Czynności: factory_positions.contract_duties > factories.contract_duties > назва посади; GET /contract-duties показує джерело", opts, async () => {
+  const { factoryId, companyId } = await mkFactoryAndCompany();
+  const workerId = await mkVerifiedWorker(companyId);
+  const [pos] = await db.insert(positionsTable).values({ name: "Sortowacz" }).returning({ id: positionsTable.id });
+  await db.update(workersTable).set({ positionId: pos!.id, factoryId }).where(eq(workersTable.id, workerId));
+
+  assert.deepEqual(await resolveContractDuties(pos!.id, factoryId), { text: "Sortowacz", source: "position_name" });
+  await db.update(factoriesTable).set({ contractDuties: "prace pomocnicze" }).where(eq(factoriesTable.id, factoryId));
+  assert.deepEqual(await resolveContractDuties(pos!.id, factoryId), { text: "prace pomocnicze", source: "factory" });
+  await db.insert(factoryPositionsTable).values({ factoryId, positionId: pos!.id, contractDuties: "sortowanie owoców" });
+  assert.deepEqual(await resolveContractDuties(pos!.id, factoryId), { text: "sortowanie owoców", source: "position" });
+  assert.deepEqual(await resolveContractDuties(null, null), { text: "", source: "none" });
+
+  const data = await buildContractData(workerId, factoryId);
+  assert.equal(data["Czynności"], "sortowanie owoców");
+  const r = await request(app).get(`/api/workers/${workerId}/contract-duties?factoryId=${factoryId}`).set("Cookie", owner);
+  assert.equal(r.status, 200); assert.equal(r.body.source, "position");
+
+  // збереження позицій фабрики через PATCH не губить обов'язки і приймає нові
+  const p = await request(app).patch(`/api/factories/${factoryId}`).set("Cookie", owner).set(H)
+    .send({ positions: [{ positionId: pos!.id, contractDuties: "pakowanie" }] });
+  assert.equal(p.status, 200);
+  assert.deepEqual(await resolveContractDuties(pos!.id, factoryId), { text: "pakowanie", source: "position" });
+});
 
 async function mkFactoryAndCompany(): Promise<{ factoryId: number; companyId: number }> {
   const [co] = await db.insert(companiesTable).values({ name: "Euro Support", legalName: "Euro Support Sp. z o.o.", nip: "9462698100" }).returning({ id: companiesTable.id });

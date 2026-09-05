@@ -1235,6 +1235,12 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
     queryFn: () => get(`/workers/${workerId}/document-set`),
     enabled: showStandardSection,
   });
+  // Превʼю {%Czynności%}: звідки візьметься текст обов'язків (посада на фабриці / фабрика / назва посади)
+  const { data: duties } = useQuery<{ text: string; source: "position" | "factory" | "position_name" | "none" }>({
+    queryKey: ["contract-duties", workerId, factoryId],
+    queryFn: () => get(`/workers/${workerId}/contract-duties?factoryId=${factoryId}`),
+    enabled: !isStandard,
+  });
 
   // Перше завантаження чекліста для обраної фабрики — попередньо відмічаємо
   // авторезолвлені пункти; повторні зміни адмін керує сам (не перезаписуємо
@@ -1354,6 +1360,18 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
             <Label>{t("Ставка в умові для цього працівника (zł/год брутто)")}</Label>
             <Input value={rateOverride} onChange={e => setRateOverride(e.target.value)} placeholder={t("порожньо = ставка фабрики")} inputMode="decimal" className="w-40" />
             <p className="mt-1 text-xs text-slate-400">{t("Перекриває ставку «в умові» з налаштувань фабрики лише для цієї людини й цього пакета.")}</p>
+          </div>
+        )}
+
+        {!isStandard && duties && (
+          <div className={`rounded-lg border px-3 py-2 text-xs ${duties.source === "position" || duties.source === "factory" ? "border-slate-200 bg-slate-50 text-slate-600" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+            <span className="font-medium">{t("Обов'язки в умові (Czynności)")}:</span> {duties.text || "—"}
+            <span className="ml-1 opacity-70">
+              · {duties.source === "position" ? t("з посади на фабриці")
+                : duties.source === "factory" ? t("із загального поля фабрики")
+                : duties.source === "position_name" ? t("лише назва посади — розпиши обов'язки в налаштуваннях фабрики")
+                : t("не визначено — у працівника немає посади, а фабрика без опису")}
+            </span>
           </div>
         )}
 

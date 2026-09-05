@@ -25,7 +25,7 @@ import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
-import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet } from "../services/contracts";
+import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { randomInviteCode } from "../lib/invite";
 import { sendSignLink } from "../bot/notify";
@@ -300,6 +300,15 @@ router.patch("/contracts/:id/dates", WD, async (req, res) => {
   } catch (e: any) {
     fail(res, 400, e?.message ?? "Не вдалося оновити дати");
   }
+});
+
+// Превʼю {%Czynności%} для модалки генерації: звідки візьметься текст обов'язків
+// (посада на фабриці / поле фабрики / назва посади / нічого).
+router.get("/workers/:id/contract-duties", WD, async (req, res) => {
+  const [worker] = await db.select({ positionId: workersTable.positionId }).from(workersTable).where(eq(workersTable.id, Number(req.params.id)));
+  if (!worker) return fail(res, 404, "Працівника не знайдено");
+  const factoryId = req.query.factoryId ? Number(req.query.factoryId) : null;
+  ok(res, await resolveContractDuties(worker.positionId, factoryId));
 });
 
 // Список умов працівника з назвами фабрики/фірми і файлами пакета — картка в

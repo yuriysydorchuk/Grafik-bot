@@ -1796,7 +1796,7 @@ router.get("/factories", async (req, res) => {
   const rates = canFactoryRates(req);
   // per-factory positions (with the catalogue name/colour); rates → viewFinance|factoryRates
   const fp = await db
-    .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, rateNetto: factoryPositionsTable.rateNetto, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, name: positionsTable.name, color: positionsTable.color })
+    .select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, rate: factoryPositionsTable.rate, rateNetto: factoryPositionsTable.rateNetto, invoiceRate: factoryPositionsTable.invoiceRate, sortOrder: factoryPositionsTable.sortOrder, contractDuties: factoryPositionsTable.contractDuties, name: positionsTable.name, color: positionsTable.color })
     .from(factoryPositionsTable)
     .leftJoin(positionsTable, eq(factoryPositionsTable.positionId, positionsTable.id))
     .orderBy(factoryPositionsTable.sortOrder, factoryPositionsTable.id);
@@ -1823,7 +1823,7 @@ router.get("/factories", async (req, res) => {
 // права шле позиції БЕЗ ставок — інакше збереження фабрики тихо стирало б їх).
 async function setFactoryPositions(factoryId: number, positions: any, ratesAllowed: boolean) {
   if (!Array.isArray(positions)) return;
-  const prev = ratesAllowed ? [] : await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
+  const prev = await db.select().from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
   const prevById = new Map(prev.map(p => [p.positionId, p]));
   await db.delete(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, factoryId));
   const seen = new Set<number>();
@@ -1831,9 +1831,11 @@ async function setFactoryPositions(factoryId: number, positions: any, ratesAllow
     .map((p: any, i: number) => {
       const positionId = Number(p?.positionId);
       const old = prevById.get(positionId);
+      // обов'язки в умові (Czynności) — не фінансове поле, зберігаються з будь-яким правом
+      const contractDuties = p?.contractDuties !== undefined ? (String(p.contractDuties ?? "").trim() || null) : (old?.contractDuties ?? null);
       return ratesAllowed
-        ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i }
-        : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i };
+        ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i, contractDuties }
+        : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i, contractDuties };
     })
     .filter(p => Number.isInteger(p.positionId) && p.positionId > 0 && !seen.has(p.positionId) && seen.add(p.positionId));
   if (rows.length) await db.insert(factoryPositionsTable).values(rows.map(r => ({ factoryId, ...r })));
