@@ -11,7 +11,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
 import {
-  createTask, loadTask, loadAssignees, isParticipant, setTaskStatus, respondAssignee, snoozeTask, planTask, addComment, myCounters,
+  createTask, loadTask, loadAssignees, isParticipant, setTaskStatus, respondAssignee, snoozeTask, planTask, addComment, myCounters, controlStats,
   normalizeChecklist, warsawToday, dateStr, OPEN_STATUSES, TASK_KINDS, TASK_PRIORITIES, TASK_STATUSES, loadTaskSettings, DEFAULT_TASK_SETTINGS,
   type TaskKind, type TaskPriority, type TaskStatus, type Recurrence,
 } from "../services/tasks";
@@ -135,22 +135,7 @@ router.get("/tasks/calendar", TP, async (req: AuthedRequest, res) => {
 router.get("/tasks/control", TP, async (req: AuthedRequest, res) => {
   if (!canManage(req)) return fail(res, 403, "forbidden");
   const weeks = Math.min(12, Math.max(1, Number(req.query.weeks ?? 1)));
-  const today = warsawToday(); const from = addDaysStr(today, -7 * weeks);
-  const admins = await officeAdmins();
-  const out = [];
-  for (const a of admins) {
-    const mine = await db.select().from(tasksTable).where(mineCond(a.id));
-    const open = mine.filter(t => OPEN_STATUSES.includes(t.status as TaskStatus));
-    const overdue = open.filter(t => t.dueAt && dateStr(t.dueAt)! < today);
-    const done = mine.filter(t => t.status === "done" && t.completedAt && dateStr(t.completedAt)! >= from);
-    const durs = done.map(t => Math.max(0, (t.completedAt!.getTime() - t.createdAt.getTime()) / 86400000));
-    out.push({ adminId: a.id, name: a.name, role: a.role, open: open.length, overdue: overdue.length, done: done.length,
-      avgDays: durs.length ? Math.round((durs.reduce((x, y) => x + y, 0) / durs.length) * 10) / 10 : null,
-      auto: open.filter(t => t.source.startsWith("auto:")).length, manual: open.filter(t => t.source === "manual").length });
-  }
-  const autoResolved = (await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(and(eq(tasksTable.status, "auto_resolved"), sql`${tasksTable.completedAt} >= ${from}`)))[0]?.c ?? 0;
-  const created = (await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(sql`${tasksTable.createdAt} >= ${from}`))[0]?.c ?? 0;
-  ok(res, { from, to: today, admins: out, autoResolved: Number(autoResolved), created: Number(created) });
+  ok(res, await controlStats(weeks));
 });
 
 router.get("/tasks/admins", TP, async (_req, res) => ok(res, await officeAdmins()));

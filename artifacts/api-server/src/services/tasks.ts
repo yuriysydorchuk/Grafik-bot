@@ -232,6 +232,26 @@ export async function addComment(task: Task, adminId: number, body: string, ment
   }
 }
 
+// Контроль: показники по адмінах за N тижнів (сторінка «Контроль» і понеділковий звіт).
+export async function controlStats(weeks = 1, today = warsawToday()) {
+  const from = addDaysStr(today, -7 * Math.max(1, weeks));
+  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role }).from(adminsTable).where(sql`${adminsTable.role} <> 'driver'`).orderBy(adminsTable.name);
+  const out: { adminId: number; name: string; role: string; open: number; overdue: number; done: number; avgDays: number | null; auto: number; manual: number }[] = [];
+  for (const a of admins) {
+    const mine = await db.select().from(tasksTable).where(sql`(${tasksTable.assigneeAdminId} = ${a.id} or exists (select 1 from task_assignees x where x.task_id = ${tasksTable.id} and x.admin_id = ${a.id}))`);
+    const open = mine.filter(t => OPEN_STATUSES.includes(t.status as TaskStatus));
+    const overdue = open.filter(t => t.dueAt && dateStr(t.dueAt)! < today);
+    const done = mine.filter(t => t.status === "done" && t.completedAt && dateStr(t.completedAt)! >= from);
+    const durs = done.map(t => Math.max(0, (t.completedAt!.getTime() - t.createdAt.getTime()) / 86400000));
+    out.push({ adminId: a.id, name: a.name, role: a.role, open: open.length, overdue: overdue.length, done: done.length,
+      avgDays: durs.length ? Math.round((durs.reduce((x, y) => x + y, 0) / durs.length) * 10) / 10 : null,
+      auto: open.filter(t => t.source.startsWith("auto:")).length, manual: open.filter(t => t.source === "manual").length });
+  }
+  const [ar] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(and(eq(tasksTable.status, "auto_resolved"), sql`${tasksTable.completedAt} >= ${from}`));
+  const [cr] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(sql`${tasksTable.createdAt} >= ${from}`);
+  return { from, to: today, admins: out, autoResolved: Number(ar?.c ?? 0), created: Number(cr?.c ?? 0) };
+}
+
 // Лічильники для віджетів (мої: прострочено / сьогодні / тиждень / зустрічі).
 export async function myCounters(adminId: number, today = warsawToday()) {
   const weekEnd = addDaysStr(today, 6);

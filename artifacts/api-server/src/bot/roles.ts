@@ -104,6 +104,7 @@ export async function adminMenuFor(admin: { role: string } | undefined, lang: La
   return adminMenu(lang, {
     invoice: caps.has("invoiceScan"),
     docs: caps.has("workerDocs"),
+    tasks: await adminHasPage(admin, "/tasks"),
     orders: caps.has("editData"),
     orderView: caps.has("editData") || caps.has("viewWorkers"),
     broadcast: caps.has("editData"),

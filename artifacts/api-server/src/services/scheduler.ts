@@ -81,6 +81,8 @@ let serverStatsReportTask: ScheduledTask | null = null;
 let recruiterHoursSheetTask: ScheduledTask | null = null;
 let tasksNightlyTask: ScheduledTask | null = null;   // 06:30 перерахунок легальності + автозадачі + нагадування
 let tasksRolloverTask: ScheduledTask | null = null;  // 00:05 перенос невиконаного з плану дня
+let tasksDigestTask: ScheduledTask | null = null;    // */5 хв: ранковий дайджест / вечірній підсумок за часом із налаштувань
+let tasksWeeklyTask: ScheduledTask | null = null;    // пн 08:00 звіт контролю головному
 let reminderHour = 18;
 
 // Фінансові алерти йдуть ролям, які самі підписані на тип "finance_alerts"
@@ -321,6 +323,16 @@ export function startScheduler() {
     },
     { timezone: TZ },
   );
+  tasksDigestTask = cron.schedule(
+    "*/5 * * * *",
+    async () => { try { const { runTaskDigestTick } = await import("./taskDigest"); await runTaskDigestTick(); } catch (e: any) { logger.warn({ err: e?.message }, "task digest tick failed"); } },
+    { timezone: TZ },
+  );
+  tasksWeeklyTask = cron.schedule(
+    "0 8 * * 1",
+    async () => { try { const { sendWeeklyControlReport } = await import("./taskDigest"); await sendWeeklyControlReport(); } catch (e: any) { logger.warn({ err: e?.message }, "task weekly report failed"); } },
+    { timezone: TZ },
+  );
   fleetAlertTask = cron.schedule(
     "0 8 * * 1",
     async () => {
@@ -409,6 +421,8 @@ export function stopScheduler() {
   recruiterHoursSheetTask?.stop(); recruiterHoursSheetTask = null;
   tasksNightlyTask?.stop();   tasksNightlyTask = null;
   tasksRolloverTask?.stop();  tasksRolloverTask = null;
+  tasksDigestTask?.stop();    tasksDigestTask = null;
+  tasksWeeklyTask?.stop();    tasksWeeklyTask = null;
 }
 
 export function setReminderHour(hour: number) {

@@ -8,9 +8,9 @@ import { t, tb, type Lang } from "./i18n";
 // вони вже за гейтованим флоу, capability там перевірена на вході.
 // «🪪 Паспорт» (opts.docs) — капа workerDocs, модуль worker-docs-signing; гейт у
 // самому флоу (bot/handlers/passportScan.ts).
-export type AdminMenuOpts = { invoice?: boolean; docs?: boolean; orders?: boolean; orderView?: boolean; broadcast?: boolean; management?: boolean };
+export type AdminMenuOpts = { invoice?: boolean; docs?: boolean; tasks?: boolean; orders?: boolean; orderView?: boolean; broadcast?: boolean; management?: boolean };
 export const adminMenu = (lang: Lang = "uk", opts: AdminMenuOpts = {}) => {
-  const { invoice = true, docs = true, orders = true, orderView = true, broadcast = true, management = true } = opts;
+  const { invoice = true, docs = true, tasks = true, orders = true, orderView = true, broadcast = true, management = true } = opts;
   const rows: any[][] = [];
   if (process.env.WEB_APP_ADMIN === "1" && webAppUrl()) {
     // Test-only surface: the Mini App button in the OFFICE menu is opt-in via WEB_APP_ADMIN=1
@@ -27,7 +27,11 @@ export const adminMenu = (lang: Lang = "uk", opts: AdminMenuOpts = {}) => {
   if (broadcast) actionRow.push(tb(lang, "📢 Розсилки"));
   if (invoice) actionRow.push(tb(lang, "📄 Фактура"));
   if (actionRow.length) rows.push(actionRow);
-  if (docs) rows.push([tb(lang, "🪪 Паспорт")]);
+  // «📋 Задачі» (сторінка /tasks) поруч із «🪪 Паспорт» (капа workerDocs)
+  const officeRow: string[] = [];
+  if (tasks) officeRow.push(tb(lang, "📋 Задачі"));
+  if (docs) officeRow.push(tb(lang, "🪪 Паспорт"));
+  if (officeRow.length) rows.push(officeRow);
   rows.push([tb(lang, "🌐 Мова / Language")]);
   return Markup.keyboard(rows).resize();
 };
