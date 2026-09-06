@@ -3035,6 +3035,13 @@ const EN: Record<string, string> = {
   // резолвер виплат (06.09.2026)
   // ── модуль «Задачі» (06.09.2026) ──
   "показати всі {n}": "show all {n}", "згорнути": "collapse",
+  // «Календар працівників» (батч 4)
+  "Календар працівників": "Workers calendar", "Найближчі події": "Upcoming events", "Найближчі 90 днів без подій": "No events in the next 90 days", "календар": "calendar",
+  "строки документів, умови, обовʼязки, відпрошування, дні народження, задачі": "document expiries, contracts, obligations, absences, birthdays, tasks",
+  "Таймлайн": "Timeline", "пошук: працівник, подія": "search: worker, event", "Клікни на день, щоб побачити всі події": "Click a day to see all its events", "подій немає": "no events",
+  "У цьому діапазоні подій немає": "No events in this range", "подій за рік": "events this year", "клік по дню відкриває місяць": "click a day to open the month",
+  "Деталі": "Details", "минуло": "past", "Створити задачу": "Create task", "Відкрити задачу": "Open task",
+  "документи": "documents", "умови": "contracts", "обовʼязки": "obligations", "відпрошування": "absences", "дні народження": "birthdays", "початок роботи": "job start", "кінець роботи": "job end", "задачі": "tasks",
   "Задача": "Task", "Групова": "Group", "задача": "task", "групова": "group", "зустріч": "meeting", "Нова задача": "New task",
   "Нова групова задача": "New group task", "Нова зустріч": "New meeting", "Задачу створено": "Task created", "Зустріч скликано": "Meeting scheduled", "Мій день": "My day", "Дошка": "Board",
   "Список": "List", "Календар": "Calendar", "Контроль": "Control", "Розклад": "Schedule", "Мої": "Mine", "Я автор": "Created by me",

@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  LayoutDashboard, CalendarRange, ClipboardList, CheckSquare, ListTodo,
+  LayoutDashboard, CalendarRange, ClipboardList, CheckSquare, ListTodo, CalendarDays,
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
@@ -59,6 +59,7 @@ const NAV: NavGroup[] = [
     title: "Персонал",
     items: [
       { href: "/workers", label: "Працівники", icon: Users },
+      { href: "/workers-calendar", label: "Календар працівників", icon: CalendarDays },
       { href: "/contracts", label: "Документи й умови", icon: FileText },
       { href: "/legalization", label: "Легалізація", icon: ShieldCheck },
       { href: "/document-templates", label: "Шаблони документів", icon: FileStack },

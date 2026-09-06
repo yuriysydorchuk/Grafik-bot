@@ -33,7 +33,7 @@ export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
   "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/fuel", "/cleaning", "/settings",
   "/workers", "/recruitment", "/broadcast", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
-  "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks",
+  "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks", "/workers-calendar",
 ] as const;
 
 // owner is always allowed; otherwise check the resolved capability set.

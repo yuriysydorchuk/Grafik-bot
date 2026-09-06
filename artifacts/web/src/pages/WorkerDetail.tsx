@@ -25,7 +25,7 @@ import {
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
 import { AbsenceFiles } from "../components/AbsenceFiles";
-import { WorkerTasksBlock } from "../components/TasksWidgets";
+import { WorkerTasksBlock, WorkerUpcomingEvents } from "../components/TasksWidgets";
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -413,6 +413,7 @@ export default function WorkerDetail() {
         </div>
 
         <div className="min-w-0 space-y-5">
+          <WorkerUpcomingEvents workerId={w.id} factoryId={w.factoryId} />
           <WorkerTasksBlock workerId={w.id} factoryId={w.factoryId} />
           <WorkerBankAccounts workerId={w.id} />
           <WorkerAdvances workerId={w.id} />

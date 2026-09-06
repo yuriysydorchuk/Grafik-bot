@@ -32,6 +32,7 @@ import residenceCardScanRouter from "./residenceCardScan";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
 import tasksRouter from "./tasks";
+import workersCalendarRouter from "./workersCalendar";
 
 const router: IRouter = Router();
 
@@ -75,6 +76,7 @@ router.use(securityRouter);
 router.use(contractsRouter);
 router.use(documentTemplatesRouter);
 router.use(tasksRouter);
+router.use(workersCalendarRouter);
 router.use(legalizationRouter);
 router.use(documentDeliveryRouter);
 router.use(residenceCardScanRouter);

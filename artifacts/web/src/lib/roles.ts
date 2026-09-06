@@ -41,6 +41,7 @@ export const PAGE_LABEL: Record<string, string> = {
   "/document-templates": "Бібліотека шаблонів документів",
   "/legalization": "Легалізація",
   "/tasks": "Задачі",
+  "/workers-calendar": "Календар працівників",
 };
 export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 

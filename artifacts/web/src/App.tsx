@@ -10,6 +10,7 @@ import { Layout } from "./components/Layout";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
+import WorkersCalendar from "./pages/WorkersCalendar";
 import Workers from "./pages/Workers";
 import WorkerDetail from "./pages/WorkerDetail";
 import Recruitment from "./pages/Recruitment";
@@ -128,6 +129,7 @@ export default function App() {
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/tasks">{() => guard("/tasks", <Tasks />)}</Route>
+        <Route path="/workers-calendar">{() => guard("/workers-calendar", <WorkersCalendar />)}</Route>
         <Route path="/schedule" component={Schedule} />
         <Route path="/driver-shifts">{() => guard("/driver-shifts", <DriverShifts />)}</Route>
         <Route path="/orders">{() => guard("/orders", <Orders />)}</Route>

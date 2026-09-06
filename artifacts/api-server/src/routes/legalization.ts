@@ -9,7 +9,7 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable,
-  factoriesTable, companiesTable, workerFactoriesTable, contractsTable,
+  factoriesTable, companiesTable, workerFactoriesTable, contractsTable, adminsTable,
 } from "@workspace/db";
 import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
@@ -201,11 +201,15 @@ async function dashboardRows() {
     for (const c of cs) contractLabel.set(c.id, c.factoryName ? `Umowa — ${c.factoryName}` : "Umowa — Biuro");
   }
   const contractBasis = (a?: Axes["contract"]) => !a || !a.basisDocId ? null : { label: contractLabel.get(a.basisDocId) ?? "Umowa", until: a.expiresAt, docId: null };
+  // відповідальний фабрики (factories.responsible_admin_id, модуль «Задачі» D7) — колонка Excel «Odpowiedzialny»
+  const responsibleByFactory = new Map<number, string>();
+  for (const f of await db.select({ id: factoriesTable.id, name: adminsTable.name }).from(factoriesTable).innerJoin(adminsTable, eq(factoriesTable.responsibleAdminId, adminsTable.id))) responsibleByFactory.set(f.id, f.name);
   return rows.map(r => {
     const a = (r.lg?.axes ?? {}) as Axes;
     return {
       id: r.id, fullName: r.fullName, workerCode: r.workerCode, nationality: r.nationality, legalStatus: r.legalStatus,
       factoryId: r.factoryId, factoryName: r.factoryName, companyId: r.companyId, companyName: r.companyName,
+      responsibleName: r.factoryId ? responsibleByFactory.get(r.factoryId) ?? null : null,
       legality: r.lg ? {
         stay: r.lg.stay, work: r.lg.work, contract: r.lg.contract, overall: r.lg.overall, reviewRequired: r.lg.reviewRequired,
         nextExpiryAt: r.lg.nextExpiryAt, nextExpiryDocId: r.lg.nextExpiryDocId, requiredMissing: r.lg.requiredMissing,
@@ -252,7 +256,7 @@ router.get("/legalization/excel", LG, async (_req, res) => {
     { key: "umowaTo", header: "Umowa do", get: (r: any) => r.contractBasis?.until ?? "" },
     { key: "status", header: "Status", get: (r: any) => (r.legality ? STATUS_PL[r.legality.overall] ?? r.legality.overall : "Brak danych") },
     { key: "next", header: "Najbliższy termin", get: (r: any) => r.legality?.nextExpiryAt ?? "" },
-    { key: "resp", header: "Odpowiedzialny", get: () => "" }, // відповідальний фабрики — фаза 3 (D7)
+    { key: "resp", header: "Odpowiedzialny", get: (r: any) => r.responsibleName ?? "" }, // відповідальний фабрики (D7)
   ];
   ws.addRow(cols.map(c => c.header)).font = { bold: true };
   const sorted = [...rows].sort((a, b) => new Intl.Collator("pl").compare(a.fullName, b.fullName));

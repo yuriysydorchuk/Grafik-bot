@@ -2,9 +2,9 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { ListTodo, Plus } from "lucide-react";
+import { ListTodo, Plus, CalendarDays } from "lucide-react";
 import { get } from "../lib/api";
-import { type MyDay, type TaskRow, PRIORITY_CLS, PRIORITY_LABEL, STATUS_LABEL, STATUS_BADGE } from "../lib/tasksApi";
+import { type MyDay, type TaskRow, type CalEvent, PRIORITY_CLS, PRIORITY_LABEL, STATUS_LABEL, STATUS_BADGE, CAL_KIND_DOT, fmtDShort, todayStr, addDays } from "../lib/tasksApi";
 import { Card, Badge, Button, cn } from "./ui";
 import { useT } from "../lib/i18n";
 import { useMe } from "../lib/hooks";
@@ -37,6 +37,44 @@ export function MyTasksTile() {
         </ul>
       </div>
       {drawer}
+    </Card>
+  );
+}
+
+// «Найближчі події» в профілі: строки документів/умов, обовʼязки, відпрошування, ДН — на 90 днів
+// (джерело — GET /workers-calendar?workerId=). Клік на подію → нова задача з предзаповненням.
+export function WorkerUpcomingEvents({ workerId, factoryId }: { workerId: number; factoryId: number | null }) {
+  const t = useT();
+  const me = useMe();
+  const enabled = !!me && canAccessPage(me, "/workers-calendar");
+  const from = todayStr(), to = addDays(from, 90);
+  const { data } = useQuery<{ events: CalEvent[] }>({ queryKey: ["workers-calendar", "worker", workerId], queryFn: () => get(`/workers-calendar?from=${addDays(from, -30)}&to=${to}&workerId=${workerId}`), enabled });
+  const [draft, setDraft] = useState<CalEvent | null>(null);
+  const { setOpenId, drawer } = useOpenTask();
+  if (!enabled) return null;
+  const events = (data?.events ?? []).filter(e => e.kind !== "task" || e.date < from); // задачі показує окремий блок; лишаємо лише прострочені
+  const canTasks = canAccessPage(me, "/tasks");
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-2.5">
+        <CalendarDays className="h-4 w-4 text-slate-400" /><h3 className="text-sm font-semibold text-slate-700">{t("Найближчі події")}</h3>
+        <span className="text-xs text-slate-400">· 90 {t("дн.")}</span>
+        <Link href={`/workers-calendar?worker=${workerId}`} className="ml-auto text-xs text-slate-400 hover:text-red-600">{t("календар")} →</Link>
+      </div>
+      <div className="px-5 py-2 text-sm">
+        {!events.length && <div className="py-1 text-slate-400">{t("Найближчі 90 днів без подій")}</div>}
+        <ul className="space-y-1">{events.slice(0, 12).map(e => (
+          <li key={e.id} className="flex items-center gap-2">
+            <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", CAL_KIND_DOT[e.kind])} />
+            <span className={cn("shrink-0 tabular-nums", e.severity === "danger" ? "font-semibold text-rose-600" : e.severity === "warn" ? "text-amber-600" : "text-slate-500")}>{fmtDShort(e.date)}</span>
+            <span className="truncate">{e.title}{e.factoryName && !e.title.includes(e.factoryName) ? <span className="text-xs text-slate-400"> · {e.factoryName}</span> : null}</span>
+            {canTasks && (e.taskId ? <button onClick={() => setOpenId(e.taskId!)} className="ml-auto shrink-0 text-xs text-slate-400 hover:text-red-600">{t("задача")}</button>
+              : <button onClick={() => setDraft(e)} className="ml-auto shrink-0 rounded-full border border-slate-200 px-2 text-[10px] hover:border-red-300 hover:text-red-600">+ {t("задача")}</button>)}
+          </li>))}</ul>
+        {events.length > 12 && <div className="mt-1 text-xs text-slate-400">…{t("ще")} {events.length - 12}</div>}
+      </div>
+      {drawer}
+      {draft && <NewTaskModal defaults={{ workerId, factoryId: draft.factoryId ?? factoryId ?? undefined, title: draft.title, dueAt: draft.date < from ? from : addDays(draft.date, -7) < from ? from : addDays(draft.date, -7) }} onClose={() => setDraft(null)} />}
     </Card>
   );
 }
