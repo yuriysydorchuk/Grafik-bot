@@ -250,7 +250,10 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     if (ex.status === "done" || ex.status === "cancelled") continue; // закрив офіс — не воскрешаємо
     const changed = ex.title !== c.title || dateStr(ex.dueAt) !== c.dueAt || ex.priority !== c.priority;
     // бекфіл дефолтного чекліста для задач, створених до появи чеклістів (лише якщо порожній)
-    const defaults = !(ex.checklist as unknown[])?.length && !c.autoParams.grouped ? defaultChecklist(c.rule, c.autoParams) : [];
+    // (і заміна старого чекліста без auto-ключів, поки в ньому нічого не відмічено)
+    const exList = (ex.checklist ?? []) as { done: boolean; auto?: string }[];
+    const stale = exList.length > 0 && !exList.some(x => x.auto) && !exList.some(x => x.done);
+    const defaults = (!exList.length || stale) && !c.autoParams.grouped ? defaultChecklist(c.rule, c.autoParams) : [];
     if (changed || defaults.length) {
       await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt: c.dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
       if (ex.priority !== c.priority) await logTaskEvent(ex.id, "priority", null, { from: ex.priority, to: c.priority });
