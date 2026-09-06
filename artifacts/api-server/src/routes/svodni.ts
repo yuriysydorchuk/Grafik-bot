@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable, workerFactoryCodesTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -74,6 +74,23 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
   return base;
 }
 
+// Nr osobowy рядка: значення зі сводної (hr.nrOsobowy — імпорт/ручний ввід) має
+// пріоритет, інакше — ключ працівника у системі фабрики рядка
+// (worker_factory_codes, ті самі «🔑 Ключі» з обліку годин). Лише для показу
+// (GET/Excel), у БД не пишеться (рішення 06.09.2026).
+async function factoryCodeMap(workerIds: number[]): Promise<Map<string, string>> {
+  const ids = [...new Set(workerIds)];
+  if (!ids.length) return new Map();
+  const codes = await db.select({ workerId: workerFactoryCodesTable.workerId, factoryId: workerFactoryCodesTable.factoryId, code: workerFactoryCodesTable.code })
+    .from(workerFactoryCodesTable).where(inArray(workerFactoryCodesTable.workerId, ids));
+  return new Map(codes.map(c => [`${c.workerId}|${c.factoryId}`, c.code]));
+}
+function nrOsobowyOf(hr: Record<string, unknown>, workerId: number | null, factoryId: number | null, codes: Map<string, string>): string | null {
+  const own = String(hr?.nrOsobowy ?? "").trim();
+  if (own) return own;
+  return workerId != null && factoryId != null ? codes.get(`${workerId}|${factoryId}`) ?? null : null;
+}
+
 // Додає до серіалізованого рядка його сегменти (порізка місяця) — щоб відповіді
 // PATCH не затирали сегменти в кеші вебу (він замінює рядок цілком)
 async function withSegments(base: Record<string, unknown>, rowId: number, sensitive = true, workerLegal: string | null = null): Promise<Record<string, unknown>> {
@@ -86,6 +103,10 @@ async function withSegments(base: Record<string, unknown>, rowId: number, sensit
       from: s.segmentFrom, to: s.segmentTo, label: s.segmentLabel,
     }));
   }
+  // той самий fallback Nr osobowy, що в GET — інакше після PATCH ключ фабрики зникав би з кешу вебу
+  const wid = base.workerId as number | null;
+  const nr = nrOsobowyOf(base.hr as Record<string, unknown>, wid, base.factoryId as number | null, await factoryCodeMap(wid != null ? [wid] : []));
+  if (nr) base.hr = { ...(base.hr as Record<string, unknown>), nrOsobowy: nr };
   return base;
 }
 
@@ -819,10 +840,14 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     if (x.r.segmentOf == null) continue;
     const l = segsOf.get(x.r.segmentOf) ?? []; l.push(x); segsOf.set(x.r.segmentOf, l);
   }
+  const facCodes = await factoryCodeMap(raw.map(x => x.r.workerId).filter((n): n is number => n != null));
   const rows = raw.filter(({ r }) => r.segmentOf == null && tabAllowed(r.factoryLabel))
     .map(({ r, workerName, workerLegal, prefKind, prefValue, workerNationality }) => {
       const base = serializeRow(r, workerName, sensitive, workerLegal, prefKind ? { kind: prefKind, value: prefValue ?? null } : null);
       base.nationality = workerNationality; // прапорець біля імені у веб-таблиці
+      // Nr osobowy: порожній у рядку → ключ фабрики працівника (колонка hr у вебі динамічна)
+      const nr = nrOsobowyOf(base.hr as Record<string, unknown>, r.workerId, r.factoryId, facCodes);
+      if (nr) base.hr = { ...(base.hr as Record<string, unknown>), nrOsobowy: nr };
       const segs = segsOf.get(r.id);
       if (segs?.length) {
         delete base.ksiegMismatch; // ставка батька = min сегментів — пара легально «рвана»
@@ -3382,6 +3407,7 @@ router.post("/svodni/sync", requireCap("svodni"), async (req, res) => {
 // Документ польською (правило проєкту). Сенситивні колонки — лише з svodniSensitive.
 const XLS_COLS: { key: string; header: string; sensitive?: boolean; get: (r: any) => unknown }[] = [
   { key: "name", header: "Nazwisko i imię", get: r => nameCaps(r.workerName ?? r.rawName) },
+  { key: "nrOsobowy", header: "Nr osobowy", get: r => r.nrOsobowy }, // hr.nrOsobowy → ключ фабрики (worker_factory_codes)
   { key: "section", header: "Stanowisko", get: r => r.section },
   { key: "hoursNotified", header: "Ilość godz w powiadomieniu", get: r => r.hoursNotified },
   { key: "hours", header: "Ilość godzin", get: r => r.hours },
@@ -3432,8 +3458,11 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
     .map(({ r, workerName, workerLegal }) => ({
       ...r, workerName,
       legalStatus: legalStatusOf((r.extras as any)?.zusStatus) ?? workerLegal ?? null,
+      nrOsobowy: null as string | null,
     }));
   if (!rows.length) return fail(res, 404, "немає рядків за вибором");
+  const xlsCodes = await factoryCodeMap(rows.map(r => r.workerId).filter((n): n is number => n != null));
+  for (const r of rows) r.nrOsobowy = nrOsobowyOf(r.hr as Record<string, unknown>, r.workerId, r.factoryId, xlsCodes);
 
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();

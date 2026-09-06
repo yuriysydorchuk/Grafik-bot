@@ -1855,6 +1855,7 @@ function UnmatchedPanel() {
 // Вибір колонок запам'ятовується в браузері. Каталог — дзеркало бекенду
 // (GET /svodni/excel), сенситивні пункти показуються лише з закритим доступом.
 const XLS_COL_DEFS: { key: string; label: string; sensitive?: boolean }[] = [
+  { key: "nrOsobowy", label: "Nr osobowy" },
   { key: "section", label: "Stanowisko" },
   { key: "hoursNotified", label: "Год. повід." },
   { key: "hours", label: "Години" },
