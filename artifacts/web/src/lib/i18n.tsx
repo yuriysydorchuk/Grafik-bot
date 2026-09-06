@@ -2974,6 +2974,11 @@ const EN: Record<string, string> = {
   "Обов'язки в умові (Czynności)": "Duties in the contract (Czynności)",
   // резолвер виплат (06.09.2026)
   "Для виплат": "For payroll",
+  // два лінки реєстрації на фабрику (06.09.2026)
+  "Скопійовано новий лінк: скан паспорта + анкета": "Copied the new link: passport scan + questionnaire",
+  "Скопійовано старий лінк: ім'я в чаті": "Copied the old link: name in chat",
+  "Новий лінк реєстрації: скан паспорта + анкета": "New registration link: passport scan + questionnaire",
+  "Старий лінк реєстрації: ім'я в чаті (без анкети)": "Old registration link: name in chat (no questionnaire)",
   "за документами": "by documents",
   "за ручним полем «Форма легалізації»": "by the manual “Legalization form” field",
   "без статусу і без повного комплекту документів": "no status and no complete document set",

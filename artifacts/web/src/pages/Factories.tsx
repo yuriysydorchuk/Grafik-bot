@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Link2, Trash2, X, Eye } from "lucide-react";
+import { Plus, Pencil, Link2, Trash2, X, Eye, ScanLine } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode } from "../lib/api";
 import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge, Textarea } from "../components/ui";
@@ -46,9 +46,15 @@ export default function Factories() {
   const [edit, setEdit] = useState<FactoryX | null>(null);
   const [adding, setAdding] = useState(false);
   const inv = () => qc.invalidateQueries({ queryKey: ["factories"] });
+  // Два лінки реєстрації (перехідний період, 06.09.2026): новий — скан паспорта
+  // + анкета на вебі (facs), старий — ім'я в чаті (fac; роздані QR/лінки працюють)
   const joinLink = useMutation({
-    mutationFn: (id: number) => get<{ link: string }>(`/factories/${id}/join-link`),
-    onSuccess: (d) => { navigator.clipboard?.writeText(d.link); toast.success(t("Посилання для реєстрації скопійовано"), { description: d.link }); },
+    mutationFn: async (v: { id: number; kind: "scan" | "name" }) => ({ kind: v.kind, ...(await get<{ link: string; scanLink: string }>(`/factories/${v.id}/join-link`)) }),
+    onSuccess: (d) => {
+      const url = d.kind === "scan" ? d.scanLink : d.link;
+      navigator.clipboard?.writeText(url);
+      toast.success(d.kind === "scan" ? t("Скопійовано новий лінк: скан паспорта + анкета") : t("Скопійовано старий лінк: ім'я в чаті"), { description: url });
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -67,7 +73,8 @@ export default function Factories() {
                 {f.address && <p className="mt-0.5 text-sm text-slate-500">{f.address}</p>}
               </div>
               <div className="flex gap-1">
-                <button onClick={() => joinLink.mutate(f.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Посилання для самореєстрації працівників")}><Link2 className="h-4 w-4" /></button>
+                <button onClick={() => joinLink.mutate({ id: f.id, kind: "scan" })} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Новий лінк реєстрації: скан паспорта + анкета")}><ScanLine className="h-4 w-4" /></button>
+                <button onClick={() => joinLink.mutate({ id: f.id, kind: "name" })} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Старий лінк реєстрації: ім'я в чаті (без анкети)")}><Link2 className="h-4 w-4" /></button>
                 <button onClick={() => setEdit(f)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
               </div>
             </div>

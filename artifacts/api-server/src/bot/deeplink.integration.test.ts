@@ -1,6 +1,6 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { hasTestDb, resetDb, closeDb, db, sendStart, pressButton, resetSent, sentText } from "../test/botHarness.ts";
+import { hasTestDb, resetDb, closeDb, db, sendStart, sendText, pressButton, resetSent, sentText } from "../test/botHarness.ts";
 import { workersTable, driversTable, adminsTable, factoriesTable } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 
@@ -63,11 +63,32 @@ test("adm: binds an admin and burns the invite code", opts, async () => {
 // Профіль з'являється лише після confirm() на тій сторінці — сам OCR-флоу
 // перевіряється окремо (passportScan.integration.test.ts); тут лише те, що
 // бот видає лінк і нічого не створює сам.
-test("fac: language pick immediately sends a passport-scan link — no profile created in chat", opts, async () => {
+// Два лінки на перехідний період (рішення власника 06.09.2026): `facs<id>` — новий
+// скан-флоу, `fac<id>` — старий (ім'я в чаті), бо роздані QR/лінки мають працювати.
+test("facs: language pick immediately sends a passport-scan link — no profile created in chat", opts, async () => {
   const [f] = await db.insert(factoriesTable).values({ name: "Fabryka A" }).returning({ id: factoriesTable.id });
-  await sendStart("500700", `fac${f!.id}`);
+  await sendStart("500700", `facs${f!.id}`);
   resetSent();
   await pressButton("500700", "setlang:uk");
   assert.match(sentText(), /passport-scan/);
   assert.equal((await db.select().from(workersTable).where(eq(workersTable.telegramId, "500700"))).length, 0, "профіль створюється лише через confirm() на веб-сторінці, не в боті");
+});
+
+test("fac (старий лінк): мова → ім'я в чаті → профіль з фабрикою, кодом і telegramId; кирилиця відхиляється", opts, async () => {
+  const [f] = await db.insert(factoriesTable).values({ name: "Fabryka B" }).returning({ id: factoriesTable.id });
+  await sendStart("500800", `fac${f!.id}`);
+  resetSent();
+  await pressButton("500800", "setlang:uk");
+  assert.match(sentText(), /ім'я та прізвище/i);
+  assert.doesNotMatch(sentText(), /passport-scan/);
+  resetSent();
+  await sendText("500800", "Іван Петренко");
+  assert.match(sentText(), /латиницею/i);
+  assert.equal((await db.select().from(workersTable).where(eq(workersTable.telegramId, "500800"))).length, 0);
+  resetSent();
+  await sendText("500800", "Jan Nowak");
+  assert.match(sentText(), /Дякуємо/);
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.telegramId, "500800"));
+  assert.equal(w?.fullName, "Jan Nowak"); assert.equal(w?.factoryId, f!.id); assert.equal(w?.language, "uk");
+  assert.ok(w?.workerCode, "публічний код виданий");
 });

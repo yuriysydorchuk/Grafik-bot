@@ -112,7 +112,7 @@ Grafik-bot/
 
 Telegraf, **long-polling**, один інстанс. Деталі — [`artifacts/api-server/src/bot/README.md`](artifacts/api-server/src/bot/README.md).
 
-- **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал, `fac`=самореєстрація на фабрику; вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
+- **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал, `fac`=самореєстрація на фабрику старим способом (ім'я в чаті), `facs`=новим (скан паспорта + анкета на вебі; перехідний період з 06.09.2026); вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
 - **Навігація:** reply-keyboard меню за роллю (`menus.ts`); `bot.hears` (~53, двомовний матч через `bhears`). Головний водій має web_app-кнопку «🖥 Панель призначень» (Telegram Mini App: відкриває `/driver-shifts` панелі з авто-логіном через `POST /auth/telegram-webapp`; зʼявляється лише коли задано `WEB_APP_URL`).
 - **Дії:** inline-кнопки `bot.action` (~32) — підтвердження відсутностей, мова, редагування графіку.
 - **Введення:** `bot.on("text"|"photo"|"document")` у межах активного кроку діалогу.

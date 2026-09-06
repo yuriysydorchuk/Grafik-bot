@@ -26,6 +26,7 @@ import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, type WeekRow } fro
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
+import { nextWorkerCode } from "../lib/workerCode";
 import { randomInviteCode } from "../lib/invite";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
@@ -225,9 +226,14 @@ bot.start(async (ctx) => {
       return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
 
-    // Factory self-signup link: ?start=fac<factoryId> — person registers themselves
-    if (code.toLowerCase().startsWith("fac")) {
-      const factoryId = Number(code.slice(3));
+    // Factory self-signup links (перехідний період, рішення власника 06.09.2026 — два лінки):
+    //   ?start=facs<factoryId> — НОВИЙ: скан паспорта + анкета на вебі (routes/passportScan.ts),
+    //   ?start=fac<factoryId>  — СТАРИЙ: ім'я в чаті (лишається, бо роздані лінки/QR мають працювати).
+    // `facs` перевіряється ПЕРШИМ — інакше "fac" + "s12" дав би NaN.
+    const lower = code.toLowerCase();
+    if (lower.startsWith("facs") || lower.startsWith("fac")) {
+      const mode: "scan" | "name" = lower.startsWith("facs") ? "scan" : "name";
+      const factoryId = Number(code.slice(mode === "scan" ? 4 : 3));
       const fac = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
       if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.\n❌ Invalid link — please contact your administrator.");
       const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
@@ -235,8 +241,8 @@ bot.start(async (ctx) => {
         const wl = wlang(existing);
         return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
       }
-      // language first — the name prompt and the rest of the flow follow in it (setlang)
-      setState(tid, "worker_signup:lang", { factoryId, factoryName: fac.name });
+      // language first — the scan link / name prompt and the rest of the flow follow in it (setlang)
+      setState(tid, "worker_signup:lang", { factoryId, factoryName: fac.name, mode });
       return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
 
@@ -801,7 +807,13 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
   // (routes/passportScan.ts) — фото В ЧАТ більше не приймається (незручно,
   // власник). telegramId уже відомий (це його чат) — профіль створиться і
   // прив'яжеться відразу після сканування, без окремого emp-лінка.
+  // Старий лінк (?start=fac<id>, mode=name): ім'я в чаті — профіль без анкети,
+  // офіс доповнює документи пізніше (перехідний період, 06.09.2026).
   if (st?.action === "worker_signup:lang") {
+    if (st.data.mode === "name") {
+      setState(tid, "worker_signup", { ...st.data, lang });
+      return ctx.reply(t(lang, "signup.factoryName", { factory: mdSafe(st.data.factoryName) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+    }
     clearState(tid);
     const token = await createSelfScanToken({ factoryId: st.data.factoryId, telegramId: tid, language: lang });
     return ctx.reply(t(lang, "signup.factory", { factory: mdSafe(st.data.factoryName), link: passportScanLink(token) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
@@ -3227,6 +3239,60 @@ bot.on("text", async (ctx) => {
   // tapping a button → repeat the picker (language-neutral prompt).
   if (state?.action === "worker_signup:lang" || state?.action === "candidate_signup:lang") {
     return ctx.reply(LANG_PROMPT, langPickKeyboard());
+  }
+
+  // ── Worker self-signup via the OLD factory link (?start=fac<id>): name in chat ──
+  // Повернуто 06.09.2026 на перехідний період поруч із новим скан-флоу (facs<id>).
+  if (state?.action === "worker_signup") {
+    const { data } = state;
+    const lang = asLang(data.lang); // chosen on the language step before the name prompt
+    const fullName = text.trim().replace(/\s+/g, " ");
+    // names are stored in Latin (Polish alphabet) only — Cyrillic is rejected up front
+    if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) {
+      return ctx.reply(t(lang, "signup.badName"));
+    }
+    // double-check this Telegram isn't already linked to a worker
+    const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
+    if (existing) {
+      clearState(tid);
+      const wl = wlang(existing);
+      return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
+    }
+    // Дублікат-детект: якщо офіс уже завів схожу людину — профіль усе одно
+    // створюємо (людина одразу працює з ботом), а адмін отримує кнопки
+    // «Обʼєднати» / «Різні люди»: злиття — ЛИШЕ після ручного затвердження.
+    const dup = findLikelyDuplicate(fullName, await db.select().from(workersTable));
+    const code = await nextWorkerCode();
+    const [freshWorker] = await db.insert(workersTable).values({
+      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code, language: lang,
+    }).returning();
+    clearState(tid);
+    // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
+    try {
+      const staff = await db.select().from(adminsTable);
+      const dupNote = dup
+        ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}${dup.isActive ? "" : " (звільнений)"}.`
+        : "";
+      const dupKb = dup && freshWorker ? {
+        inline_keyboard: [[
+          { text: `🔗 Обʼєднати (лишити №${dup.workerCode ?? dup.id})`, callback_data: `wmerge_${dup.id}_${freshWorker.id}` },
+          { text: "👥 Різні люди", callback_data: "wmerge_skip" },
+        ]],
+      } : undefined;
+      for (const a of staff) {
+        if (!a.telegramId) continue;
+        if (a.role !== "owner" && a.role !== "scheduler") continue;
+        await bot.telegram.sendMessage(
+          a.telegramId,
+          `🆕 Новий працівник зареєструвався сам (старий лінк, без анкети):\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники) і попросіть скан паспорта.`,
+          { parse_mode: "HTML", ...(dupKb ? { reply_markup: dupKb } : {}) },
+        );
+      }
+    } catch { /* notification is best-effort */ }
+    return ctx.reply(
+      t(lang, "signup.done", { name: mdSafe(fullName), factory: mdSafe(data.factoryName) }),
+      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, lang)) },
+    );
   }
 
   // ── Factory shift times ───────────────────────────────────────────

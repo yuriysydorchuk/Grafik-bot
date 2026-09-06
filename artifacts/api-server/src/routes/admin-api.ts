@@ -1989,7 +1989,10 @@ router.get("/factories/:id/join-link", RW, async (req, res) => {
   const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];
   if (!f) return fail(res, 404, "Не знайдено");
   const username = process.env.TELEGRAM_BOT_USERNAME || "";
-  ok(res, { link: username ? `https://t.me/${username}?start=fac${id}` : `?start=fac${id}` });
+  // Два лінки на перехідний період (06.09.2026): `link` — старий (ім'я в чаті,
+  // роздані QR/лінки працюють), `scanLink` — новий (скан паспорта + анкета на вебі).
+  const mk = (p: string) => username ? `https://t.me/${username}?start=${p}${id}` : `?start=${p}${id}`;
+  ok(res, { link: mk("fac"), scanLink: mk("facs") });
 });
 
 // ─── Orders ─────────────────────────────────────────────────────────────────
