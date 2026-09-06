@@ -36,7 +36,6 @@ const D: Dict = {
   "menu.myAbsences":   { uk: "🚫 Мої пропуски", en: "🚫 My absences", es: "🚫 Mis ausencias", ru: "🚫 Мои пропуски", pl: "🚫 Moje nieobecności" },
   "menu.advance":      { uk: "💰 Аванс", en: "💰 Advance", es: "💰 Adelanto", ru: "💰 Аванс", pl: "💰 Zaliczka" },
   "menu.language":     { uk: "🌐 Мова", en: "🌐 Language", es: "🌐 Idioma", ru: "🌐 Язык", pl: "🌐 Język" },
-  "menu.documents":    { uk: "📄 Документи", en: "📄 Documents", es: "📄 Documentos", ru: "📄 Документы", pl: "📄 Dokumenty" },
   "menu.back":         { uk: "⬅️ Назад", en: "⬅️ Back", es: "⬅️ Atrás", ru: "⬅️ Назад", pl: "⬅️ Wstecz" },
   "menu.title":        { uk: "Головне меню:", en: "Main menu:", es: "Menú principal:", ru: "Главное меню:", pl: "Menu główne:" },
 
@@ -63,20 +62,7 @@ const D: Dict = {
   "ref.done":          { uk: "✅ Дякуємо, *{name}*! Вашу заявку прийнято.\nМенеджер зв'яжеться з вами найближчим часом. 📞", en: "✅ Thank you, *{name}*! Your request has been received.\nA manager will contact you soon. 📞", es: "✅ ¡Gracias, *{name}*! Tu solicitud ha sido recibida.\nUn gerente se pondrá en contacto contigo pronto. 📞", ru: "✅ Спасибо, *{name}*! Ваша заявка принята.\nМенеджер свяжется с вами в ближайшее время. 📞", pl: "✅ Dziękujemy, *{name}*! Twoje zgłoszenie zostało przyjęte.\nMenedżer wkrótce się z Tobą skontaktuje. 📞" },
 
   // ── документи й анкета (worker-docs-signing, §6 плану) ──
-  "docs.title":        { uk: "📄 Твої документи:", en: "📄 Your documents:", es: "📄 Tus documentos:", ru: "📄 Твои документы:", pl: "📄 Twoje dokumenty:" },
   "docs.fileFromOffice": { uk: "📎 Документ від офісу: {title}", en: "📎 Document from the office: {title}", es: "📎 Documento de la oficina: {title}", ru: "📎 Документ от офиса: {title}", pl: "📎 Dokument z biura: {title}" },
-  "docs.status.present":  { uk: "✅ є", en: "✅ on file", es: "✅ presente", ru: "✅ есть", pl: "✅ jest" },
-  "docs.status.missing":  { uk: "❌ відсутній", en: "❌ missing", es: "❌ falta", ru: "❌ отсутствует", pl: "❌ brak" },
-  "docs.status.expired":  { uk: "⚠️ протермінований", en: "⚠️ expired", es: "⚠️ caducado", ru: "⚠️ просрочен", pl: "⚠️ przeterminowany" },
-  "docs.status.pending":  { uk: "⏳ на перевірці", en: "⏳ under review", es: "⏳ en revisión", ru: "⏳ на проверке", pl: "⏳ w trakcie weryfikacji" },
-  "docs.required":     { uk: " (обовʼязковий)", en: " (required)", es: " (obligatorio)", ru: " (обязательный)", pl: " (wymagany)" },
-  "docs.addBtn":       { uk: "📎 Додати: {name}", en: "📎 Add: {name}", es: "📎 Añadir: {name}", ru: "📎 Добавить: {name}", pl: "📎 Dodaj: {name}" },
-  "docs.fillAnketaBtn": { uk: "📝 Заповнити анкету", en: "📝 Fill in the questionnaire", es: "📝 Rellenar el cuestionario", ru: "📝 Заполнить анкету", pl: "📝 Wypełnij ankietę" },
-  "docs.none":         { uk: "Наразі немає налаштованих типів документів.", en: "No document types are configured yet.", es: "Aún no hay tipos de documentos configurados.", ru: "Пока нет настроенных типов документов.", pl: "Nie skonfigurowano jeszcze typów dokumentów." },
-  "docs.uploadPrompt": { uk: "Надішли фото або скан документа «{name}»:", en: "Send a photo or scan of the document “{name}”:", es: "Envía una foto o escaneo del documento «{name}»:", ru: "Пришли фото или скан документа «{name}»:", pl: "Wyślij zdjęcie lub skan dokumentu „{name}”:" },
-  "docs.saved":        { uk: "✅ Документ «{name}» додано, очікує перевірки офісом.", en: "✅ Document “{name}” added, awaiting office review.", es: "✅ Documento «{name}» añadido, pendiente de revisión por la oficina.", ru: "✅ Документ «{name}» добавлен, ожидает проверки офисом.", pl: "✅ Dokument „{name}” dodany, oczekuje na weryfikację przez biuro." },
-  "docs.badFile":      { uk: "Не вдалося зберегти файл — потрібен PDF або фото.", en: "Couldn't save the file — a PDF or photo is required.", es: "No se pudo guardar el archivo — se requiere un PDF o una foto.", ru: "Не удалось сохранить файл — нужен PDF или фото.", pl: "Nie udało się zapisać pliku — wymagany jest PDF lub zdjęcie." },
-  "docs.anketaLink":   { uk: "📝 Ось лінк для заповнення анкети:\n{link}\n\nЛінк дійсний 24 години.", en: "📝 Here's the link to fill in the questionnaire:\n{link}\n\nThe link is valid for 24 hours.", es: "📝 Aquí tienes el enlace para rellenar el cuestionario:\n{link}\n\nEl enlace es válido por 24 horas.", ru: "📝 Вот ссылка для заполнения анкеты:\n{link}\n\nСсылка действительна 24 часа.", pl: "📝 Oto link do wypełnienia ankiety:\n{link}\n\nLink jest ważny 24 godziny." },
   "docs.inviteExisting": { uk: "📋 Адміністрація просить оновити документи — скан паспорта (якщо потрібно) та анкету за посиланням:\n{link}\n\nЛінк дійсний 24 години.", en: "📋 The office is asking you to update your documents — passport scan (if needed) and the questionnaire, via the link:\n{link}\n\nThe link is valid for 24 hours.", es: "📋 La oficina te pide actualizar tus documentos — escaneo de pasaporte (si hace falta) y el cuestionario, en el enlace:\n{link}\n\nEl enlace es válido por 24 horas.", ru: "📋 Офис просит обновить документы — скан паспорта (если нужно) и анкету по ссылке:\n{link}\n\nСсылка действительна 24 часа.", pl: "📋 Biuro prosi o aktualizację dokumentów — skan paszportu (jeśli potrzebny) i ankietę, przez link:\n{link}\n\nLink jest ważny 24 godziny." },
   // ── days (short / full) ──
   "d.mon": { uk: "Пн", en: "Mon", es: "Lun", ru: "Пн", pl: "Pon" },

@@ -101,7 +101,6 @@ installChatTracking();
 
 import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
-import { registerWorkerDocuments } from "./handlers/workerDocuments";
 import { registerWorkerAbsences } from "./handlers/absences";
 
 bot.use(async (ctx, next) => {
@@ -125,7 +124,6 @@ bot.use(async (ctx, next) => {
 // хендлерів (вони не кличуть next); чужі стани пропускає далі через next() ────
 registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
-registerWorkerDocuments(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
 

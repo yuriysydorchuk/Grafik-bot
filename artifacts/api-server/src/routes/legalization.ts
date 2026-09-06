@@ -400,8 +400,10 @@ router.post("/worker-documents/:id/reject", LG, async (req, res) => {
   ok(res, d);
 });
 
-// Запит на подачу: гейт кнопки «Додати» в боті (D3, фаза 4). Якщо рядка нема — створює
-// порожній `missing` під тип.
+// Запит на подачу: позначає документ як запитаний (requested_at) і через documentChanged
+// → notify шле працівнику лінк на веб-сторінку (скан/анкета). Самообслуговування в боті
+// немає (рішення власника 06.09.2026: документи й анкета — лише за запитом офісу).
+// Якщо рядка нема — створює порожній `missing` під тип.
 router.post("/workers/:id/documents/request", LG, async (req, res) => {
   const workerId = Number(req.params.id);
   const docTypeId = Number(req.body?.docTypeId);

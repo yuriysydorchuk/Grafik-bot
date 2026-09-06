@@ -44,7 +44,9 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   rows.push([t(lang, "menu.absence"), t(lang, "menu.myAbsences")]);
   rows.push([t(lang, "menu.myInfo"), t(lang, "menu.referral")]);
   rows.push([t(lang, "menu.report"), t(lang, "menu.advance")]);
-  rows.push([t(lang, "menu.documents")]);
+  // «📄 Документи» прибрано (рішення власника 06.09.2026): документи й анкету
+  // працівник додає ЛИШЕ за запитом офісу — бот шле лінк на веб-сторінку
+  // (notify.ts docs.inviteExisting), самообслуговування в чаті немає.
   rows.push([t(lang, "menu.language")]);
   return Markup.keyboard(rows).resize();
 };

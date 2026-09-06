@@ -62,14 +62,17 @@ test("«➕ Додати працівника»: editData → скан-лінк 
   assert.doesNotMatch(sentText(), /passport-scan/);
 });
 
-test("меню працівника: «🚫 Мої пропуски» (main) і «📄 Документи» (гілка) разом", opts, async () => {
+test("меню працівника: «🚫 Мої пропуски» (main) є; кнопки «📄 Документи» НЕМА — документи лише за запитом офісу", opts, async () => {
   const [f] = await db.insert(factoriesTable).values({ name: "Fabryka" }).returning();
   await db.insert(workersTable).values({ fullName: "Jan Nowak", telegramId: "800500", language: "uk", factoryId: f!.id, isActive: true });
   await sendStart("800500");
   const kb = lastKeyboard();
   assert.ok(kb.includes("🚫 Мої пропуски"), `пропуски: ${kb.join(" | ")}`);
-  assert.ok(kb.includes("📄 Документи"), `документи: ${kb.join(" | ")}`);
-  assert.ok(kb.includes("💸 Аванс") || kb.some(x => /Аванс/.test(x)), "аванс лишився");
+  assert.ok(!kb.some(x => /Документи/.test(x)), `самообслуговування документів прибрано (рішення 06.09.2026): ${kb.join(" | ")}`);
+  assert.ok(kb.some(x => /Аванс/.test(x)), "аванс лишився");
+  resetSent();
+  await sendText("800500", "📄 Документи");
+  assert.equal(sentText(), "", "старий текст кнопки не запускає жодного флоу");
 });
 
 test("фабрика: isOffice (гілка) + minDaysPerWeek/email-отримувачі (main) зберігаються разом; join-link — обидва лінки", opts, async () => {
