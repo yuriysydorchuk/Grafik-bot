@@ -14,6 +14,7 @@ import { Card, Spinner, Badge, Button, cn } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { WeeklyWizard } from "../components/WeeklyWizard";
 import { LiveShifts } from "../components/LiveShifts";
+import { MyTasksTile } from "../components/TasksWidgets";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
@@ -96,6 +97,7 @@ export default function Dashboard() {
     <>
       <PageHeader title={t("Огляд")} subtitle={t("Поточний тиждень {a} · наступний {b}", { a: data.currentWeek, b: data.nextWeek })} />
 
+      <MyTasksTile />
       {attn && <AttentionPanel a={attn} />}
 
       <LiveShifts />

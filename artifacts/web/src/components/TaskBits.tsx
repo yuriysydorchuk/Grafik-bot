@@ -1,0 +1,400 @@
+// Спільні цеглинки модуля «Задачі»: картка, чипи, шухляда деталей, модалка створення.
+// Використовуються сторінкою /tasks, дашбордом, профілем працівника.
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, ExternalLink, Send, Repeat, MapPin, AlertTriangle } from "lucide-react";
+import { get, post, patch, type Factory, type Worker } from "../lib/api";
+import {
+  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence,
+  STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, fmtD, fmtDShort, todayStr, addDays,
+} from "../lib/tasksApi";
+import { Button, Badge, Modal, Input, Select, Label, Textarea, Spinner, cn } from "./ui";
+import { useT } from "../lib/i18n";
+import { useMe } from "../lib/hooks";
+import { can } from "../lib/roles";
+
+export const invalidateTasks = (qc: ReturnType<typeof useQueryClient>) => {
+  qc.invalidateQueries({ queryKey: ["tasks"] }); qc.invalidateQueries({ queryKey: ["task"] }); qc.invalidateQueries({ queryKey: ["my-day"] });
+  qc.invalidateQueries({ queryKey: ["task-counters"] }); qc.invalidateQueries({ queryKey: ["tasks-calendar"] });
+};
+
+export function dueLabel(t: TaskRow, tr: (s: string, p?: any) => string): { text: string; cls: string } {
+  if (!t.dueAt) return { text: tr("без строку"), cls: "text-slate-400" };
+  const today = todayStr();
+  if (t.status === "done" || t.status === "auto_resolved" || t.status === "cancelled") return { text: fmtDShort(t.dueAt), cls: "text-slate-400" };
+  if (t.dueAt < today) { const d = Math.round((new Date(today).getTime() - new Date(t.dueAt).getTime()) / 86400000); return { text: `${fmtDShort(t.dueAt)} · −${d} ${tr("дн.")}`, cls: "text-rose-600 font-semibold" }; }
+  if (t.dueAt === today) return { text: tr("сьогодні") + (t.dueTime ? ` ${t.dueTime}` : ""), cls: "text-amber-600 font-semibold" };
+  if (t.dueAt === addDays(today, 1)) return { text: tr("завтра") + (t.dueTime ? ` ${t.dueTime}` : ""), cls: "text-amber-600" };
+  return { text: fmtDShort(t.dueAt) + (t.dueTime ? ` ${t.dueTime}` : ""), cls: "text-slate-500" };
+}
+
+export function Initials({ name }: { name: string | null | undefined }) {
+  const s = (name ?? "?").split(/\s+/).map(x => x[0]).join("").slice(0, 2).toUpperCase();
+  return <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-100 px-1 text-[10px] font-semibold text-slate-600" title={name ?? ""}>{s}</span>;
+}
+
+export function TaskCard({ t, onOpen, draggable, onDragStart, compact }: { t: TaskRow; onOpen: (id: number) => void; draggable?: boolean; onDragStart?: () => void; compact?: boolean }) {
+  const tr = useT();
+  const due = dueLabel(t, tr);
+  return (
+    <div draggable={draggable} onDragStart={onDragStart} onClick={() => onOpen(t.id)}
+      className={cn("cursor-pointer rounded-lg border border-slate-200 border-l-[3px] bg-white p-2.5 shadow-sm transition hover:shadow-md", PRIORITY_BORDER[t.priority], t.status === "done" && "opacity-70")}>
+      <div className="flex flex-wrap items-center gap-1 text-[10px]">
+        <span className={cn("rounded-full px-1.5 py-0.5 font-semibold", PRIORITY_CLS[t.priority])}>{tr(PRIORITY_LABEL[t.priority])}</span>
+        <span className={cn("rounded-full px-1.5 py-0.5 font-semibold", t.source === "manual" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700")}>{tr(SOURCE_LABEL[t.source] ?? t.source)}</span>
+        {t.kind === "meeting" && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 font-semibold text-indigo-700">🗓 {tr("зустріч")}</span>}
+        {t.kind === "group" && <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-semibold text-teal-700">👥 {t.assignees.filter(a => a.status === "done").length}/{t.assignees.length}</span>}
+        {t.recurrence && <Repeat className="h-3 w-3 text-slate-400" />}
+      </div>
+      <div className={cn("mt-1 text-sm font-semibold text-slate-800", t.status === "done" && "line-through decoration-slate-300")}>{t.title}</div>
+      {!compact && (t.worker || t.factoryName) && (
+        <div className="mt-0.5 truncate text-xs text-slate-500">{t.worker?.fullName}{t.worker && t.factoryName ? " · " : ""}{t.factoryName}</div>
+      )}
+      <div className="mt-1 flex items-center justify-between text-[11px]">
+        <span className={due.cls}>⏰ {due.text}{t.checklistTotal ? <span className="ml-2 text-slate-400">☑ {t.checklistDone}/{t.checklistTotal}</span> : null}</span>
+        {t.kind === "task" ? <Initials name={t.assigneeName} /> : <span className="flex -space-x-1">{t.assignees.slice(0, 4).map(a => <Initials key={a.adminId} name={a.name} />)}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Шухляда деталей ─────────────────────────────────────────────────────────
+export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void }) {
+  const tr = useT();
+  const qc = useQueryClient();
+  const me = useMe();
+  const { data: t, isLoading } = useQuery<TaskDetail>({ queryKey: ["task", id], queryFn: () => get(`/tasks/${id}`) });
+  const { data: admins = [] } = useQuery<TaskAdmin[]>({ queryKey: ["task-admins"], queryFn: () => get("/tasks/admins") });
+  const [comment, setComment] = useState("");
+  const [note, setNote] = useState("");
+  const inv = () => invalidateTasks(qc);
+  const status = useMutation({ mutationFn: (v: { status: string; note?: string }) => post(`/tasks/${id}/status`, v), onSuccess: () => { inv(); setNote(""); }, onError: (e: any) => toast.error(e.message) });
+  const respond = useMutation({ mutationFn: (v: { status: string }) => post(`/tasks/${id}/respond`, v), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const snooze = useMutation({ mutationFn: (days: number) => post(`/tasks/${id}/snooze`, { days }), onSuccess: () => { inv(); toast.success(tr("Відкладено")); }, onError: (e: any) => toast.error(e.message) });
+  const plan = useMutation({ mutationFn: (v: { date: string | null; time?: string | null }) => post(`/tasks/${id}/plan`, v), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const edit = useMutation({ mutationFn: (v: Record<string, unknown>) => patch(`/tasks/${id}`, v), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const addComment = useMutation({ mutationFn: () => post(`/tasks/${id}/comments`, { body: comment }), onSuccess: () => { setComment(""); qc.invalidateQueries({ queryKey: ["task", id] }); }, onError: (e: any) => toast.error(e.message) });
+  useEffect(() => { const h = (e: KeyboardEvent) => e.key === "Escape" && onClose(); window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose]);
+
+  const toggleCheck = (cid: string) => {
+    if (!t) return;
+    const next = t.checklist.map(c => c.id === cid ? { ...c, done: !c.done, doneBy: !c.done ? me?.id ?? null : null, doneAt: !c.done ? new Date().toISOString() : null } : c);
+    edit.mutate({ checklist: next });
+  };
+  const open = !!t && ["open", "in_progress", "review"].includes(t.status);
+  const myPart = t?.assignees.find(a => a.adminId === me?.id);
+  const mine = !!t && (t.assigneeAdminId === me?.id || !!myPart);
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-xl flex-col border-l border-slate-200 bg-white shadow-2xl animate-fade-in">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-3">
+        <span className="text-xs text-slate-400">#{id}</span>
+        {t && <><Badge color={STATUS_BADGE[t.status]}>{tr(STATUS_LABEL[t.status])}</Badge><span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-semibold", PRIORITY_CLS[t.priority])}>{tr(PRIORITY_LABEL[t.priority])}</span><span className="text-[10px] text-slate-400">{tr(SOURCE_LABEL[t.source] ?? t.source)} · {tr(KIND_LABEL[t.kind])}</span></>}
+        <button onClick={onClose} className="ml-auto rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X className="h-5 w-5" /></button>
+      </div>
+      {isLoading || !t ? <div className="p-6"><Spinner /></div> : (
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 text-sm">
+          <div>
+            <div className="text-lg font-bold leading-snug text-slate-800">{t.title}</div>
+            {t.description && <div className="mt-1 whitespace-pre-wrap text-slate-600">{t.description}</div>}
+            {t.source !== "manual" && <div className="mt-1 text-xs text-slate-400">{tr("Створено системою")} · {tr("закриється сама, коли причина зникне")}</div>}
+          </div>
+
+          {/* дії */}
+          {open && (
+            <div className="flex flex-wrap gap-1.5">
+              {t.kind === "task" && (mine || t.can.edit) && t.status !== "review" && (<>
+                {t.status === "open" && <Button variant="secondary" className="px-2.5 py-1 text-xs" onClick={() => status.mutate({ status: "in_progress" })}><Play className="h-3.5 w-3.5" /> {tr("Беру в роботу")}</Button>}
+                <Button variant="success" className="px-2.5 py-1 text-xs" onClick={() => status.mutate({ status: "done", note: note || undefined })}><CheckCircle2 className="h-3.5 w-3.5" /> {t.reviewRequired && t.creatorAdminId !== me?.id ? tr("Зроблено → на перевірку") : tr("Виконано")}</Button>
+              </>)}
+              {t.status === "review" && t.can.review && (<>
+                <Button variant="success" className="px-2.5 py-1 text-xs" onClick={() => status.mutate({ status: "done" })}><CheckCircle2 className="h-3.5 w-3.5" /> {tr("Прийняти")}</Button>
+                <Button variant="secondary" className="px-2.5 py-1 text-xs" onClick={() => status.mutate({ status: "in_progress", note: note || tr("повернуто автором") })}><RotateCcw className="h-3.5 w-3.5" /> {tr("Повернути")}</Button>
+              </>)}
+              {t.kind === "group" && myPart && myPart.status !== "done" && <Button variant="success" className="px-2.5 py-1 text-xs" onClick={() => respond.mutate({ status: "done" })}><CheckCircle2 className="h-3.5 w-3.5" /> {tr("Моя частина готова")}</Button>}
+              {t.kind === "meeting" && myPart && (<>
+                <Button variant={myPart.status === "accepted" ? "success" : "secondary"} className="px-2.5 py-1 text-xs" onClick={() => respond.mutate({ status: "accepted" })}>✅ {tr("Буду")}</Button>
+                <Button variant={myPart.status === "declined" ? "danger" : "secondary"} className="px-2.5 py-1 text-xs" onClick={() => respond.mutate({ status: "declined" })}>❌ {tr("Не зможу")}</Button>
+              </>)}
+              {t.kind === "meeting" && t.can.edit && <Button variant="success" className="px-2.5 py-1 text-xs" onClick={() => status.mutate({ status: "done" })}>{tr("Провели")}</Button>}
+              {(mine || t.can.edit) && t.kind !== "meeting" && (
+                <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-1 text-xs">
+                  <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  {[1, 3, 7].map(d => <button key={d} onClick={() => snooze.mutate(d)} className="rounded px-1.5 py-1 hover:bg-slate-100" title={tr("нагадати через {n} дн.", { n: d })}>+{d}</button>)}
+                </span>
+              )}
+              {(mine || t.can.edit) && t.kind !== "meeting" && (t.plannedFor === todayStr()
+                ? <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => plan.mutate({ date: null })}>{tr("Зняти з мого дня")}</Button>
+                : <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => plan.mutate({ date: todayStr() })}><CalendarClock className="h-3.5 w-3.5" /> {tr("У мій день")}</Button>)}
+              {t.can.edit && <Button variant="ghost" className="ml-auto px-2 py-1 text-xs text-rose-500" onClick={() => { if (confirm(tr("Скасувати задачу?"))) status.mutate({ status: "cancelled" }); }}><Ban className="h-3.5 w-3.5" /> {tr("Скасувати")}</Button>}
+            </div>
+          )}
+          {open && t.reviewRequired && (mine || t.can.review) && <Input value={note} onChange={e => setNote(e.target.value)} placeholder={tr("Примітка до виконання / повернення (необов'язково)")} className="text-xs" />}
+          {t.status === "done" && <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">✓ {tr("Виконано")} {t.completedByName ? `· ${t.completedByName}` : ""} {t.completedAt ? `· ${new Date(t.completedAt).toLocaleString("uk-UA")}` : ""}{t.resolutionNote ? ` · ${t.resolutionNote}` : ""}{open ? "" : ""}{t.can.edit && <button className="ml-2 underline" onClick={() => status.mutate({ status: "open" })}>{tr("відкрити знову")}</button>}</div>}
+          {t.status === "auto_resolved" && <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">✓ {tr("Вирішено автоматично")} · {t.resolutionNote}</div>}
+
+          {/* кого стосується */}
+          {(t.worker || t.factoryName || t.autoParams) && (
+            <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Кого стосується")}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                {t.worker && <Link href={`/workers/${t.worker.id}`} className="font-semibold text-slate-800 hover:text-red-600">{t.worker.fullName} <span className="font-mono text-xs text-slate-400">{t.worker.workerCode}</span></Link>}
+                {t.factoryName && <Badge color="red">{t.factoryName}</Badge>}
+                {typeof t.autoParams?.expiresAt === "string" && <span className="text-xs text-slate-500">{tr("строк")}: <b>{fmtD(String(t.autoParams.expiresAt))}</b></span>}
+                {Array.isArray(t.autoParams?.workerNames) && <span className="text-xs text-slate-500">{(t.autoParams.workerNames as string[]).slice(0, 8).join(", ")}{(t.autoParams.count as number) > 8 ? ` … (+${(t.autoParams.count as number) - 8})` : ""}</span>}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                {t.worker && <Link href={`/workers/${t.worker.id}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50"><ExternalLink className="mr-1 inline h-3 w-3" />{tr("Профіль")}</Link>}
+                {t.worker && <Link href={`/legalization?q=${encodeURIComponent(t.worker.fullName)}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50">{tr("Легалізація")}</Link>}
+                {t.candidateId && <Link href="/recruitment" className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50">{tr("Рекрутація")}</Link>}
+              </div>
+            </div>
+          )}
+
+          {/* зустріч / групова: учасники */}
+          {t.kind !== "task" && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Учасники")} · {t.assignees.filter(a => a.status === (t.kind === "meeting" ? "accepted" : "done")).length}/{t.assignees.length} {t.kind === "meeting" ? tr("підтвердили") : tr("виконали")}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {t.assignees.map(a => <span key={a.adminId} className={cn("rounded-full px-2 py-0.5 text-xs", a.status === "done" || a.status === "accepted" ? "bg-emerald-50 text-emerald-700" : a.status === "declined" ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-500")}>{a.status === "done" || a.status === "accepted" ? "✓ " : a.status === "declined" ? "✕ " : "? "}{a.name}</span>)}
+              </div>
+              {t.kind === "meeting" && <div className="mt-2 text-xs text-slate-500">{fmtD(t.dueAt)} {t.dueTime}{t.durationMin ? ` · ${t.durationMin} ${tr("хв")}` : ""}{t.place ? <span> · <MapPin className="inline h-3 w-3" /> {t.place}</span> : null}</div>}
+            </div>
+          )}
+
+          {/* чекліст */}
+          {(t.checklist.length > 0 || t.can.edit) && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Чекліст")} {t.checklistTotal ? `${t.checklistDone}/${t.checklistTotal}` : ""}</div>
+              <div className="space-y-1">
+                {t.checklist.map(c => (
+                  <label key={c.id} className="flex items-start gap-2"><input type="checkbox" checked={c.done} onChange={() => toggleCheck(c.id)} className="mt-0.5" /><span className={cn(c.done && "text-slate-400 line-through")}>{c.text}</span></label>
+                ))}
+                {t.can.edit && <AddStep onAdd={txt => edit.mutate({ checklist: [...t.checklist, { id: `c${Date.now()}`, text: txt, done: false }] })} />}
+              </div>
+            </div>
+          )}
+
+          {/* поля */}
+          <div className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-xs">
+            <span className="text-slate-400">{tr("Виконавець")}</span>
+            <span>{t.kind === "task" ? (t.can.reassign ? (
+              <select value={t.assigneeAdminId ?? ""} onChange={e => edit.mutate({ assigneeAdminId: e.target.value ? Number(e.target.value) : null })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300">
+                <option value="">—</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>) : t.assigneeName ?? "—") : `${t.assignees.length} ${tr("учасників")}`}</span>
+            <span className="text-slate-400">{tr("Автор")}</span><span>{t.creatorName}</span>
+            <span className="text-slate-400">{tr("Строк")}</span>
+            <span>{t.can.edit ? <input type="date" value={t.dueAt ?? ""} onChange={e => edit.mutate({ dueAt: e.target.value || null })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300" /> : fmtD(t.dueAt) || "—"}{t.dueTime ? ` ${t.dueTime}` : ""}</span>
+            <span className="text-slate-400">{tr("Пріоритет")}</span>
+            <span>{t.can.edit ? <select value={t.priority} onChange={e => edit.mutate({ priority: e.target.value })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300">{(["low", "normal", "high", "urgent"] as TaskPriority[]).map(p => <option key={p} value={p}>{tr(PRIORITY_LABEL[p])}</option>)}</select> : tr(PRIORITY_LABEL[t.priority])}</span>
+            {t.durationMin && t.kind !== "meeting" && <><span className="text-slate-400">{tr("Оцінка часу")}</span><span>{t.durationMin} {tr("хв")}</span></>}
+            {t.plannedFor && <><span className="text-slate-400">{tr("У плані дня")}</span><span>{fmtD(t.plannedFor)}{t.plannedTime ? ` ${t.plannedTime}` : ""}{t.rolloverCount ? <span className="ml-1 text-amber-600">· {tr("перенесено {n} р.", { n: t.rolloverCount })}</span> : null}</span></>}
+            {t.snoozedUntil && t.snoozedUntil > todayStr() && <><span className="text-slate-400">{tr("Відкладено до")}</span><span>{fmtD(t.snoozedUntil)}</span></>}
+            <span className="text-slate-400">{tr("Контроль автора")}</span><span>{t.reviewRequired ? tr("так") : tr("ні")}</span>
+            {t.recurrence && <><span className="text-slate-400">{tr("Повторення")}</span><span>{t.recurrence.freq === "daily" ? tr("щодня") : t.recurrence.freq === "weekly" ? tr("щотижня") : tr("щомісяця")}</span></>}
+            {t.source !== "manual" && <><span className="text-slate-400">{tr("Нагадування")}</span><span>{[60, 30, 14, 7, 0].map(s => <span key={s} className={cn("mr-1", t.remindersSent.includes(s) ? "font-semibold text-slate-700" : "text-slate-300")}>{s}</span>)}{tr("дн.")}</span></>}
+          </div>
+
+          {/* коментарі */}
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Коментарі")}</div>
+            <div className="space-y-2">
+              {t.comments.map(c => <div key={c.id} className="rounded-lg border border-slate-100 p-2"><div className="text-[10px] text-slate-400">{c.name} · {new Date(c.createdAt).toLocaleString("uk-UA")}</div><div className="whitespace-pre-wrap">{c.body}</div></div>)}
+              <div className="flex gap-2"><Input value={comment} onChange={e => setComment(e.target.value)} placeholder={tr("Коментар…")} onKeyDown={e => { if (e.key === "Enter" && comment.trim()) addComment.mutate(); }} /><Button variant="secondary" className="px-2.5" disabled={!comment.trim()} onClick={() => addComment.mutate()}><Send className="h-4 w-4" /></Button></div>
+            </div>
+          </div>
+
+          {/* журнал */}
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Журнал")}</div>
+            <ul className="space-y-0.5 text-[11px] text-slate-500">
+              {t.events.map(e => <li key={e.id}>{new Date(e.createdAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} · {e.name ?? tr("Система")} · {eventText(e.kind, e.payload, tr)}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function eventText(kind: string, p: Record<string, unknown> | null, tr: (s: string, o?: any) => string): string {
+  switch (kind) {
+    case "created": return tr("створено");
+    case "status": return `${tr("статус")}: ${tr(STATUS_LABEL[(p?.from as TaskStatusKey) ?? "open"] ?? String(p?.from))} → ${tr(STATUS_LABEL[(p?.to as TaskStatusKey) ?? "open"] ?? String(p?.to))}${p?.note ? ` (${p.note})` : ""}`;
+    case "priority": return `${tr("пріоритет")} → ${tr(PRIORITY_LABEL[(p?.to as TaskPriority) ?? "normal"])}`;
+    case "reminder": return `${tr("нагадування")} (${(p?.steps as number[] | undefined)?.join("/") ?? ""} ${tr("дн.")})`;
+    case "escalated": return tr("ескалація головному");
+    case "auto_resolved": return tr("вирішено автоматично");
+    case "reopened": return tr("знову актуально");
+    case "snoozed": return `${tr("відкладено до")} ${fmtD(String(p?.until ?? ""))}`;
+    case "planned": return p?.date ? `${tr("у плані")} ${fmtD(String(p.date))}${p.time ? ` ${p.time}` : ""}` : tr("знято з плану");
+    case "rollover": return `${tr("перенесено на")} ${fmtD(String(p?.to ?? ""))}`;
+    case "respond": return `${tr("відповідь")}: ${String(p?.status)}`;
+    case "comment": return tr("коментар");
+    case "edited": return tr("змінено") + (p?.assignee ? ` · ${tr("виконавець")}` : "") + (p?.dueAt ? ` · ${tr("строк")}` : "");
+    case "recurred": return `${tr("наступний екземпляр")} ${fmtD(String(p?.nextDue ?? ""))}`;
+    default: return kind;
+  }
+}
+type TaskStatusKey = keyof typeof STATUS_LABEL;
+
+function AddStep({ onAdd }: { onAdd: (t: string) => void }) {
+  const tr = useT();
+  const [v, setV] = useState("");
+  return <input value={v} onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && v.trim()) { onAdd(v.trim()); setV(""); } }} placeholder={`+ ${tr("додати крок")}`} className="w-full bg-transparent py-0.5 text-xs text-slate-500 outline-none placeholder:text-slate-400" />;
+}
+
+// ── Створення ───────────────────────────────────────────────────────────────
+export function NewTaskModal({ defaults, onClose, onCreated }: { defaults?: Partial<{ kind: TaskKind; workerId: number; factoryId: number; dueAt: string; dueTime: string; title: string; plannedFor: string }>; onClose: () => void; onCreated?: (t: TaskRow) => void }) {
+  const tr = useT();
+  const qc = useQueryClient();
+  const me = useMe();
+  const canGroup = can(me, "tasksGroup");
+  const { data: admins = [] } = useQuery<TaskAdmin[]>({ queryKey: ["task-admins"], queryFn: () => get("/tasks/admins") });
+  const { data: templates = [] } = useQuery<TaskTemplate[]>({ queryKey: ["task-templates"], queryFn: () => get("/task-templates") });
+  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const [kind, setKind] = useState<TaskKind>(defaults?.kind ?? "task");
+  const [title, setTitle] = useState(defaults?.title ?? "");
+  const [description, setDescription] = useState("");
+  const [assignee, setAssignee] = useState<string>(me ? String(me.id) : "");
+  const [participants, setParticipants] = useState<number[]>([]);
+  const [priority, setPriority] = useState<TaskPriority>("normal");
+  const [dueAt, setDueAt] = useState(defaults?.dueAt ?? "");
+  const [dueTime, setDueTime] = useState(defaults?.dueTime ?? "");
+  const [durationMin, setDurationMin] = useState(kind === "meeting" ? "45" : "");
+  const [place, setPlace] = useState("");
+  const [factoryId, setFactoryId] = useState(defaults?.factoryId ? String(defaults.factoryId) : "");
+  const [workerQ, setWorkerQ] = useState("");
+  const [workerId, setWorkerId] = useState<number | null>(defaults?.workerId ?? null);
+  const [checklist, setChecklist] = useState<string[]>([]);
+  const [step, setStep] = useState("");
+  const [reviewRequired, setReviewRequired] = useState(false);
+  const [recur, setRecur] = useState<"" | "daily" | "weekly" | "monthly">("");
+  const [templateId, setTemplateId] = useState("");
+  const [notify, setNotify] = useState(true);
+  const { data: allWorkers = [] } = useQuery<Worker[]>({ queryKey: ["workers"], queryFn: () => get("/workers") });
+  const workers = useMemo(() => { const q = workerQ.trim().toLowerCase(); return q.length >= 2 ? allWorkers.filter(w => w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q)) : allWorkers.filter(w => w.id === workerId); }, [allWorkers, workerQ, workerId]);
+  const roles = useMemo(() => [...new Set(admins.map(a => a.role))], [admins]);
+  const addRole = (role: string) => setParticipants(p => [...new Set([...p, ...admins.filter(a => a.role === role).map(a => a.id)])]);
+  const applyTemplate = (id: string) => {
+    setTemplateId(id);
+    const tpl = templates.find(x => x.id === Number(id)); if (!tpl) return;
+    if (!title) setTitle(tpl.titleTemplate.replace("{worker}", "").trim());
+    setChecklist(tpl.checklist); setReviewRequired(tpl.reviewRequired); if (tpl.description) setDescription(tpl.description);
+    if (tpl.defaultAssigneeAdminId) setAssignee(String(tpl.defaultAssigneeAdminId));
+    if (tpl.dueInDays != null && !dueAt) setDueAt(addDays(todayStr(), tpl.dueInDays));
+    if (tpl.recurrence) setRecur(tpl.recurrence.freq);
+  };
+  const create = useMutation({
+    mutationFn: () => post<TaskRow>("/tasks", {
+      kind, title, description: description || null, priority, dueAt: dueAt || null, dueTime: dueTime || null, durationMin: durationMin ? Number(durationMin) : null, place: place || null,
+      assigneeAdminId: kind === "task" ? (assignee ? Number(assignee) : null) : null, assigneeIds: kind === "task" ? [] : participants,
+      reviewRequired, workerId, factoryId: factoryId ? Number(factoryId) : null, checklist,
+      recurrence: recur ? { freq: recur, ...(recur === "weekly" && dueAt ? { weekday: ((new Date(dueAt + "T00:00:00").getDay() + 6) % 7) + 1 } : {}) } : null,
+      templateId: templateId ? Number(templateId) : null, plannedFor: defaults?.plannedFor ?? null, notify,
+    }),
+    onSuccess: (t) => { invalidateTasks(qc); toast.success(kind === "meeting" ? tr("Зустріч скликано") : tr("Задачу створено")); onCreated?.(t); onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const quick = (d: string) => setDueAt(d);
+  const busy = useMemo(() => participants.filter(id => false && id), [participants]); void busy;
+  return (
+    <Modal open onClose={onClose} title={kind === "meeting" ? tr("Нова зустріч") : kind === "group" ? tr("Нова групова задача") : tr("Нова задача")} size="lg">
+      <div className="space-y-3">
+        <div className="flex gap-1 rounded-lg bg-slate-100 p-0.5 text-xs font-semibold">
+          {(["task", "group", "meeting"] as TaskKind[]).map(k => (
+            <button key={k} disabled={k !== "task" && !canGroup} onClick={() => { setKind(k); if (k === "meeting" && !durationMin) setDurationMin("45"); }} title={k !== "task" && !canGroup ? tr("Групові задачі та зустрічі — лише з правом «групові задачі та зустрічі»") : ""}
+              className={cn("flex-1 rounded-md px-2.5 py-1.5 transition", kind === k ? "bg-white shadow-sm text-slate-800" : "text-slate-500 hover:text-slate-700", k !== "task" && !canGroup && "opacity-40 cursor-not-allowed")}>
+              {k === "task" ? tr("Задача") : k === "group" ? `👥 ${tr("Групова")}` : `🗓 ${tr("Зустріч")}`}
+            </button>
+          ))}
+        </div>
+        <div><Label>{tr("Назва")}</Label><Input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder={kind === "meeting" ? tr("напр. Збори офісу Люблін") : tr("напр. Замовити спецодяг на NOWOPAK")} /></div>
+        {kind === "task" ? (
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label>{tr("Виконавець")}</Label><Select value={assignee} onChange={e => setAssignee(e.target.value)}><option value="">—</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}{a.id === me?.id ? ` (${tr("я")})` : ""}</option>)}</Select></div>
+            <div><Label>{tr("Пріоритет")}</Label><Select value={priority} onChange={e => setPriority(e.target.value as TaskPriority)}>{(["low", "normal", "high", "urgent"] as TaskPriority[]).map(p => <option key={p} value={p}>{tr(PRIORITY_LABEL[p])}</option>)}</Select></div>
+          </div>
+        ) : (
+          <div>
+            <Label>{tr("Учасники")}</Label>
+            <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 p-2">
+              {participants.map(id => <span key={id} className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{admins.find(a => a.id === id)?.name ?? id}<button onClick={() => setParticipants(p => p.filter(x => x !== id))}>✕</button></span>)}
+              <select value="" onChange={e => { if (e.target.value.startsWith("role:")) addRole(e.target.value.slice(5)); else if (e.target.value) setParticipants(p => [...new Set([...p, Number(e.target.value)])]); }} className="rounded-full border border-dashed border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-500">
+                <option value="">+ {tr("людина або роль")}</option>
+                <optgroup label={tr("Роль (усі)")}>{roles.map(r => <option key={r} value={`role:${r}`}>{tr("усі")}: {r}</option>)}</optgroup>
+                <optgroup label={tr("Люди")}>{admins.filter(a => !participants.includes(a.id)).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</optgroup>
+              </select>
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+          <div><Label>{kind === "meeting" ? tr("Дата") : tr("Строк")}</Label>
+            <div className="flex gap-1">
+              <Input type="date" value={dueAt} onChange={e => setDueAt(e.target.value)} className="w-40" />
+              <button onClick={() => quick(todayStr())} className={cn("rounded-full border px-2 text-xs", dueAt === todayStr() ? "border-red-600 bg-red-600 text-white" : "border-slate-200")}>{tr("сьогодні")}</button>
+              <button onClick={() => quick(addDays(todayStr(), 1))} className={cn("rounded-full border px-2 text-xs", dueAt === addDays(todayStr(), 1) ? "border-red-600 bg-red-600 text-white" : "border-slate-200")}>{tr("завтра")}</button>
+              <button onClick={() => quick(addDays(todayStr(), 7))} className="rounded-full border border-slate-200 px-2 text-xs">+7</button>
+            </div>
+          </div>
+          <div><Label>{tr("Час")}</Label><Input type="time" value={dueTime} onChange={e => setDueTime(e.target.value)} className="w-28" /></div>
+          <div><Label>{kind === "meeting" ? tr("Тривалість, хв") : tr("Оцінка, хв")}</Label><Input value={durationMin} onChange={e => setDurationMin(e.target.value)} inputMode="numeric" className="w-24" placeholder="30" /></div>
+        </div>
+        {kind === "meeting" && <div><Label>{tr("Місце або лінк")}</Label><Input value={place} onChange={e => setPlace(e.target.value)} placeholder={tr("Офіс Люблін / Google Meet")} /></div>}
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label>{tr("Фабрика")}</Label><Select value={factoryId} onChange={e => setFactoryId(e.target.value)}><option value="">—</option>{factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</Select></div>
+          <div><Label>{tr("Працівник")}</Label>
+            {workerId ? <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5 text-sm"><span className="truncate">{workers.find(w => w.id === workerId)?.fullName ?? `#${workerId}`}</span><button className="ml-auto text-slate-400" onClick={() => setWorkerId(null)}>✕</button></div>
+              : <div className="relative"><Input value={workerQ} onChange={e => setWorkerQ(e.target.value)} placeholder={tr("пошук за іменем…")} />
+                {workerQ.length >= 2 && workers.length > 0 && <div className="absolute z-10 mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow">{workers.slice(0, 8).map(w => <button key={w.id} onClick={() => { setWorkerId(w.id); if (!factoryId && w.factoryId) setFactoryId(String(w.factoryId)); }} className="block w-full px-2 py-1 text-left text-sm hover:bg-slate-50">{w.fullName} <span className="text-xs text-slate-400">{w.factoryName}</span></button>)}</div>}
+              </div>}
+          </div>
+        </div>
+        <div><Label>{kind === "meeting" ? tr("Порядок денний") : tr("Опис")}</Label><Textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} /></div>
+        {kind !== "meeting" && (
+          <div><Label>{tr("Чекліст")}</Label>
+            <div className="space-y-1 text-sm">
+              {checklist.map((c, i) => <div key={i} className="flex items-center gap-2">☐ <span className="flex-1">{c}</span><button className="text-slate-400" onClick={() => setChecklist(l => l.filter((_, j) => j !== i))}>✕</button></div>)}
+              <input value={step} onChange={e => setStep(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && step.trim()) { setChecklist(l => [...l, step.trim()]); setStep(""); } }} placeholder={`+ ${tr("крок (Enter)")}`} className="w-full bg-transparent py-0.5 text-xs outline-none placeholder:text-slate-400" />
+            </div>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
+          {kind !== "meeting" && <label className="flex items-center gap-1"><input type="checkbox" checked={reviewRequired} onChange={e => setReviewRequired(e.target.checked)} /> {tr("перевірити перед закриттям")}</label>}
+          <label className="flex items-center gap-1">{tr("повторювати")}: <select value={recur} onChange={e => setRecur(e.target.value as any)} className="rounded border border-slate-200 bg-white px-1 py-0.5"><option value="">{tr("ні")}</option><option value="daily">{tr("щодня")}</option><option value="weekly">{tr("щотижня")}</option><option value="monthly">{tr("щомісяця")}</option></select></label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={notify} onChange={e => setNotify(e.target.checked)} /> {tr("сповістити в бот")}</label>
+          {kind !== "meeting" && templates.length > 0 && <label className="flex items-center gap-1">{tr("шаблон")}: <select value={templateId} onChange={e => applyTemplate(e.target.value)} className="rounded border border-slate-200 bg-white px-1 py-0.5"><option value="">—</option>{templates.filter(x => x.isActive).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>}
+        </div>
+        {kind === "meeting" && participants.length > 0 && dueAt && dueTime && <MeetingConflicts date={dueAt} time={dueTime} durationMin={Number(durationMin) || 45} participants={participants} admins={admins} />}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{tr("Скасувати")}</Button>
+          <Button loading={create.isPending} disabled={!title.trim() || (kind !== "task" && !participants.length) || (kind === "meeting" && (!dueAt || !dueTime))} onClick={() => create.mutate()}>{kind === "meeting" ? tr("Скликати") : tr("Створити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// накладки: зустрічі учасників того ж дня, що перетинаються за часом
+function MeetingConflicts({ date, time, durationMin, participants, admins }: { date: string; time: string; durationMin: number; participants: number[]; admins: TaskAdmin[] }) {
+  const tr = useT();
+  const { data = [] } = useQuery<TaskRow[]>({ queryKey: ["tasks-calendar", "team", date], queryFn: () => get(`/tasks/calendar?from=${date}&to=${date}&scope=team`) });
+  const toMin = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+  const s = toMin(time), e = s + durationMin;
+  const clashes = data.filter(t => t.kind === "meeting" && t.dueTime && t.status !== "cancelled").flatMap(t => {
+    const ts = toMin(t.dueTime!), te = ts + (t.durationMin ?? 30);
+    if (te <= s || ts >= e) return [];
+    return t.assignees.filter(a => participants.includes(a.adminId)).map(a => ({ who: admins.find(x => x.id === a.adminId)?.name ?? a.name, title: t.title, at: t.dueTime }));
+  });
+  if (!clashes.length) return null;
+  return <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />{clashes.map((c, i) => <span key={i}>{c.who} {tr("має")} «{c.title}» {tr("о")} {c.at}{i < clashes.length - 1 ? "; " : ""}</span>)}</div>;
+}
+
+export function useOpenTask() {
+  const [openId, setOpenId] = useState<number | null>(null);
+  const drawer = openId != null ? <TaskDrawer id={openId} onClose={() => setOpenId(null)} /> : null;
+  return { openId, setOpenId, drawer };
+}
+export { Users };

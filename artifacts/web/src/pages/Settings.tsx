@@ -16,8 +16,10 @@ import { can } from "../lib/roles";
 import Factories from "./Factories";
 import Admins from "./Admins";
 import { LegalRulesSettings } from "./LegalRulesSettings";
+import { TasksSettings } from "./TasksSettings";
+import { canAccessPage } from "../lib/roles";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "funnels" | "email" | "gratyfikant" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "tasks" | "funnels" | "email" | "gratyfikant" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
@@ -25,6 +27,7 @@ const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "positions", label: "Посади", show: m => can(m, "editData") },
   { id: "documents", label: "Документи", show: m => can(m, "editData") },
   { id: "legalRules", label: "Правила легальності", show: m => can(m, "legalization") },
+  { id: "tasks", label: "Задачі", show: m => canAccessPage(m, "/tasks") },
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
   { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
   { id: "gratyfikant", label: "Gratyfikant", show: m => can(m, "svodniSensitive") },
@@ -64,6 +67,7 @@ export default function Settings() {
       {active === "funnels" && <FunnelsSettings />}
       {active === "email" && <EmailTemplatesSettings />}
       {active === "gratyfikant" && <GratyfikantSettings />}
+      {active === "tasks" && <TasksSettings />}
       {active === "users" && me && <Admins me={me} />}
     </>
   );

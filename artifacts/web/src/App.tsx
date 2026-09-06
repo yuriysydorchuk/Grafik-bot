@@ -9,6 +9,7 @@ import { Spinner } from "./components/ui";
 import { Layout } from "./components/Layout";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Tasks from "./pages/Tasks";
 import Workers from "./pages/Workers";
 import WorkerDetail from "./pages/WorkerDetail";
 import Recruitment from "./pages/Recruitment";
@@ -126,6 +127,7 @@ export default function App() {
     <Layout me={me}>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/tasks">{() => guard("/tasks", <Tasks />)}</Route>
         <Route path="/schedule" component={Schedule} />
         <Route path="/driver-shifts">{() => guard("/driver-shifts", <DriverShifts />)}</Route>
         <Route path="/orders">{() => guard("/orders", <Orders />)}</Route>

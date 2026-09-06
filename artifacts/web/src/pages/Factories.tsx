@@ -127,6 +127,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const t = useT();
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: allPositions = [] } = useQuery<Position[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
+  const { data: admins = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["task-admins"], queryFn: () => get("/tasks/admins") });
   const { data: tplData } = useQuery<{ templates: EmailTemplate[] }>({ queryKey: ["email-templates"], queryFn: () => get("/email-templates") });
   const templates = tplData?.templates ?? [];
   // отримувачі графіку: email + шаблон листа (порожньо = стандартний)
@@ -156,6 +157,8 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     showCode: factory?.showCode ?? true,
     requiresSanepid: factory?.requiresSanepid ?? false,
     isOffice: factory?.isOffice ?? false,
+    responsibleAdminId: (factory as any)?.responsibleAdminId ? String((factory as any).responsibleAdminId) : "",
+    schedulerAdminId: (factory as any)?.schedulerAdminId ? String((factory as any).schedulerAdminId) : "",
     invoiceRate: factory?.invoiceRate != null ? String(factory.invoiceRate) : "",
     rateBrutto: factory?.rateBrutto != null ? String(factory.rateBrutto) : "",
     rateNetto: factory?.rateNetto != null ? String(factory.rateNetto) : "",
@@ -198,6 +201,8 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
     requiresSanepid: v.requiresSanepid,
     isOffice: v.isOffice,
+    responsibleAdminId: v.responsibleAdminId ? Number(v.responsibleAdminId) : null,
+    schedulerAdminId: v.schedulerAdminId ? Number(v.schedulerAdminId) : null,
     paidTransport: v.paidTransport, transportFeePerShift: num(v.transportFeePerShift), transportFeeMonthCap: num(v.transportFeeMonthCap),
     // поля, на які немає права, не шлемо — бекенд і так їх ігнорує і зберігає наявні значення
     positions: v.usesPositions ? posRows.map(r => ({
@@ -400,6 +405,12 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           <input type="checkbox" checked={v.isOffice} onChange={e => setV({ ...v, isOffice: e.target.checked })} />
           {t("Офіс (Biuro) — фабрика для офісних працівників")}
         </label>
+        {/* Модуль «Задачі» (D7): відповідальний отримує автозадачі по документах/умовах працівників фабрики, графікова — про пропуски */}
+        <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-3">
+          <div><Label>{t("Відповідальний за фабрику (задачі, легалізація)")}</Label><Select value={v.responsibleAdminId} onChange={set("responsibleAdminId")}><option value="">{t("— не задано —")}</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select></div>
+          <div><Label>{t("Графікова фабрики")}</Label><Select value={v.schedulerAdminId} onChange={set("schedulerAdminId")}><option value="">{t("— не задано —")}</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select></div>
+          <p className="col-span-2 text-xs text-slate-400">{t("Порожньо: відповідальний за категорію з Налаштування → Задачі, далі головний адмін.")}</p>
+        </div>
         {/* Excel schedule columns */}
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Стовпчики Excel-графіку")}</p>
