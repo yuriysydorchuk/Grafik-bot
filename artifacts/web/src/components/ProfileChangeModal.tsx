@@ -20,6 +20,7 @@ export type RequestChange = ((changes: Record<string, unknown>, title: string, f
 // Людські назви полів журналу/дифів (укр-рядок-як-ключ для t())
 export const CHANGE_FIELD_LABEL: Record<string, string> = {
   factoryId: "Фабрика", positionId: "Посада", legalStatus: "Форма легалізації",
+  effectiveLegalStatus: "Статус для виплат (за документами)",
   birthDate: "Дата народження", notifyHours: "Год. у повідомленні",
   employmentStartDate: "Дата працевлаштування", agramStazBonus: "Бонус Agram: стаж",
   agramCashBonus: "Бонус Agram: нал", hourlyRate: "Ставка брутто", hourlyRateNetto: "Ставка нетто",
@@ -37,6 +38,7 @@ export const DIFF_KEY_LABEL: Record<string, string> = {
 // щоб було видно наслідки за межами конкретних рядків сводної
 const FIELD_IMPACTS: Record<string, string[]> = {
   legalStatus: ["Розклад konto/готівка у сводних", "Księgowa ставка (нижча зі ставок)", "Фінанси: розрахунок ЗП"],
+  effectiveLegalStatus: ["Розклад konto/готівка у сводних", "Księgowa ставка (нижча зі ставок)", "Фінанси: розрахунок ЗП"],
   birthDate: ["Пільга «до 26» (податки)", "Розклад konto/готівка у сводних", "Фінанси: розрахунок ЗП"],
   notifyHours: ["Ліміт декларованих годин → konto/готівка у сводних"],
   hourlyRate: ["Ставка в сводних і нових місяцях", "Фінанси: розрахунок ЗП", "Excel-сводна"],

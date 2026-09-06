@@ -15,6 +15,7 @@ import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, factoryBonusPerHour, hasCashBonus, legacyPayoutRule, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type PayoutRule, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
+import { effectiveView, effectiveViewOf, loadLegalityCache } from "../services/effectiveStatus";
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
@@ -51,7 +52,9 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     // форма легалізації: з тексту Księgowość рядка, fallback — профіль працівника
     // (профільні значення нормалізуються: у БД живуть і старі ключі на кшталт
     // oswiadczenie/student_do26 — без нормалізації веб-бейдж їх не знає)
-    legalStatus: legalStatusOf((r.extras as Record<string, unknown>).zusStatus as string) ?? normalizeProfileLegal(workerLegal) ?? null,
+    // снапшот рядка (06.09.2026: група береться на момент формування) — старі рядки без нього читають профіль
+    legalStatus: legalStatusOf((r.extras as Record<string, unknown>).zusStatus as string) ?? normalizeProfileLegal(r.legalStatus ?? workerLegal) ?? null,
+    legalSource: r.legalSource ?? null, // documents | manual | none
   };
   if (sensitive) {
     base.payoutPref = workerPref ?? null; // побажання працівника (примітки профілю)
@@ -238,7 +241,7 @@ router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res
 // Поля, які двигун пропагації вміє застосувати (ключі normTrackedChanges);
 // решта (фабрика, звільнення, національність) — у списку інформаційно.
 const PROPAGATABLE_FIELDS = new Set([
-  "legalStatus", "birthDate", "employmentStartDate", "notifyHours", "hourlyRate",
+  "legalStatus", "effectiveLegalStatus", "birthDate", "employmentStartDate", "notifyHours", "hourlyRate",
   "hourlyRateNetto", "agramStazBonus", "agramCashBonus", "isStudent", "positionId",
   "payoutPrefKind", "payoutPrefValue",
 ]);
@@ -456,7 +459,8 @@ async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" |
       // ставка, очищена в профілі пізніше (NULL = «авто»), двигуном не
       // приймається — таку зміну пропускаємо, рядок і так рахує from-hours
       if (c.field === "hourlyRate" && (w as any).hourlyRate == null) continue;
-      changes[c.field] = (w as any)[c.field];
+      // ефективний статус (за документами) — поточне значення з кешу легальності, не з профілю
+      changes[c.field] = c.field === "effectiveLegalStatus" ? (await effectiveViewOf(w)).legalStatus : (w as any)[c.field];
     }
     if (!Object.keys(changes).length) continue;
     const from = list.map(c => String(c.effectiveDate)).sort()[0]!;
@@ -696,7 +700,7 @@ async function factoryRuleRecompute(factoryId: number, fromMonth: string, dryRun
           return {
             hours: seg.hours, rateNetto, rateBrutto: seg.rateBrutto,
             isStudent: seg.isStudent, under26: seg.under26,
-            legal: raw !== undefined ? (raw || null) : (w?.legalStatus ?? null),
+            legal: raw !== undefined ? (raw || null) : (row.legalStatus ?? w?.legalStatus ?? null),
             facBonus: newBonus > 0 ? newBonus : null,
           };
         }),
@@ -739,7 +743,7 @@ async function factoryRuleRecompute(factoryId: number, fromMonth: string, dryRun
     const payout = computePayout(merged, row.city as any);
     if (payout != null) merged.doWyplaty = payout;
     applyLegalDefaults(merged, true, {
-      profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city,
+      profileLegal: (row.legalStatus ?? w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city,
       firm: row.firm, factoryId, rule, payoutPref,
     });
     const diffs: RuleImpactRow["diffs"] = [];
@@ -1086,7 +1090,9 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
   // бонусні фабрики (Agram нал+стаж, LST нал): до профільної ставки додається
   // бонус (він же в extras.facBonus — розклад тримає його готівкою);
   // студенту до 26 бонуси не нараховуються
-  const stud26Add = (worker!.isStudent || worker!.legalStatus === "student") && !!under26;
+  // ефективний статус (за документами або вручну) — снапшот у рядок на момент додавання
+  const effW = await effectiveViewOf(worker!);
+  const stud26Add = effW.isStudent && !!under26;
   const facBonus = !stud26Add && factory != null
     ? factoryBonusPerHour(worker!, await payoutRuleForRow({ factoryId: factory.id, factoryLabel, periodMonth }), periodMonth, null)
     : 0;
@@ -1099,7 +1105,8 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     workerId: worker!.id, linkStatus: "confirmed", manual: true,
     rateBrutto: worker!.hourlyRate ?? null, rateNetto: prefillNetto,
     hoursNotified: worker!.notifyHours ?? null,
-    isStudent: worker!.isStudent, under26,
+    isStudent: effW.isStudent, under26,
+    legalStatus: effW.legalStatus ?? null, legalSource: effW.legalSource,
     extras: facBonus > 0 && prefillNetto != null ? { facBonus } : {}, hr, sheetValues: {},
   }).returning();
   ok(res, serializeRow(created!, worker!.fullName, canSensitive(req), worker!.legalStatus, worker!.payoutPrefKind ? { kind: worker!.payoutPrefKind, value: worker!.payoutPrefValue ?? null } : null));
@@ -1132,7 +1139,7 @@ router.post("/svodni/rows/:id/unsplit", requireCap("svodni"), async (req: Authed
   if (merged.hours != null && merged.rateBrutto != null) merged.brutto = rnd2(merged.hours * merged.rateBrutto);
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
-      profileLegal: (w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
+      profileLegal: (row.legalStatus ?? w?.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
       factoryId: row.factoryId, rule: unsplitRule,
       payoutPref: w?.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
@@ -1434,21 +1441,31 @@ export async function writeSegments(parent: SegRow, plan: NonNullable<Awaited<Re
 const LEGAL_SET = new Set(["student", "dyplom", "powiadomienie", "zus", "oczekuje", "karta_pobytu", "staly_pobyt", "polak"]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const FINANCE_TRACKED = new Set(["hourlyRate", "hourlyRateNetto"]);
-function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typeof workersTable.$inferInsert>; err?: string } {
+// virtual — ключі patch, які НЕ пишуться в профіль: ефективний статус за
+// документами (06.09.2026) для двигуна пропагації виглядає як зміна legalStatus,
+// але workers.legal_status лишається ручним полем (payroll-інваріант).
+function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typeof workersTable.$inferInsert>; virtual: Set<string>; err?: string } {
   const patch: any = {};
+  const virtual = new Set<string>();
   const has = (k: string) => body[k] !== undefined;
   const s = (v: unknown) => (v == null ? null : String(v).trim() || null);
   const n = (v: unknown) => { const x = v == null || v === "" ? null : Number(String(v).replace(",", ".")); return x != null && !Number.isFinite(x) ? undefined : x; };
-  if (has("legalStatus")) {
+  if (has("effectiveLegalStatus")) {
+    const ls = s(body.effectiveLegalStatus);
+    if (ls && !LEGAL_SET.has(ls)) return { patch, virtual, err: "Невідома форма легалізації" };
+    patch.legalStatus = ls;
+    patch.isStudent = ls === "student";
+    virtual.add("legalStatus"); virtual.add("isStudent");
+  } else if (has("legalStatus")) {
     const ls = s(body.legalStatus);
-    if (ls && !LEGAL_SET.has(ls)) return { patch, err: "Невідома форма легалізації" };
+    if (ls && !LEGAL_SET.has(ls)) return { patch, virtual, err: "Невідома форма легалізації" };
     patch.legalStatus = ls;
     // статус керує прапорцем студента, включно з очищенням: «—» ≠ студент
     patch.isStudent = ls === "student";
   }
   if (has("birthDate")) {
     const bd = s(body.birthDate);
-    if (bd && !DATE_RE.test(bd)) return { patch, err: "Дата народження — YYYY-MM-DD" };
+    if (bd && !DATE_RE.test(bd)) return { patch, virtual, err: "Дата народження — YYYY-MM-DD" };
     patch.birthDate = bd;
     // очищення дати скидає прапорець (дзеркало PATCH /workers): без дати
     // не вважаємо пільговиком «до 26»
@@ -1456,28 +1473,28 @@ function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typ
   }
   if (has("employmentStartDate")) {
     const d = s(body.employmentStartDate);
-    if (d && !DATE_RE.test(d)) return { patch, err: "Дата працевлаштування — YYYY-MM-DD" };
+    if (d && !DATE_RE.test(d)) return { patch, virtual, err: "Дата працевлаштування — YYYY-MM-DD" };
     patch.employmentStartDate = d;
   }
-  if (has("notifyHours")) { const v = n(body.notifyHours); if (v === undefined || (v != null && v < 0)) return { patch, err: "Год. повідомлення — число" }; patch.notifyHours = v; }
-  if (has("hourlyRate")) { const v = n(body.hourlyRate); if (v == null || v <= 0) return { patch, err: "Ставка брутто — число > 0" }; patch.hourlyRate = v; }
-  if (has("hourlyRateNetto")) { const v = n(body.hourlyRateNetto); if (v === undefined || (v != null && v <= 0)) return { patch, err: "Ставка нетто — число > 0" }; patch.hourlyRateNetto = v; }
+  if (has("notifyHours")) { const v = n(body.notifyHours); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Год. повідомлення — число" }; patch.notifyHours = v; }
+  if (has("hourlyRate")) { const v = n(body.hourlyRate); if (v == null || v <= 0) return { patch, virtual, err: "Ставка брутто — число > 0" }; patch.hourlyRate = v; }
+  if (has("hourlyRateNetto")) { const v = n(body.hourlyRateNetto); if (v === undefined || (v != null && v <= 0)) return { patch, virtual, err: "Ставка нетто — число > 0" }; patch.hourlyRateNetto = v; }
   if (has("agramStazBonus")) patch.agramStazBonus = !!body.agramStazBonus;
   if (has("agramCashBonus")) patch.agramCashBonus = !!body.agramCashBonus;
   if (has("isStudent")) patch.isStudent = !!body.isStudent;
   if (has("positionId")) {
     const v = body.positionId == null ? null : Number(body.positionId);
-    if (v != null && !Number.isFinite(v)) return { patch, err: "Невідома посада" };
+    if (v != null && !Number.isFinite(v)) return { patch, virtual, err: "Невідома посада" };
     patch.positionId = v;
   }
   if (has("payoutPrefKind")) {
     const k = s(body.payoutPrefKind);
-    if (k && !["all_konto", "hours", "amount"].includes(k)) return { patch, err: "Невідомий тип побажання" };
+    if (k && !["all_konto", "hours", "amount"].includes(k)) return { patch, virtual, err: "Невідомий тип побажання" };
     patch.payoutPrefKind = k;
     if (!k) patch.payoutPrefValue = null;
   }
-  if (has("payoutPrefValue")) { const v = n(body.payoutPrefValue); if (v === undefined || (v != null && v < 0)) return { patch, err: "Значення побажання — число" }; patch.payoutPrefValue = v; }
-  return { patch };
+  if (has("payoutPrefValue")) { const v = n(body.payoutPrefValue); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Значення побажання — число" }; patch.payoutPrefValue = v; }
+  return { patch, virtual };
 }
 
 // Приведення рядка сводної до профілю w з урахуванням того, ЩО саме змінилось
@@ -1505,6 +1522,9 @@ function rowSetFromProfile(
   }
   if (changed.has("legalStatus") || changed.has("isStudent")) {
     merged.isStudent = w.legalStatus != null ? w.legalStatus === "student" : w.isStudent;
+    // снапшот статусу рядка йде за зміною (ручною або ефективною за документами)
+    merged.legalStatus = w.legalStatus ?? null;
+    merged.legalSource = (w as any).legalSource ?? "manual";
     // текст Księgowość із таблиці більше не має перекривати профіль
     delete merged.extras.zusStatus;
     if (w.birthDate) merged.under26 = isUnder26(w.birthDate);
@@ -1552,7 +1572,7 @@ function rowSetFromProfile(
   if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
   if (!OFFICE_TAB_RE.test(row.factoryLabel) && row.factoryLabel !== EXTRA_STUDENTS_LABEL) {
     applyLegalDefaults(merged, true, {
-      profileLegal: (w.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
+      profileLegal: (merged.legalStatus ?? w.legalStatus ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
       factoryId: row.factoryId, rule: payRule,
       payoutPref: w.payoutPrefKind ? { kind: w.payoutPrefKind as any, value: w.payoutPrefValue ?? null } : null,
     });
@@ -1560,7 +1580,7 @@ function rowSetFromProfile(
   const set: Record<string, unknown> = {};
   const diffs: RowDiff[] = [];
   const numish = (v: unknown) => typeof v === "number" ? r2(v) : v ?? null;
-  for (const k of ["hoursNotified", "rateBrutto", "rateNetto", "isStudent", "under26", "section",
+  for (const k of ["hoursNotified", "rateBrutto", "rateNetto", "isStudent", "under26", "section", "legalStatus", "legalSource",
     "doWyplaty", "brutto", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
     if (numish(merged[k]) !== numish((row as any)[k])) { set[k] = merged[k] ?? null; diffs.push({ key: k, from: (row as any)[k], to: merged[k] ?? null }); }
   }
@@ -1581,11 +1601,13 @@ function rowSetFromProfile(
 export async function profileChangeContext(workerId: number, body: Record<string, unknown>, from: string, sensitive: boolean) {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return { err: "працівника не знайдено" } as const;
-  const { patch, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
+  const { patch, virtual, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
   if (err) return { err } as const;
   if (!Object.keys(patch).length) return { err: "нема змін" } as const;
   const changed = new Set(Object.keys(patch));
-  const nextW = { ...w, ...patch } as typeof workersTable.$inferSelect;
+  // virtual (ефективний статус за документами) — лише для двигуна рядків, у профіль не пишеться
+  const persistPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => !virtual.has(k))) as Partial<typeof workersTable.$inferInsert>;
+  const nextW = { ...w, ...patch, ...(virtual.size ? { legalSource: "documents" } : {}) } as typeof workersTable.$inferSelect;
   const fromMonth = from.slice(0, 7);
   const rows = (await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf),
@@ -1638,7 +1660,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
     const existingSegs = (segsByParent.get(row.id) ?? []);
     if ((wantsSplit && row.periodMonth === fromMonth) || existingSegs.length) {
       const existing = existingSegs.sort((a, b) => (a.segmentFrom! < b.segmentFrom! ? -1 : 1));
-      const oldAt = oldStateAt(row, existing, w.legalStatus ?? null);
+      const oldAt = oldStateAt(row, existing, row.legalStatus ?? w.legalStatus ?? null);
       // ОВЕРЛЕЙ, не заміна: до стану кожного вікна ≥ from застосовуються лише
       // ЗМІНЕНІ аспекти — вікна, що кодують ПІЗНІШІ зміни (інша ставка з 15-го),
       // зберігають свої відмінності й не «зшиваються» ранішою зміною
@@ -1760,7 +1782,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
   // сводних людина взагалі має (щоб підказати «обери ранішу дату»)
   const allMonths = await db.selectDistinct({ m: svodniRowsTable.periodMonth })
     .from(svodniRowsTable).where(and(eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf)));
-  return { w, patch, changed, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
+  return { w, patch, persistPatch, virtual, changed, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
 }
 
 const SENSITIVE_DIFF_KEYS = new Set(["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka", "zusStatus"]);
@@ -1811,7 +1833,7 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
   if ("err" in ctx) return fail(res, 400, ctx.err!);
   const toApply = ctx.items.filter(it => !it.locked && rowIds.has(it.row.id));
   const skippedLocked = ctx.items.filter(it => it.locked).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
-  await db.update(workersTable).set(ctx.patch).where(eq(workersTable.id, workerId));
+  if (Object.keys(ctx.persistPatch).length) await db.update(workersTable).set(ctx.persistPatch).where(eq(workersTable.id, workerId));
   for (const it of toApply) {
     if (it.plan) {
       // зміна з середини місяця → рядок ріжеться на сегменти
@@ -1839,7 +1861,32 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
       adminId: req.admin!.adminId,
     });
   }
+  // ефективний статус за документами: запис у журнал уже створив движок при
+  // перерахунку — відмічаємо його застосованим (без дубля), офіс = хто прийняв
+  if (changesBody.effectiveLegalStatus !== undefined) {
+    const pending = await db.select().from(workerChangesTable).where(and(
+      eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "effectiveLegalStatus"),
+      isNull(workerChangesTable.reviewDismissedAt), isNull(workerChangesTable.appliedRows)));
+    for (const p of pending) {
+      await db.update(workerChangesTable).set({
+        appliedRows: appliedRows.length ? appliedRows : [], // [] = прийнято без рядків (нічого не зачепило)
+        skippedLocked: skippedLocked.length ? skippedLocked : null, adminId: req.admin!.adminId,
+      }).where(eq(workerChangesTable.id, p.id));
+    }
+  }
   ok(res, { applied: appliedRows.length, skippedLocked });
+});
+
+// Відхилити зміну ефективного статусу (за документами) — сводна лишається як є,
+// запис позначається відхиленим (не зникає з історії); ревʼю при розлоку його не показує.
+router.post("/svodni/profile-change/:id/dismiss", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, id));
+  if (!entry) return fail(res, 404, "запис не знайдено");
+  if (entry.field !== "effectiveLegalStatus") return fail(res, 400, "відхиляти можна лише зміни статусу за документами");
+  await db.update(workerChangesTable).set({ reviewDismissedAt: new Date(), adminId: req.admin!.adminId }).where(eq(workerChangesTable.id, id));
+  ok(res, { ok: true });
 });
 
 // «Видалити зміну» з історії профілю: значення повертається до попереднього
@@ -2179,7 +2226,11 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       : noCity.size ? `місто фабрики невідоме (нема ні в сводних, ні в Зарплатах): ${[...noCity].join(", ")}`
       : "немає підтверджених годин у вибраному");
   }
-  const workers = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
+  // ефективний статус виплат (за документами, коли людина повністю оформлена,
+  // інакше ручне поле) — знімається в рядок на момент формування (06.09.2026)
+  const workersRaw = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
+  const lgCache = await loadLegalityCache(workerIds);
+  const workers = workersRaw.map(w => effectiveView(w, lgCache.get(w.id)));
   const wById = new Map(workers.map(w => [w.id, w]));
   // дні з файлу фабрики (factory_hours.days) — теж точні дати активності
   {
@@ -2489,12 +2540,15 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       const payout = computePayout(merged, city as any);
       if (payout != null) merged.doWyplaty = payout;
       if (merged.hours != null && merged.rateBrutto != null) merged.brutto = r2(merged.hours * merged.rateBrutto);
-      applyLegalDefaults(merged, true, { profileLegal: (w.legalStatus ?? null) as any, factoryLabel, city, payoutPref, firm: merged.firm, factoryId: pair.factoryId, rule: pairRule });
+      // статус рядка — снапшот на момент формування; старий рядок без снапшоту дознімає поточний ефективний
+      const rowLegal = prev.legalStatus ?? w.legalStatus ?? null;
+      applyLegalDefaults(merged, true, { profileLegal: rowLegal as any, factoryLabel, city, payoutPref, firm: merged.firm, factoryId: pair.factoryId, rule: pairRule });
       const unregU = isUnregistered(w, r2(pair.hours));
       if (unregU) merged.extras = { ...merged.extras, zusStatus: "не оформлений" };
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
         firm: merged.firm,
+        ...(prev.legalStatus == null && prev.legalSource == null ? { legalStatus: w.legalStatus ?? null, legalSource: w.legalSource } : {}),
         ...(ec || unregU || isBonusFac || debtTouched ? { extras: merged.extras } : {}),
         ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia } : {}),
         ...(debtTouched ? {
@@ -2527,6 +2581,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       zaliczka: null, // залічки переносяться масовою дією «У сводну» (apply-zaliczki)
       hostel: isMainPair(pair) && hostelByWorker.has(pair.workerId) ? r2(hostelByWorker.get(pair.workerId)!) : null,
       isStudent: w.isStudent, under26,
+      legalStatus: w.legalStatus ?? null, legalSource: w.legalSource, // снапшот ефективного статусу на момент формування
       extras: {
         ...(ec && ec.nocneH != null ? { nocneH: ec.nocneH, doplataNocna: ec.doplataNocna } : {}),
         // вшитий бонус (Agram/LST) — розклад тримає його готівкою

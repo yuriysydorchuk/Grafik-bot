@@ -1308,6 +1308,11 @@ export const svodniRowsTable = pgTable("svodni_rows", {
   konto: real("konto"),
   isStudent: boolean("is_student"),
   under26: boolean("under_26"),
+  // Снапшот форми легалізації на момент формування рядка (06.09.2026): група виплат
+  // береться тоді, а не з живого профілю; джерело — documents | manual | none.
+  // Старі рядки без снапшоту читають профіль, як і раніше.
+  legalStatus: text("legal_status"),
+  legalSource: text("legal_source"),
   extras: jsonb("extras").notNull().default({}),
   hr: jsonb("hr").notNull().default({}),
   sheetValues: jsonb("sheet_values").notNull().default({}),
@@ -2156,6 +2161,13 @@ export const workerLegalityTable = pgTable("worker_legality", {
   legacyMappingRequiresReview: boolean("legacy_mapping_requires_review").notNull().default(false),
   legacyMismatchKind: text("legacy_mismatch_kind").notNull().default("none"), // none | within_class | cross_class | no_proposal
   payrollHints: jsonb("payroll_hints").$type<Record<string, unknown>>(), // контрольні підказки для UI, НЕ вхід payroll
+  // Ефективний статус для виплат (рішення власника 06.09.2026, services/effectiveStatus.ts):
+  // повністю оформлений за документами → derivedLegalStatus (source=documents), інакше
+  // ручне workers.legal_status (manual) або без статусу (none). ЦЕ вхід payroll —
+  // сводна знімає його в svodni_rows.legal_status на момент формування рядка.
+  effectiveLegalStatus: text("effective_legal_status"),
+  effectiveSource: text("effective_source"), // documents | manual | none
+  effectiveSince: date("effective_since"),   // від якої дати діє (дати документів/умови)
   inputHash: text("input_hash"),
   rulesHash: text("rules_hash"),
   computedAt: timestamp("computed_at").notNull(),

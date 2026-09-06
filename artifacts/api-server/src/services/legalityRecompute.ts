@@ -5,7 +5,7 @@
 //
 // Пише ЛИШЕ worker_legality. workers.* не чіпає (інваріант payroll).
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable, workerQuestionnairesTable,
   contractsTable, contractFilesTable, documentTemplatesTable, workerFactoriesTable, factoriesTable, companiesTable, scheduleEntriesTable, scheduleWeeksTable,
@@ -15,6 +15,7 @@ import {
   type LegalityContract, type LegalityEmployer,
 } from "./legality";
 import { mrzNationalityToCatalog } from "./docai";
+import { resolveEffectiveLegal, type EffectiveLegal } from "./effectiveStatus";
 import { logger } from "../lib/logger";
 
 export const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
@@ -133,8 +134,47 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
   };
 }
 
+// Від якої дати діє ефективний статус (рішення 06.09.2026 «з урахуванням дат
+// документів»): за документами — найпізніша з дат початку підстав (перебування,
+// праця, умова), не пізніше сьогодні; вручну/без статусу — дата перерахунку.
+function effectiveSinceOf(input: LegalityInput, r: LegalityResult, eff: EffectiveLegal): string {
+  if (eff.source !== "documents") return input.today;
+  const dates: string[] = [];
+  for (const ax of [r.stay, r.work]) {
+    const d = ax.basisDocId != null ? input.documents.find(x => x.id === ax.basisDocId) : undefined;
+    if (d?.validFrom) dates.push(d.validFrom);
+  }
+  const c = r.contract.basisDocId != null ? (input.contracts ?? []).find(x => x.id === r.contract.basisDocId) : undefined;
+  if (c?.dateFrom) dates.push(c.dateFrom);
+  const max = dates.sort().at(-1);
+  return max && max < input.today ? max : input.today;
+}
+
+// Зміна ефективного статусу → запис у журнал змін профілю (worker_changes,
+// field=effectiveLegalStatus). НЕ застосовується сам: офіс бачить попередження в
+// профілі «вплине на сводну» і приймає/відхиляє через profile-impact/apply (незалочені
+// місяці) або ревʼю при розлоку. Відкритий (не прийнятий і не відхилений) запис
+// оновлюється замість дублювання; повернення до старого статусу знімає його.
+async function journalEffectiveChange(workerId: number, oldStatus: string | null, newStatus: string | null, since: string): Promise<void> {
+  const [pending] = await db.select().from(workerChangesTable)
+    .where(and(eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "effectiveLegalStatus"), isNull(workerChangesTable.reviewDismissedAt), isNull(workerChangesTable.appliedRows)))
+    .orderBy(desc(workerChangesTable.id)).limit(1);
+  if (pending) {
+    if ((pending.oldValue ?? null) === (newStatus ?? null)) { await db.delete(workerChangesTable).where(eq(workerChangesTable.id, pending.id)); return; }
+    await db.update(workerChangesTable).set({ newValue: newStatus, effectiveDate: since }).where(eq(workerChangesTable.id, pending.id));
+    return;
+  }
+  await db.insert(workerChangesTable).values({ workerId, field: "effectiveLegalStatus", oldValue: oldStatus, newValue: newStatus, effectiveDate: since, adminId: null });
+}
+
 export async function saveLegality(workerId: number, input: LegalityInput, r: LegalityResult): Promise<void> {
+  const [prev] = await db.select({ status: workerLegalityTable.effectiveLegalStatus, source: workerLegalityTable.effectiveSource, since: workerLegalityTable.effectiveSince })
+    .from(workerLegalityTable).where(eq(workerLegalityTable.workerId, workerId));
+  const eff = resolveEffectiveLegal({ legalStatus: input.worker.legalStatus }, { overall: r.overall, derivedLegalStatus: r.legacy.derivedLegalStatus, legacyMismatchKind: r.legacy.legacyMismatchKind });
+  const unchanged = !!prev && (prev.status ?? null) === (eff.status ?? null) && prev.source === eff.source;
+  const effectiveSince = unchanged ? (dateStr(prev!.since) ?? input.today) : effectiveSinceOf(input, r, eff);
   const values = {
+    effectiveLegalStatus: eff.status, effectiveSource: eff.source, effectiveSince,
     workerId, stay: r.stay.status, work: r.work.status, contract: r.contract.status, overall: r.overall,
     reviewRequired: r.reviewRequired, reasons: r.reasons,
     nextExpiryAt: r.nextExpiry?.date ?? null, nextExpiryDocId: r.nextExpiry?.docId ?? null,
@@ -150,6 +190,12 @@ export async function saveLegality(workerId: number, input: LegalityInput, r: Le
     inputHash: sha1({ w: input.worker, d: input.documents, c: input.contracts ?? null, e: input.employers ?? null }), rulesHash: sha1(input.rules), computedAt: new Date(),
   };
   await db.insert(workerLegalityTable).values(values).onConflictDoUpdate({ target: workerLegalityTable.workerId, set: values });
+  // Журнал — лише для змін, спричинених ДОКУМЕНТАМИ (нове або втрачене джерело
+  // «documents»): ручну зміну «Форми легалізації» офіс уже провів через модалку
+  // профілю. Перший розрахунок (кешу/ефективних колонок ще не було — міграція,
+  // бекфіл на проді) журнал не пише.
+  const docsInvolved = eff.source === "documents" || prev?.source === "documents";
+  if (prev?.source && docsInvolved && (prev.status ?? null) !== (eff.status ?? null)) await journalEffectiveChange(workerId, prev.status ?? null, eff.status, effectiveSince);
 }
 
 export async function recomputeWorkerLegality(workerId: number, today = warsawToday(), rules?: LegalRuleInput[]): Promise<LegalityResult | null> {

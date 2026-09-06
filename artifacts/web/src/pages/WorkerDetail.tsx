@@ -1500,6 +1500,53 @@ function WorkerFactoriesChips({ workerId, factories, companies, primaryFactoryId
 // рішення власника 03.09.2026: «легалізація док і легалізація — одне й те саме»).
 // Світлофори побут/праця/разом, причини, наступний строк, обовʼязки. Без власної
 // картки — рендериться всередині Section у WorkerDocuments.
+// Статус для виплат (резолвер 06.09.2026): що реально йде у сводну і звідки —
+// за документами (повністю оформлений) або ручне поле; плюс банер відкритої зміни
+// за документами: «вплине на сводну» → Прийняти (превʼю ProfileChangeModal) / Відхилити.
+function EffectiveStatusLine({ workerId, legality }: { workerId: number; legality: WorkerLegality }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [review, setReview] = useState(false);
+  const eff = legality.effectiveLegalStatus ?? null;
+  const src = legality.effectiveSource ?? (eff ? "manual" : "none");
+  const pending = legality.pendingEffectiveChange ?? null;
+  const dismiss = useMutation({
+    mutationFn: (id: number) => post(`/svodni/profile-change/${id}/dismiss`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); toast.success(t("Зміну відхилено — сводна без змін")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const label = (s: string | null) => s ? t(LEGAL_LABEL[s as LegalStatus] ?? s) : t("не зголошений");
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+        <span className="font-semibold uppercase tracking-wide text-slate-400">{t("Для виплат")}</span>
+        <span className={`rounded px-1.5 py-0.5 font-medium ${eff && LEGAL_BADGE[eff as LegalStatus] ? LEGAL_BADGE[eff as LegalStatus]!.cls : "bg-rose-50 text-rose-700"}`}>{label(eff)}</span>
+        <span className="text-slate-400">
+          · {src === "documents" ? t("за документами") : src === "manual" ? t("за ручним полем «Форма легалізації»") : t("без статусу і без повного комплекту документів")}
+          {legality.effectiveSince && src === "documents" ? ` · ${t("з")} ${fmtDocDate(legality.effectiveSince)}` : ""}
+        </span>
+      </div>
+      {pending && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {t("Статус для виплат змінився за документами")}: <b>{label(pending.oldValue)}</b> → <b>{label(pending.newValue)}</b> {t("з")} {fmtDocDate(pending.effectiveDate)}.
+            {" "}{t("Це вплине на сводну від цієї дати — переглянь і прийми або відхили.")}
+          </span>
+          <span className="ml-auto flex shrink-0 gap-1.5">
+            <button type="button" onClick={() => setReview(true)} className="rounded-md bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-700">{t("Переглянути й прийняти")}</button>
+            <button type="button" onClick={() => dismiss.mutate(pending.id)} disabled={dismiss.isPending} className="rounded-md border border-amber-300 bg-white px-2 py-1 font-medium text-amber-700 hover:bg-amber-100">{t("Відхилити")}</button>
+          </span>
+        </div>
+      )}
+      {review && pending && (
+        <ProfileChangeModal workerId={workerId} changes={{ effectiveLegalStatus: pending.newValue }} title={t("Статус для виплат за документами → сводна")}
+          initialFrom={pending.effectiveDate} onClose={() => { setReview(false); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); }} />
+      )}
+    </div>
+  );
+}
+
 function LegalitySummary({ workerId }: { workerId: number }) {
   const t = useT();
   const { data: legality, isLoading } = useQuery<WorkerLegality | null>({
@@ -1539,6 +1586,8 @@ function LegalitySummary({ workerId }: { workerId: number }) {
             </span>
           )}
         </div>
+
+        <EffectiveStatusLine workerId={workerId} legality={legality} />
 
         {legality.reasons.length > 0 && (
           <div className="space-y-1.5">
@@ -2551,14 +2600,18 @@ function LegalStatusRow({ workerId, legalStatus, onRequest }: { workerId: number
   });
   const submit = (v: string) => onRequest ? onRequest({ legalStatus: v || null }, t("Форма легалізації")) : save.mutate(v);
   const badge = legalStatus ? LEGAL_BADGE[legalStatus] : null;
+  // коли виплати йдуть за документами, ручне поле на гроші не впливає — підказка
+  const { data: lg } = useQuery<WorkerLegality | null>({ queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`) });
+  const byDocs = lg?.effectiveSource === "documents";
   return (
-    <InfoRow icon={IdCard} label={t("Форма легалізації")}>
+    <InfoRow icon={IdCard} label={t("Форма легалізації")} title={byDocs ? t("Виплати зараз ідуть за документами — це поле на гроші не впливає, поки людина повністю оформлена") : undefined}>
       <select value={legalStatus ?? ""} onChange={e => submit(e.target.value)}
         className="max-w-full rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
         <option value="">—</option>
         {LEGAL_STATUSES.map(s => <option key={s} value={s}>{t(LEGAL_LABEL[s])}</option>)}
       </select>
       {badge && <span className={`rounded px-1 text-[10px] font-medium ${badge.cls}`}>{badge.short}</span>}
+      {byDocs && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" title={t("виплати за документами")}>{t("док.")}</span>}
     </InfoRow>
   );
 }

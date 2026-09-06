@@ -123,6 +123,10 @@ export interface WorkerLegality {
   derivedLegalStatus: string | null; derivedPayrollClass: string | null;
   legacyMappingRequiresReview: boolean; legacyMismatchKind: "none" | "within_class" | "cross_class" | "no_proposal";
   payrollHints: { studentByProfile: boolean; studentCertMissingOrExpired: boolean; notifyHoursWithoutBasis: boolean; hoursExceedNotify: boolean | null; workBasisMissing: boolean } | null;
+  // резолвер виплат (06.09.2026): що реально йде у сводну і звідки
+  effectiveLegalStatus?: string | null; effectiveSource?: "documents" | "manual" | "none" | null; effectiveSince?: string | null;
+  // відкрита зміна ефективного статусу (за документами) — банер «вплине на сводну» з прийняти/відхилити
+  pendingEffectiveChange?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string; createdAt: string } | null;
   computedAt: string;
 }
 // Зріз умов (contracts) для списку /workers: umowa — останній факторі-пакет, чия фабрика належить
@@ -165,7 +169,9 @@ export interface Worker {
   gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
-  legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми
+  legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми — РУЧНЕ поле
+  effectiveLegalStatus?: string | null; // що йде у виплати (за документами або ручне) — резолвер 06.09.2026
+  legalSource?: "documents" | "manual" | "none";
   legality?: WorkerLegalityBrief | null; // світлофори за документами (кеш worker_legality; null = ще не рахувалось)
   contracts?: WorkerContractsBrief; // зріз умов з модуля підпису: актуальна umowa на фірму працівника + сталий комплект
   student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)

@@ -1,7 +1,8 @@
 // Події документів/профілю → журнал document_audit + перерахунок кешу worker_legality.
 // Єдина точка, яку викликають усі мутації документів (admin-api, legalization,
 // бот-аплоуд) і зміни профілю, що впливають на легальність. Best-effort: помилка
-// тут ніколи не валить основну операцію. Пише ЛИШЕ document_audit і worker_legality.
+// тут ніколи не валить основну операцію. Пише document_audit, worker_legality і (при зміні
+// ефективного статусу виплат) запис у worker_changes на ревʼю офісу — НЕ workers.legal_status.
 import { logDocumentAudit, type DocumentAuditAction, type DocumentAuditChange, type DocumentAuditSource } from "./documentAudit";
 import { recomputeWorkerLegality } from "./legalityRecompute";
 import { logger } from "../lib/logger";

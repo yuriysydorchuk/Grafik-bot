@@ -38,6 +38,7 @@ import { createAnketaToken, createOfficeScanToken, createSelfScanToken, passport
 import { documentChanged, workerLegalityChanged, LEGALITY_PROFILE_FIELDS } from "../services/documentEvents";
 import { documentAuditDiff } from "../services/documentAudit";
 import { LEGAL_STATUSES, normalizeProfileLegal } from "../services/svodni";
+import { effectiveView, loadLegalityCache } from "../services/effectiveStatus";
 import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
 import { nextWorkerCode } from "../lib/workerCode";
@@ -357,19 +358,24 @@ router.get("/workers", RW, async (req, res) => {
       lgOverall: workerLegalityTable.overall, lgStay: workerLegalityTable.stay, lgWork: workerLegalityTable.work,
       lgNextExpiry: workerLegalityTable.nextExpiryAt, lgReview: workerLegalityTable.reviewRequired,
       lgDerived: workerLegalityTable.derivedLegalStatus, lgMismatch: workerLegalityTable.legacyMismatchKind,
+      lgEffective: workerLegalityTable.effectiveLegalStatus, lgSource: workerLegalityTable.effectiveSource,
     })
     .from(workersTable)
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .leftJoin(workerLegalityTable, eq(workerLegalityTable.workerId, workersTable.id))
     .orderBy(workersTable.fullName))
-    .map(({ birthDate, lgOverall, lgStay, lgWork, lgNextExpiry, lgReview, lgDerived, lgMismatch, ...r }) => {
+    .map(({ birthDate, lgOverall, lgStay, lgWork, lgNextExpiry, lgReview, lgDerived, lgMismatch, lgEffective, lgSource, ...r }) => {
       // форма легалізації + похідні статуси для фільтрів/підсвітки списку —
-      // доступні всім ролям (як і в профілі); сирі payroll-поля лишаються owner-only
+      // доступні всім ролям (як і в профілі); сирі payroll-поля лишаються owner-only.
+      // legalStatus — ручне поле профілю; effectiveLegalStatus — те, що йде у виплати
+      // (за документами, коли людина повністю оформлена, інакше ручне) — resolver 06.09.2026
       const legalStatus = normalizeProfileLegal(r.legalStatus) ?? r.legalStatus;
-      const s26 = stud26Of({ isStudent: r.isStudent, legalStatus, birthDate, under26: r.under26 });
+      const eff = effectiveView({ legalStatus: r.legalStatus, isStudent: r.isStudent }, lgOverall ? { overall: lgOverall, derivedLegalStatus: lgDerived, legacyMismatchKind: lgMismatch ?? "none" } : null);
+      const s26 = stud26Of({ isStudent: eff.isStudent, legalStatus: eff.legalStatus, birthDate, under26: r.under26 });
       return {
         ...r,
         legalStatus,
+        effectiveLegalStatus: eff.legalStatus, legalSource: eff.legalSource,
         student: s26.isStudent,
         stud26: s26.isStudent && s26.under26,
         legality: lgOverall ? { overall: lgOverall, stay: lgStay, work: lgWork, nextExpiryAt: lgNextExpiry, reviewRequired: !!lgReview, derivedLegalStatus: lgDerived, legacyMismatchKind: lgMismatch } : null,
@@ -3104,7 +3110,10 @@ router.get("/hours", RW, async (req, res) => {
   // збирач з Excel-експортом (services/hoursRows.ts), щоб файл ніколи не
   // розходився зі сторінкою.
   const { buildHoursMergedRows } = await import("../services/hoursRows");
-  const { rows: merged, facById, excluded } = await buildHoursMergedRows(month);
+  const { rows: mergedRaw, facById, excluded } = await buildHoursMergedRows(month);
+  // статус виплат — ефективний (за документами / вручну), як у сводній (resolver 06.09.2026)
+  const lgCache = await loadLegalityCache(mergedRaw.map(r => r.workerId));
+  const merged = mergedRaw.map(r => effectiveView(r, lgCache.get(r.workerId)));
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
   // фабрики, чиї рядки цього місяця вже є у сводній (from-hours пише factory_id) —
@@ -3132,7 +3141,7 @@ router.get("/hours", RW, async (req, res) => {
         note: w.note,
         clientEmail: w.factoryId != null ? facById.get(w.factoryId)?.clientEmail ?? null : null,
         city: (w.factoryId != null ? cityByFactory.get(w.factoryId) : null) ?? "Без міста",
-        ...(canSvodni ? { unlegalized: (!w.legalStatus && !w.isStudent) || w.legalStatus === "oczekuje" } : {}),
+        ...(canSvodni ? { unlegalized: (!w.legalStatus && !w.isStudent) || w.legalStatus === "oczekuje", legalSource: w.legalSource } : {}),
       };
       if (isOwner) {
         const p = calcPayroll(hours * (base.rate ?? rates.defaultRate), base.isStudent, base.under26, rates);

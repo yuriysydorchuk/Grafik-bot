@@ -6,9 +6,9 @@
 // Payroll-інваріант: тут НЕМАЄ жодного запису у workers.* — лише worker_documents,
 // legal_rules, worker_legality (кеш) і document_audit.
 import { Router, type IRouter } from "express";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
-  db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable,
+  db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable,
   factoriesTable, companiesTable, workerFactoriesTable, contractsTable,
 } from "@workspace/db";
 import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
@@ -49,7 +49,15 @@ router.get("/workers/:id/legality", async (req, res) => {
     if (!r) return fail(res, 404, "Не знайдено");
     [row] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, id));
   }
-  ok(res, row ?? null);
+  // відкрита зміна ефективного статусу виплат (за документами) — офіс приймає/відхиляє в профілі
+  const [pendingChange] = await db.select({
+    id: workerChangesTable.id, oldValue: workerChangesTable.oldValue, newValue: workerChangesTable.newValue,
+    effectiveDate: workerChangesTable.effectiveDate, createdAt: workerChangesTable.createdAt,
+  }).from(workerChangesTable).where(and(
+    eq(workerChangesTable.workerId, id), eq(workerChangesTable.field, "effectiveLegalStatus"),
+    isNull(workerChangesTable.reviewDismissedAt), isNull(workerChangesTable.appliedRows),
+  )).orderBy(desc(workerChangesTable.id)).limit(1);
+  ok(res, row ? { ...row, pendingEffectiveChange: pendingChange ?? null } : null);
 });
 router.post("/workers/:id/legality/recompute", LG, async (req, res) => {
   const id = Number(req.params.id);

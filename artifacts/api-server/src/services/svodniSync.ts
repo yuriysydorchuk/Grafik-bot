@@ -18,6 +18,7 @@ import {
   type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 import { PayoutRules } from "./factoryRules";
+import { effectiveView, loadLegalityCache, type WithEffective } from "./effectiveStatus";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -141,10 +142,12 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
   // підставляються у рядки живої таблиці ПЕРЕД розкладом конто/готівки.
   const allWorkers = dedupeWorkers(await db.select({
     id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive,
-    legalStatus: workersTable.legalStatus, payoutPrefKind: workersTable.payoutPrefKind, payoutPrefValue: workersTable.payoutPrefValue,
+    legalStatus: workersTable.legalStatus, isStudent: workersTable.isStudent, payoutPrefKind: workersTable.payoutPrefKind, payoutPrefValue: workersTable.payoutPrefValue,
     notifyHours: workersTable.notifyHours,
   }).from(workersTable));
-  type WorkerLite = (typeof allWorkers)[number];
+  // ефективний статус виплат (за документами або вручну) — знімається в рядок при імпорті
+  const lgCache = await loadLegalityCache(allWorkers.map(w => w.id));
+  type WorkerLite = WithEffective<(typeof allWorkers)[number]>;
   const rowWorker = new Map<object, WorkerLite>(); // parsed row → матчнутий працівник
 
   const tabs: SvodniParsedTab[] = [];
@@ -218,7 +221,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       // Прогалини таблиці добираються з профілю: год. повідомлення,
       // форма легалізації, побажання по виплаті.
       if (!OFFICE_TAB_RE.test(t.trim())) {
-        const w = !row.extras.blockOnly ? matchSvodniName(row.rawName, allWorkers) : null;
+        const rawW = !row.extras.blockOnly ? matchSvodniName(row.rawName, allWorkers) : null;
+        const w = rawW ? effectiveView(rawW, lgCache.get(rawW.id)) : null;
         if (w) {
           rowWorker.set(row, w);
           if (row.hoursNotified == null && w.notifyHours != null && w.notifyHours > 0) row.hoursNotified = w.notifyHours;
@@ -312,6 +316,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         hoursDeclared: row.hoursDeclared, ksiegBrutto: row.ksiegBrutto, ksiegNetto: row.ksiegNetto,
         gotowka: row.gotowka, konto: row.konto,
         isStudent: row.isStudent, under26: row.under26,
+        legalStatus: rowWorker.get(row)?.legalStatus ?? null, legalSource: rowWorker.get(row)?.legalSource ?? null,
         extras: row.extras, hr: row.hr, sheetValues: row.sheetValues, mismatch: row.mismatch,
         rowColor: rowColorOf(row),
       });

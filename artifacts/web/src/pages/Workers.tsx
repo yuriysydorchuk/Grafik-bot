@@ -239,10 +239,13 @@ export default function Workers() {
 // Підсвітка проблемних рядків: не зголошений (oczekuje) → rose; без форми
 // легалізації → amber (не студент, «не оформлений») / yellow (студент — форму
 // просто не заповнили). Дзеркало логіки unlegalized в Обліку годин.
-const rowTint = (w: Worker) =>
-  w.legalStatus === "oczekuje" ? "bg-rose-50/60 hover:bg-rose-50"
-  : !w.legalStatus ? (w.student ? "bg-yellow-50/60 hover:bg-yellow-50" : "bg-amber-50/60 hover:bg-amber-50")
-  : "hover:bg-slate-50";
+// Підсвітка — за ефективним статусом виплат (за документами або ручним полем), як у сводній
+const rowTint = (w: Worker) => {
+  const ls = w.effectiveLegalStatus !== undefined ? w.effectiveLegalStatus : w.legalStatus;
+  return ls === "oczekuje" ? "bg-rose-50/60 hover:bg-rose-50"
+    : !ls ? (w.student ? "bg-yellow-50/60 hover:bg-yellow-50" : "bg-amber-50/60 hover:bg-amber-50")
+    : "hover:bg-slate-50";
+};
 
 // Одна колонка «Легалізація» (відгук власника 03.09.2026: «легалізація док і
 // легалізація — одне й те саме, лиши одну колонку») — три рядки зверху вниз:

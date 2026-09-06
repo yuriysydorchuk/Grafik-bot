@@ -45,7 +45,8 @@ type Row = {
   mismatch: Record<string, { ours: number; sheet: number }> | null;
   rowColor: string | null;
   note: string | null; // ручна замітка «для себе» — редагується завжди, навіть при затвердженні
-  legalStatus: string | null; // форма легалізації (з Księgowość або профілю)
+  legalStatus: string | null; // форма легалізації (снапшот рядка на момент формування, з Księgowość або профілю)
+  legalSource?: "documents" | "manual" | "none" | null; // звідки снапшот: документи / ручне поле / без статусу
   // порізка місяця на сегменти (різні умови в різні періоди): батько — суми,
   // сегмент — повноцінний рядок (свої до виплати/konto/готівка + частки відрахувань)
   segments?: Seg[];
@@ -1276,10 +1277,11 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       {r.under26 && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700">&lt;26</span>}
                       {r.legalStatus && r.legalStatus !== "student" && LEGAL_BADGE[r.legalStatus as LegalStatus] && (
                         <span className={`shrink-0 rounded px-1 text-[10px] font-medium ${LEGAL_BADGE[r.legalStatus as LegalStatus]!.cls}`}
-                          title={`${t("Форма легалізації")}: ${t(LEGAL_LABEL[r.legalStatus as LegalStatus])}${r.extras.zusStatus ? ` — ${r.extras.zusStatus}` : ""}`}>
+                          title={`${t("Форма легалізації")}: ${t(LEGAL_LABEL[r.legalStatus as LegalStatus])}${r.extras.zusStatus ? ` — ${r.extras.zusStatus}` : ""}${r.legalSource === "documents" ? ` · ${t("за документами")}` : ""}`}>
                           {LEGAL_BADGE[r.legalStatus as LegalStatus]!.short}
                         </span>
                       )}
+                      {r.legalSource === "documents" && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" title={t("статус для виплат — за документами (повністю оформлений)")}>{t("док.")}</span>}
                       {!r.legalStatus && !r.isStudent && (
                         <span className="shrink-0 rounded bg-rose-100 px-1 text-[10px] font-semibold text-rose-700"
                           title={t("Немає форми легалізації — розклад конто/готівки не рахується. Впиши статус у колонку Księgowość або в профіль.")}>

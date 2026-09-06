@@ -10,6 +10,7 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const PAYROLL_FILES = [
   "services/svodni.ts", "routes/svodni.ts", "services/svodniSync.ts", "services/hoursRows.ts",
   "lib/payroll.ts", "routes/admin-api.ts", "services/factoryRules.ts", "services/gratyfikantExport.ts",
+  "services/effectiveStatus.ts", // резолвер виплат (06.09.2026): читає лише кеш worker_legality, не движок
 ];
 const FORBIDDEN = /from\s+["'][^"']*\/(legality|legalityRecompute|legalizationSeed)["']/;
 
