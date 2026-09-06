@@ -102,6 +102,7 @@ installChatTracking();
 import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
+import { registerTaskActions } from "./handlers/tasks";
 
 bot.use(async (ctx, next) => {
   try {
@@ -126,6 +127,8 @@ registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
+// «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
+registerTaskActions(bot as any);
 
 // Time/view helpers live in ./time and ./views.
 

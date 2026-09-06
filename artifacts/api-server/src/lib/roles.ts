@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -24,6 +24,8 @@ export const CAP_LABEL: Record<Capability, string> = {
   cleaning: "Прибирання — окремий бізнес (вспульноти: дохід, винагродження, видатки, P&L)",
   workerDocs: "Документи й підписання (паспортні дані, анкети, умови працівників)",
   legalization: "Легалізація (документи зі строками й номерами, справи, правила легальності)",
+  tasksGroup: "Групові задачі та зустрічі (скликати зустрічі, ставити задачі кільком)",
+  tasksManage: "Керувати задачами (перепризначати чужі, автоправила, контроль)",
 };
 
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
@@ -46,7 +48,7 @@ export function hasCap(role: Role | null | undefined, caps: string[] | null | un
 // everyone else (see plan "Гранулярний вибір типів сповіщень для кожної ролі").
 export const NOTIFY_KEYS = [
   "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
-  "absence_warning", "weekly_summary", "finance_alerts",
+  "absence_warning", "weekly_summary", "finance_alerts", "tasks",
 ] as const;
 export type NotifyType = (typeof NOTIFY_KEYS)[number];
 export const NOTIFY_LABEL: Record<NotifyType, string> = {
@@ -59,4 +61,5 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
   absence_warning: "🟡 Повторні пропуски (попередження)",
   weekly_summary: "🤖 Тижневий звіт розсилки нагадувань",
   finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
+  tasks: "📋 Задачі (призначено мені, нагадування, дайджест, зустрічі)",
 };

@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -23,6 +23,8 @@ export const CAP_LABEL: Record<Capability, string> = {
   cleaning: "Прибирання — окремий бізнес (вспульноти: дохід, винагродження, видатки, P&L)",
   workerDocs: "Документи й підписання (паспортні дані, анкети, умови працівників)",
   legalization: "Легалізація (документи зі строками й номерами, справи, правила легальності)",
+  tasksGroup: "Групові задачі та зустрічі (скликати зустрічі, ставити задачі кільком)",
+  tasksManage: "Керувати задачами (перепризначати чужі, автоправила, контроль)",
 };
 
 // Pages a role can be granted access to (nav + route guards).
@@ -46,7 +48,7 @@ export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 // Owner is NOT auto-included here (unlike caps/pages) — plain per-role list.
 export const NOTIFY_KEYS = [
   "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
-  "absence_warning", "weekly_summary", "finance_alerts",
+  "absence_warning", "weekly_summary", "finance_alerts", "tasks",
 ] as const;
 export type NotifyType = (typeof NOTIFY_KEYS)[number];
 export const NOTIFY_LABEL: Record<NotifyType, string> = {
@@ -59,6 +61,7 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
   absence_warning: "🟡 Повторні пропуски (попередження)",
   weekly_summary: "🤖 Тижневий звіт розсилки нагадувань",
   finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
+  tasks: "📋 Задачі (призначено мені, нагадування, дайджест, зустрічі)",
 };
 
 // The resolved access carried on the current user (from /auth/me).

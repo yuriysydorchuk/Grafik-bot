@@ -79,6 +79,8 @@ let fleetAlertTask: ScheduledTask | null = null;
 let serverStatsSampleTask: ScheduledTask | null = null;
 let serverStatsReportTask: ScheduledTask | null = null;
 let recruiterHoursSheetTask: ScheduledTask | null = null;
+let tasksNightlyTask: ScheduledTask | null = null;   // 06:30 перерахунок легальності + автозадачі + нагадування
+let tasksRolloverTask: ScheduledTask | null = null;  // 00:05 перенос невиконаного з плану дня
 let reminderHour = 18;
 
 // Фінансові алерти йдуть ролям, які самі підписані на тип "finance_alerts"
@@ -293,6 +295,32 @@ export function startScheduler() {
 
   // Weekly Monday 08:00 Warsaw: insurance/inspection expiry digest for the fleet
   // (head driver + main admin in the bot). Раз на тиждень — без щоденного спаму.
+  // Модуль «Задачі» (06.09.2026): щоночі 06:30 — перерахунок легальності всіх активних,
+  // генератор автозадач (створити/оновити/auto_resolved), нагадування за драбиною,
+  // ескалація головному. 00:05 — перенос невиконаного з «Мого дня» на сьогодні.
+  tasksNightlyTask = cron.schedule(
+    "30 6 * * *",
+    async () => {
+      try {
+        const { recomputeAllActiveLegality } = await import("./legalityRecompute");
+        await recomputeAllActiveLegality();
+        const { runAutoTasks } = await import("./taskAutoRules");
+        const stats = await runAutoTasks();
+        logger.info(stats, "🗂 auto tasks nightly");
+      } catch (e: any) { logger.warn({ err: e?.message }, "auto tasks nightly failed"); }
+    },
+    { timezone: TZ },
+  );
+  tasksRolloverTask = cron.schedule(
+    "5 0 * * *",
+    async () => {
+      try {
+        const { rolloverPlanned, loadTaskSettings } = await import("./tasks");
+        if ((await loadTaskSettings()).rollover) { const n = await rolloverPlanned(); if (n) logger.info({ n }, "🗂 tasks rolled over"); }
+      } catch (e: any) { logger.warn({ err: e?.message }, "tasks rollover failed"); }
+    },
+    { timezone: TZ },
+  );
   fleetAlertTask = cron.schedule(
     "0 8 * * 1",
     async () => {
@@ -379,6 +407,8 @@ export function stopScheduler() {
   serverStatsSampleTask?.stop(); serverStatsSampleTask = null;
   serverStatsReportTask?.stop(); serverStatsReportTask = null;
   recruiterHoursSheetTask?.stop(); recruiterHoursSheetTask = null;
+  tasksNightlyTask?.stop();   tasksNightlyTask = null;
+  tasksRolloverTask?.stop();  tasksRolloverTask = null;
 }
 
 export function setReminderHour(hour: number) {

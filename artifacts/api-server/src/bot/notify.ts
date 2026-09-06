@@ -158,6 +158,17 @@ export async function notifyByType(type: NotifyType, text: string, options: Reco
   }
 }
 
+// Персональне сповіщення ОДНОМУ адміну (модуль «Задачі»: призначено мені, нагадування,
+// запрошення на зустріч) — з повагою до notify-префів його ролі (тип `tasks`).
+// Повертає true, якщо реально надіслано (нема Telegram / тип вимкнено → false).
+export async function notifyAdminById(adminId: number, type: NotifyType, text: string, options: Record<string, unknown> = {}): Promise<boolean> {
+  const [a] = await db.select().from(adminsTable).where(eq(adminsTable.id, adminId));
+  if (!a?.telegramId) return false;
+  if (!(await adminWantsNotify(a, type))) return false;
+  try { await bot.telegram.sendMessage(a.telegramId, text, options as any); return true; }
+  catch { return false; }
+}
+
 // Role-targeted notification: stores an on-site notification (bell) AND sends Telegram
 // to the matching web users (by role notify prefs) + the head driver when "driver"/"both"
 // is targeted. `adminsNotified: true` — детальне повідомлення (з кнопками) адмінам уже

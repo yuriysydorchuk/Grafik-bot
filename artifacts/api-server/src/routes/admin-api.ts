@@ -1915,6 +1915,8 @@ router.post("/factories", RW, async (req, res) => {
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) values.requiresSanepid = !!req.body.requiresSanepid;
+  if (req.body?.responsibleAdminId !== undefined) values.responsibleAdminId = req.body.responsibleAdminId ? Number(req.body.responsibleAdminId) : null; // задачі (D7)
+  if (req.body?.schedulerAdminId !== undefined) values.schedulerAdminId = req.body.schedulerAdminId ? Number(req.body.schedulerAdminId) : null;
   if (req.body?.isOffice !== undefined) values.isOffice = !!req.body.isOffice;
   if (req.body?.city !== undefined) values.city = canonCity(req.body.city); // не String(null)="null"
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
@@ -1992,6 +1994,9 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (showCode !== undefined) patch.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) patch.requiresSanepid = !!req.body.requiresSanepid;
   if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // «Biuro» — офісні працівники
+  // модуль «Задачі» (D7): відповідальний за фабрику / графікова фабрики — admins.id
+  if (req.body?.responsibleAdminId !== undefined) patch.responsibleAdminId = req.body.responsibleAdminId ? Number(req.body.responsibleAdminId) : null;
+  if (req.body?.schedulerAdminId !== undefined) patch.schedulerAdminId = req.body.schedulerAdminId ? Number(req.body.schedulerAdminId) : null;
   // мінімум днів доступності на тиждень (1–7; ""/null/0 = без правила)
   if (req.body?.minDaysPerWeek !== undefined) {
     const n = Number(req.body.minDaysPerWeek);

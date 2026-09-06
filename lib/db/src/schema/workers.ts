@@ -372,6 +372,11 @@ export const factoriesTable = pgTable("factories", {
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
   multiFirm: boolean("multi_firm").notNull().default(false), // контракт клієнта з КІЛЬКОМА нашими фірмами (Sushi&Food: ES + ESO) — сводна пише фірму працівника в svodni_rows.firm (групи в одній вкладці)
   isOffice: boolean("is_office").notNull().default(false), // «Biuro»: офісні працівники (рішення 05.09.2026: без фабрики посади не буває) — умова на неї як на будь-яку фабрику
+  // Модуль «Задачі» (06.09.2026): відповідальний за фабрику отримує автозадачі по
+  // документах/умовах/обов'язках її працівників (D7: фабрика → категорія → головний);
+  // графікова фабрики — задачі про пропуски без пояснення. Обидва — admins.id.
+  responsibleAdminId: integer("responsible_admin_id").references(() => adminsTable.id, { onDelete: "set null" }),
+  schedulerAdminId: integer("scheduler_admin_id").references(() => adminsTable.id, { onDelete: "set null" }),
   requiresSanepid: boolean("requires_sanepid").notNull().default(false), // фабрика вимагає książeczkę sanepidowską → плитка «Sanepid» у документах працівника (легалізація, 03.09.2026)
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
@@ -2312,3 +2317,116 @@ export type ContractFile = typeof contractFilesTable.$inferSelect;
 export type SignatureToken = typeof signatureTokensTable.$inferSelect;
 export type SignatureEvent = typeof signatureEventsTable.$inferSelect;
 export type PassportScanToken = typeof passportScanTokensTable.$inferSelect;
+
+// ─── Задачі офісу + автозадачі + зустрічі (модуль «Задачі», 06.09.2026) ─────────
+// Лише для офісу (адміни). Три види: task (один виконавець), group (кілька, кожен
+// відмічає свою частину в task_assignees), meeting (дата/час/тривалість/місце,
+// учасники відповідають «буду / не зможу»). Автозадачі створює нічний генератор
+// (services/taskAutoRules.ts) з кешу легальності та інших джерел; source_key —
+// стабільний ключ випадку (один рядок на випадок, повторний прогін оновлює, зникла
+// причина → status=auto_resolved).
+export const tasksTable = pgTable("tasks", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull().default("task"),          // task | group | meeting
+  title: text("title").notNull(),
+  description: text("description"),                       // опис / порядок денний зустрічі
+  status: text("status").notNull().default("open"),      // open | in_progress | review | done | cancelled | auto_resolved
+  priority: text("priority").notNull().default("normal"),// low | normal | high | urgent
+  dueAt: date("due_at"),                                  // строк (дата); для зустрічі = день зустрічі
+  dueTime: text("due_time"),                              // HH:MM (зустріч — час початку; задача — опційно)
+  durationMin: integer("duration_min"),                   // зустріч: тривалість; задача: оцінка часу для «Мого дня»
+  place: text("place"),                                   // зустріч: місце або лінк
+  plannedFor: date("planned_for"),                        // «Мій день»: день, у який задачу взято в план
+  plannedTime: text("planned_time"),                      // HH:MM блок у розкладі дня
+  snoozedUntil: date("snoozed_until"),                    // «нагадати через N днів»
+  rolloverCount: integer("rollover_count").notNull().default(0), // скільки разів переносилась на наступний день
+  creatorAdminId: integer("creator_admin_id").references(() => adminsTable.id), // null = система
+  assigneeAdminId: integer("assignee_admin_id").references(() => adminsTable.id), // kind=task; group/meeting → task_assignees
+  reviewRequired: boolean("review_required").notNull().default(false), // «перевірити перед закриттям» автором
+  workerId: integer("worker_id").references(() => workersTable.id, { onDelete: "set null" }),
+  factoryId: integer("factory_id").references(() => factoriesTable.id, { onDelete: "set null" }),
+  documentId: integer("document_id").references(() => workerDocumentsTable.id, { onDelete: "set null" }),
+  contractId: integer("contract_id").references(() => contractsTable.id, { onDelete: "set null" }),
+  candidateId: integer("candidate_id").references(() => candidatesTable.id, { onDelete: "set null" }),
+  source: text("source").notNull().default("manual"),    // manual | auto:<rule code>
+  sourceKey: text("source_key"),                          // дедуп автозадач (unique)
+  autoParams: jsonb("auto_params").$type<Record<string, unknown>>(), // {docTypeCode, expiresAt, daysLeft, …}
+  checklist: jsonb("checklist").$type<{ id: string; text: string; done: boolean; doneBy?: number | null; doneAt?: string | null }[]>().notNull().default([]),
+  recurrence: jsonb("recurrence").$type<{ freq: "daily" | "weekly" | "monthly"; interval?: number; weekday?: number; monthday?: number; until?: string | null }>(),
+  recurrenceParentId: integer("recurrence_parent_id"),
+  remindersSent: jsonb("reminders_sent").$type<number[]>().notNull().default([]), // кроки драбини (днів до строку), що вже надіслані
+  templateId: integer("template_id"),
+  completedAt: timestamp("completed_at"),
+  completedById: integer("completed_by_id").references(() => adminsTable.id),
+  resolutionNote: text("resolution_note"),
+  escalatedAt: timestamp("escalated_at"),                 // коли головного повідомили про прострочення
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("tasks_source_key_uq").on(t.sourceKey),
+  index("tasks_assignee_status_idx").on(t.assigneeAdminId, t.status),
+  index("tasks_due_idx").on(t.dueAt),
+  index("tasks_worker_idx").on(t.workerId),
+]);
+
+// Учасники групових задач і зустрічей: у кожного власний стан.
+export const taskAssigneesTable = pgTable("task_assignees", {
+  id: serial("id").primaryKey(),
+  taskId: integer("task_id").notNull().references(() => tasksTable.id, { onDelete: "cascade" }),
+  adminId: integer("admin_id").notNull().references(() => adminsTable.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),   // pending | accepted | declined | done
+  respondedAt: timestamp("responded_at"),
+  note: text("note"),
+}, (t) => [uniqueIndex("task_assignees_uq").on(t.taskId, t.adminId)]);
+
+export const taskCommentsTable = pgTable("task_comments", {
+  id: serial("id").primaryKey(),
+  taskId: integer("task_id").notNull().references(() => tasksTable.id, { onDelete: "cascade" }),
+  adminId: integer("admin_id").references(() => adminsTable.id),
+  body: text("body").notNull(),
+  mentions: jsonb("mentions").$type<number[]>().notNull().default([]),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Журнал дій по задачі (створено, призначено, статус, строк, нагадування, ескалація…)
+export const taskEventsTable = pgTable("task_events", {
+  id: serial("id").primaryKey(),
+  taskId: integer("task_id").notNull().references(() => tasksTable.id, { onDelete: "cascade" }),
+  adminId: integer("admin_id").references(() => adminsTable.id), // null = система
+  kind: text("kind").notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("task_events_task_idx").on(t.taskId)]);
+
+// Шаблони задач (чеклісти, повторення, тригери: вручну / новий працівник / звільнення / щомісяця)
+export const taskTemplatesTable = pgTable("task_templates", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("task"),
+  titleTemplate: text("title_template").notNull(),        // «Онбординг: {worker}»
+  description: text("description"),
+  checklist: jsonb("checklist").$type<string[]>().notNull().default([]),
+  defaultAssigneeAdminId: integer("default_assignee_admin_id").references(() => adminsTable.id),
+  reviewRequired: boolean("review_required").notNull().default(false),
+  dueInDays: integer("due_in_days"),
+  recurrence: jsonb("recurrence").$type<{ freq: "daily" | "weekly" | "monthly"; interval?: number; weekday?: number; monthday?: number }>(),
+  trigger: text("trigger").notNull().default("manual"),   // manual | worker_created | worker_fired
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Правила автозадач: по одному рядку на джерело (code), увімкнено/лід-дні/фолбек-виконавець;
+// рядок code='settings' тримає загальні параметри (драбина, ескалація, час дайджесту).
+export const taskAutoRulesTable = pgTable("task_auto_rules", {
+  code: text("code").primaryKey(),
+  enabled: boolean("enabled").notNull().default(true),
+  leadDays: integer("lead_days"),
+  fallbackAdminId: integer("fallback_admin_id").references(() => adminsTable.id),
+  params: jsonb("params").$type<Record<string, unknown>>().notNull().default({}),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type Task = typeof tasksTable.$inferSelect;
+export type TaskAssignee = typeof taskAssigneesTable.$inferSelect;
+export type TaskTemplate = typeof taskTemplatesTable.$inferSelect;
+export type TaskAutoRule = typeof taskAutoRulesTable.$inferSelect;
