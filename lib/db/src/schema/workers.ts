@@ -691,6 +691,7 @@ export const documentTypesTable = pgTable("document_types", {
   requiresEmployerMatch: boolean("requires_employer_match").notNull().default(false), // видано на конкретного роботодавця (oświadczenie/zezwolenie/powiadomienie)
   defaultValidityDays: integer("default_validity_days"), // підказка строку при внесенні (oświadczenie 24 міс → 730)
   renewalLeadDays: integer("renewal_lead_days"),         // за скільки днів статус стає expiring; NULL → глобальний дефолт з legal_rules
+  selfService: boolean("self_service").notNull().default(false), // працівник може надіслати сам (автозапит у бот перед кінцем строку); false = оформляє офіс
   appliesToNationalities: jsonb("applies_to_nationalities").$type<string[]>(), // null = усі; групи "ua" | "eu" | "non_eu" або коди каталогу
   isActive: boolean("is_active").notNull().default(true),
   isSystem: boolean("is_system").notNull().default(false), // сід-рядок: не видаляти, лише деактивувати
@@ -728,7 +729,9 @@ export const workerDocumentsTable = pgTable("worker_documents", {
   source: text("source").notNull().default("office"), // office | worker_bot | ocr | import
   replacesDocumentId: integer("replaces_document_id").references((): AnyPgColumn => workerDocumentsTable.id), // ланцюг поновлень (у межах одного роботодавця)
   requestedAt: timestamp("requested_at"), // офіс попросив працівника подати цей документ (гейт кнопки в боті)
-  requestedBy: integer("requested_by").references(() => adminsTable.id),
+  requestedBy: integer("requested_by").references(() => adminsTable.id), // NULL при requested_at = автозапит системи (services/docRequests)
+  requestRemindCount: integer("request_remind_count").notNull().default(0), // скільки нагадувань працівнику пішло після запиту
+  requestRemindedAt: timestamp("request_reminded_at"),
   // Типоспецифічні атрибути (web/src/lib/documentFields.ts): напр. TRC {laborMarketAccess:true} =
   // карта «z dostępem do rynku pracy» → дає і працю (движок: grantsWork override у legalityRecompute)
   attrs: jsonb("attrs").$type<Record<string, unknown>>(),

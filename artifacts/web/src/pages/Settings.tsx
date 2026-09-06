@@ -437,6 +437,9 @@ function DocTypeRow({ d, onSave, onDelete }: { d: DocumentType; onSave: (p: any)
           {t("дн.")}
         </label>
         <NatMultiSelect value={d.appliesToNationalities} onChange={v => onSave({ appliesToNationalities: v })} />
+        <label className="flex items-center gap-1.5 text-xs text-slate-600" title={t("Система сама просить цей документ у бот перед кінцем строку і нагадує; офіс отримує задачу лише перевірити файл або звʼязатись")}>
+          <input type="checkbox" checked={d.selfService} onChange={e => onSave({ selfService: e.target.checked })} /> {t("працівник надсилає сам")}
+        </label>
         <label className="ml-auto flex items-center gap-1.5 text-xs font-medium text-slate-600">
           <input type="checkbox" checked={d.isActive} onChange={e => onSave({ isActive: e.target.checked })} /> {t("активний")}
         </label>

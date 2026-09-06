@@ -3035,6 +3035,12 @@ const EN: Record<string, string> = {
   // резолвер виплат (06.09.2026)
   // ── модуль «Задачі» (06.09.2026) ──
   "показати всі {n}": "show all {n}", "згорнути": "collapse",
+  // автозапит документів (батч 6)
+  "працівник надсилає сам": "worker sends it himself", "Система сама просить цей документ у бот перед кінцем строку і нагадує; офіс отримує задачу лише перевірити файл або звʼязатись": "The system asks the worker for this document via the bot before it expires and reminds them; the office only gets a task to check the file or to get in touch",
+  "Автозапит документів у працівника": "Auto-request documents from the worker", "для типів «працівник надсилає сам» (Налаштування → Документи) і людей з Telegram": "for “worker sends it himself” types (Settings → Documents) and people with Telegram",
+  "Нагадати працівнику через": "Remind the worker after", "дн. після запиту": "days after the request", "Задача офісу «не надіслав» після": "Office task “not sent” after", "дн. мовчання": "days of silence",
+  "Завжди задача офісу, якщо до строку ≤": "Always an office task if the deadline is within", "Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.": "A file from the worker immediately creates a “Check the uploaded document” task for the assignee; without Telegram — a regular office task.",
+  "автозапит системи в бот": "system auto-request via the bot", "запит офісу": "office request", "нагад.": "rem.", "не надіслав документ": "document not sent", "Запросити ще раз (новий лінк)": "Request again (new link)",
   // «Як вирішити» (батч 5)
   "Як вирішити": "How to resolve", "Файли від працівника на перевірці": "Files from the worker awaiting review", "відмітиться сама за фактом": "checks itself when done", "Закриється сама, коли": "Closes itself when", "Відкрити файл": "Open file", "запитано": "requested", "умови в системі немає": "no contract in the system", "Статус для виплат за документами": "Payroll status by documents", "Вплине на сводну від цієї дати.": "Affects the svodni from that date.",
   "Пропуски без пояснення": "Unexplained absences", "Експорт Excel": "Export Excel",

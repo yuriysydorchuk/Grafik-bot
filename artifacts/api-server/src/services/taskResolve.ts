@@ -15,6 +15,7 @@ import type { Task } from "@workspace/db";
 import { bot } from "../bot/instance";
 import { sendDocsInviteLink, notifyAdminById } from "../bot/notify";
 import { documentChanged } from "./documentEvents";
+import { sendDocumentRequest } from "./docRequests";
 import { recomputeWorkerLegality } from "./legalityRecompute";
 import { logTaskEvent } from "./tasks";
 import { fmtDate, dateStr, diffDays, mdEsc, normalizeChecklist, OPEN_STATUSES, type ChecklistItem } from "./taskUtils";
@@ -47,11 +48,12 @@ const CLOSES_WHEN: Record<string, string> = {
   review_required: "після перерахунку причини перевірки зникнуть",
   absence_unexplained: "пропуск отримає пояснення",
   candidate_stale: "у кандидата оновиться дата наступної дії або етап",
+  doc_no_response: "працівник надішле файл (задача перевірки створиться сама) або документ зʼявиться в профілі",
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
 // коди requiredMissing, що не є типами документів (осі движка)
 const MISSING_LABEL: Record<string, string> = { stay_basis: "підстава перебування", work_basis: "підстава праці", contract: "чинна умова", questionnaire: "анкета" };
-const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc"]);
+const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response"]);
 const isImageMime = (m: string | null | undefined) => !!m && m.startsWith("image/");
 
 // Дефолтний чекліст під правило: text + auto-ключ (відмічається сам, коли стан підтверджує крок).
@@ -75,6 +77,7 @@ export function defaultChecklist(rule: string, params: Record<string, unknown> |
     case "absence_unexplained": steps = [{ text: "Звʼязатись із працівником", auto: "contacted" }, { text: "Внести пояснення у відсутностях" }]; break;
     case "review_required": steps = [{ text: "Переглянути причини в легалізації" }, { text: "Виправити дані або документ" }, { text: "Перерахувати", auto: "recomputed" }]; break;
     case "candidate_stale": steps = [{ text: "Звʼязатись із кандидатом" }, { text: "Оновити етап або дату наступної дії" }]; break;
+    case "doc_no_response": steps = [{ text: "Звʼязатись із працівником (дзвінок або повідомлення)", auto: "contacted" }, { text: "Отримати файл від працівника", auto: "uploaded" }, { text: "Перевірити і підтвердити в профілі", auto: "verified" }]; break;
     default: steps = [];
   }
   return normalizeChecklist(steps.map(s => ({ id: "", text: s.text, done: false, auto: s.auto })));
@@ -155,6 +158,21 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
         if (doc?.ctx.docTypeId) actions.push({ code: "request_doc", label: "Запросити скан у бот", kind: "api", primary: !pendingUploads.length, done: requested(doc.ctx.requestedAt), bot: !!worker.telegramId });
         actions.push({ code: "invite_scan", label: "Запросити скан+анкету", kind: "api", bot: !!worker.telegramId });
         if (doc?.ctx.typeCode && CARD_CODES.has(doc.ctx.typeCode)) actions.push({ code: "scan_card", label: "Сканувати картку", kind: "link", href: prof("scan-card") });
+        actions.push({ code: "add_doc", label: "Додати документ вручну", kind: "link", href: prof(doc?.ctx.docTypeId ? `add-doc:${doc.ctx.docTypeId}` : "add-doc") });
+      }
+      break;
+    }
+    case "doc_no_response": {
+      const doc = await loadDoc(); ctx.document = doc?.ctx ?? null;
+      const raw = doc?.raw;
+      if (acted("message_worker")) satisfied.add("contacted");
+      const sameType = workerDocs.filter(x => x.d.docTypeId && x.d.docTypeId === raw?.docTypeId);
+      if (pendingUploads.length || sameType.some(x => x.d.source === "worker_bot" && after(x.d.updatedAt))) satisfied.add("uploaded");
+      if (sameType.some(x => x.d.status === "present" && after(x.d.verifiedAt))) satisfied.add("verified");
+      if (worker) {
+        actions.push({ code: "message_worker", label: "Написати працівнику в бот", kind: "api", primary: true, needsNote: true, bot: !!worker.telegramId,
+          notePlaceholder: `Ми кілька разів просили ${doc?.ctx.typeName ?? "документ"} — будь ласка, надішліть його або повідомте, коли зможете.` });
+        if (doc?.ctx.docTypeId) actions.push({ code: "request_doc", label: "Запросити ще раз (новий лінк)", kind: "api", bot: !!worker.telegramId });
         actions.push({ code: "add_doc", label: "Додати документ вручну", kind: "link", href: prof(doc?.ctx.docTypeId ? `add-doc:${doc.ctx.docTypeId}` : "add-doc") });
       }
       break;
@@ -281,17 +299,6 @@ async function syncAutoChecklist(task: Task, satisfied: Set<string>): Promise<bo
   return true;
 }
 
-async function requestDocument(workerId: number, docTypeId: number, actor: { adminId: number; name?: string | null }) {
-  const [t] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.id, docTypeId));
-  if (!t) throw new Error("Тип документа не знайдено");
-  let [doc] = await db.select().from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, docTypeId)));
-  const patch = { requestedAt: new Date(), requestedBy: actor.adminId, updatedAt: new Date() };
-  if (doc) [doc] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, doc.id)).returning();
-  else [doc] = await db.insert(workerDocumentsTable).values({ workerId, docTypeId, title: t.name, status: "missing", ...patch }).returning();
-  await documentChanged({ id: doc!.id, workerId }, "requested", actor);
-  return t.name;
-}
-
 // Виконання дії. code може нести параметр: `verify_doc.123` (id документа). Повертає текст для тосту/бота.
 export async function runTaskAction(task: Task, rawCode: string, actor: { adminId: number; name?: string | null }, body: { note?: string } = {}): Promise<string> {
   const { code, param } = parseActionCode(rawCode);
@@ -302,16 +309,17 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
   switch (code) {
     case "request_doc": {
       if (!w || !context.document?.docTypeId) throw new Error("Немає типу документа для запиту");
-      const name = await requestDocument(w.id, context.document.docTypeId, actor);
-      message = w.telegram ? `Запит «${name}» надіслано в бот` : `Документ «${name}» позначено як запитаний (працівник без Telegram — лінк у профілі)`;
+      const r = await sendDocumentRequest({ workerId: w.id, docTypeId: context.document.docTypeId, kind: "office", actorAdminId: actor.adminId, actorName: actor.name ?? null });
+      message = r.sent ? `Запит «${r.typeName}» з лінком надіслано в бот` : `Документ «${r.typeName}» позначено як запитаний (працівник без Telegram — лінк передайте вручну)`;
       break;
     }
     case "request_docs": {
       if (!w) throw new Error("Задача без працівника");
       const list = (context.missing ?? []).filter(m => m.docTypeId);
       if (!list.length) throw new Error("Немає типів документів для запиту");
-      for (const m of list) await requestDocument(w.id, m.docTypeId!, actor);
-      message = `Запитано: ${list.map(m => m.name).join(", ")}`;
+      let sent = 0;
+      for (const m of list) { const r = await sendDocumentRequest({ workerId: w.id, docTypeId: m.docTypeId!, kind: "office", actorAdminId: actor.adminId, actorName: actor.name ?? null }); if (r.sent) sent++; }
+      message = `Запитано: ${list.map(m => m.name).join(", ")}${sent ? ` — ${sent} лінк(и) в бот` : " (працівник без Telegram)"}`;
       break;
     }
     case "invite_scan": {

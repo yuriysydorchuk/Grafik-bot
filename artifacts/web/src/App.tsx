@@ -54,6 +54,7 @@ import Legalization from "./pages/Legalization";
 import DocumentTemplates from "./pages/DocumentTemplates";
 import Sign from "./pages/Sign";
 import PassportScan from "./pages/PassportScan";
+import DocUpload from "./pages/DocUpload";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
@@ -86,6 +87,8 @@ export default function App() {
   // браузері замість фото в Telegram), той самий підхід: токен-авторизація,
   // без /auth/me.
   const onPassportScan = location.pathname.startsWith("/passport-scan/");
+  // /docs/:token — публічна сторінка завантаження запитаного документа (автозапит з бота)
+  const onDocs = location.pathname.startsWith("/docs/");
   // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
   // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
   const [tgReady, setTgReady] = useState(!isTelegramWebApp);
@@ -94,7 +97,7 @@ export default function App() {
     telegramLogin().finally(() => setTgReady(true));
   }, []);
   const { data: me, isLoading, isError } = useQuery<Me>({
-    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && tgReady,
+    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && !onDocs && tgReady,
   });
   // Server-stored language wins: the TG webview forgets localStorage between openings.
   const serverLang = me?.lang;
@@ -102,6 +105,7 @@ export default function App() {
 
   if (onSign) return <Sign />;
   if (onPassportScan) return <PassportScan />;
+  if (onDocs) return <DocUpload />;
   if (onLogin) return <Login />;
   if (!tgReady || isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
   if (isError || !me) return <Login />;

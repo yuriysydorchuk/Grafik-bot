@@ -397,6 +397,10 @@ router.patch("/task-auto-rules/:code", TP, async (req: AuthedRequest, res) => {
     if (typeof b.eveningTime === "string" && TIME_RE.test(b.eveningTime)) next.eveningTime = b.eveningTime;
     if (b.skipWeekends !== undefined) next.skipWeekends = !!b.skipWeekends;
     if (b.rollover !== undefined) next.rollover = !!b.rollover;
+    if (b.autoRequest !== undefined) next.autoRequest = !!b.autoRequest;
+    if (Array.isArray(b.workerLadder)) next.workerLadder = b.workerLadder.map(Number).filter((x: number) => Number.isInteger(x) && x > 0).sort((a: number, z: number) => a - z);
+    if (b.silenceDays !== undefined) next.silenceDays = Math.max(1, Number(b.silenceDays) || 14);
+    if (b.officeThresholdDays !== undefined) next.officeThresholdDays = Math.max(0, Number(b.officeThresholdDays) || 0);
     await db.update(taskAutoRulesTable).set({ params: next as any, updatedAt: new Date() }).where(eq(taskAutoRulesTable.code, "settings"));
     return ok(res, next);
   }

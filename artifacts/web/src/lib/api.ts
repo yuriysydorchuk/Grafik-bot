@@ -84,6 +84,7 @@ export interface DocumentType {
   // легалізація (02.09.2026): тип = каталог evidence; що документ «дає» — прапорці; code — стабільний ключ сіду (не правиться)
   code: string | null; category: DocCategory; grantsStay: boolean; grantsWork: boolean; requiresEmployerMatch: boolean;
   defaultValidityDays: number | null; renewalLeadDays: number | null; appliesToNationalities: string[] | null;
+  selfService: boolean; // працівник надсилає сам — автозапит у бот перед кінцем строку
   isActive: boolean; isSystem: boolean;
 }
 export type CaseStatus = "to_submit" | "submitted" | "in_progress" | "decision_positive" | "decision_negative" | "withdrawn";
@@ -96,7 +97,7 @@ export interface WorkerDocument {
   caseStatus: CaseStatus | null; submittedAt: string | null; caseNumber: string | null; decisionAt: string | null;
   verifiedBy: number | null; verifiedAt: string | null; reviewNote: string | null;
   source: "office" | "worker_bot" | "ocr" | "import"; replacesDocumentId: number | null;
-  requestedAt: string | null; requestedBy: number | null;
+  requestedAt: string | null; requestedBy: number | null; requestRemindCount?: number; requestRemindedAt?: string | null;
   attrs: Record<string, unknown> | null; // типоспецифічні атрибути (lib/documentFields.ts): TRC {laborMarketAccess}
 }
 export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number }

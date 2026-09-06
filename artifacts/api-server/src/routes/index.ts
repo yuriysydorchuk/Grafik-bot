@@ -31,6 +31,7 @@ import documentDeliveryRouter from "./documentDelivery";
 import residenceCardScanRouter from "./residenceCardScan";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
+import docRequestsRouter from "./docRequests";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 
@@ -45,6 +46,7 @@ router.use(healthRouter);
 // сторінку (саме так і сталося при першому підключенні — фіксовано тестом).
 router.use(signRouter);
 router.use(passportScanRouter);
+router.use(docRequestsRouter);
 router.use(authRouter);
 router.use(adminApiRouter);
 router.use(fleetRouter);

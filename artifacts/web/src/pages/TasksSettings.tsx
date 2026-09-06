@@ -56,6 +56,19 @@ export function TasksSettings() {
           <label className="flex items-center gap-1"><input type="checkbox" checked={s.skipWeekends} disabled={!canManage} onChange={e => upd.mutate({ code: "settings", body: { skipWeekends: e.target.checked } })} /> {t("без дайджесту у вихідні")}</label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={s.rollover} disabled={!canManage} onChange={e => upd.mutate({ code: "settings", body: { rollover: e.target.checked } })} /> {t("переносити невиконане на наступний день")}</label>
         </div>
+        {/* автозапит документів у працівника (services/docRequests.ts) */}
+        <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/40 p-3 text-xs text-slate-600">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 font-semibold text-slate-700"><input type="checkbox" checked={s.autoRequest} disabled={!canManage} onChange={e => upd.mutate({ code: "settings", body: { autoRequest: e.target.checked } })} /> {t("Автозапит документів у працівника")}</label>
+            <span className="text-slate-400">{t("для типів «працівник надсилає сам» (Налаштування → Документи) і людей з Telegram")}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <span>{t("Нагадати працівнику через")} <input defaultValue={(s.workerLadder ?? [7, 14]).join(", ")} disabled={!canManage || !s.autoRequest} onBlur={e => upd.mutate({ code: "settings", body: { workerLadder: e.target.value.split(/[^\d]+/).filter(Boolean).map(Number) } })} className="w-20 rounded border border-slate-200 px-1 py-0.5" /> {t("дн. після запиту")}</span>
+            <span>{t("Задача офісу «не надіслав» після")} <input type="number" min={1} defaultValue={s.silenceDays ?? 14} disabled={!canManage || !s.autoRequest} onBlur={e => upd.mutate({ code: "settings", body: { silenceDays: Number(e.target.value) } })} className="w-12 rounded border border-slate-200 px-1 py-0.5" /> {t("дн. мовчання")}</span>
+            <span>{t("Завжди задача офісу, якщо до строку ≤")} <input type="number" min={0} defaultValue={s.officeThresholdDays ?? 7} disabled={!canManage || !s.autoRequest} onBlur={e => upd.mutate({ code: "settings", body: { officeThresholdDays: Number(e.target.value) } })} className="w-12 rounded border border-slate-200 px-1 py-0.5" /> {t("дн.")}</span>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-400">{t("Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.")}</p>
+        </div>
       </Card>
 
       <Card className="p-5">

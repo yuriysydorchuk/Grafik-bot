@@ -46,7 +46,7 @@ export interface TaskAdmin { id: number; name: string; role: string; isMain: boo
 export interface TaskControlRow { adminId: number; name: string; role: string; open: number; overdue: number; done: number; avgDays: number | null; auto: number; manual: number }
 export interface TaskTemplate { id: number; name: string; kind: TaskKind; titleTemplate: string; description: string | null; checklist: string[]; defaultAssigneeAdminId: number | null; reviewRequired: boolean; dueInDays: number | null; recurrence: Recurrence | null; trigger: "manual" | "worker_created" | "worker_fired"; isActive: boolean }
 export interface AutoRuleRow { code: string; label: string; description: string; enabled: boolean; leadDays: number | null; fallbackAdminId: number | null; scheduler?: boolean }
-export interface TaskSettings { ladder: number[]; manualLadder: number[]; escalationDays: number; digestTime: string; eveningTime: string; skipWeekends: boolean; rollover: boolean; groupAbove?: number }
+export interface TaskSettings { ladder: number[]; manualLadder: number[]; escalationDays: number; digestTime: string; eveningTime: string; skipWeekends: boolean; rollover: boolean; groupAbove?: number; autoRequest: boolean; workerLadder: number[]; silenceDays: number; officeThresholdDays: number }
 
 export const STATUS_LABEL: Record<TaskStatus, string> = { open: "нова", in_progress: "в роботі", review: "на перевірці", done: "виконано", cancelled: "скасовано", auto_resolved: "вирішено автоматично" };
 export const STATUS_BADGE: Record<TaskStatus, "slate" | "blue" | "amber" | "green" | "rose"> = { open: "slate", in_progress: "blue", review: "amber", done: "green", cancelled: "slate", auto_resolved: "green" };
@@ -57,11 +57,13 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "ручна", "auto:doc_expiring": "авто · документ", "auto:doc_expired": "авто · прострочений документ", "auto:contract": "авто · умова",
   "auto:obligation": "авто · обов'язок", "auto:required_missing": "авто · бракує підстави", "auto:pending_doc": "авто · перевірка файлу",
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
+  "auto:doc_no_response": "авто · не надіслав документ",
 };
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
 export const RULE_LABEL: Record<string, string> = {
   doc_expiring: "документ спливає", doc_expired: "документ прострочений", contract: "умова", obligation: "обовʼязок", required_missing: "бракує підстави",
   pending_doc: "перевірка файлу", payroll_change: "зміна виплат", review_required: "перевірка движка", absence_unexplained: "пропуск без пояснення", candidate_stale: "кандидат без руху",
+  doc_no_response: "не надіслав документ",
 };
 
 // ── «Календар працівників» (GET /workers-calendar) ──

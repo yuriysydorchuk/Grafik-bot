@@ -21,8 +21,13 @@ import {
 export * from "./taskUtils";
 
 // Загальні параметри модуля — рядок task_auto_rules.code='settings' (params), дефолти тут.
-export interface TaskSettings { ladder: number[]; manualLadder: number[]; escalationDays: number; digestTime: string; eveningTime: string; skipWeekends: boolean; rollover: boolean }
-export const DEFAULT_TASK_SETTINGS: TaskSettings = { ladder: DEFAULT_LADDER, manualLadder: [1, 0], escalationDays: 3, digestTime: "07:30", eveningTime: "17:30", skipWeekends: true, rollover: true };
+export interface TaskSettings {
+  ladder: number[]; manualLadder: number[]; escalationDays: number; digestTime: string; eveningTime: string; skipWeekends: boolean; rollover: boolean; groupAbove?: number;
+  // автозапит документів у працівника (services/docRequests.ts): нагадування працівнику через N днів після запиту,
+  // задача офісу «не надіслав» після silenceDays мовчання, і завжди офісу, якщо до строку ≤ officeThresholdDays
+  autoRequest: boolean; workerLadder: number[]; silenceDays: number; officeThresholdDays: number;
+}
+export const DEFAULT_TASK_SETTINGS: TaskSettings = { ladder: DEFAULT_LADDER, manualLadder: [1, 0], escalationDays: 3, digestTime: "07:30", eveningTime: "17:30", skipWeekends: true, rollover: true, autoRequest: true, workerLadder: [7, 14], silenceDays: 14, officeThresholdDays: 7 };
 export async function loadTaskSettings(): Promise<TaskSettings> {
   const [row] = await db.select().from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, "settings"));
   return { ...DEFAULT_TASK_SETTINGS, ...((row?.params ?? {}) as Partial<TaskSettings>) };

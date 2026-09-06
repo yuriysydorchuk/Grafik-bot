@@ -62,6 +62,23 @@ const D: Dict = {
   "ref.done":          { uk: "✅ Дякуємо, *{name}*! Вашу заявку прийнято.\nМенеджер зв'яжеться з вами найближчим часом. 📞", en: "✅ Thank you, *{name}*! Your request has been received.\nA manager will contact you soon. 📞", es: "✅ ¡Gracias, *{name}*! Tu solicitud ha sido recibida.\nUn gerente se pondrá en contacto contigo pronto. 📞", ru: "✅ Спасибо, *{name}*! Ваша заявка принята.\nМенеджер свяжется с вами в ближайшее время. 📞", pl: "✅ Dziękujemy, *{name}*! Twoje zgłoszenie zostało przyjęte.\nMenedżer wkrótce się z Tobą skontaktuje. 📞" },
 
   // ── документи й анкета (worker-docs-signing, §6 плану) ──
+  // автозапит документа перед кінцем строку / нагадування (services/docRequests.ts)
+  "docs.request": {
+    uk: "📄 Потрібен документ: *{doc}*{until}.\nБудь ласка, сфотографуйте або завантажте його за посиланням:\n{link}\n\nЛінк дійсний 30 днів.",
+    en: "📄 We need a document: *{doc}*{until}.\nPlease take a photo or upload it via the link:\n{link}\n\nThe link is valid for 30 days.",
+    es: "📄 Necesitamos un documento: *{doc}*{until}.\nPor favor, haz una foto o súbelo por el enlace:\n{link}\n\nEl enlace es válido 30 días.",
+    ru: "📄 Нужен документ: *{doc}*{until}.\nПожалуйста, сфотографируйте или загрузите его по ссылке:\n{link}\n\nСсылка действует 30 дней.",
+    pl: "📄 Potrzebujemy dokumentu: *{doc}*{until}.\nZrób zdjęcie lub prześlij go przez link:\n{link}\n\nLink jest ważny 30 dni.",
+  },
+  "docs.requestUntil": { uk: " (чинний до {date})", en: " (valid until {date})", es: " (válido hasta {date})", ru: " (действителен до {date})", pl: " (ważny do {date})" },
+  "docs.remind": {
+    uk: "🔔 Нагадування: ми досі чекаємо на *{doc}*{until}.\nЗавантажте, будь ласка, за посиланням:\n{link}",
+    en: "🔔 Reminder: we are still waiting for *{doc}*{until}.\nPlease upload it via the link:\n{link}",
+    es: "🔔 Recordatorio: seguimos esperando *{doc}*{until}.\nPor favor, súbelo por el enlace:\n{link}",
+    ru: "🔔 Напоминание: мы всё ещё ждём *{doc}*{until}.\nПожалуйста, загрузите по ссылке:\n{link}",
+    pl: "🔔 Przypomnienie: nadal czekamy na *{doc}*{until}.\nPrześlij go przez link:\n{link}",
+  },
+  "docs.uploaded": { uk: "✅ Дякуємо! Файл «{doc}» отримано — офіс перевірить його.", en: "✅ Thank you! The file “{doc}” has been received — the office will check it.", es: "✅ ¡Gracias! Hemos recibido el archivo «{doc}» — la oficina lo revisará.", ru: "✅ Спасибо! Файл «{doc}» получен — офис проверит его.", pl: "✅ Dziękujemy! Plik „{doc}” został odebrany — biuro go sprawdzi." },
   "docs.fileFromOffice": { uk: "📎 Документ від офісу: {title}", en: "📎 Document from the office: {title}", es: "📎 Documento de la oficina: {title}", ru: "📎 Документ от офиса: {title}", pl: "📎 Dokument z biura: {title}" },
   "docs.inviteExisting": { uk: "📋 Адміністрація просить оновити документи — скан паспорта (якщо потрібно) та анкету за посиланням:\n{link}\n\nЛінк дійсний 24 години.", en: "📋 The office is asking you to update your documents — passport scan (if needed) and the questionnaire, via the link:\n{link}\n\nThe link is valid for 24 hours.", es: "📋 La oficina te pide actualizar tus documentos — escaneo de pasaporte (si hace falta) y el cuestionario, en el enlace:\n{link}\n\nEl enlace es válido por 24 horas.", ru: "📋 Офис просит обновить документы — скан паспорта (если нужно) и анкету по ссылке:\n{link}\n\nСсылка действительна 24 часа.", pl: "📋 Biuro prosi o aktualizację dokumentów — skan paszportu (jeśli potrzebny) i ankietę, przez link:\n{link}\n\nLink jest ważny 24 godziny." },
   // ── days (short / full) ──

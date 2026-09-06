@@ -1077,7 +1077,7 @@ const NAT_GROUPS = new Set(["ua", "eu", "non_eu", ...NATIONALITIES]);
 function docTypeLegalPatch(b: any): Record<string, unknown> | string {
   const p: Record<string, unknown> = {};
   if (b?.category !== undefined) { if (!DOC_CATEGORIES.has(String(b.category))) return "Невідома категорія документа"; p.category = String(b.category); }
-  for (const f of ["grantsStay", "grantsWork", "requiresEmployerMatch", "isActive"] as const) if (b?.[f] !== undefined) p[f] = !!b[f];
+  for (const f of ["grantsStay", "grantsWork", "requiresEmployerMatch", "isActive", "selfService"] as const) if (b?.[f] !== undefined) p[f] = !!b[f];
   for (const f of ["defaultValidityDays", "renewalLeadDays"] as const) {
     if (b?.[f] === undefined) continue;
     if (b[f] === null || b[f] === "") { p[f] = null; continue; }

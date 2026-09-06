@@ -72,5 +72,8 @@ export async function applyWorkerDocumentUpload(workerId: number, docTypeId: num
   // відкриті документні задачі цього працівника: файл у задачі + сповіщення виконавцю (best-effort)
   try { const { notifyTasksOnWorkerUpload } = await import("./taskResolve"); await notifyTasksOnWorkerUpload(workerId, doc!.id, docType.name); }
   catch (e: any) { logger.warn({ err: e?.message, workerId }, "task upload notify failed"); }
+  // задача «Перевірити завантажений документ» — одразу, не чекаючи нічного прогону
+  try { const { ensurePendingDocTask } = await import("./taskAutoRules"); await ensurePendingDocTask(doc!.id); }
+  catch (e: any) { logger.warn({ err: e?.message, workerId }, "pending-doc task create failed"); }
   return { documentId: doc!.id, title: docType.name };
 }

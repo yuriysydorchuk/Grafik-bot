@@ -15,6 +15,7 @@ import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
 import { documentAuditDiff, documentAuditRows } from "../services/documentAudit";
 import { documentChanged, workerLegalityChanged } from "../services/documentEvents";
+import { sendDocumentRequest } from "../services/docRequests";
 import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
@@ -412,15 +413,12 @@ router.post("/workers/:id/documents/request", LG, async (req, res) => {
   const workerId = Number(req.params.id);
   const docTypeId = Number(req.body?.docTypeId);
   if (!docTypeId) return fail(res, 400, "Вкажіть тип документа");
-  const [t] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.id, docTypeId));
-  if (!t) return fail(res, 404, "Тип не знайдено");
   const admin = adminOf(req);
-  let [doc] = await db.select().from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, docTypeId)));
-  const patch = { requestedAt: new Date(), requestedBy: admin.adminId, updatedAt: new Date() };
-  if (doc) [doc] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, doc.id)).returning();
-  else [doc] = await db.insert(workerDocumentsTable).values({ workerId, docTypeId, title: t.name, status: "missing", ...patch }).returning();
-  await documentChanged({ id: doc!.id, workerId }, "requested", admin);
-  ok(res, doc);
+  try {
+    const r = await sendDocumentRequest({ workerId, docTypeId, kind: "office", actorAdminId: admin.adminId, actorName: admin.name });
+    const [doc] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, r.docId));
+    ok(res, { ...doc, sent: r.sent, link: r.link });
+  } catch (e: any) { fail(res, 400, e?.message ?? "Не вдалося запросити"); }
 });
 
 export default router;

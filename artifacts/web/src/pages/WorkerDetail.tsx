@@ -1821,7 +1821,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
           <span className="font-medium text-slate-500">{label}</span>
           <span className="ml-auto flex items-center gap-2">
             <span className="text-xs text-slate-400">{t("немає")}</span>
-            {requestedAt && <span className="text-xs font-medium text-blue-600">{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}</span>}
+            {requestedAt && <span className="text-xs font-medium text-blue-600" title={state.requestedDoc?.requestedBy == null ? t("автозапит системи в бот") : t("запит офісу")}>{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}{state.requestedDoc?.requestedBy == null ? " 🤖" : ""}{(state.requestedDoc?.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${state.requestedDoc!.requestRemindCount}` : ""}</span>}
             <span className="flex items-center gap-0.5">
               {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={scanTitle ?? t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
               {onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}

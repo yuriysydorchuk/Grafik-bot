@@ -16,6 +16,7 @@ import {
 } from "./tasks";
 import { defaultChecklist } from "./taskResolve";
 import { normalizeChecklist } from "./taskUtils";
+import { autoRequestDocuments, selfServiceTypeIds, silenceDays } from "./docRequests";
 import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
@@ -31,6 +32,7 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "review_required", label: "Потребує перевірки (движок)", description: "Конфлікт громадянства, кілька підстав тощо", leadDays: null, enabledByDefault: true },
   { code: "absence_unexplained", label: "Пропуск без пояснення", description: "Пропуск без пояснення понад N днів (графікова фабрики)", leadDays: 2, enabledByDefault: true, scheduler: true },
   { code: "candidate_stale", label: "Кандидат без руху", description: "Дата наступної дії в рекрутингу минула", leadDays: 1, enabledByDefault: false },
+  { code: "doc_no_response", label: "Працівник не надіслав документ", description: "Автозапит і нагадування в бот минули, файлу немає — звʼязатись самостійно", leadDays: null, enabledByDefault: true },
 ];
 
 // Ідемпотентний сід правил (нові коди додаються, наявні не чіпаються).
@@ -62,11 +64,24 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   const lead = (code: string) => rules.get(code)?.leadDays ?? AUTO_RULE_DEFS.find(d => d.code === code)?.leadDays ?? null;
   const out: Candidate[] = [];
 
-  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, nationality: workersTable.nationality })
+  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, nationality: workersTable.nationality, telegramId: workersTable.telegramId })
     .from(workersTable).where(eq(workersTable.isActive, true));
   const wById = new Map(workers.map(w => [w.id, w]));
   const ids = workers.map(w => w.id);
   if (!ids.length) return out;
+  // автозапит документів: self-service тип + Telegram → офісна задача лише при мовчанні
+  // (silenceDays) або коли до строку ≤ officeThresholdDays; інакше система сама просить/нагадує
+  const settings = await loadTaskSettings();
+  const selfIds = settings.autoRequest ? await selfServiceTypeIds() : new Set<number>();
+  const allDocs = await db.select().from(workerDocumentsTable).where(inArray(workerDocumentsTable.workerId, ids));
+  const docsOf = (workerId: number, docTypeId: number | null) => allDocs.filter(d => d.workerId === workerId && d.docTypeId === docTypeId);
+  const selfServed = (w: { telegramId: string | null }, docTypeId: number | null | undefined) => !!w.telegramId && docTypeId != null && selfIds.has(docTypeId);
+  const noResponse = (w: { id: number; fullName: string; factoryId: number | null }, d: { id: number; docTypeId: number | null; requestedAt: Date | null; requestRemindCount: number; status: string; expiresAt: unknown }, typeName: string): Candidate | null => {
+    const silence = silenceDays(d, today);
+    if (silence == null || silence < settings.silenceDays) return null;
+    return { sourceKey: `nores:${w.id}:${d.docTypeId}`, rule: "doc_no_response", title: `Не надіслав документ: ${typeName} (запитано ${fmtDate(dateStr(d.requestedAt)!)}, нагадувань ${d.requestRemindCount})`, priority: "high", dueAt: addDaysStr(today, 3),
+      workerId: w.id, factoryId: w.factoryId, documentId: d.id, autoParams: { docTypeCode: null, typeName, requestedAt: dateStr(d.requestedAt), reminders: d.requestRemindCount, silenceDays: silence, expiresAt: dateStr(d.expiresAt), workerName: w.fullName }, assign: { factoryId: w.factoryId } };
+  };
   const facs = new Map((await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable)).map(f => [f.id, f.name]));
   const facName = (id: number | null | undefined) => (id != null ? facs.get(id) ?? `#${id}` : "—");
   const types = new Map((await db.select().from(documentTypesTable)).map(t => [t.id, t]));
@@ -88,6 +103,14 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
         out.push({ sourceKey: `doc:${d.id}`, rule: "doc_expired", title: `${name} прострочений з ${fmtDate(exp)}`, priority: "urgent", dueAt: exp, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
           autoParams: { docTypeCode: ty?.code ?? null, expiresAt: exp, daysLeft, workerName: w.fullName }, assign: { factoryId: w.factoryId } });
       } else if (daysLeft >= 0 && daysLeft <= leadDays && on("doc_expiring")) {
+        // self-service + Telegram: система сама просить; офісу — лише «не надіслав» після мовчання або коли строк впритул
+        if (selfServed(w, d.docTypeId) && daysLeft > settings.officeThresholdDays) {
+          const pendingSame = docsOf(w.id, d.docTypeId).some(x => x.status === "pending");
+          if (pendingSame) continue; // файл уже на перевірці → задача pending_doc
+          const nr = on("doc_no_response") ? noResponse(w, { ...d, docTypeId: d.docTypeId ?? null }, name) : null;
+          if (nr) out.push(nr);
+          continue;
+        }
         out.push({ sourceKey: `doc:${d.id}`, rule: "doc_expiring", title: `${name} спливає ${fmtDate(exp)}`, priority: priorityForDays(daysLeft), dueAt: exp, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
           autoParams: { docTypeCode: ty?.code ?? null, expiresAt: exp, daysLeft, workerName: w.fullName }, assign: { factoryId: w.factoryId } });
       }
@@ -131,7 +154,22 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     }
     if (on("required_missing")) {
       // одна задача на людину з усіма пунктами, що бракує (не по пункту)
-      const codes = ((l.requiredMissing ?? []) as string[]);
+      const allCodes = ((l.requiredMissing ?? []) as string[]);
+      // self-service типи з Telegram система просить сама: в офісну задачу вони не потрапляють,
+      // окрім «мовчання» → окрема задача doc_no_response по типу
+      const codes: string[] = [];
+      for (const code of allCodes) {
+        const ty = [...types.values()].find(t => t.code === code);
+        if (ty && selfServed(w, ty.id)) {
+          const rows = docsOf(w.id, ty.id);
+          if (rows.some(x => x.status === "pending")) continue;
+          const cur = rows[0];
+          const nr = cur && on("doc_no_response") ? noResponse(w, cur, ty.name) : null;
+          if (nr) out.push(nr);
+          continue;
+        }
+        codes.push(code);
+      }
       if (codes.length) {
         const labels = codes.map(code => REQUIRED_LABEL[code] ?? [...types.values()].find(t => t.code === code)?.name ?? code);
         out.push({ sourceKey: `req:${w.id}`, rule: "required_missing", title: `Бракує: ${labels.join(", ")}`, priority: "high", dueAt: addDaysStr(today, 7),
@@ -221,11 +259,30 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   return out;
 }
 
-export interface AutoRunStats { created: number; reopened: number; updated: number; resolved: number; reminded: number; escalated: number; checked: number }
+export interface AutoRunStats { created: number; reopened: number; updated: number; resolved: number; reminded: number; escalated: number; checked: number; autoRequested: number; autoReminded: number }
+
+// Файл від працівника → задача «Перевірити завантажений документ» одразу (не чекаючи ночі).
+export async function ensurePendingDocTask(documentId: number): Promise<Task | null> {
+  const [d] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, documentId));
+  if (!d || d.status !== "pending") return null;
+  const sourceKey = `pending:${d.id}`;
+  const [ex] = await db.select().from(tasksTable).where(and(eq(tasksTable.sourceKey, sourceKey), inArray(tasksTable.status, OPEN_STATUSES)));
+  if (ex) return ex;
+  const [w] = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, d.workerId));
+  if (!w) return null;
+  const ty = d.docTypeId ? (await db.select().from(documentTypesTable).where(eq(documentTypesTable.id, d.docTypeId)))[0] : undefined;
+  const assignee = await resolveAssignee({ factoryId: w.factoryId, ruleCode: "pending_doc", prefer: d.requestedBy ?? null });
+  const { defaultChecklist: dc } = await import("./taskResolve");
+  return createTask({ kind: "task", title: `Перевірити завантажений документ: ${ty?.name ?? d.title}`, priority: "high", dueAt: addDaysStr(warsawToday(), 2), assigneeAdminId: assignee, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
+    source: "auto:pending_doc", sourceKey, autoParams: { workerName: w.fullName, source: d.source }, checklist: dc("pending_doc", null) }, null);
+}
 
 export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats> {
   await ensureAutoRules();
-  const stats: AutoRunStats = { created: 0, reopened: 0, updated: 0, resolved: 0, reminded: 0, escalated: 0, checked: 0 };
+  const stats: AutoRunStats = { created: 0, reopened: 0, updated: 0, resolved: 0, reminded: 0, escalated: 0, checked: 0, autoRequested: 0, autoReminded: 0 };
+  // спершу автозапити працівникам (self-service типи), потім задачі офісу
+  try { const ar = await autoRequestDocuments(today); stats.autoRequested = ar.requested; stats.autoReminded = ar.reminded; }
+  catch (e: any) { logger.warn({ err: e?.message }, "doc auto-request failed"); }
   const candidates = await collectCandidates(today);
   const existing = await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"));
   const byKey = new Map(existing.filter(t => t.sourceKey).map(t => [t.sourceKey!, t]));
