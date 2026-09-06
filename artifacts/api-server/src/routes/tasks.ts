@@ -17,6 +17,7 @@ import {
 } from "../services/tasks";
 import { runAutoTasks, ensureAutoRules, AUTO_RULE_DEFS, officeAdmins } from "../services/taskAutoRules";
 import { recomputeAllActiveLegality } from "../services/legalityRecompute";
+import { buildTaskResolution, runTaskAction } from "../services/taskResolve";
 import { addDaysStr } from "../lib/dates";
 
 const router: IRouter = Router();
@@ -68,7 +69,31 @@ const mineCond = (adminId: number) => or(
   sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId})`,
 );
 
-router.get("/tasks", TP, async (req: AuthedRequest, res) => {
+router.get("/tasks", TP, async (req: AuthedRequest, res) => { ok(res, await listTasks(req)); });
+
+// Excel-експорт списку (ті самі фільтри, що й GET /tasks) — польська шапка не потрібна: внутрішній документ офісу
+router.get("/tasks/export.xlsx", TP, async (req: AuthedRequest, res) => {
+  const rows = await listTasks(req);
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Задачі");
+  const cols = [
+    { header: "#", get: (r: any) => r.id }, { header: "Задача", get: (r: any) => r.title }, { header: "Вид", get: (r: any) => r.kind },
+    { header: "Статус", get: (r: any) => r.status }, { header: "Пріоритет", get: (r: any) => r.priority }, { header: "Строк", get: (r: any) => r.dueAt ?? "" },
+    { header: "Виконавець", get: (r: any) => r.assigneeName ?? (r.assignees?.map((a: any) => a.name).join(", ") ?? "") }, { header: "Автор", get: (r: any) => r.creatorName ?? "Система" },
+    { header: "Працівник", get: (r: any) => r.worker?.fullName ?? "" }, { header: "Фабрика", get: (r: any) => r.factoryName ?? "" },
+    { header: "Джерело", get: (r: any) => r.source }, { header: "Чекліст", get: (r: any) => (r.checklistTotal ? `${r.checklistDone}/${r.checklistTotal}` : "") },
+    { header: "Створено", get: (r: any) => dateStr(r.createdAt) ?? "" }, { header: "Виконано", get: (r: any) => dateStr(r.completedAt) ?? "" },
+  ];
+  ws.addRow(cols.map(c => c.header)).font = { bold: true };
+  for (const r of rows) ws.addRow(cols.map(c => c.get(r)));
+  ws.columns.forEach((c, i) => { c.width = i === 1 ? 48 : i === 8 ? 28 : 16; });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Zadania ${warsawToday()}.xlsx`)}"`);
+  res.send(Buffer.from(await wb.xlsx.writeBuffer()));
+});
+
+async function listTasks(req: AuthedRequest) {
   const q = req.query as Record<string, string | undefined>;
   const conds: any[] = [];
   const scope = q.scope ?? "mine";
@@ -94,8 +119,8 @@ router.get("/tasks", TP, async (req: AuthedRequest, res) => {
   if (q.hideSnoozed !== "0") conds.push(or(isNull(tasksTable.snoozedUntil), lte(tasksTable.snoozedUntil, warsawToday())));
   const rows = await db.select().from(tasksTable).where(conds.length ? and(...conds) : undefined)
     .orderBy(sql`case ${tasksTable.priority} when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end`, asc(tasksTable.dueAt), desc(tasksTable.id)).limit(500);
-  ok(res, await decorate(rows));
-});
+  return decorate(rows);
+}
 
 // Мій день: прострочене, сьогодні, заплановане по годинах, зустрічі, нове за ніч, лічильники
 router.get("/tasks/my-day", TP, async (req: AuthedRequest, res) => {
@@ -149,7 +174,20 @@ router.get("/tasks/:id", TP, async (req: AuthedRequest, res) => {
   const events = await db.select({ id: taskEventsTable.id, adminId: taskEventsTable.adminId, name: adminsTable.name, kind: taskEventsTable.kind, payload: taskEventsTable.payload, createdAt: taskEventsTable.createdAt })
     .from(taskEventsTable).leftJoin(adminsTable, eq(taskEventsTable.adminId, adminsTable.id)).where(eq(taskEventsTable.taskId, t.id)).orderBy(desc(taskEventsTable.id)).limit(100);
   const meId = me(req);
-  ok(res, { ...row, comments, events, can: { edit: canManage(req) || t.creatorAdminId === meId || t.assigneeAdminId === meId, reassign: canManage(req) || t.creatorAdminId === meId, review: canManage(req) || t.creatorAdminId === meId, participant: await isParticipant(t, meId) } });
+  const resolution = await buildTaskResolution(t);
+  ok(res, { ...row, comments, events, resolution, can: { edit: canManage(req) || t.creatorAdminId === meId || t.assigneeAdminId === meId, reassign: canManage(req) || t.creatorAdminId === meId, review: canManage(req) || t.creatorAdminId === meId, participant: await isParticipant(t, meId) } });
+});
+
+// Контекстна дія «Як вирішити» (запит скану, підтвердити/відхилити файл, відхилити зміну,
+// перерахунок, повідомлення працівнику). Учасник задачі або tasksManage.
+router.post("/tasks/:id/action/:code", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  try {
+    const message = await runTaskAction(t, String(req.params.code), { adminId: me(req), name: req.admin!.name }, { note: req.body?.note });
+    ok(res, { ok: true, message });
+  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 
 function parseTaskBody(body: Record<string, unknown>) {

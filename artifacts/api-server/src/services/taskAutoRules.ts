@@ -12,8 +12,10 @@ import { and, eq, gte, inArray, isNull, like, lt, lte, ne, sql } from "drizzle-o
 import { entryDateStr, addDaysStr } from "../lib/dates";
 import {
   createTask, logTaskEvent, resolveAssignee, priorityForDays, loadTaskSettings, warsawToday, diffDays, dateStr, fmtDate, mdEsc,
-  mainAdminId, adminName, OPEN_STATUSES, type TaskPriority,
+  mainAdminId, adminName, taskContextButtons, OPEN_STATUSES, type TaskPriority,
 } from "./tasks";
+import { defaultChecklist } from "./taskResolve";
+import { normalizeChecklist } from "./taskUtils";
 import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
@@ -233,7 +235,7 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     const ex = byKey.get(c.sourceKey);
     if (!ex) {
       const assignee = await resolveAssignee({ factoryId: c.assign.factoryId, ruleCode: c.rule, prefer: c.assign.prefer, useScheduler: c.assign.useScheduler });
-      await createTask({ kind: "task", title: c.title, priority: c.priority, dueAt: c.dueAt, assigneeAdminId: assignee, workerId: c.workerId, factoryId: c.factoryId, documentId: c.documentId, contractId: c.contractId, candidateId: c.candidateId, source: `auto:${c.rule}`, sourceKey: c.sourceKey, autoParams: c.autoParams }, null);
+      await createTask({ kind: "task", title: c.title, priority: c.priority, dueAt: c.dueAt, assigneeAdminId: assignee, workerId: c.workerId, factoryId: c.factoryId, documentId: c.documentId, contractId: c.contractId, candidateId: c.candidateId, source: `auto:${c.rule}`, sourceKey: c.sourceKey, autoParams: c.autoParams, checklist: c.autoParams.grouped ? [] : defaultChecklist(c.rule, c.autoParams) }, null);
       stats.created++;
       continue;
     }
@@ -247,10 +249,12 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     }
     if (ex.status === "done" || ex.status === "cancelled") continue; // закрив офіс — не воскрешаємо
     const changed = ex.title !== c.title || dateStr(ex.dueAt) !== c.dueAt || ex.priority !== c.priority;
-    if (changed) {
-      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt: c.dueAt, autoParams: c.autoParams, updatedAt: new Date() }).where(eq(tasksTable.id, ex.id));
+    // бекфіл дефолтного чекліста для задач, створених до появи чеклістів (лише якщо порожній)
+    const defaults = !(ex.checklist as unknown[])?.length && !c.autoParams.grouped ? defaultChecklist(c.rule, c.autoParams) : [];
+    if (changed || defaults.length) {
+      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt: c.dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
       if (ex.priority !== c.priority) await logTaskEvent(ex.id, "priority", null, { from: ex.priority, to: c.priority });
-      stats.updated++;
+      if (changed) stats.updated++;
     }
   }
   // причина зникла → вирішено автоматично
@@ -304,8 +308,11 @@ export async function sendReminders(today = warsawToday()): Promise<{ reminded: 
     list.sort((a, b) => a.daysLeft - b.daysLeft);
     for (const { t, daysLeft } of list.slice(0, MAX_INDIVIDUAL)) {
       const label = daysLeft < 0 ? `прострочено ${-daysLeft} дн.` : daysLeft === 0 ? "строк сьогодні" : `за ${daysLeft} дн.`;
+      const rows: { text: string; callback_data: string }[][] = [[{ text: "✅ Готово", callback_data: `tsk:done:${t.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${t.id}` }]];
+      const ctxButtons = await taskContextButtons(t);
+      if (ctxButtons.length) rows.push(ctxButtons);
       await notifyAdminById(adminId, "tasks", `⏰ *${mdEsc(label)}*: ${mdEsc(t.title)}${(t.autoParams as any)?.workerName ? `\n${mdEsc(String((t.autoParams as any).workerName))}` : ""}`,
-        { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "✅ Готово", callback_data: `tsk:done:${t.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${t.id}` }]] } }).catch(() => {});
+        { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }).catch(() => {});
     }
     if (list.length > MAX_INDIVIDUAL) await notifyAdminById(adminId, "tasks", `📋 …і ще ${list.length - MAX_INDIVIDUAL} нагадувань — у панелі «Задачі»`, {}).catch(() => {});
   }

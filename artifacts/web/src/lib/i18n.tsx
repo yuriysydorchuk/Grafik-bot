@@ -3035,7 +3035,25 @@ const EN: Record<string, string> = {
   // резолвер виплат (06.09.2026)
   // ── модуль «Задачі» (06.09.2026) ──
   "показати всі {n}": "show all {n}", "згорнути": "collapse",
-  // «Календар працівників» (батч 4)
+  // «Як вирішити» (батч 5)
+  "Як вирішити": "How to resolve", "Закриється сама, коли": "Closes itself when", "Відкрити файл": "Open file", "запитано": "requested", "умови в системі немає": "no contract in the system", "Статус для виплат за документами": "Payroll status by documents", "Вплине на сводну від цієї дати.": "Affects the svodni from that date.",
+  "Пропуски без пояснення": "Unexplained absences", "Експорт Excel": "Export Excel",
+  "Працівник не привʼязаний до бота — запит позначиться в профілі, лінк треба передати вручну": "The worker is not linked to the bot — the request is marked in the profile, pass the link manually",
+  "статус для виплат (за документами)": "payroll status (by documents)",
+  "Запросити скан у бот": "Request a scan via the bot", "Запросити скан+анкету": "Request scan + questionnaire", "Сканувати картку": "Scan the card", "Додати документ вручну": "Add a document manually",
+  "Запросити документи в бот": "Request documents via the bot", "Згенерувати умову": "Generate a contract", "Згенерувати нову версію": "Generate a new version", "Підписати від фірми": "Sign for the company", "Умови в профілі": "Contracts in the profile", "Анкета": "Questionnaire", "Підтвердити документ": "Confirm the document", "Прийняти (превʼю сводної)": "Accept (svodni preview)", "Відхилити — сводна без змін": "Reject — svodni unchanged", "Перерахувати легальність": "Recompute legality", "Написати працівнику в бот": "Message the worker via the bot",
+  "Написати працівнику": "Message the worker", "Відкрити кандидата": "Open the candidate",
+  "Причина відхилення — працівник побачить її в боті": "Rejection reason — the worker will see it in the bot", "Текст повідомлення в бот": "Message text for the bot",
+  "Підтвердити документ як дійсний?": "Confirm the document as valid?", "Відхилити зміну? Сводна лишиться як була.": "Reject the change? The svodni stays as is.",
+  "у профілі зʼявиться підтверджений документ цього типу з пізнішим строком": "a confirmed document of this type with a later expiry appears in the profile",
+  "на цю фабрику буде чинна підписана умова": "a valid signed contract exists for this factory", "обовʼязок буде виконано — документ або дата подачі в профілі": "the obligation is fulfilled — a document or a filing date in the profile",
+  "движок побачить підтверджену підставу перебування і праці": "the engine sees a confirmed basis for stay and work", "документ буде підтверджено або відхилено": "the document is confirmed or rejected",
+  "зміну буде прийнято або відхилено": "the change is accepted or rejected", "після перерахунку причини перевірки зникнуть": "review reasons disappear after a recompute",
+  "пропуск отримає пояснення": "the absence gets an explanation", "у кандидата оновиться дата наступної дії або етап": "the candidate's next-action date or stage is updated",
+  "документ спливає": "document expiring", "документ прострочений": "document expired", "обовʼязок": "obligation", "бракує підстави": "basis missing", "перевірка файлу": "file review",
+  "зміна виплат": "payroll change", "перевірка движка": "engine review", "пропуск без пояснення": "unexplained absence", "кандидат без руху": "stale candidate",
+  "present": "present", "pending": "pending", "missing": "missing", "expired": "expired",
+  "на затвердженні": "pending approval", "надіслано на підпис": "sent for signature",   // «Календар працівників» (батч 4)
   "Календар працівників": "Workers calendar", "Найближчі події": "Upcoming events", "Найближчі 90 днів без подій": "No events in the next 90 days", "календар": "calendar",
   "строки документів, умови, обовʼязки, відпрошування, дні народження, задачі": "document expiries, contracts, obligations, absences, birthdays, tasks",
   "Таймлайн": "Timeline", "пошук: працівник, подія": "search: worker, event", "Клікни на день, щоб побачити всі події": "Click a day to see all its events", "подій немає": "no events",

@@ -831,6 +831,11 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   })();
   const [newFor, setNewFor] = useState<{ factoryId: number | null; companyId: number | null } | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  // deep-link з задачі («Як вирішити» → Згенерувати умову): /workers/:id?open=generate:<factoryId>
+  useEffect(() => {
+    const m = new URLSearchParams(window.location.search).get("open")?.match(/^generate:(\d+)$/);
+    if (m) setNewFor({ factoryId: Number(m[1]) || null, companyId: null });
+  }, []);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] });
 
   const today = new Date().toLocaleDateString("sv-SE");
@@ -2009,6 +2014,14 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   const [sendFor, setSendFor] = useState<WorkerDocument | null>(null);
   const [scanCard, setScanCard] = useState(false);
   const passportInputRef = useRef<HTMLInputElement>(null);
+  // deep-link з задачі («Як вирішити»): ?open=scan-card | add-doc | add-doc:<typeId>
+  useEffect(() => {
+    const o = new URLSearchParams(window.location.search).get("open");
+    if (!o) return;
+    if (o === "scan-card") setScanCard(true);
+    const m = o.match(/^add-doc(?::(\d+))?$/);
+    if (m && (types.length || !m[1])) setDocModal({ mode: "add", type: m[1] ? types.find(x => x.id === Number(m[1])) ?? null : null });
+  }, [types.length]);
   const passportScan = useMutation({
     mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload(`/workers/${workerId}/passport-scan`, fd); },
     onSuccess: () => {

@@ -28,6 +28,15 @@ export async function loadTaskSettings(): Promise<TaskSettings> {
   return { ...DEFAULT_TASK_SETTINGS, ...((row?.params ?? {}) as Partial<TaskSettings>) };
 }
 
+// Контекстні кнопки «Як вирішити» для бот-сповіщень (динамічний імпорт — taskResolve імпортує цей модуль).
+export async function taskContextButtons(task: Task): Promise<{ text: string; callback_data: string }[]> {
+  if (!task.source.startsWith("auto:")) return [];
+  try {
+    const { buildTaskResolution, botActionButtons } = await import("./taskResolve");
+    return botActionButtons(task.id, (await buildTaskResolution(task)).actions);
+  } catch { return []; }
+}
+
 export async function logTaskEvent(taskId: number, kind: string, adminId: number | null = null, payload?: Record<string, unknown>): Promise<void> {
   await db.insert(taskEventsTable).values({ taskId, kind, adminId, payload: payload ?? null });
 }
@@ -117,7 +126,10 @@ export async function notifyTaskAssigned(task: Task, actorAdminId: number | null
       } else {
         const auto = task.source.startsWith("auto:");
         const text = `${auto ? "🤖 *Автозадача*" : `📌 *Нова задача від ${mdEsc(who)}*`}\n${mdEsc(task.title)}${task.dueAt ? `\nдо ${fmtDate(dateStr(task.dueAt)!)}` : ""} · ${PRIORITY_LABEL[task.priority as TaskPriority] ?? task.priority}`;
-        await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "▶ Беру в роботу", callback_data: `tsk:start:${task.id}` }, { text: "✅ Готово", callback_data: `tsk:done:${task.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${task.id}` }]] } });
+        const rows: { text: string; callback_data: string }[][] = [[{ text: "▶ Беру в роботу", callback_data: `tsk:start:${task.id}` }, { text: "✅ Готово", callback_data: `tsk:done:${task.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${task.id}` }]];
+        const ctxButtons = await taskContextButtons(task);
+        if (ctxButtons.length) rows.push(ctxButtons);
+        await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } });
       }
     } catch (e: any) { logger.warn({ err: e?.message, taskId: task.id, adminId: id }, "task assign notify failed"); }
   }

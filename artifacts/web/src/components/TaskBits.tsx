@@ -4,12 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, ExternalLink, Send, Repeat, MapPin, AlertTriangle } from "lucide-react";
+import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, ExternalLink, Send, Repeat, MapPin, AlertTriangle, Wrench, FileText } from "lucide-react";
 import { get, post, patch, type Factory, type Worker } from "../lib/api";
 import {
-  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence,
-  STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, fmtD, fmtDShort, todayStr, addDays,
+  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction,
+  STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, RULE_LABEL, fmtD, fmtDShort, todayStr, addDays,
 } from "../lib/tasksApi";
+import { ProfileChangeModal } from "./ProfileChangeModal";
+import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
+import { reasonText } from "../lib/legality";
 import { Button, Badge, Modal, Input, Select, Label, Textarea, Spinner, cn } from "./ui";
 import { useT } from "../lib/i18n";
 import { useMe } from "../lib/hooks";
@@ -99,7 +102,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
           <div>
             <div className="text-lg font-bold leading-snug text-slate-800">{t.title}</div>
             {t.description && <div className="mt-1 whitespace-pre-wrap text-slate-600">{t.description}</div>}
-            {t.source !== "manual" && <div className="mt-1 text-xs text-slate-400">{tr("Створено системою")} · {tr("закриється сама, коли причина зникне")}</div>}
+            {t.source !== "manual" && !t.resolution?.context.why && <div className="mt-1 text-xs text-slate-400">{tr("Створено системою")} · {tr("закриється сама, коли причина зникне")}</div>}
           </div>
 
           {/* дії */}
@@ -145,13 +148,17 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
                 {typeof t.autoParams?.expiresAt === "string" && <span className="text-xs text-slate-500">{tr("строк")}: <b>{fmtD(String(t.autoParams.expiresAt))}</b></span>}
                 {Array.isArray(t.autoParams?.workerNames) && <span className="text-xs text-slate-500">{(t.autoParams.workerNames as string[]).slice(0, 8).join(", ")}{(t.autoParams.count as number) > 8 ? ` … (+${(t.autoParams.count as number) - 8})` : ""}</span>}
               </div>
-              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-                {t.worker && <Link href={`/workers/${t.worker.id}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50"><ExternalLink className="mr-1 inline h-3 w-3" />{tr("Профіль")}</Link>}
-                {t.worker && <Link href={`/legalization?q=${encodeURIComponent(t.worker.fullName)}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50">{tr("Легалізація")}</Link>}
-                {t.candidateId && <Link href="/recruitment" className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50">{tr("Рекрутація")}</Link>}
-              </div>
+              {!t.resolution?.actions.length && (
+                <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                  {t.worker && <Link href={`/workers/${t.worker.id}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50"><ExternalLink className="mr-1 inline h-3 w-3" />{tr("Профіль")}</Link>}
+                  {t.candidateId && <Link href="/recruitment" className="rounded-md border border-slate-200 bg-white px-2 py-1 hover:bg-slate-50">{tr("Рекрутація")}</Link>}
+                </div>
+              )}
             </div>
           )}
+
+          {/* як вирішити — контекст автозадачі і дії, що закривають причину */}
+          {t.resolution && open && (t.resolution.actions.length > 0 || t.resolution.context.rule) && <ResolveBlock task={t} inv={inv} />}
 
           {/* зустріч / групова: учасники */}
           {t.kind !== "task" && (
@@ -390,6 +397,83 @@ function MeetingConflicts({ date, time, durationMin, participants, admins }: { d
   });
   if (!clashes.length) return null;
   return <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700"><AlertTriangle className="mr-1 inline h-3.5 w-3.5" />{clashes.map((c, i) => <span key={i}>{c.who} {tr("має")} «{c.title}» {tr("о")} {c.at}{i < clashes.length - 1 ? "; " : ""}</span>)}</div>;
+}
+
+// ── «Як вирішити»: контекст автозадачі (документ / умова / файл / зміна виплат / пропуски /
+// відсутні документи / причини движка) + дії, що закривають причину без переходів ──
+const CONTRACT_ST: Record<string, string> = { draft: "чернетка", pending_approval: "на затвердженні", approved: "затверджено", sent: "надіслано на підпис", viewed: "переглянуто", worker_signed: "підписав працівник", signed: "підписано", declined: "відхилено", cancelled: "скасовано", superseded: "замінено", expired: "прострочено" };
+const DOC_ST: Record<string, "slate" | "green" | "amber" | "rose"> = { present: "green", pending: "amber", missing: "rose", expired: "rose" };
+function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
+  const tr = useT();
+  const qc = useQueryClient();
+  const { context: c, actions } = task.resolution!;
+  const [noteFor, setNoteFor] = useState<TaskAction | null>(null);
+  const [note, setNote] = useState("");
+  const [applyChange, setApplyChange] = useState(false);
+  const run = useMutation({
+    mutationFn: (v: { code: string; note?: string }) => post<{ message: string }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note }),
+    onSuccess: (d) => { toast.success(d.message); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setNoteFor(null); setNote(""); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const fire = (a: TaskAction) => {
+    if (a.kind === "modal") { if (a.code === "apply_change") setApplyChange(true); return; }
+    if (a.needsNote) { setNoteFor(a); setNote(a.code === "message_worker" && a.notePlaceholder && task.resolution!.context.rule === "absence_unexplained" ? a.notePlaceholder : ""); return; }
+    if (a.confirm && !confirm(tr(a.confirm))) return;
+    run.mutate({ code: a.code });
+  };
+  const legal = (v: string | null) => v ? tr(LEGAL_LABEL[v as LegalStatus] ?? v) : tr("не зголошений");
+  const btn = "rounded-md border px-2.5 py-1 text-xs";
+  return (
+    <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-3">
+      <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-violet-700"><Wrench className="h-3.5 w-3.5" /> {tr("Як вирішити")}{c.rule && <span className="font-normal normal-case text-slate-400">· {tr(RULE_LABEL[c.rule] ?? c.rule)}</span>}</div>
+
+      {c.document && (
+        <div className="mb-2 rounded-md border border-slate-100 bg-white px-3 py-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2"><FileText className="h-3.5 w-3.5 text-slate-400" /><span className="font-semibold text-slate-800">{c.document.typeName ?? c.document.title}</span>{c.document.typeName && c.document.title !== c.document.typeName && <span className="text-slate-500">{c.document.title}</span>}<Badge color={DOC_ST[c.document.status] ?? "slate"}>{tr(c.document.status)}</Badge></div>
+          <div className="mt-1 flex flex-wrap gap-x-3 text-slate-500">
+            {c.document.number && <span>№ {c.document.number}</span>}
+            {c.document.expiresAt && <span>{tr("до")} <b className={c.document.expiresAt < todayStr() ? "text-rose-600" : "text-slate-700"}>{fmtD(c.document.expiresAt)}</b></span>}
+            {c.document.requestedAt && <span className="text-amber-700">{tr("запитано")} {fmtD(c.document.requestedAt.slice(0, 10))}</span>}
+            {c.document.hasFile && c.document.fileUrl && <a href={c.document.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a>}
+            {c.document.reviewNote && <span className="text-rose-600">{tr("відхилено")}: {c.document.reviewNote}</span>}
+          </div>
+        </div>
+      )}
+      {c.contract && (
+        <div className="mb-2 rounded-md border border-slate-100 bg-white px-3 py-2 text-xs">
+          <span className="font-semibold text-slate-800">{tr("Умова")}{c.contract.factoryName ? ` · ${c.contract.factoryName}` : ""}</span>
+          <span className="ml-2 text-slate-500">{c.contract.status ? tr(CONTRACT_ST[c.contract.status] ?? c.contract.status) : tr("умови в системі немає")}{c.contract.dateTo ? ` · ${tr("до")} ${fmtD(c.contract.dateTo)}` : ""}</span>
+        </div>
+      )}
+      {c.change && (
+        <div className="mb-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {tr("Статус для виплат за документами")}: <b>{legal(c.change.oldValue)}</b> → <b>{legal(c.change.newValue)}</b>{c.change.effectiveDate ? ` ${tr("з")} ${fmtD(c.change.effectiveDate)}` : ""}. {tr("Вплине на сводну від цієї дати.")}
+        </div>
+      )}
+      {c.missing && c.missing.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1 text-xs"><span className="text-slate-500">{tr("Бракує")}:</span>{c.missing.map(m => <span key={m.code} className="rounded-full bg-rose-50 px-2 py-0.5 text-rose-700">{m.name}</span>)}</div>}
+      {c.absences && c.absences.length > 0 && <div className="mb-2 text-xs text-slate-600">{tr("Пропуски без пояснення")}: <b>{c.absences.map(fmtD).join(", ")}</b></div>}
+      {c.reasons && c.reasons.length > 0 && <ul className="mb-2 space-y-0.5 text-xs text-slate-600">{c.reasons.map((r, i) => <li key={i}>• {reasonText(tr, r as any)}</li>)}</ul>}
+
+      <div className="flex flex-wrap gap-1.5">
+        {actions.map(a => a.kind === "link"
+          ? <Link key={a.code} href={a.href ?? "#"} className={cn(btn, a.primary ? "border-violet-300 bg-white font-semibold text-violet-800 hover:bg-violet-50" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr(a.label)} →</Link>
+          : <button key={a.code} disabled={run.isPending || !!a.done} onClick={() => fire(a)} title={a.done ?? undefined} className={cn(btn, a.done ? "border-slate-100 bg-slate-50 text-slate-400" : a.primary ? "border-violet-600 bg-violet-600 text-white hover:bg-violet-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{a.bot === false && a.kind === "api" && (a.code === "request_doc" || a.code === "request_docs" || a.code === "invite_scan" || a.code === "message_worker") ? "⚠ " : ""}{tr(a.label)}{a.done ? ` · ${a.done}` : ""}</button>)}
+      </div>
+      {actions.some(a => a.bot === false && (a.code === "request_doc" || a.code === "message_worker")) && <div className="mt-1 text-[11px] text-amber-700">⚠ {tr("Працівник не привʼязаний до бота — запит позначиться в профілі, лінк треба передати вручну")}</div>}
+      {noteFor && (
+        <div className="mt-2 flex gap-1.5">
+          <Input value={note} onChange={e => setNote(e.target.value)} placeholder={noteFor.notePlaceholder ? tr(noteFor.notePlaceholder) : ""} className="text-xs" autoFocus />
+          <Button className="px-2.5 py-1 text-xs" loading={run.isPending} disabled={!note.trim()} onClick={() => run.mutate({ code: noteFor.code, note })}>{tr("Надіслати")}</Button>
+          <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setNoteFor(null)}>✕</Button>
+        </div>
+      )}
+      {(c.why || c.closesWhen) && <div className="mt-2 text-[11px] leading-snug text-slate-500">{c.why}{c.closesWhen && <> <span className="text-emerald-700">{tr("Закриється сама, коли")} {tr(c.closesWhen)}.</span></>}</div>}
+      {applyChange && c.worker && c.change && (
+        <ProfileChangeModal workerId={c.worker.id} changes={{ effectiveLegalStatus: c.change.newValue }} title={tr("статус для виплат (за документами)")} initialFrom={c.change.effectiveDate ?? undefined}
+          onClose={() => { setApplyChange(false); inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />
+      )}
+    </div>
+  );
 }
 
 export function useOpenTask() {

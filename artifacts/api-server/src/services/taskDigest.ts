@@ -2,12 +2,12 @@
 // вечірній підсумок дня (eveningTime, 17:30), тижневий звіт контролю головному (пн 08:00).
 // Тік крону кожні 5 хв звіряє час із налаштуваннями і дедупить по settings-ключах,
 // щоб рестарт сервера не подвоював розсилку. Повага до notify-префів ролі (тип tasks).
-import { db, tasksTable, adminsTable, settingsTable } from "@workspace/db";
+import { db, tasksTable, adminsTable, settingsTable, taskEventsTable, taskAssigneesTable } from "@workspace/db";
 import { and, eq, inArray, lte, or, isNull, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { notifyAdminById } from "../bot/notify";
 import { adminHasPage } from "../bot/roles";
-import { loadTaskSettings, mainAdminId, controlStats, warsawToday, fmtDate, dateStr, diffDays, mdEsc, OPEN_STATUSES, type TaskStatus } from "./tasks";
+import { loadTaskSettings, mainAdminId, controlStats, logTaskEvent, warsawToday, fmtDate, dateStr, diffDays, mdEsc, OPEN_STATUSES, type TaskStatus } from "./tasks";
 import { logger } from "../lib/logger";
 
 const panelUrl = () => (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
@@ -90,8 +90,60 @@ export async function buildEveningSummary(adminId: number, today = warsawToday()
   if (left.length > 6) lines.push(`…ще ${left.length - 6}`);
   if (tmr.length) lines.push(`\nЗавтра: ${tmr.length - tmrMeet.length} задач${tmrMeet.length ? `, 🗓 ${tmrMeet.map(m => `${m.dueTime ?? ""} ${mdEsc(m.title)}`).join(", ")}` : ""}`);
   const kb: any[][] = [];
-  if (left.length) kb.push([{ text: "→ Усе на завтра", callback_data: "tsk:allTomorrow" }, { text: "📅 Вибрати по одній", callback_data: "tskm:today" }]);
+  if (left.length) {
+    kb.push([{ text: "→ Усе на завтра", callback_data: "tsk:allTomorrow" }, { text: "📅 Вибрати по одній", callback_data: "tskm:today" }]);
+    const wd = new Date(today + "T00:00:00Z").getUTCDay();
+    if (wd === 5 || wd === 6 || wd === 0) kb.push([{ text: "→ На понеділок", callback_data: "tsk:allMonday" }]);
+  }
   return { text: lines.join("\n"), kb };
+}
+
+// ── нагадування про зустрічі: за день (у час вечірнього підсумку) і за годину ─────
+async function meetingReminded(taskId: number, kind: string): Promise<boolean> {
+  const [r] = await db.select({ id: taskEventsTable.id }).from(taskEventsTable).where(and(eq(taskEventsTable.taskId, taskId), eq(taskEventsTable.kind, kind)));
+  return !!r;
+}
+async function meetingParticipants(taskId: number): Promise<number[]> {
+  return (await db.select({ adminId: taskAssigneesTable.adminId }).from(taskAssigneesTable).where(eq(taskAssigneesTable.taskId, taskId))).map(r => r.adminId);
+}
+async function confirmedCount(taskId: number): Promise<{ yes: number; total: number }> {
+  const rows = await db.select({ status: taskAssigneesTable.status }).from(taskAssigneesTable).where(eq(taskAssigneesTable.taskId, taskId));
+  return { yes: rows.filter(r => r.status === "accepted").length, total: rows.length };
+}
+export async function sendMeetingReminders(now = new Date(), today = warsawToday()): Promise<number> {
+  const hm = nowHm(now);
+  const [h, m] = hm.split(":").map(Number);
+  const nowMin = h! * 60 + m!;
+  let sent = 0;
+  // за годину: зустрічі сьогодні з часом у вікні [+60, +65) хв
+  const todays = await db.select().from(tasksTable).where(and(eq(tasksTable.kind, "meeting"), eq(tasksTable.dueAt, today), inArray(tasksTable.status, OPEN_STATUSES)));
+  for (const t of todays) {
+    if (!t.dueTime) continue;
+    const [th, tm] = t.dueTime.split(":").map(Number);
+    const diff = th! * 60 + tm! - nowMin;
+    if (diff < 60 || diff >= 65 || (await meetingReminded(t.id, "meeting_reminder_hour"))) continue;
+    await logTaskEvent(t.id, "meeting_reminder_hour", null);
+    const c = await confirmedCount(t.id);
+    const text = `⏰ Через годину: *${mdEsc(t.title)}*, ${t.dueTime}${t.place ? `, ${mdEsc(t.place)}` : ""}. Підтвердили ${c.yes} з ${c.total}.`;
+    for (const id of [...new Set([...(await meetingParticipants(t.id)), ...(t.creatorAdminId ? [t.creatorAdminId] : [])])]) if (await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown" })) sent++;
+  }
+  // за день: у час вечірнього підсумку — зустрічі завтра
+  const s = await loadTaskSettings();
+  const [eh, em] = s.eveningTime.split(":").map(Number);
+  const ed = nowMin - (eh! * 60 + em!);
+  if (ed >= 0 && ed < 5) {
+    const tomorrow = addDaysStr(today, 1);
+    const tmr = await db.select().from(tasksTable).where(and(eq(tasksTable.kind, "meeting"), eq(tasksTable.dueAt, tomorrow), inArray(tasksTable.status, OPEN_STATUSES)));
+    for (const t of tmr) {
+      if (await meetingReminded(t.id, "meeting_reminder_day")) continue;
+      await logTaskEvent(t.id, "meeting_reminder_day", null);
+      const c = await confirmedCount(t.id);
+      const text = `🗓 Завтра: *${mdEsc(t.title)}*${t.dueTime ? `, ${t.dueTime}` : ""}${t.place ? `, ${mdEsc(t.place)}` : ""}. Підтвердили ${c.yes} з ${c.total}.`;
+      const kb = [[{ text: "✅ Буду", callback_data: `tsk:yes:${t.id}` }, { text: "❌ Не зможу", callback_data: `tsk:no:${t.id}` }]];
+      for (const id of await meetingParticipants(t.id)) if (await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } })) sent++;
+    }
+  }
+  return sent;
 }
 
 export async function sendEveningSummaries(today = warsawToday()): Promise<number> {
@@ -127,6 +179,7 @@ export async function runTaskDigestTick(now = new Date()): Promise<void> {
   const today = warsawToday();
   const hm = nowHm(now);
   const within = (target: string) => { const [th, tm] = target.split(":").map(Number); const [h, m] = hm.split(":").map(Number); const d = (h! * 60 + m!) - (th! * 60 + tm!); return d >= 0 && d < 5; };
+  try { await sendMeetingReminders(now, today); } catch (e: any) { logger.warn({ err: e?.message }, "meeting reminders failed"); }
   if (s.skipWeekends && isWeekend(today)) return;
   try {
     if (within(s.digestTime) && (await getSetting("tasks.digest.sent")) !== today) {

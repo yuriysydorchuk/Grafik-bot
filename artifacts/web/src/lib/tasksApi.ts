@@ -21,7 +21,20 @@ export interface TaskRow {
 }
 export interface TaskComment { id: number; adminId: number | null; name: string | null; body: string; createdAt: string }
 export interface TaskEvent { id: number; adminId: number | null; name: string | null; kind: string; payload: Record<string, unknown> | null; createdAt: string }
-export interface TaskDetail extends TaskRow { comments: TaskComment[]; events: TaskEvent[]; can: { edit: boolean; reassign: boolean; review: boolean; participant: boolean } }
+// «Як вирішити» — контекст автозадачі і дії (services/taskResolve.ts)
+export interface TaskAction { code: string; label: string; kind: "api" | "link" | "modal"; href?: string; needsNote?: boolean; notePlaceholder?: string; confirm?: string; primary?: boolean; done?: string | null; bot?: boolean }
+export interface TaskContext {
+  rule: string | null; why: string; closesWhen: string | null;
+  worker?: { id: number; fullName: string; telegram: boolean; nationality: string | null; language: string | null; factoryId: number | null } | null;
+  document?: { id: number; title: string; typeName: string | null; typeCode: string | null; docTypeId: number | null; number: string | null; expiresAt: string | null; status: string; fileUrl: string | null; hasFile: boolean; requestedAt: string | null; reviewNote: string | null; updatedAt: string | null } | null;
+  contract?: { id: number | null; status: string | null; dateTo: string | null; factoryId: number | null; factoryName: string | null; code: string | null } | null;
+  change?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string | null } | null;
+  missing?: { code: string; name: string; docTypeId: number | null }[];
+  absences?: string[];
+  reasons?: { code: string; axis?: string; severity?: string; params?: Record<string, unknown> }[];
+}
+export interface TaskResolution { context: TaskContext; actions: TaskAction[] }
+export interface TaskDetail extends TaskRow { comments: TaskComment[]; events: TaskEvent[]; resolution?: TaskResolution; can: { edit: boolean; reassign: boolean; review: boolean; participant: boolean } }
 export interface MyDay {
   date: string; overdue: TaskRow[]; today: TaskRow[]; meetings: TaskRow[]; planned: TaskRow[]; newOvernight: TaskRow[]; doneToday: TaskRow[];
   stats: { done: number; total: number; plannedMin: number }; counters: TaskCounters;
@@ -44,6 +57,10 @@ export const SOURCE_LABEL: Record<string, string> = {
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
 };
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
+export const RULE_LABEL: Record<string, string> = {
+  doc_expiring: "документ спливає", doc_expired: "документ прострочений", contract: "умова", obligation: "обовʼязок", required_missing: "бракує підстави",
+  pending_doc: "перевірка файлу", payroll_change: "зміна виплат", review_required: "перевірка движка", absence_unexplained: "пропуск без пояснення", candidate_stale: "кандидат без руху",
+};
 
 // ── «Календар працівників» (GET /workers-calendar) ──
 export type CalKind = "doc" | "contract" | "obligation" | "absence" | "birthday" | "start" | "end" | "task";

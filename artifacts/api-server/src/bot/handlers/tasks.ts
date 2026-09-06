@@ -126,6 +126,38 @@ export function registerTaskActions(bot: Telegraf<any>) {
     if (old) await ctx.editMessageText(`${old}\n\n— ${tb(oLang(admin.language), "перенесено на завтра")}: ${left.length}`).catch(() => {});
   });
 
+  // вечірній підсумок: усе невиконане → понеділок (наступний)
+  bot.action("tsk:allMonday", async (ctx) => {
+    const admin = await getAdmin(String(ctx.from!.id));
+    if (!admin) return ctx.answerCbQuery().catch(() => {});
+    const today = warsawToday();
+    const wd = (new Date(today + "T00:00:00Z").getUTCDay() + 6) % 7; // 0=Пн
+    const monday = addDaysStr(today, 7 - wd);
+    const all = await myOpen(admin.id, today);
+    const left = all.filter(t => t.kind !== "meeting" && ((t.due && t.due <= today) || t.planned === today));
+    for (const t of left) await planTask(t, monday, null, admin.id);
+    await ctx.answerCbQuery(`→ ${left.length}`).catch(() => {});
+    const old = (ctx.callbackQuery as any)?.message?.text as string | undefined;
+    if (old) await ctx.editMessageText(`${old}\n\n— ${tb(oLang(admin.language), "перенесено на понеділок")}: ${left.length}`).catch(() => {});
+  });
+
+  // контекстні дії «Як вирішити» (запит скану, підтвердити файл, перерахунок …) — services/taskResolve
+  bot.action(/^tska:([a-z_]+):(\d+)$/, async (ctx) => {
+    const admin = await getAdmin(String(ctx.from!.id));
+    if (!admin) return ctx.answerCbQuery("Лише для офісу").catch(() => {});
+    const code = (ctx.match as RegExpMatchArray)[1]!;
+    const task = await loadTask(Number((ctx.match as RegExpMatchArray)[2]));
+    if (!task) return ctx.answerCbQuery("Задачу не знайдено").catch(() => {});
+    if (!(await isParticipant(task, admin.id)) && task.creatorAdminId !== admin.id && !(await adminCanManage(admin))) return ctx.answerCbQuery("⛔ не ваша задача").catch(() => {});
+    try {
+      const { runTaskAction } = await import("../../services/taskResolve");
+      const msg = await runTaskAction(task, code, { adminId: admin.id, name: admin.name });
+      await ctx.answerCbQuery(msg.slice(0, 190)).catch(() => {});
+      const old = (ctx.callbackQuery as any)?.message?.text as string | undefined;
+      if (old) await ctx.editMessageText(`${old}\n\n— ${msg} · ${admin.name ?? ""}`, { reply_markup: (ctx.callbackQuery as any).message.reply_markup }).catch(() => {});
+    } catch (e: any) { await ctx.answerCbQuery(`⛔ ${e?.message ?? "помилка"}`).catch(() => {}); }
+  });
+
   // інлайн-дії на сповіщеннях/дайджестах
   bot.action(/^tsk:(start|done|snooze|yes|no|part|accept|return):(\d+)$/, async (ctx) => {
     const tid = String(ctx.from!.id);

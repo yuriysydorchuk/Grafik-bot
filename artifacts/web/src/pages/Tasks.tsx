@@ -3,7 +3,7 @@
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, ChevronLeft, ChevronRight, Sun, Columns3, List, CalendarDays, Gauge, CheckCircle2, Clock, Focus, Wand2, Users } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Sun, Columns3, List, CalendarDays, Gauge, CheckCircle2, Clock, Focus, Wand2, Users, Download } from "lucide-react";
 import { get, post, patch, type Factory } from "../lib/api";
 import {
   type TaskRow, type MyDay, type TaskAdmin, type TaskControlRow, type TaskStatus,
@@ -159,7 +159,10 @@ function ListView({ onOpen }: { onOpen: (id: number) => void }) {
   const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   return (
     <>
-      <FilterBar f={f} />
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1"><FilterBar f={f} /></div>
+        <a href={`/api/tasks/export.xlsx?${f.qs()}`} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"><Download className="mr-1 inline h-3.5 w-3.5" />{t("Експорт Excel")}</a>
+      </div>
       {isLoading ? <Spinner /> : !rows.length ? <Card className="p-6 text-center text-sm text-slate-400">{t("Задач немає")}</Card> : (
         <Card className="overflow-x-auto">
           {groups.map(g => (
