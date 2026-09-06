@@ -2351,7 +2351,7 @@ export const tasksTable = pgTable("tasks", {
   source: text("source").notNull().default("manual"),    // manual | auto:<rule code>
   sourceKey: text("source_key"),                          // дедуп автозадач (unique)
   autoParams: jsonb("auto_params").$type<Record<string, unknown>>(), // {docTypeCode, expiresAt, daysLeft, …}
-  checklist: jsonb("checklist").$type<{ id: string; text: string; done: boolean; doneBy?: number | null; doneAt?: string | null }[]>().notNull().default([]),
+  checklist: jsonb("checklist").$type<{ id: string; text: string; done: boolean; doneBy?: number | null; doneAt?: string | null; auto?: string }[]>().notNull().default([]), // auto — ключ авто-відмітки (services/taskResolve)
   recurrence: jsonb("recurrence").$type<{ freq: "daily" | "weekly" | "monthly"; interval?: number; weekday?: number; monthday?: number; until?: string | null }>(),
   recurrenceParentId: integer("recurrence_parent_id"),
   remindersSent: jsonb("reminders_sent").$type<number[]>().notNull().default([]), // кроки драбини (днів до строку), що вже надіслані

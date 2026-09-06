@@ -5,7 +5,7 @@ export type TaskKind = "task" | "group" | "meeting";
 export type TaskStatus = "open" | "in_progress" | "review" | "done" | "cancelled" | "auto_resolved";
 export type TaskPriority = "low" | "normal" | "high" | "urgent";
 export type Recurrence = { freq: "daily" | "weekly" | "monthly"; interval?: number; weekday?: number; monthday?: number; until?: string | null };
-export type ChecklistItem = { id: string; text: string; done: boolean; doneBy?: number | null; doneAt?: string | null };
+export type ChecklistItem = { id: string; text: string; done: boolean; doneBy?: number | null; doneAt?: string | null; auto?: string }; // auto — ключ авто-відмітки (taskResolve)
 
 export const TASK_KINDS: TaskKind[] = ["task", "group", "meeting"];
 export const TASK_STATUSES: TaskStatus[] = ["open", "in_progress", "review", "done", "cancelled", "auto_resolved"];

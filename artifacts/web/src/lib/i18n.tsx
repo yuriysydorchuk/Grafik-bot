@@ -3036,7 +3036,7 @@ const EN: Record<string, string> = {
   // ── модуль «Задачі» (06.09.2026) ──
   "показати всі {n}": "show all {n}", "згорнути": "collapse",
   // «Як вирішити» (батч 5)
-  "Як вирішити": "How to resolve", "Закриється сама, коли": "Closes itself when", "Відкрити файл": "Open file", "запитано": "requested", "умови в системі немає": "no contract in the system", "Статус для виплат за документами": "Payroll status by documents", "Вплине на сводну від цієї дати.": "Affects the svodni from that date.",
+  "Як вирішити": "How to resolve", "Файли від працівника на перевірці": "Files from the worker awaiting review", "відмітиться сама за фактом": "checks itself when done", "Закриється сама, коли": "Closes itself when", "Відкрити файл": "Open file", "запитано": "requested", "умови в системі немає": "no contract in the system", "Статус для виплат за документами": "Payroll status by documents", "Вплине на сводну від цієї дати.": "Affects the svodni from that date.",
   "Пропуски без пояснення": "Unexplained absences", "Експорт Excel": "Export Excel",
   "Працівник не привʼязаний до бота — запит позначиться в профілі, лінк треба передати вручну": "The worker is not linked to the bot — the request is marked in the profile, pass the link manually",
   "статус для виплат (за документами)": "payroll status (by documents)",

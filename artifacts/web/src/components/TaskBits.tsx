@@ -177,7 +177,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Чекліст")} {t.checklistTotal ? `${t.checklistDone}/${t.checklistTotal}` : ""}</div>
               <div className="space-y-1">
                 {t.checklist.map(c => (
-                  <label key={c.id} className="flex items-start gap-2"><input type="checkbox" checked={c.done} onChange={() => toggleCheck(c.id)} className="mt-0.5" /><span className={cn(c.done && "text-slate-400 line-through")}>{c.text}</span></label>
+                  <label key={c.id} className="flex items-start gap-2"><input type="checkbox" checked={c.done} onChange={() => toggleCheck(c.id)} className="mt-0.5" /><span className={cn(c.done && "text-slate-400 line-through")}>{c.text}</span>{c.done && c.auto && c.doneBy == null && <span className="ml-auto shrink-0 rounded-full bg-emerald-50 px-1.5 text-[10px] text-emerald-700" title={c.doneAt ? new Date(c.doneAt).toLocaleString("uk-UA") : ""}>{tr("система")}</span>}{!c.done && c.auto && <span className="ml-auto shrink-0 text-[10px] text-slate-300" title={tr("відмітиться сама за фактом")}>auto</span>}</label>
                 ))}
                 {t.can.edit && <AddStep onAdd={txt => edit.mutate({ checklist: [...t.checklist, { id: `c${Date.now()}`, text: txt, done: false }] })} />}
               </div>
@@ -437,6 +437,18 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
             {c.document.hasFile && c.document.fileUrl && <a href={c.document.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a>}
             {c.document.reviewNote && <span className="text-rose-600">{tr("відхилено")}: {c.document.reviewNote}</span>}
           </div>
+          {c.document.hasFile && c.document.fileUrl && c.document.isImage && <a href={c.document.fileUrl} target="_blank" rel="noreferrer"><img src={c.document.fileUrl} alt="" className="mt-2 max-h-48 rounded-md border border-slate-200 object-contain" /></a>}
+        </div>
+      )}
+      {c.uploads && c.uploads.length > 0 && (
+        <div className="mb-2 space-y-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">📎 {tr("Файли від працівника на перевірці")} · {c.uploads.length}</div>
+          {c.uploads.map(u => (
+            <div key={u.id} className="rounded-md border border-emerald-100 bg-white px-3 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-slate-800">{u.typeName ?? u.title}</span>{u.uploadedAt && <span className="text-slate-400">{new Date(u.uploadedAt).toLocaleString("uk-UA")}</span>}<a href={u.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a></div>
+              {u.isImage && <a href={u.fileUrl} target="_blank" rel="noreferrer"><img src={u.fileUrl} alt="" className="mt-2 max-h-56 rounded-md border border-slate-200 object-contain" /></a>}
+            </div>
+          ))}
         </div>
       )}
       {c.contract && (

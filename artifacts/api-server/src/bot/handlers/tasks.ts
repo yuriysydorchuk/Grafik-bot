@@ -142,7 +142,7 @@ export function registerTaskActions(bot: Telegraf<any>) {
   });
 
   // контекстні дії «Як вирішити» (запит скану, підтвердити файл, перерахунок …) — services/taskResolve
-  bot.action(/^tska:([a-z_]+):(\d+)$/, async (ctx) => {
+  bot.action(/^tska:([a-z_]+(?:\.\d+)?):(\d+)$/, async (ctx) => {
     const admin = await getAdmin(String(ctx.from!.id));
     if (!admin) return ctx.answerCbQuery("Лише для офісу").catch(() => {});
     const code = (ctx.match as RegExpMatchArray)[1]!;

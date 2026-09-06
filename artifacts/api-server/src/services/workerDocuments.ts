@@ -69,5 +69,8 @@ export async function applyWorkerDocumentUpload(workerId: number, docTypeId: num
   // журнал + перерахунок світлофорів (best-effort; lazy import — не тягнути движок у бот-код при старті)
   const { documentChanged } = await import("./documentEvents");
   await documentChanged({ id: doc!.id, workerId }, existing ? "file" : "created", { source: "worker_bot" });
+  // відкриті документні задачі цього працівника: файл у задачі + сповіщення виконавцю (best-effort)
+  try { const { notifyTasksOnWorkerUpload } = await import("./taskResolve"); await notifyTasksOnWorkerUpload(workerId, doc!.id, docType.name); }
+  catch (e: any) { logger.warn({ err: e?.message, workerId }, "task upload notify failed"); }
   return { documentId: doc!.id, title: docType.name };
 }

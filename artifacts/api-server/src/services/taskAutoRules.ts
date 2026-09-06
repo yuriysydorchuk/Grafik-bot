@@ -221,11 +221,11 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   return out;
 }
 
-export interface AutoRunStats { created: number; reopened: number; updated: number; resolved: number; reminded: number; escalated: number }
+export interface AutoRunStats { created: number; reopened: number; updated: number; resolved: number; reminded: number; escalated: number; checked: number }
 
 export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats> {
   await ensureAutoRules();
-  const stats: AutoRunStats = { created: 0, reopened: 0, updated: 0, resolved: 0, reminded: 0, escalated: 0 };
+  const stats: AutoRunStats = { created: 0, reopened: 0, updated: 0, resolved: 0, reminded: 0, escalated: 0, checked: 0 };
   const candidates = await collectCandidates(today);
   const existing = await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"));
   const byKey = new Map(existing.filter(t => t.sourceKey).map(t => [t.sourceKey!, t]));
@@ -264,6 +264,12 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     await logTaskEvent(ex.id, "auto_resolved", null);
     stats.resolved++;
   }
+  // авто-чекліст відкритих автозадач (запит надіслано / файл прийшов / підтверджено / умова …)
+  try {
+    const { buildTaskResolution } = await import("./taskResolve");
+    const openAuto = await db.select().from(tasksTable).where(and(inArray(tasksTable.status, OPEN_STATUSES), sql`${tasksTable.source} like 'auto:%'`, sql`jsonb_array_length(${tasksTable.checklist}) > 0`));
+    for (const t of openAuto) { try { if ((await buildTaskResolution(t)).checklistChanged) stats.checked++; } catch { /* best-effort */ } }
+  } catch (e: any) { logger.warn({ err: e?.message }, "auto checklist sync failed"); }
   const rem = await sendReminders(today);
   stats.reminded = rem.reminded; stats.escalated = rem.escalated;
   logger.info(stats, "auto tasks run");

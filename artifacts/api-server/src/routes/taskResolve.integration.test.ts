@@ -7,13 +7,16 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import {
   hasTestDb, resetDb, closeDb, db, app, seedAdmin, seedRole, workersTable, factoriesTable, workerDocumentsTable, documentTypesTable,
-  workerChangesTable, tasksTable, taskEventsTable, adminsTable,
+  workerChangesTable, tasksTable, taskEventsTable, adminsTable, rolesTable,
 } from "../test/harness.ts";
+import { invalidateRolesCache } from "../lib/auth.ts";
 import { createTask } from "../services/tasks.ts";
 import { buildTaskResolution, runTaskAction, defaultChecklist } from "../services/taskResolve.ts";
 import { sendMeetingReminders } from "../services/taskDigest.ts";
 import { sent, resetSent } from "../test/botHarness.ts";
 import { addDaysStr } from "../lib/dates.ts";
+import { applyWorkerDocumentUpload } from "../services/workerDocuments.ts";
+import { ensureUploadDirs } from "../lib/uploads.ts";
 
 const opts = { skip: hasTestDb ? false : "set TEST_DATABASE_URL to run integration tests" };
 beforeEach(async () => { if (hasTestDb) { await resetDb(); resetSent(); } });
@@ -84,6 +87,53 @@ test("doc_expiring: request_doc ставить requestedAt і шле лінк у
   await seedRole("office", ["editData"], ["/tasks"]);
   const other = await seedAdmin({ role: "office", name: "Other" });
   assert.equal((await request(app).post(`/api/tasks/${t.id}/action/request_doc`).set("Cookie", other.cookie).set(H).send({})).status, 403);
+});
+
+test("файл з бота: сповіщення виконавцю з кнопкою «Підтвердити», файл видно в задачі, авто-чекліст requested→uploaded→verified", opts, async () => {
+  await ensureUploadDirs();
+  const { cookie, adminId } = await seedAdmin();
+  await db.update(adminsTable).set({ telegramId: "77500" }).where(eq(adminsTable.id, adminId));
+  await seedRole("owner", [], ["/tasks"], ["tasks"]);
+  await db.update(rolesTable).set({ notify: ["tasks"] }).where(eq(rolesTable.key, "owner"));
+  invalidateRolesCache();
+  const [w] = await db.insert(workersTable).values({ fullName: "Maria Shevchenko", isActive: true, telegramId: "77003", language: "uk" }).returning();
+  const [ty] = await db.insert(documentTypesTable).values({ name: "Paszport", code: "passport" }).returning();
+  const [doc] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: ty!.id, title: "Paszport", status: "present", expiresAt: addDaysStr(today, 15) }).returning();
+  const t = await createTask({ title: "Paszport спливає", workerId: w!.id, documentId: doc!.id, source: "auto:doc_expiring", sourceKey: "p", autoParams: { docTypeCode: "passport", workerName: w!.fullName }, assigneeAdminId: adminId, notify: false, checklist: defaultChecklist("doc_expiring", { docTypeCode: "passport" }) }, null);
+  const keys = (list: any[]) => list.filter(c => c.done).map(c => c.auto);
+  assert.deepEqual(keys((await buildTaskResolution(t)).context && (await db.select().from(tasksTable).where(eq(tasksTable.id, t.id)))[0]!.checklist as any[]), [], "спочатку нічого не відмічено");
+
+  // 1) запит скану → крок «requested» відмічено системою
+  await request(app).post(`/api/tasks/${t.id}/action/request_doc`).set("Cookie", cookie).set(H).send({});
+  let row = (await db.select().from(tasksTable).where(eq(tasksTable.id, t.id)))[0]!;
+  assert.deepEqual(keys(row.checklist as any[]), ["requested"]);
+  assert.equal((row.checklist as any[])[0].doneBy, null, "відмітила система");
+
+  // 2) працівник надіслав файл через бот → сповіщення виконавцю з кнопками, файл у контексті, крок «uploaded»
+  resetSent();
+  const PNG = Buffer.from("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", "latin1");
+  await applyWorkerDocumentUpload(w!.id, ty!.id, PNG, "scan.png");
+  const n = sent.find(s => String(s.chatId) === "77500");
+  assert.ok(n && /надіслав\(ла\) файл: \*Paszport\*/.test(n.text ?? ""), "виконавець отримав сповіщення");
+  const kb = (n!.extra.reply_markup.inline_keyboard as any[]).flat().map(b => b.callback_data);
+  assert.ok(kb.some((c: string) => c === `tska:verify_doc.${doc!.id}:${t.id}`), `кнопка підтвердити: ${kb.join(",")}`);
+  const r = await request(app).get(`/api/tasks/${t.id}`).set("Cookie", cookie);
+  assert.equal(r.body.resolution.context.uploads.length, 1);
+  assert.equal(r.body.resolution.context.uploads[0].fileUrl, `/api/worker-documents/${doc!.id}/file`);
+  assert.equal(r.body.resolution.context.uploads[0].isImage, true);
+  assert.equal(r.body.resolution.actions[0].code, `verify_doc.${doc!.id}`, "підтвердити — перша дія");
+  assert.deepEqual(keys(r.body.checklist), ["requested", "uploaded"]);
+
+  // 3) підтвердження з задачі → документ present, крок «verified»
+  const v = await request(app).post(`/api/tasks/${t.id}/action/verify_doc.${doc!.id}`).set("Cookie", cookie).set(H).send({});
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  row = (await db.select().from(tasksTable).where(eq(tasksTable.id, t.id)))[0]!;
+  assert.deepEqual(keys(row.checklist as any[]), ["requested", "uploaded", "verified"]);
+  assert.equal((await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, doc!.id)))[0]?.status, "present");
+  // чужий документ через параметр — відмова
+  const [other] = await db.insert(workersTable).values({ fullName: "Інший", isActive: true }).returning();
+  const [od] = await db.insert(workerDocumentsTable).values({ workerId: other!.id, docTypeId: ty!.id, title: "X", status: "pending", filePath: "x/y.png" }).returning();
+  assert.equal((await request(app).post(`/api/tasks/${t.id}/action/verify_doc.${od!.id}`).set("Cookie", cookie).set(H).send({})).status, 400);
 });
 
 test("payroll_change: контекст показує було→стало, dismiss_change закриває зміну; review_required → recompute", opts, async () => {

@@ -25,6 +25,8 @@ export default function Tasks() {
   const [tab, setTab] = usePersisted<Tab>("tasks.tab", "myday");
   const [adding, setAdding] = useState<null | Partial<{ kind: "task" | "group" | "meeting"; dueAt: string; dueTime: string; plannedFor: string }>>(null);
   const { setOpenId, drawer } = useOpenTask();
+  // deep-link з бота: /tasks?task=<id> відкриває шухляду
+  useEffect(() => { const id = Number(new URLSearchParams(window.location.search).get("task")); if (id) setOpenId(id); }, []);
   const { data: counters } = useQuery<{ overdue: number; today: number; week: number; meetingsToday: number }>({ queryKey: ["task-counters"], queryFn: () => get("/tasks/counters"), refetchInterval: 60000 });
   // клавіші: N нова, T сьогодні (перемикає на Мій день)
   useEffect(() => {
