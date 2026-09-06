@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Me, type RoleDef } from "../lib/api";
-import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, type Capability } from "../lib/roles";
+import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, type Capability, type NotifyType } from "../lib/roles";
 import { Card, Spinner, Badge, Empty, Select, Button, Modal, Input, Label } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
@@ -145,7 +145,7 @@ function RolesManager({ roles, confirm }: { roles: RoleDef[]; confirm: ReturnTyp
               </div>
             </div>
             <div className="flex shrink-0 gap-1">
-              {r.key !== "owner" && <button onClick={() => setEditing(r)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>}
+              <button onClick={() => setEditing(r)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={r.key === "owner" ? t("Сповіщення") : t("Редагувати")}><Pencil className="h-4 w-4" /></button>
               {!r.isSystem && <button onClick={async () => { if (await confirm({ title: t("Видалити роль «{name}»?", { name: r.label }), danger: true, confirmText: t("Видалити") })) remove.mutate(r.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>}
             </div>
           </div>
@@ -158,49 +158,70 @@ function RolesManager({ roles, confirm }: { roles: RoleDef[]; confirm: ReturnTyp
 
 function RoleEditor({ role, onClose, onSaved }: { role: RoleDef | null; onClose: () => void; onSaved: () => void }) {
   const t = useT();
+  const isOwner = role?.key === "owner";
   const [label, setLabel] = useState(role?.label ?? "");
   const [pages, setPages] = useState<Set<string>>(new Set(role?.pages ?? ["/"]));
   const [caps, setCaps] = useState<Set<string>>(new Set(role?.caps ?? []));
+  const [notify, setNotify] = useState<Set<string>>(new Set(role?.notify ?? []));
   const toggle = (set: Set<string>, setter: (s: Set<string>) => void, key: string) => {
     const next = new Set(set); next.has(key) ? next.delete(key) : next.add(key); setter(next);
   };
   const save = useMutation({
     mutationFn: () => {
-      const body = { label: label.trim(), pages: [...pages], caps: [...caps] };
+      const body = isOwner
+        ? { notify: [...notify] }
+        : { label: label.trim(), pages: [...pages], caps: [...caps], notify: [...notify] };
       return role ? patch(`/roles/${role.id}`, body) : post("/roles", body);
     },
     onSuccess: () => { toast.success(role ? t("Роль оновлено") : t("Роль створено")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
   return (
-    <Modal open onClose={onClose} title={role ? t("Редагувати роль") : t("Нова роль")}>
+    <Modal open onClose={onClose} title={role ? (isOwner ? t("Сповіщення ролі «Власник»") : t("Редагувати роль")) : t("Нова роль")}>
       <div className="space-y-4">
-        <div><Label>{t("Назва ролі")}</Label><Input value={label} onChange={e => setLabel(e.target.value)} placeholder={t("напр. Координатор складу")} autoFocus /></div>
+        {isOwner ? (
+          <p className="text-sm text-slate-500">{t("Повний доступ (незмінна) — можна налаштувати лише сповіщення бота.")}</p>
+        ) : (
+          <>
+            <div><Label>{t("Назва ролі")}</Label><Input value={label} onChange={e => setLabel(e.target.value)} placeholder={t("напр. Координатор складу")} autoFocus /></div>
+            <div>
+              <Label>{t("Доступ до сторінок")}</Label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {PAGE_KEYS.map(p => (
+                  <label key={p} className="flex items-center gap-2 text-sm text-slate-700">
+                    <input type="checkbox" checked={pages.has(p)} onChange={() => toggle(pages, setPages, p)} />
+                    {t(PAGE_LABEL[p] ?? p)}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label>{t("Дозволені дії")}</Label>
+              <div className="space-y-1.5">
+                {CAP_KEYS.map(c => (
+                  <label key={c} className="flex items-center gap-2 text-sm text-slate-700">
+                    <input type="checkbox" checked={caps.has(c)} onChange={() => toggle(caps, setCaps, c)} />
+                    {t(CAP_LABEL[c as Capability])}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
         <div>
-          <Label>{t("Доступ до сторінок")}</Label>
-          <div className="grid grid-cols-2 gap-1.5">
-            {PAGE_KEYS.map(p => (
-              <label key={p} className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={pages.has(p)} onChange={() => toggle(pages, setPages, p)} />
-                {t(PAGE_LABEL[p] ?? p)}
-              </label>
-            ))}
-          </div>
-        </div>
-        <div>
-          <Label>{t("Дозволені дії")}</Label>
+          <Label>{t("Сповіщення бота")}</Label>
           <div className="space-y-1.5">
-            {CAP_KEYS.map(c => (
-              <label key={c} className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={caps.has(c)} onChange={() => toggle(caps, setCaps, c)} />
-                {t(CAP_LABEL[c as Capability])}
+            {NOTIFY_KEYS.map(n => (
+              <label key={n} className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={notify.has(n)} onChange={() => toggle(notify, setNotify, n)} />
+                {t(NOTIFY_LABEL[n as NotifyType])}
               </label>
             ))}
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} disabled={!label.trim()} onClick={() => label.trim() && save.mutate()}>{t("Зберегти")}</Button>
+          <Button loading={save.isPending} disabled={!isOwner && !label.trim()} onClick={() => (isOwner || label.trim()) && save.mutate()}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>

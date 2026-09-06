@@ -9,17 +9,18 @@ import {
   driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
-  documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable,
+  documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable, absenceAttachmentsTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
   contractsTable, passportScanTokensTable, workerLegalityTable,
+  emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
-import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, type Role } from "../lib/roles";
+import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, NOTIFY_KEYS, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
 import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
@@ -55,6 +56,10 @@ router.use(authRequired);
 const RW = requireCap("editData");
 // Документи й підписання (паспорт-скан/анкета/умови) — той самий cap, що routes/contracts.ts.
 const WD = requireCap("workerDocs");
+// Перегляд картки/списку працівників — editData (як завжди) АБО viewWorkers
+// (read-only cap для ролі «бухгалтерія»: бачить дані, не редагує — самі
+// мутуючі роути (POST/PATCH/DELETE/fire/restore) лишаються лише на RW)
+const WORKERS_RO = requireAnyCap("editData", "viewWorkers");
 
 // КАНОН статусу «студент до 26» (як у сводній): студент = чекбокс АБО
 // legalStatus="student"; вік — з дати народження, прапорець under26 — лише
@@ -318,7 +323,7 @@ router.get("/attention", async (_req, res) => {
 });
 
 // ─── Workers ─────────────────────────────────────────────────────────────────
-router.get("/workers", RW, async (req, res) => {
+router.get("/workers", WORKERS_RO, async (req, res) => {
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : undefined;
   const companies = await db.select().from(companiesTable);
   const coMap = new Map(companies.map(c => [c.id, c.name]));
@@ -740,7 +745,7 @@ router.get("/badania/deducted", RW, async (_req, res) => {
 });
 
 // Історія змін профілю (журнал worker_changes) — таймлайн у профілі
-router.get("/workers/:id/changes", RW, async (req, res) => {
+router.get("/workers/:id/changes", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db.select({ c: workerChangesTable, adminName: adminsTable.name })
     .from(workerChangesTable)
@@ -801,7 +806,7 @@ router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
 
 // Per-worker profile + analytics (for the worker detail page).
 const DAY_OFFSET: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
-router.get("/workers/:id", RW, async (req, res) => {
+router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
@@ -925,7 +930,7 @@ router.get("/workers/:id", RW, async (req, res) => {
 });
 
 // Аванси працівника — для блоку на сторінці профілю (той самий гейт, що /advances)
-router.get("/workers/:id/advances", RW, async (req, res) => {
+router.get("/workers/:id/advances", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db
     .select({
@@ -953,14 +958,25 @@ router.get("/workers/:id/advances", RW, async (req, res) => {
   });
 });
 
+// Довідки/скріншоти до пропусків, прикріплені працівником у боті: мапа entryId → файли
+type AbsenceFile = { id: number; fileName: string | null; fileMime: string | null; createdAt: Date };
+async function absenceFilesFor(entryIds: number[]): Promise<Map<number, AbsenceFile[]>> {
+  const map = new Map<number, AbsenceFile[]>();
+  if (!entryIds.length) return map;
+  const rows = await db.select({ id: absenceAttachmentsTable.id, entryId: absenceAttachmentsTable.entryId, fileName: absenceAttachmentsTable.fileName, fileMime: absenceAttachmentsTable.fileMime, createdAt: absenceAttachmentsTable.createdAt })
+    .from(absenceAttachmentsTable).where(inArray(absenceAttachmentsTable.entryId, entryIds)).orderBy(absenceAttachmentsTable.id);
+  for (const r of rows) { const arr = map.get(r.entryId) ?? []; arr.push({ id: r.id, fileName: r.fileName, fileMime: r.fileMime, createdAt: r.createdAt }); map.set(r.entryId, arr); }
+  return map;
+}
+
 // Пропуски працівника з усіх затверджених тижнів — блок на сторінці профілю
-router.get("/workers/:id/absences", RW, async (req, res) => {
+router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db
     .select({
       entryId: scheduleEntriesTable.id, factory: factoriesTable.name,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
-      reason: scheduleEntriesTable.absenceReason,
+      reason: scheduleEntriesTable.absenceReason, explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
       weekStart: scheduleWeeksTable.weekStart,
@@ -972,12 +988,14 @@ router.get("/workers/:id/absences", RW, async (req, res) => {
   const absences = rows
     .map(r => ({
       entryId: r.entryId, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), shift: r.shift,
-      reason: r.reason, excused: !!r.reason, justified: !!r.excusedFlag,
+      reason: r.reason, explainedAt: r.explainedAt, excused: !!r.reason, justified: !!r.excusedFlag,
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
       deductedMonth: r.deductedMonth, deductedAmount: r.deductedAmount,
     }))
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 60);
+  const files = await absenceFilesFor(absences.map(a => a.entryId));
+  for (const a of absences as any[]) a.attachments = files.get(a.entryId) ?? [];
   const counted = absences.filter(a => !a.justified);
   const penaltyTotal = Math.round(absences.reduce((s, a) => s + a.penalty, 0) * 100) / 100;
   ok(res, { total: counted.length, justified: absences.length - counted.length, penaltyTotal, absences });
@@ -1101,7 +1119,7 @@ router.delete("/document-types/:id", RW, async (req, res) => {
 });
 
 // ─── Per-worker documents ───────────────────────────────────────────────────────
-router.get("/workers/:id/documents", RW, async (req, res) => {
+router.get("/workers/:id/documents", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id)).orderBy(desc(workerDocumentsTable.id));
   ok(res, docs);
@@ -1812,10 +1830,14 @@ router.get("/factories", async (req, res) => {
     if (rates) { entry.rate = p.rate; entry.rateNetto = p.rateNetto; entry.invoiceRate = p.invoiceRate; }
     (posByFactory.get(p.factoryId) ?? posByFactory.set(p.factoryId, []).get(p.factoryId)!).push(entry);
   }
+  // отримувачі графіку (email + шаблон); clientEmail лишається кешем «усі через кому»
+  const { factoryEmailMap } = await import("../services/email");
+  const recipients = await factoryEmailMap(rows.map(r => r.id), new Map(rows.map(r => [r.id, r.clientEmail])));
   const withCo = rows.map(r => ({
     ...r,
     companyName: r.companyId ? (coMap.get(r.companyId) ?? null) : null,
     positions: posByFactory.get(r.id) ?? [],
+    emailRecipients: recipients.get(r.id) ?? [],
   }));
   // NIP/P&L-підпис — лише viewFinance; ставки (оплата + фактурна) — також factoryRates
   if (fin) return ok(res, withCo);
@@ -1970,6 +1992,11 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (showCode !== undefined) patch.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) patch.requiresSanepid = !!req.body.requiresSanepid;
   if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // «Biuro» — офісні працівники
+  // мінімум днів доступності на тиждень (1–7; ""/null/0 = без правила)
+  if (req.body?.minDaysPerWeek !== undefined) {
+    const n = Number(req.body.minDaysPerWeek);
+    patch.minDaysPerWeek = Number.isInteger(n) && n >= 1 ? Math.min(7, n) : null;
+  }
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
   const [f] = Object.keys(patch).length
@@ -1979,11 +2006,27 @@ router.patch("/factories/:id", RW, async (req, res) => {
   ok(res, stripFactoryEcho(f, req));
 });
 
-// Shared self-signup link for a factory — a fixed Telegram deep link
-// (t.me/<bot>?start=fac<id>, independent of WEB_APP_URL/token TTL, never
-// needs to change). Opening it starts bot/index.ts's worker_signup:lang flow,
-// which hands the candidate a passport-scan+questionnaire link
-// (createSelfScanToken) — office reviews the resulting profile after.
+// Отримувачі графіку фабрики: повна заміна списку [{email, name?, templateId?}]
+router.put("/factories/:id/email-recipients", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];
+  if (!f) return fail(res, 404, "Не знайдено");
+  const list = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+  const { isEmail, setFactoryRecipients } = await import("../services/email");
+  for (const r of list) {
+    if (!isEmail(String(r?.email ?? "").trim())) return fail(res, 400, `Невірний email: ${String(r?.email ?? "")}`);
+  }
+  const saved = await setFactoryRecipients(id, list.map((r: any) => ({
+    email: String(r.email), name: r.name != null ? String(r.name) : null,
+    templateId: Number.isInteger(Number(r.templateId)) && Number(r.templateId) > 0 ? Number(r.templateId) : null,
+  })));
+  ok(res, saved);
+});
+
+// Shared self-signup links for a factory — fixed Telegram deep links
+// (t.me/<bot>?start=fac<id> / facs<id>, independent of WEB_APP_URL/token TTL).
+// `fac` = старий флоу (ім'я в чаті), `facs` = новий (bot/index.ts worker_signup:lang
+// → passport-scan+questionnaire link, createSelfScanToken). Office reviews after.
 router.get("/factories/:id/join-link", RW, async (req, res) => {
   const id = Number(req.params.id);
   const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];
@@ -2175,11 +2218,12 @@ router.get("/schedule", async (req, res) => {
   const available: Record<string, { workerId: number; name: string; code: string | null; positionId: number | null; gender: string | null }[]> = {};
   let factoryInfo: { shiftCount: number; usesAvailability: boolean; genMode: string; usesPositions: boolean; usesGender: boolean; shiftTimes: { start: string; end: string }[] } | null = null;
   if (factoryId != null) {
-    // who is assigned each day (any shift)
+    // who is assigned each day (any shift) / each day+shift
     const assignedThatDay = new Map<string, Set<number>>(); // day -> workerIds
+    const assignedThatShift = new Set<string>(); // "day-shift-workerId"
     for (const e of entries) {
       if (!assignedThatDay.has(e.day)) assignedThatDay.set(e.day, new Set());
-      if (e.workerId) assignedThatDay.get(e.day)!.add(e.workerId);
+      if (e.workerId) { assignedThatDay.get(e.day)!.add(e.workerId); assignedThatShift.add(`${e.day}-${e.shift}-${e.workerId}`); }
     }
 
     const av = await db
@@ -2192,8 +2236,10 @@ router.get("/schedule", async (req, res) => {
     for (const a of av) {
       if (a.workerId == null) continue;
       if (a.wFactory && a.wFactory !== factoryId) continue; // other factory's worker
-      if (assignedThatDay.get(a.day)?.has(a.workerId)) continue; // already working that day
       const key = `${a.day}-${a.shift}`;
+      // Запас — по зміні, не по дню: людина на 1-й зміні лишається в запасі 2-ї (друга
+      // зміна того ж дня дозволена; веб підсвітить замалий відпочинок помаранчевим)
+      if (assignedThatShift.has(`${key}-${a.workerId}`)) continue;
       const dedup = `${key}-${a.workerId}`;
       if (seen.has(dedup)) continue; seen.add(dedup);
       (reserve[key] ??= []).push({ workerId: a.workerId, name: a.name ?? "—", code: a.code, positionId: a.positionId, gender: a.gender });
@@ -2525,10 +2571,33 @@ router.post("/schedule/entry", RW, async (req, res) => {
   // draft-рядок, щоб графік можна було зібрати вручну ще до «Згенерувати»
   // (дзеркально призначенню водіїв наперед у PUT /schedule/driver-assignments).
   const week = await ensureWeekRow(String(weekStart));
-  // avoid duplicate / two shifts same day
-  const existing = await db.select().from(scheduleEntriesTable)
-    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.dayOfWeek, day)));
-  if (existing.length) return fail(res, 400, "Працівник уже має зміну цього дня");
+  // Дві зміни в один день на ТІЙ САМІЙ фабриці — дозволено (1+2 тощо), але з
+  // попередженням restGapHours, якщо пауза між змінами < MIN_REST_HOURS (веб підсвічує
+  // помаранчевим). Дубль тієї ж зміни й зміна на іншій фабриці того дня — блок.
+  const workerWeek = await db.select().from(scheduleEntriesTable)
+    .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId)));
+  const sameDay = workerWeek.filter(e => e.dayOfWeek === day);
+  if (sameDay.some(e => e.factoryId === factoryId && e.shift === shift)) return fail(res, 400, "Працівник уже в цій зміні");
+  if (sameDay.some(e => e.factoryId !== factoryId)) return fail(res, 400, "Працівник уже має зміну цього дня на іншій фабриці");
+  let restGapHours: number | null = null;
+  if (workerWeek.length) {
+    const facIds = [...new Set([factoryId, ...workerWeek.map(e => e.factoryId)])];
+    const facs = await db.select().from(factoriesTable).where(inArray(factoriesTable.id, facIds));
+    const facById = new Map(facs.map(f => [f.id, f]));
+    const ov = await loadWeekShiftOverrides(String(weekStart));
+    const timeOf = (fid: number, d: string, s: string) =>
+      overrideFor(ov, fid, String(weekStart), d, s) ?? factoryShifts(facById.get(fid))[Number(s) - 1];
+    const tTime = timeOf(factoryId, String(day), String(shift));
+    if (tTime) {
+      const { shiftIntervalMin, minRestGapHours, MIN_REST_HOURS } = await import("../services/restGap");
+      const others = workerWeek.flatMap(e => {
+        const tm = timeOf(e.factoryId, e.dayOfWeek, e.shift);
+        return tm ? [shiftIntervalMin(DAYS.indexOf(e.dayOfWeek), tm)] : [];
+      });
+      const gap = minRestGapHours(shiftIntervalMin(DAYS.indexOf(day), tTime), others);
+      if (gap !== null && gap < MIN_REST_HOURS) restGapHours = gap;
+    }
+  }
   // Клітинка з разовим override часу → фіксуємо його тривалість у hoursOverride,
   // щоб облік годин не взяв дефолтні 8 для зміни поза конфігом фабрики.
   const [cellOv] = await db.select().from(factoryShiftOverridesTable).where(and(
@@ -2540,7 +2609,7 @@ router.post("/schedule/entry", RW, async (req, res) => {
     weekId: week.id, workerId, factoryId, dayOfWeek: day, shift, status: "scheduled",
     hoursOverride: cellOv ? shiftDurationHours(cellOv.start, cellOv.end) : null,
   }).returning();
-  ok(res, e);
+  ok(res, { ...e, restGapHours });
 });
 
 router.delete("/schedule/entry/:id", RW, async (req, res) => {
@@ -2816,18 +2885,61 @@ router.post("/schedule/email", RW, async (req, res) => {
   }
 });
 
-// Email templates (settings-backed). Scenario "schedule" = client schedule email.
+// Email templates — глобальний список шаблонів листа з графіком (таблиця email_templates).
+// Кожен отримувач фабрики може мати свій; isDefault — для отримувачів без шаблону.
 router.get("/email-templates", RW, async (_req, res) => {
-  const { getScheduleEmailTemplate, SCHEDULE_EMAIL_DEFAULTS } = await import("../services/email");
-  ok(res, { schedule: await getScheduleEmailTemplate(), defaults: { schedule: SCHEDULE_EMAIL_DEFAULTS } });
+  const { listEmailTemplates, SCHEDULE_EMAIL_DEFAULTS } = await import("../services/email");
+  ok(res, { templates: await listEmailTemplates(), defaults: SCHEDULE_EMAIL_DEFAULTS });
 });
 
-router.put("/email-templates", RW, async (req, res) => {
-  const { subject, body } = req.body?.schedule ?? {};
-  if (typeof subject !== "string" || !subject.trim() || typeof body !== "string" || !body.trim())
-    return fail(res, 400, "Тема і текст листа обовʼязкові");
-  const { saveScheduleEmailTemplate } = await import("../services/email");
-  await saveScheduleEmailTemplate(subject.trim(), body.trim());
+type TemplateInput = { name: string; subject: string; body: string };
+// null = невалідно (причина у другому елементі)
+const cleanTemplateBody = (b: any): [TemplateInput | null, string] => {
+  const name = String(b?.name ?? "").trim();
+  const subject = String(b?.subject ?? "").trim();
+  const body = String(b?.body ?? "").trim();
+  if (!name) return [null, "Вкажіть назву шаблону"];
+  if (!subject || !body) return [null, "Тема і текст листа обовʼязкові"];
+  return [{ name: name.slice(0, 80), subject, body }, ""];
+};
+
+router.post("/email-templates", RW, async (req, res) => {
+  const [c, err] = cleanTemplateBody(req.body);
+  if (!c) return fail(res, 400, err);
+  await (await import("../services/email")).ensureDefaultTemplate();
+  const [row] = await db.insert(emailTemplatesTable).values(c).returning();
+  ok(res, row);
+});
+
+router.put("/email-templates/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [c, err] = cleanTemplateBody(req.body);
+  if (!c) return fail(res, 400, err);
+  const [row] = await db.update(emailTemplatesTable).set({ ...c, updatedAt: new Date() })
+    .where(eq(emailTemplatesTable.id, id)).returning();
+  if (!row) return fail(res, 404, "Не знайдено");
+  ok(res, row);
+});
+
+// Зробити стандартним (рівно один isDefault)
+router.post("/email-templates/:id/default", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const exists = (await db.select({ id: emailTemplatesTable.id }).from(emailTemplatesTable).where(eq(emailTemplatesTable.id, id)))[0];
+  if (!exists) return fail(res, 404, "Не знайдено");
+  await db.transaction(async (tx) => {
+    await tx.update(emailTemplatesTable).set({ isDefault: false });
+    await tx.update(emailTemplatesTable).set({ isDefault: true }).where(eq(emailTemplatesTable.id, id));
+  });
+  ok(res, {});
+});
+
+// Видалити (не стандартний; отримувачі з цим шаблоном переходять на стандартний через ON DELETE SET NULL)
+router.delete("/email-templates/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const row = (await db.select().from(emailTemplatesTable).where(eq(emailTemplatesTable.id, id)))[0];
+  if (!row) return fail(res, 404, "Не знайдено");
+  if (row.isDefault) return fail(res, 400, "Стандартний шаблон видалити не можна — спершу зробіть стандартним інший");
+  await db.delete(emailTemplatesTable).where(eq(emailTemplatesTable.id, id));
   ok(res, {});
 });
 
@@ -3134,7 +3246,7 @@ router.get("/hours", RW, async (req, res) => {
         workerId: w.workerId, name: w.name, code: w.code, factoryId: w.factoryId, factory: w.factory, firm: w.firm,
         factoryShiftCount: w.factoryShiftCount,
         rate: svodniRate(w.profileRate, w.factoryId, w.positionId), ...stud26Of(w),
-        byShift: w.byShift, shifts: w.shifts, hours,
+        byShift: w.byShift, shifts: w.shifts, weekendShifts: w.weekendShifts, hours,
         reportHours: w.reportHours, reportSubmitted: w.reportSubmitted, reportLink: w.reportLink,
         factoryHours: w.factoryHours, factoryDays: w.factoryDays, factoryConfirmed: w.factoryConfirmed,
         createdViaImport: w.createdViaImport,
@@ -3165,6 +3277,7 @@ router.get("/hours", RW, async (req, res) => {
     ...(canSvodni ? { svodniDone } : {}),
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
+    totalWeekendShifts: workers.reduce((s, w) => s + w.weekendShifts, 0),
     totalReportHours: round2(workers.reduce((s, w) => s + (w.reportHours ?? 0), 0)),
     totalFactoryHours: round2(workers.reduce((s, w) => s + (w.factoryHours ?? 0), 0)),
     ...(isOwner ? {
@@ -3844,7 +3957,9 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   const attachWorkerIds: number[] = Array.isArray(req.body?.attachWorkerIds) ? req.body.attachWorkerIds.map(Number).filter(Boolean) : [];
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return fail(res, 400, "Некоректний email отримувача");
+  // кілька адрес через кому (clientEmail фабрики тепер — список отримувачів)
+  const toList = to.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+  if (!toList.length || toList.some(a => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a))) return fail(res, 400, "Некоректний email отримувача");
   // PDF-рапорти вибраних працівників по цій фабриці (докази розбіжностей)
   const attachments: { filename: string; content: Buffer }[] = [];
   const missing: string[] = [];
@@ -3866,7 +3981,7 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   }
   try {
     const { sendEmailWithAttachments } = await import("../services/email");
-    await sendEmailWithAttachments(to, subject, body, attachments);
+    await sendEmailWithAttachments(toList.join(", "), subject, body, attachments);
   } catch (e: any) {
     logger.error({ err: e }, "discrepancy email failed");
     return fail(res, 500, e?.message ?? "Помилка надсилання email");
@@ -4155,6 +4270,7 @@ router.get("/absences", RW, async (req, res) => {
       entryId: scheduleEntriesTable.id, workerId: scheduleEntriesTable.workerId,
       name: workersTable.fullName, code: workersTable.workerCode, factory: factoriesTable.name, city: factoriesTable.city,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, reason: scheduleEntriesTable.absenceReason,
+      explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
       deductedMonth: scheduleEntriesTable.absenceDeductedMonth, deductedAmount: scheduleEntriesTable.absenceDeductedAmount,
       weekStart: scheduleWeeksTable.weekStart,
@@ -4168,6 +4284,7 @@ router.get("/absences", RW, async (req, res) => {
     .map(r => ({
       entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory, city: r.city,
       date: entryDateStr(String(r.weekStart), r.day), day: r.day, shift: r.shift, reason: r.reason,
+      explainedAt: r.explainedAt, // коли працівник вніс пояснення в боті (NULL = причину поставив адмін/водій)
       excused: !!r.reason,
       justified: !!r.excusedFlag, // «виправдано» адміном: не рахується в кількість/штраф
       penalty: absencePenaltyOf({ absenceExcused: r.excusedFlag, absencePenalty: r.penaltyOverride }),
@@ -4177,6 +4294,8 @@ router.get("/absences", RW, async (req, res) => {
     }))
     .filter(a => a.date >= monthStart && a.date < monthEnd) // keep only days that fall inside the queried month
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
+  const files = await absenceFilesFor(absences.map(a => a.entryId));
+  for (const a of absences as any[]) a.attachments = files.get(a.entryId) ?? [];
   // Кількісні підсумки рахуються БЕЗ виправданих (justified) пропусків
   const counted = absences.filter(a => !a.justified);
   const noShow = counted.filter(a => !a.excused).length;
@@ -4215,6 +4334,27 @@ router.patch("/absences/:entryId", RW, async (req, res) => {
     entryId: e!.id, justified: e!.absenceExcused, penaltyOverride: e!.absencePenalty,
     penalty: absencePenaltyOf({ absenceExcused: e!.absenceExcused, absencePenalty: e!.absencePenalty }),
   });
+});
+
+// Файл довідки до пропуску (за авторизацією; особисті документи — nosniff, inline)
+router.get("/absence-attachments/:id/file", WORKERS_RO, async (req, res) => {
+  const id = Number(req.params.id);
+  const [f] = await db.select().from(absenceAttachmentsTable).where(eq(absenceAttachmentsTable.id, id));
+  if (!f) return fail(res, 404, "Файл не знайдено");
+  const abs = path.resolve(UPLOADS_ROOT, f.filePath);
+  if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
+  if (f.fileMime) res.type(f.fileMime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.fileName || `absence-${id}`)}`);
+  fs.createReadStream(abs).pipe(res);
+});
+
+router.delete("/absence-attachments/:id", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [f] = await db.delete(absenceAttachmentsTable).where(eq(absenceAttachmentsTable.id, id)).returning();
+  if (!f) return fail(res, 404, "Файл не знайдено");
+  deleteStoredFile(f.filePath);
+  ok(res, { id });
 });
 
 // ─── Absence requests (worker self-reported) — approve / reject on the site ──────
@@ -4513,6 +4653,20 @@ router.get("/advances/gratyfikant", requireCap("svodniSensitive"), async (req, r
 // ── Перенесення виплачених залічок у сводну (вкладка «У сводну») ──────────────
 // Список кандидатів: виплачені аванси, ще не перенесені (svodni_month IS NULL).
 // Саме перенесення/відміна — POST /svodni/apply-zaliczki | /svodni/undo-zaliczka.
+// Фінансова довідка до запиту авансу: години/нараховано за конвенцією сводної,
+// незняті залічки, kary, badania, борг M−1 (services/workerBalance.ts). Гейт —
+// той самий, що й на розділ «Аванси» (RW): рішення про аванс ухвалює саме ця роль.
+router.get("/advances/:id/balance", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [r] = await db.select({ id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId, factoryId: advanceRequestsTable.factoryId })
+    .from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id));
+  if (!r) return fail(res, 404, "Не знайдено");
+  const { computeWorkerBalance } = await import("../services/workerBalance");
+  const bal = await computeWorkerBalance(r.workerId, { factoryId: r.factoryId ?? null, excludeAdvanceId: r.id });
+  if (!bal) return fail(res, 404, "Працівника не знайдено");
+  ok(res, bal);
+});
+
 router.get("/advances/svodni-pending", RW, async (_req, res) => {
   const rows = await db.select({
     id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
@@ -4958,12 +5112,12 @@ router.get("/roles", requireMainAdmin, async (_req, res) => {
   for (const a of admins) inUse.set(a.role ?? "", (inUse.get(a.role ?? "") ?? 0) + 1);
   ok(res, rows.map(r => ({
     id: r.id, key: r.key, label: r.label, isSystem: r.isSystem,
-    pages: r.pages ?? [], caps: r.caps ?? [], inUse: inUse.get(r.key) ?? 0,
+    pages: r.pages ?? [], caps: r.caps ?? [], notify: r.notify ?? [], inUse: inUse.get(r.key) ?? 0,
   })));
 });
 
 router.post("/roles", requireMainAdmin, async (req, res) => {
-  const { label, key, pages, caps } = req.body ?? {};
+  const { label, key, pages, caps, notify } = req.body ?? {};
   if (!label?.trim()) return fail(res, 400, "Вкажіть назву ролі");
   // key is internal (the label is what's shown); non-latin names slug to "" → auto-generate
   let k = slugify(key || label) || `role-${Date.now().toString(36).slice(-6)}`;
@@ -4971,7 +5125,7 @@ router.post("/roles", requireMainAdmin, async (req, res) => {
   const max = (await db.select({ s: rolesTable.sortOrder }).from(rolesTable)).reduce((a, r) => Math.max(a, r.s ?? 0), 0);
   const [r] = await db.insert(rolesTable).values({
     key: k, label: String(label).trim(), isSystem: false,
-    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), sortOrder: max + 1,
+    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), notify: cleanKeys(notify, NOTIFY_KEYS), sortOrder: max + 1,
   }).returning();
   invalidateRolesCache();
   ok(res, r);
@@ -4981,12 +5135,17 @@ router.patch("/roles/:id", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const [role] = await db.select().from(rolesTable).where(eq(rolesTable.id, id));
   if (!role) return fail(res, 404, "Роль не знайдено");
-  if (role.key === OWNER) return fail(res, 400, "Роль «Власник» не можна змінювати");
-  const { label, pages, caps } = req.body ?? {};
+  const { label, pages, caps, notify } = req.body ?? {};
+  // owner is the immutable superuser — label/pages/caps can't change, but its
+  // notification prefs are a plain per-role list like everyone else's.
+  if (role.key === OWNER && (label !== undefined || pages !== undefined || caps !== undefined)) {
+    return fail(res, 400, "Роль «Власник»: можна змінювати лише сповіщення");
+  }
   const patch: any = {};
   if (label !== undefined) { if (!String(label).trim()) return fail(res, 400, "Назва не може бути порожньою"); patch.label = String(label).trim(); }
   if (pages !== undefined) patch.pages = cleanKeys(pages, PAGE_KEYS);
   if (caps !== undefined) patch.caps = cleanKeys(caps, CAP_KEYS);
+  if (notify !== undefined) patch.notify = cleanKeys(notify, NOTIFY_KEYS);
   const [r] = await db.update(rolesTable).set(patch).where(eq(rolesTable.id, id)).returning();
   invalidateRolesCache();
   ok(res, r);
@@ -5146,6 +5305,9 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   const seatsOf = new Map(drivers.map(d => [d.id, d.seats]));
 
   let entries: { factoryId: number; day: string; shift: string }[] = [];
+  // Self-transport people per cell — NOT in headcount, but shown so the driver
+  // understands why the board count is lower than the factory schedule list.
+  let selfEntries: { factoryId: number; day: string; shift: string }[] = [];
   let assigns: { factoryId: number; day: string; shift: string; driverId: number; driverName: string | null; kind: string }[] = [];
   const cancelledSet = new Set<string>();
   if (week) {
@@ -5159,6 +5321,10 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       .from(scheduleEntriesTable)
       .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
       .where(and(eq(scheduleEntriesTable.weekId, week.id), ne(workersTable.selfTransport, true)));
+    selfEntries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
+      .from(scheduleEntriesTable)
+      .innerJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+      .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(workersTable.selfTransport, true)));
     assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name, kind: driverShiftAssignmentsTable.kind })
       .from(driverShiftAssignmentsTable).leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(eq(driverShiftAssignmentsTable.weekId, week.id));
@@ -5172,6 +5338,7 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
     const n = Math.min(6, Math.max(1, f.shiftCount ?? fShifts.length ?? 1));
     const effTime = (day: string, s: number) => overrideFor(boardOv, f.id, weekStart, day, s) ?? fShifts[s - 1];
     const headcountOf = (day: string, sc: string) => entries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
+    const selfCountOf = (day: string, sc: string) => selfEntries.filter(e => e.factoryId === f.id && e.day === day && e.shift === sc).length;
     const cellAssigns = (day: string, sc: string, kind: string) =>
       assigns.filter(a => a.factoryId === f.id && a.day === day && a.shift === sc && a.kind === kind).map(a => ({ id: a.driverId, name: a.driverName }));
 
@@ -5205,12 +5372,13 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
       for (let s = 1; s <= 6; s++) {
         const sc = String(s);
         const headcount = headcountOf(day, sc);
+        const selfCount = selfCountOf(day, sc);
         const cellDrivers = cellAssigns(day, sc, "delivery");
         const pickupDrivers = cellAssigns(day, sc, "pickup");
-        if (headcount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
+        if (headcount === 0 && selfCount === 0 && cellDrivers.length === 0 && pickupDrivers.length === 0) continue; // only relevant shifts
         const st = effTime(day, s);
         const cancelled = cancelledSet.has(`${f.id}-${day}-${sc}`);
-        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
+        cells.push({ day, shift: sc, start: st?.start ?? null, end: st?.end ?? null, headcount, selfCount, drivers: cellDrivers, pickupDrivers, pickupGap: cancelled ? null : pickupGapFor(day, s - 1), cancelled });
       }
     }
     return { id: f.id, name: f.name, shiftCount: n, cells };

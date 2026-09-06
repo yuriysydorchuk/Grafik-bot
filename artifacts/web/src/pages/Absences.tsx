@@ -5,16 +5,22 @@ import { toast } from "sonner";
 import { get, post, patch, DAY_UK, SHIFT_UK, type DayCode, type ShiftCode } from "../lib/api";
 import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge, Button } from "../components/ui";
+import { AbsenceFiles, type AbsenceFile } from "../components/AbsenceFiles";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
 
+// Дата внесення пояснення працівником (бот) — показуємо, бо пояснення може прийти значно пізніше за пропуск
+const fmtExplained = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
+
 interface Absence {
   entryId: number; workerId: number; name: string; code: string | null; factory: string | null;
   city: string | null;
   date: string; day: DayCode; shift: ShiftCode; reason: string | null;
+  explainedAt?: string | null;  // коли працівник вніс пояснення в боті
+  attachments?: AbsenceFile[];  // довідки/скріншоти з бота
   excused: boolean;             // відпросився (є причина)
   justified: boolean;           // виправдано адміном — не рахується в кількість/штраф
   penalty: number;              // ефективний штраф, zł
@@ -373,7 +379,11 @@ export default function Absences() {
                       : a.excused ? <Badge color="amber">{t("Відпросився")}</Badge>
                       : <Badge color="rose">{t("Нез'явлення")}</Badge>}
                   </td>
-                  <td className="px-4 py-2.5 text-slate-600">{a.reason || <span className="text-slate-300">{t("— без причини —")}</span>}</td>
+                  <td className="px-4 py-2.5 text-slate-600">
+                    {a.reason || <span className="text-slate-300">{t("— без причини —")}</span>}
+                    {a.reason && a.explainedAt && <span className="ml-1.5 text-xs text-slate-400" title={t("Дата внесення пояснення працівником")}>({t("пояснено")} {fmtExplained(a.explainedAt)})</span>}
+                    {!!a.attachments?.length && <span className="ml-1.5"><AbsenceFiles files={a.attachments} /></span>}
+                  </td>
                   <td className="px-4 py-2.5 text-right tabular-nums">
                     {a.justified || a.penalty === 0 ? <span className="text-slate-300">—</span> : (
                       <span className="font-medium text-slate-700">
@@ -437,7 +447,8 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, s
                   {a.justified ? <Badge color="green">{t("Виправдано")}</Badge>
                     : a.excused ? <Badge color="amber">{t("Відпросився")}</Badge>
                     : <Badge color="rose">{t("Нез'явлення")}</Badge>}
-                  {a.reason && <span className="text-slate-500">📝 {a.reason}</span>}
+                  {a.reason && <span className="text-slate-500">📝 {a.reason}{a.explainedAt && <span className="ml-1 text-xs text-slate-400">({t("пояснено")} {fmtExplained(a.explainedAt)})</span>}</span>}
+                  <AbsenceFiles files={a.attachments} />
                   <span className="ml-auto inline-flex items-center gap-1.5">
                     {a.deductedMonth ? (
                       <>

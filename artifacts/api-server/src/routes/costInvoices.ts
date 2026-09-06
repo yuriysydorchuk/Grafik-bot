@@ -9,11 +9,11 @@ import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import { db , vehiclesTable } from "@workspace/db";
-import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable, cleaningProjectsTable, counterpartyRulesTable } from "@workspace/db";
+import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable, cleaningProjectsTable, counterpartyRulesTable, agreementConditionsTable, agreementChargesTable } from "@workspace/db";
 import { and, eq, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile } from "../lib/uploads";
+import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile, shrinkDocBuffer, SCAN_UPLOAD_LIMIT } from "../lib/uploads";
 import { lastSyncStatus, syncKsef } from "../services/ksef";
 import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile, upgradeArchiveNamesV2 } from "../services/invoiceArchive";
 import { logInvoiceAudit, auditDiff, invoiceAuditRows } from "../services/invoiceAudit";
@@ -81,8 +81,8 @@ async function validInvoiceCat(v: string): Promise<boolean> {
 
 // Уніфікований рядок списку: origin визначає, звідки правити (ksef | local)
 export type CostInvoiceRow = {
-  key: string; origin: "ksef" | "local"; id: number;
-  source: "ksef" | "manual" | "scan" | "sheet";
+  key: string; origin: "ksef" | "local" | "agreement"; id: number;
+  source: "ksef" | "manual" | "scan" | "sheet" | "agreement";
   companyId: number | null; firm: string | null;
   issueDate: string | null; number: string | null;
   seller: string | null; sellerNip: string | null;
@@ -93,6 +93,7 @@ export type CostInvoiceRow = {
   hostelId: number | null;    // привʼязка до хостелу (лише local-рядки)
   vehicleId: number | null;   // привʼязка до авто (лізинг/сервіс; лише local-рядки)
   city: string | null;        // cost-center місто (P&L по містах; лише local-рядки)
+  serviceMonth: string | null; // «за який місяць» послуга (P&L; лише local-рядки)
   paymentMethod: PayMethod;   // ефективний спосіб оплати (ручний ?? авто)
   paymentMethodSource: "manual" | "auto" | null;
   cashReport: boolean;        // «рапорт готівковий» — чекбокс кшєнгової
@@ -106,6 +107,9 @@ export type CostInvoiceRow = {
   addedAt: string | null;
   category: string;           // ефективна категорія витрат (ключ expense_categories або 'other')
   categorySource: "manual" | "auto";
+  agreementId: number | null; // умова, з якої згенеровано запис (лише origin='agreement')
+  agreementKind: "one_time" | "fixed_term" | "indefinite" | null;
+  isProforma: boolean;        // проформа (лише local: manual|scan — чекбокс на сайті)
 };
 
 router.get("/cost-invoices", async (req, res) => {
@@ -153,7 +157,7 @@ router.get("/cost-invoices", async (req, res) => {
       paid,
       paidDate: k.manualStatus === "paid" ? k.manualPaidDate ?? k.paidDate : k.manualStatus ? null : k.paidDate,
       paidSource: k.manualStatus ? "manual" : k.paidDate ? k.paidVia ?? "bank" : null,
-      note: null, hasFile: false, dupOfKsefId: null, hostelId: null, vehicleId: null, city: null,
+      note: k.note, hasFile: false, dupOfKsefId: null, hostelId: null, vehicleId: null, city: null, serviceMonth: null,
       paymentMethod: method, paymentMethodSource: k.paymentMethod ? "manual" : method ? "auto" : null,
       cashReport: k.cashReport, cleaning: k.segment === "cleaning", cleaningProjectId: k.cleaningProjectId,
       overdue: !paid && !!k.dueDate && k.dueDate < today,
@@ -161,6 +165,7 @@ router.get("/cost-invoices", async (req, res) => {
       driveFileId: k.drivePdfId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
       category: kCats.get(k.id)?.cat ?? "other",
       categorySource: kCats.get(k.id)?.manual ? "manual" : "auto",
+      agreementId: null, agreementKind: null, isProforma: false,
     });
   }
   for (const l of localRows) {
@@ -178,7 +183,7 @@ router.get("/cost-invoices", async (req, res) => {
       paid,
       paidDate: l.manualStatus === "paid" ? l.manualPaidDate ?? l.paidDate : l.manualStatus ? null : l.paidDate,
       paidSource: l.manualStatus ? "manual" : paid ? "sheet" : null,
-      note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null, hostelId: l.hostelId, vehicleId: l.vehicleId, city: l.city,
+      note: l.note, hasFile: !!l.filePath, dupOfKsefId: dup?.id ?? null, hostelId: l.hostelId, vehicleId: l.vehicleId, city: l.city, serviceMonth: l.serviceMonth,
       paymentMethod: method, paymentMethodSource: l.paymentMethod ? "manual" : method ? "auto" : null,
       cashReport: l.cashReport, cleaning: l.cleaning, cleaningProjectId: l.cleaningProjectId,
       overdue: !paid && !!l.dueDate && l.dueDate < today,
@@ -187,6 +192,39 @@ router.get("/cost-invoices", async (req, res) => {
       addedAt: l.importedAt ? l.importedAt.toISOString() : null,
       category: lCats.get(l.id)?.cat ?? "other",
       categorySource: lCats.get(l.id)?.manual ? "manual" : "auto",
+      agreementId: null, agreementKind: null, isProforma: l.docType === "PROFORMA",
+    });
+  }
+
+  // третє джерело — умови (agreement_charges ⋈ agreement_conditions): щомісячні
+  // записи-витрати періодичних/одноразових зобов'язань, окремий бакет на сторінці
+  const aConds = [eq(agreementChargesTable.month, month), eq(agreementChargesTable.status, "active")];
+  const chargeRows = await db.select({ charge: agreementChargesTable, cond: agreementConditionsTable })
+    .from(agreementChargesTable)
+    .innerJoin(agreementConditionsTable, eq(agreementChargesTable.agreementId, agreementConditionsTable.id))
+    .where(and(...aConds, ...(companyId ? [eq(agreementConditionsTable.companyId, companyId)] : [])));
+  for (const { charge: a, cond: c } of chargeRows) {
+    // спосіб оплати: точковий на місяці ?? дефолт умови («авто» — як XML у KSeF)
+    const method: PayMethod = (a.paymentMethod as PayMethod) ?? (c.paymentMethod as PayMethod) ?? null;
+    rows.push({
+      key: `a${a.id}`, origin: "agreement", id: a.id, source: "agreement",
+      companyId: c.companyId, firm: companies.get(c.companyId) ?? null,
+      issueDate: `${a.month}-01`, number: null,
+      seller: c.counterparty, sellerNip: null,
+      gross: a.amount, dueDate: null,
+      // оплата — лише ручна позначка кшєнгової на записі місяця (банк-матчингу для умов нема)
+      paid: a.paid, paidDate: a.paidDate, paidSource: a.paid ? "manual" : null,
+      note: a.note ?? c.note, hasFile: !!c.filePath, dupOfKsefId: null,
+      hostelId: null, vehicleId: null, city: c.city, serviceMonth: a.month,
+      paymentMethod: method, paymentMethodSource: a.paymentMethod ? "manual" : method ? "auto" : null,
+      cashReport: a.cashReport, cleaning: false, cleaningProjectId: null,
+      overdue: false,
+      driveFileId: c.driveFileId, drivePdfId: null, driveError: c.driveError,
+      addedBy: a.createdBy ? admins.get(a.createdBy) ?? null : null,
+      addedAt: a.createdAt ? a.createdAt.toISOString() : null,
+      category: c.category,
+      categorySource: "manual",
+      agreementId: c.id, agreementKind: c.kind as "one_time" | "fixed_term" | "indefinite", isProforma: false,
     });
   }
   rows.sort((a, b) => String(b.issueDate ?? "").localeCompare(String(a.issueDate ?? "")));
@@ -296,6 +334,7 @@ function parseBody(b: any): { err?: string; patch?: Record<string, unknown> } {
   if (b.dueDate !== undefined) { if (b.dueDate && !validDate(b.dueDate)) return { err: "dueDate: YYYY-MM-DD" }; patch.dueDate = b.dueDate || null; }
   if (b.note !== undefined) patch.note = String(b.note ?? "").trim() || null;
   if (b.category !== undefined) patch.category = String(b.category ?? "").trim() || null;
+  if (b.isProforma !== undefined) patch.docType = b.isProforma ? "PROFORMA" : null;
   return { patch };
 }
 
@@ -407,6 +446,12 @@ router.patch("/cost-invoices/:id", async (req, res) => {
   if (vehicleErr) return fail(res, 400, vehicleErr);
     if (hostelErr) return fail(res, 400, hostelErr);
   }
+  // «за який місяць» послуга (P&L по містах відносить фактуру на цей місяць)
+  if (b.serviceMonth !== undefined) {
+    const sm = b.serviceMonth ? String(b.serviceMonth).trim() : null;
+    if (sm && !/^\d{4}-(0[1-9]|1[0-2])$/.test(sm)) return fail(res, 400, "serviceMonth must be YYYY-MM");
+    patch.serviceMonth = sm;
+  }
   // позначка «на прибирання» + вспульнота (розділ /cleaning)
   if (b.cleaning !== undefined) patch.cleaning = !!b.cleaning;
   {
@@ -488,6 +533,7 @@ router.patch("/cost-invoices/ksef/:id", async (req, res) => {
     if (b.dueDate !== null && !validDate(b.dueDate)) return fail(res, 400, "dueDate: YYYY-MM-DD");
     patch.dueDate = b.dueDate;
   }
+  if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();
   {
@@ -523,7 +569,8 @@ router.delete("/cost-invoices/:id", async (req, res) => {
 });
 
 // ── Файл (скан/фото фактури) ───────────────────────────────────────────────────
-const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// ліміт 60 МБ: великі PDF стискає shrinkDocBuffer (gs), фото зменшує браузер
+const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize: SCAN_UPLOAD_LIMIT } });
 
 // Розпізнавання з сайту: файл → Document AI → чернетка полів (нічого не зберігає;
 // збереження — звичайним POST /cost-invoices + аплоуд файлу)
@@ -550,7 +597,7 @@ router.post("/cost-invoices/:id/file", uploadScan.single("file"), async (req, re
   const mime = sniffDocMime(req.file.buffer);
   if (!mime || mime.includes("msword") || mime.includes("wordprocessing")) return fail(res, 400, "Дозволені PDF або фото");
   const stored = makeStoredName(req.file.originalname || "scan");
-  fs.writeFileSync(path.join(INVOICES_DIR, stored), req.file.buffer);
+  fs.writeFileSync(path.join(INVOICES_DIR, stored), await shrinkDocBuffer(req.file.buffer, mime, logger));
   deleteStoredFile(row.filePath);
   const rel = path.join("invoices", stored);
   // новий файл = нова архівна копія: стару — в кошик, перезалив у фоні

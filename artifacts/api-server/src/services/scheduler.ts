@@ -16,6 +16,8 @@ import { resolveWeekRow, type WeekRow } from "./weeks";
 import { factoryShifts, factoryShiftStart, nowWarsaw, warsawDateStr, minutesUntilShift, pickupAssignmentSlot } from "../bot/time";
 import { loadDateShiftOverrides, shiftOverrideKey } from "./shiftOverrides";
 import { t, asLang, tb, oLang } from "../bot/i18n";
+import { notifyByType } from "../bot/notify";
+import { adminWantsNotify } from "../bot/roles";
 
 // All cron times in Europe/Warsaw timezone
 const TZ = "Europe/Warsaw";
@@ -72,22 +74,29 @@ let pickupGapTask: ScheduledTask | null = null;
 let bankImportTask: ScheduledTask | null = null;
 let bankApiTask: ScheduledTask | null = null;
 let cfoTask: ScheduledTask | null = null;
+let agreementChargesTask: ScheduledTask | null = null;
 let fleetAlertTask: ScheduledTask | null = null;
 let serverStatsSampleTask: ScheduledTask | null = null;
 let serverStatsReportTask: ScheduledTask | null = null;
+let recruiterHoursSheetTask: ScheduledTask | null = null;
 let reminderHour = 18;
 
-// Фінансові алерти йдуть головному адміну (не в ALERT_TELEGRAM_CHAT_ID — то канал
-// системних помилок). Best-effort: помилка відправки не має валити крон.
-// FINANCE_ALERTS_ENABLED=0 вимикає їх (локальна розробка: тестовий бот дублював
-// продові сповіщення головному адміну).
+// Фінансові алерти йдуть ролям, які самі підписані на тип "finance_alerts"
+// (roles.notify — гранулярний вибір, кожна роль включно з owner вирішує сама;
+// міграція 2026-09-01-role-notify-prefs.sql бекфілить це всім наявним ролям,
+// тож деплой сам по собі нічого не вимикає). Не в ALERT_TELEGRAM_CHAT_ID — то
+// канал системних помилок. Best-effort: помилка відправки не має валити крон.
+// FINANCE_ALERTS_ENABLED=0 вимикає їх (локальна розробка: тестовий бот
+// дублював продові сповіщення).
 async function sendFinanceAlerts(lines: string[]): Promise<void> {
   if (process.env.FINANCE_ALERTS_ENABLED === "0" || process.env.FINANCE_ALERTS_ENABLED === "false") return;
   if (!lines.length) return;
   const shown = lines.slice(0, 10);
   if (lines.length > shown.length) shown.push(`…і ще ${lines.length - shown.length} подій — деталі на сторінці Витяги`);
   try {
-    const admins = await db.select().from(adminsTable).where(eq(adminsTable.isMain, true));
+    const all = await db.select().from(adminsTable);
+    const admins: typeof all = [];
+    for (const a of all) if (await adminWantsNotify(a, "finance_alerts")) admins.push(a);
     for (const a of admins) {
       if (!a.telegramId) continue;
       try { await bot.telegram.sendMessage(a.telegramId, shown.join("\n\n")); }
@@ -267,6 +276,21 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Умови (/cost-invoices → «Умови»): щомісячна генерація agreement_charges за
+  // поточний місяць для чинних fixed_term/indefinite умов — 1-го числа о 07:00
+  // Warsaw (до денного bankImportTask). Одноразові й заднім числом заведені вже
+  // покриті бекфілом при збереженні умови (routes/agreements.ts).
+  agreementChargesTask = cron.schedule(
+    "0 7 1 * *",
+    async () => {
+      try {
+        const { materializeMonth, currentMonthStr } = await import("./agreementConditions");
+        await materializeMonth(currentMonthStr());
+      } catch (e: any) { logger.warn({ err: e?.message }, "Agreement charges materialize failed"); }
+    },
+    { timezone: TZ },
+  );
+
   // Weekly Monday 08:00 Warsaw: insurance/inspection expiry digest for the fleet
   // (head driver + main admin in the bot). Раз на тиждень — без щоденного спаму.
   fleetAlertTask = cron.schedule(
@@ -303,6 +327,21 @@ export function startScheduler() {
     { timezone: TZ },
   );
 
+  // Daily 06:20 Warsaw: recruiter payout feed — свіжі (≤60 днів стажу) активні
+  // працівники з годинами обліку (мінус 8, не нижче 0) у окремий Google Sheet,
+  // який підтягує зовнішній сервіс розрахунку рекрутерів. Після банк-імпорту.
+  recruiterHoursSheetTask = cron.schedule(
+    "20 6 * * *",
+    async () => {
+      try {
+        const { syncRecruiterHoursSheet } = await import("./recruiterHoursSheet");
+        const r = await syncRecruiterHoursSheet();
+        logger.info(r, "Daily recruiter hours sheet sync");
+      } catch (e: any) { logger.warn({ err: e?.message }, "Daily recruiter hours sheet sync failed"); }
+    },
+    { timezone: TZ },
+  );
+
   pruneNotifications(); // run once on boot so the table is bounded immediately
 
   logger.info({ cron: `0 ${reminderHour} * * 0`, tz: TZ }, "Weekly reminder scheduler started");
@@ -335,9 +374,11 @@ export function stopScheduler() {
   bankImportTask?.stop();     bankImportTask = null;
   bankApiTask?.stop();        bankApiTask = null;
   cfoTask?.stop();            cfoTask = null;
+  agreementChargesTask?.stop(); agreementChargesTask = null;
   fleetAlertTask?.stop();     fleetAlertTask = null;
   serverStatsSampleTask?.stop(); serverStatsSampleTask = null;
   serverStatsReportTask?.stop(); serverStatsReportTask = null;
+  recruiterHoursSheetTask?.stop(); recruiterHoursSheetTask = null;
 }
 
 export function setReminderHour(hour: number) {
@@ -700,17 +741,11 @@ export async function sendWeeklyReminders(): Promise<{ notified: number; skipped
       }
     }
 
-    const admins = await db.select().from(adminsTable);
-    for (const admin of admins) {
-      if (!admin.telegramId) continue;
-      try {
-        await bot.telegram.sendMessage(
-          admin.telegramId,
-          `🤖 *Авто-нагадування*\n\nТиждень: ${formatWeekStart(nextWeek)}\n✅ Надіслано: ${notified}\n⚠️ Без Telegram: ${skipped}\n📭 Не заповнили: ${missing.length}`,
-          { parse_mode: "Markdown" },
-        );
-      } catch { /* ignore */ }
-    }
+    await notifyByType(
+      "weekly_summary",
+      `🤖 *Авто-нагадування*\n\nТиждень: ${formatWeekStart(nextWeek)}\n✅ Надіслано: ${notified}\n⚠️ Без Telegram: ${skipped}\n📭 Не заповнили: ${missing.length}`,
+      { parse_mode: "Markdown" },
+    );
 
     logger.info({ week: nextWeek, notified, skipped }, "Weekly reminders sent");
   } catch (e: any) {

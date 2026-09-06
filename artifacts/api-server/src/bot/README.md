@@ -32,6 +32,11 @@ bot/
 ├── chat.ts       трекінг повідомлень бота (для масового очищення < 48 год) + pruning
 ├── display.ts    хелпери форматування (DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml)
 ├── time.ts       час/зміни у Europe/Warsaw (+ time.test.ts)
+├── handlers/     виокремлені блоки, реєструються В index.ts ДО загальних on(text/photo/document), чужі стани пропускають через next():
+│   ├── invoiceScan.ts  «📄 Фактура» — скан фактури коштової (Document AI)
+│   └── absences.ts     «🚫 Мої пропуски» (список за місяць + попередній), одноразове пояснення пропуску
+│                       (стан absent:explain_reason) і окрема опція «📎 Додати фото/документ» — один файл
+│                       (absence_attachments; стан absent:attach)
 └── README.md     цей файл
 ```
 

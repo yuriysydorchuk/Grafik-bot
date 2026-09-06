@@ -72,7 +72,7 @@ test("PATCH: ручний метод/рапорт на обох типах ря�
   assert.equal(lp.status, 200);
   // ksef: ручний метод перекриває XML; термін оплати вписується
   const kp = await request(app).patch(`/api/cost-invoices/ksef/${kid}`).set("Cookie", buch).set(H)
-    .send({ paymentMethod: "gotowka", cashReport: true, dueDate: "2026-08-30" });
+    .send({ paymentMethod: "gotowka", cashReport: true, dueDate: "2026-12-30" });
   assert.equal(kp.status, 200);
 
   const r = await request(app).get(`/api/cost-invoices?month=${MONTH}`).set("Cookie", buch);
@@ -81,7 +81,7 @@ test("PATCH: ручний метод/рапорт на обох типах ря�
   assert.equal(ksefRow.paymentMethod, "gotowka");
   assert.equal(ksefRow.paymentMethodSource, "manual");
   assert.equal(ksefRow.cashReport, true);
-  assert.equal(ksefRow.dueDate, "2026-08-30");
+  assert.equal(ksefRow.dueDate, "2026-12-30");
   assert.equal(ksefRow.overdue, false, "термін у майбутньому — не прострочена");
   assert.equal(localRow.paymentMethod, "gotowka");
   assert.equal(localRow.cashReport, true);
@@ -93,6 +93,28 @@ test("PATCH: ручний метод/рапорт на обох типах ря�
   const k2 = r2.body.rows.find((x: any) => x.origin === "ksef");
   assert.equal(k2.paymentMethod, "przelew");
   assert.equal(k2.paymentMethodSource, "auto");
+});
+
+test("проформа: чекбокс на ручній фактурі, нотатка на обох типах рядків (KSeF+local)", opts, async () => {
+  const created = await request(app).post("/api/cost-invoices").set("Cookie", buch).set(H)
+    .send({ companyId, issueDate: "2026-08-06", number: "PF 1/08/2026", amount: "150", isProforma: true, note: "чекаємо оригінал" });
+  assert.equal(created.status, 200);
+
+  const kid = await insertKsef({});
+  await request(app).patch(`/api/cost-invoices/ksef/${kid}`).set("Cookie", buch).set(H).send({ note: "уточнити суму з бухгалтерією" });
+
+  const r = await request(app).get(`/api/cost-invoices?month=${MONTH}`).set("Cookie", buch);
+  const localRow = r.body.rows.find((x: any) => x.id === created.body.id && x.origin === "local");
+  assert.equal(localRow.isProforma, true);
+  assert.equal(localRow.note, "чекаємо оригінал");
+  const ksefRow = r.body.rows.find((x: any) => x.origin === "ksef");
+  assert.equal(ksefRow.note, "уточнити суму з бухгалтерією");
+  assert.equal(ksefRow.isProforma, false, "проформа — лише для ручних/скан рядків");
+
+  // зняти позначку проформи
+  await request(app).patch(`/api/cost-invoices/${created.body.id}`).set("Cookie", buch).set(H).send({ isProforma: false });
+  const r2 = await request(app).get(`/api/cost-invoices?month=${MONTH}`).set("Cookie", buch);
+  assert.equal(r2.body.rows.find((x: any) => x.id === created.body.id).isProforma, false);
 });
 
 test("гейт: роль без costInvoices не бачить модуль; хибний метод — 400", opts, async () => {

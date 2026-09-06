@@ -85,7 +85,7 @@ const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
 import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
-import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor } from "./roles";
+import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
@@ -102,6 +102,7 @@ installChatTracking();
 import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerDocuments } from "./handlers/workerDocuments";
+import { registerWorkerAbsences } from "./handlers/absences";
 
 bot.use(async (ctx, next) => {
   try {
@@ -125,6 +126,8 @@ bot.use(async (ctx, next) => {
 registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
 registerWorkerDocuments(bot as any);
+// «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
+registerWorkerAbsences(bot as any, workerMenuFor);
 
 // Time/view helpers live in ./time and ./views.
 
@@ -426,6 +429,7 @@ bot.action(/^olang:(uk|en|ru)$/, async (ctx) => {
 bot.hears(bhears("📋 Замовлення фабрик"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику через 👥 Управління → 🏭 Фабрики."));
   setState(tid, "order:select_factory", {});
@@ -439,6 +443,7 @@ bot.hears(bhears("📋 Замовлення фабрик"), async (ctx) => {
 bot.hears(bhears("🗓 Генерувати графік"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."), adminMenu(al));
   setState(tid, "gen:select_factory", {});
@@ -450,6 +455,7 @@ bot.hears(bhears("🗓 Генерувати графік"), async (ctx) => {
 bot.hears(bhears("✅ Перегляд графіків"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers"], al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "view:select_factory", {});
@@ -460,7 +466,8 @@ bot.hears(bhears("✅ Перегляд графіків"), async (ctx) => {
 
 bot.hears(bhears("👥 Управління"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
-  return ctx.reply(tb(al, "Управління:"), managementMenu(al));
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers", "assignDrivers", "deleteWorkers"], al))) return;
+  return ctx.reply(tb(al, "Управління:"), await managementMenuFor(admin, al));
 });
 
 // ─── Admin: Notifications ─────────────────────────────────────────────────────
@@ -468,6 +475,7 @@ bot.hears(bhears("👥 Управління"), async (ctx) => {
 bot.hears(bhears("📢 Розсилки"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const { getReminderHour } = await import("../services/scheduler");
   return ctx.reply(
     `📢 *${tb(al, "Розсилки")}*\n\n⏰ ${tb(al, "Авто-нагадування: щонеділі о *{h}:00* (Київ)", { h: getReminderHour() })}`,
@@ -520,6 +528,7 @@ bot.hears(bhears("📢 Розіслати затверджений графік"
 bot.hears(bhears("📥 Імпорт графіку (Excel)"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "schedule_import:awaiting_file", {});
   return ctx.reply(
     tb(al, `📥 *Імпорт графіку з Excel*\n\nНадішліть Excel файл у форматі який генерує бот.\n\n*Очікуваний формат:*\n• Аркуш "Загальний" з колонками: ПІБ, Код, потім дні (Пн зм1, Пн зм2...)\n• Або будь-який аркуш з колонками: ПІБ | Код | Зміна | День\n\nБот визначить тиждень з назви файлу (формат: \`Графік 2026.06.01.xlsx\`)`),
@@ -534,6 +543,7 @@ bot.hears(bhears("📥 Імпорт графіку (Excel)"), async (ctx) => {
 bot.hears(bhears("➕ Додати працівника"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const token = await createOfficeScanToken(admin.id);
   return ctx.reply(tb(al,
     "📷 Відкрий цю сторінку на телефоні кандидата (чи своєму) — там камера й рамка-підказка для паспорта, дійсна 30 хв:\n{link}\n\nПрофіль створиться автоматично після сканування, я напишу сюди, коли буде готово.",
@@ -543,6 +553,7 @@ bot.hears(bhears("➕ Додати працівника"), async (ctx) => {
 bot.hears(bhears("📋 Список працівників"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers"], al))) return;
   const factories = await db.select().from(factoriesTable);
   setState(tid, "workers_list:select_filter", {});
   return ctx.reply(
@@ -558,6 +569,7 @@ bot.hears(bhears("📋 Список працівників"), async (ctx) => {
 bot.hears(bhears("📥 Імпорт працівників"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "import:awaiting_file", {});
   return ctx.reply(
     tb(al, "📥 *Масовий імпорт працівників*\n\nНадішліть CSV або Excel (.xlsx) файл.\n\n*Формат CSV:*\n```\nПрізвище Ім'я,telegram_id,код\nІванов Іван,123456789,0001\nПетров Петро,,\n```\nКолонки telegram_id та код — необов'язкові. Перший рядок — заголовок (пропускається)."),
@@ -568,6 +580,7 @@ bot.hears(bhears("📥 Імпорт працівників"), async (ctx) => {
 bot.hears(bhears("🔗 Прив'язати Telegram"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "link:enter_name", { type: "worker" });
   return ctx.reply(tb(al, "Введіть ім'я працівника для прив'язки:"), Markup.removeKeyboard());
 });
@@ -576,6 +589,7 @@ bot.hears(bhears("🔗 Прив'язати Telegram"), async (ctx) => {
 
 bot.hears(bhears("🚗 Водії"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   return ctx.reply(tb(al, "Управління водіями:"), Markup.keyboard([
     [tb(al, "➕ Додати водія"), tb(al, "📋 Список водіїв")],
     [tb(al, "📨 Запросити водія"), tb(al, "👑 Призначити головним")],
@@ -608,8 +622,9 @@ bot.hears(bhears("🗑 Видалити водія"), async (ctx) => {
 
 bot.hears(bhears("📋 Список водіїв"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
-  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."), managementMenu(al));
+  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."), await managementMenuFor(admin, al));
   const list = drivers.map((d, i) =>
     `${i + 1}. ${d.isHeadDriver ? "👑 " : ""}*${d.name}*${d.vehicle ? ` (${d.vehicle})` : ""}${d.telegramId ? " ✅" : " ⚠️"}`
   ).join("\n");
@@ -626,8 +641,9 @@ bot.hears(bhears("🔗 Прив'язати вручну (ID)"), async (ctx) => {
 bot.hears(bhears("📨 Запросити водія"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
-  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв. Спочатку додайте водія."), managementMenu(al));
+  if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв. Спочатку додайте водія."), await managementMenuFor(admin, al));
   setState(tid, "invite_driver:select", {});
   return ctx.reply(tb(al, "Оберіть водія, щоб отримати посилання-запрошення:"), Markup.keyboard([
     ...drivers.map(d => [`${d.name}${d.telegramId ? " ✅" : " ⚠️"}`]),
@@ -638,6 +654,7 @@ bot.hears(bhears("📨 Запросити водія"), async (ctx) => {
 bot.hears(bhears("👑 Призначити головним"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, ["editData", "assignDrivers"], al))) return;
   const drivers = await db.select().from(driversTable).where(eq(driversTable.isActive, true));
   if (drivers.length === 0) return ctx.reply(tb(al, "Немає водіїв."));
   setState(tid, "set_head_driver", {});
@@ -648,6 +665,7 @@ bot.hears(bhears("👑 Призначити головним"), async (ctx) => {
 
 bot.hears(bhears("🏭 Фабрики"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   return ctx.reply(tb(al, "Управління фабриками:"), Markup.keyboard([
     [tb(al, "➕ Додати фабрику"), tb(al, "📋 Список фабрик")],
     [tb(al, "⏰ Часи змін фабрики"), tb(al, "📧 Email клієнта")],
@@ -658,6 +676,7 @@ bot.hears(bhears("🏭 Фабрики"), async (ctx) => {
 bot.hears(bhears("⏰ Часи змін фабрики"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "factory_times:select", {});
@@ -667,6 +686,7 @@ bot.hears(bhears("⏰ Часи змін фабрики"), async (ctx) => {
 bot.hears(bhears("📧 Email клієнта"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Спочатку додайте фабрику."));
   setState(tid, "factory_email:select", {});
@@ -676,12 +696,14 @@ bot.hears(bhears("📧 Email клієнта"), async (ctx) => {
 bot.hears(bhears("➕ Додати фабрику"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "add_factory", {});
   return ctx.reply(tb(al, "Введіть назву фабрики:"), Markup.removeKeyboard());
 });
 
 bot.hears(bhears("📋 Список фабрик"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   const factories = await db.select().from(factoriesTable);
   if (factories.length === 0) return ctx.reply(tb(al, "Немає фабрик."));
   const list = factories.map((f, i) => `${i + 1}. *${f.name}*${f.address ? `\n   📍 ${f.address}` : ""}`).join("\n");
@@ -693,10 +715,11 @@ bot.hears(bhears("📋 Список фабрик"), async (ctx) => {
 bot.hears(bhears("🔥 Звільнити працівника"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "deleteWorkers", al))) return;
   const workers = await db.select().from(workersTable)
     .where(and(eq(workersTable.isActive, true), ne(workersTable.status, "fired")))
     .orderBy(workersTable.fullName);
-  if (workers.length === 0) return ctx.reply(tb(al, "Немає активних працівників."), managementMenu(al));
+  if (workers.length === 0) return ctx.reply(tb(al, "Немає активних працівників."), await managementMenuFor(admin, al));
   setState(tid, "fire_worker:select", { workers: workers.map(w => ({ id: w.id, name: w.fullName, code: w.workerCode })) });
   return ctx.reply(tb(al, "Оберіть працівника для звільнення:"), Markup.keyboard([...workers.map(w => [`${w.fullName} (${w.workerCode ?? "—"})`]), [tb(al, "⬅️ Назад")]]).resize());
 });
@@ -767,17 +790,18 @@ bot.hears(bhears("🗑 Видалити адміна"), async (ctx) => {
 bot.hears(bhears("☁️ Google Drive"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   await ctx.reply(tb(al, "⏳ Перевіряю папки на Google Drive..."));
   try {
     await ensureFolderStructure();
     const link = await getDriveFolderLink();
     return ctx.reply(
       tb(al, "☁️ *Google Drive*\n\n📁 Головна папка:\n{link}\n\nСтруктура:\n📂 Графіки — Excel графіків по тижнях\n📂 Облік годин — річний Excel з вкладками по місяцях\n📂 Поїздки водіїв — статистика водіїв\n📂 Рапорти — фото рапортів по фабриках та місяцях", { link: link ?? "" }),
-      { parse_mode: "Markdown", ...managementMenu(al) },
+      { parse_mode: "Markdown", ...await managementMenuFor(admin, al) },
     );
   } catch (e) {
     logger.error({ err: e }, "Drive folder check error");
-    return ctx.reply(tb(al, "❌ Помилка підключення до Google Drive. Перевірте налаштування сервісного акаунту."), managementMenu(al));
+    return ctx.reply(tb(al, "❌ Помилка підключення до Google Drive. Перевірте налаштування сервісного акаунту."), await managementMenuFor(admin, al));
   }
 });
 
@@ -1276,10 +1300,29 @@ bot.action("hrv:x", async (ctx) => {
 });
 
 // A day off can be requested three ways: off a concrete ASSIGNED shift (approved
-// schedule, ≥24h ahead), off a day with FILLED AVAILABILITY (schedule not made yet),
-// or off any calendar day within the next 2 weeks. The scheduler approves/rejects
-// all of them; whole-day requests are stored with shift = NULL.
+// schedule, ≥ABS_MIN_HOURS ahead), off a day with FILLED AVAILABILITY (schedule not
+// made yet), or off any calendar day within the next 2 weeks. The scheduler
+// approves/rejects all of them; whole-day requests are stored with shift = NULL.
+// Правило «мінімум 48 год до зміни» (03.09.2026, було 24): для цілого дня рахуємо
+// від старту 1-ї зміни фабрики працівника (фолбек 06:00).
 const ABS_DAY_HORIZON = 14;
+const ABS_MIN_HOURS = 48;
+// Перший календарний день, на який ще можна попросити вихідний цілком.
+function absFirstAllowedDay(now: Date, shift1Start: string): Date {
+  const [hh, mm] = shift1Start.split(":").map(Number);
+  const d = new Date(now); d.setHours(0, 0, 0, 0);
+  for (let i = 0; i < ABS_DAY_HORIZON + 2; i++) {
+    const start = new Date(d); start.setHours(hh || 6, mm || 0, 0, 0);
+    if ((start.getTime() - now.getTime()) / 3600000 >= ABS_MIN_HOURS) return d;
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+async function absShift1Start(workerFactoryId: number | null): Promise<string> {
+  if (workerFactoryId == null) return "06:00";
+  const [f] = await db.select().from(factoriesTable).where(eq(factoriesTable.id, workerFactoryId));
+  return f ? factoryShiftStart(f, "1") : "06:00";
+}
 const absYmd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const absDateOf = (weekStart: string, day: string): Date => {
   const d = new Date(weekStart + "T00:00:00");
@@ -1334,21 +1377,21 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     };
   }).sort((a, b) => a._t - b._t);
 
-  const eligible = items.filter(i => i.hoursUntil >= 24 && !taken.has(i.dateStr));
-  const tooClose = items.filter(i => i.hoursUntil >= 0 && i.hoursUntil < 24);
+  const eligible = items.filter(i => i.hoursUntil >= ABS_MIN_HOURS && !taken.has(i.dateStr));
+  const tooClose = items.filter(i => i.hoursUntil >= 0 && i.hoursUntil < ABS_MIN_HOURS);
   const shiftDates = new Set(items.filter(i => i.hoursUntil >= 0).map(i => i.dateStr));
 
   // 2) Days with filled availability (this + next week), no assigned shift there.
   const avail = await db.select({ weekStart: availabilityTable.weekStart, day: availabilityTable.dayOfWeek })
     .from(availabilityTable)
     .where(and(eq(availabilityTable.workerId, worker.id), inArray(availabilityTable.weekStart, [curMon, nextMon])));
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(worker.factoryId));
   const seenDays = new Set<string>();
   const dayItems: { date: string; label: string; day: DayOfWeek }[] = [];
   for (const a of avail) {
     const d = absDateOf(String(a.weekStart), a.day);
     const ds = absYmd(d);
-    if (d < tomorrow || seenDays.has(ds) || shiftDates.has(ds) || taken.has(ds)) continue;
+    if (d < firstDay || seenDays.has(ds) || shiftDates.has(ds) || taken.has(ds)) continue;
     seenDays.add(ds);
     dayItems.push({ date: ds, day: a.day as DayOfWeek, label: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) });
   }
@@ -1365,7 +1408,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
     ...dayItems.map(dI => [{ text: `📋 ${dI.label} ${dayShort(lang, dI.day)} — ${t(lang, "abs.dayAvail")}`, callback_data: `absday:${dI.date}` }]),
     [{ text: t(lang, "abs.otherDay"), callback_data: "absother" }],
   ];
-  setState(tid, "absence:pick", { workerId: worker.id, lang, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
+  setState(tid, "absence:pick", { workerId: worker.id, lang, factoryId: worker.factoryId ?? null, items: eligible.map(i => ({ id: i.id, weekStart: i.weekStart, weekId: i.weekId, day: i.day, shift: i.shift })) });
   return ctx.reply(msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } });
 });
 
@@ -1377,17 +1420,18 @@ bot.action("absother", async (ctx) => {
   const lang = asLang(st.data.lang);
   const taken = await absTakenDates(st.data.workerId);
   const now = nowWarsaw();
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(st.data.factoryId ?? null));
   const btns: { text: string; callback_data: string }[] = [];
   for (let i = 1; i <= ABS_DAY_HORIZON; i++) {
     const d = new Date(now); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0);
     const ds = absYmd(d);
-    if (taken.has(ds)) continue;
+    if (taken.has(ds) || d < firstDay) continue;
     const dayName = DAYS[(d.getDay() + 6) % 7]!;
     btns.push({ text: `${d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })} ${dayShort(lang, dayName)}`, callback_data: `absday:${ds}` });
   }
   const kb: typeof btns[] = [];
   for (let i = 0; i < btns.length; i += 2) kb.push(btns.slice(i, i + 2));
-  return ctx.reply(t(lang, "abs.pickDay"), { reply_markup: { inline_keyboard: kb } });
+  return ctx.reply(t(lang, "abs.pickDay") + t(lang, "abs.ruleHint"), { parse_mode: "Markdown", reply_markup: { inline_keyboard: kb } });
 });
 
 // Whole-day pick (from the availability list or the 14-day picker).
@@ -1399,9 +1443,10 @@ bot.action(/^absday:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const dateStr = (ctx.match as RegExpMatchArray)[1]!;
   const d = new Date(dateStr + "T00:00:00");
   const now = nowWarsaw();
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(0, 0, 0, 0);
+  const firstDay = absFirstAllowedDay(now, await absShift1Start(st.data.factoryId ?? null));
   const limit = new Date(now); limit.setDate(limit.getDate() + ABS_DAY_HORIZON); limit.setHours(23, 59, 59, 0);
-  if (d < tomorrow || d > limit) return;
+  if (d > limit) return;
+  if (d < firstDay) return ctx.reply(t(lang, "abs.tooLateDay", { date: d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" }) }), { parse_mode: "Markdown" });
   const dayIdx = (d.getDay() + 6) % 7;
   const mon = new Date(d); mon.setDate(mon.getDate() - dayIdx);
   const weekStart = absYmd(mon);
@@ -1621,11 +1666,13 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
   if (!worker) return ctx.reply(t(lang, "notRegistered"));
   // Manual factories: workers don't fill availability — admins set the schedule
   let shiftCount = 3;
+  let minDays: number | null = null; // правило фабрики: мінімум днів доступності на тиждень
+  let factoryName = "";
   if (worker.factoryId) {
-    const [f] = await db.select({ shiftCount: factoriesTable.shiftCount, usesAvailability: factoriesTable.usesAvailability })
+    const [f] = await db.select({ name: factoriesTable.name, shiftCount: factoriesTable.shiftCount, usesAvailability: factoriesTable.usesAvailability, minDaysPerWeek: factoriesTable.minDaysPerWeek })
       .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
     if (f && f.usesAvailability === false) return ctx.reply(t(lang, "av.manual"));
-    if (f) shiftCount = f.shiftCount;
+    if (f) { shiftCount = f.shiftCount; minDays = f.minDaysPerWeek; factoryName = f.name; }
   }
   const weekStart = getNextMonday();
   const responses: Record<string, Shift[] | null> = {};
@@ -1640,7 +1687,7 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
   const alreadyFilled = existing.length > 0;
   // Already-submitted shifts are locked: the worker may ADD more, but can't remove/change these.
   const locked = existing.map(a => `${a.day}-${a.shift}`);
-  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked });
+  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked, minDays, factoryName });
   await ctx.reply(
     alreadyFilled ? t(lang, "av.already", { week: formatWeekStart(weekStart) }) : t(lang, "av.intro", { week: formatWeekStart(weekStart) }),
     { parse_mode: "Markdown" },
@@ -1650,7 +1697,8 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
 
 
 // Availability day selection callback: avail_MON_1 toggles a shift; avail_MON_off = day off
-bot.action(/^avail_([a-z]+)_(1|2|3|off)$/, async (ctx) => {
+// (зміни 1–6 — клавіатура малює до shiftCount фабрики, див. views.ts)
+bot.action(/^avail_([a-z]+)_(1|2|3|4|5|6|off)$/, async (ctx) => {
   const tid = String(ctx.from.id);
   const state = getState(tid);
   if (state?.action !== "avail:filling") { await ctx.answerCbQuery(); return; }
@@ -1683,6 +1731,21 @@ bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   const lang = asLang(state.data.lang);
   const responses = state.data.responses as Record<string, Shift[] | null>;
   const offDays = DAYS.filter(d => { const s = responses[d]; return !Array.isArray(s) || s.length === 0; });
+  // Правило фабрики «мінімум N днів на тиждень»: рахуємо дні з хоча б однією зміною
+  // (погоджений вихідний не зараховується). Менше — не приймаємо, повертаємо до вибору.
+  const minDays: number | null = state.data.minDays ?? null;
+  const picked = DAYS.length - offDays.length;
+  if (minDays && picked < minDays) {
+    await ctx.answerCbQuery();
+    const word = (n: number) => t(lang, n === 1 ? "av.days1" : n >= 2 && n <= 4 ? "av.days2" : "av.days5");
+    try {
+      await ctx.editMessageText(t(lang, "av.minDays", { factory: mdSafe(state.data.factoryName || "—"), min: minDays, minWord: word(minDays), picked }), {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[{ text: t(lang, "av.confirmEdit"), callback_data: "avail_edit" }]] },
+      });
+    } catch { /* ignore */ }
+    return;
+  }
   if (offDays.length > 0) {
     await ctx.answerCbQuery();
     const days = offDays.map(d => dayShort(lang, d)).join(", ");
@@ -2324,12 +2387,12 @@ async function saveUnplannedWorker(
       .set({ status: "absent", absenceReason: `заміна: вийшов(-ла) ${newName}`, pickedUpBy: null })
       .where(eq(scheduleEntriesTable.id, replaces.entryId));
     await notifyRoles("scheduler", {
-      type: "substitution",
+      type: "substitution", adminsNotified: true,
       title: "🔁 Заміна на зміні",
       body: `${newName} замість ${replaces.name}\n${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]} · водій ${driverName}`,
     });
   }
-  await notifyAdmins(
+  await notifyAdmins("substitution",
     `➕ *Позаплановий працівник*\n\n👷 ${mdSafe(newName)}${matched ? ` (код ${matched.workerCode ?? "—"})` : " (не в базі)"}` +
     (replaces ? `\n🔁 Замість: ${mdSafe(replaces.name)}` : "") +
     (!matched && suggestions.length ? `\n❓ Можливо: ${suggestions.map(mdSafe).join(", ")} — привʼязати можна у веб-графіку` : "") +
@@ -2787,8 +2850,8 @@ bot.action("brd:ok", async (ctx) => {
   }
   if (substitutions.length > 0) {
     const subLines = substitutions.map(w => `• ${mdSafe(w.name)} замість ${mdSafe(w.subForName ?? "—")} — ${facByIdOk.get(w.factoryId)?.name ?? ""} · ${SHIFT_SHORT[w.shift as Shift]}`).join("\n");
-    await notifyAdmins(`🔁 *Заміна на зміні*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${subLines}`, { parse_mode: "Markdown" });
-    await notifyRoles("scheduler", { type: "substitution", title: `🔁 Заміна на зміні (${substitutions.length})`, body: `${DAY_NAMES_UK[dayName]} · водій ${driver.name}\n${substitutions.map(w => `• ${w.name} замість ${w.subForName ?? "—"}`).join("\n")}` });
+    await notifyAdmins("substitution", `🔁 *Заміна на зміні*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${subLines}`, { parse_mode: "Markdown" });
+    await notifyRoles("scheduler", { type: "substitution", adminsNotified: true, title: `🔁 Заміна на зміні (${substitutions.length})`, body: `${DAY_NAMES_UK[dayName]} · водій ${driver.name}\n${substitutions.map(w => `• ${w.name} замість ${w.subForName ?? "—"}`).join("\n")}` });
   }
 
   // Correction mode: the boarding was already confirmed — apply status diffs only,
@@ -2812,7 +2875,7 @@ bot.action("brd:ok", async (ctx) => {
         .filter(w => w.entryId != null && w.boarded !== (w.origBoarded ?? false))
         .map(w => `• ${mdSafe(w.name)} — ${w.boarded ? "✅ був(ла) на зміні" : "🔴 не був(ла)"}`).join("\n");
       if (diffLines) {
-        await notifyAdmins(`✏️ *Корекція посадки*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${diffLines}`, { parse_mode: "Markdown" });
+        await notifyAdmins("no_show", `✏️ *Корекція посадки*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${diffLines}`, { parse_mode: "Markdown" });
       }
     }
     refreshExcelReports().catch(e => logger.error({ err: e }, "refreshExcelReports failed"));
@@ -2866,8 +2929,8 @@ bot.action("brd:ok", async (ctx) => {
   for (const a of absentEntries) await notifyAbsentWorker(a.id, dayName);
   if (absentEntries.length > 0) {
     const lines = absentEntries.map(a => `• ${a.name} — ${a.factoryName} · ${SHIFT_SHORT[a.shift as Shift]}`).join("\n");
-    await notifyAdmins(`⚠️ *Відсутні на зміні*\n🚗 Водій: ${driver.name}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${lines}`, { parse_mode: "Markdown" });
-    await notifyRoles("both", { type: "no_show", title: `🔴 Невихід на зміну (${absentEntries.length})`, body: `${DAY_NAMES_UK[dayName]} · водій ${driver.name}\n${lines}` });
+    await notifyAdmins("no_show", `⚠️ *Відсутні на зміні*\n🚗 Водій: ${driver.name}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${lines}`, { parse_mode: "Markdown" });
+    await notifyRoles("both", { type: "no_show", adminsNotified: true, title: `🔴 Невихід на зміну (${absentEntries.length})`, body: `${DAY_NAMES_UK[dayName]} · водій ${driver.name}\n${lines}` });
   }
   refreshExcelReports().catch(e => logger.error({ err: e }, "refreshExcelReports failed"));
 
@@ -3360,18 +3423,21 @@ bot.on("text", async (ctx) => {
   if (state?.action === "factory_email:enter") {
     const { data } = state;
     const al = olang(await getAdmin(tid));
+    const { isEmail, setFactoryRecipients } = await import("../services/email");
     if (text === "/clear") {
-      await db.update(factoriesTable).set({ clientEmail: null }).where(eq(factoriesTable.id, data.factoryId));
+      await setFactoryRecipients(data.factoryId, []);
       clearState(tid);
       return ctx.reply(tb(al, "✅ Email для *{name}* прибрано.", { name: data.factoryName }), { parse_mode: "Markdown", ...managementMenu(al) });
     }
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text.trim())) {
+    // кілька адрес через кому — список отримувачів фабрики (шаблон — стандартний; змінити у веб-панелі)
+    const emails = text.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    if (!emails.length || emails.some(e => !isEmail(e))) {
       return ctx.reply(tb(al, "❌ Невірний формат email. Введіть ще раз або /clear:"));
     }
-    await db.update(factoriesTable).set({ clientEmail: text.trim() }).where(eq(factoriesTable.id, data.factoryId));
+    const saved = await setFactoryRecipients(data.factoryId, emails.map(email => ({ email })));
     clearState(tid);
     return ctx.reply(
-      tb(al, "✅ Email клієнта для *{name}* збережено:\n{email}\n\nПісля затвердження графіку лист надсилатиметься автоматично.", { name: data.factoryName, email: text.trim() }),
+      tb(al, "✅ Email клієнта для *{name}* збережено:\n{email}\n\nПісля затвердження графіку лист надсилатиметься автоматично.", { name: data.factoryName, email: saved.map(r => r.email).join(", ") }),
       { parse_mode: "Markdown", ...managementMenu(al) },
     );
   }
@@ -4256,11 +4322,11 @@ bot.on("text", async (ctx) => {
     if (row && worker && row.workerId === worker.id) {
       await db.update(factoryHoursTable).set({ workerNote: note }).where(eq(factoryHoursTable.id, row.id));
       const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
-      await notifyAdmins(
+      await notifyAdmins("hours_correction",
         `⚠️ *Помилка в годинах фабрики*\n\n👷 *${mdSafe(worker.fullName)}*\n🏭 ${mdSafe(fac?.name ?? "—")} · ${row.month}\n🕒 Наші години: *${row.hours}*\n📝 ${mdSafe(note)}`,
         { parse_mode: "Markdown" },
       );
-      await notifyRoles("scheduler", { type: "hours_correction", title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${row.month} · наші ${row.hours} год · ${note}` });
+      await notifyRoles("scheduler", { type: "hours_correction", adminsNotified: true, title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${row.month} · наші ${row.hours} год · ${note}` });
     }
     return ctx.reply(t(lang, "fh.noteSaved"), await workerMenuFor(worker, lang));
   }
@@ -4314,14 +4380,28 @@ bot.on("text", async (ctx) => {
     const facName = data.factoryId != null
       ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, data.factoryId)))[0]?.name ?? null
       : null;
-    await notifyAdmins(
-      `💰 *Запит на аванс*\n\n👷 *${wname}*${facName ? `\n🏭 ${mdSafe(facName)}` : ""}\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${comment}` : ""}`,
-      { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
-        [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
-        [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],
-      ] } },
-    );
-    await notifyRoles("scheduler", { type: "advance", title: `💰 Запит на аванс: ${wname}`, body: `${data.amount} zł${comment ? ` · ${comment}` : ""}` });
+    const baseText = `💰 *Запит на аванс*\n\n👷 *${wname}*${facName ? `\n🏭 ${mdSafe(facName)}` : ""}\n💵 Сума: *${data.amount} zł*${comment ? `\n📝 ${mdSafe(comment)}` : ""}`;
+    const advKb = { inline_keyboard: [
+      [{ text: "✅ Підтвердити", callback_data: `adv_approve_${reqId}` }, { text: "❌ Відхилити", callback_data: `adv_reject_${reqId}` }],
+      [{ text: "💸 Виплачено", callback_data: `adv_paid_${reqId}` }],
+    ] };
+    // Фінансова довідка (години/нараховано/незняті залічки, kary, badania, борг M−1) —
+    // лише адмінам із доступом до розділу «Аванси»; решта бачить запит без цифр.
+    let balanceMd = "";
+    try {
+      const { computeWorkerBalance, formatWorkerBalanceMd } = await import("../services/workerBalance");
+      const bal = await computeWorkerBalance(data.workerId, { factoryId: data.factoryId ?? null, excludeAdvanceId: reqId });
+      if (bal) balanceMd = `\n\n📊 *Стан на сьогодні*\n${formatWorkerBalanceMd(bal)}`;
+    } catch (e) { logger.error({ err: e, workerId: data.workerId }, "advance balance"); }
+    const { adminHasPage, adminWantsNotify } = await import("./roles");
+    for (const admin of await db.select().from(adminsTable)) {
+      // той самий гейт, що й notifyAdmins: лише ролі з увімкненим "advance"
+      if (!admin.telegramId || !(await adminWantsNotify(admin, "advance"))) continue;
+      const withBalance = balanceMd && await adminHasPage(admin, "/advances");
+      try { await bot.telegram.sendMessage(admin.telegramId, baseText + (withBalance ? balanceMd : ""), { parse_mode: "Markdown", reply_markup: advKb }); }
+      catch { /* individual failure should not stop others */ }
+    }
+    await notifyRoles("scheduler", { type: "advance", adminsNotified: true, title: `💰 Запит на аванс: ${wname}`, body: `${data.amount} zł${comment ? ` · ${comment}` : ""}` });
     return ctx.reply(t(lang, "adv.sent", { amount: String(data.amount) }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
   }
 
@@ -4385,7 +4465,7 @@ bot.on("text", async (ctx) => {
       const wName = wRec[0]?.fullName ?? "Невідомий";
       const reqId = dayReq[0]!.id;
       const adminMsg = `🏖 *Запит на вихідний (цілий день)*\n\n👷 *${mdSafe(wName)}*\n📅 ${DAY_UK[data.day as DayOfWeek]} ${data.dateLabel ?? ""}\n📝 Причина: ${mdSafe(text)}`;
-      await notifyAdmins(adminMsg, {
+      await notifyAdmins("cancellation", adminMsg, {
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: [
           [{ text: "✅ Підтвердити вихідний", callback_data: `absence_approve_${reqId}` }],
@@ -4393,7 +4473,7 @@ bot.on("text", async (ctx) => {
         ] },
       });
       await notifyRoles("scheduler", {
-        type: "cancellation",
+        type: "cancellation", adminsNotified: true,
         title: `🏖 Вихідний: ${wName}`,
         body: `${DAY_UK[data.day as DayOfWeek]} ${data.dateLabel ?? ""} · цілий день · причина: ${text}`,
       });
@@ -4439,10 +4519,10 @@ bot.on("text", async (ctx) => {
       [{ text: "✅ Прийняти (без заміни)", callback_data: `absence_approve_${requestId}` }],
       [{ text: "❌ Відхилити", callback_data: `absence_reject_${requestId}` }],
     ];
-    await notifyAdmins(adminMsg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: inlineButtons } });
+    await notifyAdmins("cancellation", adminMsg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: inlineButtons } });
     // Notify the scheduler (графікова) about the cancellation (on-site bell + Telegram)
     await notifyRoles("scheduler", {
-      type: "cancellation",
+      type: "cancellation", adminsNotified: true,
       title: `🚫 Відміна зміни: ${workerName}`,
       body: `${DAY_UK[data.day as DayOfWeek]} · ${SHIFT_SHORT[data.shift as Shift]} · причина: ${text}`,
     });
@@ -4453,20 +4533,7 @@ bot.on("text", async (ctx) => {
     );
   }
 
-  // ── Absent worker: explain reason ─────────────────────────────────
-  if (state?.action === "absent:explain_reason") {
-    const { data } = state;
-    clearState(tid);
-    // Save reason to schedule entry
-    await db.update(scheduleEntriesTable).set({ absenceReason: text }).where(eq(scheduleEntriesTable.id, data.entryId));
-    // Notify admin
-    await notifyAdmins(
-      `📝 *Пояснення відсутності*\n\n👷 *${data.name}*\n📅 ${DAY_NAMES_UK[data.day as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}\n\nПричина: ${text}`,
-      { parse_mode: "Markdown" },
-    );
-    const w = await getWorker(tid);
-    return ctx.reply("✅ Дякуємо. Вашу причину передано адміністратору.", await workerMenuFor(w, wlang(w)));
-  }
+  // ── Absent worker: explain reason → bot/handlers/absences.ts ──────
 
   // ── Fire worker ───────────────────────────────────────────────────
   if (state?.action === "fire_worker:select") {
@@ -4736,7 +4803,7 @@ bot.on("text", async (ctx) => {
       }
       const absentNames = workers.filter(w => absentIds.includes(w.id)).map(w => w.name).join(", ");
       const driver = await getDriver(tid);
-      await notifyAdmins(
+      await notifyAdmins("no_show",
         `⚠️ *Не прийшли до машини*\n🚗 Водій: ${driver?.name ?? "—"}\n📅 ${DAY_UK[data.dayName as DayOfWeek]}\nВідсутні: ${absentNames}`,
         { parse_mode: "Markdown" },
       );
@@ -4845,9 +4912,16 @@ bot.action(/^absence_approve_(\d+)$/, async (ctx) => {
         .where(and(eq(scheduleEntriesTable.weekId, wk.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled")));
     }
   } else {
+    // лише запис ТОГО Ж тижня (weekStart запиту) — без фільтра по тижню можна було
+    // позначити absent зміну іншого тижня (веб-approve фільтрує по weekId)
     const entries = await db.select({ id: scheduleEntriesTable.id })
       .from(scheduleEntriesTable)
-      .where(and(eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+      .innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+      .where(and(
+        eq(scheduleWeeksTable.weekStart, String(r.weekStart)),
+        eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift),
+      ))
+      .orderBy(desc(scheduleEntriesTable.id));
     if (entries[0]) {
       await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined }).where(eq(scheduleEntriesTable.id, entries[0].id));
     }
@@ -4921,7 +4995,7 @@ bot.action(/^absence_invite_accept_(\d+)_(\d+)$/, async (ctx) => {
     try { await bot.telegram.sendMessage(origWorker[0].telegramId, `✅ Вашу зміну *${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}* закриє *${sub[0].fullName}*.`, { parse_mode: "Markdown" }); }
     catch { /* ignore */ }
   }
-  await notifyAdmins(`✅ *Заміна підтверджена*\n👷 ${origWorker[0]?.fullName ?? "—"} → *${sub[0].fullName}*\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`, { parse_mode: "Markdown" });
+  await notifyAdmins("substitution", `✅ *Заміна підтверджена*\n👷 ${origWorker[0]?.fullName ?? "—"} → *${sub[0].fullName}*\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}`, { parse_mode: "Markdown" });
   return ctx.editMessageText(`✅ Підтверджую! Виходжу на зміну.\n\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}\nТиждень: ${formatWeekStart(r.weekStart)}`, { parse_mode: "Markdown" });
 });
 
@@ -4934,7 +5008,7 @@ bot.action(/^absence_invite_decline_(\d+)_(\d+)$/, async (ctx) => {
   const r = req[0];
   if (r.shift == null) return; // whole-day requests have no substitute flow
   const sub = await db.select().from(workersTable).where(eq(workersTable.id, substituteId));
-  await notifyAdmins(
+  await notifyAdmins("substitution",
     `❌ *${sub[0]?.fullName ?? "Замінник"}* не може вийти\n📅 ${DAY_UK[r.dayOfWeek]} ${SHIFT_SHORT[r.shift]}\n\nОберіть іншого замінника.`,
     { parse_mode: "Markdown" },
   );

@@ -363,7 +363,10 @@ export const factoriesTable = pgTable("factories", {
   usesScheduling: boolean("uses_scheduling").notNull().default(true),  // false = фабрика лише зарплатна (Лодзь/Познань): без замовлень/графіків/доступності
   showWorkerHours: boolean("show_worker_hours").notNull().default(true), // show the "My hours" button to workers
   showCode: boolean("show_code").notNull().default(true),             // show the worker-code column in the Excel schedule
-  clientEmail: text("client_email"), // where to send approved schedule
+  clientEmail: text("client_email"), // legacy single recipient — superseded by factory_email_recipients (kept as fallback)
+  // Мінімум днів доступності на тиждень (правило фабрики): бот не приймає доступність,
+  // у якій менше днів із хоча б однією зміною. NULL = без правила.
+  minDaysPerWeek: integer("min_days_per_week"),
   invoiceRate: real("invoice_rate"), // net PLN/hour billed to this factory (finance module)
   city: text("city"),               // місто фабрики (групування сводної 2.0): Люблін | Познань | Лодзь | …
   fuelCommute: boolean("fuel_commute").notNull().default(false), // фабрика з доїздом: паливо ділиться по містах ∝ людей на таких фабриках
@@ -433,6 +436,8 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   // «Виправдана» відсутність: адмін визнав пропуск поважним — не рахується
   // у кількість пропусків працівника і не тягне штраф.
   absenceExcused: boolean("absence_excused").notNull().default(false),
+  // Коли працівник вніс пояснення в боті (може бути значно пізніше за дату пропуску).
+  absenceExplainedAt: timestamp("absence_explained_at"),
   // Штраф за пропуск, zł: NULL = стандартний (200), число = override (0 = анульовано).
   absencePenalty: real("absence_penalty"),
   // Перенесення штрафу в Kara сводної: місяць/дата + сума на момент переносу
@@ -524,6 +529,7 @@ export const rolesTable = pgTable("roles", {
   isSystem: boolean("is_system").notNull().default(false), // owner/scheduler/driver — not deletable
   pages: jsonb("pages").$type<string[]>().notNull().default([]),  // allowed page paths
   caps: jsonb("caps").$type<string[]>().notNull().default([]),    // allowed capability keys
+  notify: jsonb("notify").$type<string[]>().notNull().default([]), // bot notification types this role receives (NotifyType keys)
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -552,6 +558,21 @@ export const absenceRequestsTable = pgTable("absence_requests", {
   status: text("status").notNull().default("pending"), // pending | substituted | rejected | accepted
   rejectReason: text("reject_reason"),                  // чому відхилено (опційно; йде у сповіщення працівнику)
   substituteWorkerId: integer("substitute_worker_id").references(() => workersTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Підтвердження пропуску (довідка від лікаря, скріншот), які працівник прикріпив
+// у боті разом із поясненням. Файл на диску в UPLOADS_DIR/absence-attachments;
+// tg_file_id — щоб переслати адмінам у бот без повторного аплоаду.
+export const absenceAttachmentsTable = pgTable("absence_attachments", {
+  id: serial("id").primaryKey(),
+  entryId: integer("entry_id").notNull().references(() => scheduleEntriesTable.id, { onDelete: "cascade" }),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  filePath: text("file_path").notNull(),   // відносний шлях у UPLOADS_ROOT
+  fileName: text("file_name"),
+  fileMime: text("file_mime"),
+  tgFileId: text("tg_file_id"),
+  tgKind: text("tg_kind"),                 // photo | document — яким методом пересилати file_id
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -837,6 +858,30 @@ export const botMessagesTable = pgTable("bot_messages", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// ─── Email-шаблони графіку та отримувачі фабрик ───────────────────────────────
+// Глобальний список шаблонів листа з графіком (плейсхолдери {data}, {fabryka}).
+// Один шаблон позначений isDefault — ним ідуть отримувачі без явного template_id.
+export const emailTemplatesTable = pgTable("email_templates", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Адреси, на які фабриці розсилається затверджений графік; кожен отримувач може мати
+// власний шаблон (NULL = стандартний). Замінює одиночне factories.client_email.
+export const factoryEmailRecipientsTable = pgTable("factory_email_recipients", {
+  id: serial("id").primaryKey(),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  name: text("name"), // кому (для підпису/підказки в UI), необовʼязково
+  templateId: integer("template_id").references(() => emailTemplatesTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("factory_email_recipients_uq").on(t.factoryId, t.email)]);
+
 // Key-value settings store (Drive folder IDs, etc.)
 export const settingsTable = pgTable("settings", {
   key: text("key").primaryKey(),
@@ -1085,7 +1130,7 @@ export const invoicesTable = pgTable("invoices", {
   id: serial("id").primaryKey(),
   companyId: integer("company_id").references(() => companiesTable.id),
   periodMonth: text("period_month").notNull(), // "YYYY-MM" from the tab name
-  docType: text("doc_type"),                   // PROFORMA | FAKTURA | null (col A)
+  docType: text("doc_type"),                   // PROFORMA | FAKTURA | null (sheet col A; manual/scan — чекбокс «Проформа» на /cost-invoices)
   issueDate: date("issue_date"),
   number: text("number"),
   amount: real("amount").notNull(),
@@ -1107,6 +1152,7 @@ export const invoicesTable = pgTable("invoices", {
   hostelId: integer("hostel_id").references(() => hostelsTable.id), // рахунок за оренду/медіа конкретного хостелу
   vehicleId: integer("vehicle_id").references(() => vehiclesTable.id), // лізингова/сервісна фактура конкретного авто (картка авто рахує виплачено/залишок)
   city: text("city"),                          // cost-center місто для P&L по містах (хостельні беруть місто хостелу)
+  serviceMonth: text("service_month"),         // «за який місяць» послуга (YYYY-MM); NULL = period_month. Авто з номера фактури + ручне
   cleaning: boolean("cleaning").notNull().default(false), // видаток бізнесу прибирання (розділ /cleaning)
   cleaningProjectId: integer("cleaning_project_id").references(() => cleaningProjectsTable.id), // вспульнота (NULL = загальний видаток прибирання)
   note: text("note"),
@@ -1127,6 +1173,71 @@ export const invoiceAuditTable = pgTable("invoice_audit", {
   origin: text("origin").notNull(),            // ksef | local (invoices)
   invoiceId: integer("invoice_id").notNull(),
   action: text("action").notNull(),            // created | updated | file | deleted
+  changes: jsonb("changes").$type<{ field: string; from?: unknown; to?: unknown }[] | null>(),
+  adminId: integer("admin_id"),
+  adminName: text("admin_name"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Умови (агрименти/договори) — періодичні або одноразові зобов'язання по фірмі
+// (оренда, абонплата, обслуговування), окремі від разових фактур /cost-invoices.
+// one_time: endMonth = startMonth, разова витрата за той місяць. fixed_term:
+// endMonth задано наперед. indefinite: endMonth NULL, поки не завершать (PATCH
+// endMonth на минуле — «достроково»). active=false — soft-delete (історія у
+// agreement_audit, ніколи хард-деліт). amount — ЗАВЖДИ сума брутто (як вводить
+// кшєнгова); vatRate — лише інформаційний тег ставки, без розрахунків.
+export const agreementConditionsTable = pgTable("agreement_conditions", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id),
+  title: text("title").notNull(),
+  counterparty: text("counterparty"),
+  category: text("category").notNull(),        // ключ expense_categories (як invoices.manual_category)
+  kind: text("kind").notNull(),                 // one_time | fixed_term | indefinite
+  amount: real("amount").notNull(),             // сума брутто — те, що щомісяця йде в agreement_charges
+  vatRate: text("vat_rate").notNull().default("23"), // '23' | '8' | 'zw' (zwolnione) — інформаційний тег
+  city: text("city"),                           // cost-center місто (як invoices.city)
+  startMonth: text("start_month").notNull(),    // YYYY-MM, «діє з»
+  endMonth: text("end_month"),                  // YYYY-MM; one_time = startMonth; fixed_term задано; indefinite NULL
+  paymentMethod: text("payment_method"),        // przelew | gotowka | NULL — дефолт для записів місяців (charge.paymentMethod NULL = наслідує)
+  filePath: text("file_path"),                  // скан умови (uploads/agreements/)
+  driveFileId: text("drive_file_id"),           // архів Umowy/<фірма> на Google Drive
+  driveError: text("drive_error"),
+  note: text("note"),
+  active: boolean("active").notNull().default(true), // soft-delete
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Щомісячний запис-витрата умови — те, що фактично «йде в кошти» і показується
+// на /cost-invoices поруч із фактурами. Генерується services/agreementConditions.ts
+// (materializeAgreementMonth), можна скоригувати суму чи видалити окремий місяць
+// без зміни самої умови; status='deleted' — soft, щоб повторна генерація не
+// воскрешала видалене (source='manual-edit' лишає ручну суму при регенерації).
+export const agreementChargesTable = pgTable("agreement_charges", {
+  id: serial("id").primaryKey(),
+  agreementId: integer("agreement_id").notNull().references(() => agreementConditionsTable.id, { onDelete: "cascade" }),
+  month: text("month").notNull(),               // YYYY-MM
+  amount: real("amount").notNull(),
+  note: text("note"),
+  source: text("source").notNull().default("auto"),   // auto | manual-edit
+  status: text("status").notNull().default("active"), // active | deleted
+  // оплата місяця — ручна позначка кшєнгової (як manual_status у фактур; банк-матчингу нема)
+  paid: boolean("paid").notNull().default(false),
+  paidDate: date("paid_date"),
+  paymentMethod: text("payment_method"),        // przelew | gotowka | NULL = наслідує agreement_conditions.payment_method
+  cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий» — нотатка кшєнгової
+  createdBy: integer("created_by").references(() => adminsTable.id), // хто скоригував (NULL для авто)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("agreement_charges_uq").on(t.agreementId, t.month)]);
+
+// Журнал дій над умовами й місячними записами — дзеркало invoice_audit.
+export const agreementAuditTable = pgTable("agreement_audit", {
+  id: serial("id").primaryKey(),
+  entity: text("entity").notNull(),             // condition | charge
+  entityId: integer("entity_id").notNull(),
+  action: text("action").notNull(),             // created | updated | file | deleted
   changes: jsonb("changes").$type<{ field: string; from?: unknown; to?: unknown }[] | null>(),
   adminId: integer("admin_id"),
   adminName: text("admin_name"),
@@ -1629,6 +1740,7 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   paymentMethodXml: text("payment_method_xml"), // метод з XML (FormaPlatnosci) — авто-фолбек
   cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий»
   manualCategory: text("manual_category"),      // ручна категорія витрат (expense_categories.key; NULL = авто по правилах/патернах)
+  note: text("note"),                           // ручна нотатка кшєнгової (як у invoices.note) — бейдж+тултип на /cost-invoices
   xmlPath: text("xml_path"),                    // локальна копія XML (uploads/ksef-xml/)
   driveFileId: text("drive_file_id"),           // XML на Google Drive (Faktury kosztowe/sprzedażowe)
   drivePdfId: text("drive_pdf_id"),             // PDF-візуалізація поряд з XML (лінк веб-панелі веде сюди)
@@ -1762,6 +1874,7 @@ export type ShiftCancellation = typeof shiftCancellationsTable.$inferSelect;
 export type FactoryShiftOverride = typeof factoryShiftOverridesTable.$inferSelect;
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
+export type AbsenceAttachment = typeof absenceAttachmentsTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;
@@ -1778,6 +1891,8 @@ export type Penalty = typeof penaltiesTable.$inferSelect;
 export type FuelInvoice = typeof fuelInvoicesTable.$inferSelect;
 export type FuelTransaction = typeof fuelTransactionsTable.$inferSelect;
 export type FuelCard = typeof fuelCardsTable.$inferSelect;
+export type AgreementCondition = typeof agreementConditionsTable.$inferSelect;
+export type AgreementCharge = typeof agreementChargesTable.$inferSelect;
 
 // Умови (umowy cywilnoprawne) з Gratyfikant nexo — знімок вивантаження по
 // підмiоту (файл зі списком умов у Налаштуваннях → Gratyfikant). Кожен імпорт

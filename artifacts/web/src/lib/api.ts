@@ -50,7 +50,7 @@ export type DayCode = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ShiftCode = "1" | "2" | "3" | "4" | "5" | "6";
 
 export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null; prefs?: Record<string, unknown> }
-export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; inUse: number }
+export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; notify: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
   factoryId: number | null; factoryFromRequest: boolean; // фабрика ЗАПИТУ (false = фолбек на фабрику профілю)
@@ -188,13 +188,19 @@ export interface Driver {
   seats: number | null; inviteCode: string | null; isHeadDriver: boolean; isActive: boolean;
 }
 export type GenMode = "availability" | "orders" | "all";
+// Отримувач графіку фабрики; templateId null = стандартний шаблон
+export interface EmailRecipient { id: number; email: string; name: string | null; templateId: number | null }
+export interface EmailTemplate { id: number; name: string; subject: string; body: string; isDefault: boolean }
 export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null; contractDuties?: string | null }
 export interface Factory {
   id: number; name: string; address: string | null;
   companyId?: number | null; companyName?: string | null;
   multiFirm?: boolean; // кілька наших фірм на одній фабриці (Sushi): фірма умови/роботодавця обирається
   isOffice?: boolean;  // «Biuro» — фабрика офісних працівників
-  shift1Start: string | null; shift2Start: string | null; shift3Start: string | null; clientEmail: string | null;
+  shift1Start: string | null; shift2Start: string | null; shift3Start: string | null;
+  clientEmail: string | null; // кеш «усі адреси через кому» — джерело правди emailRecipients
+  emailRecipients?: EmailRecipient[];
+  minDaysPerWeek?: number | null; // мінімум днів доступності на тиждень (null = без правила)
   shiftCount: number; usesAvailability: boolean;
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;
   usesTransport: boolean; usesScheduling: boolean; showWorkerHours: boolean; showCode: boolean;

@@ -257,7 +257,7 @@ export function KsefSales() {
                         <DriveCell inv={inv} pushing={pushingId === inv.id} onPush={() => void pushOne(inv)} />
                         <button className="ml-1 p-0.5 align-middle text-slate-300 hover:text-slate-600"
                           title={t("Історія змін (хто додав / змінив / затвердив)")}
-                          onClick={() => setAuditFor({ origin: "ksef", id: inv.id, number: inv.invoiceNumber })}>
+                          onClick={() => setAuditFor({ kind: "invoice", origin: "ksef", id: inv.id, label: inv.invoiceNumber ?? "" })}>
                           <History className="h-3.5 w-3.5" />
                         </button>
                       </td>

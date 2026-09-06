@@ -23,6 +23,8 @@ export const sentText = (): string => sent.map(s => s.text ?? "").join("\n");
 const TelegramProto: any = Object.getPrototypeOf(bot.telegram);
 TelegramProto.callApi = async function (method: string, payload: any = {}) {
   if (method === "getMe") return (bot as any).botInfo;
+  // getFileLink → getFile: fake path so the URL builds; tests stub globalThis.fetch for the body.
+  if (method === "getFile") return { file_id: payload.file_id, file_unique_id: "u", file_path: "photos/fake.jpg" };
   if (method === "sendMessage" || method === "editMessageText")
     sent.push({ method, chatId: payload.chat_id, text: payload.text, extra: payload });
   else if (method === "sendPhoto")
@@ -48,6 +50,11 @@ export function sendText(tid: string, text: string): Promise<void> {
 export function sendStart(tid: string, payload = ""): Promise<void> {
   const text = payload ? `/start ${payload}` : "/start";
   return handle({ message: { message_id: updateId, date: 0, chat: chat(tid), from: from(tid), text, entities: [{ type: "bot_command", offset: 0, length: 6 }] } });
+}
+
+// Photo message (drives bot.on("photo")).
+export function sendPhoto(tid: string, fileId: string): Promise<void> {
+  return handle({ message: { message_id: updateId, date: 0, chat: chat(tid), from: from(tid), photo: [{ file_id: fileId, file_unique_id: "u", width: 20, height: 20 }] } });
 }
 
 // Inline-button press (drives bot.action).

@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Link2, Trash2, X, Eye, ScanLine } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, patch, del, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode } from "../lib/api";
+import { get, post, patch, put, del, type Factory, type FactoryPositionConf, type Company, type Position, type GenMode, type EmailTemplate } from "../lib/api";
 import { Button, Input, Label, Select, Card, Spinner, Modal, Empty, Badge, Textarea } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
+import { useConfirm } from "../components/confirm";
 import { badgeClass, dotClass } from "../lib/colors";
 import { can } from "../lib/roles";
 
@@ -98,7 +99,8 @@ export default function Factories() {
                 ))}
               </div>
             )}
-            <div className="mt-3 text-sm text-slate-500">📧 {f.clientEmail || <span className="text-slate-300">{t("email клієнта не вказано")}</span>}</div>
+            <div className="mt-3 text-sm text-slate-500">📧 {f.emailRecipients?.length ? f.emailRecipients.map(r => r.email).join(", ") : (f.clientEmail || <span className="text-slate-300">{t("email клієнта не вказано")}</span>)}</div>
+            {f.genMode === "availability" && f.minDaysPerWeek != null && <div className="mt-1 text-sm text-slate-500">📅 {t("Мінімум днів доступності на тиждень:")} <span className="font-medium text-slate-700">{f.minDaysPerWeek}</span></div>}
             {canRates && <div className="mt-1 text-sm text-slate-500">💰 {t("Ставка фактури:")} {f.invoiceRate != null ? <span className="font-medium text-slate-700">{f.invoiceRate} {t("zł/год нетто")}</span> : <span className="text-amber-500">{t("не задано")}</span>}</div>}
           </Card>
         ))}
@@ -125,11 +127,21 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const t = useT();
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: allPositions = [] } = useQuery<Position[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
+  const { data: tplData } = useQuery<{ templates: EmailTemplate[] }>({ queryKey: ["email-templates"], queryFn: () => get("/email-templates") });
+  const templates = tplData?.templates ?? [];
+  // отримувачі графіку: email + шаблон листа (порожньо = стандартний)
+  const [recipients, setRecipients] = useState<{ email: string; name: string; templateId: string }[]>(
+    (factory?.emailRecipients ?? []).map(r => ({ email: r.email, name: r.name ?? "", templateId: r.templateId != null ? String(r.templateId) : "" }))
+  );
+  const setRecipient = (i: number, p: Partial<{ email: string; name: string; templateId: string }>) => setRecipients(prev => prev.map((r, j) => j === i ? { ...r, ...p } : r));
+  const addRecipient = () => setRecipients(prev => [...prev, { email: "", name: "", templateId: "" }]);
+  const removeRecipient = (i: number) => setRecipients(prev => prev.filter((_, j) => j !== i));
+  const emailOk = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
   const [v, setV] = useState({
     name: factory?.name ?? "", address: factory?.address ?? "",
     city: factory?.city ?? "",
-    clientEmail: factory?.clientEmail ?? "",
     contractDuties: factory?.contractDuties ?? "",
+    minDaysPerWeek: factory?.minDaysPerWeek != null ? String(factory.minDaysPerWeek) : "",
     companyId: factory?.companyId ? String(factory.companyId) : "",
     genMode: (factory?.genMode ?? "availability") as GenMode,
     usesPositions: factory?.usesPositions ?? false,
@@ -178,8 +190,9 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const shiftsOk = shifts.every(s => valid.test(s.start) && valid.test(s.end));
   const num = (s: string) => s.trim() === "" ? null : Number(s.replace(",", "."));
   const payload = () => ({
-    name: v.name.trim(), address: v.address, city: v.city.trim() || null, clientEmail: v.clientEmail,
+    name: v.name.trim(), address: v.address, city: v.city.trim() || null,
     contractDuties: v.contractDuties.trim() || null,
+    minDaysPerWeek: v.minDaysPerWeek.trim() ? Number(v.minDaysPerWeek) : null,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
     usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
@@ -195,8 +208,40 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     ...(canRates ? { invoiceRate: num(v.invoiceRate), rateBrutto: num(v.rateBrutto), rateNetto: num(v.rateNetto), nightAddon: num(v.nightAddon), contractRateBrutto: num(v.contractRateBrutto) } : {}),
     ...(canInvoice ? { clientNip: v.clientNip.trim() || null, pnlLabel: v.pnlLabel.trim() || null } : {}),
   });
+  const confirm = useConfirm();
+  // «Кардинальні» зміни налаштувань наявної фабрики — ті, що ховають її з поверхонь
+  // або міняють режим роботи (графік/замовлення/бот). Без підтвердження не зберігаємо:
+  // випадково знята галочка «Планування» прибирала фабрику з графіку (BIMIZ, 09.2026).
+  const cardinalChanges = (): string[] => {
+    if (!factory) return [];
+    const out: string[] = [];
+    if (factory.usesScheduling !== false && !v.usesScheduling) out.push(t("Вимкнути планування графіків — фабрика зникне зі сторінок «Графік» і «Замовлення», працівники перестануть подавати доступність"));
+    if (v.genMode !== factory.genMode) out.push(t("Змінити режим генерації: «{from}» → «{to}»", { from: t(GEN_MODE_LABEL[factory.genMode] ?? GEN_MODE_LABEL.availability), to: t(GEN_MODE_LABEL[v.genMode]) }));
+    if (shifts.length < (factory.shiftCount ?? 3)) out.push(t("Зменшити кількість змін: {from} → {to}", { from: String(factory.shiftCount ?? 3), to: String(shifts.length) }));
+    if (factory.usesTransport !== false && !v.usesTransport) out.push(t("Вимкнути довіз — фабрика випаде з водійського флоу (посадка, забір, зупинки)"));
+    if (factory.usesPositions && !v.usesPositions) out.push(t("Вимкнути посади — замовлення й генерація перестануть враховувати посади"));
+    if (factory.usesGender && !v.usesGender) out.push(t("Вимкнути поділ за статтю"));
+    if (String(factory.companyId ?? "") !== v.companyId) out.push(t("Змінити фірму фабрики (впливає на фінанси та фактури)"));
+    return out;
+  };
+  const submit = async () => {
+    if (!v.name.trim() || !shiftsOk) return;
+    const changes = cardinalChanges();
+    if (changes.length && !(await confirm({
+      title: t("Змінити налаштування фабрики «{name}»?", { name: factory!.name }),
+      message: `${t("Ці зміни впливають на графік, бот або фінанси:")}\n• ${changes.join("\n• ")}`,
+      confirmText: t("Так, зберегти"), danger: true,
+    }))) return;
+    save.mutate();
+  };
   const save = useMutation({
-    mutationFn: () => factory ? patch(`/factories/${factory.id}`, payload()) : post(`/factories`, payload()),
+    mutationFn: async () => {
+      const list = recipients.map(r => ({ ...r, email: r.email.trim() })).filter(r => r.email);
+      const bad = list.find(r => !emailOk.test(r.email));
+      if (bad) throw new Error(`${t("Невірний email")}: ${bad.email}`);
+      const f = factory ? await patch<Factory>(`/factories/${factory.id}`, payload()) : await post<Factory>(`/factories`, payload());
+      await put(`/factories/${f.id}/email-recipients`, { recipients: list.map(r => ({ email: r.email, name: r.name.trim() || null, templateId: r.templateId ? Number(r.templateId) : null })) });
+    },
     onSuccess: () => { toast.success(t("Збережено")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -234,6 +279,18 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
             </Select>
           </div>
         </div>
+        {v.genMode === "availability" && (
+          <div className="grid grid-cols-2 items-end gap-2">
+            <div>
+              <Label>{t("Мінімум днів доступності на тиждень")}</Label>
+              <Select value={v.minDaysPerWeek} onChange={set("minDaysPerWeek")}>
+                <option value="">{t("— без правила —")}</option>
+                {[1, 2, 3, 4, 5, 6, 7].map(n => <option key={n} value={n}>{n}</option>)}
+              </Select>
+            </div>
+            <p className="pb-1 text-xs text-slate-400">{t("Бот не прийме доступність із меншою кількістю днів і попросить працівника дозаповнити.")}</p>
+          </div>
+        )}
         {v.genMode === "orders" && (
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
             {t("Працівники цієї фабрики не заповнюють доступність. «Згенерувати» розставить усіх активних працівників за замовленнями — далі правите вручну.")}
@@ -295,6 +352,11 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           <input type="checkbox" checked={v.usesScheduling} onChange={e => setV({ ...v, usesScheduling: e.target.checked })} />
           {t("Планування графіків (замовлення/генерація/доступність)")}
         </label>
+        {!v.usesScheduling && (
+          <p className="-mt-1 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            ⚠️ {t("Без планування фабрика зникне зі сторінок «Графік» і «Замовлення», а її працівники не зможуть подавати доступність у боті. Вимикайте лише для зарплатних фабрик без графіку.")}
+          </p>
+        )}
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{t("Що бачить працівник у боті")}</p>
           <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -378,7 +440,26 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           </div>
           <p className="mt-1 text-xs text-slate-400">{t("Час — коли працівник має бути на зупинці (необов'язково).")}</p>
         </div>
-        <div><Label>{t("Email клієнта (для розсилки графіку)")}</Label><Input value={v.clientEmail} onChange={set("clientEmail")} type="email" /></div>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <Label>{t("Email клієнта (для розсилки графіку)")}</Label>
+            <button type="button" onClick={addRecipient} className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50"><Plus className="h-3.5 w-3.5" /> {t("Додати")}</button>
+          </div>
+          {recipients.length === 0 && <p className="text-xs text-slate-400">{t("Немає отримувачів — лист із графіком не надсилатиметься.")}</p>}
+          <div className="space-y-1.5">
+            {recipients.map((r, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Input value={r.email} onChange={e => setRecipient(i, { email: e.target.value })} type="email" placeholder="email@firma.pl" className="flex-1" />
+                <Select value={r.templateId} onChange={e => setRecipient(i, { templateId: e.target.value })} className="w-40">
+                  <option value="">{t("Стандартний")}</option>
+                  {templates.map(tp => <option key={tp.id} value={tp.id}>{tp.name}</option>)}
+                </Select>
+                <button type="button" onClick={() => removeRecipient(i)} className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Прибрати")}><span className="text-sm">✕</span></button>
+              </div>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-slate-400">{t("Кожен отримувач може мати власний шаблон листа (Налаштування → Email-шаблони). Лист надсилається всім одразу.")}</p>
+        </div>
         <div>
           <Label>{t("Опис обов'язків для Umowa (Czynności)")}</Label>
           <Textarea value={v.contractDuties} onChange={set("contractDuties")} rows={2} placeholder={t("напр. prace porządkowe i pomocnicze")} />
@@ -431,7 +512,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
         {factory && canPayoutView && <PayoutRulesBlock factoryId={factory.id} canEdit={canPayoutEdit} />}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} disabled={!v.name.trim() || !shiftsOk} onClick={() => v.name.trim() && shiftsOk && save.mutate()}>{t("Зберегти")}</Button>
+          <Button loading={save.isPending} disabled={!v.name.trim() || !shiftsOk} onClick={submit}>{t("Зберегти")}</Button>
         </div>
       </div>
     </Modal>

@@ -10,10 +10,18 @@ import { Button, Card, Empty, Badge, Modal, Spinner } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+
+// «+N 🚗» — self-transport people on the shift: not in headcount (nobody drives them),
+// but shown so the count doesn't look lower than the factory schedule list.
+function SelfTag({ n, on }: { n?: number; on?: boolean }) {
+  const t = useT();
+  if (!n) return null;
+  return <span title={t("Доїжджають самі — не рахуються до посадки")} className={`ml-1 text-[10px] font-medium ${on ? "text-red-200" : "text-sky-500"}`}>+{n} 🚗</span>;
+}
 import { isTelegramWebApp } from "../lib/telegram";
 
 type PickupGap = { reason: "none" | "capacity"; people: number; seats: number | null } | null;
-type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap; cancelled?: boolean };
+type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; selfCount?: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap; cancelled?: boolean };
 type FactoryBoard = { id: number; name: string; shiftCount: number; cells: Cell[] };
 type DriverRow = { id: number; name: string; seats: number | null; isHeadDriver: boolean; telegramId: string | null };
 type Board = { weekStart: string; hasWeek: boolean; factories: FactoryBoard[]; drivers: DriverRow[] };
@@ -211,7 +219,7 @@ function FactoryCard({ f, weekStart, mobileDay }: { f: FactoryBoard; weekStart: 
                   <div className="w-20 shrink-0">
                     <div className="text-sm font-semibold text-slate-700">{c.shift} {t("зм")}</div>
                     {c.start && c.end && <div className="text-[11px] text-slate-400">{c.start}–{c.end}</div>}
-                    <div className="mt-0.5 text-xs text-slate-500">{c.headcount} {t("ос.")}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">{c.headcount} {t("ос.")}<SelfTag n={c.selfCount} /></div>
                   </div>
                   <div className="min-w-0 flex-1 space-y-1">
                     {c.cancelled && <div><Badge color="rose">❌ {t("скасовано")}</Badge></div>}
@@ -263,7 +271,7 @@ function FactoryCard({ f, weekStart, mobileDay }: { f: FactoryBoard; weekStart: 
                   return (
                     <td key={d} className={`px-3 py-2.5 text-center ${isWeekend(d) ? "bg-slate-50/40" : ""} ${isPastDay(weekStart, d) ? "opacity-50" : ""}`}>
                       {c.cancelled && <div className="mb-1"><Badge color="rose">❌ {t("скасовано")}</Badge></div>}
-                      <div className="text-sm font-semibold text-slate-700">{c.headcount} <span className="font-normal text-slate-400">{t("ос.")}</span></div>
+                      <div className="text-sm font-semibold text-slate-700">{c.headcount} <span className="font-normal text-slate-400">{t("ос.")}</span><SelfTag n={c.selfCount} /></div>
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
                         {c.drivers.length ? c.drivers.map(dr => (
                           <span key={dr.id} className="rounded-md bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-700">{dr.name}</span>
@@ -382,7 +390,7 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                               <span>{c.shift} {t("зм")}{c.start && c.end ? <span className={`ml-1.5 text-xs font-normal ${on ? "text-red-200" : "text-slate-400"}`}>{c.start}–{c.end}</span> : null}</span>
                               <span className="flex items-center gap-1.5">
                                 {on && <Check className="h-4 w-4" />}
-                                <span className={`text-xs ${on ? "text-red-100" : "text-slate-500"}`}>{c.headcount} {t("ос.")}</span>
+                                <span className={`text-xs ${on ? "text-red-100" : "text-slate-500"}`}>{c.headcount} {t("ос.")}<SelfTag n={c.selfCount} on={on} /></span>
                               </span>
                             </button>
                             <button type="button" disabled={past} onClick={() => toggle(kp)} title={t("Забрати зі зміни")}
@@ -481,7 +489,7 @@ function AssignModal({ driver, factories, weekStart, onClose, onSaved }: {
                                 className={`flex w-full flex-col items-center gap-0.5 rounded-lg border px-2 py-1.5 transition ${
                                   on ? "border-red-600 bg-red-600 text-white shadow-sm" : "border-slate-200 bg-white hover:border-red-300"}`}>
                                 {on ? <Check className="h-4 w-4" /> : <span className="text-sm font-bold text-slate-700">{c.headcount}</span>}
-                                <span className={`text-[10px] font-medium ${on ? "text-red-100" : "text-slate-500"}`}>{on ? `${c.headcount} ${t("ос.")}` : t("ос.")}</span>
+                                <span className={`text-[10px] font-medium ${on ? "text-red-100" : "text-slate-500"}`}>{on ? `${c.headcount} ${t("ос.")}` : t("ос.")}<SelfTag n={c.selfCount} on={on} /></span>
                               </button>
                               <button type="button" onClick={() => toggle(kp)} title={t("Забрати зі зміни")}
                                 className={`mt-1 w-full rounded-md border px-1 py-0.5 text-[10px] font-medium transition ${

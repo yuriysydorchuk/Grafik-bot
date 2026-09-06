@@ -95,6 +95,15 @@ if (fs.existsSync(path.join(webDist, "index.html"))) {
 // 500 — the client never sees stack traces or internal details.
 const errorHandler: express.ErrorRequestHandler = (err, req, res, _next) => {
   const path = req.url?.split("?")[0];
+  // multer: перевищення ліміту — очікувана помилка користувача, не інцидент
+  // (не 500, не алерт); клієнт має бачити зрозумілий текст, а не «upload failed»
+  if ((err as any)?.name === "MulterError") {
+    const code = (err as any).code as string;
+    const msg = code === "LIMIT_FILE_SIZE" ? "Файл завеликий (макс 60 МБ)" : `Помилка завантаження: ${(err as any).message}`;
+    logger.warn({ code, method: req.method, url: path }, "multer rejected upload");
+    if (!res.headersSent) res.status(code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: msg });
+    return;
+  }
   logger.error({ err, method: req.method, url: path }, "unhandled API error");
   void sendAlert({ service: "api", kind: (err as any)?.name, source: `${req.method} ${path}`, message: (err as any)?.message });
   if (res.headersSent) return;

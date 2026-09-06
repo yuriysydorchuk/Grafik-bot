@@ -8,7 +8,10 @@ import {
 } from "@workspace/db";
 import { eq, and, count, desc, ne, gte, lt } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { adminWantsNotify } from "./roles";
+import type { NotifyType } from "../lib/roles";
 import { setState } from "./state";
+import { entryDateStr } from "../lib/dates";
 import { DAY_UK, SHIFT_SHORT, splitMessage, mdSafe } from "./display";
 import { t, asLang, dayShort, DATE_LOCALE, type Lang } from "./i18n";
 import { nowWarsaw } from "./time";
@@ -113,21 +116,56 @@ export async function offerTransferReport(workerId: number, oldFactoryId: number
   });
 }
 
-export async function notifyAdmins(text: string, options: Record<string, unknown> = {}) {
+// Офісний бродкаст (детальне повідомлення, часто з inline-кнопками). Кожне
+// повідомлення має NotifyType — адмін отримує його лише якщо тип увімкнений
+// у notify-префах його ролі (roles.notify); adminWantsNotify також відсіює
+// role=driver і невідомі ролі. Нетипізованого «всім адмінам» більше немає —
+// інакше вимкнені в налаштуваннях ролі сповіщення все одно доходили.
+export async function notifyAdmins(type: NotifyType, text: string, options: Record<string, unknown> = {}) {
   const admins = await db.select().from(adminsTable);
   for (const admin of admins) {
     if (!admin.telegramId) continue; // invited/pending admins have no Telegram yet
-    if (admin.role === "driver") continue; // web-only driver role — not office staff
+    if (!(await adminWantsNotify(admin, type))) continue;
     try { await bot.telegram.sendMessage(admin.telegramId, text, options as any); }
     catch { /* individual failure should not stop others */ }
   }
 }
 
+// Переслати адмінам файл по Telegram file_id (довідки до пропусків): фото — sendPhoto,
+// решта — sendDocument (file_id фото не приймається sendDocument і навпаки).
+export async function notifyAdminsFile(type: NotifyType, fileId: string, kind: "photo" | "document", caption?: string) {
+  const admins = await db.select().from(adminsTable);
+  for (const admin of admins) {
+    if (!admin.telegramId) continue;
+    if (!(await adminWantsNotify(admin, type))) continue;
+    try {
+      if (kind === "photo") await bot.telegram.sendPhoto(admin.telegramId, fileId, { caption });
+      else await bot.telegram.sendDocument(admin.telegramId, fileId, { caption });
+    } catch { /* individual failure should not stop others */ }
+  }
+}
+
+// Send to whichever admins have this NotifyType checked in their role's
+// notification prefs (roles.notify — see lib/roles.ts NOTIFY_KEYS). Unlike
+// notifyAdmins, this is opt-in per role, owner included (no auto-bypass).
+export async function notifyByType(type: NotifyType, text: string, options: Record<string, unknown> = {}) {
+  const admins = await db.select().from(adminsTable);
+  for (const a of admins) {
+    if (!a.telegramId) continue;
+    if (!(await adminWantsNotify(a, type))) continue;
+    try { await bot.telegram.sendMessage(a.telegramId, text, options as any); }
+    catch { /* individual failure should not stop others */ }
+  }
+}
+
 // Role-targeted notification: stores an on-site notification (bell) AND sends Telegram
-// to the matching web users (by role) + the head driver when "driver"/"both" is targeted.
+// to the matching web users (by role notify prefs) + the head driver when "driver"/"both"
+// is targeted. `adminsNotified: true` — детальне повідомлення (з кнопками) адмінам уже
+// пішло через notifyAdmins того ж типу, тож тут лише дзвіночок + головний водій
+// (без прапорця адміни отримували одну подію двічі).
 export async function notifyRoles(
   audience: "scheduler" | "driver" | "both",
-  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance" | "substitution" | "availability_change"; title: string; body?: string },
+  msg: { type: "no_show" | "cancellation" | "hours_correction" | "advance" | "substitution" | "availability_change"; title: string; body?: string; adminsNotified?: boolean },
 ) {
   // 1) on-site notification
   try {
@@ -136,9 +174,15 @@ export async function notifyRoles(
 
   // 2) Telegram recipients
   const recipients = new Set<string>();
-  const wantRoles = audience === "both" ? ["scheduler", "driver", "owner"] : [audience, "owner"];
-  const admins = await db.select().from(adminsTable);
-  for (const a of admins) if (wantRoles.includes(a.role ?? "owner") && a.telegramId) recipients.add(a.telegramId);
+  if ((audience === "scheduler" || audience === "both") && !msg.adminsNotified) {
+    const admins = await db.select().from(adminsTable);
+    for (const a of admins) {
+      if (!a.telegramId) continue;
+      // per-role notify prefs, not a caps/role-string shortcut — every role
+      // (incl. owner) decides for itself whether it wants this event type.
+      if (await adminWantsNotify(a, msg.type)) recipients.add(a.telegramId);
+    }
+  }
   if (audience === "driver" || audience === "both") {
     const heads = await db.select().from(driversTable).where(and(eq(driversTable.isHeadDriver, true), eq(driversTable.isActive, true)));
     for (const d of heads) if (d.telegramId) recipients.add(d.telegramId);
@@ -457,9 +501,11 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
       name: workersTable.fullName,
       language: workersTable.language,
       shift: scheduleEntriesTable.shift,
+      weekStart: scheduleWeeksTable.weekStart,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
+    .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(eq(scheduleEntriesTable.id, entryId));
 
   const row = rows[0];
@@ -474,7 +520,8 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
         t(lang, "notif.absentPrompt", { name: row.name ?? "", day: lDay(lang, day), shift: lShift(lang, row.shift as Shift) }),
         { parse_mode: "Markdown" },
       );
-      setState(row.telegramId, "absent:explain_reason", { entryId, day, shift: row.shift, name: row.name });
+      // далі флоу веде bot/handlers/absences.ts (причина → довідки → сповіщення адмінам)
+      setState(row.telegramId, "absent:explain_reason", { entryId, day, shift: row.shift, name: row.name, date: row.weekStart ? entryDateStr(String(row.weekStart), day) : null });
     } catch (e) {
       logger.error({ err: e }, "Error notifying absent worker");
     }
@@ -484,7 +531,6 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
   if (row.workerId) {
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-    const { scheduleWeeksTable } = await import("@workspace/db");
     const absenceRows = await db
       .select({ id: scheduleEntriesTable.id })
       .from(scheduleEntriesTable)
@@ -498,7 +544,8 @@ export async function notifyAbsentWorker(entryId: number, day: DayOfWeek) {
 
     if (totalAbsences >= 2) {
       const emoji = totalAbsences >= 5 ? "🔴" : totalAbsences >= 3 ? "🟠" : "🟡";
-      await notifyAdmins(
+      await notifyByType(
+        "absence_warning",
         `${emoji} *Попередження: пропуски*\n\n👷 *${row.name}*\nПропусків всього: *${totalAbsences}*\n\nПерейдіть до "📋 Список працівників" для деталей.`,
         { parse_mode: "Markdown" },
       );
@@ -530,6 +577,7 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
     .select({
       workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language,
+      selfTransport: workersTable.selfTransport,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
@@ -569,8 +617,14 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
       if (dayRows.length === 0) continue;
       msg += `*${DAY_NAMES_UK[d]}:*\n`;
       for (const s of ["1", "2", "3", "4", "5", "6"] as Shift[]) {
-        const names = dayRows.filter(r => r.shift === s).map(r => r.name);
-        if (names.length) msg += `  ${SHIFT_SHORT[s]} (${names.length}): ${names.join(", ")}\n`;
+        const shiftRows = dayRows.filter(r => r.shift === s);
+        if (!shiftRows.length) continue;
+        // Self-transport workers stay in the list (they ARE on the shift) but are
+        // marked and subtracted, so the count matches the driver board headcount.
+        const selfCount = shiftRows.filter(r => r.selfTransport).length;
+        const names = shiftRows.map(r => r.selfTransport ? `${r.name} 🚶` : r.name);
+        const count = selfCount ? `${shiftRows.length - selfCount} + ${selfCount} 🚶 самі` : `${shiftRows.length}`;
+        msg += `  ${SHIFT_SHORT[s]} (${count}): ${names.join(", ")}\n`;
       }
     }
     try { await sendLongMessage(hd.telegramId, msg, { parse_mode: "Markdown" }); driverNotified = true; } catch { /* ignore */ }

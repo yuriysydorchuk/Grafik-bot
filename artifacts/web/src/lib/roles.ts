@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -13,6 +13,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   factoryRates: "Ставки фабрик (оплата працівникам і ставка клієнту; без NIP/P&L)",
   assignDrivers: "Водійські дії (борд, призначення, посадка)",
   deleteWorkers: "Видаляти працівників назавжди",
+  viewWorkers: "Переглядати працівників (лише перегляд, без editData — без редагування)",
   svodni: "Сводні (офіційна частина: фактичні години, ставки, до виплати)",
   svodniSensitive: "Сводні — закритий шар (księgowość, готівка)",
   costInvoices: "Фактури коштові (внесення і оплати — для бухгалтерії)",
@@ -40,6 +41,25 @@ export const PAGE_LABEL: Record<string, string> = {
   "/tasks": "Задачі",
 };
 export const PAGE_KEYS = Object.keys(PAGE_LABEL);
+
+// Bot notification types a role can be subscribed to — independent of caps.
+// Owner is NOT auto-included here (unlike caps/pages) — plain per-role list.
+export const NOTIFY_KEYS = [
+  "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
+  "absence_warning", "weekly_summary", "finance_alerts",
+] as const;
+export type NotifyType = (typeof NOTIFY_KEYS)[number];
+export const NOTIFY_LABEL: Record<NotifyType, string> = {
+  no_show: "🔴 Невихід на зміну",
+  cancellation: "❌ Скасування зміни",
+  hours_correction: "⚠️ Помилка в годинах фабрики",
+  advance: "💰 Запит на аванс",
+  substitution: "🔁 Заміна на зміні (графік)",
+  availability_change: "📋 Зміна доступності працівника",
+  absence_warning: "🟡 Повторні пропуски (попередження)",
+  weekly_summary: "🤖 Тижневий звіт розсилки нагадувань",
+  finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
+};
 
 // The resolved access carried on the current user (from /auth/me).
 export type Access = { role?: string | null; isMain?: boolean; caps?: string[]; pages?: string[] } | null | undefined;

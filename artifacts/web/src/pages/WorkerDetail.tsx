@@ -24,6 +24,7 @@ import {
 } from "../lib/legality";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
+import { AbsenceFiles } from "../components/AbsenceFiles";
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -132,6 +133,8 @@ export default function WorkerDetail() {
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
   // що зачепить» замість прямого PATCH (лише для користувачів з cap svodni)
   const canSvodni = can(me, "svodni");
+  // viewWorkers-only (напр. бухгалтерія): бачить картку, інлайн-поля — нередаговані
+  const canEdit = can(me, "editData");
   const [pendingChange, setPendingChange] = useState<{ changes: Record<string, unknown>; title: string; from?: string } | null>(null);
   const requestChange = canSvodni ? (changes: Record<string, unknown>, title: string, from?: string) => setPendingChange({ changes, title, from }) : undefined;
 
@@ -162,7 +165,17 @@ export default function WorkerDetail() {
 
   return (
     <>
-      <Link href="/workers" className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"><ArrowLeft className="h-4 w-4" /> {t("До працівників")}</Link>
+      {/* ?from=/schedule?week=… — повернення у графік, звідки клікнули по імені
+          (тільки внутрішні шляхи, без відкритого редиректу) */}
+      {(() => {
+        const from = new URLSearchParams(window.location.search).get("from") ?? "";
+        const isSchedule = from.startsWith("/schedule");
+        return (
+          <Link href={isSchedule ? from : "/workers"} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
+            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : t("До працівників")}
+          </Link>
+        );
+      })()}
 
       {/* Єдина шапка-картка: ідентичність + лічильники текстом + групи полів.
           Всі поля редагуються інлайн; свод-релевантні (посада/ставка/студент,
@@ -229,27 +242,30 @@ export default function WorkerDetail() {
               <span>{t("запросив друзів")}: <b className="font-semibold text-slate-700">{st.referralCount}</b></span>
             </div>
           </div>
-          <Button variant="secondary" className="ml-auto shrink-0" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" /> {t("Редагувати")}</Button>
+          {canEdit && <Button variant="secondary" className="ml-auto shrink-0" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" /> {t("Редагувати")}</Button>}
         </div>
 
         <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 md:grid-cols-3 md:divide-x md:divide-y-0">
           <InfoGroup title={t("Робота")}>
+            {/* Фірма/фабрика/стать — у шапці профілю (badge-select), не дублюємо рядками (редизайн 09.2026) */}
             <InfoRow icon={Briefcase} label={t("Посада")}>
               <InlineSelect value={w.positionId != null ? String(w.positionId) : ""}
                 onChange={v => { const p = v ? Number(v) : null; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
-                options={posOptions} />
+                options={posOptions} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
               <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
-                options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} />
+                options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={Car} label={t("Транспорт")}>
               <InlineSelect value={w.selfTransport ? "self" : ""} none={t("Возить фірма")} onChange={v => wpatch.mutate({ selfTransport: v === "self" })}
-                options={[{ value: "self", label: t("Доїжджає сам") }]} />
+                options={[{ value: "self", label: t("Доїжджає сам") }]} disabled={!canEdit} />
               {w.selfTransport && (
-                <input type="date" value={w.selfTransportSince ?? ""} title={t("з")}
-                  onChange={e => wpatch.mutate({ selfTransportSince: e.target.value || null })}
-                  className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
+                canEdit ? (
+                  <input type="date" value={w.selfTransportSince ?? ""} title={t("з")}
+                    onChange={e => wpatch.mutate({ selfTransportSince: e.target.value || null })}
+                    className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
+                ) : w.selfTransportSince ? <span className="text-xs text-slate-400">{t("з")} {w.selfTransportSince}</span> : null
               )}
             </InfoRow>
             {(w.factoryCodes ?? []).length > 0 && (
@@ -267,21 +283,21 @@ export default function WorkerDetail() {
                 заповнити все одно можна через «Редагувати» (WorkerModal). */}
             {w.pesel && (
               <InfoRow icon={KeyRound} label="PESEL">
-                <InlineText value={w.pesel} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} />
+                <InlineText value={w.pesel} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} disabled={!canEdit} />
               </InfoRow>
             )}
             {w.middleName && (
               <InfoRow icon={IdCard} label={t("Друге ім'я")}>
-                <InlineText value={w.middleName} placeholder={t("необов'язково")} width="w-32" onSave={v => wpatch.mutate({ middleName: v.trim() || null })} />
+                <InlineText value={w.middleName} placeholder={t("необов'язково")} width="w-32" onSave={v => wpatch.mutate({ middleName: v.trim() || null })} disabled={!canEdit} />
               </InfoRow>
             )}
             <LegalStatusRow workerId={w.id} legalStatus={(w.legalStatus as LegalStatus | null) ?? null} onRequest={requestChange} />
             <InfoRow icon={Users} label={t("Національність")}>
               <InlineSelect value={w.nationality ?? ""} onChange={v => wpatch.mutate({ nationality: v || null })}
-                options={NATIONALITIES.map(n => ({ value: n.value, label: `${n.flag} ${t(n.label)}` }))} />
+                options={NATIONALITIES.map(n => ({ value: n.value, label: `${n.flag} ${t(n.label)}` }))} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={Send} label="Telegram">
-              <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} />
+              <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} disabled={!canEdit} />
             </InfoRow>
             <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           </InfoGroup>
@@ -318,7 +334,7 @@ export default function WorkerDetail() {
             <BadaniaRow workerId={w.id} entries={w.badania ?? []} />
             {w.gratyfikantName && (
               <InfoRow icon={Briefcase} label={t("Імʼя в Gratyfikancie")}>
-                <InlineText value={w.gratyfikantName} placeholder={t("вказати")} width="w-44" onSave={v => wpatch.mutate({ gratyfikantName: v.trim() || null })} />
+                <InlineText value={w.gratyfikantName} placeholder={t("вказати")} width="w-44" onSave={v => wpatch.mutate({ gratyfikantName: v.trim() || null })} disabled={!canEdit} />
               </InfoRow>
             )}
           </InfoGroup>
@@ -435,11 +451,16 @@ function Info({ icon, label, value }: { icon: any; label: string; value: string 
 }
 
 // Текстове значення «клік → інпут» для інлайн-редагування рядка інфо-картки
-function InlineText({ value, placeholder, width = "w-40", onSave }: { value: string; placeholder: string; width?: string; onSave: (v: string) => void }) {
+function InlineText({ value, placeholder, width = "w-40", onSave, disabled }: { value: string; placeholder: string; width?: string; onSave: (v: string) => void; disabled?: boolean }) {
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const commit = () => { onSave(draft); setEditing(false); };
+  if (disabled) return (
+    <span className="max-w-full truncate font-medium text-slate-700" title={value || undefined}>
+      {value || <span className="font-normal text-slate-400">{placeholder}</span>}
+    </span>
+  );
   if (!editing) return (
     <button className="max-w-full truncate font-medium text-slate-700 hover:text-red-600" title={value || undefined}
       onClick={() => { setDraft(value); setEditing(true); }}>
@@ -458,7 +479,10 @@ function InlineText({ value, placeholder, width = "w-40", onSave }: { value: str
 }
 
 // Borderless-select для інлайн-редагування (стиль — як рядок форми легалізації)
-function InlineSelect({ value, options, onChange, none = "—" }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; none?: string }) {
+function InlineSelect({ value, options, onChange, none = "—", disabled }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; none?: string; disabled?: boolean }) {
+  if (disabled) return (
+    <span className="max-w-full truncate text-sm font-medium text-slate-700">{options.find(o => o.value === value)?.label ?? none}</span>
+  );
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
       className="max-w-full rounded border border-transparent bg-transparent py-0.5 pr-5 text-sm font-medium text-slate-700 hover:border-slate-300 focus:border-red-400 focus:outline-none">
@@ -3153,7 +3177,7 @@ function WorkerAbsences({ workerId }: { workerId: number }) {
   const t = useT();
   const { data } = useQuery<{
     total: number; justified: number; penaltyTotal: number;
-    absences: { entryId: number; factory: string | null; date: string; shift: string; reason: string | null; excused: boolean; justified: boolean; penalty: number; deductedMonth: string | null; deductedAmount: number | null }[];
+    absences: { entryId: number; factory: string | null; date: string; shift: string; reason: string | null; explainedAt?: string | null; attachments?: { id: number; fileName: string | null; fileMime: string | null }[]; excused: boolean; justified: boolean; penalty: number; deductedMonth: string | null; deductedAmount: number | null }[];
   }>({ queryKey: ["worker-absences", workerId], queryFn: () => get(`/workers/${workerId}/absences`) });
   const rows = data?.absences ?? [];
   return (
@@ -3176,7 +3200,8 @@ function WorkerAbsences({ workerId }: { workerId: number }) {
                     {a.justified ? <Badge color="green">{t("виправдано")}</Badge>
                       : a.excused ? <Badge color="amber">{t("відпросився")}</Badge>
                       : <Badge color="rose">{t("не вийшов")}</Badge>}
-                    {a.reason && <span className="ml-1.5 text-xs text-slate-400" title={a.reason}>{a.reason.length > 24 ? a.reason.slice(0, 24) + "…" : a.reason}</span>}
+                    {a.reason && <span className="ml-1.5 text-xs text-slate-400" title={a.explainedAt ? `${a.reason} (${t("пояснено")} ${new Date(a.explainedAt).toLocaleDateString("uk-UA")})` : a.reason}>{a.reason.length > 24 ? a.reason.slice(0, 24) + "…" : a.reason}{a.explainedAt && <span className="ml-1 text-slate-300">({new Date(a.explainedAt).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" })})</span>}</span>}
+                    {!!a.attachments?.length && <span className="ml-1"><AbsenceFiles files={a.attachments} compact /></span>}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
                     {a.penalty > 0 ? <span className="font-medium text-rose-600">−{a.penalty} zł</span> : <span className="text-slate-300">—</span>}

@@ -15,6 +15,7 @@ import {
   documentTemplatesTable, contractsTable, contractFilesTable,
   signatureTokensTable, signatureEventsTable, passportScanTokensTable,
   legalRulesTable, workerLegalityTable, documentAuditTable,
+  agreementConditionsTable, agreementChargesTable, agreementAuditTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import app from "../app.ts";
@@ -38,6 +39,7 @@ export {
   documentTemplatesTable, contractsTable, contractFilesTable,
   signatureTokensTable, signatureEventsTable, passportScanTokensTable,
   legalRulesTable, workerLegalityTable, documentAuditTable,
+  agreementConditionsTable, agreementChargesTable, agreementAuditTable,
 };
 export { hashPassword, SESSION_COOKIE };
 
@@ -58,6 +60,7 @@ export async function resetDb(): Promise<void> {
     "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_tab_checks, svodni_tab_meta, svodni_locks, factory_payout_rules, monthly_reports, factory_hours, hours_notes, worker_changes, " +
     "transport_deductions, clothing_items, clothing_stock, clothing_types, " +
+    "agreement_conditions, agreement_charges, agreement_audit, " +
     "companies, document_types, vehicles, advance_requests, worker_questionnaires, " +
     "document_templates, contracts, contract_files, signature_tokens, signature_events, " +
     "legal_rules, worker_legality, document_audit, " +
@@ -81,8 +84,9 @@ export async function resetDb(): Promise<void> {
 
 // Insert a role with the given capabilities/pages, then invalidate the auth role cache so
 // authRequired resolves it on the next request.
-export async function seedRole(key: string, caps: string[] = [], pages: string[] = []): Promise<void> {
-  await db.insert(rolesTable).values({ key, label: key, caps, pages }).onConflictDoNothing();
+// `notify` — bot notification types the role opts into (bot notifyAdmins/notifyRoles are gated by it).
+export async function seedRole(key: string, caps: string[] = [], pages: string[] = [], notify: string[] = []): Promise<void> {
+  await db.insert(rolesTable).values({ key, label: key, caps, pages, notify }).onConflictDoNothing();
   invalidateRolesCache();
 }
 
