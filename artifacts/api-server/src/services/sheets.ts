@@ -187,10 +187,12 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
     }
   }
 
-  // Get all workers for matching
-  let allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+  // Усі профілі для матчингу, включно зі звільненими: рядок звільненого в таблиці
+  // пропускається (не створює дубль-профіль і не потрапляє в доступність)
+  let allWorkers = await db.select().from(workersTable);
 
   const autoAdded: string[] = [];
+  const skippedFired: string[] = [];
   let synced = 0;
 
   // Clear existing SHEETS-sourced availability for this week only.
@@ -201,11 +203,15 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
 
   for (const [normalizedName, row] of latestByName) {
     // Try to match to master list
-    let worker = allWorkers.find(w =>
+    const matchName = (w: { fullName: string }) =>
       normalizeFullName(w.fullName) === normalizedName ||
       normalizedName.includes(normalizeFullName(w.fullName)) ||
-      normalizeFullName(w.fullName).includes(normalizedName)
-    );
+      normalizeFullName(w.fullName).includes(normalizedName);
+    let worker = allWorkers.find(w => w.isActive && matchName(w));
+    if (!worker) {
+      const fired = allWorkers.find(w => !w.isActive && matchName(w));
+      if (fired) { skippedFired.push(row.fullName.trim()); continue; }
+    }
 
     // Auto-add worker if not in master list
     if (!worker) {
@@ -235,6 +241,7 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
       synced++;
     }
   }
+  if (skippedFired.length) logger.info({ weekStart, skippedFired }, "sheets sync: rows of fired workers skipped");
 
   return { synced, autoAdded };
 }

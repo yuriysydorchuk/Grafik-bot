@@ -209,6 +209,37 @@ router.post("/tasks/:id/action/:code", TP, async (req: AuthedRequest, res) => {
   } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 
+// ── ланцюжок powiadomienie UA (services/uaNotification.ts) ────────────────────
+// картка даних для форми PSZ-PPWPU по людині зі списку задачі
+router.get("/tasks/:id/ua-card/:workerId", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  const wid = Number(req.params.workerId);
+  const listed = (((t.autoParams as any)?.workers ?? []) as { id: number }[]).some(w => w.id === wid);
+  if (!listed) return fail(res, 400, "Людина не в списку цієї задачі");
+  try { ok(res, await (await import("../services/uaNotification")).uaCard(wid)); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+// підтвердження з praca.gov.pl (PDF/фото) → документ powiadomienie_ua у профіль
+const uaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
+router.post("/tasks/:id/ua-upload/:workerId", TP, uaUpload.single("file"), async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  if (!req.file) return fail(res, 400, "Файл не отримано");
+  const mime = sniffDocMime(req.file.buffer);
+  if (!mime || !DOC_MIME_WHITELIST.has(mime)) return fail(res, 400, "Тип файлу не підтверджено вмістом (дозволено фото і PDF)");
+  const originalName = Buffer.from(req.file.originalname ?? "powiadomienie.pdf", "latin1").toString("utf8");
+  const { buffer, mime: realMime, fileName } = await compressUploadImage(req.file.buffer, mime, originalName);
+  const stored = makeStoredName(fileName);
+  const { WORKER_DOCS_DIR } = await import("../lib/uploads");
+  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, stored), buffer);
+  try {
+    const message = await (await import("../services/uaNotification")).uaUploadConfirmation(t, Number(req.params.workerId), { relPath: path.join("worker-documents", stored), fileName, mime: realMime }, s(req.body?.submittedAt), { adminId: me(req) });
+    ok(res, { ok: true, message });
+  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+
 function parseTaskBody(body: Record<string, unknown>) {
   const kind = TASK_KINDS.includes(body.kind as TaskKind) ? (body.kind as TaskKind) : "task";
   const priority = TASK_PRIORITIES.includes(body.priority as TaskPriority) ? (body.priority as TaskPriority) : "normal";
@@ -448,7 +479,7 @@ router.get("/task-auto-rules", TP, async (_req, res) => {
   const rows = await db.select().from(taskAutoRulesTable);
   const byCode = new Map(rows.map(r => [r.code, r]));
   ok(res, {
-    rules: AUTO_RULE_DEFS.map(d => ({ ...d, enabled: byCode.get(d.code)?.enabled ?? d.enabledByDefault, leadDays: byCode.get(d.code)?.leadDays ?? d.leadDays, fallbackAdminId: byCode.get(d.code)?.fallbackAdminId ?? null })),
+    rules: AUTO_RULE_DEFS.map(d => ({ ...d, enabled: byCode.get(d.code)?.enabled ?? d.enabledByDefault, leadDays: byCode.get(d.code)?.leadDays ?? d.leadDays, fallbackAdminId: byCode.get(d.code)?.fallbackAdminId ?? null, params: (byCode.get(d.code)?.params ?? {}) as Record<string, unknown> })),
     settings: { ...DEFAULT_TASK_SETTINGS, ...((byCode.get("settings")?.params ?? {}) as object) },
   });
 });
@@ -477,6 +508,14 @@ router.patch("/task-auto-rules/:code", TP, async (req: AuthedRequest, res) => {
   if (b.enabled !== undefined) patch.enabled = !!b.enabled;
   if (b.leadDays !== undefined) patch.leadDays = n(b.leadDays);
   if (b.fallbackAdminId !== undefined) patch.fallbackAdminId = n(b.fallbackAdminId);
+  // параметри правила (ланцюжок powiadomienie: день ступеня 1, виконавець ступеня 2)
+  if (b.params && typeof b.params === "object") {
+    const [cur] = await db.select({ params: taskAutoRulesTable.params }).from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, code));
+    const next: Record<string, unknown> = { ...((cur?.params ?? {}) as object) };
+    if (b.params.stage1Days !== undefined) next.stage1Days = Math.max(1, Number(b.params.stage1Days) || 3);
+    if (b.params.stage2AdminId !== undefined) next.stage2AdminId = n(b.params.stage2AdminId);
+    patch.params = next;
+  }
   const [row] = await db.update(taskAutoRulesTable).set(patch).where(eq(taskAutoRulesTable.code, code)).returning();
   ok(res, row);
 });

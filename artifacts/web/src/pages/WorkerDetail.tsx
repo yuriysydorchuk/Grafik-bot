@@ -27,6 +27,7 @@ import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, Searc
 import { AbsenceFiles } from "../components/AbsenceFiles";
 import { WorkerTasksBlock, WorkerUpcomingEvents } from "../components/TasksWidgets";
 import { WorkerModal } from "../components/WorkerModal";
+import { FireModal } from "./Workers";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useLeadDays, expiryTone, expiryTextCls, leadDaysCache } from "../lib/leadDays";
@@ -53,6 +54,8 @@ interface WorkerProfile {
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
   employmentStartDate?: string | null;
+  firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
+  terminationDate?: string | null; // запланована дата звільнення (виповідзення)
   factoryCodes?: { factoryId: number; factoryName: string | null; code: string }[]; // ключі фабрик (Nr Osobowy); ведуться в Обліку годин → «🔑 Ключі»
   agramFactory?: boolean; agramStazBonus?: boolean; agramCashBonus?: boolean;
   cashBonusFactory?: boolean; // не-Agram бонусна фабрика (LST): лише нал-бонус
@@ -134,6 +137,12 @@ export default function WorkerDetail() {
   });
   // повернення звільненого прямо з профілю (той самий POST, що й у списку)
   const confirmDlg = useConfirm();
+  const [firing, setFiring] = useState(false);
+  const fire = useMutation({
+    mutationFn: (v: { offerReport: boolean; date: string }) => post<{ reportOffered?: boolean }>(`/workers/${id}/fire`, v),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setFiring(false); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const restore = useMutation({
     mutationFn: () => post(`/workers/${id}/restore`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Відновлено")); },
@@ -224,6 +233,12 @@ export default function WorkerDetail() {
                 </select>
               </span>
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
+              {w.isActive && w.terminationDate && <Badge color="amber">{t("звільнення з")} {fmtDocDate(w.terminationDate)}</Badge>}
+              {w.isActive && canEdit && (
+                <button type="button" onClick={() => setFiring(true)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
+                  <UserX className="h-3.5 w-3.5" /> {t("Звільнити")}
+                </button>
+              )}
               {!w.isActive && (
                 <button type="button" onClick={async () => {
                   if (await confirmDlg({ title: t("Відновити працівника?"), message: t("Профіль знову стане активним, історія і документи збережуться."), confirmText: t("Відновити") })) restore.mutate();
@@ -291,6 +306,8 @@ export default function WorkerDetail() {
             {/* Дата працевлаштування й поріг «нагадати про години» — про роботу
                 й графік, не про гроші; перенесено з «Фінанси» для балансу колонок. */}
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
+            <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} readOnly={!canEdit} />
+            {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} readOnly={!canEdit} />}
             <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
@@ -440,6 +457,7 @@ export default function WorkerDetail() {
         </div>
       </div>
 
+      {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
       {editing && (
         <WorkerModal worker={workerForEdit} factories={factories} companies={companies} isOwner={isOwner}
           onClose={() => setEditing(false)}
@@ -1077,7 +1095,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
         {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
-            <button onClick={() => send.mutate(c.id)} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
+            <button onClick={() => { if (!c.dateFrom && !window.confirm(t("Дата початку умови не вказана — надіслати на підпис без дати? Дописати її можна буде пізніше."))) return; send.mutate(c.id); }} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
           )}
           {!archived && c.status === "worker_signed" && (
             <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
@@ -1230,7 +1248,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   // «Фабрика · фірма фабрики», мультифірмова (Sushi) — по рядку на кожну нашу
   // фірму. Фабрики працівника — зверху окремою групою.
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
-  const { data: profile } = useQuery<{ companyId: number | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
+  const { data: profile } = useQuery<{ companyId: number | null; firstWorkDate?: string | null; employmentStartDate?: string | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
   const allOptions = employerOptions(factories, companies);
   const mineValues = new Set(employers.map(e => employerValue(e.factoryId, e.companyId, factories)));
   const mineOptions = allOptions.filter(o => mineValues.has(o.value));
@@ -1254,6 +1272,13 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   // йде БЕЗ дат (дата роботи невідома заздалегідь) — не форсувати тут дефолт.
   const [dateFrom, setDateFrom] = useState(defaultFactoryId ? "" : todayIso());
   const [dateTo, setDateTo] = useState(defaultFactoryId ? "" : yearAheadIso());
+  // факторі-пакет: «Діє від» підставляється з першого робочого дня / дати працевлаштування (рішення 08.09.2026) — порожнє лишається дозволеним
+  const [dateTouched, setDateTouched] = useState(false);
+  useEffect(() => {
+    if (dateTouched || !defaultFactoryId) return;
+    const d = profile?.firstWorkDate ?? profile?.employmentStartDate ?? null;
+    if (d && !dateFrom) setDateFrom(d);
+  }, [profile?.firstWorkDate, profile?.employmentStartDate]); // eslint-disable-line react-hooks/exhaustive-deps
   const [rateOverride, setRateOverride] = useState("");
   const [payoutCash, setPayoutCash] = useState(false);
   const [checkedFactory, setCheckedFactory] = useState<Set<number>>(new Set());
@@ -1393,7 +1418,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
         )}
 
         <div className="grid grid-cols-2 gap-2">
-          <div><Label>{t("Діє від")}</Label><Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></div>
+          <div><Label>{t("Діє від")}</Label><Input type="date" value={dateFrom} onChange={e => { setDateTouched(true); setDateFrom(e.target.value); }} /></div>
           <div><Label>{t("Діє до")}</Label><Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></div>
         </div>
         <div className="text-xs text-slate-400">
@@ -2793,6 +2818,75 @@ function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { wor
         <button className="font-medium text-slate-700 hover:text-red-600" onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }}>
           {birthDate ? new Date(birthDate + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
           {under26 != null && <span className={under26 ? "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" : "ml-1 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500"}>{under26 ? "<26" : "26+"}</span>}
+        </button>
+      )}
+    </InfoRow>
+  );
+}
+
+// Перший робочий день: система ставить сама з першої явки «присутній» у затвердженому
+// тижні; графікова може вписати/виправити (editData). Від нього — powiadomienie UA (7 днів).
+function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date: string | null; readOnly?: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(date ?? "");
+  const save = useMutation({
+    mutationFn: () => patch(`/workers/${workerId}`, { firstWorkDate: draft || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <InfoRow icon={CalendarCheck} label={t("Перший робочий день")}>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="date" value={draft} onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : readOnly ? (
+        <span className="font-medium text-slate-700">{date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : "—"}</span>
+      ) : (
+        <button className="font-medium text-slate-700 hover:text-red-600" title={t("Ставиться сам з першої явки «присутній» у затвердженому графіку; можна вписати руками")} onClick={() => { setDraft(date ?? ""); setEditing(true); }}>
+          {date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : t("ще не було явки — вказати")}
+        </button>
+      )}
+    </InfoRow>
+  );
+}
+
+// Виповідзення: запланована дата звільнення — крон звільняє в цю дату (дата ≤ сьогодні — одразу).
+function TerminationRow({ workerId, date, readOnly }: { workerId: number; date: string | null; readOnly?: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirmDlg = useConfirm();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(date ?? "");
+  const save = useMutation({
+    mutationFn: (d: string | null) => post<{ firedNow: boolean }>(`/workers/${workerId}/termination`, { date: d }),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); toast.success(r.firedNow ? t("Дата вже настала — працівника звільнено") : t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const submit = async () => {
+    if (!draft) return save.mutate(null);
+    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+    if (draft <= today && !(await confirmDlg({ title: t("Звільнити зараз?"), message: t("Дата вже настала — працівник буде звільнений одразу цією датою."), confirmText: t("Звільнити") }))) return;
+    save.mutate(draft);
+  };
+  return (
+    <InfoRow icon={UserX} label={t("Виповідзення")}>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="date" value={draft} onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
+          {date && <button className="text-xs text-rose-500" onClick={() => save.mutate(null)}>{t("скасувати виповідзення")}</button>}
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : readOnly ? (
+        <span className="font-medium text-slate-700">{date ? `${t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : "—"}</span>
+      ) : (
+        <button className={date ? "font-medium text-amber-700 hover:text-red-600" : "font-medium text-slate-400 hover:text-red-600"} title={t("Працівник подав дату, з якої звільняється: у цю дату система звільнить сама")} onClick={() => { setDraft(date ?? ""); setEditing(true); }}>
+          {date ? `${t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : t("немає — вказати дату")}
         </button>
       )}
     </InfoRow>

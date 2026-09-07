@@ -16,7 +16,7 @@ import {
   emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
+import { eq, and, or, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
@@ -461,6 +461,7 @@ const strOrNull = (v: unknown): string | null => (v == null ? null : String(v).t
 // /svodni/profile-apply). Використовується сводними і майбутніми сегментами.
 const JOURNALED_FIELDS = [
   "factoryId", "positionId", "legalStatus", "birthDate", "notifyHours", "employmentStartDate",
+  "firstWorkDate", // перший робочий день: від нього рахується powiadomienie UA (обовʼязки легалізації)
   "agramStazBonus", "agramCashBonus", "hourlyRate", "hourlyRateNetto", "isStudent",
   "payoutPrefKind", "payoutPrefValue",
   "nationality", // прапорець біля імені: історія зміни — в журналі
@@ -532,6 +533,13 @@ router.patch("/workers/:id", RW, async (req, res) => {
     const d = strOrNull(req.body.selfTransportSince);
     if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Дата «діє з» — формат YYYY-MM-DD");
     patch.selfTransportSince = d;
+  }
+  // перший робочий день — операційне поле графікової (editData), не фінансове;
+  // порожнє → система знову поставить сама з першої явки
+  if (req.body?.firstWorkDate !== undefined) {
+    const d = strOrNull(req.body.firstWorkDate);
+    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Перший робочий день — формат YYYY-MM-DD");
+    patch.firstWorkDate = d;
   }
   if (req.body?.nationality !== undefined) {
     const n = strOrNull(req.body.nationality);
@@ -629,18 +637,14 @@ router.patch("/workers/:id", RW, async (req, res) => {
 router.post("/workers/:id/fire", RW, async (req, res) => {
   const id = Number(req.params.id);
   const offerReport = !!(req.body ?? {}).offerReport;
-  // Опційна дата звільнення «від коли» (YYYY-MM-DD, множинне звільнення зі
-  // списку обліку годин); без неї — сьогодні. Години/явки після дати ніде не
-  // видаляються — сводна позначає такий період як «не оформлений».
+  // Опційна дата звільнення «від коли» (YYYY-MM-DD, дозволено минулим числом; множинне
+  // звільнення зі списку обліку годин, модалка профілю); без неї — сьогодні. Уся логіка
+  // (журнал, умови, нерозісланий графік, тригери, ланцюжок звільнення) — services/workerFire.ts.
   const rawDate = typeof (req.body ?? {}).date === "string" ? String(req.body.date) : "";
-  const fireDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
-  const firedAt = fireDate ? new Date(`${fireDate}T12:00:00`) : new Date();
-  const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt }).where(eq(workersTable.id, id)).returning();
-  import("../services/tasks").then(m => m.workerTrigger("worker_fired", w)).catch(() => {}); // шаблони задач «при звільненні»
-  await db.insert(workerChangesTable).values({
-    workerId: id, field: "fired", oldValue: "active", newValue: "fired",
-    effectiveDate: fireDate ?? warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
-  }).catch(err => logger.error({ err }, "worker change journal failed"));
+  const { fireWorker } = await import("../services/workerFire");
+  const r = await fireWorker({ workerId: id, date: rawDate || null, adminId: (req as AuthedRequest).admin?.adminId ?? null, source: "web" });
+  if (!r.ok) return fail(res, 400, r.error);
+  const w = r.worker;
   // Farewell report: on the scheduler's request the leaver gets inline month
   // buttons in the bot (entry stays valid 30 days after firing).
   let reportOffered = false;
@@ -651,6 +655,18 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
     } catch (e) { logger.error({ err: e }, "farewell report offer failed"); }
   }
   ok(res, { ...stripWorkerEcho(w, req), reportOffered });
+});
+
+// Виповідзення: запланована дата звільнення (null = скасувати). Дата ≤ сьогодні звільняє
+// одразу; майбутня — крон 00:10 (services/workerFire.ts fireDueTerminations).
+router.post("/workers/:id/termination", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const raw = (req.body ?? {}).date;
+  const date = raw == null || raw === "" ? null : String(raw);
+  const { setTerminationDate } = await import("../services/workerFire");
+  const r = await setTerminationDate(id, date, (req as AuthedRequest).admin?.adminId ?? null);
+  if (!r.ok) return fail(res, 400, r.error);
+  ok(res, { ...stripWorkerEcho(r.worker, req), firedNow: r.firedNow });
 });
 
 // Відновлення звільненого — services/workerRehire.ts (спільно з «✅ Відновити»
@@ -904,6 +920,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // канонічних — інакше select у профілі показує порожнє
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
     employmentStartDate: w.employmentStartDate,
+    firstWorkDate: w.firstWorkDate, terminationDate: w.terminationDate,
     // бонуси — лише для працівників бонусних фабрик (правило konto/готівки
     // фабрики на поточний місяць: стаж → обидві галочки, лише нал → одна)
     // і лише з доступом до кшєнгових даних (галочки впливають на ЗП; редагування
@@ -2123,7 +2140,8 @@ router.get("/availability", RW, async (req, res) => {
     .from(availabilityTable)
     .leftJoin(workersTable, eq(availabilityTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
-    .where(eq(availabilityTable.weekStart, weekStart));
+    // звільнений після подачі диспозиційності в списку не показується (непривʼязані рядки лишаються)
+    .where(and(eq(availabilityTable.weekStart, weekStart), or(isNull(availabilityTable.workerId), eq(workersTable.isActive, true))));
   // group by worker (a worker can report several shifts per day → arrays)
   const byWorker = new Map<string, { name: string; workerId: number | null; source: string; factoryId: number | null; factoryName: string | null; days: Record<string, string[]>; dayOff: Record<string, string>; filledAt: string | null; hasLate?: boolean; history?: { at: string; late?: boolean; pairs: { day: string; shift: string }[] }[] }>();
   // Telegram submissions per worker: rows of one save share submitted_at, so the
@@ -2240,8 +2258,8 @@ router.get("/schedule", async (req, res) => {
     const av = await db
       .select({ workerId: availabilityTable.workerId, day: availabilityTable.dayOfWeek, shift: availabilityTable.shift, name: workersTable.fullName, code: workersTable.workerCode, wFactory: workersTable.factoryId, positionId: workersTable.positionId, gender: workersTable.gender })
       .from(availabilityTable)
-      .leftJoin(workersTable, eq(availabilityTable.workerId, workersTable.id))
-      .where(eq(availabilityTable.weekStart, weekStart));
+      .innerJoin(workersTable, eq(availabilityTable.workerId, workersTable.id))
+      .where(and(eq(availabilityTable.weekStart, weekStart), eq(workersTable.isActive, true))); // звільнений у запас не потрапляє
     const reserveThatDay = new Map<string, Set<number>>(); // day -> workerIds in reserve
     const seen = new Set<string>();
     for (const a of av) {
@@ -2424,6 +2442,7 @@ router.patch("/schedule/entry/:id/status", RW, async (req, res) => {
   const [e] = await db.update(scheduleEntriesTable).set(patch).where(eq(scheduleEntriesTable.id, id)).returning();
   if (!e) return fail(res, 404, "Не знайдено");
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(err => logger.error({ err }, "refreshExcelReports after status edit failed"));
+  if (status === "present") import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(e.workerId)).catch(() => {}); // перший робочий день
   ok(res, e);
 });
 

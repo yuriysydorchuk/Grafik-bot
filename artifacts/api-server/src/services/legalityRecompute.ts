@@ -56,13 +56,15 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
   }));
 }
 
-// employerSince = max(employment_start_date, дата останнього переходу фірми в журналі)
-export async function employerSinceOf(worker: { id: number; employmentStartDate: string | null }): Promise<string | null> {
+// employerSince = max(перший робочий день ?? employment_start_date, дата останнього переходу
+// фірми в журналі). Перший робочий день (first_work_date, з першої явки) — точка відліку
+// обовʼязків роботодавця (powiadomienie UA ≤ 7 днів від podjęcia pracy).
+export async function employerSinceOf(worker: { id: number; employmentStartDate: string | null; firstWorkDate?: string | null }): Promise<string | null> {
   const [last] = await db.select({ effectiveDate: workerChangesTable.effectiveDate })
     .from(workerChangesTable)
     .where(and(eq(workerChangesTable.workerId, worker.id), eq(workerChangesTable.field, "companyId")))
     .orderBy(desc(workerChangesTable.effectiveDate), desc(workerChangesTable.id)).limit(1);
-  const a = dateStr(worker.employmentStartDate), b = dateStr(last?.effectiveDate);
+  const a = dateStr(worker.firstWorkDate) ?? dateStr(worker.employmentStartDate), b = dateStr(last?.effectiveDate);
   if (a && b) return a > b ? a : b;
   return a ?? b ?? null;
 }
@@ -125,7 +127,7 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
   const nationality = w.nationality ?? passportNationality;
   const worker: LegalityWorker = {
     id: w.id, nationality, birthDate: dateStr(w.birthDate), companyId: w.companyId,
-    employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate) }),
+    employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate), firstWorkDate: dateStr(w.firstWorkDate) }),
     isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
     factoryId: w.factoryId,
   };

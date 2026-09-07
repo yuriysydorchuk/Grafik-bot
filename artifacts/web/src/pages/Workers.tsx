@@ -48,7 +48,7 @@ export default function Workers() {
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
   const fire = useMutation({
-    mutationFn: (v: { id: number; offerReport: boolean }) => post<{ reportOffered?: boolean }>(`/workers/${v.id}/fire`, { offerReport: v.offerReport }),
+    mutationFn: (v: { id: number; offerReport: boolean; date?: string }) => post<{ reportOffered?: boolean }>(`/workers/${v.id}/fire`, { offerReport: v.offerReport, date: v.date }),
     onSuccess: (r) => { invalidate(); setFiring(null); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -231,7 +231,7 @@ export default function Workers() {
 
       {(adding || edit) && <WorkerModal worker={edit} factories={factories} companies={companies} isOwner={isOwner} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { invalidate(); setAdding(false); setEdit(null); }} />}
 
-      {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport) => fire.mutate({ id: firing.id, offerReport })} />}
+      {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport, date) => fire.mutate({ id: firing.id, offerReport, date })} />}
 
       {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}
     </>
@@ -326,13 +326,15 @@ function ScanInviteModal({ link, onClose }: { link: string; onClose: () => void 
 
 // Firing confirm with the "offer a farewell report" option: the leaver gets inline
 // month buttons in the bot and can submit within 30 days after firing.
-function FireModal({ worker, loading, onClose, onFire }: { worker: Worker; loading: boolean; onClose: () => void; onFire: (offerReport: boolean) => void }) {
+export function FireModal({ worker, loading, onClose, onFire }: { worker: { fullName: string; telegramId: string | null }; loading: boolean; onClose: () => void; onFire: (offerReport: boolean, date: string) => void }) {
   const t = useT();
   const [offerReport, setOfferReport] = useState(!!worker.telegramId);
+  const [date, setDate] = useState(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }));
   return (
     <Modal open onClose={onClose} title={t("Звільнити {name}?", { name: worker.fullName })}>
       <div className="space-y-4">
         <p className="text-sm text-slate-600">{t("Працівник стане неактивним і не потраплятиме в графік.")}</p>
+        <label className="block text-sm"><span className="mb-1 block text-xs text-slate-500">{t("Дата звільнення (можна минулим числом)")}</span><input type="date" value={date} onChange={e => setDate(e.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-sm" /></label>
         <label className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${worker.telegramId ? "border-slate-200" : "border-slate-100 bg-slate-50 opacity-60"}`}>
           <input type="checkbox" className="mt-0.5" disabled={!worker.telegramId} checked={offerReport} onChange={e => setOfferReport(e.target.checked)} />
           <span>
@@ -346,7 +348,7 @@ function FireModal({ worker, loading, onClose, onFire }: { worker: Worker; loadi
         </label>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button variant="danger" loading={loading} onClick={() => onFire(offerReport && !!worker.telegramId)}>
+          <Button variant="danger" loading={loading} disabled={!date} onClick={() => onFire(offerReport && !!worker.telegramId, date)}>
             <UserX className="h-4 w-4" /> {t("Звільнити")}
           </Button>
         </div>

@@ -34,6 +34,11 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "absence_unexplained", label: "Пропуск без пояснення", description: "Пропуск без пояснення понад N днів (графікова фабрики)", leadDays: 2, enabledByDefault: true, scheduler: true },
   { code: "candidate_stale", label: "Кандидат без руху", description: "Дата наступної дії в рекрутингу минула", leadDays: 1, enabledByDefault: false },
   { code: "doc_no_response", label: "Працівник не надіслав документ", description: "Автозапит і нагадування в бот минули, файлу немає — звʼязатись самостійно", leadDays: null, enabledByDefault: true },
+  // ланцюжок powiadomienie UA (services/uaNotification.ts): ступінь 1 графіковій на N-й день роботи → ступінь 2 виконавцю з params.stage2AdminId
+  { code: "ua_notification", label: "Powiadomienie для UA (2 ступені)", description: "На N-й робочий день графіковій список нових людей → «Вислати» → задача подачі на praca.gov.pl виконавцю ступеня 2 (картка PSZ-PPWPU, завантаження підтвердження)", leadDays: null, enabledByDefault: true, scheduler: true },
+  // ланцюжок звільнення (services/terminationFlow.ts)
+  { code: "termination_doc", label: "Документ звільнення — затвердити", description: "Після звільнення документ із шаблону «wypowiedzenie» → графікова затверджує й надсилає працівнику", leadDays: null, enabledByDefault: true, scheduler: true },
+  { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
 ];
 
 // Ідемпотентний сід правил (нові коди додаються, наявні не чіпаються).
@@ -147,6 +152,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     if (on("obligation")) {
       for (const o of (l.obligations ?? []) as { code: string; dueAt: string; overdue: boolean; satisfied?: boolean; params?: Record<string, unknown> }[]) {
         if (o.satisfied) continue;
+        if (o.code === "obligation.ua_notification" && on("ua_notification")) continue; // веде двоступеневий ланцюжок (uaNotification.ts)
         const due = String(o.dueAt).slice(0, 10);
         const daysLeft = diffDays(due, today);
         const what = o.code === "obligation.ua_notification" || o.params?.docCode === "powiadomienie_ua" ? "Подати powiadomienie" : `Виконати обов'язок ${o.code}`;
@@ -235,6 +241,35 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   const restRules = out.filter(c => c.rule !== "contract" && c.rule !== "required_missing");
   out.length = 0; out.push(...restRules, ...grouped);
 
+  // 11. Ланцюжок звільнення: ZWUA — звільнені за 90 днів без документа zus_zwua (задачу створює
+  // startTerminationFlow одразу; тут — підтримка/auto_resolved, коли документ зʼявився)
+  if (on("termination_zus")) {
+    const lead = rules.get("termination_zus")?.leadDays ?? 7;
+    const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
+      .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, new Date(Date.now() - 90 * 86400000))));
+    const zwua = [...types.values()].find(t => t.code === "zus_zwua");
+    const firedIds = fired.map(f => f.id);
+    const have = new Set(zwua && firedIds.length ? (await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, firedIds), eq(workerDocumentsTable.docTypeId, zwua.id), ne(workerDocumentsTable.status, "missing")))).map(d => d.workerId) : []);
+    for (const f of fired) {
+      if (have.has(f.id)) continue;
+      const fireDate = dateStr(f.firedAt)!;
+      const due = addDaysStr(fireDate, lead);
+      out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
+        workerId: f.id, factoryId: f.factoryId, autoParams: { workerName: f.fullName, fireDate, docTypeCode: "zus_zwua" }, assign: { factoryId: null } });
+    }
+  }
+  // 12. Документ звільнення: задача живе, поки пакет не надіслано/підписано (інакше auto_resolved)
+  if (on("termination_doc")) {
+    const openDoc = await db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_doc"), inArray(tasksTable.status, OPEN_STATUSES)));
+    for (const t of openDoc) {
+      if (!t.sourceKey || !t.contractId) continue;
+      const { contractsTable } = await import("@workspace/db");
+      const [c] = await db.select({ status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, t.contractId));
+      if (!c || !["draft", "pending_approval", "approved"].includes(c.status)) continue; // надіслано/підписано/скасовано → зникне
+      out.push({ sourceKey: t.sourceKey, rule: "termination_doc", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, contractId: t.contractId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: t.factoryId, useScheduler: true } });
+    }
+  }
+
   // 10. Кандидати без руху
   if (on("candidate_stale")) {
     const after = lead("candidate_stale") ?? 1;
@@ -272,7 +307,10 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
   try { const ar = await autoRequestDocuments(today); stats.autoRequested = ar.requested; stats.autoReminded = ar.reminded; }
   catch (e: any) { logger.warn({ err: e?.message }, "doc auto-request failed"); }
   const candidates = await collectCandidates(today);
-  const existing = await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"));
+  // групові задачі ланцюжка powiadomienie живуть своїм синком (списки людей), не кандидатами
+  const existing = (await db.select().from(tasksTable).where(like(tasksTable.source, "auto:%"))).filter(t => t.source !== "auto:ua_notification");
+  try { const ua = await (await import("./uaNotification")).syncUaNotificationTasks(today); stats.created += ua.created; stats.updated += ua.updated; stats.resolved += ua.resolved; }
+  catch (e: any) { logger.warn({ err: e?.message }, "ua notification sync failed"); }
   const byKey = new Map(existing.filter(t => t.sourceKey).map(t => [t.sourceKey!, t]));
   const seen = new Set<string>();
   for (const c of candidates) {

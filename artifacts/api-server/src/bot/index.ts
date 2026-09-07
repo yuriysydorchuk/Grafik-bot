@@ -2842,6 +2842,8 @@ bot.action("brd:ok", async (ctx) => {
     } else {
       await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, replacesWorkerId: w.subForWorkerId ?? null });
     }
+    // перший робочий день (workers.first_work_date) — з першої явки у затвердженому тижні
+    if (w.workerId) import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(w.workerId!)).catch(() => {});
   }
 
   // 1b) substitutions: the replaced worker goes absent with a "заміна" reason —
@@ -4528,7 +4530,11 @@ bot.on("text", async (ctx) => {
     const { data } = state;
     const al = olang(await getAdmin(tid));
     if (bhears("✅ Так, звільнити").includes(text)) {
-      await db.update(workersTable).set({ status: "fired", isActive: false, firedAt: new Date() }).where(eq(workersTable.id, data.workerId));
+      // єдина точка звільнення (журнал, умови, графік, тригери) — services/workerFire.ts
+      const { fireWorker } = await import("../services/workerFire");
+      const admin = await getAdmin(tid);
+      const r = await fireWorker({ workerId: data.workerId, adminId: admin?.id ?? null, source: "bot" });
+      if (!r.ok) { clearState(tid); return ctx.reply(`⚠️ ${r.error}`, managementMenu(al)); }
       clearState(tid);
       await ctx.reply(tb(al, "✅ *{name}* звільнений(-а).", { name: data.workerName }), { parse_mode: "Markdown", ...managementMenu(al) });
       // Farewell report: ask the office whether to offer the leaver to submit

@@ -304,6 +304,9 @@ export function startScheduler() {
     "30 6 * * *",
     async () => {
       try {
+        // перший робочий день з явок (до перерахунку — від нього рахується powiadomienie UA)
+        try { const { backfillFirstWorkDates } = await import("./firstWorkDate"); const n = await backfillFirstWorkDates(); if (n) logger.info({ n }, "🗂 first work dates backfilled"); }
+        catch (e: any) { logger.warn({ err: e?.message }, "first work date backfill failed"); }
         const { recomputeAllActiveLegality } = await import("./legalityRecompute");
         await recomputeAllActiveLegality();
         const { runAutoTasks } = await import("./taskAutoRules");
@@ -320,6 +323,9 @@ export function startScheduler() {
         const { rolloverPlanned, loadTaskSettings } = await import("./tasks");
         if ((await loadTaskSettings()).rollover) { const n = await rolloverPlanned(); if (n) logger.info({ n }, "🗂 tasks rolled over"); }
       } catch (e: any) { logger.warn({ err: e?.message }, "tasks rollover failed"); }
+      // виповідзення: запланована дата звільнення настала → звільнити (services/workerFire.ts)
+      try { const { fireDueTerminations } = await import("./workerFire"); const n = await fireDueTerminations(); if (n) logger.info({ n }, "🔥 terminations applied"); }
+      catch (e: any) { logger.warn({ err: e?.message }, "termination cron failed"); }
     },
     { timezone: TZ },
   );

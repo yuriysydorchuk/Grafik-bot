@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, ExternalLink, Send, Repeat, MapPin, AlertTriangle, Wrench, FileText } from "lucide-react";
 import { get, post, patch, upload, type Factory, type Worker } from "../lib/api";
 import {
-  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction,
+  type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction, type UaRow, type UaCard,
   STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, RULE_LABEL, fmtD, fmtDShort, todayStr, addDays,
 } from "../lib/tasksApi";
 import { ProfileChangeModal } from "./ProfileChangeModal";
@@ -555,9 +555,10 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
       {c.missing && c.missing.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1 text-xs"><span className="text-slate-500">{tr("Бракує")}:</span>{c.missing.map(m => <span key={m.code} className="rounded-full bg-rose-50 px-2 py-0.5 text-rose-700">{m.name}</span>)}</div>}
       {c.absences && c.absences.length > 0 && <div className="mb-2 text-xs text-slate-600">{tr("Пропуски без пояснення")}: <b>{c.absences.map(fmtD).join(", ")}</b></div>}
       {c.reasons && c.reasons.length > 0 && <ul className="mb-2 space-y-0.5 text-xs text-slate-600">{c.reasons.map((r, i) => <li key={i}>• {reasonText(tr, r as any)}</li>)}</ul>}
+      {c.ua && <UaBlock taskId={task.id} ua={c.ua} run={code => run.mutate({ code })} busy={run.isPending} inv={inv} />}
 
       <div className="flex flex-wrap gap-1.5">
-        {actions.map(a => a.kind === "link"
+        {actions.filter(a => !/^ua_(send|card|submitted)\./.test(a.code)).map(a => a.kind === "link"
           ? <Link key={a.code} href={a.href ?? "#"} className={cn(btn, a.primary ? "border-violet-300 bg-white font-semibold text-violet-800 hover:bg-violet-50" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{tr(a.label)} →</Link>
           : <button key={a.code} disabled={run.isPending || !!a.done} onClick={() => fire(a)} title={a.done ?? undefined} className={cn(btn, a.done ? "border-slate-100 bg-slate-50 text-slate-400" : a.primary ? "border-violet-600 bg-violet-600 text-white hover:bg-violet-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{a.bot === false && a.kind === "api" && (a.code === "request_doc" || a.code === "request_docs" || a.code === "invite_scan" || a.code === "message_worker") ? "⚠ " : ""}{tr(a.label)}{a.done ? ` · ${a.done}` : ""}</button>)}
       </div>
@@ -575,6 +576,104 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
           onClose={() => { setApplyChange(false); inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />
       )}
     </div>
+  );
+}
+
+// Групова задача ланцюжка powiadomienie UA: список людей з кроками по кожній, «Вислати»
+// (ступінь 1), картка даних для форми PSZ-PPWPU + завантаження підтвердження (ступінь 2).
+function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 1 | 2; rows: UaRow[] }; run: (code: string) => void; busy: boolean; inv: () => void }) {
+  const tr = useT();
+  const qc = useQueryClient();
+  const [card, setCard] = useState<number | null>(null);
+  const [uploadFor, setUploadFor] = useState<UaRow | null>(null);
+  const tone = (d: number) => d < 0 ? "text-rose-600 font-semibold" : d <= 2 ? "text-amber-600 font-semibold" : "text-slate-600";
+  const chip = (ok: boolean, label: string, title?: string) => <span title={title} className={cn("rounded-full px-1.5 py-0.5 text-[10px]", ok ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>{ok ? "✓" : "○"} {label}</span>;
+  return (
+    <div className="mb-2 rounded-md border border-slate-100 bg-white text-xs">
+      <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        {ua.stage === 1 ? tr("Чекають на powiadomienie") : tr("Подати powiadomienie")} · {ua.rows.length}
+        {ua.stage === 2 && <span className="ml-auto font-normal normal-case text-slate-400">{tr("кроки: дані → подано на praca.gov.pl → підтвердження в профілі")}</span>}
+      </div>
+      {!ua.rows.length && <div className="px-3 py-2 text-slate-400">{tr("Список порожній — усе подано")}</div>}
+      <ul className="divide-y divide-slate-50">
+        {ua.rows.map(r => (
+          <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
+            <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
+            {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
+            <span className="text-slate-500">{tr("з")} {r.start ? fmtD(r.start) : "—"}</span>
+            <span className={tone(r.daysLeft)}>{tr("до")} {fmtD(r.dueAt)}{r.daysLeft < 0 ? ` · −${-r.daysLeft} ${tr("дн.")}` : r.daysLeft === 0 ? ` · ${tr("сьогодні")}` : ` · ${r.daysLeft} ${tr("дн.")}`}</span>
+            {ua.stage === 2 && <span className="flex flex-wrap gap-1">
+              {chip(r.steps.data, tr("дані"), r.missing.length ? `${tr("бракує")}: ${r.missing.join(", ")}` : undefined)}
+              {chip(r.steps.submitted, tr("подано"))}
+              {chip(r.steps.entered, tr("внесено"))}
+              {r.docFileUrl && <a href={r.docFileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("файл")} ↗</a>}
+            </span>}
+            <span className="ml-auto flex flex-wrap gap-1">
+              {ua.stage === 1 && <button disabled={busy} onClick={() => run(`ua_send.${r.id}`)} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
+              {ua.stage === 2 && <>
+                <button onClick={() => setCard(r.id)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
+                {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
+                {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
+              </>}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {card != null && <UaCardModal taskId={taskId} workerId={card} onClose={() => setCard(null)} />}
+      {uploadFor && <UaUploadModal taskId={taskId} row={uploadFor} onClose={() => setUploadFor(null)} onDone={() => { setUploadFor(null); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); }} />}
+    </div>
+  );
+}
+
+function UaCardModal({ taskId, workerId, onClose }: { taskId: number; workerId: number; onClose: () => void }) {
+  const tr = useT();
+  const { data, isLoading } = useQuery<UaCard>({ queryKey: ["ua-card", taskId, workerId], queryFn: () => get(`/tasks/${taskId}/ua-card/${workerId}`) });
+  const copy = (v: string) => navigator.clipboard?.writeText(v).then(() => toast.success(tr("Скопійовано"))).catch(() => {});
+  const all = () => data ? data.groups.map(g => `${g.title}\n${g.fields.map(f => `${f.label}: ${f.value || "—"}`).join("\n")}`).join("\n\n") : "";
+  return (
+    <Modal open onClose={onClose} title={`${tr("Картка PSZ-PPWPU")}${data ? ` · ${data.name}` : ""}`}>
+      {isLoading || !data ? <Spinner /> : (
+        <div className="space-y-3 text-sm">
+          <p className="text-xs text-slate-500">{tr("Поля в порядку форми praca.gov.pl «Powiadomienie o powierzeniu wykonywania pracy obywatelowi Ukrainy». Клік по значенню — копіює.")}</p>
+          {data.missing.length > 0 && <div className="rounded-md border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">{tr("Бракує")}: {data.missing.join(", ")}</div>}
+          {data.groups.map(g => (
+            <div key={g.title}>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{g.title}</div>
+              <table className="w-full text-xs"><tbody>
+                {g.fields.map(f => (
+                  <tr key={f.key} className="border-t border-slate-50">
+                    <td className="w-2/5 py-1 pr-2 text-slate-500">{f.label}{f.required && !f.value ? <span className="text-rose-500"> *</span> : null}</td>
+                    <td className="py-1"><button disabled={!f.value} onClick={() => copy(f.value)} title={f.source ? `${tr("джерело")}: ${f.source}` : undefined} className={cn("text-left font-mono", f.value ? "text-slate-800 hover:text-red-600" : "text-slate-300")}>{f.value || "—"}</button></td>
+                  </tr>
+                ))}
+              </tbody></table>
+            </div>
+          ))}
+          <div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => copy(all())}>{tr("Скопіювати все")}</Button><Button onClick={onClose}>{tr("Закрити")}</Button></div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function UaUploadModal({ taskId, row, onClose, onDone }: { taskId: number; row: UaRow; onClose: () => void; onDone: () => void }) {
+  const tr = useT();
+  const [file, setFile] = useState<File | null>(null);
+  const [date, setDate] = useState(todayStr());
+  const up = useMutation({
+    mutationFn: () => { const fd = new FormData(); fd.append("file", file!); fd.append("submittedAt", date); return upload<{ message: string }>(`/tasks/${taskId}/ua-upload/${row.id}`, fd); },
+    onSuccess: d => { toast.success(d.message); onDone(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={`${tr("Підтвердження powiadomienia")} · ${row.name}`}>
+      <div className="space-y-3 text-sm">
+        <p className="text-xs text-slate-500">{tr("PDF або фото підтвердження з praca.gov.pl. Файл піде в профіль як документ «Powiadomienie», людина зникне зі списку.")}</p>
+        <div><Label>{tr("Дата подачі")}</Label><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></div>
+        <div><Label>{tr("Файл")}</Label><input type="file" accept="application/pdf,image/*" onChange={e => setFile(e.target.files?.[0] ?? null)} className="block w-full text-xs" /></div>
+        <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>{tr("Скасувати")}</Button><Button disabled={!file} loading={up.isPending} onClick={() => up.mutate()}>{tr("Внести в профіль")}</Button></div>
+      </div>
+    </Modal>
   );
 }
 

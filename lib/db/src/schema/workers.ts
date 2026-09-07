@@ -29,6 +29,7 @@ export const companiesTable = pgTable("companies", {
   postalCode: text("postal_code"),
   city: text("city"),
   representative: text("representative"), // ПІБ + посада (напр. "Alona Kovalchuk – Prezes Zarządu")
+  pkd: text("pkd"),                       // код PKD переважної діяльності — поле форми PSZ-PPWPU (powiadomienie UA)
   // Укладає умови з працівниками. false — приватні підприємці власників (RS/TS):
   // фінблок/фактури так, але не роботодавець → не в списках «фабрика · фірма» (05.09.2026)
   employsWorkers: boolean("employs_workers").notNull().default(true),
@@ -134,6 +135,14 @@ export const workersTable = pgTable("workers", {
   payoutPrefKind: text("payout_pref_kind"), // побажання по виплаті: all_konto | hours | amount (найвищий пріоритет у розкладі konto/готівка)
   payoutPrefValue: real("payout_pref_value"), // N годин або сума — для kind hours|amount
   employmentStartDate: date("employment_start_date"), // дата працевлаштування (усі працівники; в Agram від неї рахується стаж-бонус)
+  // Перший робочий день (08.09.2026): система ставить сама з першої явки «present» у
+  // затвердженому тижні (services/firstWorkDate.ts), графікова може вписати/виправити
+  // руками (гейт editData, не svodniSensitive). Від нього рахуються обовʼязки роботодавця
+  // (powiadomienie UA ≤ 7 днів) — фолбек employment_start_date. Стаж-бонус Agram НЕ читає.
+  firstWorkDate: date("first_work_date"),
+  // Запланована дата звільнення (виповідзення): працівник подав, з якої дати звільняється;
+  // крон у цю дату звільняє сам (services/workerFire.ts). NULL після звільнення/скасування.
+  terminationDate: date("termination_date"),
   // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)

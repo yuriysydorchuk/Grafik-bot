@@ -34,6 +34,7 @@ export interface TaskContext {
   missing?: { code: string; name: string; docTypeId: number | null }[];
   absences?: string[];
   reasons?: { code: string; axis?: string; severity?: string; params?: Record<string, unknown> }[];
+  ua?: { stage: 1 | 2; rows: import("./uaNotification").UaContextRow[] }; // ланцюжок powiadomienie (групова задача)
 }
 
 const CARD_CODES = new Set(["trc", "karta_stalego_pobytu", "rezydent_ue", "eu_family_member_card", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay"]);
@@ -49,11 +50,14 @@ const CLOSES_WHEN: Record<string, string> = {
   absence_unexplained: "пропуск отримає пояснення",
   candidate_stale: "у кандидата оновиться дата наступної дії або етап",
   doc_no_response: "працівник надішле файл (задача перевірки створиться сама) або документ зʼявиться в профілі",
+  ua_notification: "по кожній людині зі списку в профілі зʼявиться powiadomienie (список порожній)",
+  termination_zus: "у профілі зʼявиться документ «ZUS ZWUA»",
+  termination_doc: "документ звільнення буде надіслано працівнику",
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
 // коди requiredMissing, що не є типами документів (осі движка)
 const MISSING_LABEL: Record<string, string> = { stay_basis: "підстава перебування", work_basis: "підстава праці", contract: "чинна умова", questionnaire: "анкета" };
-const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response"]);
+const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response", "termination_zus"]);
 const isImageMime = (m: string | null | undefined) => !!m && m.startsWith("image/");
 
 // Дефолтний чекліст під правило: text + auto-ключ (відмічається сам, коли стан підтверджує крок).
@@ -77,6 +81,8 @@ export function defaultChecklist(rule: string, params: Record<string, unknown> |
     case "absence_unexplained": steps = [{ text: "Звʼязатись із працівником", auto: "contacted" }, { text: "Внести пояснення у відсутностях" }]; break;
     case "review_required": steps = [{ text: "Переглянути причини в легалізації" }, { text: "Виправити дані або документ" }, { text: "Перерахувати", auto: "recomputed" }]; break;
     case "candidate_stale": steps = [{ text: "Звʼязатись із кандидатом" }, { text: "Оновити етап або дату наступної дії" }]; break;
+    case "termination_zus": steps = [{ text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)" }, { text: "Внести підтвердження ZWUA в профіль", auto: "entered" }]; break;
+    case "termination_doc": steps = [{ text: "Переглянути документ" }, { text: "Затвердити й надіслати працівнику (email / Telegram)", auto: "sent" }]; break;
     case "doc_no_response": steps = [{ text: "Звʼязатись із працівником (дзвінок або повідомлення)", auto: "contacted" }, { text: "Отримати файл від працівника", auto: "uploaded" }, { text: "Перевірити і підтвердити в профілі", auto: "verified" }]; break;
     default: steps = [];
   }
@@ -267,6 +273,41 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       actions.push({ code: "candidate", label: "Відкрити кандидата", kind: "link", href: `/recruitment${task.candidateId ? `?candidate=${task.candidateId}` : ""}`, primary: true });
       break;
     }
+    case "ua_notification": {
+      // групова задача ланцюжка powiadomienie: контекст і дії по людях — services/uaNotification.ts
+      const ua = await import("./uaNotification");
+      const c = await ua.uaContext(task);
+      ctx.ua = c;
+      for (const k of ua.uaSatisfied(c.stage, c.rows)) satisfied.add(k);
+      if (c.stage === 1 && c.rows.length) {
+        actions.push({ code: "ua_send_all", label: `Вислати всіх (${c.rows.length}) до powiadomienia`, kind: "api", primary: true, confirm: "Передати весь список виконавцю ступеня 2?" });
+        for (const r of c.rows) actions.push({ code: `ua_send.${r.id}`, label: `Вислати: ${r.name}`, kind: "api", bot: false });
+      }
+      if (c.stage === 2) {
+        for (const r of c.rows) {
+          actions.push({ code: `ua_card.${r.id}`, label: `Картка PSZ-PPWPU: ${r.name}`, kind: "modal", bot: false });
+          actions.push({ code: `ua_submitted.${r.id}`, label: r.submittedAt ? `Зняти «подано»: ${r.name}` : `Подано на praca.gov.pl: ${r.name}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
+        }
+      }
+      break;
+    }
+    case "termination_zus": {
+      const ty = await typeByCode("zus_zwua");
+      if (ty && worker) {
+        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing")?.d;
+        ctx.document = d ? docCtx(d, ty.name, ty.code) : null;
+        if (d) satisfied.add("entered");
+        actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !d });
+      }
+      break;
+    }
+    case "termination_doc": {
+      const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
+      ctx.contract = { id: c?.id ?? null, status: c?.status ?? null, dateTo: c ? dateStr(c.dateTo) : null, factoryId: task.factoryId ?? null, factoryName: null, code: "termination" };
+      if (c?.sentAt || ["sent", "viewed", "worker_signed", "signed"].includes(c?.status ?? "")) satisfied.add("sent");
+      if (worker) actions.push({ code: "contracts", label: "Документ у профілі (переглянути, надіслати)", kind: "link", href: prof("contracts"), primary: true });
+      break;
+    }
     default: {
       if (worker) actions.push({ code: "invite_scan", label: "Запросити скан+анкету", kind: "api", bot: !!worker.telegramId });
     }
@@ -363,6 +404,16 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
       message = r ? `Перераховано: ${r.overall}${r.reviewRequired ? " · далі потребує перевірки" : ""}` : "Перераховано";
       break;
     }
+    case "ua_send": case "ua_send_all": {
+      const ua = await import("./uaNotification");
+      message = await ua.uaSend(task, code === "ua_send" ? param : null, actor);
+      break;
+    }
+    case "ua_submitted": {
+      if (!param) throw new Error("Немає працівника");
+      message = await (await import("./uaNotification")).uaMarkSubmitted(task, param, actor);
+      break;
+    }
     case "message_worker": {
       if (!w) throw new Error("Задача без працівника");
       if (!note) throw new Error("Порожнє повідомлення");
@@ -384,7 +435,7 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
 // Кнопки контекстних дій для бота (лише api-дії без примітки) — до 2 штук.
 export function botActionButtons(taskId: number, actions: TaskAction[]): { text: string; callback_data: string }[] {
   const pick = actions.filter(a => a.kind === "api" && !a.needsNote && !a.done && (a.bot !== false)).slice(0, 2);
-  const icon = (code: string) => code.startsWith("verify_doc") ? "✅" : ({ request_doc: "📨", request_docs: "📨", invite_scan: "🪪", recompute: "🔄", dismiss_change: "✖️" } as Record<string, string>)[code] ?? "▫️";
+  const icon = (code: string) => code.startsWith("verify_doc") ? "✅" : ({ request_doc: "📨", request_docs: "📨", invite_scan: "🪪", recompute: "🔄", dismiss_change: "✖️", ua_send_all: "📨" } as Record<string, string>)[code] ?? "▫️";
   return pick.map(a => ({ text: `${icon(a.code)} ${a.label}`.slice(0, 60), callback_data: `tska:${a.code}:${taskId}` }));
 }
 

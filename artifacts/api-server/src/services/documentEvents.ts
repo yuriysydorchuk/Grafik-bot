@@ -17,7 +17,7 @@ export async function documentChanged(
 }
 
 // Поля профілю, від яких залежить результат движка (nationality/company/дати/легасі-статус).
-export const LEGALITY_PROFILE_FIELDS = ["nationality", "companyId", "birthDate", "employmentStartDate", "legalStatus", "isStudent", "notifyHours", "isActive", "factoryId", "positionId"] as const;
+export const LEGALITY_PROFILE_FIELDS = ["nationality", "companyId", "birthDate", "employmentStartDate", "firstWorkDate", "legalStatus", "isStudent", "notifyHours", "isActive", "factoryId", "positionId"] as const;
 
 export async function workerLegalityChanged(workerId: number): Promise<void> {
   try { await recomputeWorkerLegality(workerId); }

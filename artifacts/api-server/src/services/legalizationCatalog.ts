@@ -49,6 +49,9 @@ export const DOCUMENT_TYPE_SEED: DocTypeSeed[] = [
   T("medical_exam", "Badania lekarskie", "medical", 400, "medical", { hasExpiry: true, renewalLeadDays: null }),
   T("sanepid", "Książeczka sanepidowska", "medical", 410, "medical", { hasExpiry: true, renewalLeadDays: null }),
   T("bhp", "Szkolenie BHP", "medical", 420, "medical"),
+  // виреєстрування з ZUS після звільнення (ланцюжок звільнення, 08.09.2026): задача «ZUS ZWUA»
+  // закривається, коли документ цього типу зʼявляється в профілі
+  T("zus_zwua", "ZUS ZWUA (wyrejestrowanie)", "payroll", 500, "decision"),
   T("other", "Inny dokument", "other", 900, null),
 ];
 

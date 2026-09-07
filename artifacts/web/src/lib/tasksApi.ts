@@ -38,7 +38,12 @@ export interface TaskContext {
   missing?: { code: string; name: string; docTypeId: number | null }[];
   absences?: string[];
   reasons?: { code: string; axis?: string; severity?: string; params?: Record<string, unknown> }[];
+  ua?: { stage: 1 | 2; rows: UaRow[] }; // ланцюжок powiadomienie UA (групова задача)
 }
+// рядок людини в груповій задачі powiadomienie
+export interface UaRow { id: number; name: string; factoryId: number | null; factoryName: string | null; start: string | null; dueAt: string; daysLeft: number; sentAt?: string | null; submittedAt?: string | null; missing: string[]; docId: number | null; docFileUrl: string | null; nationality: string | null; steps: { data: boolean; submitted: boolean; entered: boolean } }
+export interface UaCardField { key: string; label: string; value: string; required?: boolean; source?: string }
+export interface UaCard { workerId: number; name: string; groups: { title: string; fields: UaCardField[] }[]; missing: string[] }
 export interface TaskResolution { context: TaskContext; actions: TaskAction[] }
 export interface TaskDetail extends TaskRow { comments: TaskComment[]; events: TaskEvent[]; resolution?: TaskResolution; can: { edit: boolean; reassign: boolean; review: boolean; participant: boolean } }
 export interface MyDay {
@@ -49,7 +54,7 @@ export interface TaskCounters { overdue: number; today: number; week: number; me
 export interface TaskAdmin { id: number; name: string; role: string; isMain: boolean; hasTelegram: boolean }
 export interface TaskControlRow { adminId: number; name: string; role: string; open: number; overdue: number; done: number; avgDays: number | null; auto: number; manual: number }
 export interface TaskTemplate { id: number; name: string; kind: TaskKind; titleTemplate: string; description: string | null; checklist: string[]; defaultAssigneeAdminId: number | null; reviewRequired: boolean; dueInDays: number | null; recurrence: Recurrence | null; trigger: "manual" | "worker_created" | "worker_fired"; isActive: boolean }
-export interface AutoRuleRow { code: string; label: string; description: string; enabled: boolean; leadDays: number | null; fallbackAdminId: number | null; scheduler?: boolean }
+export interface AutoRuleRow { code: string; label: string; description: string; enabled: boolean; leadDays: number | null; fallbackAdminId: number | null; scheduler?: boolean; params?: Record<string, unknown> }
 export interface TaskSettings { ladder: number[]; manualLadder: number[]; escalationDays: number; digestTime: string; eveningTime: string; skipWeekends: boolean; rollover: boolean; groupAbove?: number; autoRequest: boolean; workerLadder: number[]; silenceDays: number; officeThresholdDays: number }
 
 export const STATUS_LABEL: Record<TaskStatus, string> = { open: "нова", in_progress: "в роботі", review: "на перевірці", done: "виконано", cancelled: "скасовано", auto_resolved: "вирішено автоматично" };
@@ -61,13 +66,13 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "ручна", "auto:doc_expiring": "авто · документ", "auto:doc_expired": "авто · прострочений документ", "auto:contract": "авто · умова",
   "auto:obligation": "авто · обов'язок", "auto:required_missing": "авто · бракує підстави", "auto:pending_doc": "авто · перевірка файлу",
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
-  "auto:doc_no_response": "авто · не надіслав документ",
+  "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS ZWUA", "auto:termination_doc": "авто · документ звільнення",
 };
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
 export const RULE_LABEL: Record<string, string> = {
   doc_expiring: "документ спливає", doc_expired: "документ прострочений", contract: "умова", obligation: "обовʼязок", required_missing: "бракує підстави",
   pending_doc: "перевірка файлу", payroll_change: "зміна виплат", review_required: "перевірка движка", absence_unexplained: "пропуск без пояснення", candidate_stale: "кандидат без руху",
-  doc_no_response: "не надіслав документ",
+  doc_no_response: "не надіслав документ", ua_notification: "powiadomienie UA", termination_zus: "ZUS ZWUA після звільнення", termination_doc: "документ звільнення",
 };
 
 // ── «Календар працівників» (GET /workers-calendar) ──
