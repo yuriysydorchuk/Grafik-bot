@@ -119,6 +119,7 @@ async function listTasks(req: AuthedRequest) {
   else if (status !== "all" && TASK_STATUSES.includes(status as TaskStatus)) conds.push(eq(tasksTable.status, status));
   if (q.assignee) conds.push(eq(tasksTable.assigneeAdminId, Number(q.assignee)));
   if (q.factoryId) conds.push(eq(tasksTable.factoryId, Number(q.factoryId)));
+  if (q.city) conds.push(sql`exists (select 1 from factories f where f.id = ${tasksTable.factoryId} and f.city = ${String(q.city)})`);
   if (q.workerId) conds.push(eq(tasksTable.workerId, Number(q.workerId)));
   if (q.kind && TASK_KINDS.includes(q.kind as TaskKind)) conds.push(eq(tasksTable.kind, q.kind));
   if (q.priority && TASK_PRIORITIES.includes(q.priority as TaskPriority)) conds.push(eq(tasksTable.priority, q.priority));

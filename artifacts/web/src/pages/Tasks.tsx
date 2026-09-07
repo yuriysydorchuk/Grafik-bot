@@ -12,6 +12,8 @@ import {
 import { TaskCard, NewTaskModal, useOpenTask, invalidateTasks, dueLabel, Initials } from "../components/TaskBits";
 import { Button, Badge, Card, Spinner, Input, Select, Modal, cn } from "../components/ui";
 import { PageHeader } from "../components/Layout";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts";
+import { useChartTheme } from "../lib/theme";
 import { useT } from "../lib/i18n";
 import { useMe, usePersisted } from "../lib/hooks";
 import { can } from "../lib/roles";
@@ -56,7 +58,7 @@ export default function Tasks() {
       {tab === "board" && <BoardView onOpen={setOpenId} />}
       {tab === "list" && <ListView onOpen={setOpenId} />}
       {tab === "calendar" && <CalendarView onOpen={setOpenId} onNew={d => setAdding(d)} />}
-      {tab === "control" && canManage && <ControlView />}
+      {tab === "control" && canManage && <ControlView onPickAdmin={id => { localStorage.setItem("tasks.f.assignee", String(id)); localStorage.setItem("tasks.scope", "all"); setTab("list"); }} />}
       {drawer}
       {adding && <NewTaskModal defaults={adding} onClose={() => setAdding(null)} />}
     </>
@@ -64,34 +66,46 @@ export default function Tasks() {
 }
 
 // ── фільтри (дошка + список) ────────────────────────────────────────────────
+// Фільтри списку/дошки (макет: статус, пріоритет, джерело, місто, «лише прострочені»,
+// групування). Виконавець запамʼятовується — з «Контролю» клік по адміну ставить його сюди.
+export type GroupBy = "due" | "assignee" | "factory";
 function useFilters() {
-  const [scope, setScope] = usePersisted<"mine" | "all" | "created">("tasks.scope", "mine");
-  const [assignee, setAssignee] = useState("");
+  const [scope, setScope] = usePersisted<"mine" | "all" | "created" | "watching">("tasks.scope", "mine");
+  const [assignee, setAssignee] = usePersisted<string>("tasks.f.assignee", "");
   const [factoryId, setFactoryId] = useState("");
+  const [city, setCity] = usePersisted<string>("tasks.f.city", "");
   const [source, setSource] = useState("");
+  const [priority, setPriority] = useState("");
   const [q, setQ] = useState("");
   const [hideDone, setHideDone] = useState(true);
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [groupBy, setGroupBy] = usePersisted<GroupBy>("tasks.f.group", "due");
   const qs = (extra: Record<string, string> = {}) => {
     const p = new URLSearchParams({ scope, status: hideDone ? "open" : "all", ...extra });
-    if (assignee) p.set("assignee", assignee); if (factoryId) p.set("factoryId", factoryId); if (source) p.set("source", source); if (q) p.set("q", q);
+    if (assignee) p.set("assignee", assignee); if (factoryId) p.set("factoryId", factoryId); if (city) p.set("city", city); if (source) p.set("source", source); if (priority) p.set("priority", priority); if (q) p.set("q", q); if (overdueOnly) p.set("overdue", "1");
     return p.toString();
   };
-  return { scope, setScope, assignee, setAssignee, factoryId, setFactoryId, source, setSource, q, setQ, hideDone, setHideDone, qs };
+  return { scope, setScope, assignee, setAssignee, factoryId, setFactoryId, city, setCity, source, setSource, priority, setPriority, q, setQ, hideDone, setHideDone, overdueOnly, setOverdueOnly, groupBy, setGroupBy, qs };
 }
-function FilterBar({ f }: { f: ReturnType<typeof useFilters> }) {
+function FilterBar({ f, withGroup = false }: { f: ReturnType<typeof useFilters>; withGroup?: boolean }) {
   const t = useT();
   const { data: admins = [] } = useQuery<TaskAdmin[]>({ queryKey: ["task-admins"], queryFn: () => get("/tasks/admins") });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const cities = useMemo(() => [...new Set(factories.map(x => (x as any).city).filter(Boolean))].sort() as string[], [factories]);
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
       <div className="flex gap-1">
-        {([["mine", t("Мої")], ["all", t("Усі")], ["created", t("Я автор")]] as const).map(([k, l]) => <button key={k} onClick={() => f.setScope(k)} className={cn("rounded-full border px-2.5 py-1 font-semibold", f.scope === k ? "border-red-600 bg-red-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50")}>{l}</button>)}
+        {([["mine", t("Мої")], ["all", t("Усі")], ["created", t("Я автор")], ["watching", t("Спостерігаю")]] as const).map(([k, l]) => <button key={k} onClick={() => f.setScope(k)} className={cn("rounded-full border px-2.5 py-1 font-semibold", f.scope === k ? "border-red-600 bg-red-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50")}>{l}</button>)}
       </div>
       <Input value={f.q} onChange={e => f.setQ(e.target.value)} placeholder={t("пошук: назва, працівник")} className="h-8 w-48 py-1 text-xs" />
       <Select value={f.assignee} onChange={e => f.setAssignee(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Виконавець: усі")}</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select>
       <Select value={f.factoryId} onChange={e => f.setFactoryId(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Фабрика: усі")}</option>{factories.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>
       <Select value={f.source} onChange={e => f.setSource(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Джерело: усі")}</option><option value="manual">{t("ручні")}</option><option value="auto">{t("автозадачі")}</option>{Object.entries(SOURCE_LABEL).filter(([k]) => k.startsWith("auto:")).map(([k, l]) => <option key={k} value={k.slice(5)}>{t(l)}</option>)}</Select>
+      <Select value={f.priority} onChange={e => f.setPriority(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Пріоритет: усі")}</option>{(["urgent", "high", "normal", "low"] as const).map(p => <option key={p} value={p}>{t(PRIORITY_LABEL[p])}</option>)}</Select>
+      {cities.length > 0 && <Select value={f.city} onChange={e => f.setCity(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Місто: усі")}</option>{cities.map(c => <option key={c} value={c}>{c}</option>)}</Select>}
+      <label className="flex items-center gap-1 text-slate-600"><input type="checkbox" checked={f.overdueOnly} onChange={e => f.setOverdueOnly(e.target.checked)} /> {t("лише прострочені")}</label>
       <label className="flex items-center gap-1 text-slate-600"><input type="checkbox" checked={f.hideDone} onChange={e => f.setHideDone(e.target.checked)} /> {t("ховати виконані")}</label>
+      {withGroup && <Select value={f.groupBy} onChange={e => f.setGroupBy(e.target.value as GroupBy)} className="h-8 w-auto py-1 text-xs"><option value="due">{t("Групувати: за строком")}</option><option value="assignee">{t("Групувати: за виконавцем")}</option><option value="factory">{t("Групувати: за фабрикою")}</option></Select>}
     </div>
   );
 }
@@ -147,6 +161,11 @@ function ListView({ onOpen }: { onOpen: (id: number) => void }) {
   const quick = useMutation({ mutationFn: (v: { id: number; action: "done" | "snooze" }) => v.action === "done" ? post(`/tasks/${v.id}/status`, { status: "done" }) : post(`/tasks/${v.id}/snooze`, { days: 1 }), onSuccess: () => invalidateTasks(qc), onError: (e: any) => toast.error(e.message) });
   const today = todayStr(), weekEnd = addDays(today, 6);
   const groups = useMemo(() => {
+    if (f.groupBy !== "due") {
+      const m = new Map<string, TaskRow[]>();
+      for (const r of rows) { const k = f.groupBy === "assignee" ? (r.assigneeName ?? (r.assignees.length ? r.assignees.map(a => a.name).join(", ") : t("без виконавця"))) : (r.factoryName ?? t("без фабрики")); (m.get(k) ?? m.set(k, []).get(k)!).push(r); }
+      return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "uk")).map(([k, list]) => ({ key: k, label: k, cls: "text-slate-600", rows: list.sort((a, b) => (a.dueAt ?? "9").localeCompare(b.dueAt ?? "9")) }));
+    }
     const g: { key: string; label: string; cls: string; rows: TaskRow[] }[] = [
       { key: "overdue", label: t("Прострочено"), cls: "text-rose-600", rows: [] }, { key: "today", label: t("Сьогодні"), cls: "text-amber-600", rows: [] },
       { key: "week", label: t("Цього тижня"), cls: "text-slate-500", rows: [] }, { key: "later", label: t("Пізніше"), cls: "text-slate-400", rows: [] }, { key: "nodue", label: t("Без строку"), cls: "text-slate-400", rows: [] }, { key: "closed", label: t("Закриті"), cls: "text-emerald-600", rows: [] },
@@ -157,12 +176,12 @@ function ListView({ onOpen }: { onOpen: (id: number) => void }) {
       g.find(x => x.key === k)!.rows.push(r);
     }
     return g.filter(x => x.rows.length);
-  }, [rows, today, weekEnd, t]);
+  }, [rows, today, weekEnd, t, f.groupBy]);
   const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   return (
     <>
       <div className="flex flex-wrap items-start gap-2">
-        <div className="min-w-0 flex-1"><FilterBar f={f} /></div>
+        <div className="min-w-0 flex-1"><FilterBar f={f} withGroup /></div>
         <a href={`/api/tasks/export.xlsx?${f.qs()}`} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"><Download className="mr-1 inline h-3.5 w-3.5" />{t("Експорт Excel")}</a>
       </div>
       {isLoading ? <Spinner /> : !rows.length ? <Card className="p-6 text-center text-sm text-slate-400">{t("Задач немає")}</Card> : (
@@ -506,10 +525,11 @@ function MiniMonth({ anchor, onPick, marks }: { anchor: string; onPick: (d: stri
 }
 
 // ── Контроль ────────────────────────────────────────────────────────────────
-function ControlView() {
+function ControlView({ onPickAdmin }: { onPickAdmin: (adminId: number) => void }) {
   const t = useT();
+  const chart = useChartTheme();
   const [weeks, setWeeks] = useState(1);
-  const { data, isLoading } = useQuery<{ from: string; to: string; admins: TaskControlRow[]; autoResolved: number; created: number }>({ queryKey: ["tasks-control", weeks], queryFn: () => get(`/tasks/control?weeks=${weeks}`) });
+  const { data, isLoading } = useQuery<{ from: string; to: string; admins: TaskControlRow[]; autoResolved: number; created: number; weekly: { weekStart: string; created: number; done: number }[] }>({ queryKey: ["tasks-control", weeks], queryFn: () => get(`/tasks/control?weeks=${weeks}`) });
   if (isLoading || !data) return <Spinner />;
   return (
     <Card className="overflow-x-auto">
@@ -517,9 +537,27 @@ function ControlView() {
         <select value={weeks} onChange={e => setWeeks(Number(e.target.value))} className="ml-auto rounded border border-slate-200 bg-white px-1 py-0.5">{[1, 2, 4, 8].map(w => <option key={w} value={w}>{w} {t("тижн.")}</option>)}</select></div>
       <table className="w-full text-sm">
         <thead><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400"><th className="px-4 py-2">{t("Адмін")}</th><th className="px-2 py-2">{t("Відкрито")}</th><th className="px-2 py-2">{t("Прострочено")}</th><th className="px-2 py-2">{t("Виконано")}</th><th className="px-2 py-2">{t("Сер. час")}</th><th className="px-2 py-2">{t("Авто / ручні")}</th></tr></thead>
-        <tbody>{data.admins.map(a => <tr key={a.adminId} className="border-t border-slate-50"><td className="px-4 py-2 font-medium">{a.name} <span className="text-xs text-slate-400">{a.role}</span></td><td className="px-2 py-2">{a.open}</td><td className={cn("px-2 py-2", a.overdue && "font-semibold text-rose-600")}>{a.overdue}</td><td className="px-2 py-2">{a.done}</td><td className="px-2 py-2">{a.avgDays != null ? `${a.avgDays} ${t("дн.")}` : "—"}</td><td className="px-2 py-2 text-slate-500">{a.auto} / {a.manual}</td></tr>)}</tbody>
+        <tbody>{data.admins.map(a => <tr key={a.adminId} onClick={() => onPickAdmin(a.adminId)} title={t("Відкрити список цього адміна")} className="cursor-pointer border-t border-slate-50 hover:bg-slate-50"><td className="px-4 py-2 font-medium">{a.name} <span className="text-xs text-slate-400">{a.role}</span></td><td className="px-2 py-2">{a.open}</td><td className={cn("px-2 py-2", a.overdue && "font-semibold text-rose-600")}>{a.overdue}</td><td className="px-2 py-2">{a.done}</td><td className="px-2 py-2">{a.avgDays != null ? `${a.avgDays} ${t("дн.")}` : "—"}</td><td className="px-2 py-2 text-slate-500">{a.auto} / {a.manual}</td></tr>)}</tbody>
       </table>
-      <div className="px-4 py-2 text-xs text-slate-400">{t("Авто закрилось само")}: {data.autoResolved} · {t("створено нових")}: {data.created}</div>
+      <div className="px-4 py-2 text-xs text-slate-400">{t("Авто закрилось само")}: {data.autoResolved} · {t("створено нових")}: {data.created} · {t("клік по рядку відкриває список адміна")}</div>
+      {data.weekly?.length > 0 && (
+        <div className="border-t border-slate-100 px-4 py-3">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Створено / виконано за 8 тижнів")}</div>
+          <div className="h-44">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data.weekly.map(w => ({ ...w, label: fmtDShort(w.weekStart) }))}>
+                <CartesianGrid stroke={chart.grid} strokeDasharray="3 3" />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: chart.tick }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: chart.tick }} width={28} />
+                <Tooltip contentStyle={chart.tooltip} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="created" name={t("створено")} fill="#94a3b8" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="done" name={t("виконано")} fill="#16a34a" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

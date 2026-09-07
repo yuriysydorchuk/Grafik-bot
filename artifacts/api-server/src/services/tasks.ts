@@ -334,7 +334,16 @@ export async function controlStats(weeks = 1, today = warsawToday()) {
   }
   const [ar] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(and(eq(tasksTable.status, "auto_resolved"), sql`${tasksTable.completedAt} >= ${from}`));
   const [cr] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(sql`${tasksTable.createdAt} >= ${from}`);
-  return { from, to: today, admins: out, autoResolved: Number(ar?.c ?? 0), created: Number(cr?.c ?? 0) };
+  // графік «створено / виконано» за 8 тижнів (пн–нд, Europe/Warsaw)
+  const wk0 = addDaysStr(today, -((new Date(today + "T00:00:00Z").getUTCDay() + 6) % 7) - 7 * 7);
+  const weekly: { weekStart: string; created: number; done: number }[] = [];
+  for (let i = 0; i < 8; i++) {
+    const ws = addDaysStr(wk0, i * 7), we = addDaysStr(ws, 7);
+    const [c] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(sql`(${tasksTable.createdAt} at time zone 'Europe/Warsaw')::date >= ${ws} and (${tasksTable.createdAt} at time zone 'Europe/Warsaw')::date < ${we}`);
+    const [d] = await db.select({ c: sql<number>`count(*)` }).from(tasksTable).where(sql`${tasksTable.status} in ('done','auto_resolved') and (${tasksTable.completedAt} at time zone 'Europe/Warsaw')::date >= ${ws} and (${tasksTable.completedAt} at time zone 'Europe/Warsaw')::date < ${we}`);
+    weekly.push({ weekStart: ws, created: Number(c?.c ?? 0), done: Number(d?.c ?? 0) });
+  }
+  return { from, to: today, admins: out, autoResolved: Number(ar?.c ?? 0), created: Number(cr?.c ?? 0), weekly };
 }
 
 // Лічильники для віджетів (мої: прострочено / сьогодні / тиждень / зустрічі).

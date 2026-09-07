@@ -3049,7 +3049,9 @@ const EN: Record<string, string> = {
   "Нагадати працівнику через": "Remind the worker after", "дн. після запиту": "days after the request", "Задача офісу «не надіслав» після": "Office task “not sent” after", "дн. мовчання": "days of silence",
   "Завжди задача офісу, якщо до строку ≤": "Always an office task if the deadline is within", "Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.": "A file from the worker immediately creates a “Check the uploaded document” task for the assignee; without Telegram — a regular office task.",
   "автозапит системи в бот": "system auto-request via the bot", "запит офісу": "office request", "нагад.": "rem.", "не надіслав документ": "document not sent", "Запросити ще раз (новий лінк)": "Request again (new link)",
-  // звірка з макетом: спостерігачі, згадки, вкладення, привʼязки, порядок денний (08.09.2026)
+  // список і контроль (блок C)
+  "Спостерігаю": "Watching", "Пріоритет: усі": "Priority: all", "Місто: усі": "City: all", "лише прострочені": "overdue only", "Групувати: за строком": "Group: by due date", "Групувати: за виконавцем": "Group: by assignee", "Групувати: за фабрикою": "Group: by factory",
+  "без виконавця": "no assignee", "без фабрики": "no factory", "Відкрити список цього адміна": "Open this admin's list", "клік по рядку відкриває список адміна": "click a row to open the admin's list", "Створено / виконано за 8 тижнів": "Created / done over 8 weeks",   // звірка з макетом: спостерігачі, згадки, вкладення, привʼязки, порядок денний (08.09.2026)
   "Спостерігачі": "Watchers", "спостерігач": "watcher", "пошук кандидата…": "search a candidate…", "пункт (Enter)": "item (Enter)",
   "Нагадано: {n}": "Reminded: {n}", "Підсумок зустрічі": "Meeting summary", "Ще не записано": "Not written yet", "редагувати": "edit", "Що вирішили, хто що робить…": "What was decided, who does what…",
   "Коментар… (@імʼя — згадати)": "Comment… (@name to mention)", "Прикріпити фото або PDF": "Attach a photo or PDF",
