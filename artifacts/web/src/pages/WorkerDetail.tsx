@@ -1585,6 +1585,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   const { data: legality, isLoading } = useQuery<WorkerLegality | null>({
     queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`),
   });
+  const ld = useLeadDays(); // хук — до умовних return (порядок хуків)
 
   if (isLoading) return <div className="px-4 py-3"><Spinner /></div>;
   if (!legality) return <div className="px-4 py-2 text-sm text-slate-400">{t("Легальність ще не рахувалась")}</div>;
@@ -1592,7 +1593,6 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   const reasonsByAxis: Record<string, LegalityReason[]> = {};
   for (const r of legality.reasons) (reasonsByAxis[r.axis] ??= []).push(r);
   const severityCls = (sev: LegalityReason["severity"]) => sev === "block" ? "text-rose-600" : sev === "warn" ? "text-amber-600" : "text-slate-500";
-  const ld = useLeadDays();
   const dLeft = daysUntil(legality.nextExpiryAt);
   const ph = legality.payrollHints;
   const hints: string[] = [];
