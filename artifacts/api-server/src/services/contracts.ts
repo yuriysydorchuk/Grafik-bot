@@ -410,16 +410,18 @@ export async function generateContract(opts: {
 }
 
 // ── Дати заднім числом (draft — перегенерувати; пізніше — лише запис у БД) ──
-export async function updateContractDates(contractId: number, dateFrom: string, dateTo?: string | null): Promise<Contract> {
+// dateFrom може бути null (лише «до», напр. закриття умови датою звільнення) — тоді «від» не чіпається.
+export async function updateContractDates(contractId: number, dateFrom: string | null, dateTo?: string | null): Promise<Contract> {
   const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
   if (!contract) throw new Error("Пакет не знайдено");
   const DEAD = new Set(["declined", "cancelled", "superseded", "expired"]);
   if (DEAD.has(contract.status)) throw new Error(`Пакет у термінальному статусі (${contract.status}) — дату вже не дописати`);
+  const from = dateFrom ?? (contract.dateFrom ? String(contract.dateFrom) : null);
 
   if (contract.status !== "draft") {
     const [updated] = await db.update(contractsTable).set({
-      dateFrom, dateTo: dateTo ?? null,
-      data: { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": dateFrom, "Data zakończenia pracy": dateTo ?? "" },
+      dateFrom: from, dateTo: dateTo ?? null,
+      data: { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": dateTo ?? "" },
       updatedAt: new Date(),
     }).where(eq(contractsTable.id, contractId)).returning();
     logger.info({ contractId, dateFrom, dateTo, status: contract.status }, "contract dates recorded (post-draft — files untouched)");
@@ -429,7 +431,7 @@ export async function updateContractDates(contractId: number, dateFrom: string, 
   const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, contract.workerId));
   const lang = asLang(worker?.language);
-  const data = await buildContractData(contract.workerId, contract.factoryId, { dateFrom, dateTo }, contract.contractRateBrutto);
+  const data = await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto);
 
   for (const file of files) {
     if (!file.templateId || !file.unsignedPath) continue;
@@ -445,7 +447,7 @@ export async function updateContractDates(contractId: number, dateFrom: string, 
     await db.update(contractFilesTable).set({ unsignedSha256: sha256, pageCount }).where(eq(contractFilesTable.id, file.id));
   }
 
-  const [updated] = await db.update(contractsTable).set({ dateFrom, dateTo: dateTo ?? null, data, updatedAt: new Date() })
+  const [updated] = await db.update(contractsTable).set({ dateFrom: from, dateTo: dateTo ?? null, data, updatedAt: new Date() })
     .where(eq(contractsTable.id, contractId)).returning();
   logger.info({ contractId, dateFrom, dateTo }, "contract dates updated, files regenerated (draft)");
   return updated!;

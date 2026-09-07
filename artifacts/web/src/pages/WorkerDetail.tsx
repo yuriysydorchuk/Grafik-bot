@@ -1051,6 +1051,8 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   const [editDates, setEditDates] = useState(false);
   const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
   const terminal = ["signed", "cancelled", "superseded", "expired", "declined"].includes(c.status);
+  // дати можна дописати/змінити на будь-якому «живому» статусі, включно з підписаною умовою (бекенд: DEAD = declined/cancelled/superseded/expired)
+  const canEditDates = !archived && !["cancelled", "superseded", "expired", "declined"].includes(c.status);
   const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { onSaved(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
   const send = useMutation({
@@ -1080,16 +1082,16 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
         <Badge color={st.color}>{t(st.label)}</Badge>
         {newVersion && <span className="text-xs text-slate-500">{t("нова версія")}</span>}
         {showTarget && <span className="text-xs text-slate-600">{c.factoryId == null ? t("Стандартний пакет") : (c.factoryName ?? `#${c.factoryId}`)}{c.companyName ? ` · ${c.companyName}` : ""}</span>}
-        {period ? (
-          <span className="tabular-nums text-slate-700">{period}</span>
+        {editDates ? (
+          <EditContractDates contractId={c.id} initialFrom={c.dateFrom} initialTo={c.dateTo} onSaved={() => { setEditDates(false); onSaved(); }} onCancel={() => setEditDates(false)} />
+        ) : period ? (
+          <span className="tabular-nums text-slate-700">{period}{canEditDates && <button type="button" onClick={() => setEditDates(true)} className="ml-1 text-xs text-slate-400 hover:text-red-600" title={t("Змінити дати")}><Pencil className="inline h-3 w-3" /></button>}</span>
         ) : archived ? (
           <span className="text-xs text-slate-400">{t("без дат")}</span>
-        ) : editDates ? (
-          <EditContractDates contractId={c.id} onSaved={() => { setEditDates(false); onSaved(); }} onCancel={() => setEditDates(false)} />
         ) : (
           <span className="text-xs text-slate-400">
             {t("дати не вказані")}
-            {!terminal && <> · <button type="button" onClick={() => setEditDates(true)} className="text-red-600 hover:underline">{t("вказати")}</button></>}
+            {canEditDates && <> · <button type="button" onClick={() => setEditDates(true)} className="text-red-600 hover:underline">{t("вказати")}</button></>}
           </span>
         )}
         {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
@@ -1134,12 +1136,12 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
 // дописуємо, щойно з'явиться, на будь-якому нетермінальному статусі. У draft
 // це ще й перегенеровує PDF-файли; після — лише дані в БД, підписаний файл не
 // чіпається (services/contracts.ts:updateContractDates).
-function EditContractDates({ contractId, onSaved, onCancel }: { contractId: number; onSaved: () => void; onCancel?: () => void }) {
+function EditContractDates({ contractId, initialFrom, initialTo, onSaved, onCancel }: { contractId: number; initialFrom?: string | null; initialTo?: string | null; onSaved: () => void; onCancel?: () => void }) {
   const t = useT();
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(initialFrom ?? "");
+  const [dateTo, setDateTo] = useState(initialTo ?? "");
   const save = useMutation({
-    mutationFn: () => patch(`/contracts/${contractId}/dates`, { dateFrom, dateTo: dateTo || null }),
+    mutationFn: () => patch(`/contracts/${contractId}/dates`, { dateFrom: dateFrom || null, dateTo: dateTo || null }),
     onSuccess: () => { toast.success(t("Дати збережено")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -1148,8 +1150,8 @@ function EditContractDates({ contractId, onSaved, onCancel }: { contractId: numb
       <Input type="date" autoFocus value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-7 w-32 text-xs" />
       <span className="text-slate-400">→</span>
       <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-7 w-32 text-xs" />
-      <button onClick={() => save.mutate()} disabled={!dateFrom || save.isPending}
-        className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50">
+      <button onClick={() => { if (!dateFrom && !dateTo) { toast.error(t("Вкажіть хоча б одну дату")); return; } save.mutate(); }} disabled={save.isPending}
+        className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
         {t("Зберегти дати")}
       </button>
       {onCancel && <button type="button" onClick={onCancel} className="rounded p-1 text-slate-400 hover:text-slate-600" title={t("Скасувати")}><XCircle className="h-3.5 w-3.5" /></button>}

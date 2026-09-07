@@ -293,9 +293,9 @@ router.post("/workers/:id/contracts", WD, async (req, res) => {
 router.patch("/contracts/:id/dates", WD, async (req, res) => {
   const id = Number(req.params.id);
   const { dateFrom, dateTo } = req.body ?? {};
-  if (!dateFrom) return fail(res, 400, "Потрібна дата початку (dateFrom)");
+  if (!dateFrom && !dateTo) return fail(res, 400, "Вкажіть хоча б одну дату (від або до)");
   try {
-    const updated = await updateContractDates(id, String(dateFrom), dateTo ? String(dateTo) : null);
+    const updated = await updateContractDates(id, dateFrom ? String(dateFrom) : null, dateTo ? String(dateTo) : null);
     ok(res, updated);
   } catch (e: any) {
     fail(res, 400, e?.message ?? "Не вдалося оновити дати");
