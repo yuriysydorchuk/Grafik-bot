@@ -439,7 +439,11 @@ export async function updateContractDates(contractId: number, dateFrom: string |
   const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, contract.workerId));
   const lang = asLang(worker?.language);
-  const data = await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto, contract.companyId ?? null);
+  // draft — повний перерахунок даних (профіль міг змінитись); після відправки/підпису —
+  // ТІ САМІ дані, що бачив працівник (дата укладення, ставка, адреса), міняються лише дати
+  const data = contract.status === "draft"
+    ? await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto, contract.companyId ?? null)
+    : { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": dateTo ?? "" };
   const workerSigned = contract.status === "worker_signed" && !!contract.workerSignaturePath;
   const workerSignatureDataUrl = workerSigned
     ? `data:image/png;base64,${(await fs.promises.readFile(path.join(UPLOADS_ROOT, contract.workerSignaturePath!))).toString("base64")}` : undefined;

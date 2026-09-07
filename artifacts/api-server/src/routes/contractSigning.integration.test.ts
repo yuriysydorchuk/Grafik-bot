@@ -323,12 +323,11 @@ test("дати після підпису працівника: PATCH /dates пе
   assert.equal(r.body.status, "worker_signed"); assert.equal(String(r.body.dateTo), "2027-03-31");
   assert.equal(r.body.data["Data zakończenia pracy"], "2027-03-31");
   const after = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
-  for (const f of after) {
-    const prev = before.find(x => x.id === f.id)!;
-    assert.ok(f.signedSha256 && f.signedSha256 !== prev.signedSha256, `${f.title}: signed-файл перерендерено`);
-    assert.ok(f.unsignedSha256 !== prev.unsignedSha256, `${f.title}: unsigned-файл перерендерено`);
-    assert.ok(fs.existsSync(path.join(UPLOADS_ROOT, f.signedPath!)));
-  }
+  // umowa має плейсхолдери дат → новий вміст; regulamin без дат може лишитись байт-у-байт тим самим
+  const umowa = after.find(f => /umowa/i.test(f.title))!; const umowaBefore = before.find(x => x.id === umowa.id)!;
+  assert.ok(umowa.signedSha256 && umowa.signedSha256 !== umowaBefore.signedSha256, "umowa: signed-файл перерендерено");
+  assert.ok(umowa.unsignedSha256 !== umowaBefore.unsignedSha256, "umowa: unsigned-файл перерендерено");
+  for (const f of after) assert.ok(f.signedPath && fs.existsSync(path.join(UPLOADS_ROOT, f.signedPath)), `${f.title}: signed-файл на диску`);
   const ev = await db.select().from(signatureEventsTable).where(eq(signatureEventsTable.contractId, contractId));
   assert.equal(ev.filter(e => e.event === "dates_filled").length, after.length);
   // лише «до» — «від» лишається
