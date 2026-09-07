@@ -121,6 +121,7 @@ export async function completeNameSignup(ctx: Context, tid: string, data: Signup
   const [freshWorker] = await db.insert(workersTable).values({
     fullName, factoryId, telegramId: tid, workerCode: code, language: lang,
   }).returning();
+  import("../../services/tasks").then(m => m.workerTrigger("worker_created", freshWorker)).catch(() => {}); // шаблони задач «при реєстрації» (модуль «Задачі»)
   clearState(tid);
   // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
   try {
