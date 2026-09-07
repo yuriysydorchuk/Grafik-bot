@@ -448,6 +448,7 @@ router.post("/workers", RW, async (req, res) => {
   const [w] = await db.insert(workersTable).values(values).returning();
   // нова людина могла вже фігурувати в сводних — підвʼязуємо її історію за іменем
   import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
+  import("../services/tasks").then(m => m.workerTrigger("worker_created", w)).catch(() => {}); // шаблони задач «при реєстрації»
   ok(res, stripWorkerEcho(w, req));
 });
 
@@ -635,6 +636,7 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
   const fireDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
   const firedAt = fireDate ? new Date(`${fireDate}T12:00:00`) : new Date();
   const [w] = await db.update(workersTable).set({ isActive: false, status: "fired", firedAt }).where(eq(workersTable.id, id)).returning();
+  import("../services/tasks").then(m => m.workerTrigger("worker_fired", w)).catch(() => {}); // шаблони задач «при звільненні»
   await db.insert(workerChangesTable).values({
     workerId: id, field: "fired", oldValue: "active", newValue: "fired",
     effectiveDate: fireDate ?? warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,

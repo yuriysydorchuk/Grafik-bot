@@ -1067,6 +1067,7 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
       fullName: newName, workerCode: String((codeRow?.max ?? 0) + 1).padStart(5, "0"),
       factoryId: factory?.id ?? null, companyId: factory?.companyId ?? null,
     }).returning();
+    import("../services/tasks").then(m => m.workerTrigger("worker_created", worker)).catch(() => {});
   }
 
   const [{ maxSort }] = await db.select({ maxSort: sql<number>`coalesce(max(${svodniRowsTable.sortIdx}), -1)` })

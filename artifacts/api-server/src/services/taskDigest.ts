@@ -54,7 +54,7 @@ export async function buildMorningDigest(adminId: number, today = warsawToday())
   top.forEach((t, i) => {
     const sfx = t.kind === "meeting" ? ` · ${t.dueTime ?? ""}` : t.due && t.due < today ? ` · −${diffDays(today, t.due)} дн.` : t.due === today ? " · сьогодні" : "";
     lines.push(`*${i + 1}.* ${line(t, sfx)}`);
-    if (t.kind !== "meeting") kb.push([{ text: `✅ ${i + 1}`, callback_data: `tsk:done:${t.id}` }, { text: `⏰ ${i + 1} завтра`, callback_data: `tsk:snooze:${t.id}` }]);
+    if (t.kind !== "meeting") kb.push([{ text: `✅ ${i + 1}`, callback_data: `tsk:done:${t.id}` }, { text: `⏰ ${i + 1} завтра`, callback_data: `tsk:snooze:${t.id}` }, ...(panelUrl() ? [{ text: `🔗 ${i + 1}`, url: `${panelUrl()}/tasks?task=${t.id}` }] : [])]);
   });
   const rest = overdue.length + todayL.length + meetings.length - top.length;
   if (rest > 0) lines.push(`…ще ${rest} у панелі`);

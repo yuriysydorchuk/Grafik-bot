@@ -389,7 +389,7 @@ const BOT_EN: Record<string, string> = {
   // модуль «Задачі» (офіс)
   "📋 Задачі": "📋 Tasks", "Мої задачі": "My tasks", "Прострочено": "Overdue", "Сьогодні": "Today", "Тиждень": "Week",
   "🔴 Прострочені": "🔴 Overdue", "🟠 На сьогодні": "🟠 For today", "⚪ Цього тижня": "⚪ This week", "➕ Нова задача": "➕ New task", "🔗 Відкрити панель": "🔗 Open the panel",
-  "нічого немає": "nothing", "ще": "and", "у панелі": "more in the panel", "Задачу створено": "Task created", "перенесено на завтра": "moved to tomorrow", "перенесено на понеділок": "moved to Monday",
+  "нічого немає": "nothing", "ще": "and", "у панелі": "more in the panel", "Задачу створено": "Task created", "перенесено на завтра": "moved to tomorrow", "перенесено на понеділок": "moved to Monday", "Напишіть коментар до задачі": "Type a comment for the task", "Коментар додано": "Comment added",
   "Напиши назву задачі. Можна з датою: «завтра 10:00 подзвонити в urząd», «12.09 замовити одяг».": "Type the task title. A date is allowed: “tomorrow 10:00 call the urząd”, “12.09 order workwear”.",
   "📢 Розсилки": "📢 Broadcasts",
   "🌐 Мова / Language": "🌐 Language / Мова",

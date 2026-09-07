@@ -148,6 +148,8 @@ export interface LegalizationRow {
   workBasis: { label: string | null; until: string | null; docId: number | null } | null;
   contractBasis: { label: string | null; until: string | null; docId: number | null } | null;
   pendingDocs: number;
+  responsibleName: string | null; // відповідальний фабрики (модуль «Задачі», D7)
+  task: { id: number; status: string; title: string; assigneeName: string | null; count: number } | null; // відкрита автозадача по працівнику
 }
 export interface LegalizationDashboard {
   today: string;

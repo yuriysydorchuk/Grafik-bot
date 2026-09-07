@@ -212,6 +212,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
         nationality: mrzNationalityToCatalog(citizenship),
       }).returning();
       worker = created!;
+      import("../services/tasks").then(m => m.workerTrigger("worker_created", created)).catch(() => {}); // шаблони задач «при реєстрації»
     }
 
     const docType = await ensureDocumentType("passport");

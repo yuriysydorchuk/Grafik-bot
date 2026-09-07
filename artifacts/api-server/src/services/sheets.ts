@@ -215,6 +215,7 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
         isActive: true,
       }).returning();
       worker = newWorker;
+      import("./tasks").then(m => m.workerTrigger("worker_created", newWorker)).catch(() => {});
       allWorkers = [...allWorkers, newWorker!];
       autoAdded.push(row.fullName.trim());
     }

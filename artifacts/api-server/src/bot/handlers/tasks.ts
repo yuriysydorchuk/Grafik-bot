@@ -8,7 +8,7 @@ import { getAdmin, adminHasPage, adminMenuFor } from "../roles";
 import { tb, bhears, oLang, type Lang } from "../i18n";
 import { setState, getState, clearState } from "../state";
 import {
-  loadTask, setTaskStatus, respondAssignee, snoozeTask, planTask, isParticipant, createTask, myCounters, mdEsc, warsawToday, fmtDate, dateStr, diffDays, OPEN_STATUSES,
+  loadTask, setTaskStatus, respondAssignee, snoozeTask, planTask, isParticipant, createTask, addComment, myCounters, mdEsc, warsawToday, fmtDate, dateStr, diffDays, OPEN_STATUSES,
 } from "../../services/tasks";
 import { db, tasksTable } from "@workspace/db";
 import { and, eq, inArray, or, sql, lte, isNull } from "drizzle-orm";
@@ -17,6 +17,7 @@ import { hasCap } from "../../lib/roles";
 import { loadRolesCache } from "../../lib/auth";
 
 const S_NEW = "task:new_title";
+const S_REPLY = "task:reply"; // «💬 Відповісти» під сповіщенням → наступний текст = коментар до задачі
 const panelUrl = () => (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
 
 async function adminCanManage(admin: { role: string }): Promise<boolean> {
@@ -92,9 +93,31 @@ export function registerTaskActions(bot: Telegraf<any>) {
     setState(tid, S_NEW, {});
     return ctx.reply(tb(lang, "Напиши назву задачі. Можна з датою: «завтра 10:00 подзвонити в urząd», «12.09 замовити одяг»."), Markup.keyboard([[tb(lang, "✖️ Скасувати")]]).resize());
   });
+  bot.action(/^tsk:reply:(\d+)$/, async (ctx) => {
+    const tid = String(ctx.from!.id);
+    const admin = await getAdmin(tid);
+    if (!admin) return ctx.answerCbQuery().catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
+    const task = await loadTask(Number((ctx.match as RegExpMatchArray)[1]));
+    if (!task) return ctx.reply("Задачу не знайдено");
+    setState(tid, S_REPLY, { taskId: task.id });
+    return ctx.reply(`💬 ${tb(oLang(admin.language), "Напишіть коментар до задачі")}: *${mdEsc(task.title)}*`, { parse_mode: "Markdown", ...Markup.keyboard([[tb(oLang(admin.language), "✖️ Скасувати")]]).resize() });
+  });
   bot.on("text", async (ctx, next) => {
     const tid = String(ctx.from.id);
     const st = getState(tid);
+    if (st?.action === S_REPLY) {
+      const admin = await getAdmin(tid);
+      if (!admin) { clearState(tid); return next(); }
+      const lang = oLang(admin.language);
+      const text = ctx.message.text.trim();
+      clearState(tid);
+      if (/^✖️|^❌|скасувати|cancel/i.test(text)) return ctx.reply(tb(lang, "Скасовано"), await adminMenuFor(admin, lang));
+      const task = await loadTask(Number((st.data as any)?.taskId));
+      if (!task) return ctx.reply("Задачу не знайдено", await adminMenuFor(admin, lang));
+      await addComment(task, admin.id, text);
+      return ctx.reply(`✅ ${tb(lang, "Коментар додано")}`, await adminMenuFor(admin, lang));
+    }
     if (st?.action !== S_NEW) return next();
     const admin = await getAdmin(tid);
     if (!admin) { clearState(tid); return next(); }

@@ -7,8 +7,7 @@
 // хелперами. Сповіщення в бот — персональні (notifyAdminById, тип `tasks`).
 import {
   db, tasksTable, taskAssigneesTable, taskEventsTable, taskCommentsTable, adminsTable, factoriesTable, taskAutoRulesTable,
-  type Task,
-} from "@workspace/db";
+  type Task, taskTemplatesTable } from "@workspace/db";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { notifyAdminById } from "../bot/notify";
@@ -33,6 +32,32 @@ export async function loadTaskSettings(): Promise<TaskSettings> {
   return { ...DEFAULT_TASK_SETTINGS, ...((row?.params ?? {}) as Partial<TaskSettings>) };
 }
 
+// Шаблони з тригером (worker_created / worker_fired): задача з чеклістом шаблону при події.
+// Виконавець: дефолт шаблону → відповідальний фабрики → головний. Один раз на подію (sourceKey).
+export async function applyTemplateTriggers(trigger: "worker_created" | "worker_fired", worker: { id: number; fullName: string; factoryId: number | null }): Promise<number> {
+  const tpls = await db.select().from(taskTemplatesTable).where(and(eq(taskTemplatesTable.trigger, trigger), eq(taskTemplatesTable.isActive, true)));
+  let n = 0;
+  for (const tpl of tpls) {
+    const sourceKey = `tpl:${tpl.id}:${worker.id}:${trigger}`;
+    const [ex] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, sourceKey), inArray(tasksTable.status, OPEN_STATUSES)));
+    if (ex) continue;
+    const assignee = tpl.defaultAssigneeAdminId ?? await resolveAssignee({ factoryId: worker.factoryId, ruleCode: `template:${tpl.id}` });
+    await createTask({
+      kind: (tpl.kind as TaskKind) ?? "task", title: tpl.titleTemplate.replace("{worker}", worker.fullName).trim() || tpl.name, description: tpl.description,
+      dueAt: tpl.dueInDays != null ? addDaysStr(warsawToday(), tpl.dueInDays) : null, assigneeAdminId: assignee, reviewRequired: tpl.reviewRequired,
+      workerId: worker.id, factoryId: worker.factoryId, checklist: tpl.checklist, recurrence: tpl.recurrence ?? null, templateId: tpl.id,
+      source: "template", sourceKey,
+    }, null);
+    n++;
+  }
+  return n;
+}
+// Best-effort обгортка для точок створення/звільнення працівника (динамічний імпорт з роутів/бота).
+export async function workerTrigger(trigger: "worker_created" | "worker_fired", worker: { id: number; fullName: string; factoryId: number | null } | undefined | null): Promise<void> {
+  if (!worker) return;
+  try { await applyTemplateTriggers(trigger, worker); } catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id, trigger }, "template trigger failed"); }
+}
+
 // Контекстні кнопки «Як вирішити» для бот-сповіщень (динамічний імпорт — taskResolve імпортує цей модуль).
 export async function taskContextButtons(task: Task): Promise<{ text: string; callback_data: string }[]> {
   if (!task.source.startsWith("auto:")) return [];
@@ -41,6 +66,8 @@ export async function taskContextButtons(task: Task): Promise<{ text: string; ca
     return botActionButtons(task.id, (await buildTaskResolution(task)).actions);
   } catch { return []; }
 }
+
+export const taskPanelUrl = () => (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
 
 export async function logTaskEvent(taskId: number, kind: string, adminId: number | null = null, payload?: Record<string, unknown>): Promise<void> {
   await db.insert(taskEventsTable).values({ taskId, kind, adminId, payload: payload ?? null });
@@ -131,9 +158,10 @@ export async function notifyTaskAssigned(task: Task, actorAdminId: number | null
       } else {
         const auto = task.source.startsWith("auto:");
         const text = `${auto ? "🤖 *Автозадача*" : `📌 *Нова задача від ${mdEsc(who)}*`}\n${mdEsc(task.title)}${task.dueAt ? `\nдо ${fmtDate(dateStr(task.dueAt)!)}` : ""} · ${PRIORITY_LABEL[task.priority as TaskPriority] ?? task.priority}`;
-        const rows: { text: string; callback_data: string }[][] = [[{ text: "▶ Беру в роботу", callback_data: `tsk:start:${task.id}` }, { text: "✅ Готово", callback_data: `tsk:done:${task.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${task.id}` }]];
+        const rows: { text: string; callback_data?: string; url?: string }[][] = [[{ text: "▶ Беру в роботу", callback_data: `tsk:start:${task.id}` }, { text: "✅ Готово", callback_data: `tsk:done:${task.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${task.id}` }]];
         const ctxButtons = await taskContextButtons(task);
         if (ctxButtons.length) rows.push(ctxButtons);
+        rows.push([{ text: "💬 Відповісти", callback_data: `tsk:reply:${task.id}` }, ...(taskPanelUrl() ? [{ text: "🔗 Відкрити", url: `${taskPanelUrl()}/tasks?task=${task.id}` }] : [])]);
         await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } });
       }
     } catch (e: any) { logger.warn({ err: e?.message, taskId: task.id, adminId: id }, "task assign notify failed"); }

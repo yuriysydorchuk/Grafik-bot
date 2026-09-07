@@ -9,7 +9,7 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   db, workersTable, workerDocumentsTable, documentTypesTable, legalRulesTable, workerLegalityTable, workerChangesTable,
-  factoriesTable, companiesTable, workerFactoriesTable, contractsTable, adminsTable,
+  factoriesTable, companiesTable, workerFactoriesTable, contractsTable, adminsTable, tasksTable,
 } from "@workspace/db";
 import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
@@ -205,12 +205,20 @@ async function dashboardRows() {
   // відповідальний фабрики (factories.responsible_admin_id, модуль «Задачі» D7) — колонка Excel «Odpowiedzialny»
   const responsibleByFactory = new Map<number, string>();
   for (const f of await db.select({ id: factoriesTable.id, name: adminsTable.name }).from(factoriesTable).innerJoin(adminsTable, eq(factoriesTable.responsibleAdminId, adminsTable.id))) responsibleByFactory.set(f.id, f.name);
+  // відкрита автозадача по працівнику (макет: колонка «Задача» — «в роботі #184»)
+  const openTasks = rows.length ? await db.select({ id: tasksTable.id, workerId: tasksTable.workerId, status: tasksTable.status, title: tasksTable.title, assigneeAdminId: tasksTable.assigneeAdminId })
+    .from(tasksTable).where(and(inArray(tasksTable.workerId, rows.map(r => r.id)), inArray(tasksTable.status, ["open", "in_progress", "review"]), sql`${tasksTable.source} like 'auto:%'`))
+    .orderBy(sql`case ${tasksTable.priority} when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end`, tasksTable.id) : [];
+  const taskOf = new Map<number, { id: number; status: string; title: string; assigneeName: string | null; count: number }>();
+  const adminNames = new Map((await db.select({ id: adminsTable.id, name: adminsTable.name }).from(adminsTable)).map(a => [a.id, a.name]));
+  for (const t of openTasks) { if (!t.workerId) continue; const cur = taskOf.get(t.workerId); if (cur) cur.count++; else taskOf.set(t.workerId, { id: t.id, status: t.status, title: t.title, assigneeName: t.assigneeAdminId ? adminNames.get(t.assigneeAdminId) ?? null : null, count: 1 }); }
   return rows.map(r => {
     const a = (r.lg?.axes ?? {}) as Axes;
     return {
       id: r.id, fullName: r.fullName, workerCode: r.workerCode, nationality: r.nationality, legalStatus: r.legalStatus,
       factoryId: r.factoryId, factoryName: r.factoryName, companyId: r.companyId, companyName: r.companyName,
       responsibleName: r.factoryId ? responsibleByFactory.get(r.factoryId) ?? null : null,
+      task: taskOf.get(r.id) ?? null,
       legality: r.lg ? {
         stay: r.lg.stay, work: r.lg.work, contract: r.lg.contract, overall: r.lg.overall, reviewRequired: r.lg.reviewRequired,
         nextExpiryAt: r.lg.nextExpiryAt, nextExpiryDocId: r.lg.nextExpiryDocId, requiredMissing: r.lg.requiredMissing,

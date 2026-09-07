@@ -12,7 +12,7 @@ import { and, eq, gte, inArray, isNull, like, lt, lte, ne, sql } from "drizzle-o
 import { entryDateStr, addDaysStr } from "../lib/dates";
 import {
   createTask, logTaskEvent, resolveAssignee, priorityForDays, loadTaskSettings, warsawToday, diffDays, dateStr, fmtDate, mdEsc,
-  mainAdminId, adminName, taskContextButtons, OPEN_STATUSES, type TaskPriority,
+  mainAdminId, adminName, taskContextButtons, taskPanelUrl, OPEN_STATUSES, type TaskPriority,
 } from "./tasks";
 import { defaultChecklist } from "./taskResolve";
 import { normalizeChecklist } from "./taskUtils";
@@ -282,6 +282,8 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
       const assignee = await resolveAssignee({ factoryId: c.assign.factoryId, ruleCode: c.rule, prefer: c.assign.prefer, useScheduler: c.assign.useScheduler });
       await createTask({ kind: "task", title: c.title, priority: c.priority, dueAt: c.dueAt, assigneeAdminId: assignee, workerId: c.workerId, factoryId: c.factoryId, documentId: c.documentId, contractId: c.contractId, candidateId: c.candidateId, source: `auto:${c.rule}`, sourceKey: c.sourceKey, autoParams: c.autoParams, checklist: c.autoParams.grouped ? [] : defaultChecklist(c.rule, c.autoParams) }, null);
       stats.created++;
+      // «Документ прострочений: копія головному» (макет) — коли виконавець не головний
+      if (c.rule === "doc_expired") { const main = await mainAdminId(); if (main && assignee !== main) await notifyAdminById(main, "tasks", `📄 *Прострочений документ* (копія): ${mdEsc(c.title)}\n${mdEsc(String(c.autoParams.workerName ?? ""))} · виконавець: ${mdEsc(await adminName(assignee))}`, { parse_mode: "Markdown" }).catch(() => {}); }
       continue;
     }
     if (ex.status === "auto_resolved") {
@@ -362,7 +364,7 @@ export async function sendReminders(today = warsawToday()): Promise<{ reminded: 
     list.sort((a, b) => a.daysLeft - b.daysLeft);
     for (const { t, daysLeft } of list.slice(0, MAX_INDIVIDUAL)) {
       const label = daysLeft < 0 ? `прострочено ${-daysLeft} дн.` : daysLeft === 0 ? "строк сьогодні" : `за ${daysLeft} дн.`;
-      const rows: { text: string; callback_data: string }[][] = [[{ text: "✅ Готово", callback_data: `tsk:done:${t.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${t.id}` }]];
+      const rows: { text: string; callback_data?: string; url?: string }[][] = [[{ text: "✅ Готово", callback_data: `tsk:done:${t.id}` }, { text: "⏰ Завтра", callback_data: `tsk:snooze:${t.id}` }, ...(taskPanelUrl() ? [{ text: "🔗 Відкрити", url: `${taskPanelUrl()}/tasks?task=${t.id}` }] : [])]];
       const ctxButtons = await taskContextButtons(t);
       if (ctxButtons.length) rows.push(ctxButtons);
       await notifyAdminById(adminId, "tasks", `⏰ *${mdEsc(label)}*: ${mdEsc(t.title)}${(t.autoParams as any)?.workerName ? `\n${mdEsc(String((t.autoParams as any).workerName))}` : ""}`,

@@ -3180,6 +3180,7 @@ bot.on("document", async (ctx) => {
       maxCode++;
       const newCode = workerCode ?? String(maxCode).padStart(5, "0");
       const [fresh] = await db.insert(workersTable).values({ fullName, workerCode: newCode, telegramId }).returning();
+      import("../services/tasks").then(m => m.workerTrigger("worker_created", fresh)).catch(() => {});
       if (fresh) allForDup.push(fresh); // дубль усередині самого файлу теж ловимо
       added++;
     }
@@ -3330,6 +3331,7 @@ bot.on("text", async (ctx) => {
     const [freshWorker] = await db.insert(workersTable).values({
       fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code, language: lang,
     }).returning();
+    import("../services/tasks").then(m => m.workerTrigger("worker_created", freshWorker)).catch(() => {}); // шаблони задач «при реєстрації»
     clearState(tid);
     // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
     try {
@@ -4160,6 +4162,7 @@ bot.on("text", async (ctx) => {
       const [w] = await db.insert(workersTable).values({
         fullName: name, factoryId: data.factoryId, workerCode: String(maxCode).padStart(5, "0"),
       }).returning();
+      import("../services/tasks").then(m => m.workerTrigger("worker_created", w)).catch(() => {});
       await db.insert(scheduleEntriesTable).values({
         weekId: data.weekId, workerId: w!.id, factoryId: data.factoryId,
         dayOfWeek: data.day, shift: data.shift, status: "scheduled",

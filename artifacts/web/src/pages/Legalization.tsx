@@ -17,6 +17,7 @@ import {
 import { NatFlag } from "../lib/nationality";
 import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
 import { useLeadDays, expiryTone, expiryTextCls } from "../lib/leadDays";
+const TASK_STATUS_SHORT: Record<string, string> = { open: "нова", in_progress: "в роботі", review: "на перевірці" };
 
 type SortKey = "expiry" | "name" | "status";
 const NOT_COMPUTED_BADGE = "bg-slate-100 text-slate-500 ring-slate-200";
@@ -177,6 +178,8 @@ export default function Legalization() {
                       <th className="cursor-pointer select-none px-3 py-2 whitespace-nowrap" onClick={() => clickSort("expiry")}>{t("Наступний термін")} {sortIcon("expiry")}</th>
                       <th className="px-3 py-2 whitespace-nowrap">{t("Форма легалізації")}</th>
                       <th className="px-3 py-2 whitespace-nowrap">{t("Перевірка")}</th>
+                      <th className="px-3 py-2 whitespace-nowrap">{t("Відповідальний")}</th>
+                      <th className="px-3 py-2 whitespace-nowrap">{t("Задача")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -238,10 +241,20 @@ function RowGroup({ r, open, onToggle, t }: { r: LegalizationRow; open: boolean;
             {r.pendingDocs > 0 && <span className="text-xs text-slate-400">{t("{n} на перевірці", { n: r.pendingDocs })}</span>}
           </div>
         </td>
+        <td className="px-3 py-2 text-slate-500">{r.responsibleName ?? <span className="text-slate-300">—</span>}</td>
+        <td className="px-3 py-2">
+          {r.task ? (
+            <Link href={`/tasks?task=${r.task.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs hover:text-red-600" title={r.task.title}>
+              <span className={`rounded-full px-1.5 py-0.5 ${r.task.status === "in_progress" ? "bg-blue-100 text-blue-700" : r.task.status === "review" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{t(TASK_STATUS_SHORT[r.task.status] ?? r.task.status)}</span>
+              <span className="text-slate-500">#{r.task.id}{r.task.count > 1 ? ` +${r.task.count - 1}` : ""}</span>
+              {r.task.assigneeName && <span className="text-slate-400">· {r.task.assigneeName}</span>}
+            </Link>
+          ) : <span className="text-slate-300">—</span>}
+        </td>
       </tr>
       {open && (
         <tr className="bg-slate-50/70">
-          <td colSpan={9} className="px-4 py-3 text-xs text-slate-600">
+          <td colSpan={11} className="px-4 py-3 text-xs text-slate-600">
             {lg && lg.reasons.length > 0
               ? <ul className="list-disc space-y-0.5 pl-4">{lg.reasons.map((rs, i) => <li key={i}>{reasonText(t, rs)}</li>)}</ul>
               : <span className="text-slate-400">{t("Причин немає — усе гаразд.")}</span>}
