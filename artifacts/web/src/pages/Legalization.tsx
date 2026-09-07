@@ -151,7 +151,7 @@ export default function Legalization() {
               {companies.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </Select>
             <label className="flex items-center gap-1.5 text-sm text-slate-600">
-              <input type="checkbox" checked={soon} onChange={e => setSoon(e.target.checked)} /> {t("строк ≤ 30 днів")}
+              <input type="checkbox" checked={soon} onChange={e => setSoon(e.target.checked)} /> {t("строк ≤ {n} днів", { n: ld.warn })}
             </label>
             <label className="flex items-center gap-1.5 text-sm text-slate-600">
               <input type="checkbox" checked={reviewOnly} onChange={e => setReviewOnly(e.target.checked)} /> {t("потребують перевірки")}

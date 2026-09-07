@@ -16,6 +16,7 @@ export const UPLOADS_ROOT = process.env.UPLOADS_DIR
   : path.resolve(process.cwd(), "uploads");
 
 export const WORKER_DOCS_DIR = path.join(UPLOADS_ROOT, "worker-documents");
+export const TASK_ATTACH_DIR = path.join(UPLOADS_ROOT, "task-attachments"); // вкладення коментарів модуля «Задачі»
 export const INVOICES_DIR = path.join(UPLOADS_ROOT, "invoices"); // скани фактур (бот + сайт)
 export const CONTRACTS_DIR = path.join(UPLOADS_ROOT, "contracts"); // згенеровані/підписані PDF умов
 export const SIGNATURES_DIR = path.join(UPLOADS_ROOT, "signatures"); // PNG підписів (доказова база)
@@ -32,6 +33,7 @@ export function ensureUploadDirs(): void {
   fs.mkdirSync(PASSPORT_SCAN_TMP_DIR, { recursive: true });
   fs.mkdirSync(AGREEMENTS_DIR, { recursive: true });
   fs.mkdirSync(ABSENCE_DOCS_DIR, { recursive: true });
+  fs.mkdirSync(TASK_ATTACH_DIR, { recursive: true });
 }
 
 // The multipart MIME is client-declared and NOT trustworthy. Sniff magic bytes so a

@@ -894,6 +894,11 @@ const EN: Record<string, string> = {
   "Potrącenia": "Potrącenia",
   "Приховано колонок — клікни, щоб показати список": "Columns hidden — click to see the list",
   "Створити нового працівника все одно?": "Create a new worker anyway?",
+  "Відновити старий профіль (історія, номер, документи збережуться) — з фабрикою і посадою з цієї форми?": "Restore the old profile (history, number and documents are kept) — with the factory and position from this form?",
+  "Створити все одно": "Create anyway",
+  "Відновити його": "Restore it",
+  "Відновити працівника?": "Restore the worker?",
+  "Профіль знову стане активним, історія і документи збережуться.": "The profile becomes active again; history and documents are kept.",
   "Години підтверджені → до сводної": "Hours confirmed → to payroll sheet",
   "Перенести підтверджені години {month} до сводної? Рядки створяться/оновляться з даними з профілів.": "Move the confirmed {month} hours to the payroll sheet? Rows are created/updated with profile data.",
   "Перенести підтверджені години до сводної: {what}? Рядки створяться/оновляться з даними з профілів.": "Move the confirmed hours to the payroll sheet: {what}? Rows are created/updated with profile data.",
@@ -3044,6 +3049,10 @@ const EN: Record<string, string> = {
   "Нагадати працівнику через": "Remind the worker after", "дн. після запиту": "days after the request", "Задача офісу «не надіслав» після": "Office task “not sent” after", "дн. мовчання": "days of silence",
   "Завжди задача офісу, якщо до строку ≤": "Always an office task if the deadline is within", "Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.": "A file from the worker immediately creates a “Check the uploaded document” task for the assignee; without Telegram — a regular office task.",
   "автозапит системи в бот": "system auto-request via the bot", "запит офісу": "office request", "нагад.": "rem.", "не надіслав документ": "document not sent", "Запросити ще раз (новий лінк)": "Request again (new link)",
+  // звірка з макетом: спостерігачі, згадки, вкладення, привʼязки, порядок денний (08.09.2026)
+  "Спостерігачі": "Watchers", "спостерігач": "watcher", "пошук кандидата…": "search a candidate…", "пункт (Enter)": "item (Enter)",
+  "Нагадано: {n}": "Reminded: {n}", "Підсумок зустрічі": "Meeting summary", "Ще не записано": "Not written yet", "редагувати": "edit", "Що вирішили, хто що робить…": "What was decided, who does what…",
+  "Коментар… (@імʼя — згадати)": "Comment… (@name to mention)", "Прикріпити фото або PDF": "Attach a photo or PDF",
   // «Як вирішити» (батч 5)
   "Як вирішити": "How to resolve", "Файли від працівника на перевірці": "Files from the worker awaiting review", "відмітиться сама за фактом": "checks itself when done", "Закриється сама, коли": "Closes itself when", "Відкрити файл": "Open file", "запитано": "requested", "умови в системі немає": "no contract in the system", "Статус для виплат за документами": "Payroll status by documents", "Вплине на сводну від цієї дати.": "Affects the svodni from that date.",
   "Пропуски без пояснення": "Unexplained absences", "Експорт Excel": "Export Excel",

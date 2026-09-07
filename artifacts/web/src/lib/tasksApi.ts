@@ -18,9 +18,13 @@ export interface TaskRow {
   assigneeName: string | null; creatorName: string | null; completedByName: string | null;
   worker: { id: number; fullName: string; workerCode: string | null } | null; factoryName: string | null;
   assignees: { adminId: number; name: string | null; status: "pending" | "accepted" | "declined" | "done" }[];
+  watchers: { adminId: number; name: string | null }[]; // спостерігачі
+  agenda: string[]; summary: string | null;           // зустріч: порядок денний, підсумок після «Провели»
+  documentTitle: string | null; contractLabel: string | null; candidateName: string | null; // привʼязки
   overdue: boolean; checklistDone: number; checklistTotal: number;
 }
-export interface TaskComment { id: number; adminId: number | null; name: string | null; body: string; createdAt: string }
+export interface TaskAttachment { path: string; name: string; mime: string; size: number }
+export interface TaskComment { id: number; adminId: number | null; name: string | null; body: string; mentions?: number[]; attachments?: TaskAttachment[]; createdAt: string }
 export interface TaskEvent { id: number; adminId: number | null; name: string | null; kind: string; payload: Record<string, unknown> | null; createdAt: string }
 // «Як вирішити» — контекст автозадачі і дії (services/taskResolve.ts)
 export interface TaskAction { code: string; label: string; kind: "api" | "link" | "modal"; href?: string; needsNote?: boolean; notePlaceholder?: string; confirm?: string; primary?: boolean; done?: string | null; bot?: boolean }

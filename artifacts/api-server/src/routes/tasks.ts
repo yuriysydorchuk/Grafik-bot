@@ -5,20 +5,23 @@
 import { Router, type IRouter } from "express";
 import {
   db, tasksTable, taskAssigneesTable, taskCommentsTable, taskEventsTable, taskTemplatesTable, taskAutoRulesTable,
-  adminsTable, workersTable, factoriesTable,
-} from "@workspace/db";
+  adminsTable, workersTable, factoriesTable, workerDocumentsTable, contractsTable, candidatesTable } from "@workspace/db";
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
 import {
   createTask, loadTask, loadAssignees, isParticipant, setTaskStatus, respondAssignee, snoozeTask, planTask, addComment, myCounters, controlStats,
   normalizeChecklist, warsawToday, dateStr, OPEN_STATUSES, TASK_KINDS, TASK_PRIORITIES, TASK_STATUSES, loadTaskSettings, DEFAULT_TASK_SETTINGS,
-  type TaskKind, type TaskPriority, type TaskStatus, type Recurrence,
-} from "../services/tasks";
+  type TaskKind, type TaskPriority, type TaskStatus, type Recurrence, setWatchers, remindGroup } from "../services/tasks";
 import { runAutoTasks, ensureAutoRules, AUTO_RULE_DEFS, officeAdmins } from "../services/taskAutoRules";
 import { recomputeAllActiveLegality } from "../services/legalityRecompute";
 import { buildTaskResolution, runTaskAction } from "../services/taskResolve";
 import { addDaysStr } from "../lib/dates";
+import multer from "multer";
+import fs from "node:fs";
+import path from "node:path";
+import { TASK_ATTACH_DIR, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
+const DOC_MIME_WHITELIST = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]); // вкладення коментарів: фото і PDF
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -45,7 +48,14 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
   const facIds = [...new Set(rows.map(t => t.factoryId).filter((x): x is number => x != null))];
   const facs = facIds.length ? await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(inArray(factoriesTable.id, facIds)) : [];
   const fName = new Map(facs.map(f => [f.id, f.name]));
-  const groupIds = rows.filter(t => t.kind !== "task").map(t => t.id);
+  const groupIds = rows.map(t => t.id); // учасники + спостерігачі (усі види)
+  // привʼязки: назви документа / умови / кандидата
+  const docIds = [...new Set(rows.map(t => t.documentId).filter((x): x is number => x != null))];
+  const dTitle = new Map((docIds.length ? await db.select({ id: workerDocumentsTable.id, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(inArray(workerDocumentsTable.id, docIds)) : []).map(d => [d.id, d.title]));
+  const contractIds = [...new Set(rows.map(t => t.contractId).filter((x): x is number => x != null))];
+  const cLabel = new Map((contractIds.length ? await db.select({ id: contractsTable.id, status: contractsTable.status, fname: factoriesTable.name }).from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id)).where(inArray(contractsTable.id, contractIds)) : []).map(c => [c.id, `Umowa${c.fname ? ` — ${c.fname}` : ""} · ${c.status}`]));
+  const candIds = [...new Set(rows.map(t => t.candidateId).filter((x): x is number => x != null))];
+  const cName = new Map((candIds.length ? await db.select({ id: candidatesTable.id, fullName: candidatesTable.fullName }).from(candidatesTable).where(inArray(candidatesTable.id, candIds)) : []).map(c => [c.id, c.fullName]));
   const parts = groupIds.length ? await db.select({ taskId: taskAssigneesTable.taskId, adminId: taskAssigneesTable.adminId, status: taskAssigneesTable.status, name: adminsTable.name })
     .from(taskAssigneesTable).leftJoin(adminsTable, eq(taskAssigneesTable.adminId, adminsTable.id)).where(inArray(taskAssigneesTable.taskId, groupIds)) : [];
   const byTask = new Map<number, typeof parts>();
@@ -58,7 +68,9 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
     completedByName: t.completedById ? aName.get(t.completedById) ?? null : null,
     worker: t.workerId ? wName.get(t.workerId) ?? null : null,
     factoryName: t.factoryId ? fName.get(t.factoryId) ?? null : null,
-    assignees: (byTask.get(t.id) ?? []).map(p => ({ adminId: p.adminId, name: p.name, status: p.status })),
+    assignees: (byTask.get(t.id) ?? []).filter(p => p.status !== "watcher").map(p => ({ adminId: p.adminId, name: p.name, status: p.status })),
+    watchers: (byTask.get(t.id) ?? []).filter(p => p.status === "watcher").map(p => ({ adminId: p.adminId, name: p.name })),
+    documentTitle: t.documentId ? dTitle.get(t.documentId) ?? null : null, contractLabel: t.contractId ? cLabel.get(t.contractId) ?? null : null, candidateName: t.candidateId ? cName.get(t.candidateId) ?? null : null,
     overdue: !!t.dueAt && dateStr(t.dueAt)! < today && OPEN_STATUSES.includes(t.status as TaskStatus),
     checklistDone: (t.checklist as any[]).filter(c => c.done).length, checklistTotal: (t.checklist as any[]).length,
   }));
@@ -66,8 +78,9 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
 
 const mineCond = (adminId: number) => or(
   eq(tasksTable.assigneeAdminId, adminId),
-  sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId})`,
+  sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId} and a.status <> 'watcher')`,
 );
+const watchCond = (adminId: number) => sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId} and a.status = 'watcher')`;
 
 router.get("/tasks", TP, async (req: AuthedRequest, res) => { ok(res, await listTasks(req)); });
 
@@ -99,7 +112,7 @@ async function listTasks(req: AuthedRequest) {
   const scope = q.scope ?? "mine";
   if (scope === "mine") conds.push(mineCond(me(req)));
   else if (scope === "created") conds.push(eq(tasksTable.creatorAdminId, me(req)));
-  else if (scope === "watching") conds.push(or(eq(tasksTable.creatorAdminId, me(req)), mineCond(me(req))));
+  else if (scope === "watching") conds.push(or(eq(tasksTable.creatorAdminId, me(req)), watchCond(me(req))));
   const status = q.status ?? "open";
   if (status === "open") conds.push(inArray(tasksTable.status, OPEN_STATUSES));
   else if (status === "closed") conds.push(inArray(tasksTable.status, ["done", "cancelled", "auto_resolved"]));
@@ -169,7 +182,7 @@ router.get("/tasks/:id", TP, async (req: AuthedRequest, res) => {
   const t = await loadTask(Number(req.params.id));
   if (!t) return fail(res, 404, "Задачу не знайдено");
   const [row] = await decorate([t]);
-  const comments = await db.select({ id: taskCommentsTable.id, adminId: taskCommentsTable.adminId, name: adminsTable.name, body: taskCommentsTable.body, createdAt: taskCommentsTable.createdAt })
+  const comments = await db.select({ id: taskCommentsTable.id, adminId: taskCommentsTable.adminId, name: adminsTable.name, body: taskCommentsTable.body, mentions: taskCommentsTable.mentions, attachments: taskCommentsTable.attachments, createdAt: taskCommentsTable.createdAt })
     .from(taskCommentsTable).leftJoin(adminsTable, eq(taskCommentsTable.adminId, adminsTable.id)).where(eq(taskCommentsTable.taskId, t.id)).orderBy(asc(taskCommentsTable.id));
   const events = await db.select({ id: taskEventsTable.id, adminId: taskEventsTable.adminId, name: adminsTable.name, kind: taskEventsTable.kind, payload: taskEventsTable.payload, createdAt: taskEventsTable.createdAt })
     .from(taskEventsTable).leftJoin(adminsTable, eq(taskEventsTable.adminId, adminsTable.id)).where(eq(taskEventsTable.taskId, t.id)).orderBy(desc(taskEventsTable.id)).limit(100);
@@ -202,6 +215,8 @@ function parseTaskBody(body: Record<string, unknown>) {
     assigneeAdminId: n(body.assigneeAdminId), assigneeIds: Array.isArray(body.assigneeIds) ? (body.assigneeIds as unknown[]).map(Number).filter(Number.isFinite) : [],
     reviewRequired: !!body.reviewRequired, workerId: n(body.workerId), factoryId: n(body.factoryId), documentId: n(body.documentId), contractId: n(body.contractId), candidateId: n(body.candidateId),
     checklist: Array.isArray(body.checklist) ? (body.checklist as any[]) : [], recurrence: rec, plannedFor: s(body.plannedFor), templateId: n(body.templateId),
+    watcherIds: Array.isArray(body.watcherIds) ? (body.watcherIds as unknown[]).map(Number).filter(Number.isFinite) : [],
+    agenda: Array.isArray(body.agenda) ? (body.agenda as unknown[]).map(x => String(x).trim()).filter(Boolean) : [],
   };
 }
 
@@ -241,6 +256,9 @@ router.patch("/tasks/:id", TP, async (req: AuthedRequest, res) => {
   if (b.reviewRequired !== undefined && (isCreator || canManage(req))) patch.reviewRequired = !!b.reviewRequired;
   if (b.recurrence !== undefined && (isCreator || canManage(req))) patch.recurrence = b.recurrence ?? null;
   if (b.checklist !== undefined) patch.checklist = normalizeChecklist(b.checklist);
+  if (Array.isArray(b.agenda)) patch.agenda = (b.agenda as unknown[]).map(x => String(x).trim()).filter(Boolean);
+  if (b.summary !== undefined) patch.summary = s(b.summary);
+  if (Array.isArray(b.watcherIds) && (isCreator || isAssignee || canManage(req))) await setWatchers(t, (b.watcherIds as unknown[]).map(Number), meId);
   if (b.assigneeAdminId !== undefined) {
     if (!(isCreator || canManage(req))) return fail(res, 403, "Перепризначати може автор або роль з правом «керувати задачами»");
     patch.assigneeAdminId = n(b.assigneeAdminId); ev.assignee = { from: t.assigneeAdminId, to: patch.assigneeAdminId };
@@ -248,7 +266,7 @@ router.patch("/tasks/:id", TP, async (req: AuthedRequest, res) => {
   if (Array.isArray(b.assigneeIds) && t.kind !== "task") {
     if (!(isCreator || canManage(req))) return fail(res, 403, "forbidden");
     const ids = [...new Set((b.assigneeIds as unknown[]).map(Number).filter(Number.isFinite))];
-    const cur = (await loadAssignees(t.id)).map(a => a.adminId);
+    const cur = (await loadAssignees(t.id)).filter(a => a.status !== "watcher").map(a => a.adminId);
     const add = ids.filter(id => !cur.includes(id)), del = cur.filter(id => !ids.includes(id));
     if (add.length) await db.insert(taskAssigneesTable).values(add.map(adminId => ({ taskId: t.id, adminId })));
     if (del.length) await db.delete(taskAssigneesTable).where(and(eq(taskAssigneesTable.taskId, t.id), inArray(taskAssigneesTable.adminId, del)));
@@ -330,6 +348,48 @@ router.post("/tasks/bulk", TP, async (req: AuthedRequest, res) => {
     done++;
   }
   ok(res, { done });
+});
+
+// Групова: нагадати всім, хто ще не відмітив (автор або tasksManage)
+router.post("/tasks/:id/remind", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (t.kind !== "group") return fail(res, 400, "Лише для групових задач");
+  if (!(canManage(req) || t.creatorAdminId === me(req))) return fail(res, 403, "forbidden");
+  ok(res, { reminded: await remindGroup(t, me(req)) });
+});
+
+// Коментар із файлами (multipart: body, mentions=JSON, files[]) — вкладення в uploads/task-attachments
+const attachUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 5 } });
+router.post("/tasks/:id/comments/upload", TP, attachUpload.array("files", 5), async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  const body = String(req.body?.body ?? "").trim();
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  if (!body && !files.length) return fail(res, 400, "Порожній коментар");
+  let mentions: number[] = [];
+  try { mentions = JSON.parse(String(req.body?.mentions ?? "[]")).map(Number).filter(Number.isFinite); } catch { mentions = []; }
+  const attachments: { path: string; name: string; mime: string; size: number }[] = [];
+  for (const f of files) {
+    const mime = sniffDocMime(f.buffer);
+    if (!mime || !DOC_MIME_WHITELIST.has(mime)) return fail(res, 400, `Файл «${f.originalname}»: тип не підтверджено вмістом (дозволено фото і PDF)`);
+    const originalName = Buffer.from(f.originalname ?? "file", "latin1").toString("utf8");
+    const { buffer, fileName } = await compressUploadImage(f.buffer, mime, originalName);
+    const stored = makeStoredName(fileName);
+    await fs.promises.writeFile(path.join(TASK_ATTACH_DIR, stored), buffer);
+    attachments.push({ path: stored, name: fileName, mime, size: buffer.length });
+  }
+  await addComment(t, me(req), body || `📎 ${attachments.map(a => a.name).join(", ")}`, mentions, attachments);
+  ok(res, { ok: true });
+});
+router.get("/tasks/:id/attachments/:cid/:idx", TP, async (req: AuthedRequest, res) => {
+  const [c] = await db.select().from(taskCommentsTable).where(and(eq(taskCommentsTable.id, Number(req.params.cid)), eq(taskCommentsTable.taskId, Number(req.params.id))));
+  const a = c?.attachments?.[Number(req.params.idx)];
+  if (!a) return fail(res, 404, "Файл не знайдено");
+  res.setHeader("Content-Type", a.mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(a.name)}`);
+  res.sendFile(path.join(TASK_ATTACH_DIR, path.basename(a.path)));
 });
 
 router.post("/tasks/:id/comments", TP, async (req: AuthedRequest, res) => {

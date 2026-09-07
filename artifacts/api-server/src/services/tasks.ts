@@ -109,6 +109,8 @@ export interface CreateTaskInput {
   source?: string; sourceKey?: string | null; autoParams?: Record<string, unknown> | null;
   checklist?: (string | ChecklistItem)[]; recurrence?: Recurrence | null; recurrenceParentId?: number | null; templateId?: number | null;
   plannedFor?: string | null; notify?: boolean;
+  watcherIds?: number[]; // спостерігачі: бачать хід, отримують сповіщення, не виконавці
+  agenda?: string[];     // зустріч: порядок денний
 }
 
 
@@ -127,10 +129,16 @@ export async function createTask(input: CreateTaskInput, actorAdminId: number | 
     source: input.source ?? "manual", sourceKey: input.sourceKey ?? null, autoParams: input.autoParams ?? null,
     checklist: normalizeChecklist(input.checklist), recurrence: input.recurrence ?? null,
     recurrenceParentId: input.recurrenceParentId ?? null, templateId: input.templateId ?? null,
+    agenda: (input.agenda ?? []).map(x => String(x).trim()).filter(Boolean),
   }).returning();
   const task = row!;
   const ids = kind === "task" ? [] : [...new Set((input.assigneeIds ?? []).filter(n => Number.isFinite(n)))];
   if (ids.length) await db.insert(taskAssigneesTable).values(ids.map(adminId => ({ taskId: task.id, adminId })));
+  const watchers = [...new Set((input.watcherIds ?? []).filter(n => Number.isFinite(n) && !ids.includes(n) && n !== task.assigneeAdminId))];
+  if (watchers.length) {
+    await db.insert(taskAssigneesTable).values(watchers.map(adminId => ({ taskId: task.id, adminId, status: "watcher" })));
+    if (input.notify !== false) { const who = await adminName(actorAdminId); for (const id of watchers) if (id !== actorAdminId) await notifyAdminById(id, "tasks", `👁 ${mdEsc(who)} додав(ла) вас спостерігачем: *${mdEsc(task.title)}*`, { parse_mode: "Markdown" }).catch(() => {}); }
+  }
   await logTaskEvent(task.id, "created", actorAdminId, { kind, assignee: task.assigneeAdminId, assignees: ids.length ? ids : undefined, source: task.source });
   if (input.notify !== false) await notifyTaskAssigned(task, actorAdminId, ids);
   return task;
@@ -150,7 +158,8 @@ export async function notifyTaskAssigned(task: Task, actorAdminId: number | null
     if (id === actorAdminId) continue;
     try {
       if (task.kind === "meeting") {
-        const text = `🗓 *Запрошення: ${mdEsc(task.title)}*\n${whenLine(task)}${task.place ? ` · ${mdEsc(task.place)}` : ""} · скликав ${mdEsc(who)}` + (task.description ? `\n_${mdEsc(task.description.slice(0, 300))}_` : "");
+        const agenda = (task.agenda ?? []).length ? "\n" + (task.agenda ?? []).map((a, i) => `${i + 1}. ${mdEsc(a)}`).join("\n") : "";
+        const text = `🗓 *Запрошення: ${mdEsc(task.title)}*\n${whenLine(task)}${task.place ? ` · ${mdEsc(task.place)}` : ""} · скликав ${mdEsc(who)}` + agenda + (task.description ? `\n_${mdEsc(task.description.slice(0, 300))}_` : "");
         await notifyAdminById(id, "tasks", text, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "✅ Буду", callback_data: `tsk:yes:${task.id}` }, { text: "❌ Не зможу", callback_data: `tsk:no:${task.id}` }]] } });
       } else if (task.kind === "group") {
         const text = `👥 *Групова задача від ${mdEsc(who)}*\n${mdEsc(task.title)}${task.dueAt ? `\nдо ${fmtDate(dateStr(task.dueAt)!)}` : ""} · ${PRIORITY_LABEL[task.priority as TaskPriority] ?? task.priority}`;
@@ -166,6 +175,32 @@ export async function notifyTaskAssigned(task: Task, actorAdminId: number | null
       }
     } catch (e: any) { logger.warn({ err: e?.message, taskId: task.id, adminId: id }, "task assign notify failed"); }
   }
+}
+
+// Спостерігачі задачі (task_assignees.status='watcher')
+export async function watchersOf(taskId: number): Promise<number[]> {
+  return (await db.select({ adminId: taskAssigneesTable.adminId }).from(taskAssigneesTable).where(and(eq(taskAssigneesTable.taskId, taskId), eq(taskAssigneesTable.status, "watcher")))).map(r => r.adminId);
+}
+export async function setWatchers(task: Task, ids: number[], actorAdminId: number | null): Promise<void> {
+  const want = [...new Set(ids.filter(n => Number.isFinite(n) && n !== task.assigneeAdminId))];
+  const cur = await watchersOf(task.id);
+  const add = want.filter(id => !cur.includes(id)), del = cur.filter(id => !want.includes(id));
+  if (del.length) await db.delete(taskAssigneesTable).where(and(eq(taskAssigneesTable.taskId, task.id), eq(taskAssigneesTable.status, "watcher"), inArray(taskAssigneesTable.adminId, del)));
+  for (const adminId of add) await db.insert(taskAssigneesTable).values({ taskId: task.id, adminId, status: "watcher" }).onConflictDoNothing();
+  if (add.length || del.length) await logTaskEvent(task.id, "watchers", actorAdminId, { add, del });
+  const who = await adminName(actorAdminId);
+  for (const id of add) if (id !== actorAdminId) await notifyAdminById(id, "tasks", `👁 ${mdEsc(who)} додав(ла) вас спостерігачем: *${mdEsc(task.title)}*`, { parse_mode: "Markdown" }).catch(() => {});
+}
+// Групова: «Нагадати всім», хто ще не відмітив свою частину
+export async function remindGroup(task: Task, actorAdminId: number | null): Promise<number> {
+  const who = await adminName(actorAdminId);
+  const pending = (await loadAssignees(task.id)).filter(a => a.status !== "done" && a.status !== "watcher" && a.adminId !== actorAdminId);
+  let n = 0;
+  for (const a of pending) {
+    if (await notifyAdminById(a.adminId, "tasks", `🔔 ${mdEsc(who)} нагадує: *${mdEsc(task.title)}*${task.dueAt ? `\nдо ${fmtDate(dateStr(task.dueAt)!)}` : ""}\nВаша частина ще не відмічена.`, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "✅ Моя частина готова", callback_data: `tsk:part:${task.id}` }]] } })) n++;
+  }
+  await logTaskEvent(task.id, "remind_all", actorAdminId, { count: n });
+  return n;
 }
 
 export async function loadTask(id: number): Promise<Task | undefined> {
@@ -196,6 +231,10 @@ export async function setTaskStatus(task: Task, next: TaskStatus, actorAdminId: 
   const [updated] = await db.update(tasksTable).set(patch).where(eq(tasksTable.id, task.id)).returning();
   await logTaskEvent(task.id, "status", actorAdminId, { from: task.status, to, note: note ?? undefined });
   const who = await adminName(actorAdminId);
+  // спостерігачі бачать хід: завершення/скасування/на перевірку
+  if (to === "done" || to === "cancelled" || to === "review") {
+    for (const w of await watchersOf(task.id)) if (w !== actorAdminId) await notifyAdminById(w, "tasks", `👁 *${mdEsc(task.title)}* → ${to === "done" ? "виконано" : to === "cancelled" ? "скасовано" : "на перевірці"} (${mdEsc(who)})`, { parse_mode: "Markdown" }).catch(() => {});
+  }
   try {
     if (to === "review" && task.creatorAdminId) {
       await notifyAdminById(task.creatorAdminId, "tasks", `🔎 *На перевірку*: ${mdEsc(task.title)}\n${mdEsc(who)} позначив як зроблене${note ? `\n_${mdEsc(note)}_` : ""}`,
@@ -233,7 +272,7 @@ export async function respondAssignee(task: Task, adminId: number, status: "acce
     .where(and(eq(taskAssigneesTable.taskId, task.id), eq(taskAssigneesTable.adminId, adminId)));
   await logTaskEvent(task.id, "respond", adminId, { status, note: note ?? undefined });
   if (task.kind === "group" && status === "done") {
-    const all = await loadAssignees(task.id);
+    const all = (await loadAssignees(task.id)).filter(a => a.status !== "watcher");
     if (all.length && all.every(a => a.status === "done") && OPEN_STATUSES.includes(task.status as TaskStatus)) await setTaskStatus(task, "done", adminId, "усі учасники відмітили");
   }
   if (task.kind === "meeting" && status === "declined" && task.creatorAdminId && task.creatorAdminId !== adminId) {
@@ -264,13 +303,14 @@ export async function rolloverPlanned(today = warsawToday()): Promise<number> {
   return rows.length;
 }
 
-export async function addComment(task: Task, adminId: number, body: string, mentions: number[] = []): Promise<void> {
-  await db.insert(taskCommentsTable).values({ taskId: task.id, adminId, body, mentions });
+export async function addComment(task: Task, adminId: number, body: string, mentions: number[] = [], attachments: { path: string; name: string; mime: string; size: number }[] = []): Promise<void> {
+  await db.insert(taskCommentsTable).values({ taskId: task.id, adminId, body, mentions, attachments });
   await logTaskEvent(task.id, "comment", adminId);
   const who = await adminName(adminId);
   const targets = new Set<number>(mentions);
   if (task.assigneeAdminId) targets.add(task.assigneeAdminId);
   if (task.creatorAdminId) targets.add(task.creatorAdminId);
+  for (const w of await watchersOf(task.id)) targets.add(w);
   targets.delete(adminId);
   for (const id of targets) {
     await notifyAdminById(id, "tasks", `💬 ${mdEsc(who)} · *${mdEsc(task.title)}*\n${mdEsc(body.slice(0, 400))}`, { parse_mode: "Markdown" }).catch(() => {});

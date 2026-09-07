@@ -2363,6 +2363,8 @@ export const tasksTable = pgTable("tasks", {
   completedById: integer("completed_by_id").references(() => adminsTable.id),
   resolutionNote: text("resolution_note"),
   escalatedAt: timestamp("escalated_at"),                 // коли головного повідомили про прострочення
+  agenda: jsonb("agenda").$type<string[]>().notNull().default([]), // зустріч: порядок денний (пункти)
+  summary: text("summary"),                                // зустріч: підсумок після «Провели»
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
@@ -2377,7 +2379,7 @@ export const taskAssigneesTable = pgTable("task_assignees", {
   id: serial("id").primaryKey(),
   taskId: integer("task_id").notNull().references(() => tasksTable.id, { onDelete: "cascade" }),
   adminId: integer("admin_id").notNull().references(() => adminsTable.id, { onDelete: "cascade" }),
-  status: text("status").notNull().default("pending"),   // pending | accepted | declined | done
+  status: text("status").notNull().default("pending"),   // pending | accepted | declined | done | watcher (спостерігач: бачить хід, отримує сповіщення, не виконавець)
   respondedAt: timestamp("responded_at"),
   note: text("note"),
 }, (t) => [uniqueIndex("task_assignees_uq").on(t.taskId, t.adminId)]);
@@ -2388,6 +2390,7 @@ export const taskCommentsTable = pgTable("task_comments", {
   adminId: integer("admin_id").references(() => adminsTable.id),
   body: text("body").notNull(),
   mentions: jsonb("mentions").$type<number[]>().notNull().default([]),
+  attachments: jsonb("attachments").$type<{ path: string; name: string; mime: string; size: number }[]>().notNull().default([]), // файли коментаря (uploads/task-attachments)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
