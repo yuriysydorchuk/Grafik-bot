@@ -73,6 +73,8 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
   const [comment, setComment] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [summaryDraft, setSummaryDraft] = useState<string | null>(null);
+  const [relatedOpen, setRelatedOpen] = useState<number | null>(null);
+  const { data: related = [] } = useQuery<TaskRow[]>({ queryKey: ["tasks", "related", id], queryFn: () => get(`/tasks?scope=all&status=all&relatedTo=${id}`), enabled: !!t && t.kind === "meeting" });
   const [agendaTask, setAgendaTask] = useState<string | null>(null);
   const remindAll = useMutation({ mutationFn: () => post<{ reminded: number }>(`/tasks/${id}/remind`), onSuccess: r => { toast.success(tr("Нагадано: {n}", { n: r.reminded })); qc.invalidateQueries({ queryKey: ["task", id] }); }, onError: (e: any) => toast.error(e.message) });
   const [note, setNote] = useState("");
@@ -181,7 +183,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
             <div>
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Учасники")} · {t.assignees.filter(a => a.status === (t.kind === "meeting" ? "accepted" : "done")).length}/{t.assignees.length} {t.kind === "meeting" ? tr("підтвердили") : tr("виконали")}</div>
               <div className="flex flex-wrap gap-1.5">
-                {t.assignees.map(a => <span key={a.adminId} className={cn("rounded-full px-2 py-0.5 text-xs", a.status === "done" || a.status === "accepted" ? "bg-emerald-50 text-emerald-700" : a.status === "declined" ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-500")}>{a.status === "done" || a.status === "accepted" ? "✓ " : a.status === "declined" ? "✕ " : "? "}{a.name}</span>)}
+                {t.assignees.map(a => <span key={a.adminId} className={cn("rounded-full px-2 py-0.5 text-xs", a.status === "done" || a.status === "accepted" ? "bg-emerald-50 text-emerald-700" : a.status === "declined" ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-500")}>{a.status === "done" || a.status === "accepted" ? "✓ " : a.status === "declined" ? "✕ " : "? "}{a.name}{a.respondedAt && <span className="ml-1 opacity-60">{new Date(a.respondedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>}</span>)}
               </div>
               {t.kind === "meeting" && <div className="mt-2 text-xs text-slate-500">{fmtD(t.dueAt)} {t.dueTime}{t.durationMin ? ` · ${t.durationMin} ${tr("хв")}` : ""}{t.place ? <span> · <MapPin className="inline h-3 w-3" /> {t.place}</span> : null}</div>}
               {t.kind === "group" && open && t.can.reassign && t.assignees.some(a => a.status !== "done") && <Button variant="secondary" className="mt-2 px-2.5 py-1 text-xs" loading={remindAll.isPending} onClick={() => remindAll.mutate()}>🔔 {tr("Нагадати всім")}</Button>}
@@ -204,7 +206,8 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
               )}
             </div>
           )}
-          {agendaTask && <NewTaskModal defaults={{ title: agendaTask, workerId: t.workerId ?? undefined, factoryId: t.factoryId ?? undefined }} onClose={() => setAgendaTask(null)} />}
+          {relatedOpen != null && <TaskDrawer id={relatedOpen} onClose={() => setRelatedOpen(null)} />}
+          {agendaTask && <NewTaskModal defaults={{ title: agendaTask, workerId: t.workerId ?? undefined, factoryId: t.factoryId ?? undefined, fromTaskId: t.id }} onClose={() => setAgendaTask(null)} onCreated={() => qc.invalidateQueries({ queryKey: ["tasks", "related", id] })} />}
 
           {/* чекліст */}
           {(t.checklist.length > 0 || t.can.edit) && (
@@ -233,6 +236,9 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
               {!t.watchers.length && !t.can.edit && "—"}</span>
             <span className="text-slate-400">{tr("Строк")}</span>
             <span>{t.can.edit ? <input type="date" value={t.dueAt ?? ""} onChange={e => edit.mutate({ dueAt: e.target.value || null })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300" /> : fmtD(t.dueAt) || "—"}{t.dueTime ? ` ${t.dueTime}` : ""}</span>
+            {t.kind === "meeting" && <><span className="text-slate-400">{tr("Час")}</span><span>{t.can.edit ? <input type="time" value={t.dueTime ?? ""} onChange={e => edit.mutate({ dueTime: e.target.value || null })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300" /> : t.dueTime ?? "—"}{t.durationMin ? ` · ${t.durationMin} ${tr("хв")}` : ""}</span>
+              <span className="text-slate-400">{tr("Нагадати")}</span><span>{tr("за 1 день, за 1 год")}</span>
+              <span className="text-slate-400">{tr("Повʼязані задачі")}</span><span className="flex flex-wrap gap-1">{related.length ? related.map(r => <button key={r.id} onClick={() => setRelatedOpen(r.id)} className={cn("rounded-full px-1.5 py-0.5 text-[11px] hover:text-red-600", r.status === "done" ? "bg-emerald-50 line-through" : "bg-slate-100")} title={r.title}>#{r.id} {r.title.slice(0, 28)}{r.title.length > 28 ? "…" : ""}</button>) : <span className="text-slate-400">—</span>}</span></>}
             <span className="text-slate-400">{tr("Пріоритет")}</span>
             <span>{t.can.edit ? <select value={t.priority} onChange={e => edit.mutate({ priority: e.target.value })} className="rounded border border-transparent bg-transparent py-0.5 hover:border-slate-300">{(["low", "normal", "high", "urgent"] as TaskPriority[]).map(p => <option key={p} value={p}>{tr(PRIORITY_LABEL[p])}</option>)}</select> : tr(PRIORITY_LABEL[t.priority])}</span>
             {t.durationMin && t.kind !== "meeting" && <><span className="text-slate-400">{tr("Оцінка часу")}</span><span>{t.durationMin} {tr("хв")}</span></>}
@@ -295,7 +301,7 @@ function AddStep({ onAdd }: { onAdd: (t: string) => void }) {
 }
 
 // ── Створення ───────────────────────────────────────────────────────────────
-export function NewTaskModal({ defaults, onClose, onCreated }: { defaults?: Partial<{ kind: TaskKind; workerId: number; factoryId: number; dueAt: string; dueTime: string; title: string; plannedFor: string }>; onClose: () => void; onCreated?: (t: TaskRow) => void }) {
+export function NewTaskModal({ defaults, onClose, onCreated }: { defaults?: Partial<{ kind: TaskKind; workerId: number; factoryId: number; dueAt: string; dueTime: string; title: string; plannedFor: string; fromTaskId: number }>; onClose: () => void; onCreated?: (t: TaskRow) => void }) {
   const tr = useT();
   const qc = useQueryClient();
   const me = useMe();
@@ -352,7 +358,7 @@ export function NewTaskModal({ defaults, onClose, onCreated }: { defaults?: Part
       reviewRequired, workerId, factoryId: factoryId ? Number(factoryId) : null, checklist,
       recurrence: recur ? { freq: recur, ...(recur === "weekly" && dueAt ? { weekday: ((new Date(dueAt + "T00:00:00").getDay() + 6) % 7) + 1 } : {}) } : null,
       templateId: templateId ? Number(templateId) : null, plannedFor: defaults?.plannedFor ?? null, notify,
-      watcherIds: watchers, agenda: kind === "meeting" ? agenda : [], documentId: documentId ? Number(documentId) : null, contractId: contractId ? Number(contractId) : null, candidateId,
+      watcherIds: watchers, agenda: kind === "meeting" ? agenda : [], documentId: documentId ? Number(documentId) : null, contractId: contractId ? Number(contractId) : null, candidateId, fromTaskId: defaults?.fromTaskId ?? null,
     }),
     onSuccess: (t) => { invalidateTasks(qc); toast.success(kind === "meeting" ? tr("Зустріч скликано") : tr("Задачу створено")); onCreated?.(t); onClose(); },
     onError: (e: any) => toast.error(e.message),

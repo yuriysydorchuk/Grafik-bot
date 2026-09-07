@@ -57,7 +57,7 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
   const cLabel = new Map((contractIds.length ? await db.select({ id: contractsTable.id, status: contractsTable.status, fname: factoriesTable.name }).from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id)).where(inArray(contractsTable.id, contractIds)) : []).map(c => [c.id, `Umowa${c.fname ? ` — ${c.fname}` : ""} · ${c.status}`]));
   const candIds = [...new Set(rows.map(t => t.candidateId).filter((x): x is number => x != null))];
   const cName = new Map((candIds.length ? await db.select({ id: candidatesTable.id, fullName: candidatesTable.fullName }).from(candidatesTable).where(inArray(candidatesTable.id, candIds)) : []).map(c => [c.id, c.fullName]));
-  const parts = groupIds.length ? await db.select({ taskId: taskAssigneesTable.taskId, adminId: taskAssigneesTable.adminId, status: taskAssigneesTable.status, name: adminsTable.name })
+  const parts = groupIds.length ? await db.select({ taskId: taskAssigneesTable.taskId, adminId: taskAssigneesTable.adminId, status: taskAssigneesTable.status, respondedAt: taskAssigneesTable.respondedAt, name: adminsTable.name })
     .from(taskAssigneesTable).leftJoin(adminsTable, eq(taskAssigneesTable.adminId, adminsTable.id)).where(inArray(taskAssigneesTable.taskId, groupIds)) : [];
   const byTask = new Map<number, typeof parts>();
   for (const p of parts) { const l = byTask.get(p.taskId) ?? []; l.push(p); byTask.set(p.taskId, l); }
@@ -69,7 +69,7 @@ async function decorate(rows: (typeof tasksTable.$inferSelect)[]) {
     completedByName: t.completedById ? aName.get(t.completedById) ?? null : null,
     worker: t.workerId ? wName.get(t.workerId) ?? null : null,
     factoryName: t.factoryId ? fName.get(t.factoryId) ?? null : null,
-    assignees: (byTask.get(t.id) ?? []).filter(p => p.status !== "watcher").map(p => ({ adminId: p.adminId, name: p.name, status: p.status })),
+    assignees: (byTask.get(t.id) ?? []).filter(p => p.status !== "watcher").map(p => ({ adminId: p.adminId, name: p.name, status: p.status, respondedAt: p.respondedAt })),
     watchers: (byTask.get(t.id) ?? []).filter(p => p.status === "watcher").map(p => ({ adminId: p.adminId, name: p.name })),
     documentTitle: t.documentId ? dTitle.get(t.documentId) ?? null : null, contractLabel: t.contractId ? cLabel.get(t.contractId) ?? null : null, candidateName: t.candidateId ? cName.get(t.candidateId) ?? null : null,
     overdue: !!t.dueAt && dateStr(t.dueAt)! < today && OPEN_STATUSES.includes(t.status as TaskStatus),
@@ -125,6 +125,7 @@ async function listTasks(req: AuthedRequest) {
   if (q.factoryId) conds.push(eq(tasksTable.factoryId, Number(q.factoryId)));
   if (q.city) conds.push(sql`exists (select 1 from factories f where f.id = ${tasksTable.factoryId} and f.city = ${String(q.city)})`);
   if (q.workerId) conds.push(eq(tasksTable.workerId, Number(q.workerId)));
+  if (q.relatedTo) conds.push(sql`(${tasksTable.autoParams}->>'fromTaskId')::int = ${Number(q.relatedTo)}`); // задачі, створені з пунктів зустрічі
   if (q.kind && TASK_KINDS.includes(q.kind as TaskKind)) conds.push(eq(tasksTable.kind, q.kind));
   if (q.priority && TASK_PRIORITIES.includes(q.priority as TaskPriority)) conds.push(eq(tasksTable.priority, q.priority));
   if (q.source === "auto") conds.push(sql`${tasksTable.source} like 'auto:%'`);
@@ -221,6 +222,7 @@ function parseTaskBody(body: Record<string, unknown>) {
     reviewRequired: !!body.reviewRequired, workerId: n(body.workerId), factoryId: n(body.factoryId), documentId: n(body.documentId), contractId: n(body.contractId), candidateId: n(body.candidateId),
     checklist: Array.isArray(body.checklist) ? (body.checklist as any[]) : [], recurrence: rec, plannedFor: s(body.plannedFor), templateId: n(body.templateId),
     watcherIds: Array.isArray(body.watcherIds) ? (body.watcherIds as unknown[]).map(Number).filter(Number.isFinite) : [],
+    autoParams: n(body.fromTaskId) ? { fromTaskId: n(body.fromTaskId) } : null, // «повʼязані задачі» зустрічі
     agenda: Array.isArray(body.agenda) ? (body.agenda as unknown[]).map(x => String(x).trim()).filter(Boolean) : [],
   };
 }

@@ -85,6 +85,7 @@ export function WorkerTasksBlock({ workerId, factoryId }: { workerId: number; fa
   const enabled = !!me && canAccessPage(me, "/tasks");
   const { data: rows = [] } = useQuery<TaskRow[]>({ queryKey: ["tasks", "worker", workerId], queryFn: () => get(`/tasks?scope=all&status=all&workerId=${workerId}`), enabled });
   const [adding, setAdding] = useState(false);
+  const [showClosed, setShowClosed] = useState(false);
   const { setOpenId, drawer } = useOpenTask();
   if (!enabled) return null;
   const open = rows.filter(r => ["open", "in_progress", "review"].includes(r.status));
@@ -99,7 +100,8 @@ export function WorkerTasksBlock({ workerId, factoryId }: { workerId: number; fa
       <div className="px-5 py-2 text-sm">
         {!open.length && <div className="py-1 text-slate-400">{t("Відкритих задач немає")}</div>}
         <ul className="space-y-1">{open.map(x => { const d = dueLabel(x, t); return <li key={x.id} className="flex items-center gap-2"><span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-semibold", PRIORITY_CLS[x.priority])}>{t(PRIORITY_LABEL[x.priority])}</span><button onClick={() => setOpenId(x.id)} className="truncate text-left hover:text-red-600">{x.title}</button><span className="ml-auto shrink-0 text-xs text-slate-400">{x.assigneeName} · <span className={d.cls}>{d.text}</span> · <Badge color={STATUS_BADGE[x.status]}>{t(STATUS_LABEL[x.status])}</Badge></span></li>; })}</ul>
-        {closed.length > 0 && <div className="mt-1 text-xs text-slate-400">{t("закритих")}: {closed.length}</div>}
+        {closed.length > 0 && <div className="mt-1 text-xs text-slate-400">{t("закритих")}: {closed.length} · <button onClick={() => setShowClosed(v => !v)} className="hover:text-red-600">{showClosed ? t("сховати") : t("показати")}</button></div>}
+        {showClosed && <ul className="mt-1 space-y-0.5 text-xs text-slate-500">{closed.slice(0, 20).map(x => <li key={x.id} className="flex items-center gap-2"><button onClick={() => setOpenId(x.id)} className="truncate text-left line-through hover:text-red-600">{x.title}</button><span className="ml-auto shrink-0">{x.completedAt ? new Date(x.completedAt).toLocaleDateString("uk-UA") : ""} · {t(STATUS_LABEL[x.status])}</span></li>)}</ul>}
       </div>
       {drawer}
       {adding && <NewTaskModal defaults={{ workerId, factoryId: factoryId ?? undefined }} onClose={() => setAdding(false)} />}

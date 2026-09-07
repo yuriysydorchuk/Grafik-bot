@@ -17,7 +17,7 @@ export interface TaskRow {
   completedAt: string | null; completedById: number | null; resolutionNote: string | null; createdAt: string; updatedAt: string;
   assigneeName: string | null; creatorName: string | null; completedByName: string | null;
   worker: { id: number; fullName: string; workerCode: string | null } | null; factoryName: string | null;
-  assignees: { adminId: number; name: string | null; status: "pending" | "accepted" | "declined" | "done" }[];
+  assignees: { adminId: number; name: string | null; status: "pending" | "accepted" | "declined" | "done"; respondedAt?: string | null }[];
   watchers: { adminId: number; name: string | null }[]; // спостерігачі
   agenda: string[]; summary: string | null;           // зустріч: порядок денний, підсумок після «Провели»
   documentTitle: string | null; contractLabel: string | null; candidateName: string | null; // привʼязки

@@ -3049,7 +3049,8 @@ const EN: Record<string, string> = {
   "Нагадати працівнику через": "Remind the worker after", "дн. після запиту": "days after the request", "Задача офісу «не надіслав» після": "Office task “not sent” after", "дн. мовчання": "days of silence",
   "Завжди задача офісу, якщо до строку ≤": "Always an office task if the deadline is within", "Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.": "A file from the worker immediately creates a “Check the uploaded document” task for the assignee; without Telegram — a regular office task.",
   "автозапит системи в бот": "system auto-request via the bot", "запит офісу": "office request", "нагад.": "rem.", "не надіслав документ": "document not sent", "Запросити ще раз (новий лінк)": "Request again (new link)",
-  // календар працівників (блок E)
+  // фінальна звірка з макетом
+  "Нагадати": "Remind", "за 1 день, за 1 год": "1 day and 1 hour before", "Повʼязані задачі": "Related tasks",   // календар працівників (блок E)
   "Фірма: усі": "Company: all", "відпустки / поза обліком": "leave / off the books", "хостел": "hostel", "зміни з графіку": "shifts from the schedule", "Строки по фабриках і місяцях": "Deadlines by factory and month", "документи, умови, обовʼязки, кінець роботи, хостел": "documents, contracts, obligations, job end, hostel",
   // Мій день і календар (блок D)
   "Підсумок дня": "Day summary", "як у боті о {time}": "as in the bot at {time}", "зроблено": "done", "лишилось": "left", "Усе на завтра": "Everything to tomorrow", "На понеділок": "To Monday", "підписка": "subscribe", "Підписка для Google / Apple Calendar": "Subscription for Google / Apple Calendar", "Підписка на календар": "Calendar subscription", "Тривалість змінено": "Duration changed", "потягни, щоб змінити тривалість": "drag to change the duration",

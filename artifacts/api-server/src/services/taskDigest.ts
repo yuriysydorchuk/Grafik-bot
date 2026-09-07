@@ -58,7 +58,7 @@ export async function buildMorningDigest(adminId: number, today = warsawToday())
   });
   const rest = overdue.length + todayL.length + meetings.length - top.length;
   if (rest > 0) lines.push(`…ще ${rest} у панелі`);
-  kb.push(panelUrl() ? [{ text: "📋 Відкрити «Мій день»", url: `${panelUrl()}/tasks` }] : [{ text: "📋 Мої задачі", callback_data: "tskm:today" }]);
+  kb.push(panelUrl() ? [{ text: "📋 Відкрити «Мій день»", url: `${panelUrl()}/tasks` }, { text: "Показати списком тут", callback_data: "tskm:today" }] : [{ text: "📋 Мої задачі", callback_data: "tskm:today" }]);
   return { text: lines.join("\n"), kb };
 }
 
