@@ -899,11 +899,6 @@ const EN: Record<string, string> = {
   "Відновити його": "Restore it",
   "Відновити працівника?": "Restore the worker?",
   "Профіль знову стане активним, історія і документи збережуться.": "The profile becomes active again; history and documents are kept.",
-  "Відновити старий профіль (історія, номер, документи збережуться) — з фабрикою і посадою з цієї форми?": "Restore the old profile (history, number and documents are kept) — with the factory and position from this form?",
-  "Створити все одно": "Create anyway",
-  "Відновити його": "Restore it",
-  "Відновити працівника?": "Restore the worker?",
-  "Профіль знову стане активним, історія і документи збережуться.": "The profile becomes active again; history and documents are kept.",
   "Години підтверджені → до сводної": "Hours confirmed → to payroll sheet",
   "Перенести підтверджені години {month} до сводної? Рядки створяться/оновляться з даними з профілів.": "Move the confirmed {month} hours to the payroll sheet? Rows are created/updated with profile data.",
   "Перенести підтверджені години до сводної: {what}? Рядки створяться/оновляться з даними з профілів.": "Move the confirmed hours to the payroll sheet: {what}? Rows are created/updated with profile data.",
@@ -3054,6 +3049,9 @@ const EN: Record<string, string> = {
   "Нагадати працівнику через": "Remind the worker after", "дн. після запиту": "days after the request", "Задача офісу «не надіслав» після": "Office task “not sent” after", "дн. мовчання": "days of silence",
   "Завжди задача офісу, якщо до строку ≤": "Always an office task if the deadline is within", "Файл від працівника одразу створює задачу «Перевірити завантажений документ» виконавцю; без Telegram — звичайна задача офісу.": "A file from the worker immediately creates a “Check the uploaded document” task for the assignee; without Telegram — a regular office task.",
   "автозапит системи в бот": "system auto-request via the bot", "запит офісу": "office request", "нагад.": "rem.", "не надіслав документ": "document not sent", "Запросити ще раз (новий лінк)": "Request again (new link)",
+  // Мій день і календар (блок D)
+  "Підсумок дня": "Day summary", "як у боті о {time}": "as in the bot at {time}", "зроблено": "done", "лишилось": "left", "Усе на завтра": "Everything to tomorrow", "На понеділок": "To Monday", "підписка": "subscribe", "Підписка для Google / Apple Calendar": "Subscription for Google / Apple Calendar", "Підписка на календар": "Calendar subscription", "Тривалість змінено": "Duration changed", "потягни, щоб змінити тривалість": "drag to change the duration",
+  "Стрілки ← → гортають період; нижній край зустрічі змінює тривалість.": "Arrow keys ← → move the period; the bottom edge of a meeting changes its duration.", "Додайте цей приватний лінк у Google Calendar («З URL») або Apple Calendar («Нова підписка»): зустрічі й строки ваших задач зʼявляться на телефоні. Лінк персональний, не пересилайте його.": "Add this private link to Google Calendar (“From URL”) or Apple Calendar (“New subscription”): your meetings and task deadlines will appear on your phone. The link is personal — do not forward it.",
   // список і контроль (блок C)
   "Спостерігаю": "Watching", "Пріоритет: усі": "Priority: all", "Місто: усі": "City: all", "лише прострочені": "overdue only", "Групувати: за строком": "Group: by due date", "Групувати: за виконавцем": "Group: by assignee", "Групувати: за фабрикою": "Group: by factory",
   "без виконавця": "no assignee", "без фабрики": "no factory", "Відкрити список цього адміна": "Open this admin's list", "клік по рядку відкриває список адміна": "click a row to open the admin's list", "Створено / виконано за 8 тижнів": "Created / done over 8 weeks",   // звірка з макетом: спостерігачі, згадки, вкладення, привʼязки, порядок денний (08.09.2026)

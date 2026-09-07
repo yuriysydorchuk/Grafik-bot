@@ -17,6 +17,7 @@ import { runAutoTasks, ensureAutoRules, AUTO_RULE_DEFS, officeAdmins } from "../
 import { recomputeAllActiveLegality } from "../services/legalityRecompute";
 import { buildTaskResolution, runTaskAction } from "../services/taskResolve";
 import { addDaysStr } from "../lib/dates";
+import { icalUrl } from "./taskIcal";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
@@ -85,6 +86,9 @@ const watchCond = (adminId: number) => sql`exists (select 1 from task_assignees 
 router.get("/tasks", TP, async (req: AuthedRequest, res) => { ok(res, await listTasks(req)); });
 
 // Excel-експорт списку (ті самі фільтри, що й GET /tasks) — польська шапка не потрібна: внутрішній документ офісу
+// Приватний iCal-лінк адміна (підписка в Google/Apple Calendar) — routes/taskIcal.ts
+router.get("/tasks/ical-link", TP, async (req: AuthedRequest, res) => { ok(res, { url: icalUrl(me(req)) }); });
+
 router.get("/tasks/export.xlsx", TP, async (req: AuthedRequest, res) => {
   const rows = await listTasks(req);
   const ExcelJS = (await import("exceljs")).default;
@@ -342,6 +346,7 @@ router.post("/tasks/bulk", TP, async (req: AuthedRequest, res) => {
     if (!(canManage(req) || (await isParticipant(t, me(req))))) continue;
     if (action === "plan_today") await planTask(t, warsawToday(), null, me(req));
     else if (action === "plan_tomorrow") await planTask(t, addDaysStr(warsawToday(), 1), null, me(req));
+    else if (action === "plan_date") { const d = s(req.body?.date); if (!d || !DATE_RE.test(d)) return fail(res, 400, "date"); await planTask(t, d, null, me(req)); }
     else if (action === "done") await setTaskStatus(t, "done", me(req));
     else if (action === "due") { const d = s(req.body?.date); if (!d || !DATE_RE.test(d)) return fail(res, 400, "date"); await db.update(tasksTable).set({ dueAt: d, updatedAt: new Date() }).where(eq(tasksTable.id, id)); await db.insert(taskEventsTable).values({ taskId: id, adminId: me(req), kind: "edited", payload: { dueAt: { to: d } } }); }
     else if (action === "assign") { if (!canManage(req) && t.creatorAdminId !== me(req)) continue; const a = n(req.body?.assigneeAdminId); await db.update(tasksTable).set({ assigneeAdminId: a, updatedAt: new Date() }).where(eq(tasksTable.id, id)); await db.insert(taskEventsTable).values({ taskId: id, adminId: me(req), kind: "edited", payload: { assignee: { to: a } } }); }

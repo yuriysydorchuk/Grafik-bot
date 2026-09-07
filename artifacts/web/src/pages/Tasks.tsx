@@ -1,6 +1,6 @@
 // Сторінка «Задачі» (модуль 06.09.2026): Мій день · Дошка · Список · Календар · Контроль.
 // Лише офіс. Деталі задачі — шухляда праворуч (TaskBits.TaskDrawer), створення — NewTaskModal.
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Plus, ChevronLeft, ChevronRight, Sun, Columns3, List, CalendarDays, Gauge, CheckCircle2, Clock, Focus, Wand2, Users, Download } from "lucide-react";
@@ -249,6 +249,9 @@ function MyDayView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: (d:
   const [showAllNew, setShowAllNew] = useState(false);
   const [quick, setQuick] = useState("");
   const isToday = date === todayStr();
+  const leftToday = useMemo(() => [...(d?.overdue ?? []), ...(d?.today ?? [])].filter((x, i, a) => x.kind !== "meeting" && !["done", "cancelled", "auto_resolved"].includes(x.status) && a.findIndex(y => y.id === x.id) === i), [d]);
+  const nextMonday = addDays(date, 7 - weekdayIdx(date));
+  const bulkPlan = useMutation({ mutationFn: (v: { ids: number[]; action: string; date?: string }) => post("/tasks/bulk", v), onSuccess: () => { invalidateTasks(qc); toast.success(t("Перенесено")); }, onError: (e: any) => toast.error(e.message) });
 
   // швидке додавання: «завтра 10:00 подзвонити …» / «12.09 …» / «сьогодні …»
   const quickAdd = useMutation({
@@ -342,6 +345,18 @@ function MyDayView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: (d:
           </Card>
           {/* план */}
           <div className="space-y-3">
+            {isToday && (d.stats.done > 0 || leftToday.length > 0) && (
+              <Card className="border-amber-100 bg-amber-50/40 p-3">
+                <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-amber-700"><span>🌇 {t("Підсумок дня")}</span><span className="font-normal normal-case text-slate-400">{t("як у боті о {time}", { time: "17:30" })}</span></div>
+                <div className="text-sm">✅ {t("зроблено")} <b>{d.stats.done}</b> · {t("лишилось")} <b>{leftToday.length}</b></div>
+                {leftToday.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Button variant="secondary" className="px-2.5 py-1 text-xs" loading={bulkPlan.isPending} onClick={() => bulkPlan.mutate({ ids: leftToday.map(x => x.id), action: "plan_tomorrow" })}>→ {t("Усе на завтра")}</Button>
+                    <Button variant="secondary" className="px-2.5 py-1 text-xs" loading={bulkPlan.isPending} onClick={() => bulkPlan.mutate({ ids: leftToday.map(x => x.id), action: "plan_date", date: nextMonday })}>→ {t("На понеділок")}</Button>
+                  </div>
+                )}
+              </Card>
+            )}
             <Card className="p-3">
               <div className="flex items-center gap-3">
                 <div className="relative h-14 w-14 shrink-0 rounded-full" style={{ background: `conic-gradient(#16a34a 0 ${ring}%, #e2e8f0 ${ring}% 100%)` }}><div className="absolute inset-1.5 flex items-center justify-center rounded-full bg-white text-xs font-bold">{d.stats.done}/{d.stats.total}</div></div>
@@ -433,20 +448,33 @@ function FocusModal({ items, onClose, onDone, onOpen }: { items: TaskRow[]; onCl
 function CalendarView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: (d: { dueAt: string; dueTime?: string }) => void }) {
   const t = useT();
   const qc = useQueryClient();
-  const [mode, setMode] = usePersisted<"month" | "week" | "agenda">("tasks.cal", "month");
+  const [mode, setMode] = usePersisted<"month" | "week" | "day" | "agenda">("tasks.cal", "month");
+  const [icalUrl, setIcalUrl] = useState<string | null>(null);
+  const resizeRef = useRef<{ id: number; startY: number; base: number } | null>(null);
   const [scope, setScope] = usePersisted<"mine" | "team">("tasks.calscope", "mine");
   const [anchor, setAnchor] = useState(todayStr());
   const range = useMemo(() => {
     if (mode === "month") { const first = anchor.slice(0, 7) + "-01"; const start = addDays(first, -weekdayIdx(first)); return { from: start, to: addDays(start, 41) }; }
     if (mode === "week") { const start = addDays(anchor, -weekdayIdx(anchor)); return { from: start, to: addDays(start, 6) }; }
+    if (mode === "day") return { from: anchor, to: anchor };
     return { from: anchor, to: addDays(anchor, 20) };
   }, [mode, anchor]);
   const { data: rows = [], isLoading } = useQuery<TaskRow[]>({ queryKey: ["tasks-calendar", scope, range.from, range.to], queryFn: () => get(`/tasks/calendar?from=${range.from}&to=${range.to}&scope=${scope}`) });
   const move = useMutation({ mutationFn: (v: { id: number; dueAt: string }) => patch(`/tasks/${v.id}`, { dueAt: v.dueAt }), onSuccess: () => invalidateTasks(qc), onError: (e: any) => toast.error(e.message) });
+  const resize = useMutation({ mutationFn: (v: { id: number; durationMin: number }) => patch(`/tasks/${v.id}`, { durationMin: v.durationMin }), onSuccess: () => { invalidateTasks(qc); toast.success(t("Тривалість змінено")); }, onError: (e: any) => toast.error(e.message) });
+  // стрілки ← → по періодах (не в полях вводу)
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if ((e.target as HTMLElement)?.tagName?.match(/INPUT|TEXTAREA|SELECT/)) return; if (e.key === "ArrowLeft") step(-1); if (e.key === "ArrowRight") step(1); };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  });
+  // розтягування зустрічі за нижній край (1 год = 2rem = 32px), крок 15 хв
+  const onResizeMove = (e: React.MouseEvent) => { const r = resizeRef.current; if (!r) return; const el = document.getElementById(`cal-ev-${r.id}`); if (el) el.style.height = `${Math.max(16, (r.base + (e.clientY - r.startY) / 32 * 60) / 60 * 32)}px`; };
+  const onResizeEnd = (e: React.MouseEvent) => { const r = resizeRef.current; if (!r) return; resizeRef.current = null; const mins = Math.max(15, Math.round((r.base + (e.clientY - r.startY) / 32 * 60) / 15) * 15); if (mins !== r.base) resize.mutate({ id: r.id, durationMin: mins }); };
+  const days = mode === "day" ? [anchor] : Array.from({ length: 7 }, (_, i) => addDays(range.from, i));
   const [dragId, setDragId] = useState<number | null>(null);
   const byDay = useMemo(() => { const m = new Map<string, TaskRow[]>(); for (const r of rows) if (r.dueAt) (m.get(r.dueAt) ?? m.set(r.dueAt, []).get(r.dueAt)!).push(r); return m; }, [rows]);
-  const step = (n: number) => setAnchor(mode === "month" ? (() => { const d = new Date(anchor.slice(0, 7) + "-15T00:00:00"); d.setMonth(d.getMonth() + n); return d.toLocaleDateString("sv-SE").slice(0, 8) + "01"; })() : addDays(anchor, n * (mode === "week" ? 7 : 14)));
-  const title = mode === "month" ? `${MONTHS_NOM[Number(anchor.slice(5, 7)) - 1]} ${anchor.slice(0, 4)}` : `${fmtDShort(range.from)} – ${fmtDShort(range.to)}`;
+  const step = (n: number) => setAnchor(mode === "month" ? (() => { const d = new Date(anchor.slice(0, 7) + "-15T00:00:00"); d.setMonth(d.getMonth() + n); return d.toLocaleDateString("sv-SE").slice(0, 8) + "01"; })() : addDays(anchor, n * (mode === "week" ? 7 : mode === "day" ? 1 : 14)));
+  const title = mode === "month" ? `${MONTHS_NOM[Number(anchor.slice(5, 7)) - 1]} ${anchor.slice(0, 4)}` : mode === "day" ? `${DAY_SHORT[weekdayIdx(anchor)]} ${fmtD(anchor)}` : `${fmtDShort(range.from)} – ${fmtDShort(range.to)}`;
   const evCls = (r: TaskRow) => r.status === "done" || r.status === "auto_resolved" ? "bg-emerald-50 text-emerald-700 line-through" : r.kind === "meeting" ? "bg-indigo-50 text-indigo-700" : r.overdue ? "bg-rose-50 text-rose-700" : r.source === "manual" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700";
   const drop = (day: string) => { const id = dragId; setDragId(null); if (id == null) return; const r = rows.find(x => x.id === id); if (r && r.dueAt !== day) move.mutate({ id, dueAt: day }); };
   return (
@@ -457,7 +485,8 @@ function CalendarView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: 
         <button onClick={() => step(1)} className="rounded-lg border border-slate-200 bg-white p-1.5"><ChevronRight className="h-4 w-4" /></button>
         <b className="ml-1 text-sm">{title}</b>
         <div className="ml-auto flex gap-1">
-          {(["month", "week", "agenda"] as const).map(m => <button key={m} onClick={() => setMode(m)} className={cn("rounded-full border px-2.5 py-1 font-semibold", mode === m ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-600")}>{m === "month" ? t("Місяць") : m === "week" ? t("Тиждень") : t("Розклад")}</button>)}
+          <button onClick={async () => { const r = await get<{ url: string }>("/tasks/ical-link"); setIcalUrl(r.url); }} className="rounded-full border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-50" title={t("Підписка для Google / Apple Calendar")}>📅 {t("підписка")}</button>
+          {(["month", "week", "day", "agenda"] as const).map(m => <button key={m} onClick={() => setMode(m)} className={cn("rounded-full border px-2.5 py-1 font-semibold", mode === m ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-600")}>{m === "month" ? t("Місяць") : m === "week" ? t("Тиждень") : m === "day" ? t("День") : t("Розклад")}</button>)}
           <span className="mx-1 text-slate-300">|</span>
           {(["mine", "team"] as const).map(s => <button key={s} onClick={() => setScope(s)} className={cn("rounded-full border px-2.5 py-1 font-semibold", scope === s ? "border-red-600 bg-red-600 text-white" : "border-slate-200 bg-white text-slate-600")}>{s === "mine" ? t("мій") : t("команда")}</button>)}
         </div>
@@ -478,21 +507,21 @@ function CalendarView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: 
             );
           })}
         </div>
-      ) : mode === "week" ? (
-        <Card className="overflow-x-auto">
-          <div className="grid min-w-[52rem]" style={{ gridTemplateColumns: "4rem repeat(7, 1fr)" }}>
+      ) : mode === "week" || mode === "day" ? (
+        <Card className="overflow-x-auto"><div onMouseMove={onResizeMove} onMouseUp={onResizeEnd} onMouseLeave={onResizeEnd}>
+          <div className={cn("grid", mode === "week" && "min-w-[52rem]")} style={{ gridTemplateColumns: `4rem repeat(${days.length}, 1fr)` }}>
             <div className="border-b border-slate-100 bg-slate-50" />
-            {Array.from({ length: 7 }, (_, i) => addDays(range.from, i)).map(day => <div key={day} className={cn("border-b border-l border-slate-100 bg-slate-50 px-2 py-1 text-center text-[10px] font-semibold uppercase text-slate-400", day === todayStr() && "text-red-600")}>{DAY_SHORT[weekdayIdx(day)]} {Number(day.slice(8, 10))}</div>)}
+            {days.map(day => <div key={day} className={cn("border-b border-l border-slate-100 bg-slate-50 px-2 py-1 text-center text-[10px] font-semibold uppercase text-slate-400", day === todayStr() && "text-red-600")}>{DAY_SHORT[weekdayIdx(day)]} {Number(day.slice(8, 10))}</div>)}
             <div className="border-b border-slate-100 px-1 py-1 text-[10px] text-slate-400">{t("весь день")}</div>
-            {Array.from({ length: 7 }, (_, i) => addDays(range.from, i)).map(day => <div key={day} onDragOver={e => e.preventDefault()} onDrop={() => drop(day)} className="min-h-10 border-b border-l border-slate-100 p-1">{(byDay.get(day) ?? []).filter(r => !r.dueTime).map(r => <div key={r.id} draggable onDragStart={() => setDragId(r.id)} onClick={() => onOpen(r.id)} className={cn("mb-0.5 cursor-pointer truncate rounded px-1 py-0.5 text-[10px] font-medium", evCls(r))}>{r.title}</div>)}</div>)}
+            {days.map(day => <div key={day} onDragOver={e => e.preventDefault()} onDrop={() => drop(day)} className="min-h-10 border-b border-l border-slate-100 p-1">{(byDay.get(day) ?? []).filter(r => !r.dueTime).map(r => <div key={r.id} draggable onDragStart={() => setDragId(r.id)} onClick={() => onOpen(r.id)} className={cn("mb-0.5 cursor-pointer truncate rounded px-1 py-0.5 text-[10px] font-medium", evCls(r))}>{r.title}</div>)}</div>)}
             {HOURS.map(h => (
               <div key={h} className="contents">
                 <div className="border-b border-slate-50 px-1 py-1 text-right text-[10px] text-slate-400">{String(h).padStart(2, "0")}:00</div>
-                {Array.from({ length: 7 }, (_, i) => addDays(range.from, i)).map(day => <div key={day} onDoubleClick={() => onNew({ dueAt: day, dueTime: `${String(h).padStart(2, "0")}:00` })} className="min-h-8 border-b border-l border-slate-50 p-0.5">{(byDay.get(day) ?? []).filter(r => r.dueTime && Number(r.dueTime.slice(0, 2)) === h).map(r => <div key={r.id} onClick={() => onOpen(r.id)} className={cn("mb-0.5 cursor-pointer truncate rounded px-1 py-0.5 text-[10px] font-medium", evCls(r))}>{r.kind === "meeting" ? "🗓 " : ""}{r.dueTime} {r.title}</div>)}</div>)}
+                {days.map(day => <div key={day} onDoubleClick={() => onNew({ dueAt: day, dueTime: `${String(h).padStart(2, "0")}:00` })} className="relative min-h-8 border-b border-l border-slate-50 p-0.5">{(byDay.get(day) ?? []).filter(r => r.dueTime && Number(r.dueTime.slice(0, 2)) === h).map(r => <div key={r.id} id={`cal-ev-${r.id}`} onClick={() => onOpen(r.id)} style={r.kind === "meeting" && r.durationMin ? { height: `${Math.max(16, r.durationMin / 60 * 32)}px`, zIndex: 5 } : undefined} className={cn("relative mb-0.5 cursor-pointer overflow-hidden rounded px-1 py-0.5 text-[10px] font-medium", evCls(r), r.kind === "meeting" && "absolute left-0.5 right-0.5")}>{r.kind === "meeting" ? "🗓 " : ""}{r.dueTime} {r.title}{r.kind === "meeting" && r.durationMin ? ` · ${r.durationMin} ${t("хв")}` : ""}{r.kind === "meeting" && <div onMouseDown={e => { e.stopPropagation(); e.preventDefault(); resizeRef.current = { id: r.id, startY: e.clientY, base: r.durationMin ?? 45 }; }} onClick={e => e.stopPropagation()} className="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize bg-indigo-300/60" title={t("потягни, щоб змінити тривалість")} />}</div>)}</div>)}
               </div>
             ))}
           </div>
-        </Card>
+        </div></Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-[14rem_1fr]">
           <MiniMonth anchor={anchor} onPick={setAnchor} marks={byDay} />
@@ -507,7 +536,15 @@ function CalendarView({ onOpen, onNew }: { onOpen: (id: number) => void; onNew: 
           </Card>
         </div>
       )}
-      <p className="mt-3 text-xs text-slate-400">{t("Перетягни картку на інший день, щоб перенести строк. Подвійний клік по дню або годині створює задачу.")}</p>
+      <p className="mt-3 text-xs text-slate-400">{t("Перетягни картку на інший день, щоб перенести строк. Подвійний клік по дню або годині створює задачу.")} {t("Стрілки ← → гортають період; нижній край зустрічі змінює тривалість.")}</p>
+      {icalUrl && (
+        <Modal open onClose={() => setIcalUrl(null)} title={t("Підписка на календар")}>
+          <div className="space-y-2 text-sm">
+            <p className="text-slate-600">{t("Додайте цей приватний лінк у Google Calendar («З URL») або Apple Calendar («Нова підписка»): зустрічі й строки ваших задач зʼявляться на телефоні. Лінк персональний, не пересилайте його.")}</p>
+            <div className="flex gap-2"><Input readOnly value={icalUrl} onFocus={e => e.currentTarget.select()} /><Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(icalUrl); toast.success(t("Скопійовано")); }}>{t("Скопіювати")}</Button></div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

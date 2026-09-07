@@ -32,6 +32,7 @@ import residenceCardScanRouter from "./residenceCardScan";
 import signRouter from "./sign";
 import passportScanRouter from "./passportScan";
 import docRequestsRouter from "./docRequests";
+import taskIcalRouter from "./taskIcal";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 
@@ -47,6 +48,7 @@ router.use(healthRouter);
 router.use(signRouter);
 router.use(passportScanRouter);
 router.use(docRequestsRouter);
+router.use(taskIcalRouter);
 router.use(authRouter);
 router.use(adminApiRouter);
 router.use(fleetRouter);
