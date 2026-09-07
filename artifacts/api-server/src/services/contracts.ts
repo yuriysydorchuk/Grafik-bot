@@ -12,7 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import puppeteer, { type Browser } from "puppeteer";
 import {
   db, workersTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, workerQuestionnairesTable,
-  contractsTable, documentTemplatesTable, contractFilesTable, type Contract, type DocumentTemplate,
+  contractsTable, documentTemplatesTable, contractFilesTable, signatureEventsTable, type Contract, type DocumentTemplate,
 } from "@workspace/db";
 import { KSIEG_STD_BRUTTO } from "./svodni";
 import { UPLOADS_ROOT, CONTRACTS_DIR, SIGNATURES_DIR, makeStoredName } from "../lib/uploads";
@@ -409,7 +409,15 @@ export async function generateContract(opts: {
   return contract!;
 }
 
-// ── Дати заднім числом (draft — перегенерувати; пізніше — лише запис у БД) ──
+// ── Дати заднім числом ────────────────────────────────────────────────────────
+// Умову легально генерують і підписують без дат (дозвіл на роботу оформлюють уже з
+// підписаною умовою). Дописані дати мають потрапити В ДОКУМЕНТ (рішення 08.09.2026):
+//   • до підпису працівника (draft/pending_approval/approved/sent/viewed) — перерендер
+//     unsigned-файлів;
+//   • підписав працівник, фірма ще ні (worker_signed) — перерендер signed-файлів з
+//     новими датами і збереженим PNG підпису працівника (як applyWorkerSignature),
+//     подія signature_events `dates_filled` зі старим/новим sha256;
+//   • підписано обома (signed) — лише запис у БД, файл не чіпається (печатка + аудит).
 // dateFrom може бути null (лише «до», напр. закриття умови датою звільнення) — тоді «від» не чіпається.
 export async function updateContractDates(contractId: number, dateFrom: string | null, dateTo?: string | null): Promise<Contract> {
   const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
@@ -418,20 +426,23 @@ export async function updateContractDates(contractId: number, dateFrom: string |
   if (DEAD.has(contract.status)) throw new Error(`Пакет у термінальному статусі (${contract.status}) — дату вже не дописати`);
   const from = dateFrom ?? (contract.dateFrom ? String(contract.dateFrom) : null);
 
-  if (contract.status !== "draft") {
+  if (contract.status === "signed") {
     const [updated] = await db.update(contractsTable).set({
       dateFrom: from, dateTo: dateTo ?? null,
       data: { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": dateTo ?? "" },
       updatedAt: new Date(),
     }).where(eq(contractsTable.id, contractId)).returning();
-    logger.info({ contractId, dateFrom, dateTo, status: contract.status }, "contract dates recorded (post-draft — files untouched)");
+    logger.info({ contractId, dateFrom, dateTo, status: contract.status }, "contract dates recorded (signed by both — files untouched)");
     return updated!;
   }
 
   const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, contract.workerId));
   const lang = asLang(worker?.language);
-  const data = await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto);
+  const data = await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto, contract.companyId ?? null);
+  const workerSigned = contract.status === "worker_signed" && !!contract.workerSignaturePath;
+  const workerSignatureDataUrl = workerSigned
+    ? `data:image/png;base64,${(await fs.promises.readFile(path.join(UPLOADS_ROOT, contract.workerSignaturePath!))).toString("base64")}` : undefined;
 
   for (const file of files) {
     if (!file.templateId || !file.unsignedPath) continue;
@@ -440,16 +451,30 @@ export async function updateContractDates(contractId: number, dateFrom: string |
     const body = (tpl.body as Record<string, string>)[lang] || (tpl.body as Record<string, string>).pl || "";
     const missing = missingFields(data, extractPlaceholderKeys(body));
     if (missing.length) throw new Error(`Бракує даних для генерації: ${missing.join(", ")}`);
+    // unsigned — завжди (прев'ю без підпису)
     const pdf = await renderHtmlToPdf(substitutePlaceholders(body, data));
     const sha256 = crypto.createHash("sha256").update(pdf).digest("hex");
     await fs.promises.writeFile(path.join(UPLOADS_ROOT, file.unsignedPath), pdf);
     const pageCount = (await PDFDocument.load(pdf)).getPageCount();
-    await db.update(contractFilesTable).set({ unsignedSha256: sha256, pageCount }).where(eq(contractFilesTable.id, file.id));
+    const patch: Partial<typeof contractFilesTable.$inferInsert> = { unsignedSha256: sha256, pageCount };
+    // підписав працівник — перерендер signed-файла з тим самим PNG підпису
+    if (workerSigned) {
+      const signedPdf = await renderHtmlToPdf(substitutePlaceholders(body, data, { workerSignatureDataUrl }));
+      const signedSha = crypto.createHash("sha256").update(signedPdf).digest("hex");
+      const storedName = makeStoredName(`signed-${file.id}.pdf`);
+      await fs.promises.writeFile(path.join(CONTRACTS_DIR, storedName), signedPdf);
+      patch.signedPath = path.join("contracts", storedName); patch.signedSha256 = signedSha;
+      await db.insert(signatureEventsTable).values({
+        contractId, event: "dates_filled", docSha256: signedSha,
+        extra: { fileId: file.id, previousSha256: file.signedSha256, dateFrom: from, dateTo: dateTo ?? null },
+      }).catch(err => logger.warn({ err: String(err), contractId }, "dates_filled event failed"));
+    }
+    await db.update(contractFilesTable).set(patch).where(eq(contractFilesTable.id, file.id));
   }
 
   const [updated] = await db.update(contractsTable).set({ dateFrom: from, dateTo: dateTo ?? null, data, updatedAt: new Date() })
     .where(eq(contractsTable.id, contractId)).returning();
-  logger.info({ contractId, dateFrom, dateTo }, "contract dates updated, files regenerated (draft)");
+  logger.info({ contractId, dateFrom, dateTo, status: contract.status, workerSigned }, "contract dates updated, files regenerated");
   return updated!;
 }
 

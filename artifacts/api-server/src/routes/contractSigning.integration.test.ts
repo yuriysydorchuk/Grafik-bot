@@ -310,3 +310,37 @@ test("supersedes: супersede-ить лише коли компанія ЗАВ�
   assert.equal(old!.status, "superseded");
   assert.ok(old!.supersededAt);
 });
+
+test("дати після підпису працівника: PATCH /dates перерендерює signed-файл з тим самим підписом (новий sha, подія dates_filled); після підпису фірми — лише запис", opts, async () => {
+  const { factoryId, companyId } = await mkFactory();
+  const workerId = await mkVerifiedWorker(companyId);
+  const { contractId, token } = await mkSentContract(workerId, factoryId);
+  await request(app).post(`/api/sign/${token}/consent`).set(H);
+  assert.equal((await request(app).post(`/api/sign/${token}`).set(H).send({ signature: TINY_PNG })).status, 200);
+  const before = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  const r = await request(app).patch(`/api/contracts/${contractId}/dates`).set("Cookie", owner).set(H).send({ dateFrom: "2026-09-15", dateTo: "2027-03-31" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.status, "worker_signed"); assert.equal(String(r.body.dateTo), "2027-03-31");
+  assert.equal(r.body.data["Data zakończenia pracy"], "2027-03-31");
+  const after = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  for (const f of after) {
+    const prev = before.find(x => x.id === f.id)!;
+    assert.ok(f.signedSha256 && f.signedSha256 !== prev.signedSha256, `${f.title}: signed-файл перерендерено`);
+    assert.ok(f.unsignedSha256 !== prev.unsignedSha256, `${f.title}: unsigned-файл перерендерено`);
+    assert.ok(fs.existsSync(path.join(UPLOADS_ROOT, f.signedPath!)));
+  }
+  const ev = await db.select().from(signatureEventsTable).where(eq(signatureEventsTable.contractId, contractId));
+  assert.equal(ev.filter(e => e.event === "dates_filled").length, after.length);
+  // лише «до» — «від» лишається
+  const r2 = await request(app).patch(`/api/contracts/${contractId}/dates`).set("Cookie", owner).set(H).send({ dateTo: "2027-06-30" });
+  assert.equal(r2.status, 200); assert.equal(String(r2.body.dateFrom), "2026-09-15"); assert.equal(String(r2.body.dateTo), "2027-06-30");
+  // без жодної дати — 400
+  assert.equal((await request(app).patch(`/api/contracts/${contractId}/dates`).set("Cookie", owner).set(H).send({})).status, 400);
+  // підпис фірми → signed; дати далі — лише запис, файл не чіпається
+  assert.equal((await request(app).post(`/api/contracts/${contractId}/finalize`).set("Cookie", owner).set(H)).status, 200);
+  const signedFiles = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  const r3 = await request(app).patch(`/api/contracts/${contractId}/dates`).set("Cookie", owner).set(H).send({ dateFrom: "2026-10-01" });
+  assert.equal(r3.status, 200); assert.equal(String(r3.body.dateFrom), "2026-10-01");
+  const still = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  for (const f of still) assert.equal(f.signedSha256, signedFiles.find(x => x.id === f.id)!.signedSha256, "після підпису фірми файл незмінний");
+});
