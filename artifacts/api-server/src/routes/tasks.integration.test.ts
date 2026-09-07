@@ -105,9 +105,9 @@ test("автозадачі: документ спливає → задача в�
     .find(t => t.source === "auto:doc_expired");
   assert.ok(t2, "прострочений паспорт"); assert.equal(t2!.assigneeAdminId, main.adminId, "без відповідального → головний"); assert.equal(t2!.priority, "urgent");
   assert.ok(!(await db.select().from(tasksTable)).some(t => t.title.includes("TRC далеко")), "далекий строк — без задачі");
-  // нагадування: TRC за 10 днів → крок 14 драбини надіслано (60/30/14 ≥ 10)
+  // нагадування: TRC за 10 днів → кроки 24 і 14 драбини надіслано (24/14/7/0 ≥ 10)
   const t1b = (await db.select().from(tasksTable).where(eq(tasksTable.id, t1!.id)))[0]!;
-  assert.deepEqual([...(t1b.remindersSent as number[])].sort((a, b) => b - a), [60, 30, 14]);
+  assert.deepEqual([...(t1b.remindersSent as number[])].sort((a, b) => b - a), [24, 14]);
   const evs = await db.select().from(taskEventsTable).where(eq(taskEventsTable.taskId, t1!.id));
   assert.ok(evs.some(e => e.kind === "reminder"));
 
@@ -142,7 +142,7 @@ test("автозадачі: документ спливає → задача в�
 
   // API налаштувань: перелік правил і settings, ескалація
   const r = await request(app).get("/api/task-auto-rules").set("Cookie", resp.cookie);
-  assert.equal(r.status, 200); assert.ok(r.body.rules.length >= 10); assert.deepEqual(r.body.settings.ladder, [60, 30, 14, 7, 0]);
+  assert.equal(r.status, 200); assert.ok(r.body.rules.length >= 10); assert.deepEqual(r.body.settings.ladder, [24, 14, 7, 0]);
   const p = await request(app).patch("/api/task-auto-rules/settings").set("Cookie", resp.cookie).set(H).send({ escalationDays: 1 });
   assert.equal(p.body.escalationDays, 1);
 });

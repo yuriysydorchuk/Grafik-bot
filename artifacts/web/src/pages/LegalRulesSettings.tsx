@@ -172,7 +172,7 @@ function LeadDaysCard({ rules, onSaved }: { rules: LegalRule[]; onSaved: () => v
   const t = useT();
   const cur = currentOf(rules, "defaults.lead_days");
   const c = cur?.conditions ?? {};
-  const init = () => ({ documents: numsToText(c.documents) || "60, 30, 14, 7, 0", cases: String(numOr(c.cases, 30)), ukr: numsToText(c.ukr) || "90, 30", def: String(numOr(c.defaultLeadDays, 30)) });
+  const init = () => ({ documents: numsToText(c.documents) || "24, 14, 7, 0", cases: String(numOr(c.cases, 24)), ukr: numsToText(c.ukr) || "90, 30", def: String(numOr(c.defaultLeadDays, 24)), urgent: String(numOr(c.urgentDays, 7)) });
   const [v, setV] = useState(init);
   useEffect(() => { setV(init()); }, [cur?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = JSON.stringify(v) !== JSON.stringify(init());
@@ -186,12 +186,13 @@ function LeadDaysCard({ rules, onSaved }: { rules: LegalRule[]; onSaved: () => v
   return (
     <RuleCard title={t("Строки та нагадування")} code="defaults.lead_days" kind="global" axis={null} rules={rules} dirty={dirty} onReset={() => setV(init())} onSaved={onSaved}
       hint={t("За скільки днів до кінця строку документ світиться «спливає» і йде нагадування. Кілька чисел через кому — кілька нагадувань.")}
-      buildConditions={() => ({ documents: textToNums(v.documents), cases: Number(v.cases) || 30, ukr: textToNums(v.ukr), defaultLeadDays: Number(v.def) || 30 })}>
+      buildConditions={() => ({ documents: textToNums(v.documents), cases: Number(v.cases) || 24, ukr: textToNums(v.ukr), defaultLeadDays: Number(v.def) || 24, urgentDays: Number(v.urgent) || 7 })}>
       <div className="grid gap-3 sm:grid-cols-2">
         {field(t("Документи: за скільки днів"), "documents", "w-56", t("дні через кому, напр. 60, 30, 14, 7, 0"))}
         {field(t("Справи в toku: за скільки днів"), "cases", "w-28")}
         {field(t("Кінець статусу UKR: за скільки днів"), "ukr", "w-40", t("дні через кому"))}
-        {field(t("Якщо у типу документа свій строк не заданий"), "def", "w-28", t("днів до кінця"))}
+        {field(t("Жовта зона: документ «спливає» за"), "def", "w-28", t("днів до кінця — задачі, автозапит у працівника, підсвітка; власний строк типу має пріоритет"))}
+        {field(t("Червона зона: терміново за"), "urgent", "w-28", t("днів до кінця — пріоритет «терміново», плитка «Потребує уваги», задача офісу попри автозапит"))}
       </div>
     </RuleCard>
   );

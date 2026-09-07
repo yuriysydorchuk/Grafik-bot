@@ -3,7 +3,7 @@
 // ранковий, вечірній з «усе на завтра», тижневий звіт головному.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { hasTestDb, resetDb, closeDb, db, sendStart, sendText, pressButton, resetSent, sent, sentText } from "../test/botHarness.ts";
 import { seedRole, adminsTable, tasksTable, taskAssigneesTable, rolesTable } from "../test/harness.ts";
 import { createTask } from "../services/tasks.ts";
@@ -100,7 +100,8 @@ test("дайджести: ранковий (топ-5 з кнопками, пор
   const rep = sent.find(s => String(s.chatId) === "810700");
   assert.ok(rep && /Задачі за тиждень/.test(rep.text ?? "") && /Office: виконано 0 · відкрито 3 · прострочено \*1\*/.test(rep.text ?? ""), rep?.text);
 
-  // тік: у час дайджесту шле раз на день
+  // тік: у час дайджесту шле раз на день (дедуп-ключі в settings переживають resetDb — чистимо)
+  await db.execute(sql`delete from settings where key like 'tasks.%'`);
   resetSent();
   const at = (h: string) => { const d = new Date(); const [hh, mm] = h.split(":").map(Number); const w = new Date(d.toLocaleString("en-US", { timeZone: "Europe/Warsaw" })); const off = d.getTime() - w.getTime(); const x = new Date(w); x.setHours(hh!, mm!, 0, 0); return new Date(x.getTime() + off); };
   await runTaskDigestTick(at("07:31"));

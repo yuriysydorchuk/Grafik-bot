@@ -27,7 +27,7 @@ interface Attention {
   pendingAbsences: number; hoursDisputes: number; pendingAdvances: number;
   unlinkedUnplanned: number; unmarkedAttendance: number; driverGaps: number;
   availabilityMissing: number; dataDrift: number;
-  legalityIllegal: number; legalityExpiring: number; pendingDocUploads: number;
+  legalityIllegal: number; legalityExpiring: number; pendingDocUploads: number; legalityUrgentDays?: number;
 }
 
 interface Overview {
@@ -291,7 +291,7 @@ function AttentionPanel({ a }: { a: Attention }) {
     { count: a.availabilityMissing, label: t("не заповнили диспозиційність (наст. тиждень)"), href: "/availability", icon: CalendarX2, tone: "amber" },
     { count: a.dataDrift, label: t("розсинхрон даних профілів (вік/студент/місто фабрики)"), href: "/workers", icon: Link2Off, tone: "amber" },
     { count: a.legalityIllegal, label: t("без підстави легалізації / без даних"), href: "/legalization?status=illegal", icon: ShieldAlert, tone: "rose" },
-    { count: a.legalityExpiring, label: t("строки легалізації спливають ≤14 днів"), href: "/legalization?soon=1", icon: Clock3, tone: "amber" },
+    { count: a.legalityExpiring, label: t("строки легалізації в червоній зоні (≤{n} дн.)", { n: a.legalityUrgentDays ?? 7 }), href: "/legalization?soon=1", icon: Clock3, tone: "rose" },
     { count: a.pendingDocUploads, label: t("документи з бота на перевірці"), href: "/legalization?review=1", icon: FileCheck2, tone: "amber" },
   ];
   const items = all.filter(i => i.count > 0);

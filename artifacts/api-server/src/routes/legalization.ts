@@ -76,7 +76,7 @@ router.get("/legalization/globals", async (_req, res) => {
   const live = rows.filter(r => r.effectiveFrom <= today && (!r.effectiveTo || r.effectiveTo > today));
   const ukr = live.find(r => r.code === "global.ukr_status_end");
   const lead = live.find(r => r.code === "defaults.lead_days");
-  ok(res, { today, ukrStatusEnd: (ukr?.conditions as any)?.date ?? null, defaultLeadDays: (lead?.conditions as any)?.defaultLeadDays ?? 30 });
+  ok(res, { today, ukrStatusEnd: (ukr?.conditions as any)?.date ?? null, defaultLeadDays: (lead?.conditions as any)?.defaultLeadDays ?? 24, urgentDays: (lead?.conditions as any)?.urgentDays ?? 7 });
 });
 
 // Мапа статусів (services/legalStatusMap.ts) + назви типів з каталогу — вкладка «Правила легальності».

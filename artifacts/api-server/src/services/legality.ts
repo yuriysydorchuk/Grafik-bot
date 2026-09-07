@@ -217,18 +217,23 @@ export function activeRules(rules: LegalRuleInput[], today: string): LegalRuleIn
 }
 
 interface Globals {
-  defaultLeadDays: number;
+  defaultLeadDays: number; // жовта зона: за скільки днів документ/умова «спливає» (рішення власника 07.09.2026: 24)
+  urgentDays: number;      // червона зона: терміново (7) — пріоритет задач, підсвітка, лічильник «Потребує уваги»
   unverifiedCountsAsBasis: boolean;
   ukrStatusEnd: string | null;
   ukrRuleVerified: boolean;
   statusMap: ResolvedStatusMap; // мапа виплат — правило payroll.status_map або дефолти з коду
 }
-const DEFAULT_GLOBALS: Globals = { defaultLeadDays: 30, unverifiedCountsAsBasis: false, ukrStatusEnd: null, ukrRuleVerified: false, statusMap: DEFAULT_STATUS_MAP };
+const DEFAULT_GLOBALS: Globals = { defaultLeadDays: 24, urgentDays: 7, unverifiedCountsAsBasis: false, ukrStatusEnd: null, ukrRuleVerified: false, statusMap: DEFAULT_STATUS_MAP };
+// Строки для інших модулів (задачі, автозапит, дашборд, веб-підсвітка): єдине джерело — правило defaults.lead_days.
+export interface LeadDays { warn: number; urgent: number }
+export function readLeadDays(rules: LegalRuleInput[]): LeadDays { const g = readGlobals(rules); return { warn: g.defaultLeadDays, urgent: g.urgentDays }; }
 function readGlobals(rules: LegalRuleInput[]): Globals {
   const g: Globals = { ...DEFAULT_GLOBALS };
   for (const r of rules) {
     if (r.code === "payroll.status_map" && r.conditions && typeof r.conditions === "object") g.statusMap = resolveStatusMap(r.conditions as Record<string, unknown>);
     if (r.code === "defaults.lead_days" && typeof r.conditions.defaultLeadDays === "number") g.defaultLeadDays = r.conditions.defaultLeadDays as number;
+    if (r.code === "defaults.lead_days" && typeof r.conditions.urgentDays === "number") g.urgentDays = r.conditions.urgentDays as number;
     if (r.code === "defaults.evidence" && typeof r.conditions.unverifiedCountsAsBasis === "boolean") g.unverifiedCountsAsBasis = r.conditions.unverifiedCountsAsBasis as boolean;
     if (r.code === "global.ukr_status_end" && typeof r.conditions.date === "string") { g.ukrStatusEnd = r.conditions.date as string; g.ukrRuleVerified = !!r.verifiedAt; }
   }

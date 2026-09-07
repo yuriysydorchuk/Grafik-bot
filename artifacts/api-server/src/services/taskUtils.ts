@@ -13,7 +13,7 @@ export const TASK_PRIORITIES: TaskPriority[] = ["low", "normal", "high", "urgent
 export const OPEN_STATUSES: TaskStatus[] = ["open", "in_progress", "review"];
 export const CLOSED_STATUSES: TaskStatus[] = ["done", "cancelled", "auto_resolved"];
 export const PRIORITY_LABEL: Record<TaskPriority, string> = { low: "низький", normal: "звичайний", high: "високий", urgent: "терміново" };
-export const DEFAULT_LADDER = [60, 30, 14, 7, 0];
+export const DEFAULT_LADDER = [24, 14, 7, 0]; // жовта зона 24 → червона 7 → день строку
 
 export const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 export const fmtDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
@@ -27,10 +27,11 @@ export const mdEsc = (s: string) => s.replace(/([_*[\]`])/g, "\\$1");
 
 // Пріоритет автозадачі від днів до строку: ≤7 терміново, ≤14 високий, далі звичайний;
 // прострочене — терміново.
-export function priorityForDays(daysLeft: number | null): TaskPriority {
+// urgent = червона зона (≤ urgentDays), high = жовта (≤ warnDays) — пороги з правила defaults.lead_days
+export function priorityForDays(daysLeft: number | null, urgentDays = 7, warnDays = 24): TaskPriority {
   if (daysLeft == null) return "normal";
-  if (daysLeft <= 7) return "urgent";
-  if (daysLeft <= 14) return "high";
+  if (daysLeft <= urgentDays) return "urgent";
+  if (daysLeft <= warnDays) return "high";
   return "normal";
 }
 

@@ -13,7 +13,7 @@ import {
 import {
   computeLegality, type LegalityInput, type LegalityResult, type LegalityDocument, type LegalRuleInput, type LegalityWorker,
   type LegalityContract, type LegalityEmployer,
-} from "./legality";
+ readLeadDays, type LeadDays } from "./legality";
 import { mrzNationalityToCatalog } from "./docai";
 import { resolveEffectiveLegal, type EffectiveLegal } from "./effectiveStatus";
 import { logger } from "../lib/logger";
@@ -29,6 +29,9 @@ export async function loadLegalRules(): Promise<LegalRuleInput[]> {
     effectiveFrom: dateStr(r.effectiveFrom), effectiveTo: dateStr(r.effectiveTo), isActive: r.isActive, verifiedAt: r.verifiedAt,
   }));
 }
+
+// Жовта/червона зона строків з активного правила defaults.lead_days (кеш не потрібен — один select).
+export async function loadLeadDays(): Promise<LeadDays> { return readLeadDays(await loadLegalRules()); }
 
 export async function loadWorkerDocuments(workerId: number): Promise<LegalityDocument[]> {
   const rows = await db.select({ d: workerDocumentsTable, t: documentTypesTable })

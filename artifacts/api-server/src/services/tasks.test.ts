@@ -14,14 +14,15 @@ test("nextOccurrence: daily/weekly/monthly з кінцем місяця", () => 
   assert.equal(nextOccurrence("2026-12-05", { freq: "monthly" }), "2027-01-05", "перехід року");
 });
 
-test("priorityForDays: ≤7 терміново, ≤14 високий, далі звичайний, прострочене — терміново", () => {
+test("priorityForDays: ≤7 терміново (червона зона), ≤24 високий (жовта), далі звичайний; пороги параметризовані", () => {
   assert.equal(priorityForDays(-3), "urgent");
   assert.equal(priorityForDays(0), "urgent");
   assert.equal(priorityForDays(7), "urgent");
   assert.equal(priorityForDays(8), "high");
-  assert.equal(priorityForDays(14), "high");
-  assert.equal(priorityForDays(15), "normal");
+  assert.equal(priorityForDays(24), "high");
+  assert.equal(priorityForDays(25), "normal");
   assert.equal(priorityForDays(null), "normal");
+  assert.equal(priorityForDays(10, 3, 12), "high"); assert.equal(priorityForDays(3, 3, 12), "urgent"); assert.equal(priorityForDays(13, 3, 12), "normal");
 });
 
 test("diffDays рядковою арифметикою (без toISOString)", () => {

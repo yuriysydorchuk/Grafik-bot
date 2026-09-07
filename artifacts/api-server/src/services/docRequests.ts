@@ -10,6 +10,7 @@ import { t as tw, asLang } from "../bot/i18n";
 import { randomInviteCode } from "../lib/invite";
 import { documentChanged } from "./documentEvents";
 import { loadTaskSettings, warsawToday } from "./tasks";
+import { loadLeadDays } from "./legalityRecompute";
 import { dateStr, diffDays, fmtDate } from "./taskUtils";
 import { logger } from "../lib/logger";
 
@@ -70,7 +71,7 @@ export async function autoRequestDocuments(today = warsawToday()): Promise<AutoR
   if (!types.length) return stats;
   const tById = new Map(types.map(t => [t.id, t]));
   const [rule] = await db.select().from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, "doc_expiring"));
-  const defaultLead = rule?.leadDays ?? 14;
+  const defaultLead = rule?.leadDays ?? (await loadLeadDays()).warn;
   const workers = await db.select({ id: workersTable.id, telegramId: workersTable.telegramId }).from(workersTable).where(and(eq(workersTable.isActive, true), isNotNull(workersTable.telegramId)));
   if (!workers.length) return stats;
   const wIds = workers.map(w => w.id);

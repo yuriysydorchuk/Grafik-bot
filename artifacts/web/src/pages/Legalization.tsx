@@ -16,6 +16,7 @@ import {
 } from "../lib/legality";
 import { NatFlag } from "../lib/nationality";
 import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
+import { useLeadDays, expiryTone, expiryTextCls } from "../lib/leadDays";
 
 type SortKey = "expiry" | "name" | "status";
 const NOT_COMPUTED_BADGE = "bg-slate-100 text-slate-500 ring-slate-200";
@@ -30,6 +31,7 @@ function initialFilters() {
 export default function Legalization() {
   const t = useT();
   const qc = useQueryClient();
+  const ld = useLeadDays(); // жовта/червона зона з правила «Строки та нагадування»
   const init = useMemo(initialFilters, []);
   const { data, isLoading } = useQuery<LegalizationDashboard>({ queryKey: ["legalization"], queryFn: () => get("/legalization") });
 
@@ -70,7 +72,7 @@ export default function Legalization() {
       if (factory && String(r.factoryId ?? "") !== factory) return false;
       if (company && String(r.companyId ?? "") !== company) return false;
       if (status) { if (status === "notComputed") { if (r.legality) return false; } else if (r.legality?.overall !== status) return false; }
-      if (soon) { const d = daysUntil(r.legality?.nextExpiryAt); if (d === null || d > 30) return false; }
+      if (soon) { const d = daysUntil(r.legality?.nextExpiryAt); if (d === null || d > ld.warn) return false; }
       // «потребують перевірки» = або движок питає підтвердження, або є аплоуд з бота, що
       // чекає офіс (той самий query-параметр ?review=1 веде сюди з плитки «на перевірці»)
       if (reviewOnly && !r.legality?.reviewRequired && r.pendingDocs === 0) return false;
@@ -194,6 +196,7 @@ export default function Legalization() {
 
 function RowGroup({ r, open, onToggle, t }: { r: LegalizationRow; open: boolean; onToggle: () => void; t: TFn }) {
   const lg = r.legality;
+  const ld = useLeadDays();
   const d = daysUntil(lg?.nextExpiryAt);
   return (
     <Fragment>
@@ -216,7 +219,7 @@ function RowGroup({ r, open, onToggle, t }: { r: LegalizationRow; open: boolean;
         </td>
         <td className="px-3 py-2">
           {lg?.nextExpiryAt ? (
-            <span className={d !== null && d < 0 ? "font-medium text-rose-600" : d !== null && d <= 30 ? "font-medium text-amber-600" : "text-slate-600"}>
+            <span className={expiryTextCls(expiryTone(d, ld), "text-slate-600")}>
               {lg.nextExpiryAt}{d !== null ? ` (${d} ${t("дн.")})` : ""}
             </span>
           ) : <span className="text-slate-300">—</span>}

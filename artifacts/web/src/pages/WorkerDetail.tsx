@@ -29,6 +29,7 @@ import { WorkerTasksBlock, WorkerUpcomingEvents } from "../components/TasksWidge
 import { WorkerModal } from "../components/WorkerModal";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
+import { useLeadDays, expiryTone, expiryTextCls, leadDaysCache } from "../lib/leadDays";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
 import { NatFlag, NATIONALITIES, natLabel } from "../lib/nationality";
@@ -1591,6 +1592,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   const reasonsByAxis: Record<string, LegalityReason[]> = {};
   for (const r of legality.reasons) (reasonsByAxis[r.axis] ??= []).push(r);
   const severityCls = (sev: LegalityReason["severity"]) => sev === "block" ? "text-rose-600" : sev === "warn" ? "text-amber-600" : "text-slate-500";
+  const ld = useLeadDays();
   const dLeft = daysUntil(legality.nextExpiryAt);
   const ph = legality.payrollHints;
   const hints: string[] = [];
@@ -1635,7 +1637,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
         {(legality.nextExpiryAt || legality.requiredMissing.length > 0) && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {legality.nextExpiryAt && (
-              <span className={dLeft != null && dLeft < 0 ? "font-medium text-rose-600" : dLeft != null && dLeft <= 30 ? "font-medium text-amber-600" : "text-slate-500"}>
+              <span className={expiryTextCls(expiryTone(dLeft, ld))}>
                 {t("Наступний термін: {date} ({n} дн.)", { date: legality.nextExpiryAt, n: dLeft ?? "—" })}
               </span>
             )}
@@ -1757,15 +1759,15 @@ function otherDocState(doc: WorkerDocument, type: DocumentType | null, globals?:
 
 const fmtDocDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
 const fmtShortDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
-const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600" } as const;
+const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", urgent: "text-rose-600", expired: "text-rose-600", pending: "text-blue-600", muted: "text-slate-400", warn: "text-amber-600" } as const;
 
 function docTone(s: Extract<DocRowState, { kind: "doc" }>): keyof typeof DOC_TONE_CLS {
   if (s.pending) return "pending";
   if (s.expired) return "expired";
   if (s.indefinite) return "muted";
   if (!s.expiresAt) return "warn";
-  const dLeft = daysUntil(s.expiresAt);
-  return dLeft != null && dLeft <= 30 ? "soon" : "ok";
+  const tone = expiryTone(daysUntil(s.expiresAt), leadDaysCache); // жовта/червона зона з правила легальності
+  return tone === "rose" ? "urgent" : tone === "amber" ? "soon" : "ok";
 }
 
 // Кнопка «Запросити» рядка: один тип-кандидат — надсилає одразу; кілька
@@ -1840,7 +1842,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const stateText = state.pending ? t("⏳ на перевірці")
     : state.expired ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt!) })
     : state.indefinite ? t("безстроково")
-    : state.expiresAt ? (dLeft != null && dLeft <= 30 ? t("до {date} · {n} дн.", { date: fmtDocDate(state.expiresAt), n: dLeft }) : t("до {date}", { date: fmtDocDate(state.expiresAt) }))
+    : state.expiresAt ? (expiryTone(dLeft, leadDaysCache) ? t("до {date} · {n} дн.", { date: fmtDocDate(state.expiresAt), n: dLeft ?? "" }) : t("до {date}", { date: fmtDocDate(state.expiresAt) }))
     : t("дата не вказана");
   const hasFile = !!doc.fileName;
   const employerName = doc.employerCompanyId != null ? (companies.find(c => c.id === doc.employerCompanyId)?.name ?? `#${doc.employerCompanyId}`) : null;

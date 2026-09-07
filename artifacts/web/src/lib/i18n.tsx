@@ -3035,6 +3035,9 @@ const EN: Record<string, string> = {
   // резолвер виплат (06.09.2026)
   // ── модуль «Задачі» (06.09.2026) ──
   "показати всі {n}": "show all {n}", "згорнути": "collapse",
+  // строки: жовта/червона зона (07.09.2026)
+  "строки легалізації в червоній зоні (≤{n} дн.)": "legalization deadlines in the red zone (≤{n} days)", "Жовта зона: документ «спливає» за": "Yellow zone: document “expiring” within", "Червона зона: терміново за": "Red zone: urgent within",
+  "днів до кінця — задачі, автозапит у працівника, підсвітка; власний строк типу має пріоритет": "days before expiry — tasks, auto-request to the worker, highlighting; a type’s own lead days win", "днів до кінця — пріоритет «терміново», плитка «Потребує уваги», задача офісу попри автозапит": "days before expiry — “urgent” priority, the attention tile, an office task despite the auto-request", "з правила": "from the rule",
   // автозапит документів (батч 6)
   "працівник надсилає сам": "worker sends it himself", "Система сама просить цей документ у бот перед кінцем строку і нагадує; офіс отримує задачу лише перевірити файл або звʼязатись": "The system asks the worker for this document via the bot before it expires and reminds them; the office only gets a task to check the file or to get in touch",
   "Автозапит документів у працівника": "Auto-request documents from the worker", "для типів «працівник надсилає сам» (Налаштування → Документи) і людей з Telegram": "for “worker sends it himself” types (Settings → Documents) and people with Telegram",

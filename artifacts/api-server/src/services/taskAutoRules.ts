@@ -17,12 +17,13 @@ import {
 import { defaultChecklist } from "./taskResolve";
 import { normalizeChecklist } from "./taskUtils";
 import { autoRequestDocuments, selfServiceTypeIds, silenceDays } from "./docRequests";
+import { loadLeadDays } from "./legalityRecompute";
 import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
 export interface AutoRuleDef { code: string; label: string; description: string; leadDays: number | null; enabledByDefault: boolean; scheduler?: boolean }
 export const AUTO_RULE_DEFS: AutoRuleDef[] = [
-  { code: "doc_expiring", label: "Документ спливає", description: "Строк документа ≤ lead-днів типу (renewal_lead_days) або цього правила", leadDays: 14, enabledByDefault: true },
+  { code: "doc_expiring", label: "Документ спливає", description: "Строк документа у жовтій зоні (правило легальності «Строки та нагадування», або власний строк типу, або це поле)", leadDays: null, enabledByDefault: true },
   { code: "doc_expired", label: "Документ прострочений", description: "Строк минув, заміни немає", leadDays: null, enabledByDefault: true },
   { code: "contract", label: "Умова спливає або відсутня", description: "Вісь «умова» движка жовта чи червона", leadDays: 7, enabledByDefault: true },
   { code: "obligation", label: "Обов'язок з терміном", description: "Напр. powiadomienie для UA — 7 днів від початку праці", leadDays: null, enabledByDefault: true },
@@ -72,6 +73,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   // автозапит документів: self-service тип + Telegram → офісна задача лише при мовчанні
   // (silenceDays) або коли до строку ≤ officeThresholdDays; інакше система сама просить/нагадує
   const settings = await loadTaskSettings();
+  const ld = await loadLeadDays(); // жовта/червона зона з правила легальності
   const selfIds = settings.autoRequest ? await selfServiceTypeIds() : new Set<number>();
   const allDocs = await db.select().from(workerDocumentsTable).where(inArray(workerDocumentsTable.workerId, ids));
   const docsOf = (workerId: number, docTypeId: number | null) => allDocs.filter(d => d.workerId === workerId && d.docTypeId === docTypeId);
@@ -97,7 +99,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       if (latestByWorkerType.get(`${d.workerId}:${d.docTypeId}`) !== exp) continue; // є новіший документ того ж типу
       const w = wById.get(d.workerId)!; const ty = d.docTypeId != null ? types.get(d.docTypeId) : undefined;
       const daysLeft = diffDays(exp, today);
-      const leadDays = ty?.renewalLeadDays ?? lead("doc_expiring") ?? 30;
+      const leadDays = ty?.renewalLeadDays ?? lead("doc_expiring") ?? ld.warn;
       const name = ty?.name ?? d.title;
       if (daysLeft < 0 && on("doc_expired")) {
         out.push({ sourceKey: `doc:${d.id}`, rule: "doc_expired", title: `${name} прострочений з ${fmtDate(exp)}`, priority: "urgent", dueAt: exp, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
@@ -111,7 +113,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
           if (nr) out.push(nr);
           continue;
         }
-        out.push({ sourceKey: `doc:${d.id}`, rule: "doc_expiring", title: `${name} спливає ${fmtDate(exp)}`, priority: priorityForDays(daysLeft), dueAt: exp, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
+        out.push({ sourceKey: `doc:${d.id}`, rule: "doc_expiring", title: `${name} спливає ${fmtDate(exp)}`, priority: priorityForDays(daysLeft, ld.urgent, ld.warn), dueAt: exp, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
           autoParams: { docTypeCode: ty?.code ?? null, expiresAt: exp, daysLeft, workerName: w.fullName }, assign: { factoryId: w.factoryId } });
       }
     }
@@ -136,7 +138,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
         const daysLeft = exp ? diffDays(exp, today) : null;
         const leadDays = lead("contract") ?? 30;
         if (r.code === "contract_expiring" && daysLeft != null && daysLeft > leadDays) continue;
-        const prio: TaskPriority = r.code === "contract_expiring" ? priorityForDays(daysLeft) : r.code === "contract_awaiting_company" ? "high" : "high";
+        const prio: TaskPriority = r.code === "contract_expiring" ? priorityForDays(daysLeft, ld.urgent, ld.warn) : r.code === "contract_awaiting_company" ? "high" : "high";
         out.push({ sourceKey: `contract:${w.id}:${fid ?? 0}`, rule: "contract", title: REASON_TITLE[r.code]!(facName(fid), r.params), priority: prio, dueAt: exp ?? addDaysStr(today, 14),
           workerId: w.id, factoryId: fid, contractId: typeof r.params.contractId === "number" ? (r.params.contractId as number) : null,
           autoParams: { code: r.code, ...r.params, workerName: w.fullName }, assign: { factoryId: fid ?? w.factoryId } });
@@ -148,7 +150,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
         const due = String(o.dueAt).slice(0, 10);
         const daysLeft = diffDays(due, today);
         const what = o.code === "obligation.ua_notification" || o.params?.docCode === "powiadomienie_ua" ? "Подати powiadomienie" : `Виконати обов'язок ${o.code}`;
-        out.push({ sourceKey: `obl:${w.id}:${o.code}`, rule: "obligation", title: `${what} до ${fmtDate(due)}${o.overdue ? " (прострочено)" : ""}`, priority: o.overdue ? "urgent" : priorityForDays(daysLeft), dueAt: due,
+        out.push({ sourceKey: `obl:${w.id}:${o.code}`, rule: "obligation", title: `${what} до ${fmtDate(due)}${o.overdue ? " (прострочено)" : ""}`, priority: o.overdue ? "urgent" : priorityForDays(daysLeft, ld.urgent, ld.warn), dueAt: due,
           workerId: w.id, factoryId: w.factoryId, autoParams: { code: o.code, ...(o.params ?? {}), workerName: w.fullName }, assign: { factoryId: w.factoryId } });
       }
     }

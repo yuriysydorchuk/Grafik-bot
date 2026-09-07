@@ -306,11 +306,12 @@ router.get("/attention", async (_req, res) => {
   const { findDataDrift, driftTotal } = await import("../services/dataDrift");
   const dataDrift = driftTotal(await findDataDrift());
 
-  // легалізація (кеш worker_legality, лише активні): без підстави/даних, строки ≤14 днів, аплоуди з бота на перевірці
+  // легалізація (кеш worker_legality, лише активні): без підстави/даних, строки в червоній зоні (defaults.lead_days.urgentDays), аплоуди з бота на перевірці
+  const leadDays = await (await import("../services/legalityRecompute")).loadLeadDays();
   const [legalityIllegal, legalityExpiring, pendingDocUploads] = await Promise.all([
     count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable).where(inArray(workerLegalityTable.overall, ["illegal", "unknown"]))),
     count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable)
-      .where(and(gte(workerLegalityTable.nextExpiryAt, today), lte(workerLegalityTable.nextExpiryAt, addDaysStr(today, 14))))),
+      .where(and(gte(workerLegalityTable.nextExpiryAt, today), lte(workerLegalityTable.nextExpiryAt, addDaysStr(today, leadDays.urgent))))),
     count(db.select({ n: sql<number>`count(*)::int` }).from(workerDocumentsTable).innerJoin(workersTable, eq(workerDocumentsTable.workerId, workersTable.id))
       .where(and(eq(workerDocumentsTable.status, "pending"), eq(workersTable.isActive, true)))),
   ]);
@@ -318,7 +319,7 @@ router.get("/attention", async (_req, res) => {
   ok(res, {
     pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned,
     unmarkedAttendance, driverGaps, availabilityMissing, dataDrift,
-    legalityIllegal, legalityExpiring, pendingDocUploads,
+    legalityIllegal, legalityExpiring, pendingDocUploads, legalityUrgentDays: leadDays.urgent,
   });
 });
 

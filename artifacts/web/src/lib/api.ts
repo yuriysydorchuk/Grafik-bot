@@ -100,7 +100,7 @@ export interface WorkerDocument {
   requestedAt: string | null; requestedBy: number | null; requestRemindCount?: number; requestRemindedAt?: string | null;
   attrs: Record<string, unknown> | null; // типоспецифічні атрибути (lib/documentFields.ts): TRC {laborMarketAccess}
 }
-export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number }
+export interface LegalizationGlobals { today: string; ukrStatusEnd: string | null; defaultLeadDays: number; urgentDays: number }
 // Мапа «група виплат ↔ старий статус ↔ типи документів» (GET /legalization/status-map, services/legalStatusMap.ts)
 export type PayrollGroupCode = "A_cash" | "B_student" | "C_registered" | "N_none";
 export interface LegalStatusMap {
