@@ -18,7 +18,9 @@ const fail = (res: any, code: number, msg: string) => res.status(code).json({ er
 
 const KINDS = [
   "umowa", "regulamin", "zus", "tax", "ppk", "bhp",
-  "wniosek_konto", "wniosek_reka", "wniosek_zaliczki", "andros_extra", "sprzatanie_umowa", "custom",
+  "wniosek_konto", "wniosek_reka", "wniosek_zaliczki", "andros_extra", "sprzatanie_umowa",
+  "swiadectwo", // документ при звільненні (świadectwo pracy / zaświadczenie) — ланцюжок звільнення, без підпису працівника
+  "custom",
 ] as const;
 const SCOPES = ["all", "company", "factory"] as const;
 const LANGS = ["pl", "en", "es", "ru", "uk"] as const;

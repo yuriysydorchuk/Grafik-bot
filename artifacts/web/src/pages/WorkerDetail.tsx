@@ -2832,7 +2832,7 @@ function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(date ?? "");
   const save = useMutation({
-    mutationFn: () => patch(`/workers/${workerId}`, { firstWorkDate: draft || null }),
+    mutationFn: (d: string | null) => patch(`/workers/${workerId}`, { firstWorkDate: d }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setEditing(false); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -2840,8 +2840,8 @@ function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date
     <InfoRow icon={CalendarCheck} label={t("Перший робочий день")}>
       {editing ? (
         <span className="flex items-center gap-1">
-          <input type="date" value={draft} onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          <button className="text-xs font-medium text-emerald-600" onClick={() => save.mutate()}>{t("Зберегти")}</button>
+          <input type="date" value={draft} autoFocus onChange={e => { setDraft(e.target.value); if (e.target.value) save.mutate(e.target.value); }} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          {date && <button className="text-xs text-rose-500" onClick={() => save.mutate(null)}>{t("очистити")}</button>}
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : readOnly ? (
@@ -2867,18 +2867,17 @@ function TerminationRow({ workerId, date, readOnly }: { workerId: number; date: 
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); toast.success(r.firedNow ? t("Дата вже настала — працівника звільнено") : t("Збережено")); },
     onError: (e: any) => toast.error(e.message),
   });
-  const submit = async () => {
-    if (!draft) return save.mutate(null);
+  const submit = async (d: string) => {
+    if (!d) return;
     const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
-    if (draft <= today && !(await confirmDlg({ title: t("Звільнити зараз?"), message: t("Дата вже настала — працівник буде звільнений одразу цією датою."), confirmText: t("Звільнити") }))) return;
-    save.mutate(draft);
+    if (d <= today && !(await confirmDlg({ title: t("Звільнити зараз?"), message: t("Дата вже настала — працівник буде звільнений одразу цією датою."), confirmText: t("Звільнити") }))) return;
+    save.mutate(d);
   };
   return (
     <InfoRow icon={UserX} label={t("Виповідзення")}>
       {editing ? (
         <span className="flex items-center gap-1">
-          <input type="date" value={draft} onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
+          <input type="date" value={draft} autoFocus onChange={e => { setDraft(e.target.value); void submit(e.target.value); }} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
           {date && <button className="text-xs text-rose-500" onClick={() => save.mutate(null)}>{t("скасувати виповідзення")}</button>}
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>

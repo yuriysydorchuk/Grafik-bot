@@ -6,7 +6,8 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import {
   hasTestDb, resetDb, closeDb, db, app, seedAdmin, workersTable, factoriesTable, companiesTable, workerDocumentsTable,
-  workerChangesTable, scheduleWeeksTable, scheduleEntriesTable, availabilityTable, contractsTable, tasksTable, taskAutoRulesTable, workerQuestionnairesTable,
+  workerChangesTable, scheduleWeeksTable, scheduleEntriesTable, availabilityTable, contractsTable, contractFilesTable, tasksTable, taskAutoRulesTable, workerQuestionnairesTable,
+  documentTemplatesTable, signatureEventsTable,
 } from "../test/harness.ts";
 import { seedLegalizationCatalog } from "./legalizationSeed.ts";
 import { ensureDocumentType } from "./workerDocuments.ts";
@@ -15,13 +16,18 @@ import { fireWorker, setTerminationDate, fireDueTerminations } from "./workerFir
 import { computeFirstWorkDate, ensureFirstWorkDate } from "./firstWorkDate.ts";
 import { syncUaNotificationTasks, uaSend, uaCard, uaUploadConfirmation, UA_SOURCE } from "./uaNotification.ts";
 import { collectCandidates, ensureAutoRules } from "./taskAutoRules.ts";
+import { deliverTerminationDoc } from "./terminationFlow.ts";
+import { closeBrowser } from "./contracts.ts";
+import { runTaskAction } from "./taskResolve.ts";
+import { sent } from "../test/botHarness.ts";
+import { ensureUploadDirs } from "../lib/uploads.ts";
 import { resetSent } from "../test/botHarness.ts";
 import { addDaysStr } from "../lib/dates.ts";
 import { dateStr } from "./taskUtils.ts";
 
 const opts = { skip: hasTestDb ? false : "set TEST_DATABASE_URL to run integration tests" };
 beforeEach(async () => { if (hasTestDb) { await resetDb(); await seedLegalizationCatalog(); await ensureAutoRules(); resetSent(); } });
-after(async () => { if (hasTestDb) await closeDb(); });
+after(async () => { if (hasTestDb) { await closeBrowser(); await closeDb(); } }); // closeBrowser — headless Chrome генерації PDF, інакше процес не завершується
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 const H = { "X-Requested-With": "grafik" };
 // понеділок тижня, що містить дату
@@ -175,4 +181,44 @@ test("powiadomienie UA: ступінь 1 на 3-й день графіковій
   const [t2b] = await db.select().from(tasksTable).where(eq(tasksTable.id, t2!.id));
   assert.equal(t2b?.status, "auto_resolved");
   assert.equal((await recomputeWorkerLegality(w!.id, today))?.obligations[0]?.satisfied, true);
+});
+
+test("документ звільнення: шаблон swiadectwo → PDF без анкети, задача графіковій, «надіслати» → Telegram, статус sent, задача зникає з кандидатів", opts, async () => {
+  ensureUploadDirs();
+  const { adminId: schedulerId, cookie } = await seedAdmin({ name: "Grafikowa" });
+  const [es] = await db.insert(companiesTable).values({ name: "ES", legalName: "Eurosupport Group Sp. z o.o.", nip: "1111111111", regon: "222", pkd: "78.10.Z", street: "Lipowa", houseNumber: "1", postalCode: "20-000", city: "Lublin", representative: "Alona Kovalchuk – Prezes" }).returning();
+  const [f] = await db.insert(factoriesTable).values({ name: "AGRAM", shiftCount: 2, schedulerAdminId: schedulerId, companyId: es!.id, contractDuties: "pakowanie" }).returning();
+  const html = `<div><h1>ŚWIADECTWO PRACY</h1><p>{%Imię%} {%Nazwisko%}, {%Data urodzenia data:(d.m.Y)%}</p><p>{%Nazwa firmy%} REGON {%REGON firmy%}-{%PKD firmy%}</p><p>od {%Data rozpoczęcia pracy data:(d.m.Y)%} do {%Data zakończenia pracy data:(d.m.Y)%} · {%Stanowisko%} {%Czynności%} · {%Nazwa Klienta%}</p><div style="border:1px dashed #999">{%Podpis odręczny pracodawcy%}</div></div>`;
+  await db.insert(documentTemplatesTable).values({ kind: "swiadectwo", title: "Świadectwo pracy", isBase: true, scope: "all", body: { pl: html } });
+  const [w] = await db.insert(workersTable).values({ fullName: "Bondar Olena", firstName: "Olena", lastName: "Bondar", factoryId: f!.id, companyId: es!.id, isActive: true, telegramId: "77900", birthDate: "1991-02-03", firstWorkDate: addDaysStr(today, -40) }).returning();
+  const fireDate = addDaysStr(today, -1);
+  const r = await fireWorker({ workerId: w!.id, date: fireDate, adminId: schedulerId, source: "web" });
+  assert.ok(r.ok);
+  // генерація йде best-effort після відповіді — дочекатись
+  let task: typeof tasksTable.$inferSelect | undefined;
+  for (let i = 0; i < 40 && !task; i++) { await new Promise(r => setTimeout(r, 250)); [task] = await db.select().from(tasksTable).where(eq(tasksTable.sourceKey, `termdoc:${w!.id}:${fireDate}`)); }
+  assert.ok(task, "задача документа звільнення створена (анкети немає — allowUnverified)");
+  assert.equal(task!.assigneeAdminId, schedulerId); assert.ok(task!.contractId);
+  const [c] = await db.select().from(contractsTable).where(eq(contractsTable.id, task!.contractId!));
+  assert.equal(c?.status, "draft"); assert.equal(String(c?.dateTo), fireDate); assert.equal(String(c?.dateFrom), addDaysStr(today, -40));
+  assert.equal((c?.data as any)["PKD firmy"], "78.10.Z");
+  const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, c!.id));
+  assert.equal(files.length, 1); assert.ok(files[0]?.unsignedPath);
+  // «Як вирішити»: переглянути PDF + надіслати
+  const g = await request(app).get(`/api/tasks/${task!.id}`).set("Cookie", cookie);
+  assert.equal(g.status, 200);
+  assert.ok(g.body.resolution.actions.some((a: any) => a.code === "deliver_doc" && a.primary));
+  assert.ok(g.body.resolution.actions.some((a: any) => a.code === "view_doc" && a.href === `/api/contracts/${c!.id}/files/${files[0]!.id}`));
+  assert.ok((await collectCandidates(today)).some(x => x.sourceKey === task!.sourceKey), "поки не надіслано — кандидат живе");
+  const before = sent.length;
+  const msg = await runTaskAction(task!, "deliver_doc", { adminId: schedulerId, name: "Grafikowa" });
+  assert.match(msg, /Telegram/);
+  assert.ok(sent.length > before && sent.some(x => x.method === "sendDocument"), "файл пішов у бот");
+  const [c2] = await db.select().from(contractsTable).where(eq(contractsTable.id, c!.id));
+  assert.equal(c2?.status, "sent"); assert.ok(c2?.sentAt);
+  assert.ok((await db.select().from(signatureEventsTable).where(eq(signatureEventsTable.contractId, c!.id))).some(e => e.event === "file_sent"));
+  const [t2] = await db.select().from(tasksTable).where(eq(tasksTable.id, task!.id));
+  assert.ok((t2!.checklist as any[]).find(x => x.auto === "sent")?.done, "крок «надіслати» відмічено");
+  assert.ok(!(await collectCandidates(today)).some(x => x.sourceKey === task!.sourceKey), "надіслано — кандидата нема (нічний прогін закриє)");
+  void deliverTerminationDoc;
 });

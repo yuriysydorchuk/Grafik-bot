@@ -37,7 +37,7 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   // ланцюжок powiadomienie UA (services/uaNotification.ts): ступінь 1 графіковій на N-й день роботи → ступінь 2 виконавцю з params.stage2AdminId
   { code: "ua_notification", label: "Powiadomienie для UA (2 ступені)", description: "На N-й робочий день графіковій список нових людей → «Вислати» → задача подачі на praca.gov.pl виконавцю ступеня 2 (картка PSZ-PPWPU, завантаження підтвердження)", leadDays: null, enabledByDefault: true, scheduler: true },
   // ланцюжок звільнення (services/terminationFlow.ts)
-  { code: "termination_doc", label: "Документ звільнення — затвердити", description: "Після звільнення документ із шаблону «wypowiedzenie» → графікова затверджує й надсилає працівнику", leadDays: null, enabledByDefault: true, scheduler: true },
+  { code: "termination_doc", label: "Документ звільнення — затвердити", description: "Після звільнення świadectwo із шаблону «Świadectwo (звільнення)» → графікова переглядає й надсилає працівнику (email з анкети або Telegram)", leadDays: null, enabledByDefault: true, scheduler: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
 ];
 
@@ -74,6 +74,36 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     .from(workersTable).where(eq(workersTable.isActive, true));
   const wById = new Map(workers.map(w => [w.id, w]));
   const ids = workers.map(w => w.id);
+  // ланцюжок звільнення — по звільнених, тож ДО раннього виходу «немає активних»
+  // 11. Ланцюжок звільнення: ZWUA — звільнені за 90 днів без документа zus_zwua (задачу створює
+  // startTerminationFlow одразу; тут — підтримка/auto_resolved, коли документ зʼявився)
+  if (on("termination_zus")) {
+    const lead = rules.get("termination_zus")?.leadDays ?? 7;
+    const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
+      .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, new Date(Date.now() - 90 * 86400000))));
+    const zwua = (await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua")))[0];
+    const firedIds = fired.map(f => f.id);
+    const have = new Set(zwua && firedIds.length ? (await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, firedIds), eq(workerDocumentsTable.docTypeId, zwua.id), ne(workerDocumentsTable.status, "missing")))).map(d => d.workerId) : []);
+    for (const f of fired) {
+      if (have.has(f.id)) continue;
+      const fireDate = dateStr(f.firedAt)!;
+      const due = addDaysStr(fireDate, lead);
+      out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
+        workerId: f.id, factoryId: f.factoryId, autoParams: { workerName: f.fullName, fireDate, docTypeCode: "zus_zwua" }, assign: { factoryId: null } });
+    }
+  }
+  // 12. Документ звільнення: задача живе, поки пакет не надіслано/підписано (інакше auto_resolved)
+  if (on("termination_doc")) {
+    const openDoc = await db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_doc"), inArray(tasksTable.status, OPEN_STATUSES)));
+    for (const t of openDoc) {
+      if (!t.sourceKey || !t.contractId) continue;
+      const { contractsTable } = await import("@workspace/db");
+      const [c] = await db.select({ status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, t.contractId));
+      if (!c || !["draft", "pending_approval", "approved"].includes(c.status)) continue; // надіслано/підписано/скасовано → зникне
+      out.push({ sourceKey: t.sourceKey, rule: "termination_doc", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, contractId: t.contractId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: t.factoryId, useScheduler: true } });
+    }
+  }
+
   if (!ids.length) return out;
   // автозапит документів: self-service тип + Telegram → офісна задача лише при мовчанні
   // (silenceDays) або коли до строку ≤ officeThresholdDays; інакше система сама просить/нагадує
@@ -240,35 +270,6 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   }
   const restRules = out.filter(c => c.rule !== "contract" && c.rule !== "required_missing");
   out.length = 0; out.push(...restRules, ...grouped);
-
-  // 11. Ланцюжок звільнення: ZWUA — звільнені за 90 днів без документа zus_zwua (задачу створює
-  // startTerminationFlow одразу; тут — підтримка/auto_resolved, коли документ зʼявився)
-  if (on("termination_zus")) {
-    const lead = rules.get("termination_zus")?.leadDays ?? 7;
-    const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
-      .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, new Date(Date.now() - 90 * 86400000))));
-    const zwua = [...types.values()].find(t => t.code === "zus_zwua");
-    const firedIds = fired.map(f => f.id);
-    const have = new Set(zwua && firedIds.length ? (await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, firedIds), eq(workerDocumentsTable.docTypeId, zwua.id), ne(workerDocumentsTable.status, "missing")))).map(d => d.workerId) : []);
-    for (const f of fired) {
-      if (have.has(f.id)) continue;
-      const fireDate = dateStr(f.firedAt)!;
-      const due = addDaysStr(fireDate, lead);
-      out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
-        workerId: f.id, factoryId: f.factoryId, autoParams: { workerName: f.fullName, fireDate, docTypeCode: "zus_zwua" }, assign: { factoryId: null } });
-    }
-  }
-  // 12. Документ звільнення: задача живе, поки пакет не надіслано/підписано (інакше auto_resolved)
-  if (on("termination_doc")) {
-    const openDoc = await db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_doc"), inArray(tasksTable.status, OPEN_STATUSES)));
-    for (const t of openDoc) {
-      if (!t.sourceKey || !t.contractId) continue;
-      const { contractsTable } = await import("@workspace/db");
-      const [c] = await db.select({ status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, t.contractId));
-      if (!c || !["draft", "pending_approval", "approved"].includes(c.status)) continue; // надіслано/підписано/скасовано → зникне
-      out.push({ sourceKey: t.sourceKey, rule: "termination_doc", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, contractId: t.contractId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: t.factoryId, useScheduler: true } });
-    }
-  }
 
   // 10. Кандидати без руху
   if (on("candidate_stale")) {

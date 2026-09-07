@@ -304,8 +304,15 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
     case "termination_doc": {
       const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
       ctx.contract = { id: c?.id ?? null, status: c?.status ?? null, dateTo: c ? dateStr(c.dateTo) : null, factoryId: task.factoryId ?? null, factoryName: null, code: "termination" };
-      if (c?.sentAt || ["sent", "viewed", "worker_signed", "signed"].includes(c?.status ?? "")) satisfied.add("sent");
-      if (worker) actions.push({ code: "contracts", label: "Документ у профілі (переглянути, надіслати)", kind: "link", href: prof("contracts"), primary: true });
+      const sent = !!c?.sentAt || ["sent", "viewed", "worker_signed", "signed"].includes(c?.status ?? "");
+      if (sent) satisfied.add("sent");
+      if (c) {
+        const { contractFilesTable } = await import("@workspace/db");
+        const [file] = await db.select({ id: contractFilesTable.id }).from(contractFilesTable).where(eq(contractFilesTable.contractId, c.id)).orderBy(contractFilesTable.sortOrder).limit(1);
+        if (file) actions.push({ code: "view_doc", label: "Переглянути PDF", kind: "link", href: `/api/contracts/${c.id}/files/${file.id}`, primary: !sent });
+        if (!sent) actions.push({ code: "deliver_doc", label: "Затвердити й надіслати працівнику", kind: "api", primary: true, confirm: "Надіслати świadectwo працівнику (email з анкети або Telegram)?" });
+      }
+      if (worker) actions.push({ code: "contracts", label: "Документи в профілі", kind: "link", href: prof("contracts") });
       break;
     }
     default: {
@@ -412,6 +419,11 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
     case "ua_submitted": {
       if (!param) throw new Error("Немає працівника");
       message = await (await import("./uaNotification")).uaMarkSubmitted(task, param, actor);
+      break;
+    }
+    case "deliver_doc": {
+      if (!task.contractId) throw new Error("Задача без документа");
+      message = await (await import("./terminationFlow")).deliverTerminationDoc(task.contractId, actor);
       break;
     }
     case "message_worker": {

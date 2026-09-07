@@ -235,6 +235,7 @@ export async function buildContractData(
     "Kod pocztowy firmy": company?.postalCode ?? "",
     "Miejscowość firmy": company?.city ?? "",
     "Reprezentant firmy": company?.representative ?? "",
+    "PKD firmy": company?.pkd ?? "", // świadectwo pracy: «Nr REGON-PKD»
     "Data dzisiejsza": todayIso,
     "Data zawarcia umowy": todayIso,
     "Data rozpoczęcia pracy": dates.dateFrom ?? "",
@@ -363,9 +364,11 @@ export async function generateContract(opts: {
   contractRateBrutto?: number | null;
   /** Наша фірма в умові (мультифірмова фабрика — вибір адміна); null = за фабрикою/профілем */
   companyId?: number | null;
+  /** Документи офісу без підпису працівника (świadectwo pracy при звільненні): анкета може бути непідтверджена/відсутня */
+  allowUnverified?: boolean;
 }): Promise<Contract> {
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, opts.workerId));
-  if (!questionnaire || questionnaire.status !== "verified") {
+  if (!opts.allowUnverified && (!questionnaire || questionnaire.status !== "verified")) {
     throw new Error("Анкета працівника ще не підтверджена (verified) — генерація документів заблокована");
   }
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, opts.workerId));
@@ -389,7 +392,7 @@ export async function generateContract(opts: {
 
   const [contract] = await db.insert(contractsTable).values({
     workerId: opts.workerId, factoryId: opts.factoryId, companyId,
-    payoutMethod: opts.factoryId == null ? questionnaire.payoutMethod : null,
+    payoutMethod: opts.factoryId == null ? questionnaire?.payoutMethod ?? null : null,
     status: "draft", dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null,
     supersedesId: opts.supersedesId ?? null, data, generatedAt: new Date(),
     contractRateBrutto: opts.contractRateBrutto ?? null,
