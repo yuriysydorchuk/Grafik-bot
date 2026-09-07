@@ -26,7 +26,6 @@ import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, type WeekRow } fro
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
-import { nextWorkerCode } from "../lib/workerCode";
 import { randomInviteCode } from "../lib/invite";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
@@ -103,6 +102,7 @@ import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
 import { registerTaskActions } from "./handlers/tasks";
+import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
 
 bot.use(async (ctx, next) => {
   try {
@@ -127,6 +127,7 @@ registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
+registerRehire(bot as any, workerMenuFor);
 // «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
 registerTaskActions(bot as any);
 
@@ -165,6 +166,9 @@ async function genDriverCode(): Promise<string> {
 bot.start(async (ctx) => {
   const tid = String(ctx.from.id);
   const name = ctx.from.first_name;
+  // Запит на повернення вже в офісі — /start не має його стирати (bot/handlers/rehire.ts).
+  const pendingRehire = getState(tid);
+  if (pendingRehire?.action === REHIRE_PENDING) return ctx.reply(t(asLang(pendingRehire.data.lang), "rehire.alreadyPending"));
   clearState(tid);
 
   const payload = (ctx as any).startPayload as string | undefined;
@@ -242,6 +246,8 @@ bot.start(async (ctx) => {
       if (!fac) return ctx.reply("❌ Посилання недійсне або фабрику не знайдено. Зверніться до адміністратора.\n❌ Invalid link — please contact your administrator.");
       const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
       if (existing) {
+        // звільнений з тим самим Telegram → повернення на фабрику лінка (bot/handlers/rehire.ts)
+        if (!existing.isActive) return offerRehire(ctx, existing, { id: fac.id, name: fac.name });
         const wl = wlang(existing);
         return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
       }
@@ -3320,45 +3326,13 @@ bot.on("text", async (ctx) => {
     const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
     if (existing) {
       clearState(tid);
+      if (!existing.isActive) return offerRehire(ctx, existing, { id: data.factoryId, name: data.factoryName });
       const wl = wlang(existing);
       return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
     }
-    // Дублікат-детект: якщо офіс уже завів схожу людину — профіль усе одно
-    // створюємо (людина одразу працює з ботом), а адмін отримує кнопки
-    // «Обʼєднати» / «Різні люди»: злиття — ЛИШЕ після ручного затвердження.
-    const dup = findLikelyDuplicate(fullName, await db.select().from(workersTable));
-    const code = await nextWorkerCode();
-    const [freshWorker] = await db.insert(workersTable).values({
-      fullName, factoryId: data.factoryId, telegramId: tid, workerCode: code, language: lang,
-    }).returning();
-    import("../services/tasks").then(m => m.workerTrigger("worker_created", freshWorker)).catch(() => {}); // шаблони задач «при реєстрації»
-    clearState(tid);
-    // best-effort: let the owner + scheduler know someone self-registered (to verify/edit)
-    try {
-      const staff = await db.select().from(adminsTable);
-      const dupNote = dup
-        ? `\n⚠️ Можливий дублікат: схожий профіль <b>${escapeHtml(dup.fullName)}</b> №${escapeHtml(dup.workerCode ?? String(dup.id))}${dup.isActive ? "" : " (звільнений)"}.`
-        : "";
-      const dupKb = dup && freshWorker ? {
-        inline_keyboard: [[
-          { text: `🔗 Обʼєднати (лишити №${dup.workerCode ?? dup.id})`, callback_data: `wmerge_${dup.id}_${freshWorker.id}` },
-          { text: "👥 Різні люди", callback_data: "wmerge_skip" },
-        ]],
-      } : undefined;
-      for (const a of staff) {
-        if (!a.telegramId) continue;
-        if (a.role !== "owner" && a.role !== "scheduler") continue;
-        await bot.telegram.sendMessage(
-          a.telegramId,
-          `🆕 Новий працівник зареєструвався сам (старий лінк, без анкети):\n👤 <b>${escapeHtml(fullName)}</b>\n🏭 ${escapeHtml(data.factoryName ?? "")}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники) і попросіть скан паспорта.`,
-          { parse_mode: "HTML", ...(dupKb ? { reply_markup: dupKb } : {}) },
-        );
-      }
-    } catch { /* notification is best-effort */ }
-    return ctx.reply(
-      t(lang, "signup.done", { name: mdSafe(fullName), factory: mdSafe(data.factoryName) }),
-      { parse_mode: "Markdown", ...(await workerMenuFor({ factoryId: data.factoryId }, lang)) },
-    );
+    // Створення профілю + дубль-детект (звільнений дубль → «Це я?» замість
+    // нового профілю, активний → алерт «Обʼєднати/Різні люди») — bot/handlers/rehire.ts.
+    return completeNameSignup(ctx, tid, { fullName, factoryId: data.factoryId, factoryName: data.factoryName, lang });
   }
 
   // ── Factory shift times ───────────────────────────────────────────

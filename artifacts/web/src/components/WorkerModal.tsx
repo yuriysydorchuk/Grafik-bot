@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { post, patch, type Worker, type Factory, type Company } from "../lib/api";
@@ -65,11 +66,22 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
     gratyfikantName: gratyfikantName.trim() || null, pesel: pesel.trim() || null,
     middleName: middleName.trim() || null, ...finance,
   };
+  // 409 зі ЗВІЛЬНЕНИМ дублем — не плодимо профіль: «Відновити його» активує
+  // старий (історія/№/документи) з фабрикою й посадою з форми і відкриває профіль.
+  const [, navigate] = useLocation();
+  const [firedDup, setFiredDup] = useState<{ id: number; fullName: string; workerCode: string | null; message: string } | null>(null);
+  const restoreDup = useMutation({
+    mutationFn: (dupId: number) => post(`/workers/${dupId}/restore`, { factoryId: base.factoryId, positionId: base.positionId }),
+    onSuccess: (_r, dupId) => { toast.success(t("Відновлено")); onSaved(); navigate(`/workers/${dupId}`); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const save = useMutation({
     mutationFn: (force?: boolean) => worker ? patch(`/workers/${worker.id}`, base) : post(`/workers`, force ? { ...base, force: true } : base),
     onSuccess: () => { toast.success(worker ? t("Збережено") : t("Додано")); onSaved(); },
     onError: (e: any) => {
-      // 409 — схожа людина вже є: даємо свідомо створити дубль або відмовитись
+      // 409 — схожа людина вже є: звільнений → плашка «Відновити його»;
+      // активний → свідомо створити дубль або відмовитись
+      if (e.status === 409 && e.data?.duplicate && e.data.duplicate.isActive === false) { setFiredDup({ ...e.data.duplicate, message: e.message }); return; }
       if (e.status === 409 && window.confirm(`${e.message}\n\n${t("Створити нового працівника все одно?")}`)) save.mutate(true);
       else if (e.status !== 409) toast.error(e.message);
     },
@@ -209,6 +221,17 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
               <label className="flex items-center gap-1.5 text-sm text-slate-600"><input type="checkbox" checked={under26} onChange={e => setUnder26(e.target.checked)} /> {t("До 26 років")}</label>
             </div>
             <p className="mt-1.5 text-xs text-slate-400">{t("Студент + до 26 → без ZUS і податків (нетто = брутто). Решта: ZUS 11.26% + здоровотне 9%, ПІТ 0.")}</p>
+          </div>
+        )}
+        {firedDup && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            <div className="font-medium">{firedDup.message}</div>
+            <div className="mt-1 text-xs text-amber-700">{t("Відновити старий профіль (історія, номер, документи збережуться) — з фабрикою і посадою з цієї форми?")}</div>
+            <div className="mt-2 flex flex-wrap justify-end gap-2">
+              <Button variant="secondary" onClick={() => setFiredDup(null)}>{t("Скасувати")}</Button>
+              <Button variant="secondary" loading={save.isPending} onClick={() => { setFiredDup(null); save.mutate(true); }}>{t("Створити все одно")}</Button>
+              <Button loading={restoreDup.isPending} onClick={() => restoreDup.mutate(firedDup.id)}>🔄 {t("Відновити його")}</Button>
+            </div>
           </div>
         )}
         <div className="flex justify-end gap-2 pt-2">

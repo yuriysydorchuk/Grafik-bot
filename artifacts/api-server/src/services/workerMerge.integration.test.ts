@@ -53,3 +53,16 @@ test("mergeWorkers: звільнений дубль з іншим Telegram — �
   assert.equal(merged!.telegramId, "1", "Telegram активного профілю не зачеплено");
   assert.equal((await db.select().from(workersTable)).length, 1);
 });
+
+test("mergeWorkers: keep ЗВІЛЬНЕНИЙ + drop активний з іншим Telegram — keep активний, бере tg дубля", opts, async () => {
+  const [keep] = await db.insert(workersTable).values({ fullName: "A B", workerCode: "00001", telegramId: "1", isActive: false, status: "fired", firedAt: new Date() }).returning();
+  const [drop] = await db.insert(workersTable).values({ fullName: "A B", workerCode: "00002", telegramId: "2" }).returning();
+  const r = await mergeWorkers(keep!.id, drop!.id);
+  assert.deepEqual(r, { ok: true });
+  const [merged] = await db.select().from(workersTable).where(eq(workersTable.id, keep!.id));
+  assert.equal(merged!.telegramId, "2", "Telegram нового акаунта переїхав на старий профіль");
+  assert.equal(merged!.isActive, true);
+  assert.equal(merged!.status, "active");
+  assert.equal(merged!.firedAt, null);
+  assert.equal((await db.select().from(workersTable)).length, 1);
+});

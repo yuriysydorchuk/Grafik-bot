@@ -653,14 +653,17 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
   ok(res, { ...stripWorkerEcho(w, req), reportOffered });
 });
 
+// Відновлення звільненого — services/workerRehire.ts (спільно з «✅ Відновити»
+// офіса в боті). Опційні factoryId/positionId — «Відновити його» з модалки дубля
+// одразу ставить нову фабрику/посаду; кожна зміна — у журнал worker_changes.
 router.post("/workers/:id/restore", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const [w] = await db.update(workersTable).set({ isActive: true, status: "active", firedAt: null }).where(eq(workersTable.id, id)).returning();
-  await db.insert(workerChangesTable).values({
-    workerId: id, field: "restored", oldValue: "fired", newValue: "active",
-    effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
-  }).catch(err => logger.error({ err }, "worker change journal failed"));
-  ok(res, stripWorkerEcho(w, req));
+  const b = req.body ?? {};
+  const optId = (v: unknown): number | null | undefined => v === undefined ? undefined : (Number.isInteger(v) ? Number(v) : null);
+  const { restoreWorker } = await import("../services/workerRehire");
+  const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null });
+  if (!r.ok) return fail(res, 400, r.error);
+  ok(res, stripWorkerEcho(r.worker, req));
 });
 
 // ─── Залічки за бадання: список записів у профілі (додати/позначити/видалити) ─

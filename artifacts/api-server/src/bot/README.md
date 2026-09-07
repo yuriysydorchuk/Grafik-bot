@@ -34,9 +34,13 @@ bot/
 ├── time.ts       час/зміни у Europe/Warsaw (+ time.test.ts)
 ├── handlers/     виокремлені блоки, реєструються В index.ts ДО загальних on(text/photo/document), чужі стани пропускають через next():
 │   ├── invoiceScan.ts  «📄 Фактура» — скан фактури коштової (Document AI)
-│   └── absences.ts     «🚫 Мої пропуски» (список за місяць + попередній), одноразове пояснення пропуску
+│   ├── absences.ts     «🚫 Мої пропуски» (список за місяць + попередній), одноразове пояснення пропуску
 │                       (стан absent:explain_reason) і окрема опція «📎 Додати фото/документ» — один файл
 │                       (absence_attachments; стан absent:attach)
+│   └── rehire.ts       повернення звільненого: лінк фабрики (fac/facs) тим самим або новим Telegram →
+│                       «Повертаєтесь?»/«Це я?» → запит офісу (owner+scheduler) → «✅ Відновити/❌ Відхилити»
+│                       (rhadm:*) → services/workerRehire.restoreWorker; тут же завершення самореєстрації
+│                       за старим лінком (completeNameSignup). Стани rehire:isyou / rehire:pending
 └── README.md     цей файл
 ```
 

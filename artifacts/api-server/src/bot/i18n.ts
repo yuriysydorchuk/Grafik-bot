@@ -52,6 +52,20 @@ const D: Dict = {
   "signup.done":       { uk: "✅ Дякуємо, *{name}*!\nВас додано до фабрики *{factory}*.\n\nТепер ви можете заповнювати доступність через меню.", en: "✅ Thank you, *{name}*!\nYou have been added to factory *{factory}*.\n\nYou can now submit your availability via the menu.", es: "✅ ¡Gracias, *{name}*!\nHas sido añadido a la fábrica *{factory}*.\n\nAhora puedes enviar tu disponibilidad desde el menú.", ru: "✅ Спасибо, *{name}*!\nВы добавлены на фабрику *{factory}*.\n\nТеперь вы можете заполнять доступность через меню.", pl: "✅ Dziękujemy, *{name}*!\nZostałeś(-aś) dodany(-a) do fabryki *{factory}*.\n\nTeraz możesz wypełniać dyspozycyjność przez menu." },
   "signup.badName":    { uk: "❌ Введіть ім'я та прізвище латиницею (наприклад: Jan Kowalski):", en: "❌ Enter your first and last name in Latin letters (e.g. Jan Kowalski):", es: "❌ Escribe tu nombre y apellido en letras latinas (por ejemplo: Jan Kowalski):", ru: "❌ Введите имя и фамилию латиницей (например: Jan Kowalski):", pl: "❌ Podaj imię i nazwisko alfabetem łacińskim (np. Jan Kowalski):" },
   "signup.already":    { uk: "✅ Ви вже зареєстровані як *{name}*.", en: "✅ You are already registered as *{name}*.", es: "✅ Ya estás registrado como *{name}*.", ru: "✅ Вы уже зарегистрированы как *{name}*.", pl: "✅ Jesteś już zarejestrowany(-a) jako *{name}*." },
+  // ── Повернення звільненого («Повернутися на роботу», bot/handlers/rehire.ts) ──
+  "rehire.offer":      { uk: "👋 *{name}*, ваш профіль неактивний з {date}.\n\nПовертаєтесь на роботу на *{factory}*?", en: "👋 *{name}*, your profile has been inactive since {date}.\n\nAre you coming back to work at *{factory}*?", es: "👋 *{name}*, tu perfil está inactivo desde {date}.\n\n¿Vuelves a trabajar en *{factory}*?", ru: "👋 *{name}*, ваш профиль неактивен с {date}.\n\nВозвращаетесь на работу на *{factory}*?", pl: "👋 *{name}*, Twój profil jest nieaktywny od {date}.\n\nWracasz do pracy w *{factory}*?" },
+  "rehire.yes":        { uk: "✅ Так", en: "✅ Yes", es: "✅ Sí", ru: "✅ Да", pl: "✅ Tak" },
+  "rehire.no":         { uk: "❌ Ні", en: "❌ No", es: "❌ No", ru: "❌ Нет", pl: "❌ Nie" },
+  "rehire.sent":       { uk: "📨 Запит надіслано в офіс. Чекайте підтвердження — повідомимо тут.", en: "📨 Your request has been sent to the office. Please wait for confirmation — we'll let you know here.", es: "📨 Tu solicitud se envió a la oficina. Espera la confirmación — te avisaremos aquí.", ru: "📨 Запрос отправлен в офис. Ждите подтверждения — сообщим здесь.", pl: "📨 Prośba została wysłana do biura. Czekaj na potwierdzenie — damy znać tutaj." },
+  "rehire.alreadyPending": { uk: "⏳ Запит уже надіслано в офіс, чекайте відповіді.", en: "⏳ Your request is already with the office, please wait for the answer.", es: "⏳ Tu solicitud ya está en la oficina, espera la respuesta.", ru: "⏳ Запрос уже отправлен в офис, ждите ответа.", pl: "⏳ Prośba została już wysłana do biura, czekaj na odpowiedź." },
+  "rehire.declined":   { uk: "Добре. Якщо передумаєте — відкрийте посилання ще раз або зверніться в офіс.", en: "OK. If you change your mind, open the link again or contact the office.", es: "De acuerdo. Si cambias de opinión, abre el enlace otra vez o contacta con la oficina.", ru: "Хорошо. Если передумаете — откройте ссылку ещё раз или обратитесь в офис.", pl: "Dobrze. Jeśli zmienisz zdanie — otwórz link ponownie lub skontaktuj się z biurem." },
+  "rehire.isYou":      { uk: "🤔 Ви вже працювали у нас як *{name}* (№{code})?\nЦе ви?", en: "🤔 Have you worked with us before as *{name}* (No. {code})?\nIs that you?", es: "🤔 ¿Ya trabajaste con nosotros como *{name}* (nº {code})?\n¿Eres tú?", ru: "🤔 Вы уже работали у нас как *{name}* (№{code})?\nЭто вы?", pl: "🤔 Pracowałeś(-aś) już u nas jako *{name}* (nr {code})?\nTo Ty?" },
+  "rehire.me":         { uk: "✅ Це я", en: "✅ That's me", es: "✅ Soy yo", ru: "✅ Это я", pl: "✅ To ja" },
+  "rehire.notMe":      { uk: "❌ Ні, це інша людина", en: "❌ No, that's someone else", es: "❌ No, es otra persona", ru: "❌ Нет, это другой человек", pl: "❌ Nie, to ktoś inny" },
+  "rehire.updateTg":   { uk: "Оновити Telegram у вашому профілі на цей акаунт?", en: "Update the Telegram in your profile to this account?", es: "¿Actualizar el Telegram de tu perfil a esta cuenta?", ru: "Обновить Telegram в вашем профиле на этот аккаунт?", pl: "Zaktualizować Telegram w Twoim profilu na to konto?" },
+  "rehire.updateTgNo": { uk: "Добре. Щоб відновити профіль, зверніться в офіс.", en: "OK. To restore your profile, please contact the office.", es: "De acuerdo. Para restaurar tu perfil, contacta con la oficina.", ru: "Хорошо. Чтобы восстановить профиль, обратитесь в офис.", pl: "Dobrze. Aby przywrócić profil, skontaktuj się z biurem." },
+  "rehire.restored":   { uk: "✅ Вас відновлено на роботу на *{factory}*. Ласкаво просимо назад!", en: "✅ You have been restored at *{factory}*. Welcome back!", es: "✅ Has sido restaurado en *{factory}*. ¡Bienvenido de nuevo!", ru: "✅ Вы восстановлены на работе на *{factory}*. С возвращением!", pl: "✅ Przywrócono Cię do pracy w *{factory}*. Witamy z powrotem!" },
+  "rehire.rejected":   { uk: "❌ Запит на повернення відхилено. Зверніться в офіс.", en: "❌ Your return request was declined. Please contact the office.", es: "❌ Tu solicitud de regreso fue rechazada. Contacta con la oficina.", ru: "❌ Запрос на возвращение отклонён. Обратитесь в офис.", pl: "❌ Prośba o powrót została odrzucona. Skontaktuj się z biurem." },
   "ref.invited":       { uk: "👋 Вітаємо! Вас запросив(ла) *{name}* на роботу.\n\nЗалиште заявку — введіть ваше *ім'я та прізвище* латиницею (наприклад: Jan Kowalski):", en: "👋 Welcome! *{name}* invited you to work with us.\n\nLeave a request — enter your *first and last name* in Latin letters (e.g. Jan Kowalski):", es: "👋 ¡Bienvenido! *{name}* te invitó a trabajar con nosotros.\n\nDeja una solicitud: escribe tu *nombre y apellido* en letras latinas (por ejemplo: Jan Kowalski):", ru: "👋 Добро пожаловать! Вас пригласил(а) *{name}* на работу.\n\nОставьте заявку — введите ваши *имя и фамилию* латиницей (например: Jan Kowalski):", pl: "👋 Witamy! *{name}* zaprosił(a) Cię do pracy.\n\nZostaw zgłoszenie — podaj swoje *imię i nazwisko* (np. Jan Kowalski):" },
   "ref.phone":         { uk: "📞 Введіть ваш *номер телефону* (або надішліть /skip):", en: "📞 Enter your *phone number* (or send /skip):", es: "📞 Escribe tu *número de teléfono* (o envía /skip):", ru: "📞 Введите ваш *номер телефона* (или отправьте /skip):", pl: "📞 Podaj swój *numer telefonu* (lub wyślij /skip):" },
 
@@ -326,6 +340,16 @@ export const oLang = (v: any): Lang => (v === "en" ? "en" : v === "ru" ? "ru" : 
 
 // uk → en. Add pairs here as strings get wrapped with tb(). Proofread later.
 const BOT_EN: Record<string, string> = {
+  // Повернення звільненого (bot/handlers/rehire.ts) — запит офісу
+  "🔄 <b>{name}</b> (№{code}, звільнений {date}, був на {oldFactory}) просить повернутись на <b>{factory}</b>.": "🔄 <b>{name}</b> (No. {code}, left {date}, last at {oldFactory}) asks to return to <b>{factory}</b>.",
+  "⚠️ Новий Telegram-акаунт (старий: {old})": "⚠️ New Telegram account (old: {old})",
+  "✅ Відновити": "✅ Restore",
+  "❌ Відхилити": "❌ Reject",
+  "✅ Відновив(ла) {admin}": "✅ Restored by {admin}",
+  "❌ Відхилив(ла) {admin}": "❌ Rejected by {admin}",
+  "Вже вирішено": "Already decided",
+  "Відновлено": "Restored",
+  "Відхилено": "Rejected",
   // ── advances (admin) ──
   "Аванс відхилено": "Advance rejected",
   "Запит не знайдено.": "Request not found.",

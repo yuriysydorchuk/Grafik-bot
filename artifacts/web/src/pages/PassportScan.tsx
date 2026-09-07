@@ -41,6 +41,12 @@ const STR: Record<string, Record<Lang, string>> = {
   female: { uk: "Жіноча", en: "Female", es: "Femenino", ru: "Женский", pl: "Kobieta" },
   retakePhoto: { uk: "Переробити фото", en: "Retake photo", es: "Repetir foto", ru: "Переснять фото", pl: "Zrób zdjęcie ponownie" },
   confirmBtn: { uk: "Підтвердити", en: "Confirm", es: "Confirmar", ru: "Подтвердить", pl: "Potwierdź" },
+  // повернення звільненого: ім'я зі скану збіглось зі старим профілем (routes/passportScan.ts → rehireCandidate)
+  rehireTitle: { uk: "Ви вже працювали у нас?", en: "Have you worked with us before?", es: "¿Ya trabajaste con nosotros?", ru: "Вы уже работали у нас?", pl: "Pracowałeś(-aś) już u nas?" },
+  rehireText: { uk: "Знайдено профіль {name} (№{code}). Це ви?", en: "We found a profile {name} (No. {code}). Is that you?", es: "Encontramos un perfil {name} (nº {code}). ¿Eres tú?", ru: "Найден профиль {name} (№{code}). Это вы?", pl: "Znaleziono profil {name} (nr {code}). To Ty?" },
+  rehireHint: { uk: "Якщо це ви — старий профіль відновлять після підтвердження офісу (з цим Telegram), а анкету заповните зараз. Повідомимо в боті.", en: "If it's you, the office will restore your old profile (with this Telegram) after confirmation; fill in the questionnaire now. We'll let you know in the bot.", es: "Si eres tú, la oficina restaurará tu perfil antiguo (con este Telegram) tras confirmarlo; rellena el cuestionario ahora. Te avisaremos en el bot.", ru: "Если это вы — старый профиль восстановят после подтверждения офиса (с этим Telegram), а анкету заполните сейчас. Сообщим в боте.", pl: "Jeśli to Ty — biuro przywróci Twój stary profil (z tym Telegramem) po potwierdzeniu; ankietę wypełnij teraz. Damy znać w bocie." },
+  rehireMe: { uk: "✅ Це я, оновити мій Telegram", en: "✅ That's me, update my Telegram", es: "✅ Soy yo, actualizar mi Telegram", ru: "✅ Это я, обновить мой Telegram", pl: "✅ To ja, zaktualizuj mój Telegram" },
+  rehireNotMe: { uk: "❌ Ні, це інша людина", en: "❌ No, that's someone else", es: "❌ No, es otra persona", ru: "❌ Нет, это другой человек", pl: "❌ Nie, to ktoś inny" },
   badName: { uk: "Ім'я та прізвище — лише латиницею (напр. Jan Kowalski)", en: "Name — Latin letters only (e.g. Jan Kowalski)", es: "Nombre — solo letras latinas (p. ej. Jan Kowalski)", ru: "Имя — только латиницей (напр. Jan Kowalski)", pl: "Imię — tylko alfabet łaciński (np. Jan Kowalski)" },
   successTitle: { uk: "✅ Готово!", en: "✅ Done!", es: "✅ ¡Listo!", ru: "✅ Готово!", pl: "✅ Gotowe!" },
   successBody: { uk: "Дані передано в офіс. Можеш закрити цю сторінку.", en: "Your details have been sent to the office. You can close this page now.", es: "Tus datos se enviaron a la oficina. Ya puedes cerrar esta página.", ru: "Данные переданы в офис. Можешь закрыть эту страницу.", pl: "Dane przesłano do biura. Możesz zamknąć tę stronę." },
@@ -136,7 +142,8 @@ export default function PassportScan() {
 
   const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState<"capture" | "analyzing" | "confirm" | "questionnaire" | "success">("capture");
+  const [step, setStep] = useState<"capture" | "analyzing" | "confirm" | "rehire" | "questionnaire" | "success">("capture");
+  const [rehire, setRehire] = useState<{ candidate: { id: number; fullName: string; workerCode: string | null }; fields: Omit<Draft, "fullName"> } | null>(null);
   const [analyzeErr, setAnalyzeErr] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
@@ -171,7 +178,19 @@ export default function PassportScan() {
   async function submitConfirm(fields: Omit<Draft, "fullName">) {
     setBusy(true);
     try {
-      await apiPostJson(`/passport-scan/${token}/confirm`, fields);
+      const r = await apiPostJson<{ rehireCandidate?: { id: number; fullName: string; workerCode: string | null } }>(`/passport-scan/${token}/confirm`, fields);
+      // звільнений профіль зі схожим ім'ям — спершу «Це ви?» (нічого ще не створено)
+      if (r?.rehireCandidate) { setRehire({ candidate: r.rehireCandidate, fields }); setStep("rehire"); return; }
+      setStep("questionnaire");
+    } catch (e: any) {
+      setAnalyzeErr(e.message);
+    } finally { setBusy(false); }
+  }
+  async function submitRehire(me: boolean) {
+    if (!rehire) return;
+    setBusy(true); setAnalyzeErr(null);
+    try {
+      await apiPostJson(`/passport-scan/${token}/confirm`, me ? { ...rehire.fields, rehireWorkerId: rehire.candidate.id } : { ...rehire.fields, force: true });
       setStep("questionnaire");
     } catch (e: any) {
       setAnalyzeErr(e.message);
@@ -244,6 +263,18 @@ export default function PassportScan() {
             onSubmit={submitConfirm} />
         )}
 
+        {step === "rehire" && rehire && (
+          <Card className="p-4">
+            <h2 className="mb-1 text-base font-semibold text-slate-800">{s("rehireTitle")}</h2>
+            <p className="mb-2 text-sm text-slate-700">{s("rehireText").replace("{name}", rehire.candidate.fullName).replace("{code}", rehire.candidate.workerCode ?? String(rehire.candidate.id))}</p>
+            <p className="mb-4 text-xs text-slate-500">{s("rehireHint")}</p>
+            {analyzeErr && <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{analyzeErr}</p>}
+            <div className="flex flex-col gap-2">
+              <Button onClick={() => submitRehire(true)} disabled={busy} className="justify-center">{s("rehireMe")}</Button>
+              <Button variant="secondary" onClick={() => submitRehire(false)} disabled={busy} className="justify-center">{s("rehireNotMe")}</Button>
+            </div>
+          </Card>
+        )}
         {step === "questionnaire" && (
           // Поля ім'я/по-батькові/прізвище тут — лише коли скану в ЦІЙ сесії не
           // було (needsPassportScan=false): ConfirmForm їх уже спитав і записав,

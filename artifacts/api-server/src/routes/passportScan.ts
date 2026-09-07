@@ -29,6 +29,7 @@ import { findLikelyDuplicate } from "../bot/workerMatch";
 import { bot } from "../bot/instance";
 import { logger } from "../lib/logger";
 import { ensureDocumentType, applyWorkerDocumentUpload } from "../services/workerDocuments";
+import { requestRehire } from "../bot/handlers/rehire";
 
 const router: IRouter = Router();
 const ok = (res: any, data: any) => res.json(data);
@@ -179,7 +180,20 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
   // Для anketa-токена з уже відомим workerId (запрошення ІСНУЮЧОГО працівника
   // без паспорта на файлі) — доповнюємо профіль, НЕ створюємо новий (інакше
   // дублікат): код лишається як є, порожні поля добираються зі сканування.
-  const isExistingWorker = !!row.workerId;
+  // Повернення звільненого (self-лінк, новий Telegram): ім'я зі скану збіглось
+  // зі звільненим профілем → без force/rehireWorkerId нічого не створюємо, а
+  // віддаємо кандидата — сторінка питає «Це я?» (bot/handlers/rehire.ts).
+  // rehireWorkerId = «це я»: скан і анкета йдуть у СТАРИЙ профіль (як для
+  // anketa-токена), офісу летить запит «✅ Відновити»; force = «інша людина».
+  const rehireWorkerId = Number.isInteger(req.body?.rehireWorkerId) ? Number(req.body.rehireWorkerId) : null;
+  const forceNew = req.body?.force === true;
+  let rehireTarget: typeof workersTable.$inferSelect | null = null;
+  if (rehireWorkerId != null && row.purpose === "self" && !row.workerId) {
+    const [cand] = await db.select().from(workersTable).where(eq(workersTable.id, rehireWorkerId));
+    if (!cand || cand.isActive) return fail(res, 400, "Профіль для повернення не знайдено або вже активний.");
+    rehireTarget = cand;
+  }
+  const isExistingWorker = !!row.workerId || !!rehireTarget;
   const LATIN_NAME = /^[a-ząćęłńóśźż' -]+$/i;
   const firstName = strOrNull(req.body?.firstName);
   const middleNameIn = strOrNull(req.body?.middleName);
@@ -190,8 +204,12 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
 
   try {
     let worker: typeof workersTable.$inferSelect;
+    if (row.purpose === "self" && !isExistingWorker && !forceNew) {
+      const dup = findLikelyDuplicate([firstName, lastName].join(" "), await db.select().from(workersTable));
+      if (dup && !dup.isActive) return ok(res, { rehireCandidate: { id: dup.id, fullName: dup.fullName, workerCode: dup.workerCode } });
+    }
     if (isExistingWorker) {
-      const [existing] = await db.select().from(workersTable).where(eq(workersTable.id, row.workerId!));
+      const [existing] = await db.select().from(workersTable).where(eq(workersTable.id, rehireTarget?.id ?? row.workerId!));
       if (!existing) return fail(res, 404, "Працівника не знайдено.");
       const [updated] = await db.update(workersTable).set({
         firstName: existing.firstName ?? firstName,
@@ -246,13 +264,20 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       await db.update(candidatesTable).set({ workerId: worker.id, stage: "hired" }).where(eq(candidatesTable.id, row.candidateId));
     }
 
+    // Повернення: запит офісу «✅ Відновити / ❌ Відхилити» (фабрика — з лінка,
+    // Telegram — з токена; profile активується лише після рішення офісу).
+    if (rehireTarget && row.factoryId && row.telegramId) {
+      try { await requestRehire({ worker, factoryId: row.factoryId, tid: row.telegramId, lang: row.language as any }); }
+      catch (e) { logger.warn({ err: e, workerId: worker.id }, "rehire request from passport-scan failed"); }
+    }
+
     // Дублікат-детект + сповіщення офісу — best-effort, не блокує результат.
     // Лише для щойно створеного профілю (office/self); для isExistingWorker
     // офіс сам ініціював запрошення — повторне сповіщення не потрібне.
     if (!isExistingWorker) try {
-      const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+      const allWorkers = await db.select().from(workersTable);
       const dup = findLikelyDuplicate(worker.fullName, allWorkers.filter(w => w.id !== worker.id));
-      const dupNote = dup ? `\n⚠️ Можливий дублікат: ${dup.fullName} (№${dup.workerCode ?? dup.id}).` : "";
+      const dupNote = dup ? `\n⚠️ Можливий дублікат: ${dup.fullName} (№${dup.workerCode ?? dup.id}${dup.isActive ? "" : ", звільнений"}).` : "";
 
       if (row.purpose === "office" && row.createdBy) {
         const [admin] = await db.select().from(adminsTable).where(eq(adminsTable.id, row.createdBy));

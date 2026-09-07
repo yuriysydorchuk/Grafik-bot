@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine,
+  Download, Printer, Mail, ScanLine, UserCheck,
 } from "lucide-react";
 import { SendFileModal, printFile } from "../components/SendFileModal";
 import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
@@ -132,6 +132,13 @@ export default function WorkerDetail() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
     onError: (e: any) => toast.error(e.message),
   });
+  // повернення звільненого прямо з профілю (той самий POST, що й у списку)
+  const confirmDlg = useConfirm();
+  const restore = useMutation({
+    mutationFn: () => post(`/workers/${id}/restore`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Відновлено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
   // що зачепить» замість прямого PATCH (лише для користувачів з cap svodni)
   const canSvodni = can(me, "svodni");
@@ -217,6 +224,13 @@ export default function WorkerDetail() {
                 </select>
               </span>
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
+              {!w.isActive && (
+                <button type="button" onClick={async () => {
+                  if (await confirmDlg({ title: t("Відновити працівника?"), message: t("Профіль знову стане активним, історія і документи збережуться."), confirmText: t("Відновити") })) restore.mutate();
+                }} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100" disabled={restore.isPending}>
+                  <UserCheck className="h-3.5 w-3.5" /> {t("Відновити")}
+                </button>
+              )}
             </h1>
             {/* Фірма/фабрика/посада — редаговані прямо тут (badge-select), щоб
                 не дублювати те саме ще й рядками в групі «Робота» нижче. */}

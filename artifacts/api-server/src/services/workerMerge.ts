@@ -15,16 +15,19 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
   const [keep] = await db.select().from(workersTable).where(eq(workersTable.id, keepId));
   const [drop] = await db.select().from(workersTable).where(eq(workersTable.id, dropId));
   if (!keep || !drop) return { ok: false, error: "профіль не знайдено" };
-  // Telegram головного профілю — пріоритетний: у ЗВІЛЬНЕНОГО дубля інший Telegram
-  // просто відкидається. Відмова — лише коли обидва профілі активні з різними tg.
-  if (keep.telegramId && drop.telegramId && keep.telegramId !== drop.telegramId && drop.isActive) {
+  // Telegram АКТИВНОГО профілю — пріоритетний: у звільненого дубля інший Telegram
+  // просто відкидається (keep звільнений + drop активний → keep бере tg drop —
+  // людина повернулась із новим акаунтом, а офіс уже завів дубль). Відмова —
+  // лише коли обидва профілі активні з різними tg.
+  if (keep.telegramId && drop.telegramId && keep.telegramId !== drop.telegramId && drop.isActive && keep.isActive) {
     return { ok: false, error: "обидва профілі активні з різними Telegram — обʼєднувати треба вручну" };
   }
+  const takeDropTg = !!drop.telegramId && (!keep.telegramId || (!keep.isActive && drop.isActive && drop.telegramId !== keep.telegramId));
 
   await db.transaction(async tx => {
     // порожні поля keep доповнюємо даними drop (Telegram — головне)
     const fill: Partial<typeof workersTable.$inferInsert> = {};
-    if (!keep.telegramId && drop.telegramId) fill.telegramId = drop.telegramId;
+    if (takeDropTg) fill.telegramId = drop.telegramId;
     if (!keep.language && drop.language) fill.language = drop.language;
     if (!keep.birthDate && drop.birthDate) fill.birthDate = drop.birthDate;
     if (!keep.legalStatus && drop.legalStatus) fill.legalStatus = drop.legalStatus;
