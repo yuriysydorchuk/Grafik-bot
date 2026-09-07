@@ -53,23 +53,23 @@ test("self-service документ у вікні: запит у бот з лі�
   assert.equal(st2.autoRequested + st2.autoReminded, 0);
 });
 
-test("нагадування за драбиною 7/14, потім задача «не надіслав»; строк впритул → задача офісу навіть після запиту", opts, async () => {
+test("нагадування за драбиною 3/7, потім задача «не надіслав»; строк впритул → задача офісу навіть після запиту", opts, async () => {
   await seedAdmin();
   const [w] = await db.insert(workersTable).values({ fullName: "Ivan Kovalenko", isActive: true, telegramId: "88010", language: "pl" }).returning();
   const [pass] = await db.insert(documentTypesTable).values({ name: "Paszport", code: "passport", selfService: true, renewalLeadDays: 60 }).returning();
-  const [d] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: pass!.id, title: "Paszport", status: "present", expiresAt: addDaysStr(today, 40), requestedAt: daysAgo(8), requestedBy: null }).returning();
+  const [d] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: pass!.id, title: "Paszport", status: "present", expiresAt: addDaysStr(today, 40), requestedAt: daysAgo(5), requestedBy: null }).returning();
   resetSent();
   let st = await runAutoTasks(today);
-  assert.equal(st.autoReminded, 1, "8 днів після запиту → перше нагадування");
+  assert.equal(st.autoReminded, 1, "5 днів після запиту → перше нагадування (крок 3)");
   assert.match(sent.find(s => String(s.chatId) === "88010")?.text ?? "", /Przypomnienie/);
   assert.equal((await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, d!.id)))[0]?.requestRemindCount, 1);
   const docTasks = async () => (await openTasks()).filter(t => t.workerId === w!.id && ["auto:doc_expiring", "auto:doc_no_response"].includes(t.source));
-  assert.equal((await docTasks()).length, 0, "мовчання 8 < 14 — задачі ще нема");
+  assert.equal((await docTasks()).length, 0, "мовчання 5 < 7 — задачі ще нема");
 
   await db.update(workerDocumentsTable).set({ requestedAt: daysAgo(15) }).where(eq(workerDocumentsTable.id, d!.id));
   resetSent();
   st = await runAutoTasks(today);
-  assert.equal(st.autoReminded, 1, "15 днів → друге нагадування (крок 14)");
+  assert.equal(st.autoReminded, 1, "15 днів → друге нагадування (крок 7)");
   const nores = (await openTasks()).find(t => t.source === "auto:doc_no_response");
   assert.ok(nores, "задача офісу «не надіслав»"); assert.match(nores!.title, /Не надіслав документ: Paszport/);
   assert.equal((nores!.autoParams as any).reminders, 2);
@@ -120,23 +120,15 @@ test("публічний лінк /docs/:token: список запитаног�
   assert.equal((await request(app).get(`/api/docs/nope`)).status, 404);
 });
 
-test("відсутній обовʼязковий self-service документ: автозапит замість задачі «Бракує»", opts, async () => {
+test("відсутній обовʼязковий документ: система НЕ просить, задача «Бракує» з усіма пунктами", opts, async () => {
   await seedAdmin();
   const [w] = await db.insert(workersTable).values({ fullName: "Ivan Kovalenko", isActive: true, telegramId: "88030" }).returning();
-  const [pass] = await db.insert(documentTypesTable).values({ name: "Paszport", code: "passport", selfService: true }).returning();
-  void pass;
-  // кеш легальності сідимо вручну (запит документа перераховує його движком, тому кандидатів беремо напряму)
-  const seedLegality = () => db.insert(workerLegalityTable).values({ workerId: w!.id, stay: "unknown", work: "unknown", overall: "illegal", requiredMissing: ["passport", "stay_basis"], computedAt: new Date() })
-    .onConflictDoUpdate({ target: workerLegalityTable.workerId, set: { requiredMissing: ["passport", "stay_basis"], overall: "illegal" } });
-  await seedLegality();
+  await db.insert(documentTypesTable).values({ name: "Paszport", code: "passport", selfService: true });
+  await db.insert(workerLegalityTable).values({ workerId: w!.id, stay: "unknown", work: "unknown", overall: "illegal", requiredMissing: ["passport", "stay_basis"], computedAt: new Date() });
   resetSent();
   const st = await autoRequestDocuments(today);
-  assert.equal(st.requested, 1, "паспорт запитано у працівника");
-  assert.ok(sent.some(s => String(s.chatId) === "88030"));
-  await seedLegality();
+  assert.equal(st.requested, 0, "відсутні не просимо"); assert.equal(sent.length, 0);
   const cands = await collectCandidates(today);
   const req = cands.find(c => c.rule === "required_missing");
-  assert.ok(req, "задача «Бракує» лишається для підстави перебування (не тип документа)");
-  assert.deepEqual((req!.autoParams as any).codes, ["stay_basis"], "паспорт випав із задачі — його просить система");
-  assert.ok(!cands.some(c => c.rule === "doc_no_response"), "щойно запитано — «не надіслав» ще нема");
+  assert.ok(req); assert.deepEqual((req!.autoParams as any).codes, ["passport", "stay_basis"]);
 });

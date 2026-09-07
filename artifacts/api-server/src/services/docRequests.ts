@@ -3,7 +3,7 @@
 // драбиною; офіс отримує задачу лише перевірити файл або звʼязатись, коли людина мовчить.
 // Лінк веде на публічну сторінку /docs/:token (routes/docRequests.ts) — камера/файл без сесії.
 // Той самий sendDocumentRequest використовує і ручний запит офісу (профіль, «Як вирішити»).
-import { db, workersTable, workerDocumentsTable, documentTypesTable, workerLegalityTable, passportScanTokensTable, taskAutoRulesTable } from "@workspace/db";
+import { db, workersTable, workerDocumentsTable, documentTypesTable, passportScanTokensTable, taskAutoRulesTable } from "@workspace/db";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { bot } from "../bot/instance";
 import { t as tw, asLang } from "../bot/i18n";
@@ -69,24 +69,22 @@ export async function autoRequestDocuments(today = warsawToday()): Promise<AutoR
   const types = await db.select().from(documentTypesTable).where(and(eq(documentTypesTable.selfService, true), eq(documentTypesTable.isActive, true)));
   if (!types.length) return stats;
   const tById = new Map(types.map(t => [t.id, t]));
-  const tByCode = new Map(types.filter(t => t.code).map(t => [t.code!, t]));
   const [rule] = await db.select().from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, "doc_expiring"));
-  const defaultLead = rule?.leadDays ?? 30;
+  const defaultLead = rule?.leadDays ?? 14;
   const workers = await db.select({ id: workersTable.id, telegramId: workersTable.telegramId }).from(workersTable).where(and(eq(workersTable.isActive, true), isNotNull(workersTable.telegramId)));
   if (!workers.length) return stats;
   const wIds = workers.map(w => w.id);
   const docs = await db.select().from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, wIds), inArray(workerDocumentsTable.docTypeId, [...tById.keys()])));
   const byWorkerType = new Map<string, typeof docs>();
   for (const d of docs) { const k = `${d.workerId}:${d.docTypeId}`; if (!byWorkerType.has(k)) byWorkerType.set(k, []); byWorkerType.get(k)!.push(d); }
-  const ladder = (s.workerLadder ?? [7, 14]).slice().sort((a, b) => a - b);
+  const ladder = (s.workerLadder ?? [3, 7]).slice().sort((a, b) => a - b);
 
-  const handle = async (workerId: number, docTypeId: number, reason: "expiring" | "missing") => {
+  const handle = async (workerId: number, docTypeId: number) => {
     const rows = byWorkerType.get(`${workerId}:${docTypeId}`) ?? [];
     // уже є файл на перевірці або новіший підтверджений → нічого не просимо
     if (rows.some(d => d.status === "pending")) return;
     const cur = rows.sort((a, b) => (dateStr(b.expiresAt) ?? "").localeCompare(dateStr(a.expiresAt) ?? ""))[0];
     if (!cur || !cur.requestedAt) { // ще не просили → запит
-      if (reason === "expiring" && cur && cur.requestedAt) return;
       const r = await sendDocumentRequest({ workerId, docTypeId, kind: "auto" });
       if (r.sent) stats.requested++;
       return;
@@ -108,14 +106,9 @@ export async function autoRequestDocuments(today = warsawToday()): Promise<AutoR
     if (daysLeft > lead) continue;
     const newer = (byWorkerType.get(`${d.workerId}:${d.docTypeId}`) ?? []).some(x => x.id !== d.id && (dateStr(x.expiresAt) ?? "") > exp);
     if (newer) continue;
-    await handle(d.workerId, d.docTypeId!, "expiring");
+    await handle(d.workerId, d.docTypeId!);
   }
-  // 2) відсутні обовʼязкові (кеш легальності: коди типів)
-  const lg = await db.select({ workerId: workerLegalityTable.workerId, requiredMissing: workerLegalityTable.requiredMissing }).from(workerLegalityTable).where(inArray(workerLegalityTable.workerId, wIds));
-  for (const r of lg) for (const code of r.requiredMissing ?? []) {
-    const ty = tByCode.get(code); if (!ty) continue;
-    await handle(r.workerId, ty.id, "missing");
-  }
+  // Відсутні обовʼязкові документи система НЕ просить (рішення власника 07.09.2026) — це задача офісу «Бракує».
   if (stats.requested || stats.reminded) logger.info(stats, "doc auto-requests");
   return stats;
 }

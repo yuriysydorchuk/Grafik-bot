@@ -22,9 +22,9 @@ import { logger } from "../lib/logger";
 
 export interface AutoRuleDef { code: string; label: string; description: string; leadDays: number | null; enabledByDefault: boolean; scheduler?: boolean }
 export const AUTO_RULE_DEFS: AutoRuleDef[] = [
-  { code: "doc_expiring", label: "Документ спливає", description: "Строк документа ≤ lead-днів типу (renewal_lead_days) або цього правила", leadDays: 30, enabledByDefault: true },
+  { code: "doc_expiring", label: "Документ спливає", description: "Строк документа ≤ lead-днів типу (renewal_lead_days) або цього правила", leadDays: 14, enabledByDefault: true },
   { code: "doc_expired", label: "Документ прострочений", description: "Строк минув, заміни немає", leadDays: null, enabledByDefault: true },
-  { code: "contract", label: "Умова спливає або відсутня", description: "Вісь «умова» движка жовта чи червона", leadDays: 30, enabledByDefault: true },
+  { code: "contract", label: "Умова спливає або відсутня", description: "Вісь «умова» движка жовта чи червона", leadDays: 7, enabledByDefault: true },
   { code: "obligation", label: "Обов'язок з терміном", description: "Напр. powiadomienie для UA — 7 днів від початку праці", leadDays: null, enabledByDefault: true },
   { code: "required_missing", label: "Бракує обов'язкового документа", description: "Движок каже «немає підстави» (перебування/праця)", leadDays: null, enabledByDefault: true },
   { code: "pending_doc", label: "Перевірити завантажений документ", description: "Працівник надіслав файл за запитом — підтвердити або відхилити", leadDays: null, enabledByDefault: true },
@@ -154,22 +154,8 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     }
     if (on("required_missing")) {
       // одна задача на людину з усіма пунктами, що бракує (не по пункту)
-      const allCodes = ((l.requiredMissing ?? []) as string[]);
-      // self-service типи з Telegram система просить сама: в офісну задачу вони не потрапляють,
-      // окрім «мовчання» → окрема задача doc_no_response по типу
-      const codes: string[] = [];
-      for (const code of allCodes) {
-        const ty = [...types.values()].find(t => t.code === code);
-        if (ty && selfServed(w, ty.id)) {
-          const rows = docsOf(w.id, ty.id);
-          if (rows.some(x => x.status === "pending")) continue;
-          const cur = rows[0];
-          const nr = cur && on("doc_no_response") ? noResponse(w, cur, ty.name) : null;
-          if (nr) out.push(nr);
-          continue;
-        }
-        codes.push(code);
-      }
+      // відсутні документи система НЕ просить (рішення 07.09.2026) — усі пункти в задачу офісу
+      const codes = ((l.requiredMissing ?? []) as string[]);
       if (codes.length) {
         const labels = codes.map(code => REQUIRED_LABEL[code] ?? [...types.values()].find(t => t.code === code)?.name ?? code);
         out.push({ sourceKey: `req:${w.id}`, rule: "required_missing", title: `Бракує: ${labels.join(", ")}`, priority: "high", dueAt: addDaysStr(today, 7),
