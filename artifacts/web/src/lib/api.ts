@@ -69,6 +69,7 @@ export interface Company {
   krs?: string | null; regon?: string | null;
   street?: string | null; houseNumber?: string | null; postalCode?: string | null; city?: string | null;
   representative?: string | null;
+  pkd?: string | null; // код PKD — форма PSZ-PPWPU (powiadomienie UA)
   employsWorkers?: boolean; // false — приватний підприємець власника (RS/TS): не роботодавець, не в списках «фабрика · фірма»
 }
 export type Gender = "male" | "female";

@@ -332,6 +332,7 @@ function CompanyRegistryModal({ co, onClose }: { co: Company; onClose: () => voi
     legalName: co.legalName ?? "", nip: co.nip ?? "", krs: co.krs ?? "", regon: co.regon ?? "",
     street: co.street ?? "", houseNumber: co.houseNumber ?? "", postalCode: co.postalCode ?? "", city: co.city ?? "",
     representative: co.representative ?? "",
+    pkd: co.pkd ?? "",
   });
   const save = useMutation({
     mutationFn: () => patch(`/companies/${co.id}`, f),
@@ -358,6 +359,7 @@ function CompanyRegistryModal({ co, onClose }: { co: Company; onClose: () => voi
           <div><Label>{t("Місто")}</Label><Input value={f.city} onChange={set("city")} /></div>
         </div>
         <div><Label>{t("Представник (ПІБ + посада)")}</Label><Input value={f.representative} onChange={set("representative")} placeholder="Alona Kovalchuk – Prezes Zarządu" /></div>
+        <div><Label>{t("PKD (переважна діяльність) — для powiadomienia UA")}</Label><Input value={f.pkd} onChange={set("pkd")} placeholder="78.10.Z" /></div>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button onClick={() => save.mutate()} loading={save.isPending}>{t("Зберегти")}</Button>

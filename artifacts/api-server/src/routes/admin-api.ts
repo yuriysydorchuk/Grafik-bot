@@ -1812,7 +1812,7 @@ router.post("/companies", RW, async (req, res) => {
   const [c] = await db.insert(companiesTable).values({ name }).returning();
   ok(res, c);
 });
-const COMPANY_REGISTRY_FIELDS = ["legalName", "nip", "krs", "regon", "street", "houseNumber", "postalCode", "city", "representative"] as const;
+const COMPANY_REGISTRY_FIELDS = ["legalName", "nip", "krs", "regon", "street", "houseNumber", "postalCode", "city", "representative", "pkd"] as const; // pkd — форма PSZ-PPWPU (powiadomienie UA)
 router.patch("/companies/:id", RW, async (req, res) => {
   const patch: Record<string, unknown> = {};
   if (req.body?.name !== undefined) {
