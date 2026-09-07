@@ -71,20 +71,22 @@ export const RULE_LABEL: Record<string, string> = {
 };
 
 // ── «Календар працівників» (GET /workers-calendar) ──
-export type CalKind = "doc" | "contract" | "obligation" | "absence" | "birthday" | "start" | "end" | "task";
+export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "task" | "shift";
 export interface CalEvent {
   id: string; kind: CalKind; date: string; title: string; detail?: string | null;
   workerId: number; workerName: string; factoryId: number | null; factoryName: string | null;
   severity: "info" | "warn" | "danger"; taskId?: number; docId?: number;
 }
-export const CAL_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "birthday", "start", "end", "task"];
-export const CAL_KIND_LABEL: Record<CalKind, string> = { doc: "документи", contract: "умови", obligation: "обовʼязки", absence: "відпрошування", birthday: "дні народження", start: "початок роботи", end: "кінець роботи", task: "задачі" };
+export const CAL_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "task", "shift"];
+export const CAL_KINDS_DEFAULT: CalKind[] = CAL_KINDS.filter(k => k !== "shift"); // зміни з графіку — вимкнений фільтр (макет)
+export const CAL_KIND_LABEL: Record<CalKind, string> = { doc: "документи", contract: "умови", obligation: "обовʼязки", absence: "відпрошування", vacation: "відпустки / поза обліком", hostel: "хостел", birthday: "дні народження", start: "початок роботи", end: "кінець роботи", task: "задачі", shift: "зміни з графіку" };
 // повні класи (Tailwind v4 сканує літерали); дарк — через CSS-змінні
 export const CAL_KIND_CLS: Record<CalKind, string> = {
   doc: "bg-amber-100 text-amber-800", contract: "bg-violet-100 text-violet-800", obligation: "bg-rose-100 text-rose-800", absence: "bg-sky-100 text-sky-800",
   birthday: "bg-pink-100 text-pink-800", start: "bg-emerald-100 text-emerald-800", end: "bg-slate-200 text-slate-700", task: "bg-blue-100 text-blue-800",
+  vacation: "bg-teal-100 text-teal-800", hostel: "bg-orange-100 text-orange-800", shift: "bg-slate-100 text-slate-500",
 };
-export const CAL_KIND_DOT: Record<CalKind, string> = { doc: "bg-amber-500", contract: "bg-violet-500", obligation: "bg-rose-500", absence: "bg-sky-500", birthday: "bg-pink-500", start: "bg-emerald-500", end: "bg-slate-500", task: "bg-blue-500" };
+export const CAL_KIND_DOT: Record<CalKind, string> = { doc: "bg-amber-500", contract: "bg-violet-500", obligation: "bg-rose-500", absence: "bg-sky-500", vacation: "bg-teal-500", hostel: "bg-orange-500", birthday: "bg-pink-500", start: "bg-emerald-500", end: "bg-slate-500", task: "bg-blue-500", shift: "bg-slate-400" };
 export const fmtD = (d: string | null | undefined) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "");
 export const fmtDShort = (d: string | null | undefined) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}` : "");
 export const todayStr = () => new Date().toLocaleDateString("sv-SE");

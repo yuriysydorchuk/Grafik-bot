@@ -8,7 +8,8 @@ import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CalendarDays, Plus, ExternalLink, X } from "lucide-react";
 import { get, type Factory } from "../lib/api";
-import { type CalEvent, type CalKind, CAL_KINDS, CAL_KIND_LABEL, CAL_KIND_CLS, CAL_KIND_DOT, fmtD, fmtDShort, todayStr, addDays, weekdayIdx, DAY_SHORT, MONTHS_GEN } from "../lib/tasksApi";
+import { type CalEvent, type CalKind, CAL_KINDS, CAL_KINDS_DEFAULT, CAL_KIND_LABEL, CAL_KIND_CLS, CAL_KIND_DOT, fmtD, fmtDShort, todayStr, addDays, weekdayIdx, DAY_SHORT, MONTHS_GEN } from "../lib/tasksApi";
+import { type Company } from "../lib/api";
 import { NewTaskModal, useOpenTask } from "../components/TaskBits";
 import { Button, Select, Input, Modal, cn } from "../components/ui";
 import { useT } from "../lib/i18n";
@@ -21,13 +22,13 @@ const monthStart = (d: string) => d.slice(0, 7) + "-01";
 const addMonths = (d: string, n: number) => { const x = new Date(d.slice(0, 7) + "-01T00:00:00"); x.setMonth(x.getMonth() + n); return x.toLocaleDateString("sv-SE"); };
 const daysInMonth = (d: string) => new Date(Number(d.slice(0, 4)), Number(d.slice(5, 7)), 0).getDate();
 
-function useEvents(from: string, to: string, factoryId: string, kinds: Set<CalKind>) {
+function calQuery(from: string, to: string, factoryId: string, city: string, companyId: string, kinds: Set<CalKind>) {
   const kindsKey = CAL_KINDS.filter(k => kinds.has(k)).join(",");
-  return useQuery<{ events: CalEvent[] }>({
-    queryKey: ["workers-calendar", from, to, factoryId, kindsKey],
-    queryFn: () => get(`/workers-calendar?from=${from}&to=${to}${factoryId ? `&factoryId=${factoryId}` : ""}${kindsKey && kinds.size < CAL_KINDS.length ? `&kinds=${kindsKey}` : ""}`),
-    placeholderData: prev => prev,
-  });
+  return `from=${from}&to=${to}${factoryId ? `&factoryId=${factoryId}` : ""}${city ? `&city=${encodeURIComponent(city)}` : ""}${companyId ? `&companyId=${companyId}` : ""}${kindsKey ? `&kinds=${kindsKey}` : ""}`;
+}
+function useEvents(from: string, to: string, factoryId: string, city: string, companyId: string, kinds: Set<CalKind>) {
+  const qs = calQuery(from, to, factoryId, city, companyId, kinds);
+  return useQuery<{ events: CalEvent[] }>({ queryKey: ["workers-calendar", qs], queryFn: () => get(`/workers-calendar?${qs}`), placeholderData: prev => prev });
 }
 
 export default function WorkersCalendar() {
@@ -38,12 +39,16 @@ export default function WorkersCalendar() {
   const [view, setView] = useState<View>("month");
   const [cursor, setCursor] = useState(todayStr());
   const [factoryId, setFactoryId] = useState("");
-  const [kinds, setKinds] = useState<Set<CalKind>>(new Set(CAL_KINDS));
+  const [city, setCity] = useState("");
+  const [companyId, setCompanyId] = useState("");
+  const [kinds, setKinds] = useState<Set<CalKind>>(new Set(CAL_KINDS_DEFAULT));
+  const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const [q, setQ] = useState("");
   const [workerFilter, setWorkerFilter] = useState<number | null>(initialWorker);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [openEvent, setOpenEvent] = useState<CalEvent | null>(null);
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const cities = useMemo(() => [...new Set(factories.map(f => (f as any).city).filter(Boolean))].sort() as string[], [factories]);
   const today = todayStr();
 
   // діапазон запиту залежить від виду
@@ -52,7 +57,7 @@ export default function WorkersCalendar() {
     if (view === "timeline") { const from = addDays(cursor, -weekdayIdx(cursor)); return { from, to: addDays(from, 41) }; }
     const ms = monthStart(cursor); const gridFrom = addDays(ms, -weekdayIdx(ms)); return { from: gridFrom, to: addDays(gridFrom, 41) };
   }, [view, cursor]);
-  const { data, isFetching } = useEvents(range.from, range.to, factoryId, kinds);
+  const { data, isFetching } = useEvents(range.from, range.to, factoryId, city, companyId, kinds);
   const events = useMemo(() => {
     let list = data?.events ?? [];
     if (workerFilter) list = list.filter(e => e.workerId === workerFilter);
@@ -86,10 +91,13 @@ export default function WorkersCalendar() {
           <button onClick={() => shift(1)} className="rounded-lg border border-slate-200 bg-white p-2 hover:bg-slate-50"><ChevronRight className="h-4 w-4" /></button>
           <span className="ml-2 text-lg font-semibold text-slate-800">{title}</span>
         </div>
+        {cities.length > 0 && <Select value={city} onChange={e => setCity(e.target.value)} className="w-36"><option value="">{t("Місто: усі")}</option>{cities.map(c => <option key={c} value={c}>{c}</option>)}</Select>}
         <Select value={factoryId} onChange={e => setFactoryId(e.target.value)} className="w-52">
           <option value="">{t("Фабрика: усі")}</option>
-          {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          {factories.filter(f => !city || (f as any).city === city).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </Select>
+        <Select value={companyId} onChange={e => setCompanyId(e.target.value)} className="w-36"><option value="">{t("Фірма: усі")}</option>{companies.filter(c => c.employsWorkers !== false).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+        <a href={`/api/workers-calendar/export.xlsx?${calQuery(range.from, range.to, factoryId, city, companyId, kinds)}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Excel</a>
         <Input value={q} onChange={e => setQ(e.target.value)} placeholder={t("пошук: працівник, подія")} className="w-56" />
         {workerName && <span className="flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-700">{workerName}<button onClick={() => setWorkerFilter(null)}><X className="h-3 w-3" /></button></span>}
       </div>
@@ -99,6 +107,7 @@ export default function WorkersCalendar() {
 
       {view === "month" && <MonthView cursor={cursor} gridFrom={range.from} byDay={byDay} today={today} selectedDay={selectedDay} onSelectDay={setSelectedDay} onOpen={setOpenEvent} onWorker={setWorkerFilter} />}
       {view === "timeline" && <TimelineView from={range.from} events={events} today={today} onOpen={setOpenEvent} />}
+      {view === "year" && <FactoryMonthMatrix events={events} cursor={cursor} onPick={(month, fid) => { setCursor(month + "-01"); if (fid) setFactoryId(String(fid)); setView("month"); }} />}
       {view === "year" && <YearView year={cursor.slice(0, 4)} byDay={byDay} today={today} onPick={(d) => { setCursor(d); setSelectedDay(d); setView("month"); }} />}
 
       {openEvent && <EventModal ev={openEvent} onClose={() => setOpenEvent(null)} canTasks={!!me && canAccessPage(me, "/tasks")} />}
@@ -187,6 +196,44 @@ function TimelineView({ from, events, today, onOpen }: { from: string; events: C
                   {list.length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{list.map(e => <button key={e.id} onClick={() => onOpen(e)} title={`${fmtDShort(e.date)} · ${e.title}`} className={cn("h-3.5 w-3.5 rounded-sm", CAL_KIND_DOT[e.kind], e.severity === "danger" && "ring-2 ring-rose-300")} />)}</div>}
                 </td>); })}
             </tr>))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Рік · таблиця «фабрика × місяць» (макет): скільки строків документів/умов/обовʼязків спливає
+// щомісяця по фабриках — видно піки, клік по клітинці відкриває місяць із фільтром фабрики.
+function FactoryMonthMatrix({ events, cursor, onPick }: { events: CalEvent[]; cursor: string; onPick: (month: string, factoryId: number | null) => void }) {
+  const t = useT();
+  const year = cursor.slice(0, 4);
+  const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
+  const deadlineKinds = new Set<CalKind>(["doc", "contract", "obligation", "end", "hostel"]);
+  const rows = useMemo(() => {
+    const m = new Map<string, { factoryId: number | null; name: string; total: number; byMonth: Record<string, number> }>();
+    for (const e of events) {
+      if (!deadlineKinds.has(e.kind)) continue;
+      const key = String(e.factoryId ?? 0);
+      const r = m.get(key) ?? m.set(key, { factoryId: e.factoryId, name: e.factoryName ?? t("без фабрики"), total: 0, byMonth: {} }).get(key)!;
+      r.total++; const mo = e.date.slice(0, 7); r.byMonth[mo] = (r.byMonth[mo] ?? 0) + 1;
+    }
+    return [...m.values()].sort((a, b) => b.total - a.total);
+  }, [events, t]);
+  const max = Math.max(1, ...rows.flatMap(r => Object.values(r.byMonth)));
+  const shade = (n: number) => n === 0 ? "" : n / max < 0.25 ? "bg-red-100 text-red-800" : n / max < 0.5 ? "bg-red-200 text-red-900" : n / max < 0.75 ? "bg-red-400 text-white" : "bg-red-600 text-white";
+  if (!rows.length) return null;
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      <div className="px-3 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t("Строки по фабриках і місяцях")} · {year} <span className="font-normal normal-case">· {t("документи, умови, обовʼязки, кінець роботи, хостел")}</span></div>
+      <table className="w-full text-xs">
+        <thead><tr className="text-[10px] uppercase text-slate-400"><th className="px-3 py-1.5 text-left">{t("Фабрика")}</th>{months.map(mo => <th key={mo} className="px-1 py-1.5 text-center font-semibold">{MONTHS_GEN[Number(mo.slice(5, 7)) - 1].slice(0, 3)}</th>)}</tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={String(r.factoryId)} className="border-t border-slate-100">
+              <td className="px-3 py-1.5 font-medium text-slate-700">{r.name} <span className="text-slate-400">· {r.total}</span></td>
+              {months.map(mo => { const n = r.byMonth[mo] ?? 0; return <td key={mo} className="p-0.5 text-center"><button onClick={() => onPick(mo, r.factoryId)} className={cn("h-7 w-full rounded font-semibold tabular-nums", shade(n), !n && "text-slate-300")}>{n || "·"}</button></td>; })}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

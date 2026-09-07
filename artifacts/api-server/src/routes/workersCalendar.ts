@@ -3,19 +3,22 @@
 // початок/кінець роботи на фабриці, відкриті задачі з привʼязкою. Лише читання; задачу з
 // події створює веб через POST /tasks (модалка з предзаповненням).
 import { Router, type IRouter } from "express";
-import { and, eq, gte, lte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gte, lte, inArray, isNotNull, or, sql } from "drizzle-orm";
 import {
   db, workersTable, factoriesTable, workerDocumentsTable, documentTypesTable, contractsTable, workerLegalityTable,
-  absenceRequestsTable, workerFactoriesTable, tasksTable,
+  absenceRequestsTable, workerFactoriesTable, tasksTable, hoursMonthExclusionsTable, hostelStaysTable, hostelsTable, scheduleEntriesTable, scheduleWeeksTable,
 } from "@workspace/db";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { addDaysStr } from "../lib/dates";
 import { OPEN_STATUSES, warsawToday } from "../services/taskUtils";
+import { loadLeadDays } from "../services/legalityRecompute";
 
 const router: IRouter = Router();
 router.use("/workers-calendar", authRequired, requirePage("/workers-calendar"));
 
-export type CalKind = "doc" | "contract" | "obligation" | "absence" | "birthday" | "start" | "end" | "task";
+export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "task" | "shift";
+// «зміни з графіку» — лише за явним запитом (kinds=…,shift): їх багато, у макеті фільтр вимкнений
+const DEFAULT_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "task"];
 export interface CalEvent {
   id: string; kind: CalKind; date: string; title: string; detail?: string | null;
   workerId: number; workerName: string; factoryId: number | null; factoryName: string | null;
@@ -29,12 +32,14 @@ const OBLIGATION_LABEL: Record<string, string> = {
 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export async function collectWorkerEvents(opts: { from: string; to: string; factoryId?: number | null; workerId?: number | null; kinds?: Set<CalKind> | null }): Promise<CalEvent[]> {
+export async function collectWorkerEvents(opts: { from: string; to: string; factoryId?: number | null; workerId?: number | null; city?: string | null; companyId?: number | null; kinds?: Set<CalKind> | null }): Promise<CalEvent[]> {
   const { from, to } = opts;
   const today = warsawToday();
-  const want = (k: CalKind) => !opts.kinds || opts.kinds.has(k);
+  const want = (k: CalKind) => (opts.kinds ? opts.kinds.has(k) : DEFAULT_KINDS.includes(k));
   const wWhere = [eq(workersTable.isActive, true)] as any[];
   if (opts.workerId) wWhere.push(eq(workersTable.id, opts.workerId));
+  if (opts.companyId) wWhere.push(eq(workersTable.companyId, opts.companyId));
+  if (opts.city) wWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
   if (opts.factoryId) wWhere.push(sql`(${workersTable.factoryId} = ${opts.factoryId} or exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${opts.factoryId}))`);
   const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...wWhere));
@@ -42,7 +47,8 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
   const wmap = new Map(workers.map(w => [w.id, w]));
   const ids = [...wmap.keys()];
   const facs = new Map((await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable)).map(f => [f.id, f.name]));
-  const sev = (d: string): CalEvent["severity"] => (d < today ? "danger" : d <= addDaysStr(today, 14) ? "warn" : "info");
+  const ld = await loadLeadDays(); // жовта/червона зона з правила легальності
+  const sev = (d: string): CalEvent["severity"] => (d < today || d <= addDaysStr(today, ld.urgent) ? "danger" : d <= addDaysStr(today, ld.warn) ? "warn" : "info");
   const out: CalEvent[] = [];
   const base = (w: { id: number; fullName: string; factoryId: number | null; factoryName: string | null }, factoryId?: number | null) =>
     ({ workerId: w.id, workerName: w.fullName, factoryId: factoryId ?? w.factoryId, factoryName: factoryId != null ? facs.get(factoryId) ?? null : w.factoryName });
@@ -96,25 +102,88 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
       if (want("end") && r.validTo && String(r.validTo) >= from && String(r.validTo) <= to) out.push({ id: `end:${r.id}`, kind: "end", date: String(r.validTo), title: `Кінець роботи · ${facs.get(r.factoryId) ?? ""}`, ...base(w, r.factoryId), severity: sev(String(r.validTo)) });
     }
   }
+  if (want("vacation")) {
+    // виключення з обліку годин по місяцях (відпустка / ще не почав / ручне) — подія на 1-ше число місяця
+    const m0 = from.slice(0, 7), m1 = to.slice(0, 7);
+    const ex = await db.select().from(hoursMonthExclusionsTable).where(and(inArray(hoursMonthExclusionsTable.workerId, ids), gte(hoursMonthExclusionsTable.month, m0), lte(hoursMonthExclusionsTable.month, m1)));
+    const label: Record<string, string> = { vacation: "Відпустка (місяць поза обліком)", not_started: "Ще не почав (місяць поза обліком)", manual: "Місяць поза обліком годин" };
+    for (const e of ex) {
+      const date = `${e.month}-01`; if (date < from || date > to) continue;
+      const w = wmap.get(e.workerId)!;
+      out.push({ id: `vac:${e.id}`, kind: "vacation", date, title: label[e.reason] ?? label.manual!, detail: e.month, ...base(w), severity: "info" });
+    }
+  }
+  if (want("hostel")) {
+    const st = await db.select({ s: hostelStaysTable, hostel: hostelsTable.name }).from(hostelStaysTable).leftJoin(hostelsTable, eq(hostelStaysTable.hostelId, hostelsTable.id)).where(inArray(hostelStaysTable.workerId, ids));
+    for (const r of st) {
+      const w = wmap.get(r.s.workerId!)!;
+      const f = String(r.s.fromDate), tD = r.s.toDate ? String(r.s.toDate) : null;
+      if (f >= from && f <= to) out.push({ id: `hostel-in:${r.s.id}`, kind: "hostel", date: f, title: `Заселення в хостел${r.hostel ? ` · ${r.hostel}` : ""}`, ...base(w), severity: "info" });
+      if (tD && tD >= from && tD <= to) out.push({ id: `hostel-out:${r.s.id}`, kind: "hostel", date: tD, title: `Кінець проживання в хостелі${r.hostel ? ` · ${r.hostel}` : ""}`, ...base(w), severity: sev(tD) });
+    }
+  }
+  if (want("shift")) {
+    const weekFrom = addDaysStr(from, -6);
+    const rows = await db.select({ e: scheduleEntriesTable, weekStart: scheduleWeeksTable.weekStart }).from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+      .where(and(inArray(scheduleEntriesTable.workerId, ids), gte(scheduleWeeksTable.weekStart, weekFrom), lte(scheduleWeeksTable.weekStart, to)));
+    for (const r of rows) {
+      const date = addDaysStr(String(r.weekStart), DAY_IDX[r.e.dayOfWeek] ?? 0);
+      if (date < from || date > to) continue;
+      const w = wmap.get(r.e.workerId)!;
+      out.push({ id: `shift:${r.e.id}`, kind: "shift", date, title: `Зміна ${r.e.shift} · ${facs.get(r.e.factoryId) ?? ""}`, ...base(w, r.e.factoryId), severity: "info" });
+    }
+  }
   if (want("task")) {
     const ts = await db.select().from(tasksTable).where(and(inArray(tasksTable.workerId, ids), isNotNull(tasksTable.dueAt), gte(tasksTable.dueAt, from), lte(tasksTable.dueAt, to), inArray(tasksTable.status, OPEN_STATUSES)));
     for (const t of ts) { const w = wmap.get(t.workerId!)!; const date = String(t.dueAt); out.push({ id: `task:${t.id}`, kind: "task", date, title: t.title, ...base(w, t.factoryId), severity: date < today ? "danger" : t.priority === "urgent" ? "warn" : "info", taskId: t.id }); }
+  }
+  // «Відкрити задачу», якщо автозадача на цю подію вже є (документ / умова / обовʼязок)
+  const docIds = out.filter(e => e.kind === "doc" && e.docId).map(e => e.docId!);
+  const withWorker = [...new Set(out.filter(e => e.kind === "obligation" || e.kind === "contract").map(e => e.workerId))];
+  if (docIds.length || withWorker.length) {
+    const open = await db.select({ id: tasksTable.id, documentId: tasksTable.documentId, workerId: tasksTable.workerId, factoryId: tasksTable.factoryId, source: tasksTable.source, autoParams: tasksTable.autoParams })
+      .from(tasksTable).where(and(inArray(tasksTable.status, OPEN_STATUSES), sql`${tasksTable.source} like 'auto:%'`, or(...[docIds.length ? inArray(tasksTable.documentId, docIds) : sql`false`, withWorker.length ? inArray(tasksTable.workerId, withWorker) : sql`false`])));
+    for (const e of out) {
+      if (e.taskId) continue;
+      const hit = open.find(t => (e.kind === "doc" && e.docId && t.documentId === e.docId)
+        || (e.kind === "contract" && t.source === "auto:contract" && t.workerId === e.workerId && (t.factoryId ?? null) === (e.factoryId ?? null))
+        || (e.kind === "obligation" && t.source === "auto:obligation" && t.workerId === e.workerId && String((t.autoParams as any)?.code ?? "") === e.id.split(":").slice(2).join(":")));
+      if (hit) e.taskId = hit.id;
+    }
   }
   out.sort((a, b) => a.date.localeCompare(b.date) || a.workerName.localeCompare(b.workerName, "pl"));
   return out;
 }
 
+function parseOpts(q: Record<string, unknown>) {
+  const from = String(q.from ?? ""), to = String(q.to ?? "");
+  if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return null;
+  const kindsRaw = String(q.kinds ?? "").split(",").map(s => s.trim()).filter(Boolean) as CalKind[];
+  return { from, to, factoryId: q.factoryId ? Number(q.factoryId) : null, workerId: q.workerId ? Number(q.workerId) : null,
+    city: q.city ? String(q.city) : null, companyId: q.companyId ? Number(q.companyId) : null, kinds: kindsRaw.length ? new Set(kindsRaw) : null };
+}
 router.get("/workers-calendar", async (req: AuthedRequest, res) => {
-  const from = String(req.query.from ?? ""), to = String(req.query.to ?? "");
-  if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return res.status(400).json({ error: "from/to (YYYY-MM-DD) обовʼязкові" });
-  const kindsRaw = String(req.query.kinds ?? "").split(",").map(s => s.trim()).filter(Boolean) as CalKind[];
-  const events = await collectWorkerEvents({
-    from, to,
-    factoryId: req.query.factoryId ? Number(req.query.factoryId) : null,
-    workerId: req.query.workerId ? Number(req.query.workerId) : null,
-    kinds: kindsRaw.length ? new Set(kindsRaw) : null,
-  });
-  return res.json({ from, to, events });
+  const o = parseOpts(req.query as Record<string, unknown>);
+  if (!o) return res.status(400).json({ error: "from/to (YYYY-MM-DD) обовʼязкові" });
+  const events = await collectWorkerEvents(o);
+  return res.json({ from: o.from, to: o.to, events });
+});
+// Excel поточного діапазону з тими самими фільтрами (макет: кнопка «Excel»); імена капсом (nameCaps)
+router.get("/workers-calendar/export.xlsx", async (req: AuthedRequest, res) => {
+  const o = parseOpts(req.query as Record<string, unknown>);
+  if (!o) return res.status(400).json({ error: "from/to (YYYY-MM-DD) обовʼязкові" });
+  const events = await collectWorkerEvents(o);
+  const { nameCaps } = await import("../services/drive");
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Kalendarz");
+  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Start pracy", end: "Koniec pracy", task: "Zadanie", shift: "Zmiana" };
+  ws.addRow(["Data", "Pracownik", "Zakład", "Rodzaj", "Zdarzenie", "Szczegóły"]).font = { bold: true };
+  for (const e of events) ws.addRow([e.date, nameCaps(e.workerName), e.factoryName ?? "", KIND_PL[e.kind] ?? e.kind, e.title, e.detail ?? ""]);
+  ws.columns.forEach((c, i) => { c.width = [12, 32, 22, 16, 44, 30][i] ?? 16; });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Kalendarz pracownikow ${o.from}_${o.to}.xlsx`)}"`);
+  return res.send(Buffer.from(await wb.xlsx.writeBuffer()));
 });
 
 export default router;
