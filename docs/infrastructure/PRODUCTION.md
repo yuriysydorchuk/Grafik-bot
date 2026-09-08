@@ -51,6 +51,8 @@
 | Зібраний бекенд | `/root/grafik-bot/artifacts/api-server/dist/index.mjs` |
 | Зібрана веб-панель | `/root/grafik-bot/artifacts/web/dist` |
 | Завантажені файли (документи) | `/root/grafik-bot/uploads/worker-documents` (поза git; бекап окремо) |
+| Умови/підписи/печатки (з 08.09.2026) | `/root/grafik-bot/uploads/{contracts,signatures,company}` — PDF пакетів, PNG підписів, печатки фірм |
+| Chromium для PDF (puppeteer) | `/root/.cache/puppeteer/chrome/…` — ставиться `puppeteer browsers install chrome` після `pnpm install` |
 | Caddy config | `/etc/caddy/Caddyfile` |
 | pm2 логи | `/root/.pm2/logs/grafik-bot-{out,error}.log` |
 
@@ -104,7 +106,7 @@ Node v22.23.0 · pnpm 11.8.0 · PostgreSQL 16.14 · Caddy v2.11.4 · pm2 7.0.1.
 `GOOGLE_SERVICE_ACCOUNT_JSON` · `GOOGLE_SHEETS_ID`
 
 **Рекомендовані/опційні:**
-`NODE_ENV` · `WEB_PUBLIC_URL` · `LOG_LEVEL` · `CORS_ORIGINS` · `WEB_DIST` · `UPLOADS_DIR` ·
+`NODE_ENV` · `WEB_PUBLIC_URL` · `LOG_LEVEL` · `CORS_ORIGINS` · `WEB_DIST` · `UPLOADS_DIR` · `COMPANY_STAMP_PNG` (фолбек печатки фірми; основні — `uploads/company/stamp-<companyId>.png`) ·
 `ADMIN_GOOGLE_EMAIL`
 
 **Алерти (опційно, off за замовчуванням — див. [ALERTING.md](ALERTING.md)):**

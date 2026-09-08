@@ -1,6 +1,6 @@
-# HANDOFF: деплой гілки `feature/worker-docs-signing` (підготовлено 10.09.2026)
+# HANDOFF: деплой гілки `feature/worker-docs-signing` (підготовлено і виконано 08.09.2026)
 
-Тимчасова записка: виконуваний порядок деплою великого батчу (підпис документів, легалізація,
+Тимчасова записка (АРХІВ — деплой виконано 08.09.2026 ~19:15 CEST, див. розділ «Виконано» внизу): порядок деплою великого батчу (підпис документів, легалізація,
 задачі/календар, життєвий цикл працівника, повернення звільненого). Довговічні правила вже
 перенесені в `docs/infrastructure/DEPLOYMENT.md` і `CLAUDE.md`. Після деплою — в архів.
 
@@ -37,7 +37,7 @@
    ```bash
    ssh grafik 'cd /root/grafik-bot && pnpm install --frozen-lockfile 2>&1 | tail -2 && pnpm --filter @workspace/api-server exec puppeteer browsers install chrome 2>&1 | tail -2 && ls ~/.cache/puppeteer'
    ```
-   Системні бібліотеки (libnss3, libatk, libgbm, libxkbcommon, libasound) на VPS уже стоять (перевірено 10.09).
+   Системні бібліотеки (libnss3, libatk, libgbm, libxkbcommon, libasound) на VPS уже стоять (перевірено 08.09).
 
 4. **Міграції** — за алфавітом, лише файли гілки (усе від `2026-08-28` і новіше; старші вже на проді):
    ```bash
@@ -82,7 +82,7 @@
 з ними працює; відкат схеми не потрібен. Єдине неадитивне — `ALTER TABLE positions DROP COLUMN
 is_office` в `2026-09-05-employers.sql`, але колонку створює сама гілка (main її не знає).
 
-## Ревʼю (друга думка, 10.09.2026)
+## Ревʼю (друга думка, 08.09.2026)
 
 `codex exec --sandbox read-only` по 4 diff-ах (умови/підпис, легалізація, задачі, життєвий цикл).
 `agy` у headless-режимі не відпрацював: «tool required the "command" permission» — потрібне
@@ -116,3 +116,19 @@ allow-правило в налаштуваннях Antigravity (без `--danger
   convert кандидата без Telegram не передає factoryId у office-токен;
 - умови: гонка двох confirm скану; PNG-валідація лише по заголовку; редагування verified-анкети офісом
   без скидання статусу (свідомо: це дія офісу).
+
+## Виконано 08.09.2026 (сесія Claude, за дорученням Yuriy «роби ці всі кроки сам і викочуй»)
+
+- Бекап: `deploy/backup.sh` → db 2.0M + uploads 9.6M у `/root/backups/`.
+- `git push origin feature/worker-docs-signing:main` (8a1b671 → f152eeb, fast-forward), `git pull` на сервері пройшов без 401.
+- `pnpm install --frozen-lockfile` + `puppeteer browsers install chrome` → `~/.cache/puppeteer/chrome/linux-148.0.7778.97`;
+  перевірка `node -e` з puppeteer.launch на сервері — PDF рендериться (7606 байт).
+- Міграції: усі файли ≥ 2026-08-28 за алфавітом з `ON_ERROR_STOP=1`, кожен rc=0. Після: 27 шаблонів,
+  29 типів документів з кодами, 10 правил легальності, `/tasks` у 6 ролях (крім driver і finanse-wspolniki),
+  реквізити 3 фірм.
+- Печатки: `uploads/company/stamp-{1,2,3}.png` на сервері, `.env` += `COMPANY_STAMP_PNG=…/stamp-2.png`.
+- `deploy/build.sh` → pm2 restart, `healthz` = ok/db ok/bot up, у логах лише стартовий алерт.
+- Примітка: файли `2026-09-10-*.sql` названі з майбутньою датою (описка, порядок сортування не ламає).
+
+Не зроблено (за власником): виконавець UA 2-го ступеня в правилі, ставки/обовʼязки фабрик, розсилка
+інструкції офісу в бот (артефакт «Гід офісу Euro Support»).

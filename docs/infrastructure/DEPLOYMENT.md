@@ -109,7 +109,7 @@ curl -s https://161.97.117.151.sslip.io/api/healthz                             
   Оригінали й скрипти витяжки — у Yuriy (фото/PDF у ~/Downloads, 08.09.2026).
 - **Порядок міграцій = алфавіт назв.** CI і `/deploy` накочують `deploy/migrations/*.sql` за `sort`;
   файл, що ALTER-ить/UPDATE-ить таблицю з «пізнішого» файла, падає на чистій/прод базі
-  (10.09.2026: employers → worker_factories, doc-auto-request/lead-days → task_auto_rules; виправлено
+  (08.09.2026: employers → worker_factories, doc-auto-request/lead-days → task_auto_rules; виправлено
   датою в назві). Перед деплоєм великого батчу — сухий прогін на копії прод-дампу
   (`pg_restore` у локальну БД → `psql -f` за алфавітом → 0 ERROR).
 - **ghostscript** (`apt install -y ghostscript`) — стискання великих PDF-сканів умов/фактур (`lib/uploads.ts shrinkDocBuffer`, з 02.09.2026). Без нього аплоуд працює, але файли лишаються оригінального розміру (у логах warn `ghostscript not installed`). Перевірка: `gs --version`.
