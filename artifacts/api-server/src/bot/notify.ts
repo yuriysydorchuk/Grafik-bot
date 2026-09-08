@@ -256,8 +256,17 @@ export async function sendLoginCode(telegramId: string, code: string): Promise<b
 // telegramId або надсилання не вдалося (виклик з routes/contracts.ts не
 // падає на цьому — токен усе одно створюється, офіс може скопіювати лінк).
 export async function sendSignLink(telegramId: string, lang: string, link: string): Promise<boolean> {
+  const L = asLang(lang);
+  // Кнопка Mini App (web_app), а не голий лінк: сторінка відкривається у
+  // вебвʼю Telegram, де Sign.tsx вимикає вертикальні свайпи — канвас підпису
+  // не «тремтить» від pull-to-refresh, і підказка «відкрий у Safari» більше
+  // не потрібна (працівники її не читали). Telegram приймає лише https для
+  // web_app, тож на http (локалка без тунелю) — лише текстовий лінк.
+  const replyMarkup = link.startsWith("https://")
+    ? { inline_keyboard: [[{ text: t(L, "sign.openButton"), web_app: { url: link } }]] }
+    : undefined;
   try {
-    await bot.telegram.sendMessage(telegramId, t(asLang(lang), "sign.newContract", { link }));
+    await bot.telegram.sendMessage(telegramId, t(L, "sign.newContract", { link }), replyMarkup ? { reply_markup: replyMarkup } : undefined);
     return true;
   } catch { return false; }
 }

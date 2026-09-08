@@ -181,6 +181,11 @@ export async function buildContractData(
     "PESEL pracownika": worker.pesel ?? "",
     "PESEL lub paszport": worker.pesel || questionnaire?.passportNumber || "",
     "Paszport": questionnaire?.passportNumber ?? "",
+    // InPost-шаблон (HrAppka): «що посвідчується документом {%Operator dowód
+    // pracownika%} за номером {%Paszport%}» — назва документа, чий номер іде
+    // далі; в анкеті є лише паспорт, тож константа. Без ключа генерація для
+    // InPost падала «Бракує даних» (той самий клас, що Miejsce zawarcia umowy).
+    "Operator dowód pracownika": "paszport",
     "Paszport data wydania": questionnaire?.passportIssuedAt ?? "",
     "Paszport data ważności": questionnaire?.passportExpiresAt ?? "",
     "Seria i numer dowodu": questionnaire?.seriaINumerDowodu ?? "",
@@ -237,6 +242,11 @@ export async function buildContractData(
     "Numer domu firmy": company?.houseNumber ?? "",
     "Kod pocztowy firmy": company?.postalCode ?? "",
     "Miejscowość firmy": company?.city ?? "",
+    // Шаблони ANDROS/OUTSOURCING (HrAppka): «Укладено в день … w m. {%Miejsce
+    // zawarcia umowy%}» — місце укладення = місто нашої фірми (AGRAM-шаблон
+    // бере те саме через «Miejscowość firmy»). Без ключа генерація падала
+    // «Бракує даних: Miejsce zawarcia umowy» (Yuriy, 08.09.2026).
+    "Miejsce zawarcia umowy": company?.city ?? "",
     "Reprezentant firmy": company?.representative ?? "",
     "PKD firmy": company?.pkd ?? "", // świadectwo pracy: «Nr REGON-PKD»
     "Data dzisiejsza": todayIso,
@@ -302,7 +312,14 @@ export async function resolveDocumentSet(workerId: number, factoryId: number | n
 let browserPromise: Promise<Browser> | null = null;
 async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    browserPromise = puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }).then(browser => {
+      // Chromium може впасти/бути вбитим окремо від Node (08.09.2026: після
+      // цього КОЖЕН рендер падав «Connection closed» до рестарту процесу) —
+      // скидаємо кеш, наступний виклик підніме новий інстанс.
+      browser.on("disconnected", () => { browserPromise = null; });
+      return browser;
+    });
+    browserPromise.catch(() => { browserPromise = null; }); // launch не вдався — не кешувати відмову
   }
   return browserPromise;
 }
@@ -575,7 +592,12 @@ export async function finalizeContractSignature(contractId: number, adminId: num
     throw new Error(`Підписати від компанії можна лише після підпису працівника (поточний статус: ${contract.status})`);
   }
 
-  const stampPath = process.env.COMPANY_STAMP_PNG;
+  // Печатка+підпис НАШОЇ фірми умови: uploads/company/stamp-<companyId>.png
+  // (ES/ESO/Klinex мають різні печатки; id фірм різняться локально/прод, але
+  // й файли лежать per-сервер — імʼя по id безпечне), фолбек — одна на всіх
+  // з COMPANY_STAMP_PNG. Best-effort: без файла статус усе одно просувається.
+  const perCompany = contract.companyId ? path.join(UPLOADS_ROOT, "company", `stamp-${contract.companyId}.png`) : null;
+  const stampPath = perCompany && fs.existsSync(perCompany) ? perCompany : process.env.COMPANY_STAMP_PNG;
   const stampOk = !!stampPath && fs.existsSync(stampPath);
   const companyStampDataUrl = stampOk ? `data:image/png;base64,${(await fs.promises.readFile(stampPath!)).toString("base64")}` : undefined;
   const workerSignatureDataUrl = contract.workerSignaturePath
@@ -607,5 +629,5 @@ export async function finalizeContractSignature(contractId: number, adminId: num
     await db.update(contractsTable).set({ status: "superseded", supersededAt: new Date(), updatedAt: new Date() }).where(eq(contractsTable.id, contract.supersedesId));
   }
   logger.info({ contractId, stamped: stamped > 0 }, "contract finalized — company countersigned");
-  return stampOk ? { stamped: stamped > 0 } : { stamped: false, reason: "COMPANY_STAMP_PNG не налаштований на цьому сервері" };
+  return stampOk ? { stamped: stamped > 0 } : { stamped: false, reason: "Печатка фірми не знайдена (uploads/company/stamp-<companyId>.png або COMPANY_STAMP_PNG)" };
 }

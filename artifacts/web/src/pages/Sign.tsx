@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { Card, Button, Spinner } from "../components/ui";
 import { PdfPreview } from "../components/PdfPreview";
+import { initPublicWebApp } from "../lib/telegram";
 
 type Lang = "uk" | "en" | "es" | "ru" | "pl";
 const STR: Record<string, Record<Lang, string>> = {
@@ -66,6 +67,10 @@ export default function Sign() {
   const [sigClearKey, setSigClearKey] = useState(0); // «Очистити»: force-remount SignaturePad (реально стирає canvas)
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Відкрито кнопкою web_app з бота: Mini App на весь екран без вертикальних
+  // свайпів (див. initPublicWebApp) — підказка «відкрий у Safari» не потрібна.
+  const [inTelegram, setInTelegram] = useState(false);
+  useEffect(() => { initPublicWebApp().then(setInTelegram); }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -167,11 +172,11 @@ export default function Sign() {
 
         {consentOk && (
           <Card className="mb-4 p-4">
-            {/* Немає надійного способу з JS відрізнити вбудований браузер
-                Telegram від звичайного Safari/Chrome (однакові UA) — показуємо
-                підказку завжди, а не за фрагільною евристикою: якщо людина вже
-                в Safari/Chrome, порада просто нерелевантна й нічого не заважає. */}
-            <p className="mb-3 rounded-lg bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">{s("browserHint")}</p>
+            {/* Поза Mini App (лінк відкрили у вбудованому браузері Telegram
+                чи звичайному Safari/Chrome — за UA їх не відрізнити) показуємо
+                підказку завжди: у справжньому браузері вона просто нерелевантна.
+                У Mini App свайпи вимкнені (initPublicWebApp) — підказка зайва. */}
+            {!inTelegram && <p className="mb-3 rounded-lg bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">{s("browserHint")}</p>}
             <div className="mb-2 text-sm font-medium text-slate-700">{s("signHere")}</div>
             <SignaturePad key={sigClearKey} onChange={setSignature} />
             <button type="button" onClick={() => { setSignature(null); setSigClearKey(k => k + 1); }} className="mt-1 text-xs text-slate-400 hover:text-slate-600">{s("clear")}</button>

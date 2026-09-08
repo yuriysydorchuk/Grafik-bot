@@ -38,6 +38,20 @@ function loadTelegramScript(): Promise<void> {
   return scriptPromise;
 }
 
+// Публічні токен-сторінки (/sign/:token), відкриті кнопкою web_app з бота
+// ПРАЦІВНИКА: без логіну (initData працівника не адмінська), лише viewport —
+// expand() на весь екран і disableVerticalSwipes() (Bot API 7.7+), щоб жест
+// «потягнути вниз» не згортав Mini App і не смикав канвас підпису. Повертає
+// true, коли сторінка справді всередині Telegram.
+export async function initPublicWebApp(): Promise<boolean> {
+  if (!isTelegramWebApp) return false;
+  await loadTelegramScript();
+  const wa = (window as any).Telegram?.WebApp;
+  if (!wa) return false;
+  try { wa.ready(); wa.expand(); wa.disableVerticalSwipes?.(); } catch { /* старий клієнт без методу */ }
+  return true;
+}
+
 // Exchange initData for a normal session cookie. Raw fetch on purpose: the shared api()
 // wrapper bounces to /login on 401, which would fight the auto-login attempt.
 export async function telegramLogin(): Promise<boolean> {

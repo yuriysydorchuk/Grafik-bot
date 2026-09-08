@@ -91,11 +91,15 @@ export default function App() {
   const onDocs = location.pathname.startsWith("/docs/");
   // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
   // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
-  const [tgReady, setTgReady] = useState(!isTelegramWebApp);
+  // Публічні токен-сторінки теж відкриваються з Telegram (web_app-кнопка
+  // «Підписати» в боті працівника) — там initData ПРАЦІВНИКА, не адміна:
+  // спроба telegramLogin дала б лише 401 і зайву невдалу подію в /security.
+  const onPublicToken = onSign || onPassportScan || onDocs;
+  const [tgReady, setTgReady] = useState(!isTelegramWebApp || onPublicToken);
   useEffect(() => {
-    if (!isTelegramWebApp) return;
+    if (!isTelegramWebApp || onPublicToken) return;
     telegramLogin().finally(() => setTgReady(true));
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: me, isLoading, isError } = useQuery<Me>({
     queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && !onDocs && tgReady,
   });
