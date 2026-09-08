@@ -159,5 +159,13 @@ overrides:
   "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
   esbuild: "0.27.3"
 
+# pnpm 11: onlyBuiltDependencies вище більше не діє — читається лише allowBuilds.
+# Без esbuild тут свіжий install (CI, прод після зміни lockfile) падає з
+# ERR_PNPM_IGNORED_BUILDS (postinstall esbuild докачує платформний бінар, бо
+# overrides вирізають усі, крім linux-x64).
 allowBuilds:
   puppeteer: true
+  esbuild: true
+  "@swc/core": true
+  msw: true
+  unrs-resolver: true
