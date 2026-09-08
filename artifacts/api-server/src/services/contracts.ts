@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { PDFDocument } from "pdf-lib";
 import { and, eq, inArray } from "drizzle-orm";
 import puppeteer, { type Browser } from "puppeteer";
@@ -332,11 +333,43 @@ export async function renderTemplatePreview(html: string): Promise<Buffer> {
   return renderHtmlToPdf(placeholderNamePreview(html));
 }
 
+// ── Шрифт документа — вшитий, не системний ────────────────────────────────────
+// Шаблони (архів HrAppka) верстані під 'Times New Roman'. На проді (Ubuntu) цього
+// шрифту нема — Chrome підставив би DejaVu/Nimbus, і документ виглядав би
+// інакше, ніж локально на Mac (інші метрики → інша розбивка на сторінки, інший
+// sha256). Тому Liberation Serif (метричний двійник Times New Roman, SIL OFL,
+// assets/fonts) вшивається @font-face ПІД ІМЕНЕМ «Times New Roman»: @font-face
+// має пріоритет над локально встановленим шрифтом, тож рендер детермінований
+// на будь-якій машині. Base64 CSS будується один раз на процес.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const FONT_DIRS = [path.resolve(HERE, "../../assets/fonts"), path.resolve(HERE, "../assets/fonts")];
+const DOC_FONT_FACES: Array<[file: string, weight: string, style: string]> = [
+  ["LiberationSerif-Regular.ttf", "normal", "normal"],
+  ["LiberationSerif-Bold.ttf", "bold", "normal"],
+  ["LiberationSerif-Italic.ttf", "normal", "italic"],
+  ["LiberationSerif-BoldItalic.ttf", "bold", "italic"],
+];
+let docFontCss: string | null = null;
+function documentFontCss(): string {
+  if (docFontCss != null) return docFontCss;
+  const rules: string[] = [];
+  for (const [file, weight, style] of DOC_FONT_FACES) {
+    const dir = FONT_DIRS.find(d => fs.existsSync(path.join(d, file)));
+    if (!dir) { logger.warn({ file, dirs: FONT_DIRS }, "document font missing — falling back to system fonts"); continue; }
+    const b64 = fs.readFileSync(path.join(dir, file)).toString("base64");
+    for (const family of ["Times New Roman", "Times", "Liberation Serif"]) {
+      rules.push(`@font-face{font-family:"${family}";font-weight:${weight};font-style:${style};src:url(data:font/ttf;base64,${b64}) format("truetype")}`);
+    }
+  }
+  docFontCss = rules.join("\n");
+  return docFontCss;
+}
+
 async function renderHtmlToPdf(innerHtml: string): Promise<Buffer> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    const doc = `<!DOCTYPE html><html><head><meta charset="utf-8" /></head><body style="margin:0">${innerHtml}</body></html>`;
+    const doc = `<!DOCTYPE html><html><head><meta charset="utf-8" /><style>${documentFontCss()}\nbody{font-family:"Times New Roman",serif}</style></head><body style="margin:0">${innerHtml}</body></html>`;
     await page.setContent(doc, { waitUntil: "load" });
     const bytes = await page.pdf({ format: "A4", printBackground: true, margin: { top: "12mm", bottom: "12mm", left: "10mm", right: "10mm" } });
     return Buffer.from(bytes);

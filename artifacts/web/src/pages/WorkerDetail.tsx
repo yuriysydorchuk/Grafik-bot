@@ -8,6 +8,7 @@ import {
   Download, Printer, Mail, ScanLine, UserCheck,
 } from "lucide-react";
 import { SendFileModal, printFile } from "../components/SendFileModal";
+import { PdfPreview } from "../components/PdfPreview";
 import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { DocumentAuditModal } from "../components/DocumentAuditModal";
@@ -1184,6 +1185,7 @@ function ContractFilesList({ contractId, workerId }: { contractId: number; worke
               {openFile === f.id ? <ChevronUp className="h-3 w-3 shrink-0 text-slate-400" /> : <ChevronDown className="h-3 w-3 shrink-0 text-slate-400" />}
             </button>
             <span className="flex shrink-0 items-center gap-0.5">
+              <a href={fileUrl(f)} target="_blank" rel="noopener" className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Відкрити")}><ExternalLink className="h-3.5 w-3.5" /></a>
               <a href={`${fileUrl(f)}?download=1`} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Скачати")}><Download className="h-3.5 w-3.5" /></a>
               <button type="button" onClick={() => printFile(fileUrl(f), "application/pdf")} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Друк")}><Printer className="h-3.5 w-3.5" /></button>
               <button type="button" onClick={() => setSendFor(f)} className="rounded p-1 text-slate-400 hover:bg-sky-50 hover:text-sky-600" title={t("Надіслати працівнику")}><Mail className="h-3.5 w-3.5" /></button>
@@ -1197,40 +1199,13 @@ function ContractFilesList({ contractId, workerId }: { contractId: number; worke
   );
 }
 
-// PDF рендеримо самі через pdf.js (канвасами) — вбудований переглядач браузера
-// може бути налаштований «скачувати PDF», і превʼю тоді не показується взагалі
-// (той самий підхід, що CostInvoices.tsx PdfPreview і /sign/:token PdfPages).
+// PDF рендеримо самі через pdf.js (спільний PdfPreview: чіткий на Retina, ліниві
+// сторінки) — вбудований переглядач браузера може бути налаштований «скачувати
+// PDF», і превʼю тоді не показується взагалі. Кнопка «Відкрити» поруч дає
+// нативний переглядач у новій вкладці (100 % якість, зум, пошук по тексту).
 function ContractPdfPreview({ url }: { url: string }) {
   const t = useT();
-  const ref = useRef<HTMLDivElement>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const pdfjs = await import("pdfjs-dist");
-        const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url" as any)).default as string;
-        pdfjs.GlobalWorkerOptions.workerSrc = worker;
-        const doc = await pdfjs.getDocument({ url }).promise;
-        if (cancelled || !ref.current) return;
-        ref.current.innerHTML = "";
-        for (let i = 1; i <= doc.numPages; i++) {
-          const page = await doc.getPage(i);
-          const vp = page.getViewport({ scale: 1.4 });
-          const canvas = document.createElement("canvas");
-          canvas.width = vp.width; canvas.height = vp.height;
-          canvas.style.width = "100%";
-          canvas.className = "mb-2 rounded border border-slate-200 bg-white";
-          if (cancelled || !ref.current) return;
-          ref.current.appendChild(canvas);
-          await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp } as any).promise;
-        }
-      } catch (e: any) { if (!cancelled) setErr(String(e?.message ?? e).slice(0, 200)); }
-    })();
-    return () => { cancelled = true; };
-  }, [url]);
-  if (err) return <div className="px-1 py-2 text-xs text-rose-500">{t("Не вдалося показати PDF.")} {err}</div>;
-  return <div ref={ref} className="max-h-[70vh] overflow-y-auto px-1 py-2" />;
+  return <PdfPreview src={url} className="max-h-[70vh] overflow-y-auto px-1 py-2" errorLabel={t("Не вдалося показати PDF.")} errorClassName="px-1 py-2 text-xs text-rose-500" />;
 }
 
 // Фабрика обирається тут, не обов'язково worker.factoryId (§7 плану —

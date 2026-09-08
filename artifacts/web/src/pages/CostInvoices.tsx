@@ -8,6 +8,7 @@ import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Penci
 import { get, post, patch, del, upload } from "../lib/api";
 import { shrinkImageFile } from "../lib/shrinkFile";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
+import { PdfPreview } from "../components/PdfPreview";
 import { InvoiceAuditModal, type AuditTarget } from "../components/InvoiceAuditModal";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
@@ -587,46 +588,11 @@ export default function CostInvoices() {
   );
 }
 
-// PDF рендеримо самі через pdf.js (канвасами) — вбудований переглядач браузера
-// може бути налаштований «скачувати PDF», і превʼю тоді не показується взагалі.
-function PdfPreview({ url }: { url: string }) {
+// PDF рендеримо самі через pdf.js (спільний PdfPreview, перші 3 сторінки) —
+// вбудований переглядач браузера може бути налаштований «скачувати PDF».
+function InvoicePdfPreview({ url }: { url: string }) {
   const t = useT();
-  const ref = useRef<HTMLDivElement>(null);
-  const [err, setErr] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const pdfjs = await import("pdfjs-dist");
-        const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url" as any)).default as string;
-        pdfjs.GlobalWorkerOptions.workerSrc = worker;
-        const doc = await pdfjs.getDocument({ url }).promise;
-        if (cancelled || !ref.current) return;
-        ref.current.innerHTML = "";
-        const pages = Math.min(doc.numPages, 3);
-        for (let i = 1; i <= pages; i++) {
-          const page = await doc.getPage(i);
-          const vp = page.getViewport({ scale: 1.6 });
-          const canvas = document.createElement("canvas");
-          canvas.width = vp.width; canvas.height = vp.height;
-          canvas.style.width = "100%";
-          canvas.className = "mb-2 rounded border border-slate-200 bg-white";
-          if (cancelled || !ref.current) return;
-          ref.current.appendChild(canvas);
-          await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp } as any).promise;
-        }
-        if (doc.numPages > pages && ref.current && !cancelled) {
-          const more = document.createElement("div");
-          more.className = "pb-2 text-center text-xs text-slate-400";
-          more.textContent = `+${doc.numPages - pages}`;
-          ref.current.appendChild(more);
-        }
-      } catch { if (!cancelled) setErr(true); }
-    })();
-    return () => { cancelled = true; };
-  }, [url]);
-  if (err) return <div className="p-4 text-sm text-slate-400">{t("Не вдалося показати PDF — відкрий через лінк «файл».")}</div>;
-  return <div ref={ref} className="max-h-[560px] overflow-y-auto p-2" />;
+  return <PdfPreview src={url} maxPages={3} className="max-h-[560px] overflow-y-auto p-2" errorLabel={t("Не вдалося показати PDF — відкрий через лінк «файл».")} errorClassName="p-4 text-sm text-slate-400" />;
 }
 
 function Tile({ icon, label, value, sub, tone }: { icon: React.ReactNode; label: string; value: string; sub?: string; tone?: string }) {
@@ -801,7 +767,7 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, categories
         <div className="min-h-[420px] overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
           {preview.isImage
             ? <img src={preview.url} alt="" className="h-full max-h-[560px] w-full object-contain" />
-            : <PdfPreview url={preview.url} />}
+            : <InvoicePdfPreview url={preview.url} />}
         </div>
       )}
       </div>

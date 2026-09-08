@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { Card, Button, Spinner } from "../components/ui";
+import { PdfPreview } from "../components/PdfPreview";
 
 type Lang = "uk" | "en" | "es" | "ru" | "pl";
 const STR: Record<string, Record<Lang, string>> = {
@@ -201,43 +202,12 @@ function Watermark({ label }: { label: string }) {
   );
 }
 
-// PDF рендериться в canvas через pdf.js (зразок: CostInvoices.tsx PdfPreview) —
-// без прямого URL «завантажити файл», усі сторінки (не обрізано на 3).
+// PDF рендериться в canvas через pdf.js (спільний PdfPreview) — без прямого URL
+// «завантажити файл», усі сторінки, чітко на телефоні (dpr 3). Сторінки одразу
+// мають правильну висоту, тож перевірка «догорнув до кінця» вище бачить повний
+// scrollHeight ще до фактичного малювання.
 function PdfPages({ url }: { url: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const pdfjs = await import("pdfjs-dist");
-        const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url" as any)).default as string;
-        pdfjs.GlobalWorkerOptions.workerSrc = worker;
-        const doc = await pdfjs.getDocument({ url }).promise;
-        if (cancelled || !ref.current) return;
-        ref.current.innerHTML = "";
-        for (let i = 1; i <= doc.numPages; i++) {
-          const page = await doc.getPage(i);
-          const vp = page.getViewport({ scale: 1.5 });
-          const canvas = document.createElement("canvas");
-          canvas.width = vp.width; canvas.height = vp.height;
-          canvas.style.width = "100%";
-          canvas.className = "mb-2 rounded border border-slate-200 bg-white";
-          if (cancelled || !ref.current) return;
-          ref.current.appendChild(canvas);
-          await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp } as any).promise;
-        }
-      } catch (e: any) {
-        // Без явного тексту помилки причину не діагностувати (регресія: глухе
-        // «PDF error» ховало справжню причину — офіс і власник не могли
-        // зрозуміти, чому працівник не бачить документ).
-        if (!cancelled) setErr(String(e?.message ?? e).slice(0, 200));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [url]);
-  if (err) return <div className="p-3 text-xs text-rose-500">PDF error: {err}</div>;
-  return <div ref={ref} />;
+  return <PdfPreview src={url} />;
 }
 
 // Підпис пальцем — звичайний canvas (без нової залежності): pointer events,

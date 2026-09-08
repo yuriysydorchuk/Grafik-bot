@@ -95,4 +95,12 @@ curl -s https://161.97.117.151.sslip.io/api/healthz                             
 
 ## Системні залежності на VPS
 
+- **Chromium для Puppeteer** (генерація PDF-документів працівника: умови, регуляміни, świadectwo — `services/contracts.ts`, гілка worker-docs-signing). Пакет `puppeteer` сам не ставить браузер на сервері — потрібно один раз після `pnpm install`:
+  ```bash
+  # системні бібліотеки Chrome (Ubuntu 22.04/24.04)
+  apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 fonts-liberation
+  cd /root/grafik-bot && pnpm --filter @workspace/api-server exec puppeteer browsers install chrome
+  ```
+  Перевірка: `ls ~/.cache/puppeteer` (тека `chrome/…`). Без браузера генерація пакета падає з `Could not find Chrome`. Шрифт документів (Liberation Serif під іменем «Times New Roman») вшитий з `artifacts/api-server/assets/fonts` через `@font-face` — системний Times New Roman на сервері НЕ потрібен, рендер однаковий локально і на проді.
 - **ghostscript** (`apt install -y ghostscript`) — стискання великих PDF-сканів умов/фактур (`lib/uploads.ts shrinkDocBuffer`, з 02.09.2026). Без нього аплоуд працює, але файли лишаються оригінального розміру (у логах warn `ghostscript not installed`). Перевірка: `gs --version`.

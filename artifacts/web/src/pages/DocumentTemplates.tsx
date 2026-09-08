@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Plus, Copy, Trash2, Languages, Star, Bold, Italic, Underline, Pilcrow, AlignCenter, Eye, Code2, Download, Upload, FileJson } from "lucide-react";
 import { get, post, put, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Badge, Label, Button, Input, Textarea, Modal } from "../components/ui";
+import { PdfPreview } from "../components/PdfPreview";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
@@ -508,7 +509,7 @@ function TemplateEditor({ id, initialKind, companies, factories, onClose }: {
 // адмін повертається сюди з вкладки «Код» після правок).
 function TemplatePreview({ html }: { html: string }) {
   const t = useT();
-  const ref = useRef<HTMLDivElement>(null);
+  const [pdf, setPdf] = useState<ArrayBuffer | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -525,23 +526,7 @@ function TemplatePreview({ html }: { html: string }) {
         if (!res.ok) { const j = await res.json().catch(() => null); throw new Error(j?.error || `Помилка ${res.status}`); }
         const buf = await res.arrayBuffer();
         if (cancelled) return;
-        const pdfjs = await import("pdfjs-dist");
-        const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url" as any)).default as string;
-        pdfjs.GlobalWorkerOptions.workerSrc = worker;
-        const doc = await pdfjs.getDocument({ data: buf }).promise;
-        if (cancelled || !ref.current) return;
-        ref.current.innerHTML = "";
-        for (let i = 1; i <= doc.numPages; i++) {
-          const page = await doc.getPage(i);
-          const vp = page.getViewport({ scale: 1.3 });
-          const canvas = document.createElement("canvas");
-          canvas.width = vp.width; canvas.height = vp.height;
-          canvas.style.width = "100%";
-          canvas.className = "mb-2 rounded border border-slate-200 bg-white shadow-sm";
-          if (cancelled || !ref.current) return;
-          ref.current.appendChild(canvas);
-          await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp } as any).promise;
-        }
+        setPdf(buf);
       } catch (e: any) {
         if (!cancelled) setErr(String(e?.message ?? e).slice(0, 300));
       } finally {
@@ -557,7 +542,7 @@ function TemplatePreview({ html }: { html: string }) {
       <div className="mb-2 text-xs text-slate-400">{t("Демо-дані (Jan Kowalski) — не справжній працівник. Підписи лишаються порожніми, як у нависланому документі.")}</div>
       {loading && <Spinner />}
       {err && <div className="text-sm text-rose-500">{t("Не вдалося показати прев'ю.")} {err}</div>}
-      <div ref={ref} className="max-h-[28rem] overflow-y-auto" />
+      {pdf && <PdfPreview src={pdf} className="max-h-[28rem] overflow-y-auto" canvasClassName="mb-2 block rounded border border-slate-200 bg-white shadow-sm" errorLabel={t("Не вдалося показати прев'ю.")} errorClassName="text-sm text-rose-500" />}
     </div>
   );
 }
