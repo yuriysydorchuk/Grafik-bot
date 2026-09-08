@@ -103,4 +103,13 @@ curl -s https://161.97.117.151.sslip.io/api/healthz                             
   cd /root/grafik-bot && pnpm --filter @workspace/api-server exec puppeteer browsers install chrome
   ```
   Перевірка: `ls ~/.cache/puppeteer` (тека `chrome/…`). Без браузера генерація пакета падає з `Could not find Chrome`. Шрифт документів (Liberation Serif під іменем «Times New Roman») вшитий з `artifacts/api-server/assets/fonts` через `@font-face` — системний Times New Roman на сервері НЕ потрібен, рендер однаковий локально і на проді.
+- **Печатки фірм для умов** (`services/contracts.ts finalizeContractSignature`): файли поза git —
+  `/root/grafik-bot/uploads/company/stamp-<companyId>.png` (id фірм: 1 Klinex, 2 ES, 3 ESO), фолбек
+  `COMPANY_STAMP_PNG` у `.env`. PNG 3:1 (бокс шаблону 210×70), печатка на весь бокс, підпис поверх.
+  Оригінали й скрипти витяжки — у Yuriy (фото/PDF у ~/Downloads, 08.09.2026).
+- **Порядок міграцій = алфавіт назв.** CI і `/deploy` накочують `deploy/migrations/*.sql` за `sort`;
+  файл, що ALTER-ить/UPDATE-ить таблицю з «пізнішого» файла, падає на чистій/прод базі
+  (10.09.2026: employers → worker_factories, doc-auto-request/lead-days → task_auto_rules; виправлено
+  датою в назві). Перед деплоєм великого батчу — сухий прогін на копії прод-дампу
+  (`pg_restore` у локальну БД → `psql -f` за алфавітом → 0 ERROR).
 - **ghostscript** (`apt install -y ghostscript`) — стискання великих PDF-сканів умов/фактур (`lib/uploads.ts shrinkDocBuffer`, з 02.09.2026). Без нього аплоуд працює, але файли лишаються оригінального розміру (у логах warn `ghostscript not installed`). Перевірка: `gs --version`.
