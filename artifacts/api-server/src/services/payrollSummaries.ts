@@ -412,6 +412,9 @@ export async function syncPayrollSummaries(opts: { sourceId?: number } = {}): Pr
   for (const src of sources) {
     let tempId: string | null = null;
     try {
+      // ручні джерела (kind=manual): рядки ведуться прямо в БД (позатабличні
+      // офісні/водії) — синк їх не читає і не перетирає
+      if (src.kind === "manual") { result.sources++; continue; }
       if (src.kind === "gotowka") {
         await syncGotowkaSource(api, src);
         result.sources++;

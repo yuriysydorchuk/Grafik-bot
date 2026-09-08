@@ -29,6 +29,25 @@ export async function getWorker(tid: string): Promise<Worker | undefined> {
   return rows[0];
 }
 
+// Leaver = fired worker inside the grace window. They keep a slim bot menu
+// (report + hours) so the last month's raport doesn't depend on the office
+// re-sending an offer by hand (KeyCRM chats 09.2026: "деактивований не може
+// подати рапорт"). 60 days: fired late in the month → the raport for that
+// month is still due through the whole next month.
+export const LEAVER_GRACE_DAYS = 60;
+export async function getLeaver(tid: string): Promise<Worker | undefined> {
+  const rows = await db.select().from(workersTable)
+    .where(and(eq(workersTable.telegramId, tid), eq(workersTable.isActive, false)));
+  const w = rows[0];
+  if (!w?.firedAt) return undefined;
+  return Date.now() - new Date(w.firedAt).getTime() <= LEAVER_GRACE_DAYS * 24 * 3600_000 ? w : undefined;
+}
+
+// Active worker, else a leaver in grace — for the handlers leavers may still use.
+export async function getWorkerOrLeaver(tid: string): Promise<Worker | undefined> {
+  return (await getWorker(tid)) ?? (await getLeaver(tid));
+}
+
 export async function getDriver(tid: string): Promise<Driver | undefined> {
   const rows = await db.select().from(driversTable)
     .where(and(eq(driversTable.telegramId, tid), eq(driversTable.isActive, true)));

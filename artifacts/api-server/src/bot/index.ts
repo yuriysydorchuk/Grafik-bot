@@ -38,7 +38,7 @@ import {
   showHdSlots, showFullWeekSchedule, showFactoryWeekSchedule, showDriverShift, showDriverWeek,
   type OrderMap,
 } from "./views";
-import { adminMenu, workerMenu, headDriverMenu, driverMenu, managementMenu } from "./menus";
+import { adminMenu, workerMenu, leaverMenu, headDriverMenu, driverMenu, managementMenu } from "./menus";
 import { t, trAll, tb, bhears, LANGS, LANG_LABEL, OFFICE_LANGS, asLang, oLang, dayShort, stageLabel, DATE_LOCALE, type Lang } from "./i18n";
 
 // Worker's chosen UI language (defaults to Ukrainian)
@@ -55,6 +55,15 @@ const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang
 };
 // Office/admin & driver chosen UI language (uk default; only uk/en offered)
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);
+
+// "Not registered" for a worker button: a fired worker in grace still has the
+// old keyboard on screen — tell them what's left (report + hours) instead of
+// the misleading "not registered", which used to send them back to the office.
+async function replyNotRegistered(ctx: Context, lang: Lang) {
+  const leaver = ctx.from ? await getLeaver(String(ctx.from.id)) : undefined;
+  if (leaver) { const ll = wlang(leaver); return ctx.reply(t(ll, "leaver.only"), leaverMenu(ll)); }
+  return ctx.reply(t(lang, "notRegistered"));
+}
 // Inline keyboard for choosing a language
 const langPickKeyboard = () => Markup.inlineKeyboard(LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `setlang:${l}`)]));
 // Language prompt readable BEFORE any language is known (all 5 worker languages).
@@ -84,7 +93,7 @@ const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
 import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
-import { isAdmin, getAdmin, getWorker, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
+import { isAdmin, getAdmin, getWorker, getLeaver, getWorkerOrLeaver, LEAVER_GRACE_DAYS, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
@@ -309,6 +318,16 @@ bot.start(async (ctx) => {
     if (!worker.language) return ctx.reply(LANG_PROMPT, langPickKeyboard());
     const lang = wlang(worker);
     return ctx.reply(t(lang, "start.greet", { name: worker.fullName }), { parse_mode: "Markdown", ...(await workerMenuFor(worker, lang)) });
+  }
+
+  // Fired worker in grace: slim menu (raport + hours). Without this branch a
+  // leaver's /start fell through to the self-registration prompt.
+  const leaver = await getLeaver(tid);
+  if (leaver) {
+    const ll = wlang(leaver);
+    const fired = leaver.firedAt ? new Date(leaver.firedAt) : new Date();
+    const date = `${String(fired.getDate()).padStart(2, "0")}.${String(fired.getMonth() + 1).padStart(2, "0")}.${fired.getFullYear()}`;
+    return ctx.reply(t(ll, "start.leaver", { name: leaver.fullName, date, days: LEAVER_GRACE_DAYS }), leaverMenu(ll));
   }
 
   // Brand-new unregistered user → let them pick a language first (stored for registration)
@@ -876,7 +895,7 @@ async function showMyScheduleWeek(ctx: Context, workerId: number, wantWeekStart:
 
 bot.hears(trAll("menu.schedule"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
-  if (!worker) return ctx.reply(t(wlang(worker), "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, wlang(worker));
   return showMyScheduleWeek(ctx, worker.id, null, undefined, wlang(worker), worker.factoryId);
 });
 
@@ -900,7 +919,7 @@ bot.hears(trAll("menu.myInfo"), async (ctx) => {
 bot.hears(trAll("menu.referral"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   const link = `https://t.me/${ctx.botInfo.username}?start=ref${worker.id}`;
   const cands = await db.select().from(candidatesTable)
     .where(eq(candidatesTable.referrerWorkerId, worker.id)).orderBy(desc(candidatesTable.id));
@@ -926,7 +945,7 @@ const advStatusLabel = (lang: Lang, s: string) =>
 bot.hears(trAll("menu.advance"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   const rows = await db.select().from(advanceRequestsTable)
     .where(eq(advanceRequestsTable.workerId, worker.id)).orderBy(desc(advanceRequestsTable.id)).limit(10);
   let msg: string;
@@ -1064,7 +1083,7 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
 bot.hears(trAll("menu.factoryInfo"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   if (!worker.factoryId) return ctx.reply(t(lang, "fac.noFactory"), await workerMenuFor(worker, lang));
   const f = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId)))[0];
   if (!f) return ctx.reply(t(lang, "fac.notFound"), await workerMenuFor(worker, lang));
@@ -1145,9 +1164,9 @@ async function loadWorkerMonthShifts(workerId: number) {
 
 // Read-only summary first; editing/reporting is behind a separate button.
 bot.hears(trAll("menu.myHours"), async (ctx) => {
-  const worker = await getWorker(String(ctx.from.id));
+  const worker = await getWorkerOrLeaver(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   const shifts = await loadWorkerMonthShifts(worker.id);
   const total = shifts.reduce((s, x) => s + x.hours, 0);
   let msg = `${t(lang, "hours.title")}\n\n${t(lang, "hours.disclaimer")}\n\n`;
@@ -1350,7 +1369,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
   const tid = String(ctx.from.id);
   const worker = await getWorker(tid);
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   const curMon = getCurrentMonday(), nextMon = getNextMonday();
   const now = nowWarsaw();
   const taken = await absTakenDates(worker.id);
@@ -1588,9 +1607,9 @@ const monthStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).pad
 // Reports are accepted the WHOLE month: through the 7th the default is still the
 // previous month, afterwards — the current one; the other month is one tap away.
 bot.hears(trAll("menu.report"), async (ctx) => {
-  const worker = await getWorker(String(ctx.from.id));
+  const worker = await getWorkerOrLeaver(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
 
   const now = nowWarsaw();
   const defaultMonth = reportMonthFor(now);
@@ -1610,15 +1629,9 @@ bot.hears(trAll("menu.report"), async (ctx) => {
 
 // Report entry via a personal inline button (the small "other month" button, a
 // farewell offer after firing, or a transfer offer). Fired workers keep this
-// entry point for 30 days — the rest of the menu is already gone for them.
-const REPORT_GRACE_MS = 30 * 24 * 3600_000;
-async function getWorkerForReport(tid: string): Promise<ReportWorker & { language: string | null } | undefined> {
-  const active = await getWorker(tid);
-  if (active) return active;
-  const [w] = await db.select().from(workersTable).where(eq(workersTable.telegramId, tid));
-  if (w && !w.isActive && w.firedAt && Date.now() - new Date(w.firedAt).getTime() <= REPORT_GRACE_MS) return w;
-  return undefined;
-}
+// entry point (and the report/hours buttons of the slim leaver menu) for
+// LEAVER_GRACE_DAYS — see roles.ts getLeaver.
+const getWorkerForReport = getWorkerOrLeaver;
 
 // Office confirmed/declined offering a farewell report to a just-fired worker.
 bot.action(/^fireoff:(\d+|x)$/, async (ctx) => {
@@ -1670,7 +1683,7 @@ bot.action(/^repi:(\d{4}-\d{2}):(\d+)$/, async (ctx) => {
 bot.hears(trAll("menu.availability"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
-  if (!worker) return ctx.reply(t(lang, "notRegistered"));
+  if (!worker) return replyNotRegistered(ctx, lang);
   // Manual factories: workers don't fill availability — admins set the schedule
   let shiftCount = 3;
   let minDays: number | null = null; // правило фабрики: мінімум днів доступності на тиждень
@@ -3210,11 +3223,12 @@ bot.on("document", async (ctx) => {
 // Shared by the photo handler and the document handler (photo sent as a file).
 async function submitMonthlyReport(ctx: Context, tid: string, data: any, fileId: string, mime: string) {
   clearState(tid);
-  // A recently-fired worker (farewell report) has no active row and no menu —
-  // take the language from the dialog state and hide the keyboard for them.
+  // A recently-fired worker (farewell report) has no active row — take the
+  // language from the dialog state and give them the slim leaver menu.
   const worker = await getWorker(tid);
-  const lang = worker ? wlang(worker) : asLang(data.lang);
-  const menu = worker ? await workerMenuFor(worker, lang) : Markup.removeKeyboard();
+  const leaver = worker ? undefined : await getLeaver(tid);
+  const lang = worker ? wlang(worker) : asLang(leaver?.language ?? data.lang);
+  const menu = worker ? await workerMenuFor(worker, lang) : leaver ? leaverMenu(lang) : Markup.removeKeyboard();
   await ctx.reply(t(lang, "report.uploading"));
   try {
     const fileLink = await ctx.telegram.getFileLink(fileId);

@@ -15,7 +15,9 @@
 | Файл | Для чого |
 |------|----------|
 | `CLAUDE.md` | опис, архітектура, команди, **правила розробки**, ключові модулі |
-| `PROJECT_MAP.md` | карта монорепо, entry points, **API routes**, bot flow, cron, схема БД, інтеграції, ролі, deploy, ризики |
+| `PROJECT_MAP.md` | карта монорепо, entry points, індекс API-груп, bot flow, cron, схема БД, інтеграції, ролі, deploy, ризики |
+| `docs/API_ROUTES.md` | **повний довідник API-маршрутів** (поведінка/гейти/рішення) — великий, читати grep-ом по маршруту |
+| `docs/rules/FINANCE_RULES.md` | **обовʼязкові фінансові правила** — читати перед змінами у сводних/зарплатах/фактурах/банку/P&L |
 | `artifacts/api-server/README.md` | бекенд: структура, запуск, env, сервіси |
 | `artifacts/api-server/src/bot/README.md` | бот: запуск, polling, handlers, звʼязок з БД/сервісами, cron, ризики pm2 |
 | `artifacts/web/README.md` | адмінпанель: стек, структура, API, ролі, i18n |
@@ -56,7 +58,7 @@
 ## Які файли читати першими (за задачею)
 
 - **Бот / діалоги / сповіщення:** `artifacts/api-server/src/bot/index.ts`, `bot/notify.ts`, `bot/i18n.ts`, `bot/state.ts`
-- **API / бізнес-логіка:** `artifacts/api-server/src/routes/admin-api.ts` (великий — шукай по маршруту з PROJECT_MAP)
+- **API / бізнес-логіка:** `artifacts/api-server/src/routes/admin-api.ts` (великий, ~5100 рядків — шукай маршрут у `docs/API_ROUTES.md`)
 - **Генерація графіку:** `artifacts/api-server/src/services/scheduleGenerator.ts`
 - **Інтеграції:** `services/drive.ts`, `services/sheets.ts`, `services/email.ts`, `services/scheduler.ts`
 - **Схема БД:** `lib/db/src/schema/workers.ts`
@@ -66,7 +68,7 @@
 
 ## Правило: не сканувати весь репозиторій без потреби
 
-`bot/index.ts` (~3200 рядків) і `routes/admin-api.ts` (~2500) — великі; повне читання дороге й рідко потрібне.
+`bot/index.ts` (~5000 рядків) і `routes/admin-api.ts` (~5100) — великі; повне читання дороге й рідко потрібне.
 
 - **Спершу** звіряйся з `PROJECT_MAP.md` (маршрути/модулі) і README — знайди точне місце.
 - Читай **цільово**: `grep`/пошук по сим"волу, потім читання потрібного діапазону рядків, а не файлу цілком.

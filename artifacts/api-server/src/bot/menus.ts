@@ -55,6 +55,13 @@ export const workerMenu = (lang: Lang = "uk", opts: WorkerMenuOpts = {}) => {
   return Markup.keyboard(rows).resize();
 };
 
+// Slim menu for a fired worker in the grace window (see roles.ts getLeaver):
+// only what they still legitimately need — the last raport and their hours.
+export const leaverMenu = (lang: Lang = "uk") => Markup.keyboard([
+  [t(lang, "menu.report")],
+  [t(lang, "menu.myHours")],
+]).resize();
+
 // Mini App button: opens the admin panel inside Telegram (auto-login via initData).
 // Telegram rejects non-HTTPS web_app URLs, so the row appears only with a proper env.
 const webAppUrl = () => {

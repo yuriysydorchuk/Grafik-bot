@@ -5,10 +5,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Схема роботи над НОВОЮ задачею (якщо це підтвердження/уточнення поточної роботи — ігноруй): 1) прочитай PROJECT_MAP.md і HANDOFF.md, якщо ще не читав у цій сесії; 2) знайди релевантні файли; 3) покажи план і ЧЕКАЙ підтвердження користувача перед реалізацією.\"}}'"
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Нова задача (підтвердження/уточнення поточної — ігноруй): 1) Навігація ЦІЛЬОВО: PROJECT_MAP.md (карта+індекс) → docs/API_ROUTES.md (деталі маршрутів) → README пакета; grep секцію, не читай великі файли цілком. Фінансова зона (сводні/зарплати/фактури/банк/P&L) — спершу docs/rules/FINANCE_RULES.md. 2) Дрібна/зворотна локальна зміна коду — виконуй ОДРАЗУ без плану й підтвердження; наприкінці верифікація (typecheck) і короткий звіт. 3) План і ПІДТВЕРДЖЕННЯ обовʼязкові: схема БД, прод (deploy/ssh/psql), видалення/масові зміни даних, фінансово-критична логіка, великі кросмодульні фічі.\"}}'"
           }
         ]
       }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm run typecheck)",
+      "Bash(pnpm run typecheck:libs)",
+      "Bash(pnpm run build)",
+      "Bash(pnpm --filter @workspace/api-server run build)",
+      "Bash(pnpm --filter @workspace/api-server run test)",
+      "Bash(pnpm --filter @workspace/web run build)",
+      "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree list)",
+      "Bash(pm2 list)",
+      "Bash(pm2 logs:*)"
     ]
   }
 }
