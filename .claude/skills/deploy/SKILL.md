@@ -17,6 +17,8 @@ description: Deploy Grafik-bot to the production VPS — verify locally (typeche
    ```
    Будь-який fail → зупинись і покажи помилку користувачу.
 
+1b. **Друга думка** (правило CLAUDE.md «Друга думка»): diff того, що їде (`git diff origin/main...HEAD` або `git show` комітів), прогнати через `codex exec --sandbox read-only` і `agy -p ... --mode plan`; кожну знахідку звірити по коду. Підтверджений баг → зупинись і покажи. Лише код/diff, без `.env` і даних.
+
 2. **Коміт + пуш `main`** — лише те, що стосується задачі. Сервер тягне з `origin/main`, тому без пушу деплоїти нічого. Формат комітів — див. git log; підпис `Co-Authored-By` як у CLAUDE.md-конвенції.
 
 3. **Pull на сервері:**

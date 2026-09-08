@@ -10,7 +10,7 @@
 import { db } from "@workspace/db";
 import {
   companiesTable, factoriesTable, factoryHoursTable, hoursMonthExclusionsTable, hoursNotesTable, monthlyReportsTable,
-  scheduleEntriesTable, scheduleWeeksTable, workersTable,
+  scheduleEntriesTable, scheduleWeeksTable, workerFactoryCodesTable, workersTable,
 } from "@workspace/db";
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { entryDateStr, weekFromForMonth } from "../lib/dates";
@@ -226,8 +226,17 @@ export async function buildHoursMergedRows(month: string): Promise<{
     id: workersTable.id, createdSource: workersTable.createdSource,
   }).from(workersTable).where(inArray(workersTable.id, rowWorkerIds)) : [];
   const importCreated = new Set(workerCos.filter(w => w.createdSource === "hours_import").map(w => w.id));
+  // Колонка «Код»: якщо у працівника є ключ фабрики (Nr Osobowy у системі
+  // фабрики, worker_factory_codes) для фабрики рядка — показуємо його, наш
+  // worker_code лишається fallback-ом (рішення 06.09.2026). Стосується і
+  // Excel-експорту, бо він читає ті самі рядки.
+  const facCodes = rowWorkerIds.length ? await db.select({
+    workerId: workerFactoryCodesTable.workerId, factoryId: workerFactoryCodesTable.factoryId, code: workerFactoryCodesTable.code,
+  }).from(workerFactoryCodesTable).where(inArray(workerFactoryCodesTable.workerId, rowWorkerIds)) : [];
+  const facCodeByKey = new Map(facCodes.map(c => [rowKey(c.workerId, c.factoryId), c.code]));
 
   for (const row of byKey.values()) {
+    row.code = facCodeByKey.get(rowKey(row.workerId, row.factoryId)) ?? row.code;
     const rep = repByKey.get(rowKey(row.workerId, row.factoryId));
     row.reportHours = rep?.hours ?? null;
     row.reportSubmitted = !!rep;
