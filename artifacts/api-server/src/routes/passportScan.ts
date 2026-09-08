@@ -30,10 +30,16 @@ import { bot } from "../bot/instance";
 import { logger } from "../lib/logger";
 import { ensureDocumentType, applyWorkerDocumentUpload } from "../services/workerDocuments";
 import { requestRehire } from "../bot/handlers/rehire";
+import { validatePassport, validateQuestionnaire, CONSENTS_VERSION } from "../lib/questionnaireRules";
+import { companiesTable } from "@workspace/db";
 
 const router: IRouter = Router();
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, code: number, msg: string) => res.status(code).json({ error: msg });
+// Валідація анкети: 400 + мапа field → код помилки (клієнт підсвічує поле й перекладає код)
+const failFields = (res: any, fields: Record<string, string>) =>
+  res.status(400).json({ error: `Перевір поля: ${Object.keys(fields).join(", ")}`, fields });
+const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const scanLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 60,
@@ -67,6 +73,7 @@ router.get("/passport-scan/:token", async (req, res) => {
   // чистого бланку щоразу.
   let questionnaire: Record<string, unknown> | null = null;
   let pesel: string | null = null;
+  let birthDate: string | null = null; // клієнт звіряє PESEL з датою народження
   let nameDraft: { firstName: string | null; middleName: string | null; lastName: string | null } | null = null;
   // office/self — паспорта в системі гарантовано ще нема, скан обов'язковий.
   // anketa — залежить від того, чи в цього працівника вже є "Paszport" на
@@ -77,9 +84,10 @@ router.get("/passport-scan/:token", async (req, res) => {
   if (row.workerId) {
     const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, row.workerId));
     if (q) questionnaire = q;
-    const [w] = await db.select({ pesel: workersTable.pesel, fullName: workersTable.fullName, firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName })
+    const [w] = await db.select({ pesel: workersTable.pesel, fullName: workersTable.fullName, firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName, birthDate: workersTable.birthDate })
       .from(workersTable).where(eq(workersTable.id, row.workerId));
     pesel = w?.pesel ?? null;
+    birthDate = w?.birthDate ? String(w.birthDate) : null;
     if (w) {
       // Немає структурованих полів (профіль заведений до цієї фічі) —
       // best-effort split fullName для префілу (той самий евристичний поділ,
@@ -99,7 +107,19 @@ router.get("/passport-scan/:token", async (req, res) => {
     }
   }
 
-  ok(res, { purpose: row.purpose, factoryName: factory?.name ?? null, language: row.language ?? "uk", questionnaire, pesel, needsPassportScan, nameDraft });
+  // Адміністратор даних у згодах RODO — наша фірма, з якою буде umowa: фірма
+  // фабрики з лінка → фірма профілю → перша активна (фолбек, щоб текст не був порожнім).
+  let companyName: string | null = null;
+  {
+    let companyId: number | null = null;
+    if (row.factoryId) { const [f] = await db.select({ companyId: factoriesTable.companyId }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)); companyId = f?.companyId ?? null; }
+    if (companyId == null && row.workerId) { const [w] = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.id, row.workerId)); companyId = w?.companyId ?? null; }
+    const [c] = companyId != null
+      ? await db.select({ name: companiesTable.name, legalName: companiesTable.legalName }).from(companiesTable).where(eq(companiesTable.id, companyId))
+      : await db.select({ name: companiesTable.name, legalName: companiesTable.legalName }).from(companiesTable).limit(1);
+    companyName = c?.legalName || c?.name || null;
+  }
+  ok(res, { purpose: row.purpose, factoryName: factory?.name ?? null, companyName, language: row.language ?? "uk", questionnaire, pesel, birthDate, needsPassportScan, nameDraft });
 });
 
 // Файл → OCR → чернетка. Файл лягає у тимчасову теку (переноситься у постійну
@@ -160,7 +180,6 @@ router.post("/passport-scan/:token/analyze", uploadScan.single("file"), async (r
   }
 });
 
-const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 
 // Фінальні (можливо підправлені на екрані підтвердження) поля → створює
 // працівника. factoryId/telegramId/language — з ТОКЕНА (серверний контекст,
@@ -170,12 +189,11 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
   if (error || !row) return fail(res, 404, error ?? "Лінк недійсний.");
   if (!row.tempFilePath || !row.tempFileMime) return fail(res, 400, "Спершу відскануй паспорт.");
 
-  const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(req.body?.birthDate) ? req.body.birthDate : null;
-  const passportExpiresAt = /^\d{4}-\d{2}-\d{2}$/.test(req.body?.passportExpiresAt) ? req.body.passportExpiresAt : null;
-  const sex = req.body?.sex === "M" || req.body?.sex === "F" ? req.body.sex : null;
-  const passportNumber = strOrNull(req.body?.passportNumber);
-  const passportCountry = strOrNull(req.body?.passportCountry);
-  const citizenship = strOrNull(req.body?.citizenship);
+  // Усі поля паспорта обов'язкові, лише латиниця, формати — lib/questionnaireRules
+  // (рішення 08.09.2026; ті самі правила підсвічує клієнт).
+  const pv = validatePassport(req.body ?? {}, todayIso());
+  if (Object.keys(pv.errors).length) return failFields(res, pv.errors);
+  const { birthDate, passportExpiresAt, sex, passportNumber, passportCountry, citizenship } = pv.values;
 
   // Для anketa-токена з уже відомим workerId (запрошення ІСНУЮЧОГО працівника
   // без паспорта на файлі) — доповнюємо профіль, НЕ створюємо новий (інакше
@@ -194,13 +212,8 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     rehireTarget = cand;
   }
   const isExistingWorker = !!row.workerId || !!rehireTarget;
-  const LATIN_NAME = /^[a-ząćęłńóśźż' -]+$/i;
-  const firstName = strOrNull(req.body?.firstName);
-  const middleNameIn = strOrNull(req.body?.middleName);
-  const lastName = strOrNull(req.body?.lastName);
-  if (!firstName || !LATIN_NAME.test(firstName)) return fail(res, 400, "Ім'я — лише латиницею (напр. Jan)");
-  if (!lastName || !LATIN_NAME.test(lastName)) return fail(res, 400, "Прізвище — лише латиницею (напр. Kowalski)");
-  if (middleNameIn && !LATIN_NAME.test(middleNameIn)) return fail(res, 400, "Друге ім'я — лише латиницею");
+  const { firstName, lastName } = pv.values;
+  const middleNameIn = pv.values.middleName;
 
   try {
     let worker: typeof workersTable.$inferSelect;
@@ -315,25 +328,50 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   if (new Date(row.expiresAt).getTime() < Date.now()) return fail(res, 404, "Термін дії лінку вичерпано.");
 
   const b = req.body ?? {};
-  const patch: Record<string, unknown> = { status: "submitted", submittedAt: new Date(), updatedAt: new Date() };
-  for (const k of [
-    "birthPlace", "addressRegistered", "addressPl", "postalCode", "city", "motherName", "fatherName", "bankName", "bankIban",
-    "phone", "email", "taxOffice", "nfzBranch", "schoolName", "otherEmploymentNote", "emergencyContact",
-    "nip", "taxOfficeAddress",
-    "regWojewodztwo", "regPowiat", "regGmina", "regMiejscowosc", "regUlica", "regNumerDomu", "regKodPocztowy",
-    "zamWojewodztwo", "zamPowiat", "zamGmina", "zamMiejscowosc", "zamUlica", "zamNumerDomu", "zamKodPocztowy",
-  ] as const) {
-    if (b[k] !== undefined) patch[k] = strOrNull(b[k]);
+  const [workerRow] = await db.select({ birthDate: workersTable.birthDate, gender: workersTable.gender, firstName: workersTable.firstName, lastName: workersTable.lastName })
+    .from(workersTable).where(eq(workersTable.id, row.workerId));
+
+  // Ім'я/по-батькові/прізвище (лише коли кроку паспорта не було — needsPassportScan=false):
+  // канонічні поля workersTable; невалідні — 400, як і решта (рішення 08.09.2026:
+  // нічого не ігноруємо мовчки).
+  const errors: Record<string, string> = {};
+  const workerPatch: Record<string, unknown> = {};
+  const wantsName = b.firstName !== undefined || b.lastName !== undefined || b.middleName !== undefined;
+  if (wantsName) {
+    const pvName = validatePassport({ firstName: b.firstName, middleName: b.middleName, lastName: b.lastName }, todayIso());
+    for (const k of ["firstName", "middleName", "lastName"] as const) if (pvName.errors[k]) errors[k] = pvName.errors[k]!;
+    if (!errors.firstName && !errors.lastName) {
+      workerPatch.firstName = pvName.values.firstName; workerPatch.lastName = pvName.values.lastName;
+      if (b.middleName !== undefined) workerPatch.middleName = pvName.values.middleName;
+    }
   }
-  if (b.isStudent !== undefined) patch.isStudent = !!b.isStudent;
-  if (b.hasOtherEmployment !== undefined) patch.hasOtherEmployment = !!b.hasOtherEmployment;
-  if (b.isRegisteredUnemployed !== undefined) patch.isRegisteredUnemployed = !!b.isRegisteredUnemployed;
-  if (b.pit0 !== undefined) patch.pit0 = !!b.pit0;
-  if (b.ankietaInnyPracodawca !== undefined) patch.ankietaInnyPracodawca = !!b.ankietaInnyPracodawca;
-  if (b.ankietaEmeryt !== undefined) patch.ankietaEmeryt = !!b.ankietaEmeryt;
-  if (b.ankietaRencista !== undefined) patch.ankietaRencista = !!b.ankietaRencista;
-  if (b.ankietaNiepelnosprawnosc !== undefined) patch.ankietaNiepelnosprawnosc = !!b.ankietaNiepelnosprawnosc;
-  if (b.ankietaSkladkaChorobowa !== undefined) patch.ankietaSkladkaChorobowa = !!b.ankietaSkladkaChorobowa;
+
+  // Усі обов'язкові поля/формати/латиниця/згоди — lib/questionnaireRules (те саме на клієнті).
+  const qv = validateQuestionnaire(b, { birthDate: workerRow?.birthDate ? String(workerRow.birthDate) : null });
+  Object.assign(errors, qv.errors);
+  if (Object.keys(errors).length) return failFields(res, errors);
+  const v = qv.values;
+
+  const patch: Record<string, unknown> = {
+    status: "submitted", submittedAt: new Date(), updatedAt: new Date(),
+    birthPlace: v.birthPlace, motherName: v.motherName, fatherName: v.fatherName, bankName: v.bankName, bankIban: v.bankIban,
+    phone: v.phone, email: v.email, taxOffice: v.taxOffice, nfzBranch: v.nfzBranch,
+    isStudent: v.isStudent, schoolName: v.schoolName, hasOtherEmployment: v.hasOtherEmployment, otherEmploymentNote: v.otherEmploymentNote,
+    isRegisteredUnemployed: v.isRegisteredUnemployed, emergencyContact: v.emergencyContact, nip: v.nip, pit0: v.pit0,
+    ankietaInnyPracodawca: v.ankietaInnyPracodawca, ankietaEmeryt: v.ankietaEmeryt, ankietaRencista: v.ankietaRencista,
+    ankietaNiepelnosprawnosc: v.ankietaNiepelnosprawnosc, ankietaSkladkaChorobowa: v.ankietaSkladkaChorobowa,
+    regWojewodztwo: v.reg.Wojewodztwo, regPowiat: v.reg.Powiat, regGmina: v.reg.Gmina, regMiejscowosc: v.reg.Miejscowosc,
+    regUlica: v.reg.Ulica, regNumerDomu: v.reg.NumerDomu, regKodPocztowy: v.reg.KodPocztowy,
+    zamWojewodztwo: v.zam.Wojewodztwo, zamPowiat: v.zam.Powiat, zamGmina: v.zam.Gmina, zamMiejscowosc: v.zam.Miejscowosc,
+    zamUlica: v.zam.Ulica, zamNumerDomu: v.zam.NumerDomu, zamKodPocztowy: v.zam.KodPocztowy,
+    // Вільнотекстові адреси старих плейсхолдерів («Pełny adres …») — похідні від структурованих,
+    // працівник їх більше не вводить окремо (рішення 08.09.2026)
+    addressPl: v.addressPl, addressRegistered: v.addressRegistered, postalCode: v.postalCode, city: v.city,
+    // Згоди RODO — доказова база: що, коли, звідки, яка версія тексту
+    consents: v.consents, consentsAt: new Date(), consentsVersion: CONSENTS_VERSION,
+    consentsIp: (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() || req.ip || null,
+    consentsUserAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
+  };
 
   // Upsert — з purpose=anketa (дозаповнення пізніше) рядка анкети може ще
   // не існувати взагалі (confirm(), що завжди його створює, для anketa-токена
@@ -342,25 +380,10 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   if (existing) await db.update(workerQuestionnairesTable).set(patch).where(eq(workerQuestionnairesTable.workerId, row.workerId));
   else await db.insert(workerQuestionnairesTable).values({ workerId: row.workerId, ...patch });
 
-  // PESEL і структуроване ім'я/по-батькові/прізвище живуть на workersTable
-  // (канонічні поля, не дублюємо в анкеті) — обидва необов'язкові тут (для
-  // needsPassportScan=false людина заповнює це вперше саме на цьому кроці,
-  // без окремого екрана підтвердження), невалідний формат тихо ігноруємо
-  // (не блокуємо решту анкети через одне поле). fullName НЕ чіпаємо —
-  // канонічне джерело для сортування/матчингу/бота лишається як є.
-  const workerPatch: Record<string, unknown> = {};
-  const pesel = strOrNull(b.pesel);
-  if (pesel && /^\d{11}$/.test(pesel)) workerPatch.pesel = pesel;
-  const LATIN_NAME = /^[a-ząćęłńóśźż' -]+$/i;
-  const firstNameIn = strOrNull(b.firstName);
-  const lastNameIn = strOrNull(b.lastName);
-  if (firstNameIn && LATIN_NAME.test(firstNameIn)) workerPatch.firstName = firstNameIn;
-  if (lastNameIn && LATIN_NAME.test(lastNameIn)) workerPatch.lastName = lastNameIn;
-  if (b.middleName !== undefined) {
-    const middleNameIn = strOrNull(b.middleName);
-    workerPatch.middleName = middleNameIn && LATIN_NAME.test(middleNameIn) ? middleNameIn : null;
-  }
-  if (Object.keys(workerPatch).length) await db.update(workersTable).set(workerPatch).where(eq(workersTable.id, row.workerId));
+  // PESEL — канонічне поле на workersTable (не дублюємо в анкеті). fullName НЕ
+  // чіпаємо — канонічне джерело для сортування/матчингу/бота лишається як є.
+  workerPatch.pesel = v.pesel;
+  await db.update(workersTable).set(workerPatch).where(eq(workersTable.id, row.workerId));
 
   ok(res, { ok: true });
 });

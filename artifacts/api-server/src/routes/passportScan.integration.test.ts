@@ -47,6 +47,19 @@ async function mkAnalyzedToken(opts: { purpose: "office" | "self" | "anketa"; fa
   return token;
 }
 
+// Повні валідні payload-и (08.09.2026: усі поля обов'язкові, лише латиниця, формати — lib/questionnaireRules)
+const PASSPORT_OK = {
+  birthDate: "1995-05-05", passportNumber: "AB1234567", passportCountry: "POL", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M",
+};
+const CONSENTS_OK = { rodo_info: true, processing: true, storage: true, sharing: true, e_comm: true };
+const ANKETA_OK = {
+  birthPlace: "Warszawa", pesel: "95050512346", motherName: "Maria", fatherName: "Piotr", bankName: "PKO BP",
+  bankIban: "PL61109010140000071219812874", phone: "+48123456789", email: "jan@example.com",
+  taxOffice: "Urząd Skarbowy w Lublinie", nfzBranch: "Lubelski Oddział Narodowego Funduszu Zdrowia w Lublinie",
+  regWojewodztwo: "mazowieckie", regPowiat: "Warszawa", regGmina: "Warszawa", regMiejscowosc: "Warszawa", regUlica: "Testowa", regNumerDomu: "1", regKodPocztowy: "00-001",
+  zamSame: true, consents: CONSENTS_OK,
+};
+
 test("GET /api/passport-scan/:token: невідомий токен — 404", opts, async () => {
   const res = await request(app).get("/api/passport-scan/NOPE");
   assert.equal(res.status, 404);
@@ -81,7 +94,7 @@ test("POST .../analyze: без файлу — 400; невалідний тип �
 test("POST .../confirm: без попереднього analyze() — 400 «Спершу відскануй паспорт»", opts, async () => {
   const token = `TESTPSTOK${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   await db.insert(passportScanTokensTable).values({ token, purpose: "self", expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   assert.equal(res.status, 400);
   assert.match(res.body.error, /відскануй/);
 });
@@ -89,7 +102,7 @@ test("POST .../confirm: без попереднього analyze() — 400 «Сп
 test("POST .../confirm: ім'я/прізвище не латиницею — 400, нічого не створюється", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" });
   const before = (await db.select().from(workersTable)).length;
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Іван", lastName: "Петров" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Іван", lastName: "Петров" });
   assert.equal(res.status, 400);
   const after = (await db.select().from(workersTable)).length;
   assert.equal(after, before);
@@ -97,9 +110,9 @@ test("POST .../confirm: ім'я/прізвище не латиницею — 400
 
 test("POST .../confirm: без прізвища (лише firstName) — 400", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" });
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan" });
   assert.equal(res.status, 400);
-  assert.match(res.body.error, /Прізвище/);
+  assert.equal(res.body.fields.lastName, "required");
 });
 
 test("POST .../confirm: щасливий шлях (self) — створює працівника з окремих firstName/middleName/lastName + factoryId/telegramId/language з ТОКЕНА, файл переїжджає в worker-documents, токен стає використаним", opts, async () => {
@@ -134,7 +147,7 @@ test("POST .../confirm: щасливий шлях (self) — створює пр
   assert.ok(tokenRow!.usedAt);
   assert.equal(tokenRow!.workerId, worker!.id);
 
-  const again = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
+  const again = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   assert.equal(again.status, 404, "використаний токен більше не діє");
 });
 
@@ -142,7 +155,7 @@ test("POST .../confirm: office purpose — factoryId/telegramId лишаютьс
   const { adminId } = await seedAdmin({ role: "owner" });
   const token = await mkAnalyzedToken({ purpose: "office", createdBy: adminId });
 
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Anna", lastName: "Nowak" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Anna", lastName: "Nowak" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, res.body.worker.id));
   assert.equal(worker!.factoryId, null);
@@ -152,32 +165,35 @@ test("POST .../confirm: office purpose — factoryId/telegramId лишаютьс
 // ── /questionnaire (решта анкети одразу після скану, §1 плану) ─────────────
 test("POST .../questionnaire: без попереднього confirm() — 400", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" }); // analyze() пройшов, confirm() — ще ні
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ addressPl: "Warszawa" });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send(ANKETA_OK);
   assert.equal(res.status, 400);
   assert.match(res.body.error, /відскануй/);
 });
 
 test("POST .../questionnaire: після confirm() зберігає поля, status → submitted", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" });
-  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
+  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
 
   const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({
-    addressPl: "ul. Testowa 1, Warszawa", addressRegistered: "ul. Testowa 1, Warszawa",
-    motherName: "Maria Kowalska", fatherName: "Jan Kowalski Sr", bankName: "PKO BP",
-    bankIban: "PL61109010140000071219812874", phone: "+48123456789", email: "jan@example.com",
+    ...ANKETA_OK, motherName: "Maria Kowalska", fatherName: "Jan Kowalski",
     isStudent: true, schoolName: "Uniwersytet Warszawski", hasOtherEmployment: false,
-    isRegisteredUnemployed: true, emergencyContact: "Anna, +48123456789", pesel: "12345678901",
+    isRegisteredUnemployed: true, emergencyContact: "Anna, +48123456789",
   });
   assert.equal(res.status, 200, JSON.stringify(res.body));
 
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, confirmed.body.worker.id));
-  assert.equal(q!.addressPl, "ul. Testowa 1, Warszawa");
+  assert.equal(q!.addressPl, "Testowa 1, 00-001 Warszawa", "вільнотекстова адреса — похідна від структурованої");
+  assert.equal(q!.addressRegistered, "Testowa 1, 00-001 Warszawa");
+  assert.equal(q!.zamUlica, "Testowa", "zamSame → адреса проживання = zameldowania");
   assert.equal(q!.motherName, "Maria Kowalska");
-  assert.equal(q!.fatherName, "Jan Kowalski Sr");
+  assert.equal(q!.fatherName, "Jan Kowalski");
   assert.equal(q!.bankName, "PKO BP");
-  assert.equal(q!.bankIban, "PL61109010140000071219812874");
+  assert.equal(q!.bankIban, "61109010140000071219812874", "рахунок нормалізується до 26 цифр (без PL/пробілів)");
   assert.equal(q!.phone, "+48123456789");
+  assert.deepEqual(q!.consents, CONSENTS_OK);
+  assert.ok(q!.consentsAt, "час згоди фіксується");
+  assert.equal(q!.consentsVersion, "2026-09-08");
   assert.equal(q!.email, "jan@example.com");
   assert.equal(q!.isStudent, true);
   assert.equal(q!.schoolName, "Uniwersytet Warszawski");
@@ -187,16 +203,33 @@ test("POST .../questionnaire: після confirm() зберігає поля, st
 
   // PESEL — канонічне поле на workersTable, не дублюється в анкеті.
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, confirmed.body.worker.id));
-  assert.equal(worker!.pesel, "12345678901");
+  assert.equal(worker!.pesel, "95050512346");
 });
 
-test("POST .../questionnaire: PESEL невалідного формату — тихо ігнорується (не пишеться)", opts, async () => {
+test("POST .../questionnaire: невалідні поля — 400 з мапою fields, нічого не пишеться (08.09.2026: без мовчазного ігнорування)", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" });
-  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ pesel: "123" });
-  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({
+    ...ANKETA_OK, pesel: "123", motherName: "Марія", bankIban: "DE89370400440532013000", regKodPocztowy: "00001", consents: { rodo_info: true },
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.equal(res.body.fields.pesel, "format");
+  assert.equal(res.body.fields.motherName, "latin");
+  assert.equal(res.body.fields.bankIban, "format");
+  assert.equal(res.body.fields.regKodPocztowy, "format");
+  assert.equal(res.body.fields["consents.processing"], "consent");
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, confirmed.body.worker.id));
   assert.equal(worker!.pesel, null);
+  const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, confirmed.body.worker.id));
+  assert.equal(q!.status, "draft", "статус не міняється, поки анкета невалідна");
+});
+
+test("POST .../questionnaire: PESEL не збігається з датою народження зі скану — 400 pesel=date", opts, async () => {
+  const token = await mkAnalyzedToken({ purpose: "self" });
+  await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski", birthDate: "1990-01-01" });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send(ANKETA_OK); // PESEL на 1995-05-05
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.equal(res.body.fields.pesel, "date");
 });
 
 // ── /student-cert (довідка студента одразу з анкети, §1 плану) ─────────────
@@ -210,7 +243,7 @@ test("POST .../student-cert: без попереднього confirm() — 400",
 
 test("POST .../student-cert: після confirm() створює документ типу «Довідка студента» (icon=student), статус pending", opts, async () => {
   const token = await mkAnalyzedToken({ purpose: "self" });
-  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
+  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   const workerId = confirmed.body.worker.id;
 
   const res = await request(app).post(`/api/passport-scan/${token}/student-cert`).set(H)
@@ -250,18 +283,18 @@ test("POST .../questionnaire з anketa-токеном — працює одра�
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ addressPl: "ul. Nowa 2", isStudent: false });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, regUlica: "Nowa", regNumerDomu: "2", isStudent: false });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
-  assert.equal(q!.addressPl, "ul. Nowa 2");
+  assert.equal(q!.addressPl, "Nowa 2, 00-001 Warszawa");
   assert.equal(q!.status, "submitted");
 });
 
-test("POST .../questionnaire з anketa-токеном — пише firstName/middleName/lastName на workersTable, fullName НЕ чіпає; невалідне ім'я тихо ігнорується", opts, async () => {
+test("POST .../questionnaire з anketa-токеном — пише firstName/middleName/lastName на workersTable, fullName НЕ чіпає; невалідне ім'я — 400", opts, async () => {
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ firstName: "Jan", middleName: "Paweł", lastName: "Kowalski" });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, firstName: "Jan", middleName: "Paweł", lastName: "Kowalski" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const [updated] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(updated!.firstName, "Jan");
@@ -269,8 +302,9 @@ test("POST .../questionnaire з anketa-токеном — пише firstName/mid
   assert.equal(updated!.lastName, "Kowalski");
   assert.equal(updated!.fullName, "Jan Kowalski", "fullName лишається як був, не перекомпоновується");
 
-  const bad = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ firstName: "Іван" });
-  assert.equal(bad.status, 200, "невалідне ім'я не блокує решту анкети — тихо ігнорується");
+  const bad = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, firstName: "Іван", lastName: "Kowalski" });
+  assert.equal(bad.status, 400, "невалідне ім'я — 400 (08.09.2026: нічого не ігнорується мовчки)");
+  assert.equal(bad.body.fields.firstName, "latin");
   const [afterBad] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(afterBad!.firstName, "Jan", "невалідне значення не записалось");
 });
@@ -279,9 +313,9 @@ test("anketa-токен НЕ одноразовий — можна дозапо�
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const first = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ phone: "+48111111111" });
-  assert.equal(first.status, 200);
-  const second = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ phone: "+48222222222" });
+  const first = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, phone: "+48111111111" });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const second = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, phone: "+48222222222" });
   assert.equal(second.status, 200, "той самий токен — ще раз, не «використано»");
 
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
@@ -310,7 +344,7 @@ test("POST .../confirm з anketa-токеном (ІСНУЮЧИЙ workerId) — 
   const token = await mkAnalyzedToken({ purpose: "anketa", workerId: w!.id });
 
   const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({
-    firstName: "Piotr", lastName: "Zima", birthDate: "1995-05-05", sex: "M", citizenship: "POL",
+    ...PASSPORT_OK, firstName: "Piotr", lastName: "Zima", birthDate: "1995-05-05", sex: "M", citizenship: "POL",
   });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.worker.id, w!.id, "жодного нового working — той самий id");
@@ -337,7 +371,7 @@ test("POST .../confirm з anketa-токеном — firstName/lastName УЖЕ з
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski", firstName: "Jan", lastName: "Kowalski" }).returning({ id: workersTable.id });
   const token = await mkAnalyzedToken({ purpose: "anketa", workerId: w!.id });
 
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Inny", lastName: "Ktos" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Inny", lastName: "Ktos" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
 
   const [updated] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
@@ -350,7 +384,7 @@ test("POST .../confirm з anketa-токеном — UPSERT анкети, не д
   await db.insert(workerQuestionnairesTable).values({ workerId: w!.id, phone: "+48111111111" });
   const token = await mkAnalyzedToken({ purpose: "anketa", workerId: w!.id });
 
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kowalski" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
 
   const rows = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
@@ -364,7 +398,7 @@ test("POST .../confirm з candidateId на токені — прив'язує к
   const [c] = await db.insert(candidatesTable).values({ fullName: "Anna Nowak", stage: "interview" }).returning({ id: candidatesTable.id });
   const token = await mkAnalyzedToken({ purpose: "office", createdBy: adminId, candidateId: c!.id });
 
-  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Anna", lastName: "Nowak" });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Anna", lastName: "Nowak" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
 
   const [candidate] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, c!.id));

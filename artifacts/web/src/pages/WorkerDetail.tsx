@@ -576,6 +576,7 @@ type Questionnaire = {
   zamWojewodztwo: string | null; zamPowiat: string | null; zamGmina: string | null; zamMiejscowosc: string | null;
   zamUlica: string | null; zamNumerDomu: string | null; zamKodPocztowy: string | null;
   submittedAt: string | null; verifiedAt: string | null;
+  consents: Record<string, boolean> | null; consentsAt: string | null; consentsIp: string | null; consentsVersion: string | null;
 };
 const QUESTIONNAIRE_STATUS: Record<string, { label: string; color: "slate" | "blue" | "green" }> = {
   draft: { label: "чернетка", color: "slate" },
@@ -652,6 +653,12 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
     <Modal open onClose={onClose} title={t("Анкета")} size="lg">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Badge color={st.color}>{t(st.label)}</Badge>
+        {/* Згоди RODO з веб-анкети (08.09.2026): скільки з 5 відмічено, коли, з якої IP */}
+        {q && (q.consents && Object.values(q.consents).filter(Boolean).length === 5
+          ? <span className="text-xs text-emerald-600" title={`${q.consentsAt ? new Date(q.consentsAt).toLocaleString("uk-UA") : ""} · ${q.consentsIp ?? ""} · v${q.consentsVersion ?? ""}`}>
+              ✓ {t("Згоди RODO")} 5/5{q.consentsAt ? ` · ${new Date(q.consentsAt).toLocaleDateString("uk-UA")}` : ""}
+            </span>
+          : <span className="text-xs text-amber-600">{t("Згоди RODO")}: {t("не відмічені")}</span>)}
         <input ref={scanInputRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) scan.mutate(f); e.target.value = ""; }} />
         <div className="ml-auto flex shrink-0 items-center gap-2">

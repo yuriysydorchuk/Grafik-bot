@@ -111,7 +111,7 @@ test("convert (без telegramId) — шле office-скан-токен, НЕ с
     draftJson: { draft: { fullName: "Jan Kandydat" }, mrz: null },
   }).where(eq(passportScanTokensTable.token, token));
 
-  const confirm = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kandydat" });
+  const confirm = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ firstName: "Jan", lastName: "Kandydat", birthDate: "1995-05-05", passportNumber: "AB1234567", passportCountry: "POL", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M" });
   assert.equal(confirm.status, 200, JSON.stringify(confirm.body));
 
   const [candidateAfter] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, id));

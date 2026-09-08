@@ -2084,6 +2084,14 @@ export const workerQuestionnairesTable = pgTable("worker_questionnaires", {
   zamKodPocztowy: text("zam_kod_pocztowy"),
   ocrRaw: jsonb("ocr_raw"),                       // сирі сутності OCR (доказ походження, дебаг)
   ocrDocId: integer("ocr_doc_id").references(() => workerDocumentsTable.id),
+  // Згоди RODO, відмічені працівником в кінці веб-анкети (рішення 08.09.2026: короткі рядки
+  // з обов'язковими галочками, без окремих документів). consents = {rodo_info, processing,
+  // storage, sharing, e_comm}: true; версія тексту + час/IP/UA — доказова база.
+  consents: jsonb("consents"),
+  consentsAt: timestamp("consents_at"),
+  consentsIp: text("consents_ip"),
+  consentsUserAgent: text("consents_user_agent"),
+  consentsVersion: text("consents_version"),
   submittedAt: timestamp("submitted_at"),
   verifiedBy: integer("verified_by").references(() => adminsTable.id),
   verifiedAt: timestamp("verified_at"),

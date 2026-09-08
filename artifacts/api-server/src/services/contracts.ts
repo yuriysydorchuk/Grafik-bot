@@ -18,6 +18,7 @@ import {
 import { KSIEG_STD_BRUTTO } from "./svodni";
 import { UPLOADS_ROOT, CONTRACTS_DIR, SIGNATURES_DIR, makeStoredName } from "../lib/uploads";
 import { logger } from "../lib/logger";
+import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
 const LANGS: Lang[] = ["pl", "en", "es", "ru", "uk"];
@@ -195,7 +196,8 @@ export async function buildContractData(
     "Bank pracownika": questionnaire?.bankName ?? "",
     "Rachunek pracownika": questionnaire?.bankIban ?? "",
     "Urząd Skarbowy pracownika": questionnaire?.taxOffice ?? "",
-    "Urząd Skarbowy pracownika adres": questionnaire?.taxOfficeAddress ?? "",
+    // ручне поле офісу → офіційний реєстр KAS за назвою urzędu (працівник адресу не знає)
+    "Urząd Skarbowy pracownika adres": questionnaire?.taxOfficeAddress || taxOfficeAddressOf(questionnaire?.taxOffice) || "",
     "Oddział NFZ": questionnaire?.nfzBranch ?? "",
     "Uczelnia": questionnaire?.schoolName ?? "",
     "Ankieta student": questionnaire?.isStudent ? "Tak" : "Nie",
