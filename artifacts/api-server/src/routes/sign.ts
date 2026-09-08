@@ -110,7 +110,10 @@ router.get("/sign/:token/file/:fileId", async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/pdf");
-  fs.createReadStream(abs).pipe(res);
+  const stream = fs.createReadStream(abs);
+  // помилка читання (права/диск) без обробника — необроблений 'error' стріму валить процес
+  stream.on("error", () => { if (!res.headersSent) res.status(500).json({ error: "Не вдалося прочитати файл" }); else res.destroy(); });
+  stream.pipe(res);
 });
 
 // Підтвердження, що працівник переглянув документ і дає згоду (окрема подія —

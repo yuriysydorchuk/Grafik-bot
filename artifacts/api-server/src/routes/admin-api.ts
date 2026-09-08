@@ -12,7 +12,7 @@ import {
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable, absenceAttachmentsTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
-  contractsTable, passportScanTokensTable, workerLegalityTable,
+  contractsTable, contractFilesTable, documentTemplatesTable, passportScanTokensTable, workerLegalityTable,
   emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
@@ -339,10 +339,18 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       dateTo: contractsTable.dateTo, factoryCompanyId: factoriesTable.companyId, factoryName: factoriesTable.name,
     }).from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
     .where(inArray(contractsTable.status, CONTRACT_LIVE)).orderBy(desc(contractsTable.id));
+  // лише пакети з umową: świadectwo при звільненні теж має factoryId і статус sent, але умовою не є.
+  // Пакет без жодного файла (старі/тестові рядки) не відкидаємо — виключаємо лише ті, чиї файли всі не-umowa.
+  const fileKinds = contractRows.length ? await db.select({ contractId: contractFilesTable.contractId, kind: documentTemplatesTable.kind }).from(contractFilesTable)
+    .innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
+    .where(inArray(contractFilesTable.contractId, contractRows.map(c => c.id))) : [];
+  const withFiles = new Set(fileKinds.map(r => r.contractId));
+  const umowaIds = new Set(fileKinds.filter(r => r.kind === "umowa" || r.kind === "sprzatanie_umowa").map(r => r.contractId));
+  const isUmowaPkg = (id: number) => umowaIds.has(id) || !withFiles.has(id);
   const todayStr = warsawDateStr();
   const contractsOf = (workerId: number, companyId: number | null) => {
     const mine = contractRows.filter(c => c.workerId === workerId);
-    const umowa = mine.find(c => c.factoryId != null && (companyId == null || c.factoryCompanyId === companyId)) ?? null;
+    const umowa = mine.find(c => c.factoryId != null && isUmowaPkg(c.id) && (companyId == null || c.factoryCompanyId === companyId)) ?? null;
     const pkg = mine.find(c => c.factoryId == null) ?? null;
     return {
       umowa: umowa ? { id: umowa.id, status: umowa.status, dateTo: umowa.dateTo, factoryName: umowa.factoryName, expired: !!umowa.dateTo && umowa.dateTo < todayStr } : null,

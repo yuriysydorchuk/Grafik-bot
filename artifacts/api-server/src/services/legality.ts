@@ -240,7 +240,9 @@ function readGlobals(rules: LegalRuleInput[]): Globals {
   return g;
 }
 
-const SEVERITY_RANK: Record<LegalityStatus, number> = { legal: 0, pending: 1, expiring: 2, unknown: 3, illegal: 4 };
+// pending («чекаємо документ») важчий за expiring: вісь, що ще не оформлена, не має ховатись за
+// «спливає» іншої — інакше overall=expiring і резолвер виплат вважає людину повністю оформленою.
+const SEVERITY_RANK: Record<LegalityStatus, number> = { legal: 0, expiring: 1, pending: 2, unknown: 3, illegal: 4 };
 const worst = (a: LegalityStatus, b: LegalityStatus): LegalityStatus => (SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b);
 
 const isCaseOpen = (d: LegalityDocument) => d.caseStatus === "submitted" || d.caseStatus === "in_progress";
@@ -343,7 +345,7 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     }
     if (usable.length) {
       // найпізніший строк; без строку = безстроковий → найкращий
-      usable.sort((a, b) => (a.exp == null ? 1 : b.exp == null ? -1 : a.exp < b.exp ? 1 : a.exp > b.exp ? -1 : 0));
+      usable.sort((a, b) => (a.exp == null ? -1 : b.exp == null ? 1 : a.exp < b.exp ? 1 : a.exp > b.exp ? -1 : 0));
       const pick = usable[0]!;
       out.basisDocId = pick.d.id; out.expiresAt = pick.exp;
       const lead = pick.d.renewalLeadDays ?? g.defaultLeadDays;
@@ -538,12 +540,12 @@ export function computeContractAxis(input: LegalityInput, g: Globals): AxisResul
     const cid = e.companyId ?? worker.companyId;
     const onFactory = input.contracts.filter(c => c.factoryId === e.factoryId);
     const mine = onFactory.filter(c => c.companyId == null || cid == null || c.companyId === cid);
-    const live = mine.filter(c => (CONTRACT_VALID.has(c.status) || CONTRACT_PENDING.has(c.status)) && (!c.dateTo || c.dateTo >= today) && (!c.dateFrom || c.dateFrom <= today || CONTRACT_PENDING.has(c.status)));
+    const live = mine.filter(c => c.hasUmowa && (CONTRACT_VALID.has(c.status) || CONTRACT_PENDING.has(c.status)) && (!c.dateTo || c.dateTo >= today) && (!c.dateFrom || c.dateFrom <= today || CONTRACT_PENDING.has(c.status)));
     // найкраща: signed > worker_signed; далі — найпізніша dateTo (безстрокова найкраща)
     live.sort((a, b) => (CONTRACT_VALID.has(b.status) ? 1 : 0) - (CONTRACT_VALID.has(a.status) ? 1 : 0) || (a.dateTo == null ? -1 : b.dateTo == null ? 1 : b.dateTo.localeCompare(a.dateTo)));
     const best = live[0];
     if (!best) {
-      const expired = mine.filter(c => CONTRACT_VALID.has(c.status) && c.dateTo && c.dateTo < today).sort((a, b) => b.dateTo!.localeCompare(a.dateTo!))[0];
+      const expired = mine.filter(c => c.hasUmowa && CONTRACT_VALID.has(c.status) && c.dateTo && c.dateTo < today).sort((a, b) => b.dateTo!.localeCompare(a.dateTo!))[0];
       const otherFirm = onFactory.find(c => CONTRACT_VALID.has(c.status) && (!c.dateTo || c.dateTo >= today) && c.companyId != null && cid != null && c.companyId !== cid);
       if (expired) push("contract_expired", "block", { factoryId: e.factoryId, factory: fname, expiresAt: expired.dateTo, contractId: expired.id });
       else if (otherFirm) push("contract_wrong_company", "block", { factoryId: e.factoryId, factory: fname, company: e.companyName ?? `#${cid}`, contractCompanyId: otherFirm.companyId, contractId: otherFirm.id });

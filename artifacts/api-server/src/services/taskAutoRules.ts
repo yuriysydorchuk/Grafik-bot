@@ -42,6 +42,8 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
 ];
 
 // Ідемпотентний сід правил (нові коди додаються, наявні не чіпаються).
+const RELATIVE_DUE_RULES = new Set(["required_missing", "review_required", "pending_doc", "payroll_change", "doc_no_response", "absence_unexplained"]);
+
 export async function ensureAutoRules(): Promise<void> {
   const have = new Set((await db.select({ code: taskAutoRulesTable.code }).from(taskAutoRulesTable)).map(r => r.code));
   const rows = AUTO_RULE_DEFS.filter(d => !have.has(d.code)).map(d => ({ code: d.code, enabled: d.enabledByDefault, leadDays: d.leadDays, params: {} }));
@@ -334,14 +336,17 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
       continue;
     }
     if (ex.status === "done" || ex.status === "cancelled") continue; // закрив офіс — не воскрешаємо
-    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== c.dueAt || ex.priority !== c.priority;
+    // правила зі строком «сьогодні + N» (не з дати документа) інакше щодня переписували б dueAt і
+    // задача ніколи не ставала простроченою — тримаємо перший призначений строк
+    const dueAt = RELATIVE_DUE_RULES.has(c.rule) && ex.dueAt ? dateStr(ex.dueAt) : c.dueAt;
+    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== dueAt || ex.priority !== c.priority;
     // бекфіл дефолтного чекліста для задач, створених до появи чеклістів (лише якщо порожній)
     // (і заміна старого чекліста без auto-ключів, поки в ньому нічого не відмічено)
     const exList = (ex.checklist ?? []) as { done: boolean; auto?: string }[];
     const stale = exList.length > 0 && !exList.some(x => x.auto) && !exList.some(x => x.done);
     const defaults = (!exList.length || stale) && !c.autoParams.grouped ? defaultChecklist(c.rule, c.autoParams) : [];
     if (changed || defaults.length) {
-      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt: c.dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
+      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
       if (ex.priority !== c.priority) await logTaskEvent(ex.id, "priority", null, { from: ex.priority, to: c.priority });
       if (changed) stats.updated++;
     }

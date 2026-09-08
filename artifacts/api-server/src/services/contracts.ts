@@ -18,6 +18,7 @@ import {
 import { KSIEG_STD_BRUTTO } from "./svodni";
 import { UPLOADS_ROOT, CONTRACTS_DIR, SIGNATURES_DIR, makeStoredName } from "../lib/uploads";
 import { logger } from "../lib/logger";
+import { warsawDateStr } from "../bot/time";
 import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
@@ -166,7 +167,7 @@ export async function buildContractData(
   const companyId = await resolveContractCompanyId(workerId, factoryId, companyIdOverride);
   const [company] = companyId ? await db.select().from(companiesTable).where(eq(companiesTable.id, companyId)) : [undefined];
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = warsawDateStr(); // дата укладення — за Варшавою: UTC у перші години доби давав учорашню дату
   // Фолбек-евристика — лише для старих профілів без структурованих полів
   // (заповнених до worker-docs-signing "окремі поля з паспорта"); нові/оновлені
   // через скан-паспорта чи анкету йдуть напряму з worker.firstName/lastName.
@@ -442,6 +443,10 @@ export async function generateContract(opts: {
   }
   if (missing.size) throw new Error(`Бракує даних для генерації: ${[...missing].join(", ")}`);
 
+  if (opts.supersedesId) {
+    const [prev] = await db.select({ id: contractsTable.id, workerId: contractsTable.workerId }).from(contractsTable).where(eq(contractsTable.id, opts.supersedesId));
+    if (!prev || prev.workerId !== opts.workerId) throw new Error("supersedesId вказує на умову іншої людини або не існує");
+  }
   const [contract] = await db.insert(contractsTable).values({
     workerId: opts.workerId, factoryId: opts.factoryId, companyId,
     payoutMethod: opts.factoryId == null ? questionnaire?.payoutMethod ?? null : null,
@@ -451,11 +456,21 @@ export async function generateContract(opts: {
   }).returning();
 
   let i = 0;
-  for (const tpl of templates) {
-    const body = (tpl.body as Record<string, string>)[lang] || (tpl.body as Record<string, string>).pl || "";
-    const html = substitutePlaceholders(body, data);
-    const pdf = await renderHtmlToPdf(html);
-    await writeContractFile(contract!.id, tpl, i++, pdf);
+  try {
+    for (const tpl of templates) {
+      const body = (tpl.body as Record<string, string>)[lang] || (tpl.body as Record<string, string>).pl || "";
+      const html = substitutePlaceholders(body, data);
+      const pdf = await renderHtmlToPdf(html);
+      await writeContractFile(contract!.id, tpl, i++, pdf);
+    }
+  } catch (e) {
+    // Chromium/диск впали посеред генерації — порожній чи неповний draft не лишаємо (його можна
+    // було б відправити на підпис, і /send навіть підтягує такі пакети в комплект).
+    const partial = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contract!.id));
+    for (const f of partial) if (f.unsignedPath) await fs.promises.unlink(path.join(UPLOADS_ROOT, f.unsignedPath)).catch(() => {});
+    await db.delete(contractFilesTable).where(eq(contractFilesTable.contractId, contract!.id));
+    await db.delete(contractsTable).where(eq(contractsTable.id, contract!.id));
+    throw e;
   }
   logger.info({ contractId: contract!.id, workerId: opts.workerId, factoryId: opts.factoryId, files: templates.length }, "document package generated");
   return contract!;
@@ -477,11 +492,12 @@ export async function updateContractDates(contractId: number, dateFrom: string |
   const DEAD = new Set(["declined", "cancelled", "superseded", "expired"]);
   if (DEAD.has(contract.status)) throw new Error(`Пакет у термінальному статусі (${contract.status}) — дату вже не дописати`);
   const from = dateFrom ?? (contract.dateFrom ? String(contract.dateFrom) : null);
+  const to = dateTo ?? (contract.dateTo ? String(contract.dateTo) : null); // PATCH лише з «від» не стирає «до»
 
   if (contract.status === "signed") {
     const [updated] = await db.update(contractsTable).set({
-      dateFrom: from, dateTo: dateTo ?? null,
-      data: { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": dateTo ?? "" },
+      dateFrom: from, dateTo: to,
+      data: { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": to ?? "" },
       updatedAt: new Date(),
     }).where(eq(contractsTable.id, contractId)).returning();
     logger.info({ contractId, dateFrom, dateTo, status: contract.status }, "contract dates recorded (signed by both — files untouched)");
@@ -495,7 +511,7 @@ export async function updateContractDates(contractId: number, dateFrom: string |
   // ТІ САМІ дані, що бачив працівник (дата укладення, ставка, адреса), міняються лише дати
   const data = contract.status === "draft"
     ? await buildContractData(contract.workerId, contract.factoryId, { dateFrom: from, dateTo }, contract.contractRateBrutto, contract.companyId ?? null)
-    : { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": dateTo ?? "" };
+    : { ...(contract.data as Record<string, string>), "Data rozpoczęcia pracy": from ?? "", "Data zakończenia pracy": to ?? "" };
   const workerSigned = contract.status === "worker_signed" && !!contract.workerSignaturePath;
   const workerSignatureDataUrl = workerSigned
     ? `data:image/png;base64,${(await fs.promises.readFile(path.join(UPLOADS_ROOT, contract.workerSignaturePath!))).toString("base64")}` : undefined;
@@ -522,13 +538,13 @@ export async function updateContractDates(contractId: number, dateFrom: string |
       patch.signedPath = path.join("contracts", storedName); patch.signedSha256 = signedSha;
       await db.insert(signatureEventsTable).values({
         contractId, event: "dates_filled", docSha256: signedSha,
-        extra: { fileId: file.id, previousSha256: file.signedSha256, dateFrom: from, dateTo: dateTo ?? null },
+        extra: { fileId: file.id, previousSha256: file.signedSha256, dateFrom: from, dateTo: to },
       }).catch(err => logger.warn({ err: String(err), contractId }, "dates_filled event failed"));
     }
     await db.update(contractFilesTable).set(patch).where(eq(contractFilesTable.id, file.id));
   }
 
-  const [updated] = await db.update(contractsTable).set({ dateFrom: from, dateTo: dateTo ?? null, data, updatedAt: new Date() })
+  const [updated] = await db.update(contractsTable).set({ dateFrom: from, dateTo: to, data, updatedAt: new Date() })
     .where(eq(contractsTable.id, contractId)).returning();
   logger.info({ contractId, dateFrom, dateTo, status: contract.status, workerSigned }, "contract dates updated, files regenerated");
   return updated!;

@@ -246,12 +246,12 @@ export async function setTaskStatus(task: Task, next: TaskStatus, actorAdminId: 
     }
   } catch (e: any) { logger.warn({ err: e?.message, taskId: task.id }, "task status notify failed"); }
   // повторювана: наступний екземпляр після виконання (не після скасування)
-  if (to === "done" && task.recurrence && task.source === "manual") {
+  if (to === "done" && task.status !== "done" && task.recurrence && task.source === "manual") { // повторний «done» не плодить наступний екземпляр
     const r = task.recurrence as Recurrence;
     const base = dateStr(task.dueAt) ?? warsawToday();
     const nextDue = nextOccurrence(base, r);
     if (!r.until || nextDue <= r.until) {
-      const assignees = task.kind === "task" ? [] : (await loadAssignees(task.id)).map(a => a.adminId);
+      const assignees = task.kind === "task" ? [] : (await loadAssignees(task.id)).filter(a => a.status !== "watcher").map(a => a.adminId); // спостерігачі не стають виконавцями повтору
       await createTask({
         kind: task.kind as TaskKind, title: task.title, description: task.description, priority: task.priority as TaskPriority,
         dueAt: nextDue, dueTime: task.dueTime, durationMin: task.durationMin, place: task.place,

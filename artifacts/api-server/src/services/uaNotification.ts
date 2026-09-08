@@ -276,7 +276,7 @@ export async function uaCard(workerId: number): Promise<UaCard> {
       { key: "regon", label: "REGON", value: c?.regon ?? "", required: true, source: "компанія" },
       { key: "krs", label: "KRS", value: c?.krs ?? "", source: "компанія" },
       { key: "pkd", label: "PKD (przeważająca działalność)", value: c?.pkd ?? "", required: true, source: "компанія → PKD" },
-      { key: "caddr", label: "Adres siedziby", value: addr([c?.street ? `ul. ${c.street}` : null, c?.postalCode, c?.city]), required: true, source: "компанія" },
+      { key: "caddr", label: "Adres siedziby", value: addr([c?.street ? `ul. ${c.street}${c?.houseNumber ? " " + c.houseNumber : ""}` : null, c?.postalCode, c?.city]), required: true, source: "компанія" },
       { key: "rep", label: "Osoba reprezentująca", value: c?.representative ?? "", source: "компанія" },
     ] },
     { title: "Cudzoziemiec", fields: [

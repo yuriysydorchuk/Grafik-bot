@@ -455,7 +455,10 @@ router.get("/contracts/:id/files/:fileId", WD, async (req, res) => {
   res.setHeader("Content-Type", "application/pdf");
   const disposition = req.query.download === "1" ? "attachment" : "inline"; // ?download=1 — «Скачати» в профілі
   res.setHeader("Content-Disposition", `${disposition}; filename="${file.title.replace(/[^\w.\- ]/g, "_")}.pdf"`);
-  fs.createReadStream(abs).pipe(res);
+  const stream = fs.createReadStream(abs);
+  // помилка читання (права/диск) без обробника — необроблений 'error' стріму валить процес
+  stream.on("error", () => { if (!res.headersSent) res.status(500).json({ error: "Не вдалося прочитати файл" }); else res.destroy(); });
+  stream.pipe(res);
 });
 
 export default router;

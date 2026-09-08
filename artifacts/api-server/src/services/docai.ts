@@ -367,6 +367,6 @@ export async function processPassport(buffer: Buffer, mimeType: string): Promise
   const fullText = await callVisionOcr(prepared);
   const mrz = parsePassportMrz(fullText);
   const draft = mrzToPassportDraft(mrz);
-  logger.info({ passportNumber: draft.passportNumber, mrzValid: mrz?.documentNumberValid ?? null }, "vision passport parsed");
+  logger.info({ passportTail: draft.passportNumber ? String(draft.passportNumber).slice(-3) : null, mrzValid: mrz?.documentNumberValid ?? null }, "vision passport parsed");
   return { draft, mrz, fullText };
 }
