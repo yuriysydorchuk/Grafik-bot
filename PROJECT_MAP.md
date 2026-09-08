@@ -223,6 +223,7 @@ Caddy проксіює на `$PORT`; `app.set("trust proxy", 1)` для коре
 Довкола деплою:
 - **CI** — GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): typecheck + тести api-server на кожен push/PR у `main`.
 - **Скіл `/deploy`** ([`.claude/skills/deploy/SKILL.md`](.claude/skills/deploy/SKILL.md)) — виконуваний ранбук деплою для сесій Claude Code.
+- **Скіл `/module-proposal`** ([`.claude/skills/module-proposal/SKILL.md`](.claude/skills/module-proposal/SKILL.md)) — формат пропозиції великого модуля для узгодження: HTML-артефакт «Механіка» + повний візуал екранів/бота/налаштувань (еталон — «Задачі та календар працівників», 06.09.2026).
 - **Бекапи** — щодня 03:00 cron → [`deploy/backup.sh`](deploy/backup.sh) → `/root/backups/` (дамп БД + `uploads/`, ротація 14 днів); див. [DATABASE.md](docs/infrastructure/DATABASE.md).
 
 ---
