@@ -124,7 +124,9 @@ test("PATCH /contracts/:id/dates: draft без дати → дата з'явля
   assert.equal(sub.status, 200);
 });
 
-test("PATCH /contracts/:id/dates: поза draft (напр. pending_approval) — оновлює лише dateFrom/dateTo в БД, PDF-файл НЕ перегенерується (sha256 не міняється)", opts, async () => {
+// З f8ee0db дописані дати потрапляють у документ до підпису фірми: поза draft
+// unsigned-файл перерендерюється (sha256 міняється), статус не рухається.
+test("PATCH /contracts/:id/dates: поза draft (напр. pending_approval) — дописує дати в БД І перерендерює unsigned-файл (sha256 міняється), статус лишається", opts, async () => {
   const { factoryId, companyId } = await mkFactory();
   const workerId = await mkVerifiedWorker(companyId);
   const id = await generateWithoutDate(workerId, factoryId);
@@ -137,7 +139,7 @@ test("PATCH /contracts/:id/dates: поза draft (напр. pending_approval) �
   assert.equal(res.body.status, "pending_approval", "статус не змінюється — це просто дописування дати");
 
   const [fileAfter] = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, id));
-  assert.equal(fileAfter!.unsignedSha256, fileBefore!.unsignedSha256, "підписаний/показаний файл не чіпається поза draft");
+  assert.notEqual(fileAfter!.unsignedSha256, fileBefore!.unsignedSha256, "unsigned-файл перерендерено з новою датою (f8ee0db)");
 });
 
 test("PATCH /contracts/:id/dates: термінальний статус (cancelled) — 400", opts, async () => {
