@@ -52,6 +52,14 @@ export const DOCUMENT_TYPE_SEED: DocTypeSeed[] = [
   // виреєстрування з ZUS після звільнення (ланцюжок звільнення, 08.09.2026): задача «ZUS ZWUA»
   // закривається, коли документ цього типу зʼявляється в профілі
   T("zus_zwua", "ZUS ZWUA (wyrejestrowanie)", "payroll", 500, "decision"),
+  // підтвердження зголошень з ZUS/Płatnika (нотатка власника «BOT - UPDATE», 10.09.2026):
+  // ZUA — зголошення до ubezpieczeń; ZZA — лише zdrowotne (людина має umowę o pracę деінде);
+  // ZCNA — зголошення członka rodziny; ZUA chorobowe — підтвердження dobrowolnego chorobowego.
+  // Пара «wniosek (пакет) + підтвердження» — наступний етап (індикатор + автозадача).
+  T("zus_zua", "ZUS ZUA (zgłoszenie do ubezpieczeń)", "payroll", 510, "decision"),
+  T("zus_zza", "ZUS ZZA (zgłoszenie — tylko zdrowotne)", "payroll", 520, "decision"),
+  T("zus_zcna", "ZUS ZCNA (zgłoszenie członka rodziny)", "payroll", 530, "decision"),
+  T("zus_zua_chorobowe", "ZUS ZUA — dobrowolne chorobowe (potwierdzenie)", "payroll", 540, "decision"),
   T("other", "Inny dokument", "other", 900, null),
 ];
 
