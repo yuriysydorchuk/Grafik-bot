@@ -72,16 +72,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує)
+      - name: Chrome for PDF tests (системний Chrome раннера; кеш puppeteer у CI ненадійний)
         run: |
-          set -o pipefail
-          rm -rf ~/.cache/puppeteer/chrome
-          if ! pnpm --filter @workspace/api-server exec puppeteer browsers install chrome --format '{{path}}' 2>&1 | tee /tmp/chrome.log; then
-            grep -vE '^\s*$' /tmp/chrome.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
-            exit 1
-          fi
-          CHROME=$(grep -E '^/.*/chrome$' /tmp/chrome.log | tail -1)
-          echo "::notice::chrome=$CHROME"; ls -la "$CHROME"
+          CHROME=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)
+          if [ -z "$CHROME" ]; then echo "::error::system Chrome not found on runner"; exit 1; fi
+          echo "::notice::chrome=$CHROME ($("$CHROME" --version 2>/dev/null || echo '?'))"
           echo "PUPPETEER_EXECUTABLE_PATH=$CHROME" >> "$GITHUB_ENV"
 
       - name: Chrome smoke launch
