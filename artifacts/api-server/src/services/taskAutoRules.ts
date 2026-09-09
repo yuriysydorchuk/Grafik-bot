@@ -58,7 +58,7 @@ interface Candidate {
   autoParams: Record<string, unknown>; assign: { factoryId?: number | null; prefer?: number | null; useScheduler?: boolean };
 }
 
-const REQUIRED_LABEL: Record<string, string> = { stay_basis: "документ на право перебування", work_basis: "документ на право працювати" }; // проста мова (запит власника 10.09.2026)
+const REQUIRED_LABEL: Record<string, string> = { stay_basis: "підстава перебування", work_basis: "підстава праці" };
 const REASON_TITLE: Record<string, (f: string, p: Record<string, unknown>) => string> = {
   contract_missing: f => `Немає чинної умови на ${f}`,
   contract_expired: (f, p) => `Умова на ${f} закінчилась${p.expiresAt ? ` ${fmtDate(String(p.expiresAt))}` : ""}`,

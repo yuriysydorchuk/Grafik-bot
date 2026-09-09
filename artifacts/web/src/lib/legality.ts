@@ -56,7 +56,7 @@ export const MISMATCH_LABEL: Record<string, string> = {
 };
 
 export const REQUIRED_MISSING_LABEL: Record<string, string> = {
-  passport: "документ, що підтверджує особу (паспорт або ID)", stay_basis: "документ на право перебування", work_basis: "документ на право працювати",
+  passport: "документ, що підтверджує особу (паспорт або ID)", stay_basis: "підстава перебування", work_basis: "підстава праці",
 };
 
 // Причини движка → людською мовою. {param} підставляються з reason.params.

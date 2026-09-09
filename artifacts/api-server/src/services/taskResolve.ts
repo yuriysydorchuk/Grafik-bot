@@ -56,7 +56,7 @@ const CLOSES_WHEN: Record<string, string> = {
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
 // коди requiredMissing, що не є типами документів (осі движка)
-const MISSING_LABEL: Record<string, string> = { stay_basis: "документ на право перебування", work_basis: "документ на право працювати", contract: "чинна умова", questionnaire: "анкета" };
+const MISSING_LABEL: Record<string, string> = { stay_basis: "підстава перебування", work_basis: "підстава праці", contract: "чинна умова", questionnaire: "анкета" };
 const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response", "termination_zus"]);
 const isImageMime = (m: string | null | undefined) => !!m && m.startsWith("image/");
 
