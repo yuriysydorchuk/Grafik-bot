@@ -12,7 +12,7 @@ import { google } from "googleapis";
 import heicConvert from "heic-convert";
 import sharp from "sharp";
 import { logger } from "../lib/logger";
-import { sniffDocMime } from "../lib/uploads";
+import { sniffDocMime, shrinkDocBuffer } from "../lib/uploads";
 
 // ── Чисті хелпери ──────────────────────────────────────────────────────────────
 
@@ -293,11 +293,42 @@ export async function processInvoice(buffer: Buffer, mimeType: string): Promise<
   return { draft, fullText };
 }
 
+// Синхронний files:annotate читає перші 5 сторінок (паспорт — 1–2), сторінки
+// зʼєднуємо в один текст — MRZ шукається по всьому. Inline-контент обмежений
+// ~10 МБ JSON (base64 ×1.37): більший PDF спершу стискаємо ghostscript-ом
+// (best-effort), далі — зрозуміла помилка замість 413 від Google.
+const VISION_PDF_INLINE_MAX = 7 * 1024 * 1024;
+
 export async function callVisionOcr(buffer: Buffer): Promise<string> {
   const keyFile = process.env.GOOGLE_DOCAI_KEY_FILE;
   if (!keyFile || !fs.existsSync(keyFile)) throw new Error("OCR паспорта не налаштований (GOOGLE_DOCAI_KEY_FILE)");
   const auth = new google.auth.GoogleAuth({ keyFile, scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
   const client = await auth.getClient();
+  // PDF: images:annotate його не приймає («Bad image data», кейс офісу 10.09.2026 —
+  // скан паспорта з принтера йде PDF-ом) — для файлів окремий files:annotate.
+  if (sniffDocMime(buffer) === "application/pdf") {
+    let pdf = buffer;
+    if (pdf.length > VISION_PDF_INLINE_MAX) pdf = await shrinkDocBuffer(pdf, "application/pdf", logger);
+    if (pdf.length > VISION_PDF_INLINE_MAX) throw new Error("PDF завеликий для розпізнавання (понад 7 МБ) — стисніть файл або надішліть фото сторінки");
+    let res: any;
+    try {
+      res = await client.request({
+        url: "https://vision.googleapis.com/v1/files:annotate",
+        method: "POST",
+        data: { requests: [{ inputConfig: { content: pdf.toString("base64"), mimeType: "application/pdf" }, features: [{ type: "DOCUMENT_TEXT_DETECTION" }] }] },
+      });
+    } catch (e: any) {
+      const msg = e?.response?.data?.error?.message ?? e?.message ?? "Vision API error";
+      throw new Error(`Розпізнавання PDF не вдалося: ${msg}`);
+    }
+    const file = res.data?.responses?.[0];
+    if (file?.error) throw new Error(file.error.message || "Vision API error");
+    const pages: any[] = file?.responses ?? [];
+    const errors = pages.filter(p => p?.error).map(p => p.error?.message ?? "?");
+    if (errors.length) logger.warn({ errors, pages: pages.length }, "vision pdf: частина сторінок з помилкою");
+    if (errors.length && !pages.some(p => p?.fullTextAnnotation?.text)) throw new Error(errors[0] || "Vision API error");
+    return pages.map(p => p?.fullTextAnnotation?.text ?? "").filter(Boolean).join("\n");
+  }
   const res: any = await client.request({
     url: "https://vision.googleapis.com/v1/images:annotate",
     method: "POST",
