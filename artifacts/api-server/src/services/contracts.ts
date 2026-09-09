@@ -313,7 +313,7 @@ export async function resolveDocumentSet(workerId: number, factoryId: number | n
 let browserPromise: Promise<Browser> | null = null;
 async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }).then(browser => {
+    browserPromise = puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] }).then(browser => {
       // Chromium може впасти/бути вбитим окремо від Node (08.09.2026: після
       // цього КОЖЕН рендер падав «Connection closed» до рестарту процесу) —
       // скидаємо кеш, наступний виклик підніме новий інстанс.

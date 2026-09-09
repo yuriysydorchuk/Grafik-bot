@@ -34,7 +34,9 @@ jobs:
       - name: Failing tests → annotations
         if: failure()
         run: |
-          grep -E '^(✖|not ok) ' /tmp/test.log | sort -u | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+          # спершу деталі (текст помилок), потім назви — у GitHub видно ~10 аннотацій на крок
+          grep -A14 -E '^(✖ failing tests|# Subtest.*failed)' /tmp/test.log | grep -E 'Error|error|!==|ENOENT|at .*src/' | sort -u | head -25 | while IFS= read -r l; do echo "::error::$l"; done
+          grep -E '^(✖|not ok) ' /tmp/test.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::$l"; done
           echo "----- failure details -----"
           grep -A14 -E '^(✖ failing tests|# Subtest.*failed)' /tmp/test.log | head -200 || true
 
@@ -89,6 +91,8 @@ jobs:
       - name: Failing tests → annotations
         if: failure()
         run: |
-          grep -E '^(✖|not ok) ' /tmp/test.log | sort -u | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+          # спершу деталі (текст помилок), потім назви — у GitHub видно ~10 аннотацій на крок
+          grep -A14 -E '^(✖ failing tests|# Subtest.*failed)' /tmp/test.log | grep -E 'Error|error|!==|ENOENT|at .*src/' | sort -u | head -25 | while IFS= read -r l; do echo "::error::$l"; done
+          grep -E '^(✖|not ok) ' /tmp/test.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::$l"; done
           echo "----- failure details -----"
           grep -A14 -E '^(✖ failing tests|# Subtest.*failed)' /tmp/test.log | head -200 || true
