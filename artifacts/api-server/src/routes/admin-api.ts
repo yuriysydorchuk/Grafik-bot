@@ -1179,9 +1179,22 @@ router.patch("/worker-documents/:id", RW, async (req, res) => {
   for (const k of ["title", "status", "number", "fileUrl", "note"]) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
   if (patch.title === null) return fail(res, 400, "Назва не може бути порожньою");
   if (req.body?.expiresAt !== undefined) patch.expiresAt = req.body.expiresAt || null;
+  // зміна типу (напр. «власний» → каталожний): без цього движок легальності не бачив
+  // документ як підставу — назва мінялась, doc_type_id лишався NULL (баг 10.09.2026)
+  if (req.body?.docTypeId !== undefined) {
+    const docTypeId = req.body.docTypeId != null && req.body.docTypeId !== "" ? Number(req.body.docTypeId) : null;
+    if (docTypeId != null) {
+      if (!Number.isInteger(docTypeId)) return fail(res, 400, "Невірний тип документа");
+      const [ty] = await db.select({ id: documentTypesTable.id, name: documentTypesTable.name }).from(documentTypesTable).where(eq(documentTypesTable.id, docTypeId));
+      if (!ty) return fail(res, 404, "Тип документа не знайдено");
+      if (patch.title === undefined) patch.title = ty.name;
+    }
+    patch.docTypeId = docTypeId;
+  }
   const [before] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  if (!before) return fail(res, 404, "Документ не знайдено");
   const [d] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, id)).returning();
-  if (before && d) await documentChanged({ id, workerId: before.workerId }, "updated", { adminId: actingAdminId(req) }, documentAuditDiff(before, patch));
+  if (d) await documentChanged({ id, workerId: before.workerId }, "updated", { adminId: actingAdminId(req) }, documentAuditDiff(before, patch));
   ok(res, d);
 });
 router.delete("/worker-documents/:id", RW, async (req, res) => {

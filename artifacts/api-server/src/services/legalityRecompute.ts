@@ -72,13 +72,15 @@ export async function employerSinceOf(worker: { id: number; employmentStartDate:
 // Умови працівника для осі «умова»: hasUmowa — у пакеті є файл із шаблону виду umowa
 // (сталий пакет ZUS/PPK/BHP без umowy умовою не є — важливо для офісного пакета без фабрики).
 export async function loadWorkerContracts(workerId: number): Promise<LegalityContract[]> {
-  const rows = await db.select({ id: contractsTable.id, factoryId: contractsTable.factoryId, companyId: contractsTable.companyId, status: contractsTable.status, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo })
+  const rows = await db.select({ id: contractsTable.id, factoryId: contractsTable.factoryId, companyId: contractsTable.companyId, status: contractsTable.status, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo, data: contractsTable.data })
     .from(contractsTable).where(eq(contractsTable.workerId, workerId));
   if (!rows.length) return [];
   const umowa = await db.select({ contractId: contractFilesTable.contractId })
     .from(contractFilesTable).innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
     .where(and(inArray(contractFilesTable.contractId, rows.map(r => r.id)), inArray(documentTemplatesTable.kind, ["umowa", "sprzatanie_umowa"])));
   const withUmowa = new Set(umowa.map(u => u.contractId));
+  // імпортований скан підписаної умови (POST /workers/:id/contracts/import) — умова без шаблону
+  for (const r of rows) if ((r.data as Record<string, unknown> | null)?.imported === true) withUmowa.add(r.id);
   return rows.map(r => ({ id: r.id, factoryId: r.factoryId, companyId: r.companyId, status: r.status, dateFrom: dateStr(r.dateFrom), dateTo: dateStr(r.dateTo), hasUmowa: withUmowa.has(r.id) }));
 }
 

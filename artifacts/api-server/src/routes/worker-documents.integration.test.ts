@@ -67,3 +67,19 @@ test("document file endpoints require authentication", opts, async () => {
   const id = await mkDoc();
   assert.equal((await request(app).get(`/api/worker-documents/${id}/file`)).status, 401);
 });
+
+test("PATCH: «власний» документ можна перевести в каталожний тип — doc_type_id і назва оновлюються (баг 10.09.2026)", opts, async () => {
+  const { documentTypesTable } = await import("../test/harness.ts");
+  const { seedLegalizationCatalog } = await import("../services/legalizationSeed.ts");
+  await seedLegalizationCatalog();
+  const id = await mkDoc(); // docTypeId = null, title "Paszport"
+  const [zez] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "zezwolenie_a"));
+  const r = await request(app).patch(`/api/worker-documents/${id}`).set("Cookie", owner).set(H).send({ docTypeId: zez!.id, title: zez!.name });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const [d] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  assert.equal(d!.docTypeId, zez!.id); assert.equal(d!.title, zez!.name);
+  // назад у «власний» — тип знімається; неіснуючий тип — 404
+  assert.equal((await request(app).patch(`/api/worker-documents/${id}`).set("Cookie", owner).set(H).send({ docTypeId: null, title: "Inny" })).status, 200);
+  assert.equal((await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id)))[0]!.docTypeId, null);
+  assert.equal((await request(app).patch(`/api/worker-documents/${id}`).set("Cookie", owner).set(H).send({ docTypeId: 999999 })).status, 404);
+});

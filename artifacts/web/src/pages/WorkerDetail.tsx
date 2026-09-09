@@ -871,6 +871,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
     return r ? (r.params!.factoryId as number) : undefined;
   })();
   const [newFor, setNewFor] = useState<{ factoryId: number | null; companyId: number | null } | null>(null);
+  const [importOpen, setImportOpen] = useState(false); // скан уже підписаної умови (бекфіл, 10.09.2026)
   const [archiveOpen, setArchiveOpen] = useState(false);
   // deep-link з задачі («Як вирішити» → Згенерувати умову): /workers/:id?open=generate:<factoryId>
   useEffect(() => {
@@ -912,6 +913,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
       <Section icon={FileSignature} title={t("Умови (Umowa)")} summary={summary}
         action={<>
           <WorkerQuestionnaire workerId={workerId} />
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setImportOpen(true)} title={t("Умова, підписана поза системою: скан PDF одразу як чинна")}><Upload className="h-3.5 w-3.5" /> {t("Завантажити підписану")}</Button>
           <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => openNew(suggestedFactoryId ?? factoryId, null)}><Plus className="h-3.5 w-3.5" /> {t("Згенерувати документи")}</Button>
         </>}>
         {isLoading ? <div className="px-5 py-3"><Spinner /></div> : (
@@ -952,6 +954,10 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
           </div>
         )}
       </Section>
+      {importOpen && (
+        <ImportSignedContractModal workerId={workerId} factories={factories} companies={companies} employers={employers}
+          defaultFactoryId={suggestedFactoryId ?? factoryId} onClose={() => setImportOpen(false)} onSaved={() => { inv(); setImportOpen(false); }} />
+      )}
       {newFor && (
         <GenerateDocumentsModal workerId={workerId} defaultFactoryId={newFor.factoryId} defaultCompanyId={newFor.companyId}
           factories={factories} employers={employers}
@@ -1005,6 +1011,75 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate }: { workerId:
 // Картка одного роботодавця: шапка «фабрика · фірма» +
 // рядки чинних умов. Підписана чинна + нова версія в роботі — обидві в тій самій
 // картці (нова позначена «нова версія»).
+// Скан уже підписаної умови → POST /workers/:id/contracts/import (одразу signed, чинна для
+// осі «умова»). Для старих умов, підписаних до запуску модуля; нові — через генерацію.
+function ImportSignedContractModal({ workerId, factories, companies, employers, defaultFactoryId, onClose, onSaved }: {
+  workerId: number; factories: Factory[]; companies: Company[]; employers: EmployerRef[]; defaultFactoryId: number | null; onClose: () => void; onSaved: () => void;
+}) {
+  const t = useT();
+  const [factoryId, setFactoryId] = useState<string>(defaultFactoryId != null ? String(defaultFactoryId) : "");
+  const defaultCompany = employers.find(e => String(e.factoryId) === (defaultFactoryId != null ? String(defaultFactoryId) : ""))?.companyId ?? null;
+  const [companyId, setCompanyId] = useState<string>(defaultCompany != null ? String(defaultCompany) : "");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [signedAt, setSignedAt] = useState("");
+  const [note, setNote] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  // фабрика змінилась → підставити її фірму (мультифірмова — лишити вибір людині)
+  const pickFactory = (v: string) => {
+    setFactoryId(v);
+    const emp = employers.find(e => String(e.factoryId) === v);
+    const f = factories.find(x => String(x.id) === v);
+    const cid = emp?.companyId ?? (f && !f.multiFirm ? f.companyId ?? null : null);
+    setCompanyId(cid != null ? String(cid) : ""); // невідома фірма → очистити, не успадковувати від попередньої фабрики
+  };
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!file) throw new Error(t("Оберіть PDF-файл підписаної умови"));
+      if (!factoryId) throw new Error(t("Вкажіть фабрику умови"));
+      if (!companyId) throw new Error(t("Вкажіть нашу фірму в умові"));
+      if (!dateFrom) throw new Error(t("Вкажіть дату початку умови"));
+      const fd = new FormData();
+      fd.append("file", file); fd.append("factoryId", factoryId); fd.append("companyId", companyId);
+      fd.append("dateFrom", dateFrom); if (dateTo) fd.append("dateTo", dateTo); if (signedAt) fd.append("signedAt", signedAt); if (note.trim()) fd.append("note", note.trim());
+      return upload(`/workers/${workerId}/contracts/import`, fd);
+    },
+    onSuccess: () => { toast.success(t("Умову додано як підписану")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const sortedFactories = [...factories].sort((a, b) => (employers.some(e => e.factoryId === b.id) ? 1 : 0) - (employers.some(e => e.factoryId === a.id) ? 1 : 0) || a.name.localeCompare(b.name, "pl"));
+  return (
+    <Modal open onClose={onClose} title={t("Підписана умова (скан)")}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">{t("Для умов, підписаних поза системою. Файл стає чинною умовою одразу, без ланцюжка підпису.")}</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t("Фабрика")}</Label>
+            <Select value={factoryId} onChange={e => pickFactory(e.target.value)}>
+              <option value="">—</option>
+              {sortedFactories.map(f => <option key={f.id} value={f.id}>{f.name}{employers.some(e => e.factoryId === f.id) ? ` · ${t("роботодавець")}` : ""}</option>)}
+            </Select>
+          </div>
+          <div><Label>{t("Фірма")}</Label>
+            <Select value={companyId} onChange={e => setCompanyId(e.target.value)}>
+              <option value="">—</option>
+              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+          </div>
+          <div><Label>{t("Початок")}</Label><Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} /></div>
+          <div><Label>{t("Кінець")} <span className="font-normal text-slate-400">({t("порожньо = безстрокова")})</span></Label><Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></div>
+          <div><Label>{t("Дата підпису")} <span className="font-normal text-slate-400">({t("порожньо = дата початку")})</span></Label><Input type="date" value={signedAt} onChange={e => setSignedAt(e.target.value)} /></div>
+          <div><Label>{t("Файл PDF")}</Label><input type="file" accept="application/pdf,.pdf" onChange={e => setFile(e.target.files?.[0] ?? null)} className="block w-full text-xs text-slate-600" /></div>
+        </div>
+        <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} placeholder={t("напр. звідки скан")} /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function ContractChain({ workerId, title, subtitle, companyName, badge, list, muted, emptyText, emptyTone, onGenerate, onSaved }: {
   workerId: number; title: string; subtitle?: string; companyName?: string | null; badge?: string;
   list: ContractSummary[]; muted?: boolean; emptyText: string; emptyTone?: "warn"; onGenerate: () => void; onSaved: () => void;
@@ -2359,6 +2434,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "submittedAt": return submittedAt ?? "";
       case "decisionAt": return decisionAt ?? "";
       case "employerCompanyId": return employerCompanyId;
+      case "caseStatus": return caseStatus; // без цього required-перевірка не бачила обраний статус справи (баг 10.09.2026)
       case "studyMode": return studyMode;
       case "purpose": return purpose;
       default: return "";

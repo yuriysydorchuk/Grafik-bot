@@ -16,6 +16,7 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import {
   db, workerQuestionnairesTable, workerDocumentsTable, documentTypesTable,
   contractsTable, contractFilesTable, signatureTokensTable, signatureEventsTable,
@@ -284,6 +285,72 @@ router.post("/workers/:id/contracts", WD, async (req, res) => {
   } catch (e: any) {
     fail(res, 400, e?.message ?? "Не вдалося згенерувати пакет документів");
   }
+});
+
+// Імпорт ВЖЕ підписаної умови (скан PDF) — бекфіл старих умов, підписаних поза
+// системою (запит офісу 10.09.2026). Одразу status=signed, файл — як signedPath
+// пакета (той самий GET /contracts/:id/files/:fileId), data.imported=true — для осі
+// «умова» движка (legalityRecompute: hasUmowa без шаблону виду umowa).
+const uploadContract = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), async (req: AuthedRequest, res) => {
+  const workerId = Number(req.params.id);
+  const b = req.body ?? {};
+  const factoryId = b.factoryId ? Number(b.factoryId) : null;
+  const companyId = b.companyId ? Number(b.companyId) : null;
+  // дата: порожньо → null; непорожнє мусить бути реальною календарною датою YYYY-MM-DD (не 2026-02-31)
+  const isoDate = (v: unknown): string | null | false => {
+    if (v == null || v === "") return null;
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    return new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v ? v : false;
+  };
+  const dateFrom = isoDate(b.dateFrom), dateTo = isoDate(b.dateTo), signedAtIn = isoDate(b.signedAt);
+  if (dateFrom === false || dateTo === false || signedAtIn === false) return fail(res, 400, "Дата: очікується YYYY-MM-DD");
+  const signedOn = signedAtIn ?? dateFrom;
+  if (!req.file) return fail(res, 400, "Файл не отримано (лише PDF до 15 МБ)");
+  if (sniffDocMime(req.file.buffer) !== "application/pdf") return fail(res, 400, "Очікується PDF (тип файлу перевіряється за вмістом)");
+  if (!factoryId || !Number.isInteger(factoryId)) return fail(res, 400, "Вкажіть фабрику умови");
+  if (!companyId || !Number.isInteger(companyId)) return fail(res, 400, "Вкажіть нашу фірму в умові");
+  if (!dateFrom) return fail(res, 400, "Вкажіть дату початку умови (YYYY-MM-DD)");
+  if (dateTo && dateTo < dateFrom) return fail(res, 400, "Дата кінця раніше за дату початку");
+  const [worker] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (!worker) return fail(res, 404, "Працівника не знайдено");
+  const [factory] = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!factory) return fail(res, 404, "Фабрику не знайдено");
+  const [company] = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId));
+  if (!company) return fail(res, 404, "Фірму не знайдено");
+
+  const rawName = Buffer.from(req.file.originalname ?? "umowa.pdf", "latin1").toString("utf8");
+  const storedName = makeStoredName(rawName.toLowerCase().endsWith(".pdf") ? rawName : `${rawName}.pdf`);
+  const relPath = path.join("contracts", storedName);
+  await fs.promises.mkdir(path.join(UPLOADS_ROOT, "contracts"), { recursive: true });
+  await fs.promises.writeFile(path.join(UPLOADS_ROOT, relPath), req.file.buffer);
+  const sha256 = crypto.createHash("sha256").update(req.file.buffer).digest("hex");
+  const signedAt = new Date(`${signedOn}T12:00:00Z`);
+  const adminId = req.admin?.adminId ?? null;
+  const note = typeof b.note === "string" ? b.note.trim().slice(0, 500) : "";
+  // умова + файл — однією транзакцією; впало → файл з диска прибираємо (не лишати
+  // signed-умову без PDF або PDF-сироту)
+  let contract: typeof contractsTable.$inferSelect;
+  try {
+    contract = await db.transaction(async tx => {
+      const [c] = await tx.insert(contractsTable).values({
+        workerId, factoryId, companyId, status: "signed", dateFrom, dateTo,
+        signedAt, companySignedAt: signedAt, companySignedBy: adminId,
+        data: { imported: true, importedBy: adminId, importedAt: new Date().toISOString(), originalName: rawName, ...(note ? { note } : {}) },
+      }).returning();
+      await tx.insert(contractFilesTable).values({
+        contractId: c!.id, sortOrder: 0, title: "Umowa (skan podpisany)", signedPath: relPath, signedSha256: sha256,
+      });
+      return c!;
+    });
+  } catch (e) {
+    await fs.promises.unlink(path.join(UPLOADS_ROOT, relPath)).catch(() => {});
+    throw e;
+  }
+  const { workerLegalityChanged } = await import("../services/documentEvents");
+  await workerLegalityChanged(workerId);
+  logger.info({ contractId: contract.id, workerId, factoryId, companyId, dateFrom, dateTo, adminId }, "signed contract imported");
+  ok(res, { ...contract, factoryName: factory.name, companyName: company.name });
 });
 
 // Дата може з'явитись у БУДЬ-якому нетермінальному статусі, навіть після
