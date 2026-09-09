@@ -75,10 +75,20 @@ jobs:
       - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує)
         run: |
           set -o pipefail
-          # postinstall у CI лишає папку chrome/linux-<ver> без бінаря — повторна установка вважає її готовою
           rm -rf ~/.cache/puppeteer/chrome
-          if ! pnpm --filter @workspace/api-server exec puppeteer browsers install chrome 2>&1 | tee /tmp/chrome.log; then
+          if ! pnpm --filter @workspace/api-server exec puppeteer browsers install chrome --format '{{path}}' 2>&1 | tee /tmp/chrome.log; then
             grep -vE '^\s*$' /tmp/chrome.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
+          CHROME=$(grep -E '^/.*/chrome$' /tmp/chrome.log | tail -1)
+          echo "::notice::chrome=$CHROME"; ls -la "$CHROME"
+          echo "PUPPETEER_EXECUTABLE_PATH=$CHROME" >> "$GITHUB_ENV"
+
+      - name: Chrome smoke launch
+        working-directory: artifacts/api-server
+        run: |
+          if ! node -e "require('puppeteer').launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']}).then(async b=>{console.log('chrome ok',await b.version());await b.close()})" 2>&1 | tee /tmp/smoke.log; then
+            grep -vE '^\s*$' /tmp/smoke.log | head -12 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           fi
 
