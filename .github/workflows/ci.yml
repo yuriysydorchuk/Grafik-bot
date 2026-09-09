@@ -73,6 +73,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує)
+        run: |
+          pnpm --filter @workspace/api-server exec puppeteer browsers install chrome --install-deps
+          ls ~/.cache/puppeteer
+
       - name: Load schema + migrations into the test database
         env:
           PGPASSWORD: postgres
