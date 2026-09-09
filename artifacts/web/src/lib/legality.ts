@@ -28,13 +28,25 @@ export const LEGALITY_ROW: Record<LegalityStatus, string> = {
 
 export const AXIS_LABEL = { stay: "Перебування", work: "Праця", contract: "Умова", overall: "Загалом" } as const;
 
+// Статус справи (stay_case_certificate). Для движка легальності є лише два стани:
+// справа ВІДКРИТА (submitted, in_progress → дає право на перебування) і ЗАКРИТА (решта →
+// права не дає). Пари «Подано/Розглядається» і «Відмова/Відкликано» — інформаційні
+// відтінки одного стану; підказки нижче кажуть це людині прямо (запит власника 10.09.2026).
 export const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
-  to_submit: "До подання", submitted: "Подано", in_progress: "У провадженні",
-  decision_positive: "Рішення позитивне", decision_negative: "Рішення негативне", withdrawn: "Відкликано",
+  to_submit: "Ще не подано", submitted: "Подано", in_progress: "Розглядається",
+  decision_positive: "Позитивне рішення", decision_negative: "Відмова", withdrawn: "Відкликано",
+};
+export const CASE_STATUS_HINT: Record<CaseStatus, string> = {
+  to_submit: "права на перебування не дає",
+  submitted: "дає право на перебування, поки триває розгляд (те саме, що «Розглядається»)",
+  in_progress: "дає право на перебування, поки триває розгляд (те саме, що «Подано»)",
+  decision_positive: "справа закрита; отриману карту додайте окремим документом",
+  decision_negative: "справа закрита, права не дає (те саме, що «Відкликано»)",
+  withdrawn: "справа закрита, права не дає (те саме, що «Відмова»)",
 };
 
 export const DOC_CATEGORY_LABEL: Record<DocCategory, string> = {
-  identity: "Тотожність", stay: "Перебування", work: "Праця", payroll: "Кадри/ЗП", medical: "Медичні", other: "Інше",
+  identity: "Посвідчення особи", stay: "Перебування", work: "Праця", payroll: "Кадри/ЗП", medical: "Медичні", other: "Інше",
 };
 
 export const NAT_GROUP_LABEL: Record<string, string> = { ua: "Громадяни України", eu: "ЄС/ЄЕЗ", non_eu: "Поза ЄС" };
@@ -44,7 +56,7 @@ export const MISMATCH_LABEL: Record<string, string> = {
 };
 
 export const REQUIRED_MISSING_LABEL: Record<string, string> = {
-  passport: "документ тотожності", stay_basis: "підстава перебування", work_basis: "підстава праці",
+  passport: "документ, що підтверджує особу (паспорт або ID)", stay_basis: "документ на право перебування", work_basis: "документ на право працювати",
 };
 
 // Причини движка → людською мовою. {param} підставляються з reason.params.
@@ -60,11 +72,11 @@ export const REASON_LABEL: Record<string, string> = {
   not_yet_valid: "Документ ще не набув чинності (з {validFrom})",
   expiry_missing: "У документа зі строком не вказано дату закінчення",
   doc_nationality_mismatch: "Тип документа не відповідає громадянству",
-  basis_expiring: "Підстава спливає {expiresAt} (за {daysLeft} дн.)",
-  basis_expired: "Підстава прострочена ({expiresAt}), іншої чинної немає",
-  case_in_progress: "Справу подано ({submittedAt}), рішення очікується",
-  work_during_case_uncertain: "Справа подана, але до подання не було права на працю — праця під час провадження під питанням",
-  no_basis: "Немає жодного документа-підстави",
+  basis_expiring: "Документ, що дає це право, спливає {expiresAt} (за {daysLeft} дн.)",
+  basis_expired: "Документ, що давав це право, прострочений ({expiresAt}), іншого чинного немає",
+  case_in_progress: "Справу подано ({submittedAt}), чекаємо рішення — право на перебування є",
+  work_during_case_uncertain: "Справу подано, але до подання не було права працювати — працювати під час розгляду можна не напевно",
+  no_basis: "Немає документа, який дає це право",
   employment_start_unknown: "Не вказано дату початку праці — строк повідомлення не рахується",
   notification_overdue: "Прострочено повідомлення про працю (термін {dueAt})",
   notification_late: "Повідомлення подано із запізненням (термін {dueAt}, подано {submittedAt})",
@@ -76,7 +88,7 @@ export const REASON_LABEL: Record<string, string> = {
   contract_wrong_company: "Умова на {factory} від іншої нашої фірми — роботодавець там {company}",
   no_factory: "У профілі немає фабрики — без фабрики посади не буває (для офісу — фабрика «Biuro»)",
   schedule_outside_factories: "Зміни в графіку на {factory}, якої немає в списку фабрик працівника",
-  work_basis_missing_for_company: "Немає підстави праці для фірми {company} (документ на цю фірму або незалежна підстава)",
+  work_basis_missing_for_company: "Немає документа на право працювати для фірми {company} (документ на цю фірму або документ, що не привʼязаний до фірми)",
   main_company_not_employer: "Фірма в профілі не збігається з жодним роботодавцем зі списку фабрик",
 };
 

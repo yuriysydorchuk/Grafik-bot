@@ -20,7 +20,7 @@ import {
   type WorkerLegality, type LegalityReason, type CaseStatus, type LegalizationGlobals, type WorkerFactory,
 } from "../lib/api";
 import {
-  LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, DOC_CATEGORY_LABEL,
+  LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, CASE_STATUS_HINT, DOC_CATEGORY_LABEL,
   MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
@@ -1957,7 +1957,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
         ) : <span className="font-medium text-slate-700">{label}</span>}
         {subLabel && subLabel !== label && <span className="text-xs text-slate-400">{subLabel}</span>}
         {doc.source === "worker_bot" && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">{t("з бота")}</span>}
-        {doc.caseStatus && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
+        {doc.caseStatus && <span title={t(CASE_STATUS_HINT[doc.caseStatus])} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{t(CASE_STATUS_LABEL[doc.caseStatus])}</span>}
         {employerName && <span className="text-xs text-slate-400">{employerName}</span>}
         {doc.number && <span className="text-xs text-slate-400">№ {doc.number}</span>}
         {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-red-600 hover:underline">{t("посилання")} <ExternalLink className="h-3 w-3" /></a>}
@@ -2508,8 +2508,9 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
         <div key={f.key}><Label>{t(f.label)}{req}</Label>
           <Select value={caseStatus} disabled={fieldDisabled(f)} onChange={e => setCaseStatus(e.target.value as CaseStatus | "")}>
             <option value="">—</option>
-            {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])}</option>)}
+            {(Object.keys(CASE_STATUS_LABEL) as CaseStatus[]).map(cs => <option key={cs} value={cs}>{t(CASE_STATUS_LABEL[cs])} — {t(CASE_STATUS_HINT[cs])}</option>)}
           </Select>
+          {caseStatus && <p className="mt-1 text-xs text-slate-400">{t(CASE_STATUS_HINT[caseStatus])}</p>}
         </div>
       );
     }
