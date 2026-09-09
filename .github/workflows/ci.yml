@@ -87,6 +87,7 @@ jobs:
       - name: Chrome smoke launch
         working-directory: artifacts/api-server
         run: |
+          set -o pipefail
           if ! node -e "require('puppeteer').launch({headless:true,args:['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage']}).then(async b=>{console.log('chrome ok',await b.version());await b.close()})" 2>&1 | tee /tmp/smoke.log; then
             grep -vE '^\s*$' /tmp/smoke.log | head -12 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
