@@ -76,6 +76,8 @@ jobs:
       - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує)
         run: |
           set -o pipefail
+          # postinstall у CI лишає папку chrome/linux-<ver> без бінаря — повторна установка вважає її готовою
+          rm -rf ~/.cache/puppeteer/chrome
           if ! pnpm --filter @workspace/api-server exec puppeteer browsers install chrome 2>&1 | tee /tmp/chrome.log; then
             grep -vE '^\s*$' /tmp/chrome.log | tail -15 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
