@@ -73,10 +73,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує)
+      - name: Chrome for PDF tests (postinstall puppeteer у CI Chrome не докачує; --install-deps потребує root)
         run: |
-          pnpm --filter @workspace/api-server exec puppeteer browsers install chrome --install-deps
-          ls ~/.cache/puppeteer
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 fonts-liberation
+          pnpm --filter @workspace/api-server exec puppeteer browsers install chrome
 
       - name: Load schema + migrations into the test database
         env:
