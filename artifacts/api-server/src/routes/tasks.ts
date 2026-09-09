@@ -500,6 +500,12 @@ router.patch("/task-auto-rules/:code", TP, async (req: AuthedRequest, res) => {
     if (Array.isArray(b.workerLadder)) next.workerLadder = b.workerLadder.map(Number).filter((x: number) => Number.isInteger(x) && x > 0).sort((a: number, z: number) => a - z);
     if (b.silenceDays !== undefined) next.silenceDays = Math.max(1, Number(b.silenceDays) || 14);
     if (b.officeThresholdDays !== undefined) next.officeThresholdDays = Math.max(0, Number(b.officeThresholdDays) || 0);
+    if (b.legacyBefore !== undefined) {
+      // порожньо = гейт вимкнено; непорожнє мусить бути реальною датою YYYY-MM-DD (не 2026-99-99)
+      if (b.legacyBefore === null || b.legacyBefore === "") next.legacyBefore = null;
+      else if (typeof b.legacyBefore === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.legacyBefore) && new Date(`${b.legacyBefore}T00:00:00Z`).toISOString().slice(0, 10) === b.legacyBefore) next.legacyBefore = b.legacyBefore;
+      else return fail(res, 400, "legacyBefore: очікується дата YYYY-MM-DD");
+    }
     await db.update(taskAutoRulesTable).set({ params: next as any, updatedAt: new Date() }).where(eq(taskAutoRulesTable.code, "settings"));
     return ok(res, next);
   }

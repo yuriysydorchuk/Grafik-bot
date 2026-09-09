@@ -210,3 +210,36 @@ test("сторінка /tasks гейтить доступ; фабрика збе
   assert.equal(f?.responsibleAdminId, owner.adminId); assert.equal(f?.schedulerAdminId, x.adminId);
   void adminsTable;
 });
+
+test("«старі» працівники (додані до legacyBefore без документів і умов) не дають движкових задач і ZWUA; перший документ вводить у модуль", opts, async () => {
+  const { workerLegalityTable } = await import("../test/harness.ts");
+  await seedAdmin({ role: "owner", name: "Main", isMain: true });
+  await db.insert(taskAutoRulesTable).values({ code: "settings", enabled: true, params: { legacyBefore: today } });
+  const [fa] = await db.insert(factoriesTable).values({ name: "SUSHI" }).returning();
+  const yesterday = new Date(`${addDaysStr(today, -1)}T10:00:00Z`);
+  const [old] = await db.insert(workersTable).values({ fullName: "Old One", factoryId: fa!.id, isActive: true, createdAt: yesterday }).returning();
+  const [fresh] = await db.insert(workersTable).values({ fullName: "Fresh One", factoryId: fa!.id, isActive: true }).returning(); // createdAt = сьогодні ≥ legacyBefore
+  const [firedOld] = await db.insert(workersTable).values({ fullName: "Fired Old", factoryId: fa!.id, isActive: false, firedAt: new Date(`${addDaysStr(today, -10)}T10:00:00Z`), createdAt: yesterday }).returning();
+  const [firedNew] = await db.insert(workersTable).values({ fullName: "Fired New", factoryId: fa!.id, isActive: false, firedAt: new Date(`${today}T10:00:00Z`), createdAt: yesterday }).returning();
+  for (const w of [old, fresh]) await db.insert(workerLegalityTable).values({ workerId: w!.id, stay: "illegal", work: "illegal", overall: "illegal", reasons: [{ code: "contract_missing", axis: "contract" }], requiredMissing: ["stay_basis"], obligations: [], computedAt: new Date() });
+
+  await runAutoTasks(today);
+  let all = await db.select().from(tasksTable);
+  assert.equal(all.filter(t => t.workerId === old!.id).length, 0, "старий без документів — без задач");
+  assert.equal(all.filter(t => t.workerId === fresh!.id).length, 2, "доданий у день запуску — умова + бракує підстав");
+  assert.equal(all.filter(t => t.workerId === firedOld!.id).length, 0, "звільнений до запуску — без ZWUA");
+  assert.equal(all.filter(t => t.workerId === firedNew!.id && t.source === "auto:termination_zus").length, 1, "звільнений після запуску — ZWUA є");
+
+  // перший документ → людина в модулі, задачі зʼявляються
+  const [pass] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "passport"));
+  await db.insert(workerDocumentsTable).values({ workerId: old!.id, docTypeId: pass!.id, title: "Paszport", status: "present", expiresAt: addDaysStr(today, 400) });
+  await runAutoTasks(today);
+  all = await db.select().from(tasksTable);
+  assert.equal(all.filter(t => t.workerId === old!.id).length, 2, "після першого документа — як усі");
+
+  // гейт вимкнено (дата порожня) → старий без документів теж отримує задачі
+  await db.delete(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, old!.id));
+  await db.update(taskAutoRulesTable).set({ params: { legacyBefore: null } }).where(eq(taskAutoRulesTable.code, "settings"));
+  await runAutoTasks(today);
+  assert.equal((await db.select().from(tasksTable)).filter(t => t.workerId === firedOld!.id).length, 1, "без дати — ZWUA за 90 днів як раніше");
+});

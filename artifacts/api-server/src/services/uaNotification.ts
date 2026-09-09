@@ -19,7 +19,8 @@ import {
   type Task,
 } from "@workspace/db";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { createTask, logTaskEvent, resolveAssignee, priorityForDays, warsawToday, diffDays, dateStr, fmtDate, mdEsc, mainAdminId, adminName, taskPanelUrl, OPEN_STATUSES, type TaskPriority } from "./tasks";
+import { createTask, logTaskEvent, resolveAssignee, priorityForDays, warsawToday, diffDays, dateStr, fmtDate, mdEsc, mainAdminId, adminName, taskPanelUrl, loadTaskSettings, OPEN_STATUSES, type TaskPriority } from "./tasks";
+import { loadLegacyWorkerIds } from "./taskLegacy";
 import { normalizeChecklist } from "./taskUtils";
 import { loadLeadDays } from "./legalityRecompute";
 import { documentChanged } from "./documentEvents";
@@ -61,7 +62,10 @@ async function pendingObligations(today: string): Promise<Map<number, { dueAt: s
   const rows = await db.select({ workerId: workerLegalityTable.workerId, obligations: workerLegalityTable.obligations, isActive: workersTable.isActive })
     .from(workerLegalityTable).innerJoin(workersTable, eq(workerLegalityTable.workerId, workersTable.id)).where(eq(workersTable.isActive, true));
   const out = new Map<number, { dueAt: string; start: string | null }>();
+  // «старі» без документів/умов (додані до запуску модуля) — не ретроактивно (taskLegacy.ts)
+  const legacy = await loadLegacyWorkerIds(rows.map(r => r.workerId), (await loadTaskSettings()).legacyBefore);
   for (const r of rows) {
+    if (legacy.has(r.workerId)) continue;
     for (const o of (r.obligations ?? []) as { code: string; dueAt: string; satisfied?: boolean; params?: Record<string, unknown> }[]) {
       if (o.code !== OBL_CODE || o.satisfied) continue;
       const dueAt = String(o.dueAt).slice(0, 10);

@@ -10,17 +10,20 @@
 import { db, tasksTable, documentTemplatesTable, contractsTable, type Worker } from "@workspace/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
-import { createTask, resolveAssignee, OPEN_STATUSES } from "./tasks";
+import { createTask, resolveAssignee, loadTaskSettings, OPEN_STATUSES } from "./tasks";
 import { normalizeChecklist, dateStr } from "./taskUtils";
 import { logger } from "../lib/logger";
 
 export const TERMINATION_TEMPLATE_KIND = "swiadectwo";
 
 export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null): Promise<void> {
-  // 2) ZUS ZWUA — завжди
+  // 2) ZUS ZWUA — завжди, крім звільнення датою ДО запуску модуля (settings.legacyBefore):
+  //    таке заднім числом = історія, нічний скан (taskAutoRules) її теж не бере — інакше
+  //    задача зʼявилась би тут і зникла наступної ночі
   const zwuaKey = `zwua:${worker.id}`;
+  const legacyBefore = (await loadTaskSettings()).legacyBefore;
   const [exZ] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, zwuaKey), inArray(tasksTable.status, OPEN_STATUSES)));
-  if (!exZ) {
+  if (!exZ && !(legacyBefore && fireDate < legacyBefore)) {
     const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
     await createTask({
       kind: "task", title: `Виреєструвати з ZUS (ZWUA): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,

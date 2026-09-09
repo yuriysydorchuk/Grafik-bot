@@ -25,8 +25,11 @@ export interface TaskSettings {
   // автозапит документів у працівника (services/docRequests.ts): нагадування працівнику через N днів після запиту,
   // задача офісу «не надіслав» після silenceDays мовчання, і завжди офісу, якщо до строку ≤ officeThresholdDays
   autoRequest: boolean; workerLadder: number[]; silenceDays: number; officeThresholdDays: number;
+  // дата запуску модуля (YYYY-MM-DD): працівники, додані раніше і без жодного документа/умови,
+  // движкових автозадач не отримують (services/taskLegacy.ts); null = гейт вимкнено
+  legacyBefore: string | null;
 }
-export const DEFAULT_TASK_SETTINGS: TaskSettings = { ladder: DEFAULT_LADDER, manualLadder: [1, 0], escalationDays: 3, digestTime: "07:30", eveningTime: "17:30", skipWeekends: true, rollover: true, autoRequest: true, workerLadder: [3, 7], silenceDays: 7, officeThresholdDays: 7 };
+export const DEFAULT_TASK_SETTINGS: TaskSettings = { ladder: DEFAULT_LADDER, manualLadder: [1, 0], escalationDays: 3, digestTime: "07:30", eveningTime: "17:30", skipWeekends: true, rollover: true, autoRequest: true, workerLadder: [3, 7], silenceDays: 7, officeThresholdDays: 7, legacyBefore: null };
 export async function loadTaskSettings(): Promise<TaskSettings> {
   const [row] = await db.select().from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, "settings"));
   return { ...DEFAULT_TASK_SETTINGS, ...((row?.params ?? {}) as Partial<TaskSettings>) };

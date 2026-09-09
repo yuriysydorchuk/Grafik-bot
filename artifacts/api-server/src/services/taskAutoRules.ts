@@ -18,6 +18,7 @@ import { defaultChecklist } from "./taskResolve";
 import { normalizeChecklist } from "./taskUtils";
 import { autoRequestDocuments, selfServiceTypeIds, silenceDays } from "./docRequests";
 import { loadLeadDays } from "./legalityRecompute";
+import { loadLegacyWorkerIds } from "./taskLegacy";
 import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
@@ -79,10 +80,14 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   // ланцюжок звільнення — по звільнених, тож ДО раннього виходу «немає активних»
   // 11. Ланцюжок звільнення: ZWUA — звільнені за 90 днів без документа zus_zwua (задачу створює
   // startTerminationFlow одразу; тут — підтримка/auto_resolved, коли документ зʼявився)
+  const settings = await loadTaskSettings();
   if (on("termination_zus")) {
     const lead = rules.get("termination_zus")?.leadDays ?? 7;
-    const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
-      .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, new Date(Date.now() - 90 * 86400000))));
+    // звільнені до дати запуску модуля (settings.legacyBefore) — не ретроактивно (taskLegacy.ts)
+    const firedFrom = new Date(Date.now() - 90 * 86400000);
+    const fired = (await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, firedAt: workersTable.firedAt })
+      .from(workersTable).where(and(eq(workersTable.isActive, false), gte(workersTable.firedAt, firedFrom))))
+      .filter(f => !settings.legacyBefore || (dateStr(f.firedAt) ?? "") >= settings.legacyBefore);
     const zwua = (await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua")))[0];
     const firedIds = fired.map(f => f.id);
     const have = new Set(zwua && firedIds.length ? (await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, firedIds), eq(workerDocumentsTable.docTypeId, zwua.id), ne(workerDocumentsTable.status, "missing")))).map(d => d.workerId) : []);
@@ -109,8 +114,8 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   if (!ids.length) return out;
   // автозапит документів: self-service тип + Telegram → офісна задача лише при мовчанні
   // (silenceDays) або коли до строку ≤ officeThresholdDays; інакше система сама просить/нагадує
-  const settings = await loadTaskSettings();
   const ld = await loadLeadDays(); // жовта/червона зона з правила легальності
+  const legacy = await loadLegacyWorkerIds(ids, settings.legacyBefore); // «старі» без слідів у модулі — без движкових задач
   const selfIds = settings.autoRequest ? await selfServiceTypeIds() : new Set<number>();
   const allDocs = await db.select().from(workerDocumentsTable).where(inArray(workerDocumentsTable.workerId, ids));
   const docsOf = (workerId: number, docTypeId: number | null) => allDocs.filter(d => d.workerId === workerId && d.docTypeId === docTypeId);
@@ -159,6 +164,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   // 3–5, 8. З кешу легальності: умова, обов'язки, бракує підстави, review
   const lg = await db.select().from(workerLegalityTable).where(inArray(workerLegalityTable.workerId, ids));
   for (const l of lg) {
+    if (legacy.has(l.workerId)) continue;
     const w = wById.get(l.workerId)!;
     const reasons = (l.reasons ?? []) as { code: string; axis: string; params?: Record<string, unknown> }[];
     if (on("contract")) {
