@@ -56,6 +56,21 @@ export { app };
 export async function resetDb(): Promise<void> {
   const url = process.env.TEST_DATABASE_URL ?? "";
   if (!/test/i.test(url)) throw new Error("resetDb refused: TEST_DATABASE_URL is not a *test* database");
+  // TRUNCATE ... CASCADE бере ACCESS EXCLUSIVE на десятки таблиць; fire-and-forget
+  // запит попереднього тесту на іншому зʼєднанні пулу (last_seen_at, події,
+  // сповіщення) на повільному раннері дає «deadlock detected» (40P01) — ретрай,
+  // а не червоний CI через тайминг.
+  for (let attempt = 1; ; attempt++) {
+    try { await truncateAll(); break; } catch (e: any) {
+      const code = e?.cause?.code ?? e?.code;
+      if ((code === "40P01" || code === "55P03") && attempt < 6) { await new Promise(r => setTimeout(r, 150 * attempt)); continue; }
+      throw e;
+    }
+  }
+  await reseedDefaults();
+}
+
+async function truncateAll(): Promise<void> {
   await db.execute(sql.raw(
     "TRUNCATE admins, admin_sessions, login_events, workers, drivers, roles, " +
     "factories, positions, factory_orders, availability, absence_requests, " +
@@ -71,6 +86,9 @@ export async function resetDb(): Promise<void> {
     "expense_categories, counterparty_rules, " +
     "payroll_sources, payroll_factory_months RESTART IDENTITY CASCADE",
   ));
+}
+
+async function reseedDefaults(): Promise<void> {
   // classification queries need the category rows — restore the default seed
   await db.insert(expenseCategoriesTable).values(
     DEFAULT_EXPENSE_CATS.map((c, i) => ({ ...c, sortOrder: (i + 1) * 10 })),
