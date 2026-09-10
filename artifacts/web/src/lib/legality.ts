@@ -28,6 +28,32 @@ export const LEGALITY_ROW: Record<LegalityStatus, string> = {
 
 export const AXIS_LABEL = { stay: "Перебування", work: "Праця", contract: "Умова", overall: "Загалом" } as const;
 
+// Зрозумілі ярлики статусу ПО ОСЯХ (рішення власника 10.09.2026): червоне — не «без підстави»,
+// а конкретно: перебування → «Без перебування», праця → «Без дозволу праці», умова — за причиною
+// («Відсутня» / «Не підписана» / «Закінчилася» / «Від іншої фірми»); «Загалом» — перелік червоних осей.
+export const AXIS_RED_LABEL = { stay: "Без перебування", work: "Без дозволу праці", contract: "Без умови" } as const;
+const CONTRACT_REASON_LABEL: Record<string, string> = {
+  contract_unsigned: "Не підписана", contract_expired: "Закінчилася", contract_missing: "Відсутня",
+  contract_wrong_company: "Від іншої фірми", no_factory: "Без фабрики",
+};
+export function axisStatusLabel(axis: "stay" | "work" | "contract" | "overall", legality: { stay: LegalityStatus; work: LegalityStatus; contract: LegalityStatus; overall: LegalityStatus; reasons?: LegalityReason[] }): string {
+  const status = legality[axis];
+  if (axis === "overall") {
+    if (status !== "illegal") return LEGALITY_LABEL[status];
+    const red = (["stay", "work", "contract"] as const).filter(a => legality[a] === "illegal").map(a => AXIS_RED_LABEL[a]);
+    return red.length ? red.join(" · ") : LEGALITY_LABEL.illegal;
+  }
+  if (axis === "contract") {
+    if (status === "pending") return "Чекає підпису фірми";
+    if (status === "illegal") {
+      const r = (legality.reasons ?? []).find(x => (x.axis as string) === "contract" && CONTRACT_REASON_LABEL[x.code]);
+      return r ? CONTRACT_REASON_LABEL[r.code]! : AXIS_RED_LABEL.contract;
+    }
+    return LEGALITY_LABEL[status];
+  }
+  return status === "illegal" ? AXIS_RED_LABEL[axis] : LEGALITY_LABEL[status];
+}
+
 // Статус справи (stay_case_certificate). Для движка легальності є лише два стани:
 // справа ВІДКРИТА (submitted, in_progress → дає право на перебування) і ЗАКРИТА (решта →
 // права не дає). Пари «Подано/Розглядається» і «Відмова/Відкликано» — інформаційні
@@ -81,8 +107,9 @@ export const REASON_LABEL: Record<string, string> = {
   notification_overdue: "Прострочено повідомлення про працю (термін {dueAt})",
   notification_late: "Повідомлення подано із запізненням (термін {dueAt}, подано {submittedAt})",
   // вісь «умова»
-  contract_missing: "Немає чинної умови на {factory}",
-  contract_expired: "Умова на {factory} закінчилась {expiresAt}",
+  contract_missing: "Умова на {factory} відсутня",
+  contract_unsigned: "Умова на {factory} ще не підписана працівником",
+  contract_expired: "Умова на {factory} закінчилася {expiresAt}",
   contract_expiring: "Умова на {factory} спливає {expiresAt} (за {daysLeft} дн.)",
   contract_awaiting_company: "Умову на {factory} підписав працівник, чекає підпису компанії",
   contract_wrong_company: "Умова на {factory} від іншої нашої фірми — роботодавець там {company}",

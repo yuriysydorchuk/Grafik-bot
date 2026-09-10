@@ -520,6 +520,7 @@ export function computeLegality(input: LegalityInput): LegalityResult {
 // червоне: посади без фабрики не буває.
 const CONTRACT_VALID = new Set(["signed"]);
 const CONTRACT_PENDING = new Set(["worker_signed"]);
+const CONTRACT_UNSIGNED = new Set(["draft", "pending_approval", "approved", "sent", "viewed"]); // є, але працівник ще не підписав
 export function computeContractAxis(input: LegalityInput, g: Globals): AxisResult {
   const { today, worker } = input;
   const reasons: Reason[] = [];
@@ -547,7 +548,10 @@ export function computeContractAxis(input: LegalityInput, g: Globals): AxisResul
     if (!best) {
       const expired = mine.filter(c => c.hasUmowa && CONTRACT_VALID.has(c.status) && c.dateTo && c.dateTo < today).sort((a, b) => b.dateTo!.localeCompare(a.dateTo!))[0];
       const otherFirm = onFactory.find(c => CONTRACT_VALID.has(c.status) && (!c.dateTo || c.dateTo >= today) && c.companyId != null && cid != null && c.companyId !== cid);
-      if (expired) push("contract_expired", "block", { factoryId: e.factoryId, factory: fname, expiresAt: expired.dateTo, contractId: expired.id });
+      // умова є, але ще не підписана (чернетка / надіслана / переглянута) — окремий, зрозуміліший стан (рішення 10.09.2026)
+      const unsigned = mine.filter(c => c.hasUmowa && CONTRACT_UNSIGNED.has(c.status) && (!c.dateTo || c.dateTo >= today)).sort((a, b) => b.id - a.id)[0];
+      if (unsigned) push("contract_unsigned", "block", { factoryId: e.factoryId, factory: fname, contractId: unsigned.id, status: unsigned.status });
+      else if (expired) push("contract_expired", "block", { factoryId: e.factoryId, factory: fname, expiresAt: expired.dateTo, contractId: expired.id });
       else if (otherFirm) push("contract_wrong_company", "block", { factoryId: e.factoryId, factory: fname, company: e.companyName ?? `#${cid}`, contractCompanyId: otherFirm.companyId, contractId: otherFirm.id });
       else push("contract_missing", "block", { factoryId: e.factoryId, factory: fname, company: e.companyName ?? null });
       status = "illegal";

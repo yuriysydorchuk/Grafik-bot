@@ -20,7 +20,7 @@ import {
   type WorkerLegality, type LegalityReason, type CaseStatus, type LegalizationGlobals, type WorkerFactory,
 } from "../lib/api";
 import {
-  LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, CASE_STATUS_LABEL, CASE_STATUS_HINT, DOC_CATEGORY_LABEL,
+  LEGALITY_LABEL, LEGALITY_BADGE, LEGALITY_DOT, AXIS_LABEL, axisStatusLabel, CASE_STATUS_LABEL, CASE_STATUS_HINT, DOC_CATEGORY_LABEL,
   MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
@@ -1722,6 +1722,8 @@ function LegalitySummary({ workerId }: { workerId: number }) {
     queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`),
   });
   const ld = useLeadDays(); // хук — до умовних return (порядок хуків)
+  const { data: wk } = useQuery<{ isActive: boolean }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
+  const fired = wk ? wk.isActive === false : false; // звільнений — стан на момент звільнення, не «нелегально»
 
   if (isLoading) return <div className="px-4 py-3"><Spinner /></div>;
   if (!legality) return <div className="px-4 py-2 text-sm text-slate-400">{t("Легальність ще не рахувалась")}</div>;
@@ -1747,9 +1749,10 @@ function LegalitySummary({ workerId }: { workerId: number }) {
             <div key={axis} className="flex items-center gap-1.5 rounded-lg border border-slate-100 bg-white px-2.5 py-1.5 text-sm">
               <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[legality[axis]]}`} />
               <span className="text-xs text-slate-400">{t(AXIS_LABEL[axis])}</span>
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${LEGALITY_BADGE[legality[axis]]}`}>{t(LEGALITY_LABEL[legality[axis]])}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${LEGALITY_BADGE[legality[axis]]}`}>{t(axisStatusLabel(axis, legality))}</span>
             </div>
           ))}
+          {fired && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200" title={t("Профіль звільнений — стан на момент звільнення")}>{t("Звільнений")}</span>}
           {legality.reviewRequired && (
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600">
               <AlertTriangle className="h-3 w-3" /> {t("потребує перевірки")}

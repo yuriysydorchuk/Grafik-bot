@@ -139,7 +139,7 @@ export interface WorkerContractsBrief {
   package: { id: number; status: ContractBriefStatus } | null;
 }
 // Короткий зріз для списку /workers (усім ролям)
-export interface WorkerLegalityBrief { overall: LegalityStatus; stay: LegalityStatus; work: LegalityStatus; nextExpiryAt: string | null; reviewRequired: boolean; derivedLegalStatus: string | null; legacyMismatchKind: string | null }
+export interface WorkerLegalityBrief { overall: LegalityStatus; stay: LegalityStatus; work: LegalityStatus; contract?: LegalityStatus; nextExpiryAt: string | null; reviewRequired: boolean; derivedLegalStatus: string | null; legacyMismatchKind: string | null }
 // Рядок дашборду GET /legalization (cap legalization)
 export interface LegalizationRow {
   id: number; fullName: string; workerCode: string | null; nationality: string | null; legalStatus: string | null;

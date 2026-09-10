@@ -9,7 +9,7 @@
 //     ПРАЦІВНИКА (kind=wypowiedzenie, без печатки, працівник підписує). Świadectwo pracy не видаємо.
 // Після підпису працівника фірма підписує автоматично (DATA_AUTO_FINALIZE, routes/sign.ts).
 // Один документ на (умова, вид): sourceKey `<вид>:<contractId>` у задачі — замок (unique).
-import { db, contractsTable, contractFilesTable, documentTemplatesTable, tasksTable, workersTable, factoriesTable } from "@workspace/db";
+import { db, contractsTable, contractFilesTable, documentTemplatesTable, tasksTable, workersTable, factoriesTable, companiesTable } from "@workspace/db";
 import { and, eq, gte, inArray, isNotNull, lte, ne, or, isNull, gt, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { createTask, resolveAssignee, warsawToday, dateStr, mdEsc, OPEN_STATUSES } from "./tasks";
@@ -66,6 +66,27 @@ export async function collectContractEndCandidates(today = warsawToday()): Promi
   return out;
 }
 
+// Правило власника 10.09.2026 для zaświadczenia ES GROUP: один клієнт у періоді → «u klienta: <фабрика>»,
+// кілька → «w <фірма> (różni klienci)». Аутсорсингові фірми користуються шаблоном без цього
+// плейсхолдера (лише okres zatrudnienia). Рахуємо по підписаних умовах працівника цієї фірми, що
+// перетинають період (подієві документи не рахуються).
+async function workplacePhrase(workerId: number, companyId: number | null, from: string | null, to: string): Promise<string> {
+  const rows = await db.select({ id: contractsTable.id, factoryId: contractsTable.factoryId, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo, fname: factoriesTable.name })
+    .from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+    .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "signed"), isNotNull(contractsTable.factoryId), companyId != null ? eq(contractsTable.companyId, companyId) : sql`true`));
+  const events = await eventContractIds(rows.map(r => r.id));
+  const names = new Set<string>();
+  for (const r of rows) {
+    if (events.has(r.id)) continue;
+    const f = dateStr(r.dateFrom), t = dateStr(r.dateTo);
+    if ((t && from && t < from) || (f && f > to)) continue; // не перетинається з періодом
+    if (r.fname) names.add(r.fname);
+  }
+  if (names.size === 1) return `u klienta: ${[...names][0]}`;
+  const [co] = companyId != null ? await db.select({ legalName: companiesTable.legalName, name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId)) : [];
+  return names.size > 1 ? `w ${co?.legalName ?? co?.name ?? "firmie"} (różni klienci)` : "";
+}
+
 // ── Документ звільнення для ОДНІЄЇ умови: zaświadczenie (з печаткою) або wypowiedzenie ──────
 async function issueEventDoc(opts: {
   kind: string; contract: typeof contractsTable.$inferSelect; worker: { id: number; fullName: string }; dateTo: string;
@@ -94,7 +115,10 @@ async function issueEventDoc(opts: {
     const doc = await generateContract({
       workerId: worker.id, factoryId: c.factoryId, companyId: c.companyId ?? null, templateIds: [tpl.id],
       dateFrom: dateStr(c.dateFrom), dateTo: opts.dateTo, allowUnverified: true,
-      extraData: { "Data zawarcia umowy": dateStr(c.dateFrom) ?? "" }, // «umowę zawartą dnia …» — дата оригінальної умови
+      extraData: {
+        "Data zawarcia umowy": dateStr(c.dateFrom) ?? "", // «umowę zawartą dnia …» — дата оригінальної умови
+        "Miejsce pracy zaświadczenia": opts.kind === ZASW_KIND ? await workplacePhrase(worker.id, c.companyId ?? null, dateStr(c.dateFrom), opts.dateTo) : "",
+      },
     });
     await db.update(contractsTable).set({
       data: sql`${contractsTable.data} || ${JSON.stringify({ [DATA_AUTO_FINALIZE]: "1", [DATA_SOURCE_CONTRACT]: String(c.id) })}::jsonb`, updatedAt: new Date(),

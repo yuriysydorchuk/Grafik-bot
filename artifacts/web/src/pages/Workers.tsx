@@ -13,7 +13,7 @@ import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
 import { badgeClass, dotClass, genderIcon, genderClass } from "../lib/colors";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
-import { LEGALITY_STATUSES, LEGALITY_LABEL, LEGALITY_DOT, daysUntil } from "../lib/legality";
+import { LEGALITY_STATUSES, LEGALITY_LABEL, LEGALITY_DOT, daysUntil, axisStatusLabel } from "../lib/legality";
 import { NATIONALITIES, NatFlag } from "../lib/nationality";
 
 export default function Workers() {
@@ -268,8 +268,8 @@ function LegalizationCell({ w }: { w: Worker }) {
     <div className="space-y-0.5 py-0.5">
       {leg ? (
         <div className="flex items-center gap-1.5 whitespace-nowrap">
-          <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[leg.overall]}`} title={t(LEGALITY_LABEL[leg.overall])} />
-          <span className="text-xs text-slate-600">{t(LEGALITY_LABEL[leg.overall])}</span>
+          <span className={`h-2 w-2 shrink-0 rounded-full ${LEGALITY_DOT[leg.overall]}`} title={t(axisStatusLabel("overall", { ...leg, contract: leg.contract ?? "unknown" }))} />
+          <span className="text-xs text-slate-600">{t(axisStatusLabel("overall", { ...leg, contract: leg.contract ?? "unknown" }))}</span>
           {leg.nextExpiryAt && <span className={`text-xs ${expiryCls}`}>· {t("{n} дн.", { n: dLeft ?? "—" })}</span>}
           {leg.reviewRequired && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{t("перевірка")}</span>}
         </div>
