@@ -189,9 +189,10 @@ export default function WorkerDetail() {
       {(() => {
         const from = new URLSearchParams(window.location.search).get("from") ?? "";
         const isSchedule = from.startsWith("/schedule");
+        const isHours = from.startsWith("/hours"); // з обліку годин (модалка днів працівника відкриється знову: ?w=&wn=)
         return (
-          <Link href={isSchedule ? from : "/workers"} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
-            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : t("До працівників")}
+          <Link href={isSchedule || isHours ? from : "/workers"} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
+            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : isHours ? t("До обліку годин") : t("До працівників")}
           </Link>
         );
       })()}

@@ -82,16 +82,22 @@ export default function Hours() {
   });
   const [cityTab, setCityTab] = useState(() => new URLSearchParams(window.location.search).get("city") ?? "");   // "" = всі міста
   const [facTab, setFacTab] = useState(() => new URLSearchParams(window.location.search).get("fac") ?? "");      // ключ групи ("" = всі фабрики)
+  // ?w=<id>&wn=<імʼя> — відкрита модалка днів працівника (повернення з профілю «назад де був»)
+  const [sel, setSel] = useState<{ id: number; name: string } | null>(() => {
+    const p = new URLSearchParams(window.location.search);
+    const id = Number(p.get("w")); const name = p.get("wn") ?? "";
+    return id > 0 ? { id, name: name || `#${id}` } : null;
+  });
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     if (month !== months[0]!.value) p.set("m", month); else p.delete("m");
     if (cityTab) p.set("city", cityTab); else p.delete("city");
     if (facTab) p.set("fac", facTab); else p.delete("fac");
+    if (sel) { p.set("w", String(sel.id)); p.set("wn", sel.name); } else { p.delete("w"); p.delete("wn"); }
     const q = p.toString();
     window.history.replaceState(null, "", window.location.pathname + (q ? `?${q}` : ""));
     try { localStorage.setItem("hours.month", month); } catch { /* ignore */ }
-  }, [month, cityTab, facTab, months]);
-  const [sel, setSel] = useState<{ id: number; name: string } | null>(null);
+  }, [month, cityTab, facTab, months, sel]);
   // Ключі груп, для яких відкриті модалки (сам Group береться свіжим із query —
   // так лист/превʼю живо перераховуються після правок годин)
   const [importKey, setImportKey] = useState<string | null>(null);

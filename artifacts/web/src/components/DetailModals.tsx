@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Trash2, Plus, X } from "lucide-react";
+import { Check, Trash2, Plus, X, User } from "lucide-react";
+import { Link } from "wouter";
 import { get, post, patch, DAY_UK, SHIFT_UK, type DayCode, type ShiftCode, type Factory } from "../lib/api";
 import { Modal, Spinner, Empty, Badge, Button, Input, Select } from "./ui";
 import { useT, type TFn } from "../lib/i18n";
@@ -25,6 +26,13 @@ const itemLabel = (it: DisputeItem, t: TFn) => {
   const tail = it.kind === "wrong" && it.hours != null ? ` → ${it.hours} ${t("год")}` : "";
   return `${head}: ${it.date ? fmtDate(it.date) : ""} · ${it.shift ?? "?"} ${t("зм")}${it.factoryName ? ` · ${it.factoryName}` : ""}${tail}`;
 };
+
+// Лінк у профіль зі збереженням місця: шлях + query сторінки + w/wn (id та імʼя для повторного відкриття модалки)
+function profileHref(workerId: number, name: string): string {
+  const p = new URLSearchParams(window.location.search);
+  p.set("w", String(workerId)); p.set("wn", name);
+  return `/workers/${workerId}?from=${encodeURIComponent(`${window.location.pathname}?${p.toString()}`)}`;
+}
 
 export function WorkerDaysModal({ workerId, name, month, monthLabel, onClose }: { workerId: number; name: string; month: string; monthLabel: string; onClose: () => void }) {
   const t = useT();
@@ -59,6 +67,10 @@ export function WorkerDaysModal({ workerId, name, month, monthLabel, onClose }: 
 
   return (
     <Modal open onClose={onClose} title={`${name} — ${monthLabel}`} size="lg">
+      {/* у профіль і назад: ?from= несе поточний шлях з фільтрами + w/wn, щоб /hours знову відкрив цю модалку (запит власника 10.09.2026) */}
+      <div className="-mt-1 mb-2 flex justify-end">
+        <Link href={profileHref(workerId, name)} className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"><User className="h-3.5 w-3.5" /> {t("Профіль працівника")}</Link>
+      </div>
       {isLoading ? <Spinner /> : (
         <>
           <div className="mb-3 flex flex-wrap gap-2">
