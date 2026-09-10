@@ -383,6 +383,7 @@ export default function WorkerDetail() {
         <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
         {/* Умови — теж на всю ширину, одразу під легалізацією (рішення власника 05.09.2026) */}
         {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
+        {can(me, "workerDocs") && <WorkerFamily workerId={w.id} />}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
@@ -785,7 +786,7 @@ type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedS
 type DocSetItem = { id: number; kind: string; title: string };
 const KIND_LABEL: Record<string, string> = {
   umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
-  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", aneks: "Aneks — przedłużenie",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", aneks: "Aneks — przedłużenie", zcna: "ZUS ZCNA (rodzina)",
   andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", custom: "Інше",
 };
 
@@ -1230,6 +1231,105 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
 // дописуємо, щойно з'явиться, на будь-якому нетермінальному статусі. У draft
 // це ще й перегенеровує PDF-файли; після — лише дані в БД, підписаний файл не
 // чіпається (services/contracts.ts:updateContractDates).
+
+// ── Родина для ZUS ZCNA (рішення власника 10.09.2026): лише на прохання працівника ─────────────
+// «Запросити анкету» → лінк у бот (працівник вписує членів сам), офіс може правити вручну;
+// «Згенерувати ZCNA» → документ з печаткою на підпис + задача виконавцю ZUS.
+type FamilyMember = { id?: number; action: "zgloszenie" | "wyrejestrowanie"; rightsDate: string | null; pesel: string | null; docKind: string | null; docNumber: string | null; lastName: string; firstName: string; birthDate: string | null; relationCode: string; sharedHousehold: boolean; disabilityCode: string | null; addressDiffers: boolean; postalCode: string | null; city: string | null; gmina: string | null; street: string | null; houseNo: string | null; flatNo: string | null; phone: string | null; countryCode: string | null; foreignPostal: string | null; source?: string };
+type FamilyInfo = { members: FamilyMember[]; relationCodes: { code: string; pl: string }[]; disabilityCodes: { code: string; pl: string }[] };
+const blankMember = (): FamilyMember => ({ action: "zgloszenie", rightsDate: new Date().toLocaleDateString("sv-SE"), pesel: "", docKind: "", docNumber: "", lastName: "", firstName: "", birthDate: "", relationCode: "11", sharedHousehold: true, disabilityCode: "", addressDiffers: false, postalCode: "", city: "", gmina: "", street: "", houseNo: "", flatNo: "", phone: "", countryCode: "", foreignPostal: "" });
+
+function WorkerFamily({ workerId }: { workerId: number }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<FamilyInfo>({ queryKey: ["worker-family", workerId], queryFn: () => get(`/workers/${workerId}/family`) });
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-family", workerId] }); qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] }); };
+  const [edit, setEdit] = useState<FamilyMember[] | null>(null);
+  const invite = useMutation({ mutationFn: () => post(`/workers/${workerId}/zcna/invite`), onSuccess: (r: any) => toast.success(r?.notified ? t("Анкету ZCNA надіслано в бот") : r?.link ? `${t("Telegram недоступний — лінк")}: ${r.link}` : t("Лінк створено")), onError: (e: any) => toast.error(e.message) });
+  const generate = useMutation({ mutationFn: () => post(`/workers/${workerId}/zcna/generate`), onSuccess: (r: any) => { toast.success(r?.notified ? t("ZCNA згенеровано і надіслано на підпис") : t("ZCNA згенеровано")); inv(); }, onError: (e: any) => toast.error(e.message) });
+  const save = useMutation({ mutationFn: (members: FamilyMember[]) => put(`/workers/${workerId}/family`, { members }), onSuccess: () => { toast.success(t("Збережено")); setEdit(null); inv(); }, onError: (e: any) => toast.error(e?.data?.index != null ? `${e.message}` : e.message) });
+  const members = data?.members ?? [];
+  const rel = (code: string) => data?.relationCodes.find(r => r.code === code)?.pl ?? code;
+  return (
+    <>
+    <Section icon={Users} title={t("Родина (ZUS ZCNA)")} summary={members.length ? `${members.length}` : undefined} defaultOpen={members.length > 0}
+      action={<>
+        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => invite.mutate()} disabled={invite.isPending} title={t("Працівник сам впише членів родини за лінком у боті")}><Send className="h-3.5 w-3.5" /> {t("Запросити анкету ZCNA")}</Button>
+        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setEdit(members.length ? members.map(m => ({ ...m })) : [blankMember()])}><Pencil className="h-3.5 w-3.5" /> {t("Редагувати")}</Button>
+        <Button className="px-2 py-1 text-xs" onClick={() => generate.mutate()} disabled={!members.length || generate.isPending} title={t("Документ ZCNA з печаткою фірми одразу на підпис працівнику; задача виконавцю ZUS")}><FileSignature className="h-3.5 w-3.5" /> {t("Згенерувати ZCNA")}</Button>
+      </>}>
+      {isLoading ? <div className="px-5 py-3"><Spinner /></div> : members.length === 0 ? (
+        <div className="px-5 py-3 text-sm text-slate-400">{t("Членів родини не вказано. Зголошення до ZUS робиться лише на прохання працівника — запросіть анкету або впишіть вручну.")}</div>
+      ) : (
+        <div className="overflow-x-auto px-5 py-2">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-400"><th className="py-1 pr-3">{t("Прізвище, імʼя")}</th><th className="py-1 pr-3">{t("Спорідненість")}</th><th className="py-1 pr-3">PESEL / {t("документ")}</th><th className="py-1 pr-3">{t("Дата нар.")}</th><th className="py-1 pr-3">{t("Дія")}</th><th className="py-1 pr-3">{t("Джерело")}</th></tr></thead>
+            <tbody>
+              {members.map(m => (
+                <tr key={m.id} className="border-t border-slate-100">
+                  <td className="py-1.5 pr-3 font-medium text-slate-800">{m.lastName} {m.firstName}{m.addressDiffers && <span className="ml-1 text-xs text-slate-400" title={t("Адреса інша, ніж у працівника")}>📍</span>}</td>
+                  <td className="py-1.5 pr-3 text-slate-600">{m.relationCode} · {rel(m.relationCode)}</td>
+                  <td className="py-1.5 pr-3 tabular-nums text-slate-600">{m.pesel || `${m.docKind === "1" ? "dowód" : "paszport"} ${m.docNumber ?? ""}`}</td>
+                  <td className="py-1.5 pr-3 tabular-nums text-slate-600">{m.birthDate ?? "—"}</td>
+                  <td className="py-1.5 pr-3 text-slate-600">{m.action === "wyrejestrowanie" ? t("виреєструвати") : t("зголосити")}{m.rightsDate ? ` · ${m.rightsDate}` : ""}</td>
+                  <td className="py-1.5 pr-3 text-xs text-slate-400">{m.source === "office" ? t("офіс") : t("анкета")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+      {/* модалка ПОЗА секцією: згорнута секція не рендерить children (інакше «Редагувати» нічого не показує) */}
+      {edit && (
+        <Modal open onClose={() => setEdit(null)} title={t("Члени родини (ZUS ZCNA)")} size="xl">
+          <div className="space-y-3">
+            {edit.map((m, i) => {
+              const upd = (patch: Partial<FamilyMember>) => setEdit(ms => ms!.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+              return (
+                <div key={i} className="rounded-lg border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">{t("Член родини")} {i + 1}<button type="button" onClick={() => setEdit(ms => ms!.filter((_, j) => j !== i))} className="text-xs font-normal text-rose-600 hover:underline">{t("Прибрати")}</button></div>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <div><Label>{t("Дія")}</Label><Select value={m.action} onChange={e => upd({ action: e.target.value as FamilyMember["action"] })}><option value="zgloszenie">{t("зголосити")}</option><option value="wyrejestrowanie">{t("виреєструвати")}</option></Select></div>
+                    <div><Label>{t("Спорідненість")}</Label><Select value={m.relationCode} onChange={e => upd({ relationCode: e.target.value })}>{data?.relationCodes.map(r => <option key={r.code} value={r.code}>{r.code} — {r.pl}</option>)}</Select></div>
+                    <div><Label>{t("Прізвище")}</Label><Input value={m.lastName} onChange={e => upd({ lastName: e.target.value })} /></div>
+                    <div><Label>{t("Імʼя")}</Label><Input value={m.firstName} onChange={e => upd({ firstName: e.target.value })} /></div>
+                    <div><Label>{t("Дата народження")}</Label><Input type="date" value={m.birthDate ?? ""} onChange={e => upd({ birthDate: e.target.value })} /></div>
+                    <div><Label>PESEL</Label><Input value={m.pesel ?? ""} maxLength={11} onChange={e => upd({ pesel: e.target.value.replace(/\D/g, "") })} /></div>
+                    {!m.pesel && <><div><Label>{t("Документ (без PESEL)")}</Label><Select value={m.docKind ?? ""} onChange={e => upd({ docKind: e.target.value })}><option value="">—</option><option value="1">dowód osobisty</option><option value="2">paszport</option></Select></div>
+                    <div><Label>{t("Серія і номер")}</Label><Input value={m.docNumber ?? ""} onChange={e => upd({ docNumber: e.target.value })} /></div></>}
+                    <div><Label>{t("Дата права")}</Label><Input type="date" value={m.rightsDate ?? ""} onChange={e => upd({ rightsDate: e.target.value })} /></div>
+                    <div><Label>{t("Інвалідність")}</Label><Select value={m.disabilityCode ?? ""} onChange={e => upd({ disabilityCode: e.target.value })}>{data?.disabilityCodes.map(d => <option key={d.code} value={d.code}>{d.code ? `${d.code} — ` : ""}{d.pl}</option>)}</Select></div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-4 text-sm text-slate-700">
+                    <label className="flex items-center gap-1.5"><input type="checkbox" checked={m.sharedHousehold} onChange={e => upd({ sharedHousehold: e.target.checked })} /> {t("спільне господарство")}</label>
+                    <label className="flex items-center gap-1.5"><input type="checkbox" checked={m.addressDiffers} onChange={e => upd({ addressDiffers: e.target.checked })} /> {t("адреса інша, ніж у працівника")}</label>
+                  </div>
+                  {m.addressDiffers && (
+                    <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+                      <div><Label>{t("Індекс")}</Label><Input value={m.postalCode ?? ""} onChange={e => upd({ postalCode: e.target.value })} /></div>
+                      <div><Label>{t("Місто")}</Label><Input value={m.city ?? ""} onChange={e => upd({ city: e.target.value })} /></div>
+                      <div><Label>Gmina</Label><Input value={m.gmina ?? ""} onChange={e => upd({ gmina: e.target.value })} /></div>
+                      <div><Label>{t("Вулиця")}</Label><Input value={m.street ?? ""} onChange={e => upd({ street: e.target.value })} /></div>
+                      <div><Label>{t("Будинок")}</Label><Input value={m.houseNo ?? ""} onChange={e => upd({ houseNo: e.target.value })} /></div>
+                      <div><Label>{t("Квартира")}</Label><Input value={m.flatNo ?? ""} onChange={e => upd({ flatNo: e.target.value })} /></div>
+                      <div><Label>{t("Телефон")}</Label><Input value={m.phone ?? ""} onChange={e => upd({ phone: e.target.value })} /></div>
+                      <div><Label>{t("Країна / закордонний індекс")}</Label><div className="flex gap-1"><Input value={m.countryCode ?? ""} placeholder="PL" className="w-16" onChange={e => upd({ countryCode: e.target.value.toUpperCase() })} /><Input value={m.foreignPostal ?? ""} onChange={e => upd({ foreignPostal: e.target.value })} /></div></div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div className="flex items-center justify-between">
+              <Button variant="secondary" onClick={() => setEdit(ms => [...(ms ?? []), blankMember()])} disabled={edit.length >= 10}><Plus className="h-3.5 w-3.5" /> {t("Додати члена родини")}</Button>
+              <div className="flex gap-2"><Button variant="secondary" onClick={() => setEdit(null)}>{t("Скасувати")}</Button><Button onClick={() => save.mutate(edit)} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Зберегти")}</Button></div>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
 // Аннекс на продовження умови (рішення власника 10.09.2026): нова дата → POST /contracts/:id/annex →
 // документ kind=aneks одразу на підпис працівнику; після підпису date_to умови подовжується.
 function AnnexModal({ contractId, current, onClose, onSaved }: { contractId: number; current: ContractSummary | null; onClose: () => void; onSaved: () => void }) {

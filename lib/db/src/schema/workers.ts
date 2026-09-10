@@ -2013,6 +2013,32 @@ export type InsertWorker = z.infer<typeof insertWorkerSchema>;
 // Анкета працівника: паспортні й адміністративні дані для генерації umowa zlecenie.
 // OCR (Document AI) лише пропонує значення в status=draft — верифікація людиною
 // (verifiedBy/verifiedAt) обов'язкова перед генерацією умови.
+// Члени родини для ZUS ZCNA (рішення власника 10.09.2026): лише на окреме прохання працівника —
+// офіс шле анкету (/zcna/:token), працівник вписує членів, система формує документ ZCNA на підпис
+// (services/zcna.ts). Поля — з бланка ZUS ZCNA (розділи IV/V: A дані, B адреса, якщо інша).
+export const workerFamilyMembersTable = pgTable("worker_family_members", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  action: text("action").notNull().default("zgloszenie"), // zgloszenie (01=1) | wyrejestrowanie (01=2)
+  rightsDate: date("rights_date"),                          // 02. data uzyskania/utraty uprawnień
+  pesel: text("pesel"),                                     // 03 (якщо надано)
+  docKind: text("doc_kind"),                                // 05: "1" dowód osobisty | "2" paszport (коли нема PESEL)
+  docNumber: text("doc_number"),                            // 06 seria i numer
+  lastName: text("last_name").notNull(),                    // 07
+  firstName: text("first_name").notNull(),                  // 08
+  birthDate: date("birth_date"),                            // 09
+  relationCode: text("relation_code").notNull(),            // 10 kod stopnia pokrewieństwa (ZUS)
+  sharedHousehold: boolean("shared_household").notNull().default(true), // 11 wspólne gospodarstwo
+  disabilityCode: text("disability_code"),                  // 12 kod stopnia niepełnosprawności (порожньо = нема)
+  addressDiffers: boolean("address_differs").notNull().default(false), // B: адреса інша, ніж у застрахованого
+  postalCode: text("postal_code"), city: text("city"), gmina: text("gmina"), street: text("street"),
+  houseNo: text("house_no"), flatNo: text("flat_no"), phone: text("phone"), countryCode: text("country_code"), foreignPostal: text("foreign_postal"),
+  source: text("source").notNull().default("worker"),      // worker (анкета) | office
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [index("worker_family_members_worker_idx").on(t.workerId)]);
+export type WorkerFamilyMember = typeof workerFamilyMembersTable.$inferSelect;
+
 export const workerQuestionnairesTable = pgTable("worker_questionnaires", {
   id: serial("id").primaryKey(),
   workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),

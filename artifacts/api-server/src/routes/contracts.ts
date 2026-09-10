@@ -518,3 +518,23 @@ router.get("/contracts/:id/files/:fileId", WD, async (req, res) => {
 });
 
 export default router;
+
+// ─── ZUS ZCNA — члени родини (рішення власника 10.09.2026, services/zcna.ts) ──────────────
+router.get("/workers/:id/family", WD, async (req, res) => {
+  const { listFamily, ZCNA_RELATION_CODES, ZCNA_DISABILITY_CODES } = await import("../services/zcna");
+  ok(res, { members: await listFamily(Number(req.params.id)), relationCodes: ZCNA_RELATION_CODES, disabilityCodes: ZCNA_DISABILITY_CODES });
+});
+router.put("/workers/:id/family", WD, async (req, res) => {
+  const members = Array.isArray(req.body?.members) ? req.body.members : null;
+  if (!members) return fail(res, 400, "members[] обовʼязковий");
+  try { const { replaceFamily, listFamily } = await import("../services/zcna"); await replaceFamily(Number(req.params.id), members, "office"); ok(res, { members: await listFamily(Number(req.params.id)) }); }
+  catch (e: any) { res.status(400).json({ error: e?.message ?? "Не вдалося зберегти", field: e?.field ?? null, index: e?.index ?? null }); }
+});
+router.post("/workers/:id/zcna/invite", WD, async (req: AuthedRequest, res) => {
+  try { const { createZcnaInvite } = await import("../services/zcna"); ok(res, await createZcnaInvite(Number(req.params.id), req.admin?.adminId ?? null)); }
+  catch (e: any) { fail(res, 400, e?.message ?? "Не вдалося створити запрошення"); }
+});
+router.post("/workers/:id/zcna/generate", WD, async (req: AuthedRequest, res) => {
+  try { const { generateZcnaDocument } = await import("../services/zcna"); ok(res, await generateZcnaDocument(Number(req.params.id), req.admin?.adminId ?? null)); }
+  catch (e: any) { fail(res, 400, e?.message ?? "Не вдалося згенерувати ZCNA"); }
+});

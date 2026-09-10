@@ -35,7 +35,7 @@ const MODIFIER_RE = /^(data:|format:|język:)/;
 const COMPANY_SIG_RE = /podpis.*pracodawc|piecz[eę]ć/i;
 // Подієві документи: генеруються ланцюжками (звільнення — świadectwo/wypowiedzenie, кінець
 // умови — zaświadczenie), НЕ входять в автонабір «Згенерувати документи».
-export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie", "aneks"]);
+export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie", "aneks", "zcna"]);
 // Маркери в contracts.data (снапшот плейсхолдерів): підкреслення = службові, не для шаблонів.
 export const DATA_AUTO_FINALIZE = "_autoFinalize"; // "1" → після підпису працівника компанія підписує автоматично
 export const DATA_SOURCE_CONTRACT = "_forContractId"; // id умови, до якої згенеровано подієвий документ
@@ -70,6 +70,7 @@ function formatValue(raw: string | undefined, modifier: string | null): string {
   if (!v) return "";
   if (modifier?.startsWith("data:")) return escapeHtml(formatPolishDate(v));
   if (modifier === "format:tak_nie") return v === "true" || v === "Tak" ? "Tak" : "Nie";
+  if (modifier === "format:html") return v; // готовий HTML (таблиця членів родини ZCNA) — джерело лише наш код, не введення користувача
   return escapeHtml(v);
 }
 

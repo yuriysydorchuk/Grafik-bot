@@ -54,11 +54,12 @@ const CLOSES_WHEN: Record<string, string> = {
   termination_zus: "у профілі зʼявиться документ «ZUS ZWUA»",
   termination_doc: "документ буде надіслано працівнику на підпис",
   contract_end: "працівника звільнено або підписано аннекс/нову умову на цю фабрику",
+  zcna_file: "у профілі зʼявиться підтвердження ZUS ZCNA (документ типу «ZUS ZCNA»)",
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
 // коди requiredMissing, що не є типами документів (осі движка)
 const MISSING_LABEL: Record<string, string> = { stay_basis: "підстава перебування", work_basis: "підстава праці", contract: "чинна умова", questionnaire: "анкета" };
-const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response", "termination_zus"]);
+const DOC_RULES = new Set(["doc_expiring", "doc_expired", "required_missing", "obligation", "pending_doc", "doc_no_response", "termination_zus", "zcna_file"]);
 const isImageMime = (m: string | null | undefined) => !!m && m.startsWith("image/");
 
 // Дефолтний чекліст під правило: text + auto-ключ (відмічається сам, коли стан підтверджує крок).
@@ -83,6 +84,7 @@ export function defaultChecklist(rule: string, params: Record<string, unknown> |
     case "review_required": steps = [{ text: "Переглянути причини в легалізації" }, { text: "Виправити дані або документ" }, { text: "Перерахувати", auto: "recomputed" }]; break;
     case "candidate_stale": steps = [{ text: "Звʼязатись із кандидатом" }, { text: "Оновити етап або дату наступної дії" }]; break;
     case "termination_zus": steps = [{ text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)" }, { text: "Внести підтвердження ZWUA в профіль", auto: "entered" }]; break;
+    case "zcna_file": steps = [{ text: "Дочекатись підпису працівника" }, { text: "Подати ZUS ZCNA у Płatnik / PUE ZUS" }, { text: "Внести підтвердження ZCNA в профіль", auto: "entered" }]; break;
     case "contract_end": steps = [{ text: "Узгодити з фабрикою: людина лишається чи ні" }, { text: "Звільнити датою кінця умови АБО зробити аннекс на продовження (дії нижче)" }]; break;
     case "termination_doc": steps = [{ text: "Переглянути документ" }, { text: "Затвердити й надіслати працівнику (email / Telegram)", auto: "sent" }]; break;
     case "doc_no_response": steps = [{ text: "Звʼязатись із працівником (дзвінок або повідомлення)", auto: "contacted" }, { text: "Отримати файл від працівника", auto: "uploaded" }, { text: "Перевірити і підтвердити в профілі", auto: "verified" }]; break;
@@ -290,6 +292,24 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
           actions.push({ code: `ua_card.${r.id}`, label: `Картка PSZ-PPWPU: ${r.name}`, kind: "modal", bot: false });
           actions.push({ code: `ua_submitted.${r.id}`, label: r.submittedAt ? `Зняти «подано»: ${r.name}` : `Подано на praca.gov.pl: ${r.name}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
         }
+      }
+      break;
+    }
+    case "zcna_file": {
+      const ty = await typeByCode("zus_zcna");
+      const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
+      ctx.contract = { id: c?.id ?? null, status: c?.status ?? null, dateTo: null, factoryId: null, factoryName: null, code: "zcna" };
+      if (ty && worker) {
+        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing" && x.d.createdAt > task.createdAt)?.d; // той самий критерій, що авторезолв (zcna.ts)
+        ctx.document = d ? docCtx(d, ty.name, ty.code) : null;
+        if (d) satisfied.add("entered");
+        if (c) {
+          const { contractFilesTable } = await import("@workspace/db");
+          const [file] = await db.select({ id: contractFilesTable.id }).from(contractFilesTable).where(eq(contractFilesTable.contractId, c.id)).orderBy(contractFilesTable.sortOrder).limit(1);
+          if (file) actions.push({ code: "view_doc", label: `Переглянути ZCNA (PDF${c.status === "signed" ? ", підписано" : `, ${c.status}`})`, kind: "link", href: `/api/contracts/${c.id}/files/${file.id}`, primary: !d });
+        }
+        actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !d && c?.status === "signed" });
+        actions.push({ code: "family", label: "Родина в профілі", kind: "link", href: prof("family") });
       }
       break;
     }

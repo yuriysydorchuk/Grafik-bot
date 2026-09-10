@@ -37,6 +37,8 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "doc_no_response", label: "Працівник не надіслав документ", description: "Автозапит і нагадування в бот минули, файлу немає — звʼязатись самостійно", leadDays: null, enabledByDefault: true },
   // ланцюжок powiadomienie UA (services/uaNotification.ts): ступінь 1 графіковій на N-й день роботи → ступінь 2 виконавцю з params.stage2AdminId
   { code: "ua_notification", label: "Powiadomienie для UA (2 ступені)", description: "На N-й робочий день графіковій список нових людей → «Вислати» → задача подачі на praca.gov.pl виконавцю ступеня 2 (картка PSZ-PPWPU, завантаження підтвердження)", leadDays: null, enabledByDefault: true, scheduler: true },
+  // ZUS ZCNA (services/zcna.ts): подати зголошення родини в Płatnik; закривається, коли внесено документ zus_zcna
+  { code: "zcna_file", label: "ZUS ZCNA — подати зголошення родини", description: "Після генерації документа ZCNA (на прохання працівника) — виконавець ZUS подає в Płatnik і вносить підтвердження (тип ZUS ZCNA); задача закривається, коли документ у профілі", leadDays: null, enabledByDefault: true },
   // кінець умови (services/contractEndDocs.ts): графіковій рішення «звільнити або продовжити аннексом»
   { code: "contract_end", label: "Умова закінчилась — звільнити чи продовжити", description: "Підписана умова на фабрику дійшла до дати кінця, працівник активний, нової умови/аннексу нема → графікова або звільняє (тоді zaświadczenie), або робить аннекс на продовження (документ на підпис)", leadDays: null, enabledByDefault: true, scheduler: true },
   // документи звільнення (services/contractEndDocs.ts): zaświadczenie o zatrudnieniu (з печаткою) і wypowiedzenie від працівника — на підпис через лінк
@@ -233,6 +235,14 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       const w = wById.get(c.workerId)!;
       out.push({ sourceKey: `payroll:${c.id}`, rule: "payroll_change", title: `Прийняти зміну статусу виплат: ${c.oldValue ?? "не зголошений"} → ${c.newValue ?? "не зголошений"}`, priority: "high", dueAt: addDaysStr(today, 3),
         workerId: w.id, factoryId: w.factoryId, autoParams: { changeId: c.id, effectiveDate: dateStr(c.effectiveDate), workerName: w.fullName }, assign: { factoryId: null, prefer: null } });
+    }
+  }
+
+  // 8a. ZCNA: відкриті задачі живуть, поки нема підтвердження zus_zcna, внесеного після задачі (services/zcna.ts)
+  if (on("zcna_file")) {
+    const { openZcnaTasksStillPending } = await import("./zcna");
+    for (const { sourceKey, task } of await openZcnaTasksStillPending()) {
+      out.push({ sourceKey, rule: "zcna_file", title: task.title, priority: task.priority as TaskPriority, dueAt: dateStr(task.dueAt), workerId: task.workerId, factoryId: task.factoryId, contractId: task.contractId, autoParams: (task.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: null } });
     }
   }
 

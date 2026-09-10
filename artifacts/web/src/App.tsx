@@ -55,6 +55,7 @@ import DocumentTemplates from "./pages/DocumentTemplates";
 import Sign from "./pages/Sign";
 import PassportScan from "./pages/PassportScan";
 import DocUpload from "./pages/DocUpload";
+import ZcnaForm from "./pages/ZcnaForm";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
@@ -89,19 +90,21 @@ export default function App() {
   const onPassportScan = location.pathname.startsWith("/passport-scan/");
   // /docs/:token — публічна сторінка завантаження запитаного документа (автозапит з бота)
   const onDocs = location.pathname.startsWith("/docs/");
+  // /zcna/:token — публічна анкета членів родини для ZUS ZCNA (лінк з бота на прохання працівника)
+  const onZcna = location.pathname.startsWith("/zcna/");
   // Inside Telegram (Mini App) the launch hash carries initData — trade it for a session
   // BEFORE the me-query runs, otherwise its 401 bounces us to /login and drops the hash.
   // Публічні токен-сторінки теж відкриваються з Telegram (web_app-кнопка
   // «Підписати» в боті працівника) — там initData ПРАЦІВНИКА, не адміна:
   // спроба telegramLogin дала б лише 401 і зайву невдалу подію в /security.
-  const onPublicToken = onSign || onPassportScan || onDocs;
+  const onPublicToken = onSign || onPassportScan || onDocs || onZcna;
   const [tgReady, setTgReady] = useState(!isTelegramWebApp || onPublicToken);
   useEffect(() => {
     if (!isTelegramWebApp || onPublicToken) return;
     telegramLogin().finally(() => setTgReady(true));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: me, isLoading, isError } = useQuery<Me>({
-    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && !onDocs && tgReady,
+    queryKey: ["me"], queryFn: () => get("/auth/me"), enabled: !onLogin && !onSign && !onPassportScan && !onDocs && !onZcna && tgReady,
   });
   // Server-stored language wins: the TG webview forgets localStorage between openings.
   const serverLang = me?.lang;
@@ -110,6 +113,7 @@ export default function App() {
   if (onSign) return <Sign />;
   if (onPassportScan) return <PassportScan />;
   if (onDocs) return <DocUpload />;
+  if (onZcna) return <ZcnaForm />;
   if (onLogin) return <Login />;
   if (!tgReady || isLoading) return <div className="flex min-h-screen items-center justify-center"><Spinner /></div>;
   if (isError || !me) return <Login />;
