@@ -52,7 +52,8 @@ const CLOSES_WHEN: Record<string, string> = {
   doc_no_response: "працівник надішле файл (задача перевірки створиться сама) або документ зʼявиться в профілі",
   ua_notification: "по кожній людині зі списку в профілі зʼявиться powiadomienie (список порожній)",
   termination_zus: "у профілі зʼявиться документ «ZUS ZWUA»",
-  termination_doc: "документ звільнення буде надіслано працівнику",
+  termination_doc: "документ буде надіслано працівнику на підпис",
+  contract_end: "працівника звільнено або підписано аннекс/нову умову на цю фабрику",
 };
 const OBLIGATION_DOC: Record<string, string> = { "obligation.ua_notification": "powiadomienie_ua" };
 // коди requiredMissing, що не є типами документів (осі движка)
@@ -82,6 +83,7 @@ export function defaultChecklist(rule: string, params: Record<string, unknown> |
     case "review_required": steps = [{ text: "Переглянути причини в легалізації" }, { text: "Виправити дані або документ" }, { text: "Перерахувати", auto: "recomputed" }]; break;
     case "candidate_stale": steps = [{ text: "Звʼязатись із кандидатом" }, { text: "Оновити етап або дату наступної дії" }]; break;
     case "termination_zus": steps = [{ text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)" }, { text: "Внести підтвердження ZWUA в профіль", auto: "entered" }]; break;
+    case "contract_end": steps = [{ text: "Узгодити з фабрикою: людина лишається чи ні" }, { text: "Звільнити датою кінця умови АБО зробити аннекс на продовження (дії нижче)" }]; break;
     case "termination_doc": steps = [{ text: "Переглянути документ" }, { text: "Затвердити й надіслати працівнику (email / Telegram)", auto: "sent" }]; break;
     case "doc_no_response": steps = [{ text: "Звʼязатись із працівником (дзвінок або повідомлення)", auto: "contacted" }, { text: "Отримати файл від працівника", auto: "uploaded" }, { text: "Перевірити і підтвердити в профілі", auto: "verified" }]; break;
     default: steps = [];
@@ -301,6 +303,17 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       }
       break;
     }
+    case "contract_end": {
+      const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
+      const fac = task.factoryId ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, task.factoryId)))[0] : null;
+      ctx.contract = { id: c?.id ?? null, status: c?.status ?? null, dateTo: c ? dateStr(c.dateTo) : null, factoryId: task.factoryId ?? null, factoryName: fac?.name ?? null, code: "contract_end" };
+      if (worker && c) {
+        actions.push({ code: "annex", label: "Продовжити аннексом (вибрати дату)", kind: "link", href: prof(`annex:${c.id}`), primary: true });
+        actions.push({ code: "fire_at_end", label: `Звільнити з ${fmtDate(dateStr(c.dateTo) ?? "")}`, kind: "api", confirm: `Звільнити ${worker.fullName} датою кінця умови (${fmtDate(dateStr(c.dateTo) ?? "")})? Zaświadczenie згенерується автоматично.` });
+        actions.push({ code: "contracts", label: "Умови в профілі", kind: "link", href: prof("contracts") });
+      }
+      break;
+    }
     case "termination_doc": {
       const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
       ctx.contract = { id: c?.id ?? null, status: c?.status ?? null, dateTo: c ? dateStr(c.dateTo) : null, factoryId: task.factoryId ?? null, factoryName: null, code: "termination" };
@@ -425,6 +438,18 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
     case "deliver_doc": {
       if (!task.contractId) throw new Error("Задача без документа");
       message = await (await import("./terminationFlow")).deliverTerminationDoc(task.contractId, actor);
+      break;
+    }
+    case "fire_at_end": {
+      if (!w || !task.contractId) throw new Error("Задача без працівника або умови");
+      const mod = await import("./contractEndDocs");
+      const c = await mod.contractEndTaskContract(task.contractId);
+      if (!c?.dateTo) throw new Error("Умову не знайдено або без дати кінця");
+      // задача могла застаріти: зʼявилась нова умова/аннекс → умова більше не «закінчилась» (ревʼю 10.09)
+      if (!(await mod.collectContractEndCandidates()).some(x => x.contractId === c.id)) throw new Error("Умова вже продовжена або є нова — звільняти з цієї задачі не можна; закрийте її");
+      const r = await (await import("./workerFire")).fireWorker({ workerId: w.id, date: String(c.dateTo).slice(0, 10), adminId: actor.adminId, source: "web" });
+      if (!r.ok) throw new Error(r.error);
+      message = `Звільнено з ${fmtDate(String(c.dateTo).slice(0, 10))}; zaświadczenie згенерується і зʼявиться окремою задачею`;
       break;
     }
     case "send_sign": {

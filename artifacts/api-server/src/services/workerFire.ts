@@ -38,7 +38,8 @@ export async function fireWorker(opts: FireOpts): Promise<FireResult> {
     workerId: w.id, field: "fired", oldValue: "active", newValue: "fired", effectiveDate: fireDate, adminId: opts.adminId,
   }).catch(err => logger.error({ err }, "worker change journal failed"));
 
-  // чинні умови закриваються датою звільнення (date_to порожнє або пізніше за дату)
+  // чинні умови закриваються датою звільнення (date_to порожнє або пізніше за дату) — саме вони
+  // «раніше кінця» → wypowiedzenie від працівника (terminationFlow → contractEndDocs)
   const closed = await db.update(contractsTable)
     .set({ dateTo: fireDate, updatedAt: new Date() })
     .where(and(eq(contractsTable.workerId, w.id), eq(contractsTable.status, "signed"), or(isNull(contractsTable.dateTo), gt(contractsTable.dateTo, fireDate))))
@@ -53,7 +54,7 @@ export async function fireWorker(opts: FireOpts): Promise<FireResult> {
 
   // шаблони «при звільненні» + ланцюжок звільнення (best-effort, не блокує відповідь)
   import("./tasks").then(m => m.workerTrigger("worker_fired", fired!)).catch(() => {});
-  import("./terminationFlow").then(m => m.startTerminationFlow(fired!, fireDate, opts.adminId)).catch(err => logger.warn({ err: String(err), workerId: w.id }, "termination flow failed"));
+  import("./terminationFlow").then(m => m.startTerminationFlow(fired!, fireDate, opts.adminId, closed.map(c => c.id))).catch(err => logger.warn({ err: String(err), workerId: w.id }, "termination flow failed"));
   logger.info({ workerId: w.id, fireDate, source: opts.source, adminId: opts.adminId, removedEntries: toRemove.length, closedContracts: closed.length }, "worker fired");
   return { ok: true, worker: fired!, removedEntries: toRemove.length, closedContracts: closed.length };
 }

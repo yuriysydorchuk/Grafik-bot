@@ -22,7 +22,7 @@ const LANGS: { key: Lang; label: string }[] = [
 
 const KIND_LABEL: Record<string, string> = {
   umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
-  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", aneks: "Aneks — przedłużenie",
   andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", swiadectwo: "Świadectwo (звільнення)", custom: "Інше",
 };
 const KIND_KEYS = Object.keys(KIND_LABEL);

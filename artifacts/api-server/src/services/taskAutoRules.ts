@@ -37,8 +37,10 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "doc_no_response", label: "Працівник не надіслав документ", description: "Автозапит і нагадування в бот минули, файлу немає — звʼязатись самостійно", leadDays: null, enabledByDefault: true },
   // ланцюжок powiadomienie UA (services/uaNotification.ts): ступінь 1 графіковій на N-й день роботи → ступінь 2 виконавцю з params.stage2AdminId
   { code: "ua_notification", label: "Powiadomienie для UA (2 ступені)", description: "На N-й робочий день графіковій список нових людей → «Вислати» → задача подачі на praca.gov.pl виконавцю ступеня 2 (картка PSZ-PPWPU, завантаження підтвердження)", leadDays: null, enabledByDefault: true, scheduler: true },
-  // ланцюжок звільнення (services/terminationFlow.ts)
-  { code: "termination_doc", label: "Документ звільнення — затвердити", description: "Після звільнення świadectwo із шаблону «Świadectwo (звільнення)» → графікова переглядає й надсилає працівнику (email з анкети або Telegram)", leadDays: null, enabledByDefault: true, scheduler: true },
+  // кінець умови (services/contractEndDocs.ts): графіковій рішення «звільнити або продовжити аннексом»
+  { code: "contract_end", label: "Умова закінчилась — звільнити чи продовжити", description: "Підписана умова на фабрику дійшла до дати кінця, працівник активний, нової умови/аннексу нема → графікова або звільняє (тоді zaświadczenie), або робить аннекс на продовження (документ на підпис)", leadDays: null, enabledByDefault: true, scheduler: true },
+  // документи звільнення (services/contractEndDocs.ts): zaświadczenie o zatrudnieniu (з печаткою) і wypowiedzenie від працівника — на підпис через лінк
+  { code: "termination_doc", label: "Документ звільнення — надіслати на підпис", description: "Після звільнення: zaświadczenie o zatrudnieniu на кожну умову (печатка фірми вже стоїть) і wypowiedzenie від працівника, якщо звільнення раніше кінця умови → графікова надсилає лінк на підпис", leadDays: null, enabledByDefault: true, scheduler: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
 ];
 
@@ -231,6 +233,16 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       const w = wById.get(c.workerId)!;
       out.push({ sourceKey: `payroll:${c.id}`, rule: "payroll_change", title: `Прийняти зміну статусу виплат: ${c.oldValue ?? "не зголошений"} → ${c.newValue ?? "не зголошений"}`, priority: "high", dueAt: addDaysStr(today, 3),
         workerId: w.id, factoryId: w.factoryId, autoParams: { changeId: c.id, effectiveDate: dateStr(c.effectiveDate), workerName: w.fullName }, assign: { factoryId: null, prefer: null } });
+    }
+  }
+
+  // 8b. Умова закінчилась — рішення графіковій (services/contractEndDocs.ts)
+  if (on("contract_end")) {
+    const { collectContractEndCandidates } = await import("./contractEndDocs");
+    for (const c of await collectContractEndCandidates(today)) {
+      if (legacy.has(c.workerId)) continue;
+      out.push({ sourceKey: `contract_end:${c.contractId}:${c.dateTo}`, rule: "contract_end", title: `Умова на ${c.factoryName} закінчилась ${fmtDate(c.dateTo)}: звільнити або продовжити аннексом`, priority: "high", dueAt: addDaysStr(c.dateTo, 3),
+        workerId: c.workerId, factoryId: c.factoryId, contractId: c.contractId, autoParams: { workerName: c.workerName, contractId: c.contractId, dateTo: c.dateTo, factoryName: c.factoryName, companyId: c.companyId }, assign: { factoryId: c.factoryId, useScheduler: true } });
     }
   }
 

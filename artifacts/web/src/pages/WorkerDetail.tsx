@@ -785,7 +785,7 @@ type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedS
 type DocSetItem = { id: number; kind: string; title: string };
 const KIND_LABEL: Record<string, string> = {
   umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
-  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", aneks: "Aneks — przedłużenie",
   andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", custom: "Інше",
 };
 
@@ -873,11 +873,15 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   })();
   const [newFor, setNewFor] = useState<{ factoryId: number | null; companyId: number | null } | null>(null);
   const [importOpen, setImportOpen] = useState(false); // скан уже підписаної умови (бекфіл, 10.09.2026)
+  const [annexFor, setAnnexFor] = useState<number | null>(null); // аннекс на продовження (з задачі «кінець умови»: ?open=annex:<contractId>)
   const [archiveOpen, setArchiveOpen] = useState(false);
   // deep-link з задачі («Як вирішити» → Згенерувати умову): /workers/:id?open=generate:<factoryId>
   useEffect(() => {
-    const m = new URLSearchParams(window.location.search).get("open")?.match(/^generate:(\d+)$/);
+    const o = new URLSearchParams(window.location.search).get("open") ?? "";
+    const m = o.match(/^generate:(\d+)$/);
     if (m) setNewFor({ factoryId: Number(m[1]) || null, companyId: null });
+    const a = o.match(/^annex:(\d+)$/);
+    if (a) setAnnexFor(Number(a[1]));
   }, []);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] });
 
@@ -955,6 +959,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
           </div>
         )}
       </Section>
+      {annexFor != null && <AnnexModal contractId={annexFor} current={contracts.find(c => c.id === annexFor) ?? null} onClose={() => setAnnexFor(null)} onSaved={() => { inv(); setAnnexFor(null); }} />}
       {importOpen && (
         <ImportSignedContractModal workerId={workerId} factories={factories} companies={companies} employers={employers}
           defaultFactoryId={suggestedFactoryId ?? factoryId} onClose={() => setImportOpen(false)} onSaved={() => { inv(); setImportOpen(false); }} />
@@ -1138,6 +1143,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   // дати можна дописати/змінити на будь-якому «живому» статусі, включно з підписаною умовою (бекенд: DEAD = declined/cancelled/superseded/expired)
   const canEditDates = !archived && !["cancelled", "superseded", "expired", "declined"].includes(c.status);
   const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { onSaved(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
+  const [annexOpen, setAnnexOpen] = useState(false);
   const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
   const send = useMutation({
     mutationFn: (id: number) => post<{ notified: boolean; link: string | null; bundledCount: number }>(`/contracts/${id}/send`),
@@ -1162,6 +1168,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   const cls = archived ? "px-5 py-2" : `rounded-lg border px-3 py-2 ${c.status === "signed" ? "border-emerald-200 bg-emerald-50/40" : newVersion ? "border-dashed border-slate-300 bg-white" : "border-slate-200 bg-white"}`;
   return (
     <div className={cls}>
+      {annexOpen && <AnnexModal contractId={c.id} current={c} onClose={() => setAnnexOpen(false)} onSaved={() => { setAnnexOpen(false); onSaved(); }} />}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <Badge color={st.color}>{t(st.label)}</Badge>
         {newVersion && <span className="text-xs text-slate-500">{t("нова версія")}</span>}
@@ -1180,6 +1187,9 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
         )}
         {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
         <div className="ml-auto flex shrink-0 items-center gap-1">
+          {!archived && c.status === "signed" && c.factoryId != null && (
+            <button type="button" onClick={() => setAnnexOpen(true)} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200" title={t("Аннекс на продовження умови — документ одразу на підпис працівнику")}>{t("Аннекс")}</button>
+          )}
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
             <button onClick={() => { if (!c.dateFrom && !window.confirm(t("Дата початку умови не вказана — надіслати на підпис без дати? Дописати її можна буде пізніше."))) return; send.mutate(c.id); }} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
           )}
@@ -1220,6 +1230,33 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
 // дописуємо, щойно з'явиться, на будь-якому нетермінальному статусі. У draft
 // це ще й перегенеровує PDF-файли; після — лише дані в БД, підписаний файл не
 // чіпається (services/contracts.ts:updateContractDates).
+// Аннекс на продовження умови (рішення власника 10.09.2026): нова дата → POST /contracts/:id/annex →
+// документ kind=aneks одразу на підпис працівнику; після підпису date_to умови подовжується.
+function AnnexModal({ contractId, current, onClose, onSaved }: { contractId: number; current: ContractSummary | null; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const [dateTo, setDateTo] = useState("");
+  const save = useMutation({
+    mutationFn: () => post(`/contracts/${contractId}/annex`, { dateTo }),
+    onSuccess: (r: any) => { toast.success(r?.notified ? t("Аннекс надіслано на підпис у Telegram") : r?.link ? `${t("Аннекс створено, Telegram недоступний — лінк")}: ${r.link}` : t("Аннекс створено")); onSaved(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Аннекс до умови")}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">
+          {current ? `${current.factoryName ?? ""}${current.companyName ? ` · ${current.companyName}` : ""} · ${current.dateFrom ?? "…"} → ${current.dateTo ?? "…"}` : ""}
+        </p>
+        <p className="text-xs text-slate-500">{t("Документ надішлеться працівнику на підпис одразу; після підпису дата кінця умови подовжиться.")}</p>
+        <div><Label>{t("Нова дата кінця умови")}</Label><Input type="date" value={dateTo} min={current?.dateTo ?? undefined} onChange={e => setDateTo(e.target.value)} autoFocus /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => { if (!dateTo) { toast.error(t("Вкажіть нову дату кінця умови")); return; } save.mutate(); }} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Створити й надіслати на підпис")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function EditContractDates({ contractId, initialFrom, initialTo, onSaved, onCancel }: { contractId: number; initialFrom?: string | null; initialTo?: string | null; onSaved: () => void; onCancel?: () => void }) {
   const t = useT();
   const [dateFrom, setDateFrom] = useState(initialFrom ?? "");

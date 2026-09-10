@@ -14,9 +14,8 @@ import { createTask, resolveAssignee, loadTaskSettings, OPEN_STATUSES } from "./
 import { normalizeChecklist, dateStr } from "./taskUtils";
 import { logger } from "../lib/logger";
 
-export const TERMINATION_TEMPLATE_KIND = "swiadectwo";
 
-export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null): Promise<void> {
+export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null, earlyContractIds: number[] = []): Promise<void> {
   // 2) ZUS ZWUA — завжди, крім звільнення датою ДО запуску модуля (settings.legacyBefore):
   //    таке заднім числом = історія, нічний скан (taskAutoRules) її теж не бере — інакше
   //    задача зʼявилась би тут і зникла наступної ночі
@@ -33,27 +32,14 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
     }, actorAdminId);
   }
 
-  // 1) документ при звільненні — коли є активний шаблон kind=swiadectwo
-  const tpls = await db.select({ id: documentTemplatesTable.id }).from(documentTemplatesTable).where(and(eq(documentTemplatesTable.kind, TERMINATION_TEMPLATE_KIND), eq(documentTemplatesTable.isActive, true)));
-  if (!tpls.length) return;
-  const docKey = `termdoc:${worker.id}:${fireDate}`;
-  const [exD] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, docKey), inArray(tasksTable.status, OPEN_STATUSES)));
-  if (exD) return;
+  // 1) документи звільнення (рішення власника 10.09.2026: świadectwo pracy НЕ видаємо):
+  //    zaświadczenie o zatrudnieniu на кожну умову + wypowiedzenie (від працівника), якщо
+  //    звільнення раніше кінця умови — services/contractEndDocs.ts
   try {
-    // період праці: перший робочий день → дата працевлаштування → початок останньої підписаної умови
-    const [signed] = await db.select({ dateFrom: contractsTable.dateFrom }).from(contractsTable)
-      .where(and(eq(contractsTable.workerId, worker.id), eq(contractsTable.status, "signed"))).orderBy(desc(contractsTable.id)).limit(1);
-    const dateFrom = dateStr(worker.firstWorkDate) ?? dateStr(worker.employmentStartDate) ?? dateStr(signed?.dateFrom) ?? null;
-    const { generateContract } = await import("./contracts");
-    const contract = await generateContract({ workerId: worker.id, factoryId: worker.factoryId, templateIds: tpls.map(t => t.id), dateFrom, dateTo: fireDate, allowUnverified: true });
-    const assignee = await resolveAssignee({ factoryId: worker.factoryId, ruleCode: "termination_doc", useScheduler: true });
-    await createTask({
-      kind: "task", title: `Затвердити документ звільнення: ${worker.fullName}`, priority: "high", dueAt: addDaysStr(fireDate, 3), assigneeAdminId: assignee,
-      workerId: worker.id, factoryId: worker.factoryId, contractId: contract.id, source: "auto:termination_doc", sourceKey: docKey,
-      autoParams: { workerName: worker.fullName, fireDate, contractId: contract.id, dateFrom },
-      checklist: normalizeChecklist([{ id: "", text: "Переглянути świadectwo (PDF у задачі)", done: false }, { id: "", text: "Надіслати працівнику (email з анкети або Telegram)", done: false, auto: "sent" }]),
-    }, actorAdminId);
-  } catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id }, "termination document generation failed"); }
+    const { issueTerminationDocs } = await import("./contractEndDocs");
+    const r = await issueTerminationDocs(worker, fireDate, earlyContractIds, actorAdminId);
+    if (r.zaswiadczenie || r.wypowiedzenie) logger.info({ workerId: worker.id, ...r }, "termination documents issued");
+  } catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id }, "termination documents failed"); }
 }
 
 // Дія задачі termination_doc: надіслати згенерований файл працівнику (email з анкети, інакше Telegram),

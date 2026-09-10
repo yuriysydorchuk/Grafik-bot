@@ -9,7 +9,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PDFDocument } from "pdf-lib";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import puppeteer, { type Browser } from "puppeteer";
 import {
   db, workersTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, workerQuestionnairesTable,
@@ -35,10 +35,11 @@ const MODIFIER_RE = /^(data:|format:|język:)/;
 const COMPANY_SIG_RE = /podpis.*pracodawc|piecz[eę]ć/i;
 // Подієві документи: генеруються ланцюжками (звільнення — świadectwo/wypowiedzenie, кінець
 // умови — zaświadczenie), НЕ входять в автонабір «Згенерувати документи».
-export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie"]);
+export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie", "aneks"]);
 // Маркери в contracts.data (снапшот плейсхолдерів): підкреслення = службові, не для шаблонів.
 export const DATA_AUTO_FINALIZE = "_autoFinalize"; // "1" → після підпису працівника компанія підписує автоматично
 export const DATA_SOURCE_CONTRACT = "_forContractId"; // id умови, до якої згенеровано подієвий документ
+export const DATA_EXTENDS_CONTRACT = "_extendsContractId"; // аннекс: id умови, чий date_to подовжується після підпису
 const WORKER_SIG_RE = /podpis.*pracownik/i;
 
 export function parsePlaceholder(raw: string): { key: string; modifier: string | null } {
@@ -428,6 +429,8 @@ export async function generateContract(opts: {
   companyId?: number | null;
   /** Документи офісу без підпису працівника (świadectwo pracy при звільненні): анкета може бути непідтверджена/відсутня */
   allowUnverified?: boolean;
+  /** Додаткові плейсхолдери подієвих документів (напр. «Data zawarcia umowy» оригінальної умови для wypowiedzenia/aneksu) */
+  extraData?: Record<string, string>;
 }): Promise<Contract> {
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, opts.workerId));
   if (!opts.allowUnverified && (!questionnaire || questionnaire.status !== "verified")) {
@@ -442,7 +445,7 @@ export async function generateContract(opts: {
   if (!templates.length) throw new Error("Не знайдено жодного шаблону для цього комплекту — прив'яжіть шаблони у бібліотеці");
 
   const companyId = await resolveContractCompanyId(opts.workerId, opts.factoryId, opts.companyId ?? null);
-  const data = await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null, companyId);
+  const data = { ...(await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null, companyId)), ...(opts.extraData ?? {}) };
   const lang = asLang(worker.language);
 
   const missing = new Set<string>();
@@ -726,6 +729,23 @@ export async function finalizeContractSignature(contractId: number, adminId: num
   }).where(eq(contractsTable.id, contractId));
   if (contract.supersedesId) {
     await db.update(contractsTable).set({ status: "superseded", supersededAt: new Date(), updatedAt: new Date() }).where(eq(contractsTable.id, contract.supersedesId));
+  }
+  // аннекс підписано обома → подовжити date_to оригінальної умови (вісь «умова» бачить чинну умову;
+  // кандидат contract_end зникає → задача auto_resolved)
+  // гарди (ревʼю 10.09): лише вперед (коротший аннекс, підписаний пізніше, не скорочує), лише активному
+  // працівнику (звільнення після відправки аннексу не «воскрешає» умову)
+  const extendsId = Number(data[DATA_EXTENDS_CONTRACT] ?? 0);
+  if (extendsId && contract.dateTo) {
+    const [orig] = await db.select({ dateTo: contractsTable.dateTo, workerId: contractsTable.workerId }).from(contractsTable).where(eq(contractsTable.id, extendsId));
+    const [wk] = orig ? await db.select({ isActive: workersTable.isActive }).from(workersTable).where(eq(workersTable.id, orig.workerId)) : [];
+    const forward = !orig?.dateTo || String(orig.dateTo) < String(contract.dateTo);
+    if (orig && wk?.isActive && forward) {
+      await db.update(contractsTable).set({
+        dateTo: contract.dateTo, updatedAt: new Date(),
+        data: sql`${contractsTable.data} || ${JSON.stringify({ "Data zakończenia pracy": String(contract.dateTo) })}::jsonb`,
+      }).where(and(eq(contractsTable.id, extendsId), eq(contractsTable.status, "signed")));
+      logger.info({ annexId: contractId, contractId: extendsId, dateTo: contract.dateTo }, "contract extended by signed annex");
+    } else logger.warn({ annexId: contractId, contractId: extendsId, active: wk?.isActive, forward }, "signed annex NOT applied to contract (fired worker or earlier date)");
   }
   logger.info({ contractId, stamped: stamped > 0 }, "contract finalized — company countersigned");
   return stampOk ? { stamped: stamped > 0 } : { stamped: false, reason: "Печатка фірми не знайдена (uploads/company/stamp-<companyId>.png або COMPANY_STAMP_PNG)" };

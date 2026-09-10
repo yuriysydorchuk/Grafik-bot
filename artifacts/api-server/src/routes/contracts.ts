@@ -353,6 +353,20 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   ok(res, { ...contract, factoryName: factory.name, companyName: company.name });
 });
 
+// Аннекс на продовження умови (рішення власника 10.09.2026): {dateTo} → документ kind=aneks одразу
+// на підпис працівнику; після підпису date_to оригінальної умови подовжується (finalize).
+router.post("/contracts/:id/annex", WD, async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  const dateTo = typeof req.body?.dateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.dateTo) && new Date(`${req.body.dateTo}T00:00:00Z`).toISOString().slice(0, 10) === req.body.dateTo ? req.body.dateTo : null;
+  if (!dateTo) return fail(res, 400, "Вкажіть нову дату кінця умови (YYYY-MM-DD)");
+  try {
+    const { createContractAnnex } = await import("../services/contractEndDocs");
+    ok(res, await createContractAnnex(id, dateTo, req.admin?.adminId ?? null));
+  } catch (e: any) {
+    fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося створити аннекс");
+  }
+});
+
 // Дата може з'явитись у БУДЬ-якому нетермінальному статусі, навіть після
 // підпису працівника — дозвіл на роботу часто оформлюють ВЖЕ маючи підписану
 // умову, тож дата стає відома пізніше (services/contracts.ts:updateContractDates:
