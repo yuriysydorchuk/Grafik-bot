@@ -26,7 +26,7 @@ import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
-import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties } from "../services/contracts";
+import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { randomInviteCode } from "../lib/invite";
 import { sendSignLink } from "../bot/notify";
@@ -472,40 +472,15 @@ router.post("/contracts/:id/cancel", WD, async (req, res) => {
 // одночасно. Дозволено прямо з draft — submit/approve лишились як окремі
 // ендпоінти (напр. для команд з окремим внутрішнім рев'ю), але «Надіслати на
 // підпис» — одна кнопка, без обов'язкового проміжного клацання по них.
-const SENDABLE = new Set(["draft", "pending_approval", "approved"]);
 router.post("/contracts/:id/send", WD, async (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
-  const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
-  if (!contract) return fail(res, 404, "Умову не знайдено");
-  if (!SENDABLE.has(contract.status)) return fail(res, 400, `Надіслати на підпис можна лише з draft/pending_approval/approved (поточний: ${contract.status})`);
-
-  // Комплект підписується ОДНІЄЮ сесією: усі інші sendable пакети ЦІЄЇ Ж
-  // людини (напр. сталий пакет, згенерований разом з факторі-умовою) ідуть
-  // в один токен/лінк з contractId — не два окремі "Надіслати на підпис".
-  const siblings = await db.select({ id: contractsTable.id }).from(contractsTable)
-    .where(and(eq(contractsTable.workerId, contract.workerId), inArray(contractsTable.status, [...SENDABLE]), ne(contractsTable.id, id)));
-  const bundle = [id, ...siblings.map(s => s.id)];
-
-  await db.update(signatureTokensTable).set({ revokedAt: new Date() })
-    .where(inArray(signatureTokensTable.contractId, bundle));
-
-  const token = randomInviteCode(24); // ~120 біт ентропії — токен є єдиною авторизацією /sign/:token
-  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
-  const [tokenRow] = await db.insert(signatureTokensTable).values({
-    token, contractId: id, extraContractIds: siblings.length ? siblings.map(s => s.id) : null,
-    expiresAt, createdBy: req.admin?.adminId ?? null,
-  }).returning();
-  await db.insert(signatureEventsTable).values(bundle.map(cid => ({ contractId: cid, tokenId: tokenRow!.id, event: "token_created" })));
-
-  const [worker] = await db.select({ telegramId: workersTable.telegramId, language: workersTable.language }).from(workersTable).where(eq(workersTable.id, contract.workerId));
-  const base = (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
-  const link = base ? `${base}/sign/${token}` : null;
-  let notified = false;
-  if (worker?.telegramId && link) notified = await sendSignLink(worker.telegramId, worker.language ?? "uk", link);
-
-  await db.update(contractsTable).set({ status: "sent", sentAt: new Date(), updatedAt: new Date() }).where(inArray(contractsTable.id, bundle));
-  const [updated] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
-  ok(res, { ...updated, token, link, notified, bundledCount: siblings.length });
+  try {
+    const r = await sendContractForSignature(id, req.admin?.adminId ?? null); // services/contracts.ts — те саме робить дія задачі
+    const [updated] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
+    ok(res, { ...updated, ...r });
+  } catch (e: any) {
+    fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося надіслати на підпис");
+  }
 });
 
 // Стрім PDF (unsigned — до підписання; signed зʼявляється після /sign/:token).

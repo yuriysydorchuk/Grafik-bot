@@ -13,7 +13,7 @@ import { db, signatureTokensTable, signatureEventsTable, contractsTable, contrac
 import { eq, inArray } from "drizzle-orm";
 import { UPLOADS_ROOT } from "../lib/uploads";
 import { clientIp, parseDevice, lookupGeo } from "../lib/clientInfo";
-import { applyWorkerSignature } from "../services/contracts";
+import { applyWorkerSignature, finalizeContractSignature, DATA_AUTO_FINALIZE } from "../services/contracts";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -143,6 +143,13 @@ router.post("/sign/:token", async (req, res) => {
     for (const contractId of bundle) {
       const result = await applyWorkerSignature(contractId, signature);
       signedFiles += result.signedFiles;
+      // документи, які фірма видає першою (zaświadczenie/wypowiedzenie): печатка стоїть з чернетки,
+      // після підпису працівника компанія підписує автоматично — без кроку офісу «Підписати від компанії»
+      const [c] = await db.select({ data: contractsTable.data }).from(contractsTable).where(eq(contractsTable.id, contractId));
+      if ((c?.data as Record<string, string> | null)?.[DATA_AUTO_FINALIZE] === "1") {
+        // збій = документ лишається worker_signed; офіс дотискає кнопкою «Підписати від компанії» (error → алерт)
+        await finalizeContractSignature(contractId, null).catch(err => logger.error({ err: String(err), contractId }, "auto-finalize after worker signature failed — потрібно «Підписати від компанії» вручну"));
+      }
       const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
       await logEvent(req, token.id, contractId, "signed", {
         files: files.map(f => ({ id: f.id, title: f.title, sha256: f.signedSha256 })),

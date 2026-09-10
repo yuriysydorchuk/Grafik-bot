@@ -33,6 +33,12 @@ export function asLang(v: string | null | undefined): Lang {
 const PLACEHOLDER_RE = /\{%([^%]+)%\}/g;
 const MODIFIER_RE = /^(data:|format:|język:)/;
 const COMPANY_SIG_RE = /podpis.*pracodawc|piecz[eę]ć/i;
+// Подієві документи: генеруються ланцюжками (звільнення — świadectwo/wypowiedzenie, кінець
+// умови — zaświadczenie), НЕ входять в автонабір «Згенерувати документи».
+export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie"]);
+// Маркери в contracts.data (снапшот плейсхолдерів): підкреслення = службові, не для шаблонів.
+export const DATA_AUTO_FINALIZE = "_autoFinalize"; // "1" → після підпису працівника компанія підписує автоматично
+export const DATA_SOURCE_CONTRACT = "_forContractId"; // id умови, до якої згенеровано подієвий документ
 const WORKER_SIG_RE = /podpis.*pracownik/i;
 
 export function parsePlaceholder(raw: string): { key: string; modifier: string | null } {
@@ -285,7 +291,7 @@ export async function resolveDocumentSet(workerId: number, factoryId: number | n
   // 13 різних додатків Andros звелися б до одного випадкового переможця.
   const SINGULAR_KINDS = new Set([
     "umowa", "regulamin", "zus", "tax", "ppk", "bhp",
-    "wniosek_konto", "wniosek_reka", "wniosek_zaliczki", "sprzatanie_umowa",
+    "wniosek_konto", "wniosek_reka", "wniosek_zaliczki", "wniosek_chorobowe", "sprzatanie_umowa",
   ]);
   const payoutKind = questionnaire?.payoutMethod === "reka" ? "wniosek_reka" : "wniosek_konto";
 
@@ -295,8 +301,11 @@ export async function resolveDocumentSet(workerId: number, factoryId: number | n
     const isFactoryLevel = factoryKinds.has(t.kind);
     if (isFactoryLevel !== (factoryId != null)) continue; // факторі-типи лише для факторі-пакету, і навпаки
     if (t.kind === "andros_extra" && t.positionId != null && t.positionId !== worker.positionId) continue;
+    if (EVENT_KINDS.has(t.kind)) continue; // подієві документи (звільнення / кінець умови) — лише явним templateIds
     if (t.kind === "wniosek_konto" && payoutKind !== "wniosek_konto") continue;
     if (t.kind === "wniosek_reka" && payoutKind !== "wniosek_reka") continue;
+    // Wniosek o dobrowolne chorobowe — лише коли працівник позначив це в анкеті (нотатка власника 10.09.2026)
+    if (t.kind === "wniosek_chorobowe" && !questionnaire?.ankietaSkladkaChorobowa) continue;
     // Wniosek o niepobieranie zaliczek — рішення власника 02.09.2026: стандартно
     // йде всім (як zus/tax/ppk/bhp), не лише коли анкета позначена waivesTaxAdvance;
     // адмін і так може зняти галочку вручну в чеклісті перед генерацією.
@@ -601,6 +610,80 @@ export async function applyWorkerSignature(contractId: number, signaturePngBase6
 // COMPANY_STAMP_PNG, best-effort якщо не налаштована — не блокує статус),
 // переводить у термінальний signed, супersede-ить попередню версію в
 // межах (workerId, factoryId)-ланцюга.
+// Печатка+підпис нашої фірми: uploads/company/stamp-<companyId>.png, фолбек COMPANY_STAMP_PNG.
+async function companyStampDataUrl(companyId: number | null): Promise<string | undefined> {
+  const perCompany = companyId ? path.join(UPLOADS_ROOT, "company", `stamp-${companyId}.png`) : null;
+  const stampPath = perCompany && fs.existsSync(perCompany) ? perCompany : process.env.COMPANY_STAMP_PNG;
+  if (!stampPath || !fs.existsSync(stampPath)) return undefined;
+  return `data:image/png;base64,${(await fs.promises.readFile(stampPath)).toString("base64")}`;
+}
+
+// Печатка фірми на ЧЕРНЕТКУ (до підпису працівника) — для документів, які фірма
+// видає першою (zaświadczenie o zatrudnieniu, wypowiedzenie): перерендер unsigned-файлів
+// з печаткою + статус approved (готово до відправки на підпис). Best-effort щодо самої
+// картинки: без файла печатки статус усе одно просувається.
+export async function stampDraftWithCompany(contractId: number, adminId: number | null): Promise<{ stamped: boolean }> {
+  const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  if (!contract) throw new Error("Пакет не знайдено");
+  if (!["draft", "pending_approval", "approved"].includes(contract.status)) throw new Error(`Печатку на чернетку можна поставити лише до відправки (поточний статус: ${contract.status})`);
+  const stamp = await companyStampDataUrl(contract.companyId ?? null);
+  const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, contract.workerId));
+  const lang = asLang(worker?.language);
+  const data = contract.data as Record<string, string>;
+  const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId));
+  let stamped = 0;
+  for (const file of files) {
+    if (!file.templateId) continue;
+    const [tpl] = await db.select().from(documentTemplatesTable).where(eq(documentTemplatesTable.id, file.templateId));
+    if (!tpl) continue;
+    const body = (tpl.body as Record<string, string>)[lang] || (tpl.body as Record<string, string>).pl || "";
+    if (!stamp || !COMPANY_SIG_RE.test(body)) continue;
+    const pdf = await renderHtmlToPdf(substitutePlaceholders(body, data, { companyStampDataUrl: stamp }));
+    const sha256 = crypto.createHash("sha256").update(pdf).digest("hex");
+    const storedName = makeStoredName(`${tpl.kind}-${tpl.id}-stamped.pdf`);
+    await fs.promises.writeFile(path.join(CONTRACTS_DIR, storedName), pdf);
+    const old = file.unsignedPath;
+    await db.update(contractFilesTable).set({ unsignedPath: path.join("contracts", storedName), unsignedSha256: sha256 }).where(eq(contractFilesTable.id, file.id));
+    if (old) await fs.promises.unlink(path.join(UPLOADS_ROOT, old)).catch(() => {});
+    stamped++;
+  }
+  // умовно: якщо пакет тим часом уже відправили (sent), статус не відкочуємо
+  await db.update(contractsTable).set({ status: "approved", approvedBy: adminId, approvedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(contractsTable.id, contractId), inArray(contractsTable.status, ["draft", "pending_approval", "approved"])));
+  return { stamped: stamped > 0 };
+}
+
+// Надіслати на підпис (лінк /sign/:token у Telegram): усі sendable пакети тієї ж людини —
+// одним токеном. Винесено з routes/contracts.ts, бо те саме робить дія задачі (taskResolve).
+// bundle=false (дія задачі для подієвого документа) — лише цей пакет, без «причепу» інших
+// чернеток працівника, які офіс ще може редагувати.
+export async function sendContractForSignature(contractId: number, adminId: number | null, opts: { bundle?: boolean } = {}): Promise<{ token: string; link: string | null; notified: boolean; bundledCount: number }> {
+  const SENDABLE = ["draft", "pending_approval", "approved"];
+  const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  if (!contract) throw new Error("Умову не знайдено");
+  if (!SENDABLE.includes(contract.status)) throw new Error(`Надіслати на підпис можна лише з draft/pending_approval/approved (поточний: ${contract.status})`);
+  const { signatureTokensTable, signatureEventsTable } = await import("@workspace/db");
+  const { ne } = await import("drizzle-orm");
+  const siblings = opts.bundle === false ? [] : await db.select({ id: contractsTable.id }).from(contractsTable)
+    .where(and(eq(contractsTable.workerId, contract.workerId), inArray(contractsTable.status, SENDABLE), ne(contractsTable.id, contractId)));
+  const bundle = [contractId, ...siblings.map(s => s.id)];
+  await db.update(signatureTokensTable).set({ revokedAt: new Date() }).where(inArray(signatureTokensTable.contractId, bundle));
+  const { randomInviteCode } = await import("../lib/invite");
+  const token = randomInviteCode(24); // ~120 біт ентропії — токен є єдиною авторизацією /sign/:token
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  const [tokenRow] = await db.insert(signatureTokensTable).values({
+    token, contractId, extraContractIds: siblings.length ? siblings.map(s => s.id) : null, expiresAt, createdBy: adminId,
+  }).returning();
+  await db.insert(signatureEventsTable).values(bundle.map(cid => ({ contractId: cid, tokenId: tokenRow!.id, event: "token_created" })));
+  const [worker] = await db.select({ telegramId: workersTable.telegramId, language: workersTable.language }).from(workersTable).where(eq(workersTable.id, contract.workerId));
+  const base = (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
+  const link = base ? `${base}/sign/${token}` : null;
+  let notified = false;
+  if (worker?.telegramId && link) { const { sendSignLink } = await import("../bot/notify"); notified = await sendSignLink(worker.telegramId, worker.language ?? "uk", link); }
+  await db.update(contractsTable).set({ status: "sent", sentAt: new Date(), updatedAt: new Date() }).where(inArray(contractsTable.id, bundle));
+  return { token, link, notified, bundledCount: siblings.length };
+}
+
 export async function finalizeContractSignature(contractId: number, adminId: number | null): Promise<{ stamped: boolean; reason?: string }> {
   const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
   if (!contract) throw new Error("Пакет не знайдено");

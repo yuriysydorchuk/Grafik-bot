@@ -310,7 +310,8 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
         const { contractFilesTable } = await import("@workspace/db");
         const [file] = await db.select({ id: contractFilesTable.id }).from(contractFilesTable).where(eq(contractFilesTable.contractId, c.id)).orderBy(contractFilesTable.sortOrder).limit(1);
         if (file) actions.push({ code: "view_doc", label: "Переглянути PDF", kind: "link", href: `/api/contracts/${c.id}/files/${file.id}`, primary: !sent });
-        if (!sent) actions.push({ code: "deliver_doc", label: "Затвердити й надіслати працівнику", kind: "api", primary: true, confirm: "Надіслати świadectwo працівнику (email з анкети або Telegram)?" });
+        if (!sent && (task.autoParams as any)?.signRequired) actions.push({ code: "send_sign", label: "Надіслати на підпис (лінк у Telegram)", kind: "api", primary: true, confirm: "Надіслати працівнику лінк на підпис документа?" });
+        else if (!sent) actions.push({ code: "deliver_doc", label: "Затвердити й надіслати працівнику", kind: "api", primary: true, confirm: "Надіслати świadectwo працівнику (email з анкети або Telegram)?" });
       }
       if (worker) actions.push({ code: "contracts", label: "Документи в профілі", kind: "link", href: prof("contracts") });
       break;
@@ -424,6 +425,12 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
     case "deliver_doc": {
       if (!task.contractId) throw new Error("Задача без документа");
       message = await (await import("./terminationFlow")).deliverTerminationDoc(task.contractId, actor);
+      break;
+    }
+    case "send_sign": {
+      if (!task.contractId) throw new Error("Задача без документа");
+      const r = await (await import("./contracts")).sendContractForSignature(task.contractId, actor.adminId, { bundle: false });
+      message = r.notified ? "Лінк на підпис надіслано в Telegram" : r.link ? `Telegram недоступний — лінк: ${r.link}` : "Лінк створено, але WEB_APP_URL не задано";
       break;
     }
     case "message_worker": {

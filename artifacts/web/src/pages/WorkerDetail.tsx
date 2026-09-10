@@ -785,7 +785,7 @@ type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedS
 type DocSetItem = { id: number; kind: string; title: string };
 const KIND_LABEL: Record<string, string> = {
   umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
-  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy",
   andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", custom: "Інше",
 };
 

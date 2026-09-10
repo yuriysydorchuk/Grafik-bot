@@ -309,6 +309,9 @@ export function startScheduler() {
         catch (e: any) { logger.warn({ err: e?.message }, "first work date backfill failed"); }
         const { recomputeAllActiveLegality } = await import("./legalityRecompute");
         await recomputeAllActiveLegality();
+        // zaświadczenie o zatrudnieniu — умова закінчилась (dateTo настав): документ з печаткою + задача «на підпис»
+        try { const { generateContractEndCertificates } = await import("./contractEndDocs"); const r = await generateContractEndCertificates(); if (r.created) logger.info(r, "🗂 contract-end certificates"); }
+        catch (e: any) { logger.warn({ err: e?.message }, "contract-end certificates failed"); }
         const { runAutoTasks } = await import("./taskAutoRules");
         const stats = await runAutoTasks();
         logger.info(stats, "🗂 auto tasks nightly");
