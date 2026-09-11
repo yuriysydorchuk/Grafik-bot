@@ -143,6 +143,10 @@ export const workersTable = pgTable("workers", {
   // Запланована дата звільнення (виповідзення): працівник подав, з якої дати звільняється;
   // крон у цю дату звільняє сам (services/workerFire.ts). NULL після звільнення/скасування.
   terminationDate: date("termination_date"),
+  // Фабрика, з якої йде (11.09.2026): NULL = звільнення з усіх (профіль неактивний);
+  // задано → у дату закриваються лише умови/графік/worker_factories цієї фабрики,
+  // людина лишається активною на решті (services/workerFire.ts endWorkerAtFactory).
+  terminationFactoryId: integer("termination_factory_id"),
   // Бонуси Аграму (лише працівники фабрик Agram; сводна додає до ставки нетто)
   agramStazBonus: boolean("agram_staz_bonus").notNull().default(false), // стаж: +1 зл/год після 30 днів, +1.5 після 60 (без дати +1); лише при 160+ год/міс
   agramCashBonus: boolean("agram_cash_bonus").notNull().default(false), // готівковий бонус: +1 зл/год (частина ЗП налом; на przelew — не належить; від годин не залежить)

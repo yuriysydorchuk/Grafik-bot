@@ -57,6 +57,7 @@ interface WorkerProfile {
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
   terminationDate?: string | null; // запланована дата звільнення (виповідзення)
+  terminationFactoryId?: number | null; // з якої фабрики йде (null = з усіх)
   factoryCodes?: { factoryId: number; factoryName: string | null; code: string }[]; // ключі фабрик (Nr Osobowy); ведуться в Обліку годин → «🔑 Ключі»
   agramFactory?: boolean; agramStazBonus?: boolean; agramCashBonus?: boolean;
   cashBonusFactory?: boolean; // не-Agram бонусна фабрика (LST): лише нал-бонус
@@ -235,7 +236,7 @@ export default function WorkerDetail() {
                 </select>
               </span>
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
-              {w.isActive && w.terminationDate && <Badge color="amber">{t("звільнення з")} {fmtDocDate(w.terminationDate)}</Badge>}
+              {w.isActive && w.terminationDate && <Badge color="amber">{w.terminationFactoryId != null ? `${t("йде з")} ${factories.find(f => f.id === w.terminationFactoryId)?.name ?? `#${w.terminationFactoryId}`} ` : `${t("звільнення з")} `}{fmtDocDate(w.terminationDate)}</Badge>}
               {w.isActive && canEdit && (
                 <button type="button" onClick={() => setFiring(true)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
                   <UserX className="h-3.5 w-3.5" /> {t("Звільнити")}
@@ -309,7 +310,7 @@ export default function WorkerDetail() {
                 й графік, не про гроші; перенесено з «Фінанси» для балансу колонок. */}
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
             <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} readOnly={!canEdit} />
-            {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} readOnly={!canEdit} />}
+            {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canEdit} />}
             <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
@@ -3058,36 +3059,61 @@ function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date
 }
 
 // Виповідзення: запланована дата звільнення — крон звільняє в цю дату (дата ≤ сьогодні — одразу).
-function TerminationRow({ workerId, date, readOnly }: { workerId: number; date: string | null; readOnly?: boolean }) {
+function TerminationRow({ workerId, date, factoryId, primaryFactoryId, factories, readOnly }: { workerId: number; date: string | null; factoryId: number | null; primaryFactoryId: number | null; factories: Factory[]; readOnly?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const confirmDlg = useConfirm();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(date ?? "");
+  const [draftFactory, setDraftFactory] = useState<string>(factoryId != null ? String(factoryId) : "");
+  // фабрики, де людина працює: основна + додаткові (worker_factories); «усі» = звичайне звільнення
+  const { data: extra = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`), enabled: editing || factoryId != null });
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const nameOf = (id: number) => factories.find(f => f.id === id)?.name ?? extra.find(r => r.factoryId === id)?.factoryName ?? `#${id}`;
+  const options: { id: number; name: string }[] = [
+    ...(primaryFactoryId != null ? [{ id: primaryFactoryId, name: nameOf(primaryFactoryId) }] : []),
+    ...extra.filter(r => r.factoryId !== primaryFactoryId && !(r.validTo && r.validTo < today)).map(r => ({ id: r.factoryId, name: `${r.factoryName ?? `#${r.factoryId}`}${r.companyName ? ` · ${r.companyName}` : ""}` })),
+  ];
   const save = useMutation({
-    mutationFn: (d: string | null) => post<{ firedNow: boolean }>(`/workers/${workerId}/termination`, { date: d }),
-    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); toast.success(r.firedNow ? t("Дата вже настала — працівника звільнено") : t("Збережено")); },
+    mutationFn: (v: { date: string | null; factoryId: number | null }) => post<{ firedNow: boolean }>(`/workers/${workerId}/termination`, v),
+    onSuccess: (r, v) => {
+      qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", workerId] }); qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] });
+      setEditing(false);
+      toast.success(r.firedNow ? (v.factoryId != null ? t("Дата вже настала — роботу на фабриці закінчено") : t("Дата вже настала — працівника звільнено")) : t("Збережено"));
+    },
     onError: (e: any) => toast.error(e.message),
   });
-  const submit = async (d: string) => {
+  const submit = async (d: string, f: string) => {
     if (!d) return;
-    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
-    if (d <= today && !(await confirmDlg({ title: t("Звільнити зараз?"), message: t("Дата вже настала — працівник буде звільнений одразу цією датою."), confirmText: t("Звільнити") }))) return;
-    save.mutate(d);
+    const fid = f ? Number(f) : null;
+    if (d <= today && !(await confirmDlg({
+      title: fid != null ? t("Закінчити роботу на фабриці зараз?") : t("Звільнити зараз?"),
+      message: fid != null ? t("Дата вже настала — умови й графік на {factory} закриються одразу цією датою; на решті фабрик працівник лишається.", { factory: nameOf(fid) }) : t("Дата вже настала — працівник буде звільнений одразу цією датою."),
+      confirmText: fid != null ? t("Закінчити") : t("Звільнити"),
+    }))) return;
+    save.mutate({ date: d, factoryId: fid });
   };
+  const label = date ? `${factoryId != null ? `${t("йде з")} ${nameOf(factoryId)}` : t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : null;
   return (
     <InfoRow icon={UserX} label={t("Виповідзення")}>
       {editing ? (
-        <span className="flex items-center gap-1">
-          <input type="date" value={draft} autoFocus onChange={e => { setDraft(e.target.value); void submit(e.target.value); }} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
-          {date && <button className="text-xs text-rose-500" onClick={() => save.mutate(null)}>{t("скасувати виповідзення")}</button>}
+        <span className="flex flex-wrap items-center justify-end gap-1">
+          {options.length > 1 && (
+            <select value={draftFactory} onChange={e => setDraftFactory(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" title={t("З якої фабрики йде: на решті лишається. «Усі» — звичайне звільнення")}>
+              <option value="">{t("усі фабрики")}</option>
+              {options.map(o => <option key={o.id} value={String(o.id)}>{o.name}</option>)}
+            </select>
+          )}
+          <input type="date" value={draft} autoFocus onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-red-600" disabled={!draft || save.isPending} onClick={() => void submit(draft, draftFactory)}>{t("Зберегти")}</button>
+          {date && <button className="text-xs text-rose-500" onClick={() => save.mutate({ date: null, factoryId: null })}>{t("скасувати виповідзення")}</button>}
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : readOnly ? (
-        <span className="font-medium text-slate-700">{date ? `${t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : "—"}</span>
+        <span className="font-medium text-slate-700">{label ?? "—"}</span>
       ) : (
-        <button className={date ? "font-medium text-amber-700 hover:text-red-600" : "font-medium text-slate-400 hover:text-red-600"} title={t("Працівник подав дату, з якої звільняється: у цю дату система звільнить сама")} onClick={() => { setDraft(date ?? ""); setEditing(true); }}>
-          {date ? `${t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : t("немає — вказати дату")}
+        <button className={date ? "font-medium text-amber-700 hover:text-red-600" : "font-medium text-slate-400 hover:text-red-600"} title={t("Працівник подав дату, з якої звільняється (з усіх фабрик або лише з однієї): у цю дату система зробить це сама")} onClick={() => { setDraft(date ?? ""); setDraftFactory(factoryId != null ? String(factoryId) : ""); setEditing(true); }}>
+          {label ?? t("немає — вказати дату")}
         </button>
       )}
     </InfoRow>
@@ -3415,7 +3441,8 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
   const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
   const showVal = (field: string, v: string | null): string => {
     if (v == null || v === "") return "—";
-    if (field === "factoryId") return factories.find(f => String(f.id) === v)?.name ?? v;
+    if (field === "factoryId" || field === "factoryEnded") return factories.find(f => String(f.id) === v)?.name ?? v;
+    if (field === "terminationDate") return v.replace(/ @(\d+)$/, (_m, id) => ` · ${factories.find(f => String(f.id) === id)?.name ?? `#${id}`}`);
     if (field === "positionId") return positions.find(p => String(p.id) === v)?.name ?? v;
     return fmtVal(v, t);
   };

@@ -21,6 +21,7 @@ import { logger } from "../lib/logger";
 export const ZASW_KIND = "zaswiadczenie";
 export const WYPOW_KIND = "wypowiedzenie";
 export const ANEKS_KIND = "aneks";
+export const DATA_ENDED_AT_FACTORY = "_endedAtFactory"; // умову закрито виповідзенням по фабриці (workerFire.endWorkerAtFactory) — кінець вирішено
 const LOOKBACK_DAYS = 30; // умови, що закінчились давніше, не бекфілимо (модуль запустився 08.09.2026)
 
 type Tpl = typeof documentTemplatesTable.$inferSelect;
@@ -36,7 +37,7 @@ export async function pickEventTemplate(kind: string, factoryId: number | null, 
 }
 
 // id умов, чиї файли — подієві документи (самі не «умови»)
-async function eventContractIds(ids: number[]): Promise<Set<number>> {
+export async function eventContractIds(ids: number[]): Promise<Set<number>> {
   if (!ids.length) return new Set();
   return new Set((await db.select({ contractId: contractFilesTable.contractId })
     .from(contractFilesTable).innerJoin(documentTemplatesTable, eq(contractFilesTable.templateId, documentTemplatesTable.id))
@@ -55,6 +56,7 @@ export async function collectContractEndCandidates(today = warsawToday()): Promi
   const out: ContractEndCandidate[] = [];
   for (const r of ended) {
     if (events.has(r.c.id)) continue;
+    if ((r.c.data as Record<string, unknown> | null)?.[DATA_ENDED_AT_FACTORY]) continue; // людина пішла з фабрики — рішення вже є
     // чинна наступна умова на ту саму фабрику (нова умова або підписаний аннекс подовжив цю) → не кандидат
     const [successor] = await db.select({ id: contractsTable.id }).from(contractsTable).where(and(
       eq(contractsTable.workerId, r.c.workerId), eq(contractsTable.factoryId, r.c.factoryId!), eq(contractsTable.status, "signed"), ne(contractsTable.id, r.c.id),
@@ -139,10 +141,12 @@ async function issueEventDoc(opts: {
 // При звільненні: для кожної підписаної факторі-умови працівника, що закінчилась не давніше LOOKBACK_DAYS
 // (у т.ч. щойно закритої датою звільнення) — zaświadczenie; для умов, закритих РАНІШЕ їхнього кінця
 // (earlyContractIds з fireWorker: date_to було порожнє або пізніше за дату) — ще wypowiedzenie.
-export async function issueTerminationDocs(worker: { id: number; fullName: string }, fireDate: string, earlyContractIds: number[], actorAdminId: number | null): Promise<{ zaswiadczenie: number; wypowiedzenie: number }> {
+// opts.factoryId — виповідзення по фабриці: лише умови цієї фабрики.
+export async function issueTerminationDocs(worker: { id: number; fullName: string }, fireDate: string, earlyContractIds: number[], actorAdminId: number | null, opts: { factoryId?: number } = {}): Promise<{ zaswiadczenie: number; wypowiedzenie: number }> {
   const stats = { zaswiadczenie: 0, wypowiedzenie: 0 };
   const rows = await db.select().from(contractsTable).where(and(
     eq(contractsTable.workerId, worker.id), eq(contractsTable.status, "signed"), isNotNull(contractsTable.factoryId), isNotNull(contractsTable.dateTo),
+    opts.factoryId != null ? eq(contractsTable.factoryId, opts.factoryId) : sql`true`,
     gte(contractsTable.dateTo, addDaysStr(fireDate, -LOOKBACK_DAYS)), lte(contractsTable.dateTo, fireDate)));
   const events = await eventContractIds(rows.map(r => r.id));
   for (const c of rows) {

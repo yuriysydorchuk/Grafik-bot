@@ -666,13 +666,17 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
 });
 
 // Виповідзення: запланована дата звільнення (null = скасувати). Дата ≤ сьогодні звільняє
-// одразу; майбутня — крон 00:10 (services/workerFire.ts fireDueTerminations).
+// одразу; майбутня — крон 00:10 (services/workerFire.ts fireDueTerminations). factoryId —
+// лише з цієї фабрики (людина лишається на решті), без нього — з усіх.
 router.post("/workers/:id/termination", RW, async (req, res) => {
   const id = Number(req.params.id);
   const raw = (req.body ?? {}).date;
   const date = raw == null || raw === "" ? null : String(raw);
+  const rawF = (req.body ?? {}).factoryId;
+  const factoryId = rawF == null || rawF === "" ? null : Number(rawF);
+  if (factoryId != null && !Number.isInteger(factoryId)) return fail(res, 400, "factoryId");
   const { setTerminationDate } = await import("../services/workerFire");
-  const r = await setTerminationDate(id, date, (req as AuthedRequest).admin?.adminId ?? null);
+  const r = await setTerminationDate(id, date, (req as AuthedRequest).admin?.adminId ?? null, factoryId);
   if (!r.ok) return fail(res, 400, r.error);
   ok(res, { ...stripWorkerEcho(r.worker, req), firedNow: r.firedNow });
 });
@@ -928,7 +932,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // канонічних — інакше select у профілі показує порожнє
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
     employmentStartDate: w.employmentStartDate,
-    firstWorkDate: w.firstWorkDate, terminationDate: w.terminationDate,
+    firstWorkDate: w.firstWorkDate, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
     // бонуси — лише для працівників бонусних фабрик (правило konto/готівки
     // фабрики на поточний місяць: стаж → обидві галочки, лише нал → одна)
     // і лише з доступом до кшєнгових даних (галочки впливають на ЗП; редагування

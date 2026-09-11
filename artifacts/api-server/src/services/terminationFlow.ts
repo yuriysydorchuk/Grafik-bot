@@ -7,8 +7,8 @@
 //   2) задача «Виреєструвати з ZUS (ZWUA)» виконавцю правила termination_zus
 //      (фолбек правила → головний), строк 7 днів від дати звільнення; закривається сама,
 //      коли в профілі зʼявляється документ типу zus_zwua (нічний синк у taskAutoRules).
-import { db, tasksTable, documentTemplatesTable, contractsTable, type Worker } from "@workspace/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { db, tasksTable, documentTemplatesTable, contractsTable, factoriesTable, companiesTable, type Worker } from "@workspace/db";
+import { and, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { createTask, resolveAssignee, loadTaskSettings, OPEN_STATUSES } from "./tasks";
 import { normalizeChecklist, dateStr } from "./taskUtils";
@@ -40,6 +40,45 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
     const r = await issueTerminationDocs(worker, fireDate, earlyContractIds, actorAdminId);
     if (r.zaswiadczenie || r.wypowiedzenie) logger.info({ workerId: worker.id, ...r }, "termination documents issued");
   } catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id }, "termination documents failed"); }
+}
+
+// Виповідзення ПО ФАБРИЦІ (11.09.2026, після workerFire.endWorkerAtFactory): людина лишається
+// активною на решті фабрик. Документи — лише по умовах цієї фабрики; ZUS ZWUA — по фірмі
+// (contracts.company_id ?? фірма фабрики) і лише якщо в людини не лишається чинної підписаної
+// умови з тією самою фірмою на інших фабриках (ключ zwua:<worker>:<company>).
+export async function startFactoryEndFlow(worker: Worker, factoryId: number, endDate: string, actorAdminId: number | null, earlyContractIds: number[] = []): Promise<void> {
+  const legacyBefore = (await loadTaskSettings()).legacyBefore;
+  if (!(legacyBefore && endDate < legacyBefore)) {
+    const ended = await db.select({ companyId: sql<number | null>`coalesce(${contractsTable.companyId}, ${factoriesTable.companyId})` })
+      .from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+      .where(and(eq(contractsTable.workerId, worker.id), eq(contractsTable.factoryId, factoryId), eq(contractsTable.status, "signed"), sql`${contractsTable.data}->>'_endedAtFactory' = ${endDate}`));
+    const { eventContractIds } = await import("./contractEndDocs");
+    for (const companyId of new Set(ended.map(r => r.companyId).filter((x): x is number => x != null))) {
+      const remaining = await db.select({ id: contractsTable.id })
+        .from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+        .where(and(eq(contractsTable.workerId, worker.id), eq(contractsTable.status, "signed"), ne(contractsTable.factoryId, factoryId),
+          sql`coalesce(${contractsTable.companyId}, ${factoriesTable.companyId}) = ${companyId}`, or(isNull(contractsTable.dateTo), gt(contractsTable.dateTo, endDate)),
+          or(isNull(contractsTable.dateFrom), lte(contractsTable.dateFrom, endDate)))); // умова, що почнеться пізніше, зараз не «чинна» — ZWUA потрібна
+      const events = await eventContractIds(remaining.map(r => r.id));
+      if (remaining.some(r => !events.has(r.id))) continue; // з цією фірмою ще працює — ZWUA не потрібна
+      const zwuaKey = `zwua:${worker.id}:${companyId}`;
+      const [exZ] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, zwuaKey), inArray(tasksTable.status, OPEN_STATUSES)));
+      if (exZ) continue;
+      const [co] = await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId));
+      const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
+      await createTask({
+        kind: "task", title: `Виреєструвати з ZUS (ZWUA, ${co?.name ?? `фірма #${companyId}`}): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(endDate, 7), assigneeAdminId: assignee,
+        workerId: worker.id, factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
+        autoParams: { workerName: worker.fullName, fireDate: endDate, docTypeCode: "zus_zwua", companyId, factoryEnd: true },
+        checklist: normalizeChecklist([{ id: "", text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)", done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),
+      }, actorAdminId);
+    }
+  }
+  try {
+    const { issueTerminationDocs } = await import("./contractEndDocs");
+    const r = await issueTerminationDocs(worker, endDate, earlyContractIds, actorAdminId, { factoryId });
+    if (r.zaswiadczenie || r.wypowiedzenie) logger.info({ workerId: worker.id, factoryId, ...r }, "factory end documents issued");
+  } catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id, factoryId }, "factory end documents failed"); }
 }
 
 // Дія задачі termination_doc: надіслати згенерований файл працівнику (email з анкети, інакше Telegram),
