@@ -14,6 +14,7 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, sql
 import { authRequired, requireAnyCap } from "../lib/auth";
 import { weekFromForMonth, entryDateStr } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
+import { isSelfTransportForMonth, monthBoundsStr } from "../services/transportFees";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -374,9 +375,7 @@ router.put("/transport/fee-members", RW, async (req, res) => {
 router.post("/transport/deductions/generate", RW, async (req, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
-  const [y, m] = month.split("-").map(Number);
-  const monthStart = `${month}-01`;
-  const monthEnd = m! === 12 ? `${y! + 1}-01-01` : `${y}-${String(m! + 1).padStart(2, "0")}-01`;
+  const { monthStart, monthEnd } = monthBoundsStr(month);
 
   const paidFactories = (await db.select().from(factoriesTable))
     .filter(f => f.paidTransport && (f.transportFeePerShift ?? 0) > 0);
@@ -408,14 +407,11 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
 
   // 2) self_transport: години сводної не тарифікуємо — лише зміни з посадкою
   // водієм (затверджені тижні, дата в місяці, без скасованих клітинок).
-  // Режим вирішується ПОМІСЯЧНО через self_transport_since («діє з»): прапорець
-  // увімкнули з датою після кінця місяця → у цьому місяці людина ще «звичайна»;
-  // вимкнули з датою після кінця місяця → у цьому місяці ще була self. Без дати
-  // (легасі) — за поточним прапорцем. Перехід усередині місяця не ламається:
-  // посадки водія поденні й тарифікуються самі собою.
+  // Режим вирішується ПОМІСЯЧНО (isSelfTransportForMonth, services/transportFees).
+  // Перехід усередині місяця не ламається: посадки водія поденні й
+  // тарифікуються самі собою.
   const isSelfForMonth = (w: { selfTransport: boolean; selfTransportSince: string | null }): boolean =>
-    w.selfTransport ? (w.selfTransportSince == null || w.selfTransportSince < monthEnd)
-      : (w.selfTransportSince != null && w.selfTransportSince >= monthEnd);
+    isSelfTransportForMonth(w, monthEnd);
   const workers = workerIds.size
     ? await db.select().from(workersTable).where(inArray(workersTable.id, [...workerIds]))
     : [];

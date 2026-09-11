@@ -2788,7 +2788,11 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
   // перезаповнити після «Розрахувати» — тоді зміни/суми вже не сходяться:
   // 409 зі списком, нічого не пишемо (force=true — перенести як є).
   // Ручні рядки (manual/manual-edit) свідомо інші — не звіряються.
+  // self_transport у цьому місяці — теж ні: їхні зміни генерація рахує за
+  // посадками водія, а не за годинами сводної (інакше вічне «1→12 змін»).
   const { factoryShiftHours } = await import("../bot/time");
+  const { isSelfTransportForMonth, monthBoundsStr } = await import("../services/transportFees");
+  const { monthEnd } = monthBoundsStr(month);
   const svodniHoursByPair = new Map<string, number>();
   for (const r of rows) {
     if (r.workerId == null || r.factoryId == null || !(r.hours != null && r.hours > 0)) continue;
@@ -2801,6 +2805,8 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
       if (d.sourceRef !== "auto" || d.workerId == null || d.factoryId == null) continue;
       const fac = facById.get(d.factoryId);
       if (!fac?.paidTransport || !((fac.transportFeePerShift ?? 0) > 0)) continue;
+      const dw = wById.get(d.workerId);
+      if (dw && isSelfTransportForMonth(dw, monthEnd)) continue;
       const hours = svodniHoursByPair.get(`${d.workerId}|${d.factoryId}`) ?? 0;
       if (!(hours > 0)) continue; // пара без годин сводної — піде в unmatched, не блокуємо
       const shiftLen = factoryShiftHours(fac, "1" as any) || 8;
