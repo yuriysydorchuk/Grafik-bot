@@ -5,15 +5,16 @@ import { eq, and } from "drizzle-orm";
 import {
   app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db,
   workersTable, factoriesTable, driversTable, scheduleWeeksTable, scheduleEntriesTable,
-  shiftCancellationsTable, transportDeductionsTable, svodniRowsTable, svodniLocksTable,
+  shiftCancellationsTable, transportDeductionsTable, svodniRowsTable, svodniLocksTable, workerSelfTransportTable,
 } from "../test/harness.ts";
 
 // Платний довіз: авторозрахунок знять (POST /transport/deductions/generate) і
 // перенесення сум у колонку Dojazd сводної (POST /svodni/apply-transport-deductions).
 // Кількість змін — ЗАВЖДИ з годин сводної: ceil(svodni_rows.hours ÷ тривалість
 // 1-ї зміни фабрики); сума = min(зміни × ціна, місячний кап). Виняток —
-// self_transport: лише зміни з посадкою водієм (picked_up_by, затверджені
-// тижні, без скасованих клітинок).
+// «доїжджає сам» (worker_self_transport, по фабриці й поденно): self-день —
+// лише з посадкою водієм (picked_up_by), день «возить фірма» у пари зі
+// self-днями — за явками (затверджені тижні, без скасованих клітинок).
 const opts = { skip: hasTestDb ? false : "set TEST_DATABASE_URL to run integration tests" };
 const H = { "X-Requested-With": "grafik" } as const;
 const MONTH = "2026-06"; // 2026-06-01 — понеділок
@@ -142,7 +143,9 @@ test("генерація: неціле ділення — округлення �
 test("генерація: self_transport — не з годин, а лише зміни з посадкою; скасована клітинка і draft-тиждень — ні", opts, async () => {
   const fab = await seedPaidFactory();
   const [drv] = await db.insert(driversTable).values({ name: "KIEROWCA TEST" } as any).returning();
-  const wSelf = await seedWorker("SAM DOJEZDZA", { selfTransport: true });
+  const wSelf = await seedWorker("SAM DOJEZDZA");
+  // «доїжджає сам» — по фабриці й поденно: інтервал пари з давніх часів
+  await db.insert(workerSelfTransportTable).values({ workerId: wSelf.id, factoryId: fab.id, since: "2000-01-01", until: null });
   // години сводної в self_transport НЕ тарифікуються (80г дали б 10 змін)
   await seedSvodniHours(wSelf.id, fab, 80);
   const [wk1] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-01", status: "approved" } as any).returning();
@@ -169,6 +172,39 @@ test("генерація: self_transport — не з годин, а лише з�
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.tripsCount, 1); // лише вт з посадкою
   assert.equal(rows[0]?.amount, 20);
+});
+
+test("генерація: перехід на self усередині місяця — до дати за явками, з дати лише посадки; інша фабрика — з годин", opts, async () => {
+  const fab = await seedPaidFactory();
+  const [fab2] = await db.insert(factoriesTable).values({
+    name: "FAB DRUGA", paidTransport: true, transportFeePerShift: 10, shifts: [{ start: "06:00", end: "14:00" }], shiftCount: 1,
+  } as any).returning();
+  const [drv] = await db.insert(driversTable).values({ name: "KIEROWCA TEST" } as any).returning();
+  const w = await seedWorker("POL MIESIACA SAM");
+  // з 15.06 доїжджає сам на fab; на fab2 — жодного запису (возить фірма, з годин)
+  await db.insert(workerSelfTransportTable).values({ workerId: w.id, factoryId: fab.id, since: "2026-06-15", until: null });
+  await seedSvodniHours(w.id, fab, 120);        // години на fab ігноруються (є self-дні)
+  await seedSvodniHours(w.id, fab2!, 16);       // fab2 — 2 зміни з годин
+  const [wk1] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-01", status: "approved" } as any).returning();
+  const [wk3] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-15", status: "approved" } as any).returning();
+  const entry = (weekId: number, day: string, over: Record<string, unknown> = {}) => db.insert(scheduleEntriesTable).values({
+    weekId, workerId: w.id, factoryId: fab.id, dayOfWeek: day, shift: "1", status: "present", ...over,
+  } as any);
+  await entry(wk1!.id, "mon");                         // возили — рахується
+  await entry(wk1!.id, "tue");                         // возили — рахується
+  await entry(wk1!.id, "wed", { status: "absent" });   // не був — ні
+  await entry(wk3!.id, "mon", { pickedUpBy: drv!.id }); // self-день з посадкою — рахується
+  await entry(wk3!.id, "tue");                         // self-день без посадки — ні
+
+  const cookie = await opsCookie();
+  const res = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
+  assert.equal(res.status, 200);
+  const rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.workerId, w.id));
+  const byFab = new Map(rows.map(r => [r.factoryId, r]));
+  assert.equal(byFab.get(fab.id)?.tripsCount, 3, "2 дні «возить фірма» + 1 посадка");
+  assert.equal(byFab.get(fab.id)?.amount, 60);
+  assert.equal(byFab.get(fab2!.id)?.tripsCount, 2, "інша фабрика без self-запису — з годин");
+  assert.equal(byFab.get(fab2!.id)?.amount, 20);
 });
 
 test("повторна генерація: ручні рядки не чіпаються, авто — оновлюються/зносяться", opts, async () => {

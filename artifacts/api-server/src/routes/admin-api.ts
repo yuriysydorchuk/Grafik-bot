@@ -2,7 +2,8 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
-import { db } from "@workspace/db";
+import { db, workerSelfTransportTable,
+} from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
@@ -46,6 +47,7 @@ import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
 import { zaliczkaRecords, groupPayDate, listaXlsxBuffer, type ZaliczkaSourceRow } from "../services/gratyfikantExport";
 import { umowaStatusFor } from "../services/gratyfikantImport";
+import { loadSelfTransport, isSelfOn, selfIntervalOn, intervalsOfWorker, selfPredicateForWeek, setSelfTransport, moveSelfTransportSince } from "../services/selfTransport";
 
 const router: IRouter = Router();
 
@@ -274,13 +276,12 @@ router.get("/attention", async (_req, res) => {
     if (weeks.length) {
       const transported = new Set(
         (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.usesTransport, true))).map(f => f.id));
-      const entries = await db.select({
-          weekId: scheduleEntriesTable.weekId, factoryId: scheduleEntriesTable.factoryId,
+      const entriesAll = await db.select({
+          weekId: scheduleEntriesTable.weekId, factoryId: scheduleEntriesTable.factoryId, workerId: scheduleEntriesTable.workerId,
           day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
         })
         .from(scheduleEntriesTable)
-        .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), ne(workersTable.selfTransport, true)));
+        .where(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)));
       const deliveries = await db.select({
           weekId: driverShiftAssignmentsTable.weekId, factoryId: driverShiftAssignmentsTable.factoryId,
           day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift,
@@ -289,6 +290,9 @@ router.get("/attention", async (_req, res) => {
         .where(and(inArray(driverShiftAssignmentsTable.weekId, weeks.map(w => w.id)), eq(driverShiftAssignmentsTable.kind, "delivery")));
       const covered = new Set(deliveries.map(a => `${a.weekId}|${a.factoryId}|${a.day}|${a.shift}`));
       const startOf = new Map(weeks.map(w => [w.id, w.weekStart]));
+      // «доїжджає сам» — по фабриці й поденно (services/selfTransport.ts)
+      const selfMap = await loadSelfTransport();
+      const entries = entriesAll.filter(e => !isSelfOn(selfMap, e.workerId, e.factoryId, entryDateStr(startOf.get(e.weekId)!, e.day)));
       const gapSlots = new Set<string>();
       for (const e of entries) {
         if (!transported.has(e.factoryId)) continue;
@@ -357,12 +361,12 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       package: pkg ? { id: pkg.id, status: pkg.status } : null,
     };
   };
+  const selfMapAll = await loadSelfTransport();
   const rows = (await db
     .select({
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
-      selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
       nationality: workersTable.nationality, language: workersTable.language,
       gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
@@ -379,6 +383,9 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
     .leftJoin(workerLegalityTable, eq(workerLegalityTable.workerId, workersTable.id))
     .orderBy(workersTable.fullName))
     .map(({ birthDate, lgOverall, lgStay, lgWork, lgNextExpiry, lgReview, lgDerived, lgMismatch, lgEffective, lgSource, ...r }) => {
+      // «доїжджає сам» — зріз по основній фабриці на сьогодні (worker_self_transport);
+      // модалка редагування бере звідси початковий стан чекбокса
+      const selfIv = r.factoryId != null ? selfIntervalOn(selfMapAll, r.id, r.factoryId, todayStr) : undefined;
       // форма легалізації + похідні статуси для фільтрів/підсвітки списку —
       // доступні всім ролям (як і в профілі); сирі payroll-поля лишаються owner-only.
       // legalStatus — ручне поле профілю; effectiveLegalStatus — те, що йде у виплати
@@ -388,6 +395,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       const s26 = stud26Of({ isStudent: eff.isStudent, legalStatus: eff.legalStatus, birthDate, under26: r.under26 });
       return {
         ...r,
+        selfTransport: !!selfIv, selfTransportSince: selfIv?.since ?? null,
         legalStatus,
         effectiveLegalStatus: eff.legalStatus, legalSource: eff.legalSource,
         student: s26.isStudent,
@@ -440,9 +448,6 @@ router.post("/workers", RW, async (req, res) => {
     fullName: fullName.trim(), factoryId: factoryId ?? null, companyId: companyId ?? null,
     positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
     telegramId: tgId, workerCode: code,
-    selfTransport: !!selfTransport,
-    selfTransportSince: typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
-      ? req.body.selfTransportSince : (selfTransport ? warsawToday() : null),
     nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
     gratyfikantName: strOrNull(req.body?.gratyfikantName),
     pesel: typeof req.body?.pesel === "string" && /^\d{11}$/.test(req.body.pesel.trim()) ? req.body.pesel.trim() : null,
@@ -454,6 +459,12 @@ router.post("/workers", RW, async (req, res) => {
     if (under26 !== undefined) values.under26 = !!under26;
   }
   const [w] = await db.insert(workersTable).values(values).returning();
+  // «доїжджає сам» — по фабриці й поденно: чекбокс модалки = інтервал на обрану фабрику
+  if (selfTransport && w!.factoryId != null) {
+    const since = typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
+      ? req.body.selfTransportSince : warsawToday();
+    await setSelfTransport(w!.id, w!.factoryId, true, since);
+  }
   // нова людина могла вже фігурувати в сводних — підвʼязуємо її історію за іменем
   import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
   import("../services/tasks").then(m => m.workerTrigger("worker_created", w)).catch(() => {}); // шаблони задач «при реєстрації»
@@ -529,18 +540,26 @@ router.patch("/workers/:id", RW, async (req, res) => {
     } else patch.workerCode = null;
   }
   if (language !== undefined) patch.language = strOrNull(language);
-  if (selfTransport !== undefined) {
-    patch.selfTransport = !!selfTransport;
-    // «діє з»: дата чинності поточного значення прапорця; зміна без явної дати
-    // штампується сьогоднішнім днем (генерація знять за довіз вирішує помісячно)
-    if (before && !!selfTransport !== before.selfTransport && req.body?.selfTransportSince === undefined) {
-      patch.selfTransportSince = warsawToday();
-    }
+  // «доїжджає сам» — по фабриці й поденно (worker_self_transport). Чекбокс модалки
+  // стосується фабрики, ЯКУ МОДАЛКА ПОКАЗУВАЛА (before.factoryId) — зміна фабрики
+  // в тому ж збереженні режим на нову НЕ переносить (рішення 11.09.2026).
+  // Ідемпотентно: модалка завжди шле поточні значення — діємо лише на реальну
+  // зміну (стан на сьогодні або явно інша дата «з»).
+  const selfFactoryId: number | null = before?.factoryId ?? null;
+  const selfSinceRaw = req.body?.selfTransportSince;
+  if (selfSinceRaw !== undefined && selfSinceRaw !== null && selfSinceRaw !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(String(selfSinceRaw))) {
+    return fail(res, 400, "Дата «діє з» — формат YYYY-MM-DD");
   }
-  if (req.body?.selfTransportSince !== undefined) {
-    const d = strOrNull(req.body.selfTransportSince);
-    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return fail(res, 400, "Дата «діє з» — формат YYYY-MM-DD");
-    patch.selfTransportSince = d;
+  if (before && selfFactoryId != null && (selfTransport !== undefined || typeof selfSinceRaw === "string")) {
+    const today = warsawToday();
+    const curIv = selfIntervalOn(await loadSelfTransport([id]), id, selfFactoryId, today);
+    const wantSelf = selfTransport !== undefined ? !!selfTransport : !!curIv;
+    const wantSince = typeof selfSinceRaw === "string" && selfSinceRaw ? selfSinceRaw : null;
+    if (wantSelf !== !!curIv) {
+      await setSelfTransport(id, selfFactoryId, wantSelf, wantSince ?? today);
+    } else if (curIv && wantSince && wantSince !== curIv.since) {
+      await moveSelfTransportSince(id, selfFactoryId, wantSince);
+    }
   }
   // перший робочий день — операційне поле графікової (editData), не фінансове;
   // порожнє → система знову поставить сама з першої явки
@@ -840,6 +859,62 @@ router.delete("/workers/:id", requireCap("deleteWorkers"), async (req, res) => {
 
 // Per-worker profile + analytics (for the worker detail page).
 const DAY_OFFSET: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
+
+// ── «Доїжджає сам» по фабриці (worker_self_transport) ────────────────────────
+// Інтервали [since, until) пари працівник+фабрика; операційне поле графікової
+// (editData). Мутації — лише через services/selfTransport.ts.
+router.get("/workers/:id/self-transport", WORKERS_RO, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "not found");
+  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const facName = new Map(facs.map(f => [f.id, f.name]));
+  const map = await loadSelfTransport([id]);
+  const rows = [...intervalsOfWorker(map, id)].flatMap(([factoryId, list]) =>
+    list.map(i => ({ id: i.id, factoryId, factoryName: facName.get(factoryId) ?? null, since: i.since, until: i.until })));
+  ok(res, { rows });
+});
+// PUT {factoryId, self, since?} — перемкнути режим на фабриці з дати (типово сьогодні)
+router.put("/workers/:id/self-transport", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const factoryId = Number(req.body?.factoryId);
+  const since = typeof req.body?.since === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.since) ? req.body.since : warsawToday();
+  if (!Number.isFinite(id) || !Number.isFinite(factoryId)) return fail(res, 400, "factoryId обовʼязковий");
+  const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "not found");
+  await setSelfTransport(id, factoryId, !!req.body?.self, since);
+  ok(res, { ok: true });
+});
+// PATCH рядка — правка дат вручну (since/until)
+router.patch("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
+  const id = Number(req.params.id), rowId = Number(req.params.rowId);
+  const patch: { since?: string; until?: string | null } = {};
+  const isDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  if (req.body?.since !== undefined) { if (!isDate(req.body.since)) return fail(res, 400, "since — YYYY-MM-DD"); patch.since = req.body.since; }
+  if (req.body?.until !== undefined) {
+    if (req.body.until === null || req.body.until === "") patch.until = null;
+    else if (!isDate(req.body.until)) return fail(res, 400, "until — YYYY-MM-DD");
+    else patch.until = req.body.until;
+  }
+  const [row] = await db.select().from(workerSelfTransportTable).where(and(eq(workerSelfTransportTable.id, rowId), eq(workerSelfTransportTable.workerId, id)));
+  if (!row) return fail(res, 404, "not found");
+  const since = patch.since ?? String(row.since), until = patch.until !== undefined ? patch.until : (row.until ? String(row.until) : null);
+  if (until != null && until <= since) return fail(res, 400, "«до» має бути пізніше за «з»");
+  // перекриття з іншими інтервалами тієї ж пари — заборонено (інакше «вимкнути» закриє лише один)
+  const siblings = await db.select().from(workerSelfTransportTable)
+    .where(and(eq(workerSelfTransportTable.workerId, id), eq(workerSelfTransportTable.factoryId, row.factoryId)));
+  const overlaps = siblings.some(s => s.id !== rowId && String(s.since) < (until ?? "9999-12-31") && (s.until == null || String(s.until) > since));
+  if (overlaps) return fail(res, 400, "Період перекривається з іншим записом цієї фабрики");
+  await db.update(workerSelfTransportTable).set(patch).where(eq(workerSelfTransportTable.id, rowId));
+  ok(res, { ok: true });
+});
+router.delete("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
+  const id = Number(req.params.id), rowId = Number(req.params.rowId);
+  await db.delete(workerSelfTransportTable).where(and(eq(workerSelfTransportTable.id, rowId), eq(workerSelfTransportTable.workerId, id)));
+  ok(res, { ok: true });
+});
+
 router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
@@ -910,14 +985,21 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   // показ у профілі; ведуться в Обліку годин (модалка «🔑 Ключі»)
   const facCodes = await db.select({ factoryId: workerFactoryCodesTable.factoryId, code: workerFactoryCodesTable.code })
     .from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.workerId, id));
+  const selfMap = await loadSelfTransport([id]);
+  const selfToday = w.factoryId != null ? selfIntervalOn(selfMap, id, w.factoryId, warsawToday()) : undefined;
+  const selfRows = [...intervalsOfWorker(selfMap, id)].flatMap(([factoryId, list]) =>
+    list.map(i => ({ id: i.id, factoryId, factoryName: facMap.get(factoryId)?.name ?? null, since: i.since, until: i.until })));
   ok(res, {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
     factoryCodes: facCodes.map(c => ({ factoryId: c.factoryId, factoryName: facMap.get(c.factoryId)?.name ?? null, code: c.code })),
     factoryId: w.factoryId, factoryName: w.factoryId ? (facMap.get(w.factoryId)?.name ?? null) : null,
     companyId: w.companyId, companyName: coName,
     positionId: w.positionId, positionName: pos?.name ?? null, positionColor: pos?.color ?? null,
-    gender: w.gender, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
-    selfTransportSince: w.selfTransportSince,
+    // «доїжджає сам» — по фабриці й поденно; selfTransport/Since — зріз по основній
+    // фабриці на сьогодні (сумісність модалки), повний список — selfTransportRows
+    gender: w.gender, fixedShift: w.fixedShift, selfTransport: !!selfToday,
+    selfTransportSince: selfToday?.since ?? null,
+    selfTransportRows: selfRows,
     // без цих двох модалка редагування з профілю відкривалась би з порожніми
     // полями і затирала б їх при збереженні
     gratyfikantName: w.gratyfikantName, pesel: w.pesel, middleName: w.middleName,
@@ -2252,12 +2334,12 @@ router.get("/schedule", async (req, res) => {
   // editor can show pools and let admins build the schedule (esp. manual factories).
   const conds = week ? [eq(scheduleEntriesTable.weekId, week.id)] : [];
   if (week && factoryId != null) conds.push(eq(scheduleEntriesTable.factoryId, factoryId));
-  const entries = !week ? [] : await db
+  const entries = !week ? [] : await (db
     .select({
       id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       status: scheduleEntriesTable.status, workerId: scheduleEntriesTable.workerId,
       workerName: workersTable.fullName, workerCode: workersTable.workerCode,
-      positionId: workersTable.positionId, gender: workersTable.gender, selfTransport: workersTable.selfTransport,
+      positionId: workersTable.positionId, gender: workersTable.gender,
       factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name,
       pickedUpByName: driversTable.name,
     })
@@ -2265,7 +2347,12 @@ router.get("/schedule", async (req, res) => {
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(driversTable, eq(scheduleEntriesTable.pickedUpBy, driversTable.id))
-    .where(and(...conds));
+    .where(and(...conds)))
+    // «доїжджає сам» — по фабриці й поденно (значок у клітинці графіку)
+    .then(async list => {
+      const selfMap = await loadSelfTransport(list.map(e => e.workerId));
+      return list.map(e => ({ ...e, selfTransport: isSelfOn(selfMap, e.workerId, e.factoryId, entryDateStr(weekStart, e.day)) }));
+    });
 
   // Reserve pool: workers who filled availability for a day+shift but aren't assigned that day
   const reserve: Record<string, { workerId: number; name: string; code: string | null; positionId: number | null; gender: string | null }[]> = {};
@@ -5372,14 +5459,12 @@ router.get("/driver-board", requireCap("assignDrivers"), async (req, res) => {
   }
   if (week) {
     // Self-transport workers get to work on their own → excluded from pickup headcount.
-    entries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
-      .from(scheduleEntriesTable)
-      .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-      .where(and(eq(scheduleEntriesTable.weekId, week.id), ne(workersTable.selfTransport, true)));
-    selfEntries = await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
-      .from(scheduleEntriesTable)
-      .innerJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-      .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(workersTable.selfTransport, true)));
+    // (режим — по фабриці й поденно, services/selfTransport.ts)
+    const isSelf = await selfPredicateForWeek(week.id);
+    const allEntries = await db.select({ workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
+      .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, week.id));
+    entries = allEntries.filter(e => !isSelf(e.workerId, e.factoryId, e.day));
+    selfEntries = allEntries.filter(e => isSelf(e.workerId, e.factoryId, e.day));
     assigns = await db.select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, driverName: driversTable.name, kind: driverShiftAssignmentsTable.kind })
       .from(driverShiftAssignmentsTable).leftJoin(driversTable, eq(driverShiftAssignmentsTable.driverId, driversTable.id))
       .where(eq(driverShiftAssignmentsTable.weekId, week.id));

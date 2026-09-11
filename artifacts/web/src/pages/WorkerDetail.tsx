@@ -48,6 +48,8 @@ interface WorkerProfile {
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
   selfTransportSince?: string | null;
+  // «доїжджає сам» — по фабриці й поденно: інтервали [since, until) пари
+  selfTransportRows?: { id: number; factoryId: number; factoryName: string | null; since: string; until: string | null }[];
   gratyfikantName?: string | null; pesel?: string | null; middleName?: string | null; firstName?: string | null; lastName?: string | null;
   badania?: BadaniaEntry[];
   nationality?: string | null;
@@ -291,16 +293,10 @@ export default function WorkerDetail() {
               <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
                 options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} disabled={!canEdit} />
             </InfoRow>
-            <InfoRow icon={Car} label={t("Транспорт")}>
-              <InlineSelect value={w.selfTransport ? "self" : ""} none={t("Возить фірма")} onChange={v => wpatch.mutate({ selfTransport: v === "self" })}
-                options={[{ value: "self", label: t("Доїжджає сам") }]} disabled={!canEdit} />
-              {w.selfTransport && (
-                canEdit ? (
-                  <input type="date" value={w.selfTransportSince ?? ""} title={t("з")}
-                    onChange={e => wpatch.mutate({ selfTransportSince: e.target.value || null })}
-                    className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
-                ) : w.selfTransportSince ? <span className="text-xs text-slate-400">{t("з")} {w.selfTransportSince}</span> : null
-              )}
+            <InfoRow icon={Car} label={t("Транспорт")} title={t("Режим «доїжджає сам» — окремо на кожну фабрику; зміна фабрики його не переносить")}>
+              <SelfTransportRows workerId={w.id} mainFactoryId={w.factoryId} rows={w.selfTransportRows ?? []}
+                historyFactoryIds={(w.factoryHistory ?? []).map(f => f.factoryId).filter((x): x is number => x != null)}
+                factories={factories} canEdit={canEdit} />
             </InfoRow>
             {(w.factoryCodes ?? []).length > 0 && (
               <Info icon={KeyRound} label={t("Ключі фабрики")}
@@ -519,6 +515,62 @@ function InlineText({ value, placeholder, width = "w-40", onSave, disabled }: { 
 }
 
 // Borderless-select для інлайн-редагування (стиль — як рядок форми легалізації)
+// «Доїжджає сам» по фабриках: рядок на кожну фабрику, де людина працює (основна +
+// історія + фабрики з інтервалами), перемикач режиму й дата «з» чинного
+// інтервалу. Дані — worker_self_transport через /workers/:id/self-transport.
+function SelfTransportRows({ workerId, mainFactoryId, rows, historyFactoryIds, factories, canEdit }: {
+  workerId: number; mainFactoryId: number | null;
+  rows: { id: number; factoryId: number; factoryName: string | null; since: string; until: string | null }[];
+  historyFactoryIds: number[]; factories: Factory[]; canEdit: boolean;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [extra, setExtra] = useState<number[]>([]);
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker", workerId] }); qc.invalidateQueries({ queryKey: ["workers"] }); };
+  const toggle = useMutation({
+    mutationFn: (v: { factoryId: number; self: boolean }) => put(`/workers/${workerId}/self-transport`, v),
+    onSuccess: inv, onError: (e: any) => toast.error(e.message),
+  });
+  const moveSince = useMutation({
+    mutationFn: (v: { rowId: number; since: string }) => patch(`/workers/${workerId}/self-transport/${v.rowId}`, { since: v.since }),
+    onSuccess: inv, onError: (e: any) => toast.error(e.message),
+  });
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const facIds = [...new Set([mainFactoryId, ...rows.map(r => r.factoryId), ...historyFactoryIds, ...extra].filter((x): x is number => x != null))];
+  const facName = (id: number) => factories.find(f => f.id === id)?.name ?? rows.find(r => r.factoryId === id)?.factoryName ?? `#${id}`;
+  const others = factories.filter(f => !facIds.includes(f.id));
+  if (!facIds.length && !canEdit) return <span className="text-sm text-slate-400">—</span>;
+  return (
+    <div className="flex w-full flex-col gap-1">
+      {facIds.map(fid => {
+        // чинний інтервал на сьогодні; майбутній — показуємо як «з дати»
+        const list = rows.filter(r => r.factoryId === fid);
+        const cur = list.find(r => r.since <= today && (r.until == null || r.until > today));
+        const future = !cur ? list.find(r => r.since > today && r.until == null) : undefined;
+        const iv = cur ?? future;
+        return (
+          <div key={fid} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className={`max-w-[9rem] truncate text-xs ${fid === mainFactoryId ? "font-medium text-slate-600" : "text-slate-400"}`} title={facName(fid)}>{facName(fid)}</span>
+            <InlineSelect value={iv ? "self" : ""} none={t("Возить фірма")} options={[{ value: "self", label: t("Доїжджає сам") }]}
+              disabled={!canEdit || toggle.isPending} onChange={v => toggle.mutate({ factoryId: fid, self: v === "self" })} />
+            {iv && (canEdit ? (
+              <input type="date" value={iv.since} title={t("з")} onChange={e => e.target.value && moveSince.mutate({ rowId: iv.id, since: e.target.value })}
+                className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
+            ) : <span className="text-xs text-slate-400">{t("з")} {iv.since}</span>)}
+          </div>
+        );
+      })}
+      {canEdit && others.length > 0 && (
+        <select value="" onChange={e => { const v = Number(e.target.value); if (v) setExtra(x => [...x, v]); }}
+          className="w-fit rounded border border-transparent bg-transparent py-0.5 text-xs text-slate-400 hover:border-slate-300 focus:outline-none">
+          <option value="">{t("+ інша фабрика")}</option>
+          {others.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function InlineSelect({ value, options, onChange, none = "—", disabled }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; none?: string; disabled?: boolean }) {
   if (disabled) return (
     <span className="max-w-full truncate text-sm font-medium text-slate-700">{options.find(o => o.value === value)?.label ?? none}</span>

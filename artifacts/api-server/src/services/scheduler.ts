@@ -18,6 +18,7 @@ import { loadDateShiftOverrides, shiftOverrideKey } from "./shiftOverrides";
 import { t, asLang, tb, oLang } from "../bot/i18n";
 import { notifyByType } from "../bot/notify";
 import { adminWantsNotify } from "../bot/roles";
+import { selfPredicateForWeek } from "./selfTransport";
 
 // All cron times in Europe/Warsaw timezone
 const TZ = "Europe/Warsaw";
@@ -539,7 +540,7 @@ async function sendFactoryShiftReminder(
 
   // Workers for this factory+shift today
   const workers = await db
-    .select({ telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language, selfTransport: workersTable.selfTransport })
+    .select({ workerId: scheduleEntriesTable.workerId, telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(
@@ -549,6 +550,7 @@ async function sendFactoryShiftReminder(
       eq(scheduleEntriesTable.shift, shift),
       eq(scheduleEntriesTable.status, "scheduled"),
     ));
+  const isSelf = await selfPredicateForWeek(weekId);
 
   let notified = 0;
   for (const w of workers) {
@@ -566,7 +568,8 @@ async function sendFactoryShiftReminder(
   }
 
   // Self-transport workers get to work on their own → not counted for the driver.
-  const driverPickupCount = workers.filter(w => !w.selfTransport).length;
+  // (режим — по фабриці й поденно, services/selfTransport.ts)
+  const driverPickupCount = workers.filter(w => !isSelf(w.workerId, factoryId, day)).length;
 
   // Delivery driver for this factory+shift today (pickups get their own reminder)
   const drivers = await db

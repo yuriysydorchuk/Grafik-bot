@@ -202,7 +202,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
           <label className="flex items-center gap-1.5 text-sm text-slate-600">
             <input type="checkbox" checked={selfTransport}
               onChange={e => { setSelfTransport(e.target.checked); setSelfSince(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" })); }} />
-            {t("Доїжджає сам")}
+            {t("Доїжджає сам")}{(() => { const f = worker?.factoryId ? factories.find(x => x.id === worker.factoryId) : selFactory; return f ? <span className="text-xs text-slate-400">({f.name})</span> : null; })()}
           </label>
           {(selfToggled || selfSince) && (
             <div className="mt-2">
@@ -210,7 +210,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
               <Input type="date" value={selfSince} onChange={e => setSelfSince(e.target.value)} className="w-44" />
             </div>
           )}
-          <p className="mt-1.5 text-xs text-slate-400">{t("Не показується водіям і не рахується до забрання. Явку/відсутність відмічає графікова вручну у графіку.")}</p>
+          <p className="mt-1.5 text-xs text-slate-400">{t("Не показується водіям і не рахується до забрання. Явку/відсутність відмічає графікова вручну у графіку.")} {t("Стосується лише обраної фабрики; по інших фабриках — у профілі.")}</p>
         </div>
         {isOwner && (
           <div className="rounded-xl border border-slate-200 p-3">

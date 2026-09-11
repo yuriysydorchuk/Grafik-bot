@@ -16,6 +16,7 @@ import {
 import { eq, and, ne } from "drizzle-orm";
 import { factoryShifts } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
+import { selfPredicateForWeek } from "./selfTransport";
 
 export type PickupGap = {
   factoryId: number;
@@ -45,11 +46,13 @@ export async function detectPickupGaps(weekId: number, day: DayOfWeek): Promise<
 
   const nextDay = DAY_ORDER[(DAY_ORDER.indexOf(day) + 1) % 7]!;
   // Self-transport workers get to work on their own → not counted toward pickup gaps.
-  const entries = await db
-    .select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
+  // (режим — по фабриці й поденно, services/selfTransport.ts)
+  const isSelf = await selfPredicateForWeek(weekId);
+  const entries = (await db
+    .select({ workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
     .from(scheduleEntriesTable)
-    .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .where(and(eq(scheduleEntriesTable.weekId, weekId), ne(workersTable.selfTransport, true)));
+    .where(eq(scheduleEntriesTable.weekId, weekId)))
+    .filter(e => !isSelf(e.workerId, e.factoryId, e.day));
   const assigns = await db
     .select({ factoryId: driverShiftAssignmentsTable.factoryId, day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, driverId: driverShiftAssignmentsTable.driverId, kind: driverShiftAssignmentsTable.kind })
     .from(driverShiftAssignmentsTable).where(eq(driverShiftAssignmentsTable.weekId, weekId));

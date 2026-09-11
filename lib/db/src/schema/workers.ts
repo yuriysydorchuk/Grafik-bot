@@ -281,6 +281,23 @@ export const transportFeeMembersTable = pgTable("transport_fee_members", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("transport_fee_members_uq").on(t.factoryId, t.workerId)]);
 
+// «Доїжджає сам» — ПО ФАБРИЦІ й ПОДЕННО (рішення 11.09.2026): інтервал
+// [since, until) для пари працівник+фабрика. Зміна основної фабрики нічого не
+// переносить — на новій людину возять, доки не додано окремий запис. Усі
+// водійські поверхні (список посадки, лічильники забору, пуші) і генерація
+// знять за довіз резолвлять режим для КОНКРЕТНОГО дня через
+// services/selfTransport.ts. Легасі-колонки workers.self_transport(_since)
+// більше не читаються (перенесені міграцією 2026-09-11-worker-self-transport).
+export const workerSelfTransportTable = pgTable("worker_self_transport", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  since: date("since").notNull(),   // перший день, коли доїжджає сам
+  until: date("until"),             // перший день, коли знову возить фірма (NULL = досі)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("worker_self_transport_pair_idx").on(t.workerId, t.factoryId)]);
+export type WorkerSelfTransport = typeof workerSelfTransportTable.$inferSelect;
+
 // Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
 // starting a workday; the plate shows up in the mileage report.
 export const vehiclesTable = pgTable("vehicles", {

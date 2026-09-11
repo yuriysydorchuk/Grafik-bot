@@ -24,6 +24,7 @@ const lShift = (lang: Lang, s: Shift) => t(lang, "hr.shiftN", { n: s });
 import { formatWeekStart } from "../services/scheduleGenerator";
 import { resolveWeekRow } from "../services/weeks";
 import { updateHoursTracking, updateDriverTripsExcel } from "../services/drive";
+import { loadSelfTransport, isSelfOn } from "../services/selfTransport";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -593,11 +594,12 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
   const factory = (await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)))[0];
   const factoryName = factory?.name ?? "—";
 
-  const rows = await db
+  // «доїжджає сам» — по фабриці й поденно (services/selfTransport.ts)
+  const selfMap = await loadSelfTransport();
+  const rows = (await db
     .select({
       workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       telegramId: workersTable.telegramId, name: workersTable.fullName, language: workersTable.language,
-      selfTransport: workersTable.selfTransport,
     })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
@@ -605,7 +607,7 @@ export async function notifyFactorySchedule(weekId: number, weekStart: string, f
       eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId),
       ne(scheduleEntriesTable.status, "absent"),
       ...(day ? [eq(scheduleEntriesTable.dayOfWeek, day)] : []),
-    ));
+    ))).map(r => ({ ...r, selfTransport: isSelfOn(selfMap, r.workerId, factoryId, entryDateStr(weekStart, r.day)) }));
 
   // Per-worker personal schedule
   const byWorker = new Map<number, { name: string; telegramId: string | null; lang: string | null; items: { day: DayOfWeek; shift: Shift }[] }>();

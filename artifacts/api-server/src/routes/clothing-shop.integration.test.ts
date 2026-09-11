@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import {
   app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db,
   workersTable, factoriesTable, clothingItemsTable, clothingStockTable,
-  svodniRowsTable, svodniLocksTable, transportDeductionsTable,
+  svodniRowsTable, svodniLocksTable, transportDeductionsTable, workerSelfTransportTable,
 } from "../test/harness.ts";
 
 // Магазин одягу: склад (тип/розмір/стан/ціна/кількість) → видача (мінусує
@@ -13,7 +13,7 @@ import {
 // «до зняття» у колонку Odzież сводної (рядок фабрики з найбільшими годинами).
 // Плюс: вкладка знять за довіз показує ВСІХ людей платних фабрик (віртуальні
 // рядки без нарахування) з маркером self_transport, а генерація знять вирішує
-// режим self помісячно за self_transport_since.
+// режим self — по фабриці й поденно (worker_self_transport).
 const opts = { skip: hasTestDb ? false : "set TEST_DATABASE_URL to run integration tests" };
 const H = { "X-Requested-With": "grafik" } as const;
 const MONTH = "2026-06";
@@ -274,7 +274,8 @@ test("зняття за довіз: віртуальні рядки всіх л�
     name: "FAB A", paidTransport: true, transportFeePerShift: 20,
     shifts: [{ start: "06:00", end: "14:00" }], shiftCount: 1,
   } as any).returning();
-  const [wSelf] = await db.insert(workersTable).values({ fullName: "Sam Dojezdza", selfTransport: true, selfTransportSince: "2026-05-01" } as any).returning();
+  const [wSelf] = await db.insert(workersTable).values({ fullName: "Sam Dojezdza" } as any).returning();
+  await db.insert(workerSelfTransportTable).values({ workerId: wSelf!.id, factoryId: fab!.id, since: "2026-05-01", until: null });
   const [wReg] = await db.insert(workersTable).values({ fullName: "Zwykly Jan" }).returning();
   const seedHours = (workerId: number, hours: number) => db.insert(svodniRowsTable).values({
     periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A", factoryId: fab!.id,
@@ -310,7 +311,9 @@ test("ручне зняття для self-пари: POST з явним factoryId
   } as any).returning();
   // self-людина з годинами сводної, профільна фабрика ІНША — пара має взятись з body
   const [otherFab] = await db.insert(factoriesTable).values({ name: "INNA" } as any).returning();
-  const [w] = await db.insert(workersTable).values({ fullName: "Sam Dojezdza", selfTransport: true, factoryId: otherFab!.id } as any).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Sam Dojezdza", factoryId: otherFab!.id } as any).returning();
+  // self саме на FAB A (пара з тіла запиту), не на профільній
+  await db.insert(workerSelfTransportTable).values({ workerId: w!.id, factoryId: fab!.id, since: "2026-01-01", until: null });
   await db.insert(svodniRowsTable).values({
     periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A", factoryId: fab!.id,
     rawName: "W", workerId: w!.id, linkStatus: "confirmed", hours: 80, extras: {}, hr: {}, sheetValues: {},
@@ -344,9 +347,8 @@ test("self_transport_since: прапорець увімкнули ПІСЛЯ м�
     shifts: [{ start: "06:00", end: "14:00" }], shiftCount: 1,
   } as any).returning();
   // з 2026-07-15 доїжджає сам, але рахуємо ЧЕРВЕНЬ → у червні його возили
-  const [w] = await db.insert(workersTable).values({
-    fullName: "Pozniej Sam", selfTransport: true, selfTransportSince: "2026-07-15",
-  } as any).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Pozniej Sam" } as any).returning();
+  await db.insert(workerSelfTransportTable).values({ workerId: w!.id, factoryId: fab!.id, since: "2026-07-15", until: null });
   await db.insert(svodniRowsTable).values({
     periodMonth: MONTH, city: "Люблін", factoryLabel: "FAB A", factoryId: fab!.id,
     rawName: "W", workerId: w!.id, linkStatus: "confirmed", hours: 40, extras: {}, hr: {}, sheetValues: {},

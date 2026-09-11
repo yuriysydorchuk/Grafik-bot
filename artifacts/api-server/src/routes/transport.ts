@@ -14,7 +14,8 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, sql
 import { authRequired, requireAnyCap } from "../lib/auth";
 import { weekFromForMonth, entryDateStr } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
-import { isSelfTransportForMonth, monthBoundsStr } from "../services/transportFees";
+import { monthBoundsStr } from "../services/transportFees";
+import { loadSelfTransport, isSelfOn, hasSelfInRange } from "../services/selfTransport";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -201,14 +202,18 @@ router.get("/transport/deductions", async (req, res) => {
     paidFacById.has(p.factoryId) && !dedPairs.has(`${p.workerId}|${p.factoryId}`));
   const wIds = [...new Set([...rows.map(r => r.d.workerId), ...extraPairs.map(p => p.workerId!)].filter((x): x is number => x != null))];
   const workers = wIds.length ? await db.select({
-    id: workersTable.id, fullName: workersTable.fullName,
-    selfTransport: workersTable.selfTransport, selfTransportSince: workersTable.selfTransportSince,
-    nationality: workersTable.nationality,
+    id: workersTable.id, fullName: workersTable.fullName, nationality: workersTable.nationality,
   }).from(workersTable).where(inArray(workersTable.id, wIds)) : [];
   const wById = new Map(workers.map(w => [w.id, w]));
-  const selfOf = (workerId: number | null) => {
+  // маркер «доїжджає сам» — по парі й у контексті місяця (є self-дні в місяці);
+  // since — початок інтервалу, що покриває місяць
+  const selfMap = await loadSelfTransport(wIds);
+  const { monthStart: mS, monthEnd: mE } = monthBoundsStr(month);
+  const selfOf = (workerId: number | null, factoryId: number | null) => {
     const w = workerId != null ? wById.get(workerId) : undefined;
-    return { selfTransport: w?.selfTransport ?? false, selfTransportSince: w?.selfTransportSince ?? null, nationality: w?.nationality ?? null };
+    const self = workerId != null && factoryId != null && hasSelfInRange(selfMap, workerId, factoryId, mS, mE);
+    const iv = self ? (selfMap.get(`${workerId}|${factoryId}`) ?? []).find(i => i.since < mE && (i.until == null || i.until > mS)) : undefined;
+    return { selfTransport: self, selfTransportSince: iv?.since ?? null, nationality: w?.nationality ?? null };
   };
   const listed = [
     ...rows.map(({ d, workerName, factoryName }) => ({
@@ -216,14 +221,14 @@ router.get("/transport/deductions", async (req, res) => {
       factoryId: d.factoryId, factoryLabel: factoryName ?? d.factoryLabel,
       tripsCount: d.tripsCount, amount: d.amount as number | null, note: d.note, sourceRef: d.sourceRef,
       hours: hoursByPair.get(`${d.workerId}|${d.factoryId}`) ?? null,
-      ...selfOf(d.workerId),
+      ...selfOf(d.workerId, d.factoryId),
     })),
     ...extraPairs.map((p) => ({
       id: null, workerId: p.workerId!, workerName: wById.get(p.workerId!)?.fullName ?? null,
       factoryId: p.factoryId!, factoryLabel: paidFacById.get(p.factoryId!)?.name ?? null,
       tripsCount: null, amount: null, note: null, sourceRef: null,
       hours: Number(p.hours),
-      ...selfOf(p.workerId),
+      ...selfOf(p.workerId, p.factoryId!),
     })),
   ];
   ok(res, {
@@ -364,9 +369,10 @@ router.put("/transport/fee-members", RW, async (req, res) => {
 // ЗАВЖДИ з годин, перенесених до сводної (svodni_rows.hours пари працівник+
 // фабрика за місяць): ceil(години ÷ тривалість 1-ї зміни фабрики, 8/12 год).
 // Тож флоу: заповнити сводну (from-hours) → розрахувати → перенести.
-// self_transport (доїжджають самі) — виняток: тарифікуються лише зміни, де
-// водій позначив посадку (picked_up_by у затверджених тижнях місяця, без
-// скасованих клітинок).
+// «Доїжджає сам» (по фабриці й поденно, worker_self_transport) — виняток:
+// у self-день тарифікується лише зміна з посадкою водія (picked_up_by у
+// затверджених тижнях місяця, без скасованих клітинок); у пари зі self-днями
+// дні «возить фірма» рахуються за явками, а не з годин сводної.
 // Вибірковість: фабрика зі списком transport_fee_members тарифікує ЛИШЕ
 // вибраних (порожній список = уся фабрика).
 // Повторний запуск перезаписує ЛИШЕ авто-рядки (source_ref='auto'); рядки,
@@ -397,27 +403,21 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
     const k = `${r.workerId}|${r.factoryId}`;
     hoursByPair.set(k, (hoursByPair.get(k) ?? 0) + r.hours);
   }
-  const workerIds = new Set<number>([...hoursByPair.keys()].map(k => Number(k.split("|")[0])));
   const shiftsByPair = new Map<string, number>(); // workerId|factoryId → зміни
-  for (const [k, hours] of hoursByPair) {
-    const factoryId = Number(k.split("|")[1]);
-    const shiftLen = factoryShiftHours(facById.get(factoryId), "1" as any) || 8;
-    shiftsByPair.set(k, Math.ceil(hours / shiftLen));
-  }
 
-  // 2) self_transport: години сводної не тарифікуємо — лише зміни з посадкою
-  // водієм (затверджені тижні, дата в місяці, без скасованих клітинок).
-  // Режим вирішується ПОМІСЯЧНО (isSelfTransportForMonth, services/transportFees).
-  // Перехід усередині місяця не ламається: посадки водія поденні й
-  // тарифікуються самі собою.
-  const isSelfForMonth = (w: { selfTransport: boolean; selfTransportSince: string | null }): boolean =>
-    isSelfTransportForMonth(w, monthEnd);
-  const workers = workerIds.size
-    ? await db.select().from(workersTable).where(inArray(workersTable.id, [...workerIds]))
-    : [];
-  const selfIds = new Set(workers.filter(isSelfForMonth).map(w => w.id));
-  for (const k of [...shiftsByPair.keys()]) {
-    if (selfIds.has(Number(k.split("|")[0]))) shiftsByPair.delete(k);
+  // 2) «доїжджає сам» — ПО ФАБРИЦІ й ПОДЕННО (services/selfTransport.ts).
+  // Пара без self-днів у місяці — зміни з годин сводної (ceil(години/зміна)).
+  // Пара, що має хоч один self-день у місяці, — години сводної НЕ тарифікуються,
+  // рахуємо по записах затверджених тижнів: self-день — лише зі посадкою водія
+  // (picked_up_by), день «возить фірма» — кожна не-absent явка. Скасовані
+  // клітинки і draft-тижні — ні. Перехід усередині місяця так ділиться поденно.
+  const selfMap = await loadSelfTransport();
+  const pairMixed = (workerId: number, factoryId: number) => hasSelfInRange(selfMap, workerId, factoryId, monthStart, monthEnd);
+  for (const [k, hours] of hoursByPair) {
+    const [workerId, factoryId] = k.split("|").map(Number);
+    if (pairMixed(workerId!, factoryId!)) continue;
+    const shiftLen = factoryShiftHours(facById.get(factoryId!), "1" as any) || 8;
+    shiftsByPair.set(k, Math.ceil(hours / shiftLen));
   }
   {
     const weeks = await db.select().from(scheduleWeeksTable).where(and(
@@ -427,28 +427,25 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
     ));
     const weekById = new Map(weeks.map(w => [w.id, w.weekStart]));
     const weekIds = weeks.map(w => w.id);
-    const picked = weekIds.length
+    const entries = weekIds.length
       ? await db.select().from(scheduleEntriesTable).where(and(
-          inArray(scheduleEntriesTable.weekId, weekIds), inArray(scheduleEntriesTable.factoryId, paidIds),
-          isNotNull(scheduleEntriesTable.pickedUpBy)))
+          inArray(scheduleEntriesTable.weekId, weekIds), inArray(scheduleEntriesTable.factoryId, paidIds)))
       : [];
     const cancels = weekIds.length
       ? await db.select().from(shiftCancellationsTable).where(and(
           inArray(shiftCancellationsTable.weekId, weekIds), inArray(shiftCancellationsTable.factoryId, paidIds)))
       : [];
     const cancelled = new Set(cancels.map(c => `${c.weekId}|${c.factoryId}|${c.dayOfWeek}|${c.shift}`));
-    const selfWorkerIds = new Set<number>(picked.map(e => e.workerId));
-    const selfWorkers = selfWorkerIds.size
-      ? await db.select().from(workersTable).where(inArray(workersTable.id, [...selfWorkerIds]))
-      : [];
-    for (const w of selfWorkers) if (isSelfForMonth(w)) selfIds.add(w.id);
-    for (const e of picked) {
-      if (!selfIds.has(e.workerId)) continue;
+    for (const e of entries) {
+      if (!pairMixed(e.workerId, e.factoryId)) continue; // звичайна пара — з годин вище
       const ws = weekById.get(e.weekId);
       if (!ws) continue;
       const date = entryDateStr(String(ws), e.dayOfWeek);
       if (date < monthStart || date >= monthEnd) continue;
       if (cancelled.has(`${e.weekId}|${e.factoryId}|${e.dayOfWeek}|${e.shift}`)) continue;
+      if (isSelfOn(selfMap, e.workerId, e.factoryId, date)) {
+        if (e.pickedUpBy == null) continue; // сам доїхав — не платить
+      } else if (e.status === "absent") continue;
       const k = `${e.workerId}|${e.factoryId}`;
       shiftsByPair.set(k, (shiftsByPair.get(k) ?? 0) + 1);
     }

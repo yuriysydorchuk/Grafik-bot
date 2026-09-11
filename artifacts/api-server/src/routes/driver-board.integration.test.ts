@@ -1,7 +1,7 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { app, hasTestDb, resetDb, seedAdmin, closeDb, db, factoriesTable, workersTable, scheduleWeeksTable, scheduleEntriesTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, closeDb, db, factoriesTable, workersTable, scheduleWeeksTable, scheduleEntriesTable, workerSelfTransportTable } from "../test/harness.ts";
 import { detectPickupGaps } from "../services/pickupGaps.ts";
 
 // Фабрики без довозу (uses_transport=false) не отримують водіїв: вони не мають
@@ -37,7 +37,9 @@ test("driver-board lists only factories with agency transport", opts, async () =
 // щоб водій розумів, чому на борді менше людей, ніж у списку графіку фабрики.
 test("driver-board splits self-transport workers into selfCount", opts, async () => {
   const { withBus, week } = await seedTwoFactories();
-  const [selfW] = await db.insert(workersTable).values({ fullName: "Cezary Sam", selfTransport: true }).returning();
+  const [selfW] = await db.insert(workersTable).values({ fullName: "Cezary Sam" }).returning();
+  // по фабриці й поденно: self на withBus з 20.07 (день борду)
+  await db.insert(workerSelfTransportTable).values({ workerId: selfW!.id, factoryId: withBus.id, since: "2026-07-20", until: null });
   await db.insert(scheduleEntriesTable).values({ weekId: week.id, workerId: selfW!.id, factoryId: withBus.id, dayOfWeek: "mon", shift: "1" });
   const { cookie } = await seedAdmin();
   const res = await request(app).get("/api/driver-board?weekStart=2026-07-20").set("Cookie", cookie);

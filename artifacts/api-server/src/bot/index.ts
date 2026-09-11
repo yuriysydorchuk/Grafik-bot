@@ -112,6 +112,7 @@ import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
 import { registerTaskActions } from "./handlers/tasks";
 import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
+import { loadSelfTransport, isSelfOn } from "../services/selfTransport";
 
 bot.use(async (ctx, next) => {
   try {
@@ -2781,13 +2782,15 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
   const myShifts = [...new Set(sections.map(s => s.shift))];
   const entriesRaw = await db
-    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, selfTransport: workersTable.selfTransport })
+    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(eq(scheduleEntriesTable.weekId, c.weekId), eq(scheduleEntriesTable.dayOfWeek, c.dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[]), eq(scheduleEntriesTable.status, "scheduled")));
-  // Self-transport workers get to work on their own → not shown to the driver, and
-  // never auto-marked absent below; the scheduler marks their presence manually.
-  const entries = entriesRaw.filter(e => secKeySet.has(`${e.factoryId}-${e.shift}`) && !e.selfTransport);
+  // Self-transport workers (по фабриці й поденно, services/selfTransport.ts) get to
+  // work on their own → not shown to the driver, and never auto-marked absent
+  // below; the scheduler marks their presence manually.
+  const selfMap = await loadSelfTransport(entriesRaw.map(e => e.workerId));
+  const entries = entriesRaw.filter(e => secKeySet.has(`${e.factoryId}-${e.shift}`) && !isSelfOn(selfMap, e.workerId, e.factoryId, c.boardDate));
   if (entries.length === 0) return ctx.reply(tb(dl, "Немає кого забирати — усіх уже забрали інші водії, або явку вже відмічено."), menu());
 
   const workers: BoardWorker[] = entries.map(e => ({ key: `e${e.id}`, entryId: e.id, workerId: e.workerId, name: e.workerName ?? "—", factoryId: e.factoryId, shift: e.shift, boarded: false, unplanned: false }));
@@ -2933,10 +2936,13 @@ bot.action("brd:ok", async (ctx) => {
       .where(and(eq(driverTripsTable.weekId, weekId), eq(driverTripsTable.dayOfWeek, dayName), eq(driverTripsTable.factoryId, sec.factoryId), eq(driverTripsTable.shift, sec.shift as Shift)));
     const confirmedIds = new Set(trips.filter(t => t.pickup).map(t => t.driverId));
     const allConfirmed = assignedIds.length > 0 && assignedIds.every(id => confirmedIds.has(id));
-    // Self-transport workers are never auto-marked absent — the scheduler handles them.
-    const remaining = await db.select({ id: scheduleEntriesTable.id, name: workersTable.fullName })
+    // Self-transport workers (по фабриці й поденно) are never auto-marked absent —
+    // the scheduler handles them.
+    const remainingRaw = await db.select({ id: scheduleEntriesTable.id, workerId: scheduleEntriesTable.workerId, name: workersTable.fullName })
       .from(scheduleEntriesTable).leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), eq(scheduleEntriesTable.factoryId, sec.factoryId), eq(scheduleEntriesTable.shift, sec.shift as Shift), eq(scheduleEntriesTable.status, "scheduled"), ne(workersTable.selfTransport, true)));
+      .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), eq(scheduleEntriesTable.factoryId, sec.factoryId), eq(scheduleEntriesTable.shift, sec.shift as Shift), eq(scheduleEntriesTable.status, "scheduled")));
+    const remSelf = await loadSelfTransport(remainingRaw.map(r => r.workerId));
+    const remaining = remainingRaw.filter(r => !isSelfOn(remSelf, r.workerId, sec.factoryId, todayStr));
     if (allConfirmed) {
       for (const r of remaining) {
         await db.update(scheduleEntriesTable).set({ status: "absent" }).where(eq(scheduleEntriesTable.id, r.id));
@@ -3000,14 +3006,15 @@ bot.action(/^brd:edit:(\d+):(\w+):([\d-]+):(\d+)$/, async (ctx) => {
   const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
   const myShifts = [...new Set(sections.map(s => s.shift))];
   const entriesRaw = await db
-    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, selfTransport: workersTable.selfTransport, status: scheduleEntriesTable.status, pickedUpBy: scheduleEntriesTable.pickedUpBy })
+    .select({ id: scheduleEntriesTable.id, workerName: workersTable.fullName, workerId: scheduleEntriesTable.workerId, shift: scheduleEntriesTable.shift, factoryId: scheduleEntriesTable.factoryId, status: scheduleEntriesTable.status, pickedUpBy: scheduleEntriesTable.pickedUpBy })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .where(and(eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.dayOfWeek, dayName), inArray(scheduleEntriesTable.shift, myShifts as Shift[])));
-  // Correction touches only this driver's people: skip self-transport and workers
-  // boarded by a DIFFERENT driver.
+  // Correction touches only this driver's people: skip self-transport (по фабриці
+  // й поденно) and workers boarded by a DIFFERENT driver.
+  const editSelf = await loadSelfTransport(entriesRaw.map(e => e.workerId));
   const entries = entriesRaw.filter(e =>
-    secKeySet.has(`${e.factoryId}-${e.shift}`) && !e.selfTransport &&
+    secKeySet.has(`${e.factoryId}-${e.shift}`) && !isSelfOn(editSelf, e.workerId, e.factoryId, dateS) &&
     !(e.status === "present" && e.pickedUpBy != null && e.pickedUpBy !== driver.id));
   if (entries.length === 0) return ctx.answerCbQuery(tb(dl, "Немає кого коригувати."));
   const workers: BoardWorker[] = entries.map(e => ({
