@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable, workerChangesTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable, workerChangesTable, factoryPayoutRulesTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -259,6 +259,70 @@ test("додавання людини без профільної ставки: 
     .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "ANDROSIK", workerId: w4!.id });
   assert.equal(r4.body.rateBrutto, 40);
   assert.equal(r4.body.rateNetto, 33);
+});
+
+test("бонусна фабрика: стажовий бонус ручного рядка перечитується від годин місяця (stazMinHours)", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [fac] = await db.insert(factoriesTable).values({ name: "AGRAMEK", rateBrutto: 31.4, rateNetto: 25.35 } as any).returning();
+  await db.insert(factoryPayoutRulesTable).values({
+    factoryId: fac!.id, effectiveFrom: "2026-01-01", cashBonus: 1, stazBonus: true, stazMinHours: 160,
+    stazSteps: [{ days: 0, add: 0.5 }, { days: 365, add: 1 }],
+  } as any);
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Stazowy Jan", legalStatus: "dyplom", birthDate: "1990-01-01",
+    agramCashBonus: true, agramStazBonus: true, employmentStartDate: "2026-03-01",
+  } as any).returning();
+  // без годин стажовий бонус ще не гейтиться: 25.35 + 1 нал + 0.5 стаж
+  const r1 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "AGRAMEK", workerId: w!.id });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.rateNetto, 26.85);
+  assert.equal(r1.body.extras.facBonus, 1.5);
+  // 100 год < 160 → стажовий знімається, нал лишається: 25.35 + 1
+  const r2 = await request(app).patch(`/api/svodni/rows/${r1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 100 });
+  assert.equal(r2.body.rateNetto, 26.35, "стажовий бонус знято нижче порога годин");
+  assert.equal(r2.body.extras.facBonus, 1);
+  assert.equal(r2.body.doWyplaty, 2635, "100 × 26.35");
+  // 170 год ≥ 160 → стажовий повертається
+  const r3 = await request(app).patch(`/api/svodni/rows/${r1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 170 });
+  assert.equal(r3.body.rateNetto, 26.85);
+  assert.equal(r3.body.extras.facBonus, 1.5);
+  assert.equal(r3.body.doWyplaty, 4564.5, "170 × 26.85");
+  // профільна ставка від правки годин не чіпається
+  const [wAfter] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(wAfter!.hourlyRateNetto, null);
+
+  // стаж-only: нижче порога бонус 0, але маркер лишається → вище порога повертається
+  const [w2] = await db.insert(workersTable).values({
+    fullName: "Stazowy Piotr", legalStatus: "dyplom", birthDate: "1990-01-01",
+    agramCashBonus: false, agramStazBonus: true, employmentStartDate: "2026-03-01",
+  } as any).returning();
+  const s1 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "AGRAMEK", workerId: w2!.id });
+  assert.equal(s1.body.rateNetto, 25.85);
+  const s2 = await request(app).patch(`/api/svodni/rows/${s1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 100 });
+  assert.equal(s2.body.rateNetto, 25.35);
+  assert.equal(s2.body.extras.facBonus, 0, "маркер лишається з нулем");
+  const s3 = await request(app).patch(`/api/svodni/rows/${s1.body.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 170 });
+  assert.equal(s3.body.rateNetto, 25.85, "стажовий повернувся вище порога");
+  assert.equal(s3.body.extras.facBonus, 0.5);
+
+  // рядок БЕЗ маркера facBonus (бонус уже вшитий у ставку, як у legacy-рядків
+  // до 20.08.2026) правка годин не чіпає — інакше бонус подвоївся б
+  const [legacy] = await db.insert(svodniRowsTable).values({
+    periodMonth: "2026-06", city: "Люблін", firm: "ES", factoryLabel: "AGRAMEK", factoryId: fac!.id,
+    sortIdx: 9, rawName: "Stazowy Jan", workerId: w!.id, linkStatus: "confirmed", manual: true,
+    hours: 10, rateBrutto: 31.4, rateNetto: 26.35, extras: {}, hr: {}, sheetValues: {},
+  } as any).returning();
+  const r5 = await request(app).patch(`/api/svodni/rows/${legacy!.id}`).set("Cookie", owner).set(H)
+    .send({ field: "hours", value: 170 });
+  assert.equal(r5.body.rateNetto, 26.35, "без маркера ставка не рухається");
+  assert.equal(r5.body.extras.facBonus, undefined);
+  assert.equal(r5.body.doWyplaty, 4479.5, "170 × 26.35");
 });
 
 test("привʼязка: POST /svodni/link підвʼязує всі рядки імені в місті", opts, async () => {

@@ -2104,6 +2104,29 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
     } else set[field] = v;
   }
 
+  // бонусна фабрика (Agram нал+стаж, LST нал): стажовий бонус залежить від
+  // годин місяця (stazMinHours) — при правці годин вшитий facBonus і нетто
+  // перечитуються, як у from-hours (ручний рядок додається без годин, тож
+  // бонус там був нарахований без перевірки мінімуму). Лише рядки З маркером
+  // extras.facBonus: без маркера бонус був нулем через галочки профілю (не
+  // через години), а legacy-рядки до ери маркерів несуть бонус вшитим у
+  // ставку — нуль як «старий бонус» подвоїв би його (інцидент 22.08.2026)
+  if (field === "hours" && !isSegParent && row.workerId != null && row.factoryId != null
+    && typeof extras.facBonus === "number" && hasCashBonus(patchRule)) {
+    const [bw] = await db.select().from(workersTable).where(eq(workersTable.id, row.workerId));
+    if (bw) {
+      const stud26B = !!(row.isStudent && row.under26);
+      const oldB = extras.facBonus as number;
+      const newB = stud26B ? 0 : factoryBonusPerHour(bw, patchRule, row.periodMonth, (set.hours as number | null) ?? null);
+      if (newB !== oldB) {
+        // маркер лишається і з нулем: стаж-only бонус, знятий нижче порога,
+        // має повернутись, коли години знову перевищать stazMinHours
+        extras.facBonus = newB;
+        set.extras = extras;
+        if (row.rateNetto != null) set.rateNetto = Math.round(Math.max(0, row.rateNetto - oldB + newB) * 100) / 100;
+      }
+    }
+  }
   // перерахунок похідних (сайт — джерело: mismatch скидається);
   // порізаний батько похідні НЕ рахує тут — після запису піде сегментним двигуном
   const merged: any = { ...row, ...set, extras: set.extras ?? row.extras };
