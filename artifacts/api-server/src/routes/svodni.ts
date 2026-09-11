@@ -1113,23 +1113,39 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     const [y, m, d] = worker!.birthDate.split("-");
     hr.dataUrodzenia = `${d}.${m}.${y}`;
   }
-  // бонусні фабрики (Agram нал+стаж, LST нал): до профільної ставки додається
-  // бонус (він же в extras.facBonus — розклад тримає його готівкою);
-  // студенту до 26 бонуси не нараховуються
   // ефективний статус (за документами або вручну) — снапшот у рядок на момент додавання
   const effW = await effectiveViewOf(worker!);
   const stud26Add = effW.isStudent && !!under26;
-  const facBonus = !stud26Add && factory != null
-    ? factoryBonusPerHour(worker!, await payoutRuleForRow({ factoryId: factory.id, factoryLabel, periodMonth }), periodMonth, null)
-    : 0;
-  const prefillNetto = worker!.hourlyRateNetto != null
-    ? Math.round((worker!.hourlyRateNetto + facBonus) * 100) / 100
+  // Ставки — дзеркало from-hours: профіль (override) → правила фабрики (посада →
+  // найдешевша посада → базова пара). Після чистки профільних ставок (07.08.2026)
+  // профіль здебільшого порожній («авто»), тож без правил ручний рядок лишався
+  // без ставки. Бонусні фабрики (Agram нал+стаж, LST нал): бонус поверх нетто
+  // (він же в extras.facBonus — розклад тримає його готівкою); студент до 26 —
+  // нетто = брутто, без бонусів. Без статусу легалізації і без ставки — мінімалка
+  // («як по освядченню»). Eurocash: ставка від порогу з файлу фабрики — префілу нема.
+  const ruleOfAdd = await loadRateRules();
+  const addRule = factory != null ? await payoutRuleForRow({ factoryId: factory.id, factoryLabel, periodMonth }) : null;
+  const isBonusAdd = factory != null && hasCashBonus(addRule);
+  const isEurocashAdd = factory != null && EUROCASH_FACTORY_IDS.has(factory.id);
+  const baseAdd = resolveBaseRates(effW, ruleOfAdd(factory?.id ?? null, worker!.positionId), stud26Add);
+  const facBonus = !stud26Add && isBonusAdd ? factoryBonusPerHour(worker!, addRule, periodMonth, null) : 0;
+  const rateBrutto = isEurocashAdd ? null
+    : baseAdd.brutto ?? (effW.legalStatus == null || (isBonusAdd && !stud26Add) ? KSIEG_STD_BRUTTO() : null);
+  const bonusBaseAdd = stud26Add ? baseAdd.brutto : (baseAdd.netto ?? KSIEG_STD_NETTO());
+  const prefillNetto = isEurocashAdd ? null
+    : isBonusAdd ? (bonusBaseAdd != null ? Math.round((bonusBaseAdd + facBonus) * 100) / 100 : null)
+    : baseAdd.netto ?? (effW.legalStatus == null ? KSIEG_STD_NETTO() : null);
+  // секція — посада з профілю, без неї найдешевша посада фабрики (як у from-hours)
+  const addRules = ruleOfAdd(factory?.id ?? null, worker!.positionId);
+  const sectionPosIdAdd = worker!.positionId ?? addRules.cheapestPositionId ?? null;
+  const sectionAdd = factory?.usesPositions && sectionPosIdAdd != null
+    ? (await db.select({ name: positionsTable.name }).from(positionsTable).where(eq(positionsTable.id, sectionPosIdAdd)))[0]?.name ?? null
     : null;
   const [created] = await db.insert(svodniRowsTable).values({
     periodMonth, city, firm, factoryLabel, factoryId: factory?.id ?? null,
     sortIdx: (maxSort ?? -1) + 1, rawName: worker!.fullName,
     workerId: worker!.id, linkStatus: "confirmed", manual: true,
-    rateBrutto: worker!.hourlyRate ?? null, rateNetto: prefillNetto,
+    rateBrutto, rateNetto: prefillNetto, section: sectionAdd,
     hoursNotified: worker!.notifyHours ?? null,
     isStudent: effW.isStudent, under26,
     legalStatus: effW.legalStatus ?? null, legalSource: effW.legalSource,

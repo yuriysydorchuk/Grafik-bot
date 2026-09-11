@@ -212,6 +212,55 @@ test("додавання людини: префіл із профілю; нов�
   assert.equal(r4.status, 200);
 });
 
+test("додавання людини без профільної ставки: ставка з правил фабрики (посада → найдешевша посада → базова), як у from-hours", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [fac] = await db.insert(factoriesTable).values({ name: "ANDROSIK", usesPositions: true, rateBrutto: 30, rateNetto: 24 } as any).returning();
+  const [posCheap] = await db.insert(positionsTable).values({ name: "Pracownik produkcji" }).returning();
+  const [posMech] = await db.insert(positionsTable).values({ name: "Pomoc mechanika" }).returning();
+  await db.insert(factoryPositionsTable).values([
+    { factoryId: fac!.id, positionId: posCheap!.id, rate: 31.4, rateNetto: 25.35 },
+    { factoryId: fac!.id, positionId: posMech!.id, rate: 34.5, rateNetto: 34.5 },
+  ]);
+  // посада в профілі → пара посади; профільної ставки нема («авто»)
+  const [w1] = await db.insert(workersTable).values({
+    fullName: "Mechanik Jan", positionId: posMech!.id, legalStatus: "dyplom", birthDate: "1990-01-01",
+  } as any).returning();
+  const r1 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "ANDROSIK", workerId: w1!.id });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.rateBrutto, 34.5, "брутто з пари посади");
+  assert.equal(r1.body.rateNetto, 34.5, "нетто з пари посади");
+  assert.equal(r1.body.section, "Pomoc mechanika", "секція — посада профілю");
+
+  // без посади → найдешевша посада фабрики
+  const [w2] = await db.insert(workersTable).values({
+    fullName: "Nowy Bez Posady", legalStatus: "dyplom", birthDate: "1990-01-01",
+  } as any).returning();
+  const r2 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "ANDROSIK", workerId: w2!.id });
+  assert.equal(r2.body.rateBrutto, 31.4);
+  assert.equal(r2.body.rateNetto, 25.35);
+  assert.equal(r2.body.section, "Pracownik produkcji");
+
+  // студент до 26 → нетто = брутто
+  const [w3] = await db.insert(workersTable).values({
+    fullName: "Student Mlody", positionId: posMech!.id, isStudent: true, birthDate: "2005-01-01",
+  } as any).returning();
+  const r3 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "ANDROSIK", workerId: w3!.id });
+  assert.equal(r3.body.rateBrutto, 34.5);
+  assert.equal(r3.body.rateNetto, 34.5, "студент до 26: нетто = брутто");
+
+  // профільна ставка лишається override-ом
+  const [w4] = await db.insert(workersTable).values({
+    fullName: "Override Piotr", positionId: posMech!.id, hourlyRate: 40, hourlyRateNetto: 33, birthDate: "1990-01-01",
+  } as any).returning();
+  const r4 = await request(app).post("/api/svodni/rows").set("Cookie", owner).set(H)
+    .send({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "ANDROSIK", workerId: w4!.id });
+  assert.equal(r4.body.rateBrutto, 40);
+  assert.equal(r4.body.rateNetto, 33);
+});
+
 test("привʼязка: POST /svodni/link підвʼязує всі рядки імені в місті", opts, async () => {
   await seedRow();
   await seedRow({ periodMonth: "2026-05" }); // та сама людина, інший місяць
