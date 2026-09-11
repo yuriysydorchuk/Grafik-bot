@@ -65,7 +65,10 @@ async function setSession(req: any, res: any, admin: { id: number; name: string;
   const token = createToken(admin.id, admin.name, role, admin.tokenVersion ?? 0, sid);
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true, sameSite: "lax",
-    secure: process.env.NODE_ENV === "production", // HTTPS-only cookie in production
+    // Secure: за фактичним https (за Caddy — X-Forwarded-Proto через trust proxy) АБО на проді для
+    // будь-якого не-loopback хоста (щоб http в обхід проксі не видав cookie без Secure). Лише loopback
+    // по http без прапорця: локальний pm2 теж іде з NODE_ENV=production, а Safari відкидає Secure на http://localhost
+    secure: req.secure === true || (process.env.NODE_ENV === "production" && !/^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(String(req.hostname))),
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
   return sid;

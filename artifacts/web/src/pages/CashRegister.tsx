@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, AlertTriangle, PiggyBank, Wallet, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Tags, Check, Undo2 } from "lucide-react";
+import { Plus, Pencil, Trash2, AlertTriangle, PiggyBank, Wallet, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Tags, Check, Undo2, Search, X } from "lucide-react";
 import { get, post, patch, del } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
@@ -52,6 +52,11 @@ export default function CashRegister() {
   const [transferring, setTransferring] = useState(false);
   const [managingCats, setManagingCats] = useState(false);
   const [ackTarget, setAckTarget] = useState<AckTarget | null>(null);
+  // фільтри списку рухів — клієнтські (API віддає весь період одразу)
+  const [q, setQ] = useState("");
+  const [kindFilter, setKindFilter] = useState(""); // "" | in | out | transfer
+  const [catFilter, setCatFilter] = useState("");
+  const [onlyUnmatched, setOnlyUnmatched] = useState(false);
 
   const meta = useQuery<Meta>({ queryKey: ["cash-meta"], queryFn: () => get("/cash/meta") });
   const params = new URLSearchParams({ year });
@@ -96,6 +101,38 @@ export default function CashRegister() {
   const kasaMonthStr = `${year}-${monthNum}`;
   const nowMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const payoutsOngoing = kasaMonthStr >= nowMonthStr;
+
+  // opening-рядки з таблиці (шапки вкладок) — шум; ручні перерахунки показуємо
+  const visibleRows = (entries.data?.rows ?? []).filter(e => e.kind !== "opening" || e.box !== "office" || e.tabName === "manual");
+  // категорії для фільтра — лише ті, що реально є в поточному періоді
+  const catsPresent = (() => {
+    const keys = new Set<string>();
+    for (const e of visibleRows) if (e.category && e.category !== "transfer") keys.add(e.category);
+    return [...keys].map(k => ({ key: k, label: t(catLabel(k)) })).sort((a, b) => a.label.localeCompare(b.label, "uk"));
+  })();
+  const unmatchedOnly = isOffice && onlyUnmatched; // чекбокс є лише для каси офісу — на інших ящиках не діє
+  const filteredRows = (() => {
+    const needle = q.trim().toLowerCase();
+    const needleAmount = needle ? normAmount(needle) : "";
+    return visibleRows.filter(e => {
+      if (kindFilter === "transfer" ? !e.transferGroup : kindFilter ? e.kind !== kindFilter || !!e.transferGroup : false) return false;
+      if (catFilter && e.category !== catFilter) return false;
+      if (unmatchedOnly && !unmatchedCash.has(e.id)) return false;
+      if (!needle) return true;
+      const hay = [
+        e.description, e.note, e.entryDate, e.periodMonth,
+        e.box === "office" ? coName(e.companyId) : boxLabel(e.box),
+        e.category ? t(catLabel(e.category)) : "",
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (hay.includes(needle)) return true;
+      // сума: «4733», «4 733,00», «4733.5» — порівнюємо нормалізовано, по входженню
+      return !!needleAmount && /^[\d.]+$/.test(needleAmount) && e.amount.toFixed(2).includes(needleAmount);
+    });
+  })();
+  const filtersActive = !!(q.trim() || kindFilter || catFilter || unmatchedOnly);
+  const filteredIn = filteredRows.reduce((s, e) => e.kind === "in" ? s + e.amount : s, 0);
+  const filteredOut = filteredRows.reduce((s, e) => e.kind === "out" ? s + e.amount : s, 0);
+  const resetFilters = () => { setQ(""); setKindFilter(""); setCatFilter(""); setOnlyUnmatched(false); };
 
   return (
     <>
@@ -293,8 +330,39 @@ export default function CashRegister() {
       )}
 
       <Card className="mt-4 p-0">
-        <div className="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">{t("Рухи каси")}</div>
-        {entries.isFetching && !entries.data ? <div className="p-5"><Spinner /></div> : !(entries.data?.rows.length) ? <div className="p-5"><Empty>{t("Немає записів")}</Empty></div> : (
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3">
+          <div className="mr-2 text-sm font-semibold text-slate-700">{t("Рухи каси")}</div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+            <Input value={q} onChange={e => setQ(e.target.value)} placeholder={t("опис, нотатка, сума, фірма…")} className="w-60 pl-8" />
+          </div>
+          <Select value={kindFilter} onChange={e => setKindFilter(e.target.value)} className="w-36">
+            <option value="">{t("Всі напрями")}</option>
+            <option value="in">{t("Приходи")}</option>
+            <option value="out">{t("Видатки")}</option>
+            <option value="transfer">{t("Переміщення")}</option>
+          </Select>
+          <Select value={catFilter} onChange={e => setCatFilter(e.target.value)} className="w-48">
+            <option value="">{t("Усі категорії")}</option>
+            {catsPresent.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </Select>
+          {isOffice && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" checked={onlyUnmatched} onChange={e => setOnlyUnmatched(e.target.checked)} className="rounded border-slate-300" />
+              {t("лише без пари в банку")}
+            </label>
+          )}
+          {filtersActive && (
+            <button className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800" onClick={resetFilters}><X className="h-3.5 w-3.5" />{t("Скинути")}</button>
+          )}
+          {entries.data && (
+            <div className="ml-auto text-xs text-slate-500 tabular-nums">
+              {filtersActive ? t("Знайдено {n} з {m}", { n: filteredRows.length, m: visibleRows.length }) : t("Записів: {n}", { n: visibleRows.length })}
+              {filtersActive && filteredRows.length > 0 && <> · <span className="text-emerald-600">+{zl(filteredIn)}</span> / <span className="text-rose-600">−{zl(filteredOut)}</span></>}
+            </div>
+          )}
+        </div>
+        {entries.isFetching && !entries.data ? <div className="p-5"><Spinner /></div> : !visibleRows.length ? <div className="p-5"><Empty>{t("Немає записів")}</Empty></div> : !filteredRows.length ? <div className="p-5"><Empty>{t("Нічого не знайдено за фільтрами")}</Empty></div> : (
           <div className="max-h-[560px] overflow-y-auto">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-slate-200 text-xs uppercase text-slate-400">
@@ -307,8 +375,7 @@ export default function CashRegister() {
                 <th className="px-2 py-2"></th>
               </tr></thead>
               <tbody>
-                {/* opening-рядки з таблиці (шапки вкладок) — шум; ручні перерахунки показуємо */}
-                {entries.data!.rows.filter(e => e.kind !== "opening" || e.box !== "office" || e.tabName === "manual").map(e => {
+                {filteredRows.map(e => {
                   const cashAck = ackedCashById.get(e.id);
                   const catOptions = e.kind === "out" ? outCats : inCats;
                   return (
