@@ -178,8 +178,11 @@ export default function WorkerDetail() {
   const st = w.stats;
   // опції посад для інлайн-селекта: фабрика з посадами → її список, інакше каталог
   const selFactory = factories.find(f => f.id === w.factoryId);
-  const posOptions = ((selFactory?.usesPositions && (selFactory.positions?.length ?? 0) > 0 ? selFactory!.positions! : positions) as { id: number; name: string }[])
-    .map(p => ({ value: String(p.id), label: p.name }));
+  // у посад фабрики ключ — positionId (FactoryPositionConf), у каталогу — id; читати лише
+  // p.id давало value="undefined" → NaN → null у PATCH (посада стиралась при виборі, 09.2026)
+  const posOptions = (selFactory?.usesPositions && (selFactory.positions?.length ?? 0) > 0
+    ? selFactory!.positions!.map(p => ({ value: String(p.positionId), label: p.name ?? String(p.positionId) }))
+    : positions.map(p => ({ value: String(p.id), label: p.name })));
   const statusBadge = (s: string) =>
     s === "present" ? <Badge color="green">{t("вийшов")}</Badge>
     : s === "absent" ? <Badge color="rose">{t("не вийшов")}</Badge>
@@ -286,7 +289,7 @@ export default function WorkerDetail() {
             {/* Фірма/фабрика/стать — у шапці профілю (badge-select), не дублюємо рядками (редизайн 09.2026) */}
             <InfoRow icon={Briefcase} label={t("Посада")}>
               <InlineSelect value={w.positionId != null ? String(w.positionId) : ""}
-                onChange={v => { const p = v ? Number(v) : null; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
+                onChange={v => { const p = v ? Number(v) : null; if (p != null && !Number.isFinite(p)) return; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
                 options={posOptions} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
