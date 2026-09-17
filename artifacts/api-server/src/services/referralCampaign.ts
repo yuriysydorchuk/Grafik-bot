@@ -6,8 +6,8 @@
 // Тексти — bot/i18n.ts camp.*; суми/телефони/дедлайн — параметри, щоб наступна
 // кампанія не вимагала правок коду. Офісних (фабрика is_office) і людей з
 // адмін-Telegram у типовій вибірці немає; фінальний список обирає офіс галочками.
-import { db, workersTable, factoriesTable, adminsTable } from "@workspace/db";
-import { inArray } from "drizzle-orm";
+import { db, workersTable, factoriesTable, adminsTable, settingsTable } from "@workspace/db";
+import { eq, inArray } from "drizzle-orm";
 import { bot } from "../bot/instance";
 import { t, asLang, DATE_LOCALE, type Lang } from "../bot/i18n";
 import { escapeHtml } from "../bot/display";
@@ -34,6 +34,20 @@ export const REFERRAL_CAMPAIGN_DEFAULTS: ReferralCampaignParams = {
   phoneUk: "+48 792 991 524", phoneEn: "+48 530 878 711",
   officeAddress: "ul. Krakowskie Przedmieście 55, Lublin", officeHours: "пн–пт 9:00–16:00",
 };
+
+// Умови кампанії живуть у settings (key referral_campaign, JSON поверх дефолтів): те, що
+// офіс ввів у формі, далі читають бот («🎁 Запроси друга», бонус кандидата з deep-link) і
+// POST /candidates — інакше в розсилці обіцяли б одне, а в картку писали б дефолтні 200.
+const SETTINGS_KEY = "referral_campaign";
+export async function loadCampaignParams(): Promise<ReferralCampaignParams> {
+  const [row] = await db.select({ value: settingsTable.value }).from(settingsTable).where(eq(settingsTable.key, SETTINGS_KEY));
+  if (!row) return { ...REFERRAL_CAMPAIGN_DEFAULTS };
+  try { return parseCampaignParams(JSON.parse(row.value)); } catch { return { ...REFERRAL_CAMPAIGN_DEFAULTS }; }
+}
+export async function saveCampaignParams(p: ReferralCampaignParams): Promise<void> {
+  await db.insert(settingsTable).values({ key: SETTINGS_KEY, value: JSON.stringify(p) })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value: JSON.stringify(p), updatedAt: new Date() } });
+}
 
 const NUM_KEYS = ["rate", "bonus1", "bonus3", "bonus5", "minShifts", "friendBonus"] as const;
 const STR_KEYS = ["deadline", "phoneUk", "phoneEn", "officeAddress", "officeHours"] as const;

@@ -1,11 +1,12 @@
 // Вкладка «Кампанія «Приведи друга»» на /broadcast (17.09.2026): персональна розсилка
 // в бот мовою кожного працівника з його реферальним кодом (API routes/referralCampaign.ts).
-// Параметри (суми, дедлайн, телефони) редагуються тут, тексти — bot/i18n.ts camp.*.
+// Умови (суми, дедлайн, телефони) редагуються тут і ЗБЕРІГАЮТЬСЯ (settings.referral_campaign):
+// їх читають бот («🎁 Запроси друга», бонус кандидата) і картки кандидатів. Тексти — bot/i18n.ts camp.*.
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { Send, Search, Eye } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Send, Search, Eye, Save } from "lucide-react";
 import { toast } from "sonner";
-import { get, post } from "../lib/api";
+import { get, post, put } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Empty, Label } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
@@ -18,7 +19,7 @@ type Recipient = {
   id: number; fullName: string; telegramId: string | null; language: string | null; isActive: boolean;
   factoryId: number | null; factoryName: string | null; isOffice: boolean; isAdmin: boolean; referralCode: string | null;
 };
-type Info = { defaults: Params; languages: string[]; recipients: Recipient[] };
+type Info = { defaults: Params; params: Params; languages: string[]; recipients: Recipient[] };
 type Preview = { worker: string; friend: string; friendBtn: string; link: string };
 type SendResult = { notified: number; skipped: number; failed: { id: number; fullName: string; error: string }[] };
 
@@ -27,31 +28,48 @@ const LANG_NAME: Record<string, string> = { uk: "Українська", en: "Eng
 export default function ReferralCampaignPanel() {
   const t = useT();
   const confirm = useConfirm();
+  const qc = useQueryClient();
   const { data, isLoading } = useQuery<Info>({ queryKey: ["referral-campaign"], queryFn: () => get("/referral-campaign") });
   const [params, setParams] = useState<Params | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [inclActive, setInclActive] = useState(true);
   const [inclFired, setInclFired] = useState(true);
   const [exclOffice, setExclOffice] = useState(true);
   const [exclAdmins, setExclAdmins] = useState(true);
   const [excluded, setExcluded] = useState<Set<number>>(new Set()); // ручні зняті галочки
   const [q, setQ] = useState("");
+  const [fFactory, setFFactory] = useState(""); // фільтр списку: фабрика ("" = всі, "none" = без фабрики)
+  const [fLang, setFLang] = useState("");       // фільтр списку: мова
   const [prevLang, setPrevLang] = useState("uk");
   const [prevActive, setPrevActive] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  useEffect(() => { if (data && !params) setParams(data.defaults); }, [data, params]);
+  useEffect(() => { if (data && !params) setParams(data.params ?? data.defaults); }, [data, params]);
 
   const base = useMemo(() => (data?.recipients ?? []).filter(r =>
     (r.isActive ? inclActive : inclFired) && !(exclOffice && r.isOffice) && !(exclAdmins && r.isAdmin),
   ), [data, inclActive, inclFired, exclOffice, exclAdmins]);
   const chosen = useMemo(() => base.filter(r => !excluded.has(r.id)), [base, excluded]);
-  const filtered = useMemo(() => base.filter(r => !q || r.fullName.toLowerCase().includes(q.toLowerCase())), [base, q]);
-  const byLang = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of chosen) { const l = r.language || "uk"; m.set(l, (m.get(l) ?? 0) + 1); }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [chosen]);
+  const filtered = useMemo(() => base.filter(r =>
+    (!q || r.fullName.toLowerCase().includes(q.toLowerCase()))
+    && (!fFactory || (fFactory === "none" ? r.factoryId == null : String(r.factoryId) === fFactory))
+    && (!fLang || (r.language || "uk") === fLang),
+  ), [base, q, fFactory, fLang]);
+  // розподіл обраних по мовах і фабриках (для бокової панелі)
+  const byLang = useMemo(() => countBy(chosen, r => r.language || "uk"), [chosen]);
+  const byFactory = useMemo(() => countBy(chosen, r => r.factoryName ?? "—"), [chosen]);
+  const factoryOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of base) if (r.factoryId != null && r.factoryName) m.set(String(r.factoryId), r.factoryName);
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], "pl"));
+  }, [base]);
+  const hasNoFactory = base.some(r => r.factoryId == null);
 
+  const saveParams = useMutation({
+    mutationFn: () => put<Params>("/referral-campaign/params", { params }),
+    onSuccess: (p) => { setParams(p); setDirty(false); qc.invalidateQueries({ queryKey: ["referral-campaign"] }); toast.success(t("Умови збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const doPreview = useMutation({
     mutationFn: () => post<Preview>("/referral-campaign/preview", { lang: prevLang, isActive: prevActive, params }),
     onSuccess: setPreview,
@@ -59,26 +77,37 @@ export default function ReferralCampaignPanel() {
   });
   const send = useMutation({
     mutationFn: () => post<SendResult>("/referral-campaign/send", { workerIds: chosen.map(r => r.id), params }),
-    onSuccess: (r) => toast.success(t("Надіслано: {n}", { n: r.notified }), {
-      description: r.failed.length ? t("Не доставлено ({n}): {names}", { n: r.failed.length, names: r.failed.slice(0, 5).map(f => f.fullName).join(", ") }) : undefined,
-      duration: 10000,
-    }),
+    onSuccess: (r) => {
+      setDirty(false); qc.invalidateQueries({ queryKey: ["referral-campaign"] });
+      toast.success(t("Надіслано: {n}", { n: r.notified }), {
+        description: r.failed.length ? t("Не доставлено ({n}): {names}", { n: r.failed.length, names: r.failed.slice(0, 5).map(f => f.fullName).join(", ") }) : undefined,
+        duration: 10000,
+      });
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
   if (isLoading || !params) return <Spinner />;
 
   // зміна умов скидає прев'ю — щоб оператор не підтвердив відправку по застарілому тексту
-  const upd = (k: keyof Params, v: string | number) => { setParams({ ...params, [k]: v }); setPreview(null); };
+  const upd = (k: keyof Params, v: string | number) => { setParams({ ...params, [k]: v }); setPreview(null); setDirty(true); };
   const num = (k: keyof Params) => ({ type: "number" as const, value: String(params[k]), onChange: (e: any) => upd(k, Number(e.target.value)) });
   const str = (k: keyof Params) => ({ value: String(params[k]), onChange: (e: any) => upd(k, e.target.value) });
   const toggle = (id: number) => setExcluded(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const excludeIds = (ids: number[]) => setExcluded(s => { const n = new Set(s); for (const id of ids) n.add(id); return n; });
+  const includeIds = (ids: number[]) => setExcluded(s => { const n = new Set(s); for (const id of ids) n.delete(id); return n; });
+  const isFiltered = !!(q || fFactory || fLang);
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
         <Card className="p-4">
-          <div className="mb-3 text-sm font-medium text-slate-600">{t("Умови кампанії")}</div>
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-sm font-medium text-slate-600">{t("Умови кампанії")}</span>
+            <Button variant="secondary" loading={saveParams.isPending} disabled={!dirty} onClick={() => saveParams.mutate()}>
+              <Save className="h-4 w-4" /> {t("Зберегти умови")}
+            </Button>
+          </div>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
             <div><Label>{t("Ставка до, zł/год")}</Label><Input {...num("rate")} /></div>
             <div><Label>{t("Бонус за 1 друга, zł")}</Label><Input {...num("bonus1")} /></div>
@@ -92,6 +121,7 @@ export default function ReferralCampaignPanel() {
             <div className="md:col-span-2"><Label>{t("Адреса офісу")}</Label><Input {...str("officeAddress")} /></div>
             <div><Label>{t("Години офісу")}</Label><Input {...str("officeHours")} placeholder="пн–пт 9:00–16:00" /></div>
           </div>
+          <p className="mt-2 text-xs text-slate-400">{t("Збережені умови бачить бот у «🎁 Запроси друга», а бонус за 1 друга підставляється в картку кожного нового кандидата. Відправка кампанії зберігає їх автоматично.")}</p>
         </Card>
 
         <Card className="p-4">
@@ -123,13 +153,31 @@ export default function ReferralCampaignPanel() {
         </Card>
 
         <Card className="p-4">
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="text-sm font-medium text-slate-600">{t("Отримувачі")} ({chosen.length}/{base.length})</span>
-            <button className="text-xs text-slate-400 hover:text-slate-600" onClick={() => setExcluded(new Set())}>{t("Повернути всіх")}</button>
+            <span className="ml-auto flex flex-wrap gap-x-3 text-xs">
+              <button className="text-slate-500 hover:text-slate-700" onClick={() => includeIds(base.map(r => r.id))}>{t("Вибрати всіх")}</button>
+              <button className="text-slate-500 hover:text-slate-700" onClick={() => excludeIds(base.map(r => r.id))}>{t("Зняти всіх")}</button>
+              {isFiltered && <>
+                <button className="text-blue-600 hover:text-blue-700" onClick={() => includeIds(filtered.map(r => r.id))}>{t("Вибрати видимих ({n})", { n: filtered.length })}</button>
+                <button className="text-blue-600 hover:text-blue-700" onClick={() => excludeIds(filtered.map(r => r.id))}>{t("Зняти видимих ({n})", { n: filtered.length })}</button>
+              </>}
+            </span>
           </div>
-          <div className="relative mb-2">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <Input placeholder={t("Пошук")} value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+          <div className="mb-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <Input placeholder={t("Пошук")} value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+            </div>
+            <Select value={fFactory} onChange={e => setFFactory(e.target.value)}>
+              <option value="">{t("Усі фабрики")}</option>
+              {factoryOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              {hasNoFactory && <option value="none">{t("Без фабрики")}</option>}
+            </Select>
+            <Select value={fLang} onChange={e => setFLang(e.target.value)}>
+              <option value="">{t("Усі мови")}</option>
+              {(data?.languages ?? []).map(l => <option key={l} value={l}>{LANG_NAME[l] ?? l}</option>)}
+            </Select>
           </div>
           <div className="max-h-96 space-y-0.5 overflow-y-auto">
             {filtered.map(r => (
@@ -156,16 +204,43 @@ export default function ReferralCampaignPanel() {
             <label className="flex items-center gap-2"><input type="checkbox" checked={exclOffice} onChange={e => setExclOffice(e.target.checked)} /> {t("Без офісних (фабрика Biuro)")}</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={exclAdmins} onChange={e => setExclAdmins(e.target.checked)} /> {t("Без адмінів панелі")}</label>
           </div>
-          <div className="mt-3 text-xs text-slate-500">
-            {byLang.map(([l, n]) => <div key={l}>{LANG_NAME[l] ?? l}: <b>{n}</b></div>)}
-          </div>
           <p className="mt-2 text-xs text-slate-400">{t("Кожен отримає 2 повідомлення своєю мовою: умови зі своїм кодом і готовий текст для пересилання другові з кнопкою.")}</p>
           <Button className="mt-3 w-full" loading={send.isPending} disabled={!chosen.length}
             onClick={async () => { if (await confirm({ title: t("Надіслати кампанію {n} працівникам?", { n: chosen.length }), message: t("Це реальні повідомлення людям у Telegram. Перевірте прев'ю кожною мовою."), confirmText: t("Надіслати") })) send.mutate(); }}>
             <Send className="h-4 w-4" /> {t("Надіслати кампанію")}
           </Button>
         </Card>
+
+        <Card className="p-4">
+          <div className="mb-2 text-sm font-medium text-slate-600">{t("Обрано за мовами")}</div>
+          <div className="space-y-0.5 text-xs text-slate-600">
+            {byLang.map(([l, n]) => (
+              <button key={l} className="flex w-full items-center justify-between rounded px-1 py-0.5 hover:bg-slate-50" onClick={() => setFLang(l)} title={t("Показати в списку")}>
+                <span>{LANG_NAME[l] ?? l}</span><b>{n}</b>
+              </button>
+            ))}
+            {!byLang.length && <div className="text-slate-400">—</div>}
+          </div>
+          <div className="mb-2 mt-3 text-sm font-medium text-slate-600">{t("Обрано за фабриками")}</div>
+          <div className="max-h-64 space-y-0.5 overflow-y-auto text-xs text-slate-600">
+            {byFactory.map(([f, n]) => {
+              const id = factoryOptions.find(([, name]) => name === f)?.[0] ?? (f === "—" ? "none" : "");
+              return (
+                <button key={f} className="flex w-full items-center justify-between rounded px-1 py-0.5 hover:bg-slate-50" onClick={() => setFFactory(id)} title={t("Показати в списку")}>
+                  <span className="truncate">{f}</span><b>{n}</b>
+                </button>
+              );
+            })}
+            {!byFactory.length && <div className="text-slate-400">—</div>}
+          </div>
+        </Card>
       </div>
     </div>
   );
+}
+
+function countBy(rows: Recipient[], key: (r: Recipient) => string): [string, number][] {
+  const m = new Map<string, number>();
+  for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); }
+  return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "pl"));
 }
