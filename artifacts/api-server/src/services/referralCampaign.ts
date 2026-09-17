@@ -104,6 +104,23 @@ export function renderCampaign(
   };
 }
 
+// Inline-кнопки під повідомленням працівнику (і під «🎁 Запроси друга»): текст для друга
+// приходить лише на запит (рішення 17.09.2026 — не спамити другим повідомленням),
+// «копіювати» = той самий текст у <pre> (тап по блоку копіює), «подати кандидата» = діалог у боті.
+export function campaignKeyboard(lang: Lang) {
+  return { inline_keyboard: [
+    [{ text: t(lang, "camp.btnFriend"), callback_data: "camp:friend" }],
+    [{ text: t(lang, "camp.btnCopy"), callback_data: "camp:copy" }],
+    [{ text: t(lang, "camp.btnSubmit"), callback_data: "camp:submit" }],
+  ] };
+}
+
+// Текст для друга як plain-text у <pre>: HTML-теги прибираємо, сутності повертаємо, потім екрануємо заново.
+export function friendCopyHtml(friendHtml: string): string {
+  const plain = friendHtml.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return `<pre>${escapeHtml(plain)}</pre>`;
+}
+
 export type CampaignRecipient = {
   id: number; fullName: string; telegramId: string | null; language: string | null; isActive: boolean;
   factoryId: number | null; factoryName: string | null; isOffice: boolean; isAdmin: boolean; referralCode: string | null;
@@ -140,8 +157,8 @@ export type CampaignSendResult = { notified: number; skipped: number; failed: { 
 let campaignInProgress = false;
 export const isCampaignInProgress = () => campaignInProgress;
 
-// Відправка обраним: обидва повідомлення послідовно; збій одного адресата не зупиняє решту.
-// ~20 msg/s (пауза 50 мс) — під лімітом Telegram (30/s); 200 людей × 2 ≈ 25 с.
+// Відправка обраним: одне повідомлення з кнопками; збій одного адресата не зупиняє решту.
+// ~20 msg/s (пауза 50 мс) — під лімітом Telegram (30/s); 200 людей ≈ 15 с.
 export async function sendReferralCampaign(workerIds: number[], p: ReferralCampaignParams): Promise<CampaignSendResult> {
   const res: CampaignSendResult = { notified: 0, skipped: 0, failed: [] };
   if (!workerIds.length) return res;
@@ -163,13 +180,10 @@ async function sendCampaignInner(workerIds: number[], p: ReferralCampaignParams,
     seen.add(w.telegramId);
     try {
       const code = await ensureReferralCode(w.id);
-      const r = renderCampaign(asLang(w.language), p, w, code, botUsername);
-      await bot.telegram.sendMessage(w.telegramId, r.worker, { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
-      await sleep(50);
-      await bot.telegram.sendMessage(w.telegramId, r.friend, {
-        parse_mode: "HTML", link_preview_options: { is_disabled: true },
-        reply_markup: { inline_keyboard: [[{ text: r.friendBtn, url: r.link }]] },
-      });
+      const lang = asLang(w.language);
+      const r = renderCampaign(lang, p, w, code, botUsername);
+      // одне повідомлення з кнопками; текст для друга людина бере кнопкою (camp:friend / camp:copy)
+      await bot.telegram.sendMessage(w.telegramId, r.worker, { parse_mode: "HTML", link_preview_options: { is_disabled: true }, reply_markup: campaignKeyboard(lang) });
       res.notified++;
       await sleep(50);
     } catch (e: any) {

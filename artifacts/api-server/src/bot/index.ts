@@ -8,7 +8,7 @@ import {
   vehiclesTable, shiftCancellationsTable, factoryHoursTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray, ne, isNull, gte, lt, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, isNull, isNotNull, gte, lt, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   getWorkersWhoHaventSubmitted,
@@ -28,7 +28,7 @@ import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
 import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../lib/referral";
-import { loadCampaignParams, campaignVars } from "../services/referralCampaign";
+import { loadCampaignParams, campaignVars, campaignKeyboard, renderCampaign, friendCopyHtml } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
@@ -944,7 +944,32 @@ bot.hears(trAll("menu.referral"), async (ctx) => {
   } else {
     msg += t(lang, "ref.none");
   }
-  return ctx.reply(msg, { parse_mode: "HTML" });
+  return ctx.reply(msg, { parse_mode: "HTML", reply_markup: campaignKeyboard(lang) });
+});
+
+// ── Кнопки кампанії «приведи друга» (під розсилкою і під «🎁 Запроси друга») ──
+// Працює і для звільнених (вони теж запрошують) — шукаємо профіль за Telegram без фільтра активності.
+bot.action(/^camp:(friend|copy|submit)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  await ctx.answerCbQuery();
+  const worker = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
+  if (!worker) return;
+  const lang = wlang(worker);
+  const kind = ctx.match[1];
+  if (kind === "submit") {
+    setState(tid, "worker_submit:name", { workerId: worker.id, lang });
+    return ctx.reply(t(lang, "sub.askName"), { parse_mode: "Markdown", ...cancelKb(lang) });
+  }
+  const code = await ensureReferralCode(worker.id);
+  const r = renderCampaign(lang, await loadCampaignParams(), worker, code, ctx.botInfo.username);
+  if (kind === "copy") {
+    return ctx.reply(t(lang, "camp.copyHint") + "\n" + friendCopyHtml(r.friend), { parse_mode: "HTML" });
+  }
+  await ctx.reply(t(lang, "camp.friendHint"));
+  return ctx.reply(r.friend, {
+    parse_mode: "HTML", link_preview_options: { is_disabled: true },
+    reply_markup: { inline_keyboard: [[{ text: r.friendBtn, url: r.link }]] },
+  });
 });
 
 // ─── Salary advance: worker requests + sees status ────────────────────────────
@@ -3483,6 +3508,47 @@ bot.on("text", async (ctx) => {
     return ctx.reply(t(lang, "ref.phone"), { parse_mode: "Markdown" });
   }
 
+  // ── Працівник сам подає кандидата («👤 Подати кандидата»): імʼя → телефон → кандидат ──
+  if (state?.action === "worker_submit:name") {
+    const lang = asLang(state.data.lang);
+    const fullName = text.trim().replace(/\s+/g, " ");
+    if (fullName.length < 3 || !/^[a-ząćęłńóśźż' -]+$/i.test(fullName)) return ctx.reply(t(lang, "signup.badName"));
+    setState(tid, "worker_submit:phone", { ...state.data, fullName });
+    return ctx.reply(t(lang, "sub.askPhone"), { parse_mode: "Markdown", ...cancelKb(lang) });
+  }
+  if (state?.action === "worker_submit:phone") {
+    const { data } = state;
+    const lang = asLang(data.lang);
+    const phone = text.trim();
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 9 || digits.length > 15) return ctx.reply(t(lang, "sub.badPhone"));
+    const referrer = (await db.select().from(workersTable).where(eq(workersTable.id, Number(data.workerId))))[0];
+    if (!referrer) { clearState(tid); return; }
+    // дубль по номеру (порівнюємо цифри без форматування) — не плодимо кандидатів
+    const existing = await db.select({ id: candidatesTable.id, phone: candidatesTable.phone }).from(candidatesTable).where(isNotNull(candidatesTable.phone));
+    if (existing.some(c => (c.phone ?? "").replace(/\D/g, "") === digits)) {
+      clearState(tid);
+      return ctx.reply(t(lang, "sub.dup"), await workerMenuFor(await getWorker(tid), lang));
+    }
+    await db.insert(candidatesTable).values({
+      funnelId: await ensureReferralFunnel(),
+      referrerWorkerId: referrer.id, fullName: data.fullName, phone,
+      factoryId: referrer.factoryId ?? null, stage: "new",
+      bonusAmount: (await loadCampaignParams()).bonus1,
+      notes: "Подав працівник через бот",
+    });
+    clearState(tid);
+    // сповіщення офісу — кожному окремо: один заблокований чат не має зривати решту
+    const staff = await db.select().from(adminsTable).catch(() => []);
+    for (const a of staff) {
+      if (!a.telegramId || (a.role !== "owner" && a.role !== "scheduler")) continue;
+      try {
+        await bot.telegram.sendMessage(a.telegramId, `🆕 Новий кандидат (подав працівник):\n👤 <b>${escapeHtml(data.fullName)}</b>\n📞 ${escapeHtml(phone)}\n🙋 Подав: ${escapeHtml(referrer.fullName)}\n\nЗателефонуйте кандидату; опрацювання — в панелі → «Реферали».`, { parse_mode: "HTML" });
+      } catch { /* best-effort */ }
+    }
+    return ctx.reply(t(lang, "sub.done", { name: mdSafe(data.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(await getWorker(tid), lang)) });
+  }
+
   // ── Referral candidate signup: phone → create candidate ───────────
   if (state?.action === "candidate_signup:phone") {
     const { data } = state;
@@ -3491,6 +3557,19 @@ bot.on("text", async (ctx) => {
     // guard against duplicate candidate (same Telegram)
     const dup = (await db.select().from(candidatesTable).where(eq(candidatesTable.telegramId, tid)))[0];
     if (dup) { clearState(tid); return ctx.reply(t(lang, "ref.alreadyCand")); }
+    // друга вже подав працівник кнопкою «👤 Подати кандидата» (картка без Telegram) — той самий
+    // номер: привʼязуємо Telegram до наявної картки замість другої (ревʼю 17.09.2026)
+    const digits = (phone ?? "").replace(/\D/g, "");
+    if (digits.length >= 9) {
+      const byPhone = (await db.select({ id: candidatesTable.id, phone: candidatesTable.phone, telegramId: candidatesTable.telegramId })
+        .from(candidatesTable).where(isNotNull(candidatesTable.phone)))
+        .find(c => !c.telegramId && (c.phone ?? "").replace(/\D/g, "") === digits);
+      if (byPhone) {
+        await db.update(candidatesTable).set({ telegramId: tid }).where(eq(candidatesTable.id, byPhone.id));
+        clearState(tid);
+        return ctx.reply(t(lang, "ref.done", { name: mdSafe(data.fullName) }), { parse_mode: "Markdown" });
+      }
+    }
     const [cand] = await db.insert(candidatesTable).values({
       funnelId: await ensureReferralFunnel(), // built-in referral funnel — else invisible on the board
       referrerWorkerId: data.referrerId, fullName: data.fullName, telegramId: tid,

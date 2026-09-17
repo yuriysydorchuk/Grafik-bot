@@ -157,7 +157,7 @@ export default function ReferralCampaignPanel() {
                 <div className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700" dangerouslySetInnerHTML={{ __html: preview.worker }} />
               </div>
               <div>
-                <div className="mb-1 text-xs text-slate-400">{t("2. Для пересилання другові")}</div>
+                <div className="mb-1 text-xs text-slate-400">{t("2. Для друга (приходить по кнопці «📨 Повідомлення для друга»)")}</div>
                 <div className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700" dangerouslySetInnerHTML={{ __html: preview.friend }} />
                 <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-center text-sm text-blue-600">{preview.friendBtn}</div>
               </div>
@@ -217,7 +217,7 @@ export default function ReferralCampaignPanel() {
             <label className="flex items-center gap-2"><input type="checkbox" checked={exclOffice} onChange={e => setExclOffice(e.target.checked)} /> {t("Без офісних (фабрика Biuro)")}</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={exclAdmins} onChange={e => setExclAdmins(e.target.checked)} /> {t("Без адмінів панелі")}</label>
           </div>
-          <p className="mt-2 text-xs text-slate-400">{t("Кожен отримає 2 повідомлення своєю мовою: умови зі своїм кодом і готовий текст для пересилання другові з кнопкою.")}</p>
+          <p className="mt-2 text-xs text-slate-400">{t("Кожен отримає 1 повідомлення своєю мовою з кодом і трьома кнопками: текст для друга, текст для копіювання, подати кандидата.")}</p>
           <Button className="mt-3 w-full" loading={send.isPending} disabled={!chosen.length}
             onClick={async () => { if (await confirm({ title: t("Надіслати кампанію {n} працівникам?", { n: chosen.length }), message: t("Це реальні повідомлення людям у Telegram. Перевірте прев'ю кожною мовою."), confirmText: t("Надіслати") })) send.mutate(); }}>
             <Send className="h-4 w-4" /> {t("Надіслати кампанію")}

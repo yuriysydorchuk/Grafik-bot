@@ -69,6 +69,63 @@ test("ref<невідомий код>: відмова без стану", opts, a
   assert.equal((await db.select().from(candidatesTable)).length, 0);
 });
 
+test("camp:submit — працівник (звільнений) сам подає кандидата: імʼя → телефон → кандидат з реферером і бонусом", opts, async () => {
+  const r = await seedReferrer(false);
+  await pressButton("700100", "camp:submit");
+  assert.match(sentText(), /імʼя та прізвище/i);
+  resetSent();
+  await sendText("700100", "Олег Тест");
+  assert.match(sentText(), /латиницею/i);
+  resetSent();
+  await sendText("700100", "Oleh Test");
+  assert.match(sentText(), /номер телефону/i);
+  resetSent();
+  await sendText("700100", "123");
+  assert.match(sentText(), /кодом країни/i);
+  resetSent();
+  await sendText("700100", "+48 601 000 000");
+  assert.match(sentText(), /додано як вашого кандидата/);
+  const [c] = await db.select().from(candidatesTable).where(eq(candidatesTable.phone, "+48 601 000 000"));
+  assert.equal(c?.referrerWorkerId, r.id);
+  assert.equal(c?.fullName, "Oleh Test");
+  assert.equal(c?.bonusAmount, 200);
+  // повторна подача того ж номера — дубль не створюється
+  resetSent();
+  await pressButton("700100", "camp:submit");
+  await sendText("700100", "Oleh Test");
+  await sendText("700100", "48601000000");
+  assert.match(sentText(), /уже є в списку/);
+  assert.equal((await db.select().from(candidatesTable)).length, 1);
+});
+
+test("друг, поданий працівником, потім реєструється сам з тим же номером → одна картка з Telegram", opts, async () => {
+  const r = await seedReferrer(true);
+  await pressButton("700100", "camp:submit");
+  await sendText("700100", "Oleh Test");
+  await sendText("700100", "+48 601 000 000");
+  await applyAsFriend(`ref${r.code}`); // applyAsFriend вводить "+48 600 000 000" — інший номер → друга картка
+  assert.equal((await db.select().from(candidatesTable)).length, 2);
+  // а той самий номер (інше форматування) — привʼязка до наявної картки
+  await sendStart("700300", `ref${r.code}`);
+  await pressButton("700300", "setlang:uk");
+  await sendText("700300", "Oleh Test");
+  resetSent();
+  await sendText("700300", "48-601-000-000");
+  assert.match(sentText(), /Дякуємо/);
+  const all = await db.select().from(candidatesTable);
+  assert.equal(all.length, 2);
+  assert.equal(all.find(c => c.phone === "+48 601 000 000")?.telegramId, "700300");
+});
+
+test("camp:friend — текст для друга приходить окремим повідомленням з URL-кнопкою на deep-link", opts, async () => {
+  const r = await seedReferrer(true);
+  await pressButton("700100", "camp:friend");
+  const friend = sent.find(s => /Euro Support/.test(s.text ?? ""));
+  assert.ok(friend, "friend message sent");
+  const url = friend!.extra?.reply_markup?.inline_keyboard?.[0]?.[0]?.url ?? "";
+  assert.match(url, new RegExp(`start=ref${r.code}$`));
+});
+
 test("normalizeReferralCode: телефонні варіанти написання", () => {
   assert.equal(normalizeReferralCode(" es 7k3mx "), "ES-7K3MX");
   assert.equal(normalizeReferralCode("ES-7K3MX"), "ES-7K3MX");
