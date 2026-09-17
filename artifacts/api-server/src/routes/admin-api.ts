@@ -28,6 +28,8 @@ import {
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
+import { findWorkerByReferralCode } from "../lib/referral";
+import { REFERRAL_CAMPAIGN_DEFAULTS } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
@@ -364,7 +366,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
   const selfMapAll = await loadSelfTransport();
   const rows = (await db
     .select({
-      id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode,
+      id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, referralCode: workersTable.referralCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
       nationality: workersTable.nationality, language: workersTable.language,
@@ -1642,8 +1644,15 @@ router.post("/candidates/:id/followup", RW, async (req, res) => {
 });
 
 router.post("/candidates", RW, async (req, res) => {
-  const { fullName, phone, factoryId, referrerWorkerId, stage, notes } = req.body ?? {};
+  const { fullName, phone, factoryId, stage, notes } = req.body ?? {};
   if (!fullName?.trim()) return fail(res, 400, "Вкажіть ім'я");
+  // Реферер — id або код «ES-XXXXX», який кандидат назвав по телефону/в офісі (кампанія 17.09.2026).
+  let referrerWorkerId: number | null = req.body?.referrerWorkerId ? Number(req.body.referrerWorkerId) : null;
+  if (!referrerWorkerId && typeof req.body?.referrerCode === "string" && req.body.referrerCode.trim()) {
+    const ref = await findWorkerByReferralCode(req.body.referrerCode);
+    if (!ref) return fail(res, 400, "Реферальний код не знайдено");
+    referrerWorkerId = ref.id;
+  }
   const funnelId = req.body?.funnelId != null ? Number(req.body.funnelId) : await referralFunnelId();
   const funnel = funnelId != null ? await getFunnel(funnelId) : undefined;
   const keys = (funnel?.stages ?? []).map(s => s.key);
@@ -1652,9 +1661,10 @@ router.post("/candidates", RW, async (req, res) => {
     funnelId: funnelId ?? null,
     fullName: fullName.trim(), phone: phone?.trim() || null, email: req.body?.email?.trim() || null,
     factoryId: factoryId ? Number(factoryId) : null,
-    referrerWorkerId: referrerWorkerId ? Number(referrerWorkerId) : null,
+    referrerWorkerId,
     assignedAdminId: req.body?.assignedAdminId != null ? Number(req.body.assignedAdminId) : null,
     stage: st, notes: notes?.trim() || null,
+    bonusAmount: referrerWorkerId ? REFERRAL_CAMPAIGN_DEFAULTS.bonus1 : null, // базовий бонус кампанії
   }).returning();
   await logActivity(c!.id, actingAdminId(req), "created", `Кандидата створено${referrerWorkerId ? " (реферал)" : ""}`);
   ok(res, c);

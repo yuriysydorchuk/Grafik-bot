@@ -332,6 +332,7 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
   const [stage, setStage] = useState(candidate?.stage ?? funnel.stages[0]?.key ?? "");
   const [factoryId, setFactoryId] = useState(candidate?.factoryId ? String(candidate.factoryId) : "");
   const [referrerWorkerId, setReferrerWorkerId] = useState(candidate?.referrerWorkerId ? String(candidate.referrerWorkerId) : "");
+  const [refCodeQ, setRefCodeQ] = useState("");
   const [assignedAdminId, setAssignedAdminId] = useState(candidate?.assignedAdminId ? String(candidate.assignedAdminId) : "");
   const [notes, setNotes] = useState(candidate?.notes ?? "");
   const isReferral = funnel.kind === "referral";
@@ -373,9 +374,22 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
         </div>
         {isReferral && (
           <div><Label>{t("Хто запросив (працівник)")}</Label>
+            {/* Кандидат по телефону/в офісі називає код реферера (ES-XXXXX) — вводимо код, працівник підставляється.
+                Звільнені теж запрошують (кампанія 17.09.2026), тому в списку всі, з позначкою. */}
+            <Input className="mb-1.5" placeholder={t("Код реферера, напр. ES-7K3MX")} value={refCodeQ}
+              onChange={e => {
+                const v = e.target.value; setRefCodeQ(v);
+                // та сама нормалізація, що й lib/referral.ts на сервері
+                let s = v.toUpperCase().replace(/[\s_]/g, "");
+                if (s.startsWith("ES-")) s = s.slice(3); else if (s.startsWith("ES") && (s.length === 7 || s.length === 10)) s = s.slice(2);
+                const hit = s ? workers.find(w => w.referralCode === "ES-" + s) : undefined;
+                // збіг → підставити; непорожній код без збігу → зняти попереднього, щоб не лишився чужий реферер
+                if (hit) setReferrerWorkerId(String(hit.id)); else if (s) setReferrerWorkerId("");
+              }} />
             <Select value={referrerWorkerId} onChange={e => setReferrerWorkerId(e.target.value)}>
               <option value="">{t("— ніхто / самостійно —")}</option>
-              {workers.filter(w => w.isActive).map(w => <option key={w.id} value={w.id}>{w.fullName}</option>)}
+              {[...workers].sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.fullName.localeCompare(b.fullName, "pl"))
+                .map(w => <option key={w.id} value={w.id}>{w.fullName}{w.referralCode ? ` · ${w.referralCode}` : ""}{w.isActive ? "" : ` (${t("звільнений")})`}</option>)}
             </Select>
           </div>
         )}

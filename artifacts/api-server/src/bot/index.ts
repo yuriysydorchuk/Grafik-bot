@@ -27,6 +27,8 @@ import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
+import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../lib/referral";
+import { REFERRAL_CAMPAIGN_DEFAULTS, campaignVars } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
@@ -228,11 +230,15 @@ bot.start(async (ctx) => {
       );
     }
 
-    // Referral link: ?start=ref<referrerWorkerId> — a worker invites a friend
+    // Referral link: ?start=ref<ES-XXXXX> — a worker (active OR fired — they invite too)
+    // invites a friend. Legacy ?start=ref<workerId> links already handed out keep working.
     if (code.toLowerCase().startsWith("ref")) {
-      const referrerId = Number(code.slice(3));
-      const referrer = (await db.select().from(workersTable).where(eq(workersTable.id, referrerId)))[0];
+      const rest = code.slice(3);
+      const referrer = /^\d+$/.test(rest)
+        ? (await db.select().from(workersTable).where(eq(workersTable.id, Number(rest))))[0]
+        : await findWorkerByReferralCode(rest);
       if (!referrer) return ctx.reply("❌ Посилання недійсне. Зверніться до того, хто його надіслав.\n❌ Invalid link — please contact the person who sent it.");
+      const referrerId = referrer.id;
       // already a worker?
       const asWorker = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
       if (asWorker) { const wl = wlang(asWorker); return ctx.reply(t(wl, "ref.alreadyWorker", { name: mdSafe(asWorker.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(asWorker, wl)) }); }
@@ -921,11 +927,13 @@ bot.hears(trAll("menu.referral"), async (ctx) => {
   const worker = await getWorker(String(ctx.from.id));
   const lang = wlang(worker);
   if (!worker) return replyNotRegistered(ctx, lang);
-  const link = `https://t.me/${ctx.botInfo.username}?start=ref${worker.id}`;
+  const refCode = await ensureReferralCode(worker.id);
+  const link = referralLink(refCode, ctx.botInfo.username);
   const cands = await db.select().from(candidatesTable)
     .where(eq(candidatesTable.referrerWorkerId, worker.id)).orderBy(desc(candidatesTable.id));
 
-  let msg = t(lang, "ref.header", { link: escapeHtml(link) });
+  // телефони/адреса/години — екрановані й з локалізованими днями тижня (спільно з кампанією)
+  let msg = t(lang, "ref.header", { ...campaignVars(lang, REFERRAL_CAMPAIGN_DEFAULTS), link: escapeHtml(link), code: refCode });
   if (cands.length) {
     msg += t(lang, "ref.list", { n: cands.length });
     for (const c of cands) {
@@ -3487,6 +3495,7 @@ bot.on("text", async (ctx) => {
       funnelId: await ensureReferralFunnel(), // built-in referral funnel — else invisible on the board
       referrerWorkerId: data.referrerId, fullName: data.fullName, telegramId: tid,
       phone, factoryId: data.factoryId ?? null, stage: "new",
+      bonusAmount: REFERRAL_CAMPAIGN_DEFAULTS.bonus1, // базовий бонус кампанії; ступені (3/5 друзів) рахує офіс при виплаті
     }).returning();
     clearState(tid);
     // notify the referrer

@@ -103,6 +103,10 @@ export const workersTable = pgTable("workers", {
   telegramId: text("telegram_id").unique(),
   workerCode: text("worker_code").unique(), // public sequential id (shown in lists/reports) — NOT a binding secret
   inviteCode: text("invite_code").unique(), // unguessable token for ?start=emp<code> Telegram binding
+  // Реферальний код «приведи друга» (17.09.2026): короткий диктабельний «ES-XXXXX» — deep-link
+  // ?start=ref<код>, називається по телефону/в офісі. НЕ порядковий (чужий код не вгадати → бонус
+  // не піде не тому) і НЕ секрет привʼязки. Бекфіл міграцією + лінива видача (lib/referral.ts).
+  referralCode: text("referral_code").unique(),
   factoryId: integer("factory_id").references(() => factoriesTable.id),
   companyId: integer("company_id").references(() => companiesTable.id), // our agency the worker is under
   positionId: integer("position_id").references(() => positionsTable.id), // work role (nullable = generic production)

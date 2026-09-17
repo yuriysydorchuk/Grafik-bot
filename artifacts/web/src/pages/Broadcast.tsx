@@ -7,12 +7,15 @@ import { Button, Input, Select, Card, Spinner, Badge, Empty } from "../component
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+import ReferralCampaignPanel from "./ReferralCampaign";
 
 type Target = "all" | "factory" | "selected";
+type Mode = "plain" | "campaign";
 
 export default function Broadcast() {
   const t = useT();
   const confirm = useConfirm();
+  const [mode, setMode] = useState<Mode>("plain");
   const { data: workers, isLoading } = useQuery<Worker[]>({ queryKey: ["workers"], queryFn: () => get("/workers") });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const [text, setText] = useState("");
@@ -53,10 +56,18 @@ export default function Broadcast() {
 
   const canSend = text.trim().length > 0 && recipientCount > 0 && (target !== "factory" || !!factoryId);
 
+  const tabs: [Mode, string][] = [["plain", t("Звичайна розсилка")], ["campaign", t("Кампанія «Приведи друга»")]];
   return (
     <>
       <PageHeader title={t("Розсилка")} subtitle={t("Надіслати повідомлення працівникам у Telegram")} />
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+      <div className="mb-4 flex gap-1 rounded-lg bg-slate-100 p-1 w-fit">
+        {tabs.map(([m, label]) => (
+          <button key={m} onClick={() => setMode(m)}
+            className={`rounded-md px-3 py-1.5 text-sm ${mode === m ? "bg-white font-medium text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>{label}</button>
+        ))}
+      </div>
+      {mode === "campaign" && <ReferralCampaignPanel />}
+      {mode === "plain" && <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <Card className="p-4">
             <label className="mb-1.5 block text-sm font-medium text-slate-600">{t("Текст повідомлення")}</label>
@@ -126,7 +137,7 @@ export default function Broadcast() {
             </Button>
           </Card>
         </div>
-      </div>
+      </div>}
     </>
   );
 }

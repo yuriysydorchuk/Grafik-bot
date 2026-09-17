@@ -167,6 +167,7 @@ export interface LegalRule {
 export interface DocumentAuditEntry { id: number; documentId: number; workerId: number; action: string; changes: { field: string; from?: unknown; to?: unknown }[] | null; adminId: number | null; adminName: string | null; source: string | null; createdAt: string }
 export interface Worker {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
+  referralCode?: string | null; // «ES-XXXXX» — код «приведи друга» (deep-link / по телефону), не секрет
   factoryId: number | null; factoryName: string | null;
   companyId?: number | null; companyName?: string | null;
   positionId?: number | null; positionName?: string | null; positionColor?: string | null;
