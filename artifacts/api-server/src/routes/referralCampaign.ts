@@ -5,16 +5,24 @@ import { authRequired, requireCap } from "../lib/auth";
 import { asLang, LANGS } from "../bot/i18n";
 import {
   REFERRAL_CAMPAIGN_DEFAULTS, campaignRecipients, parseCampaignParams, renderCampaign, sendReferralCampaign, isCampaignInProgress,
+  loadCampaignParams, saveCampaignParams,
 } from "../services/referralCampaign";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use("/referral-campaign", authRequired, requireCap("editData"));
 
-// Дефолтні параметри + адресати з прапорцями (офіс/адмін/звільнений) — веб сам збирає список.
+// Збережені умови (або дефолти) + адресати з прапорцями (офіс/адмін/звільнений) — веб сам збирає список.
 router.get("/referral-campaign", async (_req, res) => {
-  const recipients = await campaignRecipients();
-  res.json({ defaults: REFERRAL_CAMPAIGN_DEFAULTS, languages: LANGS, recipients });
+  const [recipients, params] = await Promise.all([campaignRecipients(), loadCampaignParams()]);
+  res.json({ defaults: REFERRAL_CAMPAIGN_DEFAULTS, params, languages: LANGS, recipients });
+});
+
+// Зберегти умови без відправки: їх одразу бачать бот («🎁 Запроси друга») і картки нових кандидатів.
+router.put("/referral-campaign/params", async (req, res) => {
+  const p = parseCampaignParams(req.body?.params ?? req.body);
+  await saveCampaignParams(p);
+  res.json(p);
 });
 
 // Прев'ю обох повідомлень мовою `lang` для умовного адресата (активний/звільнений).
@@ -33,6 +41,7 @@ router.post("/referral-campaign/send", async (req, res) => {
   if (isCampaignInProgress()) { res.status(409).json({ error: "Розсилка вже триває — зачекайте її завершення" }); return; }
   const p = parseCampaignParams(req.body?.params);
   try {
+    await saveCampaignParams(p); // умови розсилки = чинні умови для бота й карток кандидатів
     const r = await sendReferralCampaign(ids, p);
     logger.info({ notified: r.notified, skipped: r.skipped, failed: r.failed.length }, "referral campaign sent");
     res.json(r);

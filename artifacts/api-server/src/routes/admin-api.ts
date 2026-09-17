@@ -29,7 +29,7 @@ import {
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
 import { findWorkerByReferralCode } from "../lib/referral";
-import { REFERRAL_CAMPAIGN_DEFAULTS } from "../services/referralCampaign";
+import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
@@ -1664,7 +1664,7 @@ router.post("/candidates", RW, async (req, res) => {
     referrerWorkerId,
     assignedAdminId: req.body?.assignedAdminId != null ? Number(req.body.assignedAdminId) : null,
     stage: st, notes: notes?.trim() || null,
-    bonusAmount: referrerWorkerId ? REFERRAL_CAMPAIGN_DEFAULTS.bonus1 : null, // базовий бонус кампанії
+    bonusAmount: referrerWorkerId ? (await loadCampaignParams()).bonus1 : null, // базовий бонус з чинних умов кампанії
   }).returning();
   await logActivity(c!.id, actingAdminId(req), "created", `Кандидата створено${referrerWorkerId ? " (реферал)" : ""}`);
   ok(res, c);

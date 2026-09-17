@@ -1664,6 +1664,26 @@ export const svodniLocksTable = pgTable("svodni_locks", {
   lockedAt: timestamp("locked_at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("svodni_locks_scope_uq").on(t.periodMonth, t.city, t.factoryLabel)]);
 
+// Журнал очищень вкладки сводної («Очистити вкладку»): усі рядки області
+// (з сегментами) переносяться у снапшот, з якого їх можна відновити — рядки
+// svodni_rows як є (ключі camelCase drizzle), старі id; при відновленні
+// вставляються заново з перемапленим segment_of. reason: clear — кнопка;
+// restore_replace — рядки, витіснені відновленням іншого знімка.
+export const svodniClearsTable = pgTable("svodni_clears", {
+  id: serial("id").primaryKey(),
+  periodMonth: text("period_month").notNull(), // YYYY-MM
+  city: text("city").notNull(),
+  factoryLabel: text("factory_label").notNull(),
+  rows: jsonb("rows").notNull().default([]),
+  rowCount: integer("row_count").notNull().default(0),
+  reason: text("reason").notNull().default("clear"),
+  sources: jsonb("sources").notNull().default({}), // ReleasedSources: позначки знять, скинуті при очищенні (повертаються при відновленні)
+  clearedBy: integer("cleared_by").references(() => adminsTable.id),
+  clearedAt: timestamp("cleared_at").notNull().defaultNow(),
+  restoredAt: timestamp("restored_at"),
+  restoredBy: integer("restored_by").references(() => adminsTable.id),
+}, (t) => [index("svodni_clears_scope_idx").on(t.periodMonth, t.city, t.factoryLabel)]);
+
 // Журнал змін профілю працівника з датою набуття (effective_date): форма
 // легалізації, ставки, посада, бонуси Agram, дата народження/працевлаштування,
 // звільнення/поновлення. Історія станів людини — фундамент для пропагації змін

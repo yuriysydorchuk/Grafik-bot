@@ -1,8 +1,8 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable, workerChangesTable, factoryPayoutRulesTable } from "../test/harness.ts";
+import { and, eq } from "drizzle-orm";
+import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, svodniRowsTable, workersTable, monthlyReportsTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, payrollSourcesTable, payrollFactoryMonthsTable, advanceRequestsTable, workerChangesTable, factoryPayoutRulesTable, svodniClearsTable, svodniLocksTable, workerBadaniaTable, clothingItemsTable, penaltiesTable } from "../test/harness.ts";
 
 // Гейти сводних: сторінка — capability `svodni`; закритий шар (księgowość,
 // готівка, конто) віддається ЛИШЕ з `svodniSensitive` — перевіряємо фільтрацію
@@ -583,11 +583,13 @@ test("from-hours: лок вкладки під СТАРОЮ назвою фаб�
   await db.update(factoriesTable).set({ name: "CALKIEM NOWA" }).where(eq(factoriesTable.id, fac!.id));
   await db.update(monthlyReportsTable).set({ hoursReported: 20 }).where(eq(monthlyReportsTable.workerId, w!.id));
   const r = await request(app).post("/api/svodni/from-hours").set("Cookie", full).set(H).send({ month: "2026-05" });
-  assert.equal(r.body.updated, 0, "залочений рядок не оновлюється");
-  assert.equal(r.body.created, 0, "і дубль поруч не створюється");
-  assert.equal(r.body.skippedLocked, 1);
+  // назва вкладки резолвиться з живих рядків місяця (legacyLabelByFactory), тож
+  // лок під старою назвою ловиться ще лок-фільтром: єдина пара відкинута →
+  // «усе вибране затверджено» (400), як і для лока під поточною назвою
+  assert.equal(r.status, 400, r.text);
+  assert.match(r.body.error, /затверджено/);
   const rows = await db.select().from(svodniRowsTable);
-  assert.equal(rows.length, 1);
+  assert.equal(rows.length, 1, "дубль поруч не створюється");
   assert.equal(rows[0]!.hours, 12, "години під локом недоторкані");
 });
 
@@ -936,4 +938,224 @@ test("cashWarnings: нал-бонус, а готівки < 500 — попере�
   const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
   const rBase = (await request(app).get("/api/svodni?month=2026-07").set("Cookie", base)).body;
   assert.deepEqual(rBase.cashWarnings, [], "без sensitive — порожньо");
+});
+
+// ── «Очистити вкладку» з журналом і відновленням ─────────────────────────────
+test("clear: рядки області (з сегментами) → журнал, вкладка порожня; restore повертає їх з перемапленим segment_of; лок — 409", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  await seedRow({ rawName: "KOWALSKI JAN" });
+  await seedRow({ rawName: "NOWAK ANNA" });
+  await seedRow({ rawName: "INNA WKLADKA", factoryLabel: "DRUGA" }); // інша вкладка — не чіпається
+  const [parent] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.rawName, "NOWAK ANNA"));
+  await seedRow({ rawName: "NOWAK ANNA", segmentOf: parent!.id, segmentLabel: "seg", hours: 60 });
+
+  const scope = { month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" };
+  const cleared = await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send(scope);
+  assert.equal(cleared.status, 200, cleared.text);
+  assert.equal(cleared.body.rowCount, 2, "лічить лише батьків");
+  const left = await db.select().from(svodniRowsTable);
+  assert.deepEqual(left.map(r => r.factoryLabel), ["DRUGA"], "лишилась лише інша вкладка");
+
+  const list = await request(app).get("/api/svodni/clears?month=2026-06").set("Cookie", base);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.length, 1);
+  assert.equal(list.body[0].rowCount, 2);
+  assert.deepEqual(list.body[0].preview, ["KOWALSKI JAN", "NOWAK ANNA"]);
+  assert.equal(list.body[0].restoredAt, null);
+
+  // повторне очищення порожньої вкладки — 400
+  assert.equal((await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send(scope)).status, 400);
+
+  // відновлення: батьки + сегмент із новим segment_of
+  const restored = await request(app).post(`/api/svodni/clears/${list.body[0].id}/restore`).set("Cookie", base).set(H).send({});
+  assert.equal(restored.status, 200, restored.text);
+  assert.equal(restored.body.restored, 2);
+  assert.equal(restored.body.replaced, 0);
+  const back = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.factoryLabel, "TESTOWA"));
+  assert.equal(back.length, 3);
+  const newParent = back.find(r => r.rawName === "NOWAK ANNA" && r.segmentOf == null)!;
+  const seg = back.find(r => r.segmentOf != null)!;
+  assert.equal(seg.segmentOf, newParent.id, "сегмент привʼязано до нового id батька");
+  assert.equal(seg.hours, 60);
+  assert.notEqual(newParent.id, parent!.id);
+  const [snap] = await db.select().from(svodniClearsTable);
+  assert.ok(snap!.restoredAt, "знімок позначено відновленим");
+  assert.equal((await request(app).post(`/api/svodni/clears/${snap!.id}/restore`).set("Cookie", base).set(H).send({})).status, 409, "двічі не відновлюється");
+
+  // лок → 409 і на clear, і на restore
+  await db.insert(svodniLocksTable).values({ periodMonth: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" } as any);
+  assert.equal((await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send(scope)).status, 409);
+});
+
+test("restore у непорожню вкладку: поточні рядки витісняються в журнал (restore_replace), не губляться", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  await seedRow({ rawName: "STARY RZAD" });
+  const scope = { month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" };
+  const c1 = await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send(scope);
+  assert.equal(c1.status, 200);
+  await seedRow({ rawName: "NOWY RZAD" });
+  const r = await request(app).post(`/api/svodni/clears/${c1.body.id}/restore`).set("Cookie", base).set(H).send({});
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.restored, 1);
+  assert.equal(r.body.replaced, 1);
+  const rows = await db.select().from(svodniRowsTable);
+  assert.deepEqual(rows.map(x => x.rawName), ["STARY RZAD"]);
+  const snaps = await request(app).get("/api/svodni/clears?month=2026-06&factoryLabel=TESTOWA").set("Cookie", base);
+  assert.equal(snaps.body.length, 2);
+  const replaced = snaps.body.find((s: any) => s.reason === "restore_replace");
+  assert.ok(replaced, "витіснені рядки — окремим знімком");
+  assert.deepEqual(replaced.preview, ["NOWY RZAD"]);
+  assert.equal(replaced.restoredAt, null, "його теж можна відновити");
+});
+
+// ── очищення/видалення рядка повертає джерела знять у «до зняття» ────────────
+async function seedMarkedSources() {
+  const [w] = await db.insert(workersTable).values({ fullName: "Marked Zrodla" } as any).returning();
+  const [fac] = await db.insert(factoriesTable).values({ name: "TESTOWA", city: "Люблін" } as any).returning();
+  const [b] = await db.insert(workerBadaniaTable).values({ workerId: w!.id, amount: 150, enteredAt: "2026-05-01", deducted: true, deductedAt: "2026-06-30", deductedMonth: "2026-06" }).returning();
+  const [c] = await db.insert(clothingItemsTable).values({ workerId: w!.id, itemType: "boots", price: 30, deducted: true, deductedMonth: "2026-06", deductedAmount: 30 } as any).returning();
+  const [p] = await db.insert(penaltiesTable).values({ periodMonth: "2026-06", workerId: w!.id, factoryId: fac!.id, factoryLabel: "TESTOWA", city: "Люблін", amount: 100, deducted: true, deductedAt: "2026-06-30", deductedMonth: "2026-06" } as any).returning();
+  const [a] = await db.insert(advanceRequestsTable).values({ workerId: w!.id, factoryId: fac!.id, amount: 500, status: "paid", svodniMonth: "2026-06", svodniAppliedAt: "2026-06-30" } as any).returning();
+  // інша людина з позначкою в тому ж місяці — не чіпається
+  const [w2] = await db.insert(workersTable).values({ fullName: "Inna Osoba" } as any).returning();
+  const [b2] = await db.insert(workerBadaniaTable).values({ workerId: w2!.id, amount: 90, enteredAt: "2026-05-01", deducted: true, deductedMonth: "2026-06" }).returning();
+  await seedRow({ rawName: "Marked Zrodla", workerId: w!.id, factoryId: fac!.id, linkStatus: "confirmed", zaliczkaBd: 150, odziez: 30, kara: 100, zaliczka: 500 });
+  await seedRow({ rawName: "Inna Osoba", workerId: w2!.id, factoryId: fac!.id, linkStatus: "confirmed", zaliczkaBd: 90, factoryLabel: "DRUGA" });
+  return { w: w!, fac: fac!, b: b!, c: c!, p: p!, a: a!, b2: b2! };
+}
+const markers = async (s: Awaited<ReturnType<typeof seedMarkedSources>>) => ({
+  badania: (await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, s.b.id)))[0]!,
+  clothing: (await db.select().from(clothingItemsTable).where(eq(clothingItemsTable.id, s.c.id)))[0]!,
+  penalty: (await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, s.p.id)))[0]!,
+  advance: (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, s.a.id)))[0]!,
+  other: (await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, s.b2.id)))[0]!,
+});
+
+test("clear: бадання/одяг/штраф/залічка рядків → «не знято»; restore ставить позначки назад; перенесене тим часом деінде — пропускається", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const s = await seedMarkedSources();
+  const scope = { month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" };
+  const cleared = await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send(scope);
+  assert.equal(cleared.status, 200, cleared.text);
+  assert.equal(cleared.body.released, 4);
+  let m = await markers(s);
+  assert.equal(m.badania.deducted, false); assert.equal(m.badania.deductedMonth, null);
+  assert.equal(m.clothing.deducted, false); assert.equal(m.clothing.deductedMonth, null); assert.equal(m.clothing.deductedAmount, null);
+  assert.equal(m.penalty.deducted, false); assert.equal(m.penalty.deductedMonth, null);
+  assert.equal(m.advance.svodniMonth, null); assert.equal(m.advance.svodniAppliedAt, null);
+  assert.equal(m.other.deducted, true, "чужа вкладка — позначка лишилась");
+  const list = await request(app).get("/api/svodni/clears?month=2026-06&factoryLabel=TESTOWA").set("Cookie", base);
+  assert.equal(list.body[0].released, 4);
+  assert.equal(list.body[0].sources, undefined, "тіло позначок у список не йде");
+
+  // тим часом бадання перенесли в інший місяць — restore відмовляє (409), нічого не змінює
+  await db.update(workerBadaniaTable).set({ deducted: true, deductedMonth: "2026-07" }).where(eq(workerBadaniaTable.id, s.b.id));
+  const conflict = await request(app).post(`/api/svodni/clears/${list.body[0].id}/restore`).set("Cookie", base).set(H).send({});
+  assert.equal(conflict.status, 409, conflict.text);
+  assert.match(conflict.body.error, /бадання Marked Zrodla → 2026-07/);
+  assert.equal((await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.factoryLabel, "TESTOWA"))).length, 0, "рядки не вставлено");
+  assert.equal((await db.select().from(svodniClearsTable))[0]!.restoredAt, null, "знімок не позначено відновленим (транзакція відкотилась)");
+  m = await markers(s);
+  assert.equal(m.clothing.deducted, false, "решта позначок не чіпалась");
+  // відмінили те перенесення → restore проходить, усі 4 позначки назад
+  await db.update(workerBadaniaTable).set({ deducted: false, deductedMonth: null }).where(eq(workerBadaniaTable.id, s.b.id));
+  const restored = await request(app).post(`/api/svodni/clears/${list.body[0].id}/restore`).set("Cookie", base).set(H).send({});
+  assert.equal(restored.status, 200, restored.text);
+  assert.equal(restored.body.remarked, 4);
+  m = await markers(s);
+  assert.equal(m.badania.deducted, true); assert.equal(m.badania.deductedMonth, "2026-06"); assert.equal(m.badania.deductedAt, "2026-06-30");
+  assert.equal(m.clothing.deducted, true); assert.equal(m.clothing.deductedMonth, "2026-06"); assert.equal(m.clothing.deductedAmount, 30);
+  assert.equal(m.penalty.deducted, true); assert.equal(m.penalty.deductedAt, "2026-06-30");
+  assert.equal(m.advance.svodniMonth, "2026-06"); assert.equal(m.advance.svodniAppliedAt, "2026-06-30");
+});
+
+test("DELETE /svodni/rows/:id теж повертає джерела рядка у «до зняття»", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const s = await seedMarkedSources();
+  const [row] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.rawName, "Marked Zrodla"));
+  const r = await request(app).delete(`/api/svodni/rows/${row!.id}`).set("Cookie", base).set(H);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.released, 4);
+  const m = await markers(s);
+  assert.equal(m.badania.deducted, false); assert.equal(m.clothing.deducted, false);
+  assert.equal(m.penalty.deducted, false); assert.equal(m.advance.svodniMonth, null);
+  assert.equal(m.other.deducted, true);
+});
+
+test("DELETE рядка: бадання/одяг без фабрики НЕ звільняються, коли в людини лишається інший рядок місяця з тією ж колонкою (неоднозначно)", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const s = await seedMarkedSources();
+  // другий рядок тієї ж людини в іншій вкладці — теж із Zaliczka BD і Kara (штраф має фабрику → однозначний)
+  await seedRow({ rawName: "Marked Zrodla", workerId: s.w.id, factoryId: null, linkStatus: "confirmed", zaliczkaBd: 150, kara: 50, factoryLabel: "DRUGA" });
+  const [row] = await db.select().from(svodniRowsTable).where(and(eq(svodniRowsTable.rawName, "Marked Zrodla"), eq(svodniRowsTable.factoryLabel, "TESTOWA")));
+  const r = await request(app).delete(`/api/svodni/rows/${row!.id}`).set("Cookie", base).set(H);
+  assert.equal(r.status, 200, r.text);
+  const m = await markers(s);
+  assert.equal(m.badania.deducted, true, "бадання — неоднозначно, лишилось «знято»");
+  assert.equal(m.clothing.deducted, false, "одяг — лише в видаленому рядку, звільнено");
+  assert.equal(m.advance.svodniMonth, null, "залічка з фабрикою — однозначна");
+  assert.equal(m.penalty.deducted, true, "штраф: у DRUGA factory_id NULL матчить будь-яку фабрику → неоднозначно");
+  assert.equal(r.body.released, 2);
+  assert.equal(r.body.ambiguous, 2);
+});
+
+test("PATCH: стерта брутто-ставка обнуляє brutto, навіть коли «до виплати» від нетто ще рахується", opts, async () => {
+  await seedRow();
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [row] = await db.select().from(svodniRowsTable);
+  const r = await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", full).set(H).send({ field: "rateBrutto", value: "" });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.brutto, null);
+  assert.equal(r.body.doWyplaty, 4056, "нетто-база ціла — виплата лишилась");
+});
+
+test("PATCH: стерті години/ставка обнуляють «до виплати», brutto, konto, готівку (не лишають старих)", opts, async () => {
+  await seedRow({ extras: { nocneH: 10, doplataNocna: 3.5 } });
+  await seedRole("svodniFull", ["svodni", "svodniSensitive"], ["/svodni"]);
+  const full = (await seedAdmin({ role: "svodniFull", name: "Full" })).cookie;
+  const [row] = await db.select().from(svodniRowsTable);
+  const r = await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", full).set(H).send({ field: "hours", value: "" });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.hours, null);
+  assert.equal(r.body.doWyplaty, null);
+  assert.equal(r.body.brutto, null);
+  assert.equal(r.body.konto, null);
+  assert.equal(r.body.gotowka, null);
+  // години повернули — похідні знову рахуються
+  const r2 = await request(app).patch(`/api/svodni/rows/${row!.id}`).set("Cookie", full).set(H).send({ field: "hours", value: 100 });
+  assert.equal(r2.body.doWyplaty, 2570, "100×25.35 + 10×3.5");
+  assert.equal(r2.body.brutto, 3140);
+});
+
+test("from-hours після «Очистити вкладку»: рядки повертаються у вкладку зі старою (легасі) назвою, не в нову з назвою фабрики", opts, async () => {
+  await seedRole("svodniBase", ["svodni"], ["/svodni"]);
+  const base = (await seedAdmin({ role: "svodniBase", name: "Base" })).cookie;
+  const [fac] = await db.insert(factoriesTable).values({ name: "AGRAM LUBLIN", city: "Люблін", rateBrutto: 31.4, rateNetto: 25.35 } as any).returning();
+  await seedPayrollRegion("AGRAM LUBLIN", "Люблін");
+  const [w] = await db.insert(workersTable).values({ fullName: "Legacy Tab", factoryId: fac!.id, legalStatus: "oswiadczenie" } as any).returning();
+  await db.insert(monthlyReportsTable).values({ workerId: w!.id, month: "2026-06", factoryId: fac!.id, hoursReported: 100 });
+  // вкладка місяця під старою Google-назвою «AGRAM» (рядок іншої людини)
+  const [w2] = await db.insert(workersTable).values({ fullName: "Other Person" } as any).returning();
+  await seedRow({ rawName: "Other Person", workerId: w2!.id, factoryId: fac!.id, factoryLabel: "AGRAM", linkStatus: "confirmed" });
+  // поки вкладка жива — from-hours кладе нову людину в неї
+  let r = await request(app).post("/api/svodni/from-hours").set("Cookie", base).set(H).send({ month: "2026-06", factoryId: fac!.id });
+  assert.equal(r.status, 200, r.text);
+  let mine = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  assert.equal(mine[0]?.factoryLabel, "AGRAM", "живі рядки місяця задають назву вкладки");
+  // очистили вкладку → знову from-hours → та сама назва, не «AGRAM LUBLIN»
+  const cleared = await request(app).post("/api/svodni/clear").set("Cookie", base).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "AGRAM" });
+  assert.equal(cleared.status, 200, cleared.text);
+  r = await request(app).post("/api/svodni/from-hours").set("Cookie", base).set(H).send({ month: "2026-06", factoryId: fac!.id });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.created, 1);
+  mine = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0]!.factoryLabel, "AGRAM");
+  assert.equal(mine[0]!.hours, 100);
 });

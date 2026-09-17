@@ -9,7 +9,7 @@ import {
   RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
   Coins, CreditCard, Banknote, PiggyBank, HandCoins,
   Home, Gavel, IdCard, GraduationCap, Wallet, UserPlus, Trash2,
-  Search as SearchIcon, Lock, LockOpen, Download, ArrowUp, ArrowDown, Combine,
+  Search as SearchIcon, Lock, LockOpen, Download, ArrowUp, ArrowDown, Combine, Eraser, History,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
@@ -73,6 +73,8 @@ const hrEditableKey = (key: string) => key === "extras.zusStatus" || HR_LABEL[ke
 type Check = { city: string; factoryLabel: string; metric: string; ours: number | null; sheetSuma: number | null; summaryTab: number | null; ok: boolean };
 type TabMeta = { city: string; factoryLabel: string; colOrder: string[]; info: { stawkaEurocash?: (string | number)[][] } };
 type Lock = { city: string; factoryLabel: string }; // factoryLabel "" = усе місто
+// знімок «Очистити вкладку» (журнал svodni_clears) — без тіла рядків, лише мета
+type ClearSnap = { id: number; city: string; factoryLabel: string; rowCount: number; reason: "clear" | "restore_replace"; clearedAt: string; clearedByName: string | null; restoredAt: string | null; preview: string[]; released: number };
 // ревʼю при розблокуванні: зміни профілів, зроблені поки область була затверджена
 type PendingChange = {
   id: number; workerId: number; workerName: string; field: string;
@@ -309,6 +311,7 @@ export default function Svodni() {
   const [search, setSearch] = useState("");
   const [legalFilter, setLegalFilter] = useState("");
   const [excelOpen, setExcelOpen] = useState(false);
+  const [clearsOpen, setClearsOpen] = useState(false);
   const [gratyfikantOpen, setGratyfikantOpen] = useState(false);
   // «Без порожніх колонок» — типово УВІМКНЕНО (показуємо лише стовпчики з даними)
   const [hideEmptyCols, setHideEmptyCols] = useState(() => localStorage.getItem("svodni.hideEmptyCols") !== "0");
@@ -475,6 +478,14 @@ export default function Svodni() {
     onError: (e: any) => { toast.error(e.message); qc.invalidateQueries({ queryKey: ["svodni"] }); },
   });
   const lockBusy = lockToggle.isPending || fetchPending.isPending || unlockApply.isPending;
+  // журнал очищень вкладок місяця (усі міста): кнопка «Історія очищень» видна,
+  // коли є хоч один знімок — очищена вкладка зникає зі списку вкладок, тож
+  // відновлення живе на рівні місяця, не вкладки
+  const clears = useQuery({
+    queryKey: ["svodni-clears", effMonth],
+    queryFn: () => get<ClearSnap[]>(`/svodni/clears?month=${effMonth}`),
+    enabled: !!effMonth,
+  });
   const smartToggleLock = (city: string, factoryLabel: string, locked: boolean) =>
     locked ? fetchPending.mutate({ city, factoryLabel }) : lockToggle.mutate({ city, factoryLabel });
   const checks = useMemo(() => (data?.checks ?? []).filter(c => c.factoryLabel.split(" + ").includes(effFactory)), [data, effFactory]);
@@ -624,6 +635,11 @@ export default function Svodni() {
           )}
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={() => setExcelOpen(true)} title={t("Скачати Excel")}><Download className="h-4 w-4" /> Excel</Button>
+            {(clears.data?.length ?? 0) > 0 && (
+              <Button variant="secondary" onClick={() => setClearsOpen(true)} title={t("Очищені вкладки місяця — можна відновити")}>
+                <History className="h-4 w-4" /> {t("Історія очищень")}{(() => { const n = clears.data!.filter(c => !c.restoredAt).length; return n ? ` (${n})` : ""; })()}
+              </Button>
+            )}
             {data?.sensitive && (
               <Button variant="secondary" onClick={() => setGratyfikantOpen(true)} title={t("Файл для імпорту naliczeń у Gratyfikant nexo")}>
                 <Download className="h-4 w-4" /> Gratyfikant
@@ -768,6 +784,7 @@ export default function Svodni() {
         <ExcelModal month={effMonth} city={effCity !== TOTAL_CITY && effCity !== OFFICE_CITY ? effCity : null}
           factory={effFactory && !isSpecial(effFactory) ? effFactory : null} sensitive={!!data?.sensitive} onClose={() => setExcelOpen(false)} />
       )}
+      {clearsOpen && <ClearsModal month={effMonth} items={clears.data ?? []} onClose={() => setClearsOpen(false)} />}
       {gratyfikantOpen && (
         <GratyfikantModal month={effMonth} rows={data?.rows ?? []}
           city={effCity !== TOTAL_CITY && effCity !== OFFICE_CITY ? effCity : null}
@@ -1091,6 +1108,20 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
     onSuccess: (_r, id) => qc.setQueryData<Data>(["svodni", month], old => old ? { ...old, rows: old.rows.filter(r => r.id !== id) } : old),
     onError: (e: any) => toast.error(e.message),
   });
+  // «Очистити вкладку»: усі рядки області — у журнал svodni_clears (відновлення —
+  // з «Історії очищень» на рівні місяця, бо порожня вкладка зникає зі списку)
+  const scopeCity = rows[0]?.city ?? (label === EXTRA_STUDENTS ? OFFICE_CITY : city);
+  const clearTab = useMutation({
+    mutationFn: () => post<{ id: number; rowCount: number; released: number; ambiguous: number }>("/svodni/clear", { month, city: scopeCity, factoryLabel: label }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      qc.invalidateQueries({ queryKey: ["svodni-clears"] });
+      toast.success(t("Вкладку очищено: {n} рядків у журналі — відновити можна з «Історії очищень»", { n: r.rowCount })
+        + (r.released ? ` · ${t("{n} знять повернуто у «до зняття»", { n: r.released })}` : "")
+        + (r.ambiguous ? ` · ${t("{n} лишились «знято» — у людини є інший рядок місяця з цією колонкою", { n: r.ambiguous })}` : ""));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   // порізка місяця: розкриття сегмент-рядків + обʼєднання назад
   const [openSegs, setOpenSegs] = useState<Set<number>>(new Set());
   const toggleSegs = (id: number) => setOpenSegs(prev => {
@@ -1185,6 +1216,17 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
           : <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"><CircleCheck className="h-3.5 w-3.5" /> {t("звірено")}</span>}
         {locked && <Badge color="green">🔒 {t("затверджено")}</Badge>}
         <span className="ml-auto text-[11px] text-slate-400">{locked ? t("затверджено — редагування вимкнено") : t("клік по клітинці — редагування")}</span>
+        {!locked && rows.length > 0 && (
+          <button disabled={clearTab.isPending}
+            onClick={async () => {
+              if (await confirm({ title: t("Очистити вкладку?"), danger: true, confirmText: t("Очистити"),
+                message: `${label} · ${month}\n${t("Усі рядки ({n}) підуть у журнал очищень — їх можна буде відновити з «Історії очищень». Перенесені в них зняття (бадання, одяг, штрафи, пропуски, залічки) повернуться у «до зняття», при відновленні — знову стануть «знято».", { n: rows.length })}` }))
+                clearTab.mutate();
+            }}
+            className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50">
+            <Eraser className="h-3.5 w-3.5" /> {t("Очистити вкладку")}
+          </button>
+        )}
         {!locked && (
           <button onClick={() => setAdding(true)}
             className="flex items-center gap-1 rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700">
@@ -1318,7 +1360,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       )}
                       {!locked && (
                         <button type="button" title={t("Видалити рядок")}
-                          onClick={async () => { if (await confirm({ title: t("Видалити рядок?"), message: `${r.rawName} — ${t("рядок зникне зі сводної цього місяця")}`, confirmText: t("Видалити") })) removeRow.mutate(r.id); }}
+                          onClick={async () => { if (await confirm({ title: t("Видалити рядок?"), message: `${r.rawName} — ${t("рядок зникне зі сводної цього місяця")}. ${t("Перенесені в нього зняття (бадання, одяг, штрафи, пропуски, залічки) повернуться у «до зняття».")}`, confirmText: t("Видалити") })) removeRow.mutate(r.id); }}
                           className="invisible ml-0.5 rounded p-0.5 text-slate-300 transition hover:bg-rose-50 hover:text-rose-500 group-hover/row:visible">
                           <Trash2 className="h-3 w-3" />
                         </button>
@@ -2101,6 +2143,66 @@ function GratyfikantModal({ month, city, factory, rows, onClose }: {
           )}
         </div>
       </div>
+    </Modal>
+  );
+}
+
+// «Історія очищень» місяця: знімки вкладок (усі міста) з відновленням.
+// Відновлення повертає рядки знімка; якщо вкладка тим часом наповнилась —
+// поточні рядки самі йдуть у журнал (restore_replace), нічого не губиться.
+function ClearsModal({ month, items, onClose }: { month: string; items: ClearSnap[]; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const restore = useMutation({
+    mutationFn: (id: number) => post<{ restored: number; replaced: number; remarked: number }>(`/svodni/clears/${id}/restore`, {}),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["svodni"] });
+      qc.invalidateQueries({ queryKey: ["svodni-clears"] });
+      toast.success((r.replaced
+        ? t("Відновлено {n} рядків; {m} поточних пішли в журнал", { n: r.restored, m: r.replaced })
+        : t("Відновлено {n} рядків", { n: r.restored }))
+        + (r.remarked ? ` · ${t("{n} знять знову «знято»", { n: r.remarked })}` : ""));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const when = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  return (
+    <Modal open onClose={onClose} title={`${t("Історія очищень")} · ${month}`} size="lg">
+      {!items.length ? <Empty>{t("Записів ще немає")}</Empty> : (
+        <div className="space-y-2">
+          {items.map(c => (
+            <div key={c.id} className={`rounded-xl border px-3 py-2.5 ${c.restoredAt ? "border-slate-200 bg-slate-50/60" : "border-rose-200 bg-rose-50/40"}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-slate-800">{c.factoryLabel}</span>
+                <span className="text-xs text-slate-500">{t(c.city)}</span>
+                <Badge color={c.reason === "clear" ? "rose" : "amber"}>{c.reason === "clear" ? t("очищено") : t("витіснено відновленням")}</Badge>
+                <span className="text-xs text-slate-500">{t("{n} рядків", { n: c.rowCount })}{c.released ? ` · ${t("{n} знять", { n: c.released })}` : ""} · {when(c.clearedAt)}{c.clearedByName ? ` · ${c.clearedByName}` : ""}</span>
+                <span className="ml-auto">
+                  {c.restoredAt
+                    ? <Badge color="green">{t("відновлено")} {when(c.restoredAt)}</Badge>
+                    : <Button variant="secondary" loading={restore.isPending}
+                        onClick={async () => {
+                          if (await confirm({ title: t("Відновити знімок?"), confirmText: t("Відновити"),
+                            message: `${c.factoryLabel} · ${month}\n${t("Рядки знімка повернуться у вкладку. Якщо вкладка зараз не порожня — її поточні рядки підуть у журнал.")}` }))
+                            restore.mutate(c.id);
+                        }}>
+                        <History className="h-4 w-4" /> {t("Відновити")}
+                      </Button>}
+                </span>
+              </div>
+              {c.preview.length > 0 && (
+                <div className="mt-1 truncate text-xs text-slate-500">
+                  {c.preview.join(", ")}{c.rowCount > c.preview.length ? ` … (+${c.rowCount - c.preview.length})` : ""}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </Modal>
   );
 }

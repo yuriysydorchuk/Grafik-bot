@@ -28,7 +28,7 @@ import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
 import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../lib/referral";
-import { REFERRAL_CAMPAIGN_DEFAULTS, campaignVars } from "../services/referralCampaign";
+import { loadCampaignParams, campaignVars } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
@@ -932,8 +932,8 @@ bot.hears(trAll("menu.referral"), async (ctx) => {
   const cands = await db.select().from(candidatesTable)
     .where(eq(candidatesTable.referrerWorkerId, worker.id)).orderBy(desc(candidatesTable.id));
 
-  // телефони/адреса/години — екрановані й з локалізованими днями тижня (спільно з кампанією)
-  let msg = t(lang, "ref.header", { ...campaignVars(lang, REFERRAL_CAMPAIGN_DEFAULTS), link: escapeHtml(link), code: refCode });
+  // телефони/адреса/години — зі збережених умов кампанії, екрановані, дні тижня локалізовані
+  let msg = t(lang, "ref.header", { ...campaignVars(lang, await loadCampaignParams()), link: escapeHtml(link), code: refCode });
   if (cands.length) {
     msg += t(lang, "ref.list", { n: cands.length });
     for (const c of cands) {
@@ -3495,7 +3495,7 @@ bot.on("text", async (ctx) => {
       funnelId: await ensureReferralFunnel(), // built-in referral funnel — else invisible on the board
       referrerWorkerId: data.referrerId, fullName: data.fullName, telegramId: tid,
       phone, factoryId: data.factoryId ?? null, stage: "new",
-      bonusAmount: REFERRAL_CAMPAIGN_DEFAULTS.bonus1, // базовий бонус кампанії; ступені (3/5 друзів) рахує офіс при виплаті
+      bonusAmount: (await loadCampaignParams()).bonus1, // базовий бонус з чинних умов кампанії; ступені (3/5 друзів) рахує офіс при виплаті
     }).returning();
     clearState(tid);
     // notify the referrer

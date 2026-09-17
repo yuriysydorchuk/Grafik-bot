@@ -5,7 +5,7 @@
 // (owner бачить усе) — фільтрація тут, в API, а не в інтерфейсі.
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable, workerFactoryCodesTable } from "@workspace/db";
+import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, svodniClearsTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable, workerFactoryCodesTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
@@ -16,6 +16,7 @@ import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorke
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, factoryBonusPerHour, hasCashBonus, legacyPayoutRule, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type PayoutRule, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
 import { effectiveView, effectiveViewOf, loadLegalityCache } from "../services/effectiveStatus";
+import { releaseSourcesForRows, remarkSources, findSourceConflicts, releasedCount, type ReleasedSources, type Executor } from "../services/svodniSourceMarkers";
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
@@ -1203,8 +1204,138 @@ router.delete("/svodni/rows/:id", requireCap("svodni"), async (req, res) => {
     return fail(res, 400, "це сегмент порізки — обʼєднай рядок або редагуй сегменти");
   if (row && isLocked(await monthLocks(row.periodMonth), row.city, row.factoryLabel))
     return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
-  await db.delete(svodniRowsTable).where(eq(svodniRowsTable.id, id)); // сегменти йдуть каскадом (FK)
-  ok(res, { ok: true });
+  // зняття, перенесені в цей рядок (бадання/одяг/штрафи/пропуски/залічки), повертаються
+  // в «до зняття» — в одній транзакції з видаленням (інакше збій між кроками
+  // лишив би суму в сводній при вже відкритих джерелах)
+  const rel = await db.transaction(async tx => {
+    const r = row ? await releaseSourcesForRows(tx, [row]) : null;
+    await tx.delete(svodniRowsTable).where(eq(svodniRowsTable.id, id)); // сегменти йдуть каскадом (FK)
+    return r;
+  });
+  ok(res, { ok: true, released: releasedCount(rel), ambiguous: rel?.ambiguous ?? 0 });
+});
+
+// ── Очистити вкладку (з журналом і відновленням) ─────────────────────────────
+// Усі рядки області (місяць+місто+вкладка, з сегментами) переносяться у снапшот
+// svodni_clears і видаляються; знімок можна повернути. Мета/звірки вкладки
+// (svodni_tab_meta/checks) не чіпаються; маркери перенесень на джерелах
+// (одяг/бадання/штрафи «перенесено») теж лишаються — очищення не «розносить»
+// зняття назад, це робиться відновленням знімка.
+type ClearScope = { month: string; city: string; factoryLabel: string };
+function clearScopeOf(body: any): ClearScope | null {
+  const month = validMonth(body?.month) ? String(body.month) : null;
+  const city = String(body?.city ?? "").trim();
+  const factoryLabel = String(body?.factoryLabel ?? "").trim();
+  if (!month || !city || !factoryLabel) return null;
+  return { month, city, factoryLabel };
+}
+const clearScopeWhere = (s: ClearScope) => and(
+  eq(svodniRowsTable.periodMonth, s.month), eq(svodniRowsTable.city, s.city), eq(svodniRowsTable.factoryLabel, s.factoryLabel));
+
+// снапшот рядків області → журнал; повертає id запису (null — рядків нема)
+// Викликається всередині транзакції (tx): скидання позначок, снапшот і
+// видалення — одне ціле. Видаляються саме прочитані id, не «вся область»
+// (рядок, доданий паралельно між select і delete, у знімок би не потрапив).
+async function archiveScopeRows(tx: Executor, s: ClearScope, reason: "clear" | "restore_replace", adminId: number | null): Promise<{ id: number; count: number; released: number; ambiguous: number } | null> {
+  // FOR UPDATE: паралельна правка клітинки між читанням і видаленням не загубиться в знімку
+  const rows = await tx.select().from(svodniRowsTable).where(clearScopeWhere(s)).for("update");
+  if (!rows.length) return null;
+  // зняття, перенесені в ці рядки, повертаються в «до зняття»; їх позначки
+  // їдуть у знімок — відновлення поставить назад
+  const sources = await releaseSourcesForRows(tx, rows);
+  const [snap] = await tx.insert(svodniClearsTable).values({
+    periodMonth: s.month, city: s.city, factoryLabel: s.factoryLabel,
+    rows, rowCount: rows.filter(r => r.segmentOf == null).length, reason, clearedBy: adminId, sources,
+  }).returning({ id: svodniClearsTable.id });
+  await tx.delete(svodniRowsTable).where(inArray(svodniRowsTable.id, rows.map(r => r.id))); // сегменти — серед прочитаних
+  return { id: snap!.id, count: rows.filter(r => r.segmentOf == null).length, released: releasedCount(sources), ambiguous: sources.ambiguous ?? 0 };
+}
+// без parameter property: node --test (strip-only TS) її не підтримує
+class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
+
+router.post("/svodni/clear", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const scope = clearScopeOf(req.body);
+  if (!scope) return fail(res, 400, "month, city, factoryLabel required");
+  if (isLocked(await monthLocks(scope.month), scope.city, scope.factoryLabel))
+    return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
+  const snap = await db.transaction(tx => archiveScopeRows(tx, scope, "clear", req.admin?.adminId ?? null));
+  if (!snap) return fail(res, 400, "вкладка порожня");
+  logger.info({ ...scope, snapshotId: snap.id, rows: snap.count, released: snap.released, ambiguous: snap.ambiguous, adminId: req.admin?.adminId }, "svodni tab cleared");
+  ok(res, { id: snap.id, rowCount: snap.count, released: snap.released, ambiguous: snap.ambiguous });
+});
+
+// журнал очищень місяця (опційно місто/вкладка; без тіла знімка — мета + превʼю імен).
+// Місяць цілком — бо очищена вкладка зникає зі списку вкладок, відновлення живе на рівні місяця
+router.get("/svodni/clears", requireCap("svodni"), async (req, res) => {
+  const month = validMonth(req.query.month) ? String(req.query.month) : null;
+  if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const qCity = String(req.query.city ?? "").trim();
+  const qLabel = String(req.query.factoryLabel ?? "").trim();
+  const list = await db.select({
+    id: svodniClearsTable.id, city: svodniClearsTable.city, factoryLabel: svodniClearsTable.factoryLabel,
+    rowCount: svodniClearsTable.rowCount, reason: svodniClearsTable.reason, sources: svodniClearsTable.sources,
+    clearedAt: svodniClearsTable.clearedAt, clearedByName: adminsTable.name,
+    restoredAt: svodniClearsTable.restoredAt,
+    names: sql<string[]>`(select coalesce(array_agg(x->>'rawName' order by x->>'rawName'), '{}') from jsonb_array_elements(${svodniClearsTable.rows}) x where x->>'segmentOf' is null)`,
+  }).from(svodniClearsTable)
+    .leftJoin(adminsTable, eq(svodniClearsTable.clearedBy, adminsTable.id))
+    .where(and(eq(svodniClearsTable.periodMonth, month),
+      ...(qCity ? [eq(svodniClearsTable.city, qCity)] : []), ...(qLabel ? [eq(svodniClearsTable.factoryLabel, qLabel)] : [])))
+    .orderBy(desc(svodniClearsTable.clearedAt));
+  ok(res, list.map(c => ({ ...c, preview: c.names.slice(0, 6), names: undefined, sources: undefined, released: releasedCount((c.sources || {}) as ReleasedSources) })));
+});
+
+// відновити знімок: поточні рядки області (якщо є) — у журнал як restore_replace,
+// рядки знімка вставляються заново (батьки → сегменти з перемапленим segment_of)
+router.post("/svodni/clears/:id/restore", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [snap] = await db.select().from(svodniClearsTable).where(eq(svodniClearsTable.id, id));
+  if (!snap) return fail(res, 404, "not found");
+  if (snap.restoredAt) return fail(res, 409, "цей знімок уже відновлено");
+  const scope: ClearScope = { month: snap.periodMonth, city: snap.city, factoryLabel: snap.factoryLabel };
+  if (isLocked(await monthLocks(scope.month), scope.city, scope.factoryLabel))
+    return fail(res, 409, "Фабрику затверджено — спершу розблокуй");
+  const adminId = req.admin?.adminId ?? null;
+  try {
+    const result = await db.transaction(async tx => {
+      // «захопити» знімок атомарно: два паралельні restore одного знімка — лише один пройде
+      // (now() як defaultNow() у cleared_at — naive timestamp, new Date() дав би UTC-зсув)
+      const claimed = await tx.update(svodniClearsTable).set({ restoredAt: sql`now()`, restoredBy: adminId })
+        .where(and(eq(svodniClearsTable.id, id), isNull(svodniClearsTable.restoredAt))).returning({ id: svodniClearsTable.id });
+      if (!claimed.length) throw new HttpError(409, "цей знімок уже відновлено");
+      // джерела знімка, які тим часом перенесли деінде: відновлення поклало б
+      // суму у дві сводні — спершу відмінити те перенесення
+      const conflicts = await findSourceConflicts(tx, snap.sources as ReleasedSources);
+      if (conflicts.length) throw new HttpError(409, `Зняття з цього знімка вже перенесено деінде: ${conflicts.slice(0, 5).join("; ")}${conflicts.length > 5 ? ` (+${conflicts.length - 5})` : ""}. Спершу відміни ті перенесення.`);
+      const replaced = await archiveScopeRows(tx, scope, "restore_replace", adminId);
+      const rows = (snap.rows as Array<Record<string, unknown>>) ?? [];
+      const idMap = new Map<number, number>();
+      const strip = (r: Record<string, unknown>) => {
+        const { id: _id, createdAt: _c, segmentOf: _s, ...rest } = r;
+        return rest as typeof svodniRowsTable.$inferInsert;
+      };
+      for (const r of rows.filter(r => r.segmentOf == null)) {
+        const [ins] = await tx.insert(svodniRowsTable).values({ ...strip(r), segmentOf: null }).returning({ id: svodniRowsTable.id });
+        idMap.set(Number(r.id), ins!.id);
+      }
+      let orphans = 0;
+      for (const r of rows.filter(r => r.segmentOf != null)) {
+        const parent = idMap.get(Number(r.segmentOf));
+        if (parent == null) { orphans++; continue; }
+        await tx.insert(svodniRowsTable).values({ ...strip(r), segmentOf: parent });
+      }
+      const marks = await remarkSources(tx, snap.sources as ReleasedSources); // позначки «знято» — назад
+      // гонка: джерело перенесли деінде вже після перевірки конфліктів — відкат, не подвійне зняття
+      if (marks.skipped) throw new HttpError(409, `Зняття з цього знімка щойно перенесено деінде (${marks.skipped}). Спробуй ще раз.`);
+      logger.info({ ...scope, snapshotId: id, restored: idMap.size, replaced: replaced?.count ?? 0, orphans, ...marks, adminId }, "svodni tab restored");
+      return { restored: idMap.size, replaced: replaced?.count ?? 0, replacedSnapshotId: replaced?.id ?? null, remarked: marks.remarked };
+    });
+    ok(res, result);
+  } catch (e) {
+    if (e instanceof HttpError) return fail(res, e.status, e.message);
+    throw e;
+  }
 });
 
 // профільні властивості людини: правка в сводній оновлює профіль працівника
@@ -2134,8 +2265,17 @@ router.patch("/svodni/rows/:id", requireCap("svodni"), async (req: AuthedRequest
   if (affectsPayout) {
     const payout = computePayout(merged, row.city as any);
     if (payout != null) { set.doWyplaty = payout; merged.doWyplaty = payout; }
-    if ((field === "hours" || field === "rateBrutto") && merged.hours != null && merged.rateBrutto != null) {
-      set.brutto = Math.round(merged.hours * merged.rateBrutto * 100) / 100;
+    else if (["hours", "rateNetto", "rateBrutto"].includes(field)) {
+      // базу «год × ставка» стерли — похідні не можуть лишатись від старих
+      // значень (рядок Басанського 08.2026: години очищено, «до виплати»
+      // й конто застрягли від липневих цифр)
+      for (const k of ["doWyplaty", "brutto", "konto", "gotowka"] as const) { set[k] = null; merged[k] = null; }
+    }
+    if (field === "hours" || field === "rateBrutto") {
+      // brutto = год × брутто-ставка; стерли одне з них — brutto теж порожнє,
+      // навіть коли «до виплати» (від нетто) ще рахується
+      set.brutto = merged.hours != null && merged.rateBrutto != null ? Math.round(merged.hours * merged.rateBrutto * 100) / 100 : null;
+      merged.brutto = set.brutto;
     }
   }
   // статусні правила бухгалтерії (студент до 26 → конто; не зголошений → готівка;
@@ -2271,6 +2411,31 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   const cityOf = (factoryId: number | null): string | null =>
     factoryId != null ? cityByFactory.get(factoryId) ?? null : null;
 
+  // Назва вкладки фабрики в цьому місяці: живі рядки місяця (легасі-назви
+  // Google-вкладок, напр. «AGRAM» для AGRAM LUBLIN) → назва з ще не відновленого
+  // знімка «Очистити вкладку» (інакше після очищення рядки лягали б у нову
+  // вкладку з назвою фабрики, а стара стояла б порожньою — 17.09.2026) → назва
+  // фабрики. Мульти-контрактні вкладки (суфікси фірм) — завжди назва фабрики.
+  const legacyLabelByFactory = new Map<number, string>();
+  {
+    // пари (фабрика, назва вкладки) зі знімків — на боці БД, без тягнення jsonb цілком
+    const snapLabels = await db.execute<{ fid: number; lbl: string }>(sql`
+      select distinct on ((x->>'factoryId')::int) (x->>'factoryId')::int as fid, x->>'factoryLabel' as lbl
+      from ${svodniClearsTable} c, jsonb_array_elements(c.rows) x
+      where c.period_month = ${month} and c.restored_at is null
+        and x->>'segmentOf' is null and x->>'factoryId' is not null and coalesce(x->>'factoryLabel', '') <> ''
+      order by (x->>'factoryId')::int, c.cleared_at desc`); // новіший знімок перекриває старіший
+    for (const r of snapLabels.rows) {
+      if (r.lbl === facById.get(r.fid)?.name) continue; // дефолт і так
+      legacyLabelByFactory.set(r.fid, r.lbl);
+    }
+    const live = await db.select({ factoryId: svodniRowsTable.factoryId, factoryLabel: svodniRowsTable.factoryLabel }).from(svodniRowsTable)
+      .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf), isNotNull(svodniRowsTable.factoryId)));
+    for (const r of live) if (r.factoryId != null) legacyLabelByFactory.set(r.factoryId, r.factoryLabel); // живі рядки — пріоритет
+  }
+  const labelOfFactory = (fac: typeof facRows[number] | undefined): string =>
+    fac ? ((!fac.multiFirm && legacyLabelByFactory.get(fac.id)) || fac.name) : "Без фабрики";
+
   // фільтри «одна фабрика» / «ціле місто» + пропуск затверджених фабрик/міст
   const locks = await monthLocks(month);
   let skippedLocked = 0;
@@ -2278,7 +2443,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   for (const [k, pair] of [...hoursByPair]) {
     if (onlyFactoryId != null && pair.factoryId !== onlyFactoryId) { hoursByPair.delete(k); continue; }
     if (onlyWorkerIds && !onlyWorkerIds.has(pair.workerId)) { hoursByPair.delete(k); continue; }
-    const label = pair.factoryId != null ? facById.get(pair.factoryId)?.name ?? "Без фабрики" : "Без фабрики";
+    const label = labelOfFactory(pair.factoryId != null ? facById.get(pair.factoryId) : undefined);
     const city = cityOf(pair.factoryId);
     if (!city) { hoursByPair.delete(k); noCity.add(label); continue; }
     if (onlyCity && city !== onlyCity) { hoursByPair.delete(k); continue; }
@@ -2333,7 +2498,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     const cn = firmOf(w0) ?? "";
     return cn === "ES" ? "EURO SUPORT" : cn.toUpperCase(); // як вкладки таблиці
   };
-  const tabLabelFor = (fac: typeof facRows[number] | undefined): string => fac ? fac.name : "Без фабрики";
+  const tabLabelFor = labelOfFactory; // див. legacyLabelByFactory вище
   // становіска: назва позиції працівника → секція рядка (для фабрик з посадами)
   const positions = await db.select().from(positionsTable);
   const posById = new Map(positions.map(p => [p.id, p.name]));
