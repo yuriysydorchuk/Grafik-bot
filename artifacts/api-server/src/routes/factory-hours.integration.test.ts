@@ -158,6 +158,27 @@ test("студент до 26 на /hours: вік з дати народженн�
   assert.ok(rowOld.reportNet < rowOld.reportGross, "після 26 внески мають зніматись попри прапорці");
 });
 
+test("statement-email: валідація source/адрес; масив адрес приймається; без даних у колонці — 400", opts, async () => {
+  const { factoryId, workerId } = await seedFactoryWorker();
+  const post = (b: object) => request(app).post("/api/hours/statement-email").set("Cookie", owner).set(H).send({ month: MONTH, factoryId, subject: "s", body: "b", ...b });
+  assert.equal((await post({ to: ["a@b.pl"], source: "diff" })).status, 400);
+  assert.equal((await post({ to: ["a@b.pl", "zły"], source: "report" })).status, 400);
+  // колонка рапорту порожня → 400 з людською помилкою
+  const empty = await post({ to: ["a@b.pl"], source: "report" });
+  assert.equal(empty.status, 400);
+  assert.match(empty.body.error ?? "", /немає годин/);
+  await db.insert(monthlyReportsTable).values({ workerId, month: MONTH, factoryId, hoursReported: 120 });
+  // валідний запит (масив адрес; елемент з комою — legacy client_email одним рядком)
+  // без SMTP у тест-оточенні → 500 з людською помилкою
+  const noSmtp = await post({ to: ["a@b.pl, c@d.pl", "e@f.pl"], source: "report" });
+  assert.equal(noSmtp.status, 500);
+  assert.match(noSmtp.body.error ?? "", /SMTP/);
+  // Excel-скачування у режимі zestawienie
+  const xl = await request(app).get(`/api/hours/report-excel?month=${MONTH}&factoryId=${factoryId}&statement=report&cols=name,report`).set("Cookie", owner);
+  assert.equal(xl.status, 200);
+  assert.match(xl.headers["content-disposition"] ?? "", /Zestawienie/);
+});
+
 test("discrepancy-email: валідація адреси і полів (до SMTP не доходить)", opts, async () => {
   const { factoryId } = await seedFactoryWorker();
   const bad = await request(app).post("/api/hours/discrepancy-email").set("Cookie", owner).set(H)

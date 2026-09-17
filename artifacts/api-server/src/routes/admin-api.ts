@@ -4090,18 +4090,28 @@ router.get("/hours/day-compare", RW, async (req, res) => {
 
 // Лист клієнту про розбіжності годин: тіло генерує веб (живий драфт), сервер
 // прикріплює PDF-рапорти працівників з Drive як докази і шле через SMTP.
+// Отримувачі листа з обліку годин: масив або рядок «через кому/крапку з комою»
+// (адреси з бази фабрики + дописані вручну). Елементи масиву теж ріжуться по
+// роздільниках — legacy factories.client_email приходить одним рядком з комами.
+// null = хоч одна адреса некоректна.
+function parseEmailList(raw: unknown): string[] | null {
+  const parts = (Array.isArray(raw) ? raw.map(String) : [String(raw ?? "")]).flatMap(s => s.split(/[,;]/));
+  const list = [...new Set(parts.map(s => s.trim().toLowerCase()).filter(Boolean))];
+  if (!list.length || list.some(a => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a))) return null;
+  return list;
+}
+
 router.post("/hours/discrepancy-email", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   const subject = String(req.body?.subject || "").trim();
   const body = String(req.body?.body || "").trim();
-  const to = String(req.body?.to || "").trim();
   const attachWorkerIds: number[] = Array.isArray(req.body?.attachWorkerIds) ? req.body.attachWorkerIds.map(Number).filter(Boolean) : [];
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
-  // кілька адрес через кому (clientEmail фабрики тепер — список отримувачів)
-  const toList = to.split(/[,;]/).map(s => s.trim()).filter(Boolean);
-  if (!toList.length || toList.some(a => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(a))) return fail(res, 400, "Некоректний email отримувача");
+  const toList = parseEmailList(req.body?.to);
+  if (!toList) return fail(res, 400, "Некоректний email отримувача");
+  const to = toList.join(", ");
   // PDF-рапорти вибраних працівників по цій фабриці (докази розбіжностей)
   const attachments: { filename: string; content: Buffer }[] = [];
   const missing: string[] = [];
@@ -4131,22 +4141,54 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   ok(res, { sent: true, to, attached: attachments.length, missingReports: missing });
 });
 
+// Zestawienie godzin клієнту: Excel з однією обраною колонкою годин (графік /
+// рапорт / фабрика) у вкладенні; тіло листа генерує веб (як лист про розбіжності).
+router.post("/hours/statement-email", RW, async (req, res) => {
+  const month = String(req.body?.month || "");
+  const factoryId = Number(req.body?.factoryId);
+  const subject = String(req.body?.subject || "").trim();
+  const body = String(req.body?.body || "").trim();
+  const source = req.body?.source;
+  const { buildReportHoursExcel, isStatementSource } = await import("../services/drive");
+  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!isStatementSource(source)) return fail(res, 400, "source: hours | report | factoryHours");
+  if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
+  const toList = parseEmailList(req.body?.to);
+  if (!toList) return fail(res, 400, "Некоректний email отримувача");
+  const withCode = req.body?.withCode !== false;
+  const cols: import("../services/drive").HoursXlsxColKey[] = withCode ? ["code", "name", source] : ["name", source];
+  const { buffer, facName, rowCount, total } = await buildReportHoursExcel(month, factoryId, { cols, statement: source });
+  if (!rowCount) return fail(res, 400, "У вибраній колонці немає годин за цей місяць");
+  const filename = `Zestawienie godzin ${facName ? `${facName} ` : ""}${month}.xlsx`;
+  try {
+    const { sendEmailWithAttachments } = await import("../services/email");
+    await sendEmailWithAttachments(toList.join(", "), subject, body, [{ filename, content: buffer }]);
+  } catch (e: any) {
+    logger.error({ err: e }, "statement email failed");
+    return fail(res, 500, e?.message ?? "Помилка надсилання email");
+  }
+  ok(res, { sent: true, to: toList.join(", "), rows: rowCount, total });
+});
+
 // Download an Excel of monthly hours. Optional query params:
 //   cols=code,name,factory,report,factoryHours,diff,status — which columns to include
 //   errorsOnly=1 — only rows where report ↔ factory hours disagree (mismatch/partial)
 router.get("/hours/report-excel", RW, async (req, res) => {
   const month = String(req.query.month || new Date().toISOString().slice(0, 7));
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : undefined;
-  const { buildReportHoursExcel, HOURS_XLSX_COLS } = await import("../services/drive");
+  const { buildReportHoursExcel, HOURS_XLSX_COLS, isStatementSource } = await import("../services/drive");
   const validKeys = new Set<string>(HOURS_XLSX_COLS.map(c => c.key));
   const cols = String(req.query.cols ?? "").split(",").map(s => s.trim()).filter(s => validKeys.has(s)) as
     import("../services/drive").HoursXlsxColKey[];
   const errorsOnly = req.query.errorsOnly === "1" || req.query.errorsOnly === "true";
-  const { buffer, facName } = await buildReportHoursExcel(month, factoryId, { cols, errorsOnly });
+  // statement=hours|report|factoryHours — «Zestawienie godzin» з однією колонкою годин
+  const statement = isStatementSource(req.query.statement) ? req.query.statement : undefined;
+  const { buffer, facName } = await buildReportHoursExcel(month, factoryId, { cols, errorsOnly, statement });
   const namePart = facName ? `${facName} ` : "";
   const suffix = errorsOnly ? " rozbieżności" : "";
+  const base = statement ? "Zestawienie godzin" : `Godziny${suffix}`;
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`Godziny${suffix} ${namePart}${month}.xlsx`)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`${base} ${namePart}${month}.xlsx`)}"`);
   res.send(buffer);
 });
 

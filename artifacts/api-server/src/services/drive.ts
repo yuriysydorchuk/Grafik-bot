@@ -559,13 +559,21 @@ const DEFAULT_HOURS_COLS: HoursXlsxColKey[] = ["code", "name", "factory", "repor
 // (04.08.2026 incident: the export only looked at active workers and lost rows).
 // Optionally filtered to a single factory, to selected columns, and to error
 // rows only (mismatch/partial).
+// Джерела годин для «zestawienie godzin» клієнту: одна з трьох числових колонок.
+export const HOURS_STATEMENT_SOURCES = ["hours", "report", "factoryHours"] as const;
+export type HoursStatementSource = typeof HOURS_STATEMENT_SOURCES[number];
+export const isStatementSource = (v: unknown): v is HoursStatementSource => HOURS_STATEMENT_SOURCES.includes(v as HoursStatementSource);
+
 export async function buildReportHoursExcel(
   month: string, factoryId?: number,
-  opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean } = {},
-): Promise<{ buffer: Buffer; facName: string | null }> {
+  // statement — «Zestawienie godzin» для клієнта: заголовок/аркуш без слова «raport»,
+  // без підсвітки розбіжностей; рядки без значення у вибраному джерелі пропускаються.
+  opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean; statement?: HoursStatementSource } = {},
+): Promise<{ buffer: Buffer; facName: string | null; rowCount: number; total: number }> {
   const colKeys = (opts.cols?.length ? opts.cols : DEFAULT_HOURS_COLS).filter(k => HOURS_XLSX_COLS.some(c => c.key === k));
   const cols = HOURS_XLSX_COLS.filter(c => colKeys.includes(c.key));
   const errorsOnly = !!opts.errorsOnly;
+  const statement = opts.statement;
 
   const { buildHoursMergedRows } = await import("./hoursRows");
   const { rows: merged, facById } = await buildHoursMergedRows(month);
@@ -576,6 +584,10 @@ export async function buildReportHoursExcel(
     shifts: number; weekendShifts: number; hours: number; report: number | null; factoryHours: number | null;
     confirmed: boolean; workerResponse: string | null; asked: boolean; note: string | null;
   };
+  // Для графіку 0 год = людина не працювала → у zestawienie не потрапляє
+  // (рапорт/фабрика: явний 0 — теж значення, лишається).
+  const sourceValue = (r: Row, src: HoursStatementSource): number | null =>
+    src === "hours" ? (r.hours > 0 ? r.hours : null) : src === "report" ? r.report : r.factoryHours;
   // Той самий diffState, що на сторінці /hours (Hours.tsx)
   const diffState = (r: Row): "match" | "mismatch" | "partial" | "none" => {
     if (r.report == null && r.factoryHours == null) return "none";
@@ -596,6 +608,7 @@ export async function buildReportHoursExcel(
     // підтверджене вручну («все ок» на /hours) — не помилка: і розбіжність,
     // і години фабрики без рапорту працівника
     .filter(x => {
+      if (statement) return sourceValue(x, statement) != null;
       if (!errorsOnly) return true;
       const st = diffState(x);
       if (st === "mismatch") return !x.confirmed;
@@ -606,7 +619,7 @@ export async function buildReportHoursExcel(
 
   const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Raport-godziny", { views: [{ showGridLines: false }] });
+  const ws = wb.addWorksheet(statement ? "Zestawienie" : "Raport-godziny", { views: [{ showGridLines: false }] });
   ws.columns = cols.map(c => ({ width: c.width }));
   const thin = { top: { style: "thin", color: { argb: "FFD1D5DB" } }, left: { style: "thin", color: { argb: "FFD1D5DB" } }, bottom: { style: "thin", color: { argb: "FFD1D5DB" } }, right: { style: "thin", color: { argb: "FFD1D5DB" } } };
   const nCols = cols.length;
@@ -614,7 +627,9 @@ export async function buildReportHoursExcel(
 
   ws.mergeCells(1, 1, 1, Math.max(2, nCols));
   const title = ws.getCell(1, 1);
-  title.value = `Godziny — ${selectedFac ? `${selectedFac} — ` : ""}${monthLabel}${errorsOnly ? " — tylko rozbieżności" : ""}`;
+  title.value = statement
+    ? `Zestawienie godzin — ${selectedFac ? `${selectedFac} — ` : ""}${monthLabel}`
+    : `Godziny — ${selectedFac ? `${selectedFac} — ` : ""}${monthLabel}${errorsOnly ? " — tylko rozbieżności" : ""}`;
   title.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
   title.alignment = { vertical: "middle", horizontal: "left" };
   ws.getRow(1).height = 26;
@@ -650,7 +665,7 @@ export async function buildReportHoursExcel(
   };
   // Підсвітка розбіжностей стосується лише пари «рапорт ↔ фабрика» (+ різниця) —
   // колонки графіка (зміни/години) не фарбуємо.
-  const diffCol = (key: HoursXlsxColKey) => key === "report" || key === "factoryHours" || key === "diff";
+  const diffCol = (key: HoursXlsxColKey) => !statement && (key === "report" || key === "factoryHours" || key === "diff");
 
   let r = 3;
   for (const row of rows) {
@@ -688,7 +703,8 @@ export async function buildReportHoursExcel(
   });
 
   const buffer = await wb.xlsx.writeBuffer().then(b => Buffer.from(b));
-  return { buffer, facName: selectedFac };
+  const total = statement ? round2(rows.reduce((s, x) => s + (sourceValue(x, statement) ?? 0), 0)) : round2(rows.reduce((s, x) => s + x.hours, 0));
+  return { buffer, facName: selectedFac, rowCount: rows.length, total };
 }
 
 // ─── Hours tracking Excel (per factory subfolder, one file per year, tab per month) ──

@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound, FileSpreadsheet } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, del, upload } from "../lib/api";
+import { get, post, del, upload, type EmailRecipient } from "../lib/api";
 import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge, Button, Input, Modal, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
@@ -103,6 +103,7 @@ export default function Hours() {
   const [importKey, setImportKey] = useState<string | null>(null);
   const [facKeysKey, setFacKeysKey] = useState<string | null>(null); // модалка «Ключі фабрики» (особисті номери працівників)
   const [emailKey, setEmailKey] = useState<string | null>(null);
+  const [statementKey, setStatementKey] = useState<string | null>(null); // лист «zestawienie godzin» клієнту
   const [notifyKey, setNotifyKey] = useState<string | null>(null); // розсилка «підтверди свої години» у бот
   // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
   const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string } | null>(null);
@@ -562,12 +563,24 @@ export default function Hours() {
                       <RotateCcw className="h-3.5 w-3.5" /> {t("Очистити години фабрики")}
                     </button>
                   )}
-                  {canEdit && g.factoryId != null && g.rows.some(w => diffState(w) === "mismatch") && (
-                    <button onClick={() => setEmailKey(g.key)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100"
-                      title={t("Згенерувати лист клієнту про розбіжності годин")}>
-                      <Mail className="h-3.5 w-3.5" /> {t("Лист про розбіжності")}
-                      <span className="rounded-full bg-red-600 px-1.5 text-[10px] font-semibold text-white">{g.rows.filter(w => diffState(w) === "mismatch").length}</span>
+                  {/* кнопка видима завжди (раніше ховалась без розбіжностей — «пропала»);
+                      без пар «рапорт ≠ фабрика» — неактивна з підказкою */}
+                  {canEdit && g.factoryId != null && (() => {
+                    const nMis = g.rows.filter(w => diffState(w) === "mismatch").length;
+                    return (
+                      <button onClick={() => setEmailKey(g.key)} disabled={nMis === 0}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={nMis ? t("Згенерувати лист клієнту про розбіжності годин") : t("Розбіжностей рапорт ↔ фабрика на цій вкладці немає (потрібні обидві колонки годин)")}>
+                        <Mail className="h-3.5 w-3.5" /> {t("Лист про розбіжності")}
+                        {nMis > 0 && <span className="rounded-full bg-red-600 px-1.5 text-[10px] font-semibold text-white">{nMis}</span>}
+                      </button>
+                    );
+                  })()}
+                  {canEdit && g.factoryId != null && (
+                    <button onClick={() => setStatementKey(g.key)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                      title={t("Зеставєння годин клієнту: Excel з однією обраною колонкою годин на email фабрики")}>
+                      <FileSpreadsheet className="h-3.5 w-3.5" /> {t("Зеставєння годин")}
                     </button>
                   )}
                   {canEdit && g.factoryId != null && (
@@ -752,8 +765,10 @@ export default function Hours() {
         // групи беруться свіжими з query — правки годин живо оновлюють модалки
         const ig = importKey ? groups.find(g => g.key === importKey) : null;
         const eg = emailKey ? groups.find(g => g.key === emailKey) : null;
+        const sg = statementKey ? groups.find(g => g.key === statementKey) : null;
         return (
           <>
+            {sg?.factoryId != null && <StatementEmailModal group={sg} month={month} onClose={() => setStatementKey(null)} />}
             {ig?.factoryId != null && <ImportHoursModal group={ig} month={month} onClose={() => setImportKey(null)}
               // Eurocash: файл фабрики несе все для сводної (пороги/нічні/потроненя)
               // — після збереження годин одразу переносимо вкладку в сводну.
@@ -1733,7 +1748,7 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
   // null = слідувати за згенерованим (живе оновлення); рядок = ручна правка
   const [customSubject, setCustomSubject] = useState<string | null>(null);
   const [customBody, setCustomBody] = useState<string | null>(null);
-  const [to, setTo] = useState(() => group.rows.find(r => r.clientEmail)?.clientEmail ?? "");
+  const [to, setTo] = useState<string[]>([]);
   const subject = customSubject ?? generated.subject;
   const body = customBody ?? generated.body;
   const withReport = mismatches.filter(w => w.reportSubmitted && w.reportLink);
@@ -1743,7 +1758,7 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
       month, factoryId: group.factoryId, to, subject, body, attachWorkerIds: withReport.map(w => w.workerId),
     }),
     onSuccess: (r) => {
-      toast.success(t("Лист надіслано на {to} (вкладень: {n})", { to, n: r.attached }), {
+      toast.success(t("Лист надіслано на {to} (вкладень: {n})", { to: to.join(", "), n: r.attached }), {
         description: r.missingReports.length ? t("Без рапорту-доказу: {list}", { list: r.missingReports.join(", ") }) : undefined,
       });
       onClose();
@@ -1763,10 +1778,7 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
             <span className="text-xs text-slate-400">{t("Текст оновлюється автоматично при правках годин")}</span>
           )}
         </div>
-        <div>
-          <Label>{t("Кому (email клієнта)")}</Label>
-          <Input value={to} onChange={e => setTo(e.target.value)} placeholder="klient@fabryka.pl" className="mt-1" />
-        </div>
+        <RecipientsPicker factoryId={group.factoryId!} value={to} onChange={setTo} />
         <div>
           <Label>{t("Тема")}</Label>
           <Input value={subject} onChange={e => setCustomSubject(e.target.value)} className="mt-1" />
@@ -1785,7 +1797,155 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button onClick={() => { if (window.confirm(t("Надіслати лист клієнту на {to}?", { to }))) send.mutate(); }} loading={send.isPending} disabled={!to || !mismatches.length}>
+          <Button onClick={() => { if (window.confirm(t("Надіслати лист клієнту на {to}?", { to: to.join(", ") }))) send.mutate(); }} loading={send.isPending} disabled={!to.length || !mismatches.length}>
+            <Mail className="h-4 w-4" /> {t("Надіслати клієнту")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Отримувачі листа: база email-ів фабрики (налаштування фабрики → «Отримувачі
+// графіку») чекбоксами — типово всі відмічені — плюс поле «інші адреси» через кому.
+// Значення = плоский список адрес, що піде в `to`.
+function RecipientsPicker({ factoryId, value, onChange }: { factoryId: number; value: string[]; onChange: (v: string[]) => void }) {
+  const t = useT();
+  const { data: factories = [] } = useQuery<{ id: number; emailRecipients?: EmailRecipient[]; clientEmail?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const base = useMemo(() => {
+    const f = factories.find(x => x.id === factoryId);
+    // legacy-фабрика (без рядків у factory_email_recipients) приходить одним
+    // записом «a@b.pl, c@d.pl» — ріжемо кожен запис по роздільниках
+    const src = f?.emailRecipients?.length ? f.emailRecipients : [{ email: f?.clientEmail ?? "", name: null as string | null }];
+    const seen = new Set<string>();
+    return src.flatMap(r => r.email.split(/[,;]/).map(s => s.trim()).filter(Boolean).map(email => ({ email, name: r.name })))
+      .filter(r => !seen.has(r.email) && seen.add(r.email));
+  }, [factories, factoryId]);
+  const [extra, setExtra] = useState("");
+  const [checked, setChecked] = useState<Set<string> | null>(null); // null = ще не ініціалізовано з бази
+  const sel = checked ?? new Set(base.map(r => r.email));
+  const extraList = useMemo(() => extra.split(/[,;]/).map(s => s.trim()).filter(Boolean), [extra]);
+  const combined = useMemo(() => [...new Set([...base.filter(r => sel.has(r.email)).map(r => r.email), ...extraList])], [base, sel, extraList]);
+  const combinedKey = combined.join("|");
+  const valueKey = value.join("|");
+  useEffect(() => { if (combinedKey !== valueKey) onChange(combined); }, [combinedKey, valueKey, combined, onChange]);
+  const toggle = (email: string) => setChecked(() => { const n = new Set(sel); n.has(email) ? n.delete(email) : n.add(email); return n; });
+  return (
+    <div>
+      <Label>{t("Кому (адреси фабрики)")}</Label>
+      {base.length ? (
+        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+          {base.map(r => (
+            <label key={r.email} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm">
+              <input type="checkbox" checked={sel.has(r.email)} onChange={() => toggle(r.email)} className="accent-red-600" />
+              <span className="min-w-0 truncate text-slate-700" title={r.email}>{r.name ? <><span className="font-medium">{r.name}</span> · </> : null}{r.email}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-1 text-xs text-amber-700">{t("У налаштуваннях фабрики немає email-адрес — впишіть адресу нижче.")}</div>
+      )}
+      <Input value={extra} onChange={e => setExtra(e.target.value)} placeholder={t("інші адреси через кому")} className="mt-1.5" />
+      {combined.length > 0 && <div className="mt-1 text-xs text-slate-400">{t("Піде на {n} адрес(и): {list}", { n: combined.length, list: combined.join(", ") })}</div>}
+    </div>
+  );
+}
+
+// Zestawienie godzin клієнту: одна обрана колонка годин (графік / рапорт / фабрика),
+// список у тексті листа + Excel у вкладенні (POST /hours/statement-email). Текст
+// живо перераховується після правок годин, поки не відредагований вручну.
+type StatementSource = "hours" | "report" | "factoryHours";
+function StatementEmailModal({ group, month, onClose }: { group: Group; month: string; onClose: () => void }) {
+  const t = useT();
+  const monthPl = useMemo(() => new Date(`${month}-01T00:00:00`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" }), [month]);
+  const SOURCES: { key: StatementSource; label: string; hint: string }[] = [
+    { key: "hours", label: t("Години (графік)"), hint: t("затверджені явки з графіку") },
+    { key: "report", label: t("Години з рапорту"), hint: t("рапорти працівників") },
+    { key: "factoryHours", label: t("Години з фабрики"), hint: t("евіденція, надіслана фабрикою") },
+  ];
+  const [source, setSource] = useState<StatementSource>("report");
+  const [withCode, setWithCode] = useState(true);
+  // графік: 0 год = не працював → пропускаємо (дзеркало sourceValue у drive.ts)
+  const valueOf = (w: HourRow): number | null => source === "hours" ? (w.hours > 0 ? w.hours : null) : source === "report" ? (w.reportHours ?? null) : (w.factoryHours ?? null);
+  const rows = useMemo(() => group.rows.map(w => ({ w, v: valueOf(w) })).filter(x => x.v != null).sort((a, b) => a.w.name.localeCompare(b.w.name, "pl")), [group, source]); // eslint-disable-line react-hooks/exhaustive-deps
+  const skipped = group.rows.length - rows.length;
+  const total = Math.round(rows.reduce((s, x) => s + (x.v ?? 0), 0) * 100) / 100;
+  const generated = useMemo(() => ({
+    subject: `Zestawienie godzin — ${group.name} — ${monthPl}`,
+    body: [
+      "Dzień dobry,",
+      "",
+      `w załączeniu przesyłamy zestawienie godzin za ${monthPl} (${group.name}):`,
+      "",
+      ...rows.map(x => `• ${x.w.name}: ${x.v} godz.`),
+      "",
+      `Razem: ${rows.length} os., ${total} godz.`,
+      "",
+      "Prosimy o weryfikację i informację zwrotną.",
+      "",
+      "Pozdrawiamy,",
+      "Euro Support",
+    ].join("\n"),
+  }), [rows, total, group.name, monthPl]);
+  const [customSubject, setCustomSubject] = useState<string | null>(null);
+  const [customBody, setCustomBody] = useState<string | null>(null);
+  const [to, setTo] = useState<string[]>([]);
+  const subject = customSubject ?? generated.subject;
+  const body = customBody ?? generated.body;
+  const excelUrl = () => {
+    const p = new URLSearchParams({ month, factoryId: String(group.factoryId), statement: source, cols: (withCode ? ["code", "name", source] : ["name", source]).join(",") });
+    return `/api/hours/report-excel?${p.toString()}`;
+  };
+  const send = useMutation({
+    mutationFn: () => post<{ sent: boolean; rows: number; total: number }>("/hours/statement-email", {
+      month, factoryId: group.factoryId, to, subject, body, source, withCode,
+    }),
+    onSuccess: (r) => { toast.success(t("Зеставєння надіслано на {to} ({n} людей, {h} год)", { to: to.join(", "), n: r.rows, h: r.total })); onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={`${t("Зеставєння годин")} — ${group.name} · ${month}`} size="xl">
+      <div className="space-y-3">
+        <div>
+          <Label>{t("Звідки брати години")}</Label>
+          <div className="mt-1 grid gap-1.5 sm:grid-cols-3">
+            {SOURCES.map(s => (
+              <label key={s.key} className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-1.5 text-sm ${source === s.key ? "border-red-300 bg-red-50/60" : "border-slate-200"}`}>
+                <input type="radio" name="stmt-source" className="mt-0.5 accent-red-600" checked={source === s.key} onChange={() => setSource(s.key)} />
+                <span><span className="font-medium text-slate-700">{s.label}</span><span className="block text-xs text-slate-500">{s.hint}</span></span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+          <Badge color="green">{t("{n} людей · {h} год", { n: rows.length, h: total })}</Badge>
+          {skipped > 0 && <span className="text-xs text-amber-700">{t("без значення в цій колонці (не потраплять): {n}", { n: skipped })}</span>}
+          <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={withCode} onChange={e => setWithCode(e.target.checked)} /> {t("колонка «Код»")}</label>
+          {(customSubject != null || customBody != null) ? (
+            <button onClick={() => { setCustomSubject(null); setCustomBody(null); }} className="inline-flex items-center gap-1 text-xs text-slate-500 underline-offset-2 hover:underline">
+              <RotateCcw className="h-3 w-3" /> {t("Скинути до згенерованого")}
+            </button>
+          ) : (
+            <span className="text-xs text-slate-400">{t("Текст оновлюється автоматично при правках годин")}</span>
+          )}
+        </div>
+        <RecipientsPicker factoryId={group.factoryId!} value={to} onChange={setTo} />
+        <div>
+          <Label>{t("Тема")}</Label>
+          <Input value={subject} onChange={e => setCustomSubject(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label>{t("Текст листа")}</Label>
+          <textarea value={body} onChange={e => setCustomBody(e.target.value)} rows={12}
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:border-red-300" />
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+          {t("Вкладення: Excel «Zestawienie godzin» з колонкою «{col}» (польською).", { col: SOURCES.find(s => s.key === source)!.label })}
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant="secondary" disabled={!rows.length} onClick={() => { window.location.href = excelUrl(); }}><Download className="h-4 w-4" /> {t("Скачати Excel")}</Button>
+          <Button onClick={() => { if (window.confirm(t("Надіслати лист клієнту на {to}?", { to: to.join(", ") }))) send.mutate(); }} loading={send.isPending} disabled={!to.length || !rows.length}>
             <Mail className="h-4 w-4" /> {t("Надіслати клієнту")}
           </Button>
         </div>
