@@ -2,7 +2,7 @@
 // в бот мовою кожного працівника з його реферальним кодом (API routes/referralCampaign.ts).
 // Умови (суми, дедлайн, телефони) редагуються тут і ЗБЕРІГАЮТЬСЯ (settings.referral_campaign):
 // їх читають бот («🎁 Запроси друга», бонус кандидата) і картки кандидатів. Тексти — bot/i18n.ts camp.*.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send, Search, Eye, Save } from "lucide-react";
 import { toast } from "sonner";
@@ -31,6 +31,7 @@ export default function ReferralCampaignPanel() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<Info>({ queryKey: ["referral-campaign"], queryFn: () => get("/referral-campaign") });
   const [params, setParams] = useState<Params | null>(null);
+  const paramsRef = useRef<Params | null>(null);
   const [dirty, setDirty] = useState(false);
   const [inclActive, setInclActive] = useState(true);
   const [inclFired, setInclFired] = useState(true);
@@ -44,7 +45,10 @@ export default function ReferralCampaignPanel() {
   const [prevActive, setPrevActive] = useState(true);
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  useEffect(() => { if (data && !params) setParams(data.params ?? data.defaults); }, [data, params]);
+  // свіжі збережені умови підхоплюються, поки у формі немає незбережених правок
+  useEffect(() => { if (data && !dirty) setParams(data.params ?? data.defaults); }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [numRaw, setNumRaw] = useState<Record<string, string>>({}); // сирий текст числових полів (щоб можна було стерти до порожнього)
+  const savedSnapshot = useRef<Params | null>(null); // що саме пішло на сервер — dirty знімаємо лише якщо форма не змінилась відтоді
 
   const base = useMemo(() => (data?.recipients ?? []).filter(r =>
     (r.isActive ? inclActive : inclFired) && !(exclOffice && r.isOffice) && !(exclAdmins && r.isAdmin),
@@ -57,17 +61,20 @@ export default function ReferralCampaignPanel() {
   ), [base, q, fFactory, fLang]);
   // розподіл обраних по мовах і фабриках (для бокової панелі)
   const byLang = useMemo(() => countBy(chosen, r => r.language || "uk"), [chosen]);
-  const byFactory = useMemo(() => countBy(chosen, r => r.factoryName ?? "—"), [chosen]);
+  // групуємо по id (назви фабрик не унікальні), показуємо назву
+  const byFactory = useMemo(() => countBy(chosen, r => r.factoryId == null ? "none" : String(r.factoryId)), [chosen]);
   const factoryOptions = useMemo(() => {
     const m = new Map<string, string>();
     for (const r of base) if (r.factoryId != null && r.factoryName) m.set(String(r.factoryId), r.factoryName);
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], "pl"));
   }, [base]);
+  const factoryName = (id: string) => id === "none" ? "—" : (factoryOptions.find(([fid]) => fid === id)?.[1] ?? id);
   const hasNoFactory = base.some(r => r.factoryId == null);
 
+  const markSaved = () => { if (savedSnapshot.current === paramsRef.current) setDirty(false); };
   const saveParams = useMutation({
-    mutationFn: () => put<Params>("/referral-campaign/params", { params }),
-    onSuccess: (p) => { setParams(p); setDirty(false); qc.invalidateQueries({ queryKey: ["referral-campaign"] }); toast.success(t("Умови збережено")); },
+    mutationFn: () => { savedSnapshot.current = params; return put<Params>("/referral-campaign/params", { params }); },
+    onSuccess: () => { markSaved(); qc.invalidateQueries({ queryKey: ["referral-campaign"] }); toast.success(t("Умови збережено")); },
     onError: (e: any) => toast.error(e.message),
   });
   const doPreview = useMutation({
@@ -76,9 +83,9 @@ export default function ReferralCampaignPanel() {
     onError: (e: any) => toast.error(e.message),
   });
   const send = useMutation({
-    mutationFn: () => post<SendResult>("/referral-campaign/send", { workerIds: chosen.map(r => r.id), params }),
+    mutationFn: () => { savedSnapshot.current = params; return post<SendResult>("/referral-campaign/send", { workerIds: chosen.map(r => r.id), params }); },
     onSuccess: (r) => {
-      setDirty(false); qc.invalidateQueries({ queryKey: ["referral-campaign"] });
+      markSaved(); qc.invalidateQueries({ queryKey: ["referral-campaign"] });
       toast.success(t("Надіслано: {n}", { n: r.notified }), {
         description: r.failed.length ? t("Не доставлено ({n}): {names}", { n: r.failed.length, names: r.failed.slice(0, 5).map(f => f.fullName).join(", ") }) : undefined,
         duration: 10000,
@@ -87,11 +94,17 @@ export default function ReferralCampaignPanel() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  paramsRef.current = params;
   if (isLoading || !params) return <Spinner />;
 
   // зміна умов скидає прев'ю — щоб оператор не підтвердив відправку по застарілому тексту
   const upd = (k: keyof Params, v: string | number) => { setParams({ ...params, [k]: v }); setPreview(null); setDirty(true); };
-  const num = (k: keyof Params) => ({ type: "number" as const, value: String(params[k]), onChange: (e: any) => upd(k, Number(e.target.value)) });
+  // числове поле: показуємо сирий текст, поки він у фокусі (можна стерти до порожнього); у стан пишемо лише число
+  const num = (k: keyof Params) => ({
+    type: "number" as const, value: numRaw[k] ?? String(params[k]),
+    onChange: (e: any) => { const v: string = e.target.value; setNumRaw(r => ({ ...r, [k]: v })); if (v !== "" && Number.isFinite(Number(v))) upd(k, Number(v)); },
+    onBlur: () => setNumRaw(r => { const { [k]: _, ...rest } = r; return rest; }),
+  });
   const str = (k: keyof Params) => ({ value: String(params[k]), onChange: (e: any) => upd(k, e.target.value) });
   const toggle = (id: number) => setExcluded(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const excludeIds = (ids: number[]) => setExcluded(s => { const n = new Set(s); for (const id of ids) n.add(id); return n; });
@@ -223,14 +236,11 @@ export default function ReferralCampaignPanel() {
           </div>
           <div className="mb-2 mt-3 text-sm font-medium text-slate-600">{t("Обрано за фабриками")}</div>
           <div className="max-h-64 space-y-0.5 overflow-y-auto text-xs text-slate-600">
-            {byFactory.map(([f, n]) => {
-              const id = factoryOptions.find(([, name]) => name === f)?.[0] ?? (f === "—" ? "none" : "");
-              return (
-                <button key={f} className="flex w-full items-center justify-between rounded px-1 py-0.5 hover:bg-slate-50" onClick={() => setFFactory(id)} title={t("Показати в списку")}>
-                  <span className="truncate">{f}</span><b>{n}</b>
-                </button>
-              );
-            })}
+            {byFactory.map(([id, n]) => (
+              <button key={id} className="flex w-full items-center justify-between rounded px-1 py-0.5 hover:bg-slate-50" onClick={() => setFFactory(id)} title={t("Показати в списку")}>
+                <span className="truncate">{factoryName(id)}</span><b>{n}</b>
+              </button>
+            ))}
             {!byFactory.length && <div className="text-slate-400">—</div>}
           </div>
         </Card>
