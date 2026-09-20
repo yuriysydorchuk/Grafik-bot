@@ -349,18 +349,27 @@ export async function controlStats(weeks = 1, today = warsawToday()) {
   return { from, to: today, admins: out, autoResolved: Number(ar?.c ?? 0), created: Number(cr?.c ?? 0), weekly };
 }
 
+// «Взято в план» на майбутній день (кнопки «→ на понеділок», «план на дату»): до
+// того дня задача НЕ прострочена і НЕ сьогоднішня — рахуємо її по plannedFor, а не
+// по dueAt. Інакше «перенести на понеділок» нічого не міняло в лічильниках
+// (баг 16.09.2026: plannedFor писався, а overdue/today рахувались лише по dueAt).
+// Єдина точка для лічильників, «Мій день», дайджестів і бот-списків.
+export function effectiveDay(due: string | null, planned: string | null, today: string): string | null {
+  return planned && planned > today ? planned : due;
+}
+
 // Лічильники для віджетів (мої: прострочено / сьогодні / тиждень / зустрічі).
 export async function myCounters(adminId: number, today = warsawToday()) {
   const weekEnd = addDaysStr(today, 6);
   const rows = await db.execute(sql`
-    select t.due_at, t.kind from tasks t
+    select t.due_at, t.planned_for, t.kind from tasks t
     left join task_assignees a on a.task_id = t.id and a.admin_id = ${adminId}
     where t.status in ('open','in_progress','review')
       and (t.assignee_admin_id = ${adminId} or a.id is not null)
       and (t.snoozed_until is null or t.snoozed_until <= ${today})`);
   let overdue = 0, todayN = 0, week = 0, meetingsToday = 0;
-  for (const r of rows.rows as { due_at: string | null; kind: string }[]) {
-    const d = dateStr(r.due_at);
+  for (const r of rows.rows as { due_at: string | null; planned_for: string | null; kind: string }[]) {
+    const d = r.kind === "meeting" ? dateStr(r.due_at) : effectiveDay(dateStr(r.due_at), dateStr(r.planned_for), today);
     if (!d) continue;
     if (d < today) overdue++; else if (d === today) { todayN++; if (r.kind === "meeting") meetingsToday++; } else if (d <= weekEnd) week++;
   }

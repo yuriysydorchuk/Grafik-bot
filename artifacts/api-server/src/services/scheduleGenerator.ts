@@ -9,6 +9,8 @@ import { DAYS } from "./sheets";
 import { matchWorker } from "../bot/workerMatch";
 import { factoryShifts, nowWarsaw } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, shiftDurationHours } from "./shiftOverrides";
+import { entryDateStr } from "../lib/dates";
+import { terminatedOn } from "../lib/termination";
 
 export interface ShortageInfo {
   factoryName: string;
@@ -157,6 +159,13 @@ export async function generateSchedule(
     if (a.shift == null) absentDaySet.add(`${a.workerId}-${a.day}`);
     else absentSet.add(`${a.workerId}-${a.day}-${a.shift}`);
   }
+  // Виповідзення: з дати звільнення (з усіх фабрик або саме з цієї) людину не ставимо
+  // (lib/termination.ts). До дати — працює як звичайно.
+  const workerRowById = new Map(allWorkers.map(w => [w.id, w]));
+  const isGone = (workerId: number, fId: number, day: string) => {
+    const w = workerRowById.get(workerId);
+    return !!w && terminatedOn(w, fId, entryDateStr(weekStart, day));
+  };
   const isAbsent = (workerId: number, day: string, shift: string) =>
     absentSet.has(`${workerId}-${day}-${shift}`) || absentDaySet.has(`${workerId}-${day}`);
 
@@ -238,6 +247,7 @@ export async function generateSchedule(
             .filter(wid => {
               if (usedThisShift.has(wid)) return false;
               if (isAbsent(wid, day, shift)) return false; // reported absent (shift or whole day)
+              if (isGone(wid, order.factoryId, day)) return false; // виповідзення настало
               const days = workerDaysAssigned.get(wid);
               if (!days) return false;
               if (days.size >= 6) return false;            // max 6 days
@@ -306,6 +316,7 @@ export async function generateSchedule(
         const shift = String(fs) as Shift;
         if (slotLocked(day, shift)) continue;
         if (isAbsent(w.id, day, shift)) continue;    // absent that shift or whole day
+        if (isGone(w.id, fac.id, day)) continue;     // виповідзення настало
         pending.push({ workerId: w.id, factoryId: fac.id, dayOfWeek: day, shift });
         load[fs - 1]!++;
         workerDaysAssigned.get(w.id)!.add(day);
@@ -319,6 +330,7 @@ export async function generateSchedule(
         !workerDayShifts.has(`${w.id}-${day}`) &&
         (workerDaysAssigned.get(w.id)?.size ?? 0) < 6);
       for (const w of unbound) {
+        if (isGone(w.id, fac.id, day)) continue;     // виповідзення настало
         // candidate shifts: not locked, not absent
         const opts = Array.from({ length: count }, (_, i) => i)
           .filter(i => !slotLocked(day, String(i + 1) as Shift) && !isAbsent(w.id, day, String(i + 1)));

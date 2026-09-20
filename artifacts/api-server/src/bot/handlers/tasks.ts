@@ -8,7 +8,7 @@ import { getAdmin, adminHasPage, adminMenuFor } from "../roles";
 import { tb, bhears, oLang, type Lang } from "../i18n";
 import { setState, getState, clearState } from "../state";
 import {
-  loadTask, setTaskStatus, respondAssignee, snoozeTask, planTask, isParticipant, createTask, addComment, myCounters, mdEsc, warsawToday, fmtDate, dateStr, diffDays, OPEN_STATUSES,
+  loadTask, setTaskStatus, respondAssignee, snoozeTask, planTask, isParticipant, createTask, addComment, myCounters, mdEsc, warsawToday, fmtDate, dateStr, diffDays, OPEN_STATUSES, effectiveDay,
 } from "../../services/tasks";
 import { db, tasksTable } from "@workspace/db";
 import { and, eq, inArray, or, sql, lte, isNull } from "drizzle-orm";
@@ -31,7 +31,8 @@ async function myOpen(adminId: number, today: string) {
     or(eq(tasksTable.assigneeAdminId, adminId), sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId})`),
     or(isNull(tasksTable.snoozedUntil), lte(tasksTable.snoozedUntil, today)),
   ));
-  return rows.map(t => ({ ...t, due: dateStr(t.dueAt), planned: dateStr(t.plannedFor) }));
+  // due — «ефективний» день: план на майбутнє (→ понеділок) сильніший за dueAt (services/tasks effectiveDay)
+  return rows.map(t => ({ ...t, due: t.kind === "meeting" ? dateStr(t.dueAt) : effectiveDay(dateStr(t.dueAt), dateStr(t.plannedFor), today), planned: dateStr(t.plannedFor) }));
 }
 
 function summaryKb(lang: Lang) {
@@ -67,7 +68,7 @@ export function registerTaskActions(bot: Telegraf<any>) {
     const today = warsawToday();
     const all = await myOpen(admin.id, today);
     const list = kind === "overdue" ? all.filter(t => t.due && t.due < today && t.kind !== "meeting")
-      : kind === "today" ? all.filter(t => t.due === today || t.planned === today)
+      : kind === "today" ? all.filter(t => t.due === today || (t.planned === today && !(t.due && t.due < today)))
       : all.filter(t => t.due && t.due > today && t.due <= addDaysStr(today, 6));
     list.sort((a, b) => (a.due ?? "9").localeCompare(b.due ?? "9") || (a.dueTime ?? "").localeCompare(b.dueTime ?? ""));
     const title = kind === "overdue" ? tb(lang, "🔴 Прострочені") : kind === "today" ? tb(lang, "🟠 На сьогодні") : tb(lang, "⚪ Цього тижня");

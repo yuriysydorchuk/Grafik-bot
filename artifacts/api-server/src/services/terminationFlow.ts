@@ -19,17 +19,39 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
   // 2) ZUS ZWUA — завжди, крім звільнення датою ДО запуску модуля (settings.legacyBefore):
   //    таке заднім числом = історія, нічний скан (taskAutoRules) її теж не бере — інакше
   //    задача зʼявилась би тут і зникла наступної ночі
-  const zwuaKey = `zwua:${worker.id}`;
+  //    ПО ФІРМІ (рішення власника 20.09.2026): людина може бути одночасно на двох фірмах —
+  //    задача на кожну фірму, з якою є підписана умова (contracts.company_id ?? фірма фабрики);
+  //    без жодної умови — фірма профілю. Ключ zwua:<worker>:<company> (як у startFactoryEndFlow);
+  //    старий ключ zwua:<worker> лишається дедуп-гардом для вже відкритих задач.
   const legacyBefore = (await loadTaskSettings()).legacyBefore;
-  const [exZ] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, zwuaKey), inArray(tasksTable.status, OPEN_STATUSES)));
-  if (!exZ && !(legacyBefore && fireDate < legacyBefore)) {
-    const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
-    await createTask({
-      kind: "task", title: `Виреєструвати з ZUS (ZWUA): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,
-      workerId: worker.id, factoryId: worker.factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
-      autoParams: { workerName: worker.fullName, fireDate, docTypeCode: "zus_zwua" },
-      checklist: normalizeChecklist([{ id: "", text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)", done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),
-    }, actorAdminId);
+  if (!(legacyBefore && fireDate < legacyBefore)) {
+    const [exOld] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, `zwua:${worker.id}`), inArray(tasksTable.status, OPEN_STATUSES)));
+    const { eventContractIds } = await import("./contractEndDocs");
+    const signedIds = await db.select({ id: contractsTable.id, companyId: sql<number | null>`coalesce(${contractsTable.companyId}, ${factoriesTable.companyId})` })
+      .from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
+      .where(and(eq(contractsTable.workerId, worker.id), eq(contractsTable.status, "signed")));
+    const events = await eventContractIds(signedIds.map(r => r.id));
+    const companyIds = new Set(signedIds.filter(r => !events.has(r.id)).map(r => r.companyId).filter((x): x is number => x != null));
+    if (!companyIds.size && worker.companyId != null) companyIds.add(worker.companyId);
+    // одна фірма (або жодної відомої) — одна задача зі старим ключем zwua:<worker> (сумісність з
+    // нічним синком/тестами); кілька фірм — по задачі на фірму з ключем zwua:<worker>:<company>
+    const list: (number | null)[] = companyIds.size ? [...companyIds] : [null];
+    const perCompany = list.length > 1;
+    for (const companyId of list) {
+      const zwuaKey = perCompany ? `zwua:${worker.id}:${companyId}` : `zwua:${worker.id}`;
+      const [exZ] = await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, zwuaKey), inArray(tasksTable.status, OPEN_STATUSES)));
+      // стара задача без фірми покриває лише фірму профілю — інші фірми отримують свою
+      if (exZ || (perCompany && exOld && companyId === worker.companyId)) continue;
+      const [co] = companyId != null ? await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId)) : [undefined];
+      const coLabel = companyId != null ? (co?.name ?? `фірма #${companyId}`) : null;
+      const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
+      await createTask({
+        kind: "task", title: `Виреєструвати з ZUS (ZWUA${coLabel ? `, ${coLabel}` : ""}): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,
+        workerId: worker.id, factoryId: worker.factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
+        autoParams: { workerName: worker.fullName, fireDate, docTypeCode: "zus_zwua", ...(companyId != null ? { companyId } : {}) },
+        checklist: normalizeChecklist([{ id: "", text: `Подати ZUS ZWUA (Płatnik / PUE ZUS)${coLabel ? ` — ${coLabel}` : ""}`, done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),
+      }, actorAdminId);
+    }
   }
 
   // 1) документи звільнення (рішення власника 10.09.2026: świadectwo pracy НЕ видаємо):

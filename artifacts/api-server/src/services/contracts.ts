@@ -20,6 +20,7 @@ import { UPLOADS_ROOT, CONTRACTS_DIR, SIGNATURES_DIR, makeStoredName } from "../
 import { logger } from "../lib/logger";
 import { warsawDateStr } from "../bot/time";
 import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
+import { fmtIban } from "../lib/iban";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
 const LANGS: Lang[] = ["pl", "en", "es", "ru", "uk"];
@@ -70,6 +71,7 @@ function formatValue(raw: string | undefined, modifier: string | null): string {
   if (!v) return "";
   if (modifier?.startsWith("data:")) return escapeHtml(formatPolishDate(v));
   if (modifier === "format:tak_nie") return v === "true" || v === "Tak" ? "Tak" : "Nie";
+  if (modifier === "format:iban") return escapeHtml(fmtIban(v)); // «61 1090 1014 …» / «PL61 1090 …» (lib/iban.ts)
   if (modifier === "format:html") return v; // готовий HTML (таблиця членів родини ZCNA) — джерело лише наш код, не введення користувача
   return escapeHtml(v);
 }

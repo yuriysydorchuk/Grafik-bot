@@ -615,6 +615,22 @@ export const absenceAttachmentsTable = pgTable("absence_attachments", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Листування щодо пропуску (20.09.2026): офіс пише працівнику у відповідь на пояснення
+// («Написати» на /absences, масове «Нагадати про невиправдані»), працівник відповідає з бота.
+// Повідомлення офісу відкриває працівнику «вікно»: знову можна написати пояснення і додати
+// файл (одноразовість з bot/handlers/absences.ts діє лише до першого повідомлення офісу).
+// Перше пояснення лишається в schedule_entries.absence_reason — тут лише продовження діалогу.
+export const absenceMessagesTable = pgTable("absence_messages", {
+  id: serial("id").primaryKey(),
+  entryId: integer("entry_id").notNull().references(() => scheduleEntriesTable.id, { onDelete: "cascade" }),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  direction: text("direction").notNull(),  // office | worker
+  kind: text("kind").notNull().default("message"), // message | reminder (масове нагадування)
+  text: text("text").notNull(),
+  adminId: integer("admin_id").references(() => adminsTable.id), // хто написав з офісу (direction=office)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Driver trip tracking (pickup start / factory arrival)
 export const driverTripsTable = pgTable("driver_trips", {
   id: serial("id").primaryKey(),
@@ -1937,6 +1953,7 @@ export type FactoryShiftOverride = typeof factoryShiftOverridesTable.$inferSelec
 export type Candidate = typeof candidatesTable.$inferSelect;
 export type AbsenceRequest = typeof absenceRequestsTable.$inferSelect;
 export type AbsenceAttachment = typeof absenceAttachmentsTable.$inferSelect;
+export type AbsenceMessage = typeof absenceMessagesTable.$inferSelect;
 export type Company = typeof companiesTable.$inferSelect;
 export type BankTransaction = typeof bankTransactionsTable.$inferSelect;
 export type BankStatementRow = typeof bankStatementsTable.$inferSelect;

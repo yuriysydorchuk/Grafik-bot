@@ -104,8 +104,8 @@ export const REASON_LABEL: Record<string, string> = {
   work_during_case_uncertain: "Справу подано, але до подання не було права працювати — працювати під час розгляду можна не напевно",
   no_basis: "Немає документа, який дає це право",
   employment_start_unknown: "Не вказано дату початку праці — строк повідомлення не рахується",
-  notification_overdue: "Прострочено повідомлення про працю (термін {dueAt})",
-  notification_late: "Повідомлення подано із запізненням (термін {dueAt}, подано {submittedAt})",
+  notification_overdue: "Прострочено повідомлення про працю для {company} (термін {dueAt})",
+  notification_late: "Повідомлення для {company} подано із запізненням (термін {dueAt}, подано {submittedAt})",
   // вісь «умова»
   contract_missing: "Умова на {factory} відсутня",
   contract_unsigned: "Умова на {factory} ще не підписана працівником",
@@ -119,8 +119,13 @@ export const REASON_LABEL: Record<string, string> = {
   main_company_not_employer: "Фірма в профілі не збігається з жодним роботодавцем зі списку фабрик",
 };
 
+// кеш, порахований до 20.09.2026, не має params.company — для нього старий текст без фірми
+const REASON_LABEL_NO_COMPANY: Record<string, string> = {
+  notification_overdue: "Прострочено повідомлення про працю (термін {dueAt})",
+  notification_late: "Повідомлення подано із запізненням (термін {dueAt}, подано {submittedAt})",
+};
 export function reasonText(t: (s: string, p?: Record<string, string | number>) => string, r: LegalityReason): string {
-  const tpl = REASON_LABEL[r.code] ?? r.code;
+  const tpl = (!r.params?.company && REASON_LABEL_NO_COMPANY[r.code]) || REASON_LABEL[r.code] || r.code;
   const params: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(r.params ?? {})) params[k] = v == null ? "—" : Array.isArray(v) ? v.join(", ") : String(v);
   return t(tpl, params);

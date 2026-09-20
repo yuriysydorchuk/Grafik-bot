@@ -36,6 +36,8 @@ import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
+import { terminatedOn } from "../lib/termination";
+import { workerQuestionnairesTable } from "@workspace/db";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
 import { createAnketaToken, createOfficeScanToken, createSelfScanToken, passportScanLink } from "./passportScan";
@@ -372,6 +374,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       nationality: workersTable.nationality, language: workersTable.language,
       gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
+      terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, // пікери графіку ховають з цієї дати
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
       legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
       // світлофори легалізації з кешу worker_legality (усім ролям — без деталей документів, D6)
@@ -989,6 +992,16 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     .from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.workerId, id));
   const selfMap = await loadSelfTransport([id]);
   const selfToday = w.factoryId != null ? selfIntervalOn(selfMap, id, w.factoryId, warsawToday()) : undefined;
+  // Перший робочий день — лінивий дорахунок при відкритті профілю (нові люди без явки: розіслана
+  // минула зміна / години фабрики — services/firstWorkDate.ts), щоб не чекати нічного бекфілу
+  if (!w.firstWorkDate && w.isActive) {
+    const d = await (await import("../services/firstWorkDate")).ensureFirstWorkDate(id).catch(() => null);
+    if (d) (w as any).firstWorkDate = d;
+  }
+  // Телефон: у workers колонки немає — читаємо з анкети (worker_questionnaires.phone, у профілі
+  // не редагується — рішення власника 20.09.2026); фолбек — картка кандидата, з якої людину створили.
+  const [qRow] = await db.select({ phone: workerQuestionnairesTable.phone }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, id));
+  const [candRow] = qRow?.phone ? [] : await db.select({ phone: candidatesTable.phone }).from(candidatesTable).where(eq(candidatesTable.workerId, id)).orderBy(desc(candidatesTable.id)).limit(1);
   const selfRows = [...intervalsOfWorker(selfMap, id)].flatMap(([factoryId, list]) =>
     list.map(i => ({ id: i.id, factoryId, factoryName: facMap.get(factoryId)?.name ?? null, since: i.since, until: i.until })));
   ok(res, {
@@ -1017,6 +1030,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
     employmentStartDate: w.employmentStartDate,
     firstWorkDate: w.firstWorkDate, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
+    phone: qRow?.phone || candRow?.phone || null, phoneSource: qRow?.phone ? "questionnaire" : candRow?.phone ? "candidate" : null,
     // бонуси — лише для працівників бонусних фабрик (правило konto/готівки
     // фабрики на поточний місяць: стаж → обидві галочки, лише нал → одна)
     // і лише з доступом до кшєнгових даних (галочки впливають на ЗП; редагування
@@ -2542,6 +2556,7 @@ router.post("/unplanned/:id/link", RW, async (req, res) => {
       dayOfWeek: row.dayOfWeek, shift: row.shift, status: "present", pickedUpBy: row.driverId,
     });
   }
+  import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(worker.id)).catch(() => {}); // перший робочий день
   ok(res, { linked: true, workerName: worker.fullName });
 });
 
@@ -2723,6 +2738,13 @@ router.post("/schedule/entry", RW, async (req, res) => {
   // draft-рядок, щоб графік можна було зібрати вручну ще до «Згенерувати»
   // (дзеркально призначенню водіїв наперед у PUT /schedule/driver-assignments).
   const week = await ensureWeekRow(String(weekStart));
+  // Виповідзення: на дату ≥ дати звільнення (з усіх фабрик або саме з цієї) не ставимо
+  // (lib/termination.ts; інцидент 15.09.2026 — Oleksiiuk R. ставився на 17–18.09 після звільнення з 17.09)
+  const [wRow] = await db.select({ terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, isActive: workersTable.isActive })
+    .from(workersTable).where(eq(workersTable.id, Number(workerId)));
+  if (!wRow) return fail(res, 404, "Працівника не знайдено");
+  if (!wRow.isActive) return fail(res, 400, "Працівник звільнений");
+  if (terminatedOn(wRow, factoryId, entryDateStr(String(weekStart), String(day)))) return fail(res, 400, `Працівник звільняється з ${String(wRow.terminationDate).slice(0, 10)} — на цю дату ставити не можна`);
   // Дві зміни в один день на ТІЙ САМІЙ фабриці — дозволено (1+2 тощо), але з
   // попередженням restGapHours, якщо пауза між змінами < MIN_REST_HOURS (веб підсвічує
   // помаранчевим). Дубль тієї ж зміни й зміна на іншій фабриці того дня — блок.
@@ -2834,12 +2856,20 @@ router.post("/schedule/copy-day", RW, async (req, res) => {
   ));
   const ovByDateShift = new Map(ovRows.map(r => [`${r.date}-${r.shift}`, { start: r.start, end: r.end }]));
 
+  // виповідзення: на дату ≥ дати звільнення людину не копіюємо (lib/termination.ts)
+  const termRows = workerIds.length ? await db.select({ id: workersTable.id, terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, isActive: workersTable.isActive })
+    .from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
+  const termById = new Map(termRows.map(r => [r.id, r]));
+
   type PlanPerson = { workerId: number; name: string; shift: Shift; note?: string | null };
   const plan = days.map(day => {
     const okL: PlanPerson[] = [], noAvail: PlanPerson[] = [], absence: PlanPerson[] = [];
-    const skipped: (PlanPerson & { reason: "cancelled" | "busy" })[] = [];
+    const skipped: (PlanPerson & { reason: "cancelled" | "busy" | "terminated" })[] = [];
+    const date = entryDateStr(String(weekStart), day);
     for (const p of people) {
       if (cancelledCell.has(`${day}-${p.shift}`)) { skipped.push({ ...p, reason: "cancelled" }); continue; }
+      const tw = termById.get(p.workerId);
+      if (tw && (!tw.isActive || terminatedOn(tw, fid, date))) { skipped.push({ ...p, reason: "terminated" }); continue; }
       if (busy.has(`${day}-${p.workerId}`)) { skipped.push({ ...p, reason: "busy" }); continue; }
       const ab = absenceOf(p.workerId, day, p.shift);
       if (ab) { absence.push({ ...p, note: ab.reason }); continue; }
@@ -3903,6 +3933,8 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     // extras Eurocash (нічні/ставка/потроненя): імпорт файла завжди їх виставляє
     // (null для форматів без extras — застарілі значення не залипають)
     await upsertFactoryHours(workerId, month, factoryId, Math.round(a.hours * 100) / 100, source, a.days, a.extras);
+    // перший робочий день — з днів імпорту, якщо явок у графіку не було (services/firstWorkDate.ts)
+    import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(workerId)).catch(() => {});
     saved++;
     // Ключ фабрики з підтвердженого рядка (вставка або Nr Osobowy Eurocash) —
     // запам'ятовуємо пару, наступні імпорти заматчаться по ньому без fuzzy.
@@ -4538,6 +4570,10 @@ router.get("/absences", RW, async (req, res) => {
     .sort((a, b) => b.date.localeCompare(a.date) || (a.name ?? "").localeCompare(b.name ?? "", "uk"));
   const files = await absenceFilesFor(absences.map(a => a.entryId));
   for (const a of absences as any[]) a.attachments = files.get(a.entryId) ?? [];
+  // листування офіс↔працівник по пропуску (services/absenceMessages.ts)
+  const { absenceMessagesFor } = await import("../services/absenceMessages");
+  const msgs = await absenceMessagesFor(absences.map(a => a.entryId));
+  for (const a of absences as any[]) a.messages = msgs.get(a.entryId) ?? [];
   // Кількісні підсумки рахуються БЕЗ виправданих (justified) пропусків
   const counted = absences.filter(a => !a.justified);
   const noShow = counted.filter(a => !a.excused).length;
@@ -4546,6 +4582,31 @@ router.get("/absences", RW, async (req, res) => {
     month, absences, total: counted.length, excused: counted.length - noShow, noShow,
     justified: absences.length - counted.length, penaltyTotal, defaultPenalty: DEFAULT_ABSENCE_PENALTY,
   });
+});
+
+// Написати працівнику щодо пропуску (20.09.2026): повідомлення в бот мовою працівника з кнопками
+// «Відповісти» / «Додати файл» — відкриває йому вікно повторного пояснення. body: { text }
+router.post("/absences/:entryId/message", RW, async (req, res) => {
+  const id = Number(req.params.entryId);
+  const text = String(req.body?.text ?? "").trim();
+  if (!Number.isInteger(id) || !text) return fail(res, 400, "Потрібен текст повідомлення");
+  if (text.length > 2000) return fail(res, 400, "Повідомлення до 2000 символів");
+  try {
+    const { sendAbsenceMessage } = await import("../services/absenceMessages");
+    const r = await sendAbsenceMessage({ entryId: id, adminId: (req as AuthedRequest).admin?.adminId ?? null, text });
+    ok(res, r);
+  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+
+// Масове нагадування про невиправдані пропуски місяця (кнопка на /absences). body: { month, workerIds? }
+router.post("/absences/remind", RW, async (req, res) => {
+  const month = String(req.body?.month ?? "");
+  if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month = YYYY-MM");
+  const workerIds = Array.isArray(req.body?.workerIds) ? (req.body.workerIds as unknown[]).map(Number).filter(Number.isInteger) : undefined;
+  try {
+    const { remindUnexcusedAbsences } = await import("../services/absenceMessages");
+    ok(res, await remindUnexcusedAbsences(month, (req as AuthedRequest).admin?.adminId ?? null, { workerIds }));
+  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 
 // Виправдання пропуску / коригування штрафу. body: { justified?: boolean; penalty?: number|null }
@@ -5133,6 +5194,7 @@ router.post("/worker-days/:id/add-shift", RW, async (req, res) => {
     }).returning();
   }
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(() => {});
+  import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(workerId)).catch(() => {}); // перший робочий день
   ok(res, row);
 });
 
@@ -5166,6 +5228,7 @@ router.post("/hours-reports/:id/apply", RW, async (req, res) => {
       else await db.insert(scheduleEntriesTable).values({ weekId: week.id, workerId: d.workerId, factoryId: Number(facId), dayOfWeek: day, shift: String(it.shift) as Shift, status: "present" });
     }
   } catch (e) { logger.error({ err: e }, "apply dispute item failed"); return fail(res, 500, "Помилка застосування"); }
+  import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(d.workerId)).catch(() => {}); // перший робочий день
   items[index] = { ...it, applied: true };
   // a "wrong" item with no proposed hours has no action → counts as done
   const allDone = items.every(x => x.applied || (x.kind === "wrong" && x.hours == null));

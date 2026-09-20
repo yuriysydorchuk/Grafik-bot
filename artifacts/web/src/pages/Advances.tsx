@@ -24,7 +24,7 @@ const STATUS_COLOR: Record<string, "amber" | "blue" | "rose" | "green"> = {
 };
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
 const r2 = (n: number) => Math.round(n * 100) / 100;
-const fmtIban = (s: string) => s.replace(/(.{4})/g, "$1 ").trim();
+import { fmtIban } from "../lib/iban";
 const addMonths = (ym: string, n: number) => {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y!, m! - 1 + n, 1);

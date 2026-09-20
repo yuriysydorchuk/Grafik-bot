@@ -151,9 +151,11 @@ router.get("/tasks/my-day", TP, async (req: AuthedRequest, res) => {
     and(eq(tasksTable.status, "done"), sql`${tasksTable.completedAt}::date = ${date}`),
   ))).orderBy(asc(tasksTable.plannedTime), asc(tasksTable.dueTime), asc(tasksTable.dueAt)));
   const open = rows.filter(t => OPEN_STATUSES.includes(t.status as TaskStatus));
-  const overdue = open.filter(t => t.dueAt && t.dueAt < date && t.kind !== "meeting");
+  // взяте в план на майбутнє (→ понеділок) — не прострочене й не сьогоднішнє до того дня (services/tasks effectiveDay)
+  const deferred = (t: { plannedFor: string | null }) => !!t.plannedFor && t.plannedFor > date;
+  const overdue = open.filter(t => t.dueAt && t.dueAt < date && t.kind !== "meeting" && !deferred(t));
   const meetings = rows.filter(t => t.kind === "meeting" && t.dueAt === date);
-  const todayTasks = open.filter(t => t.kind !== "meeting" && (t.dueAt === date || t.plannedFor === date) && !(t.dueAt && t.dueAt < date));
+  const todayTasks = open.filter(t => t.kind !== "meeting" && !deferred(t) && (t.dueAt === date || t.plannedFor === date) && !(t.dueAt && t.dueAt < date));
   const planned = rows.filter(t => t.plannedFor === date && t.plannedTime).sort((a, b) => (a.plannedTime! < b.plannedTime! ? -1 : 1));
   const doneToday = rows.filter(t => t.status === "done");
   const since = new Date(Date.now() - 24 * 3600 * 1000);
@@ -218,7 +220,8 @@ router.get("/tasks/:id/ua-card/:workerId", TP, async (req: AuthedRequest, res) =
   const wid = Number(req.params.workerId);
   const listed = (((t.autoParams as any)?.workers ?? []) as { id: number }[]).some(w => w.id === wid);
   if (!listed) return fail(res, 400, "Людина не в списку цієї задачі");
-  try { ok(res, await (await import("../services/uaNotification")).uaCard(wid)); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+  const cid = req.query.companyId != null && Number(req.query.companyId) > 0 ? Number(req.query.companyId) : null; // рядок людина×фірма
+  try { ok(res, await (await import("../services/uaNotification")).uaCard(wid, cid)); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 // підтвердження з praca.gov.pl (PDF/фото) → документ powiadomienie_ua у профіль
 const uaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
@@ -235,7 +238,8 @@ router.post("/tasks/:id/ua-upload/:workerId", TP, uaUpload.single("file"), async
   const { WORKER_DOCS_DIR } = await import("../lib/uploads");
   await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, stored), buffer);
   try {
-    const message = await (await import("../services/uaNotification")).uaUploadConfirmation(t, Number(req.params.workerId), { relPath: path.join("worker-documents", stored), fileName, mime: realMime }, s(req.body?.submittedAt), { adminId: me(req) });
+    const companyId = req.body?.companyId != null && Number(req.body.companyId) > 0 ? Number(req.body.companyId) : null; // фірма рядка
+    const message = await (await import("../services/uaNotification")).uaUploadConfirmation(t, Number(req.params.workerId), { relPath: path.join("worker-documents", stored), fileName, mime: realMime }, s(req.body?.submittedAt), { adminId: me(req) }, companyId);
     ok(res, { ok: true, message });
   } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });

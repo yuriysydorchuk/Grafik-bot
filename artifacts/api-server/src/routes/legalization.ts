@@ -15,6 +15,7 @@ import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../
 import { recomputeWorkerLegality, recomputeAllActiveLegality, warsawToday } from "../services/legalityRecompute";
 import { documentAuditDiff, documentAuditRows } from "../services/documentAudit";
 import { documentChanged, workerLegalityChanged } from "../services/documentEvents";
+import { STAY_ARTICLE_CODES, stayArticleOf } from "../services/stayArticles";
 import { sendDocumentRequest } from "../services/docRequests";
 import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
@@ -359,8 +360,10 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
     else {
       // laborMarketAccess — TRC z dostępem do rynku pracy; studyMode — тип навчання (stationary дає працю; part_time/school — лише ставка студента)
       // purpose — мета перебування карти (з decyzji, на карті не друкується): інформаційно + для задач офісу
-      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string", purpose: "string" };
-      const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"], purpose: ["work", "study", "family", "business", "other"] };
+      // article — стаття decyzji (services/stayArticles.ts, 20.09.2026): мета виводиться з неї, а
+      // право на працю движок бере з довідника (articleGrantsWork) або з анотації карти
+      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string", purpose: "string", article: "string" };
+      const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"], purpose: ["work", "study", "family", "business", "other"], article: STAY_ARTICLE_CODES };
       const clean: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(b.attrs)) {
         if (!(k in ALLOWED)) return fail(res, 400, `attrs.${k}: невідомий атрибут`);
@@ -368,6 +371,8 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
         if (v !== null && ENUMS[k] && !ENUMS[k].includes(String(v))) return fail(res, 400, `attrs.${k}: одне з ${ENUMS[k].join("|")}`);
         if (v !== null) clean[k] = v;
       }
+      const art = stayArticleOf(clean.article);
+      if (art && !clean.purpose) clean.purpose = art.purpose; // мета — зі статті, якщо не вказана явно
       patch.attrs = Object.keys(clean).length ? clean : null;
     }
   }

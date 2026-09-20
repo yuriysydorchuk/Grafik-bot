@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, X, ArrowUp, ArrowDown } from "lucide-react";
+import { Check, X, ArrowUp, ArrowDown, BellRing } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, DAY_UK, SHIFT_UK, type DayCode, type ShiftCode } from "../lib/api";
 import { monthOptions } from "../lib/dates";
-import { Card, Spinner, Select, Empty, Badge, Button } from "../components/ui";
+import { Card, Spinner, Select, Empty, Badge, Button, Modal } from "../components/ui";
 import { AbsenceFiles, type AbsenceFile } from "../components/AbsenceFiles";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
@@ -21,6 +21,7 @@ interface Absence {
   date: string; day: DayCode; shift: ShiftCode; reason: string | null;
   explainedAt?: string | null;  // коли працівник вніс пояснення в боті
   attachments?: AbsenceFile[];  // довідки/скріншоти з бота
+  messages?: AbsenceMessage[];  // листування офіс↔працівник (services/absenceMessages.ts)
   excused: boolean;             // відпросився (є причина)
   justified: boolean;           // виправдано адміном — не рахується в кількість/штраф
   penalty: number;              // ефективний штраф, zł
@@ -28,6 +29,7 @@ interface Absence {
   deductedMonth: string | null; // YYYY-MM сводної, куди перенесено штраф (NULL = ні)
   deductedAmount: number | null;
 }
+interface AbsenceMessage { id: number; direction: "office" | "worker"; kind: string; text: string; adminName: string | null; createdAt: string }
 interface AbsenceRequest {
   id: number; workerId: number; name: string | null; factory: string | null;
   date: string; day: DayCode; shift: ShiftCode | null; reason: string | null; status: string; createdAt: string;
@@ -96,6 +98,27 @@ export default function Absences() {
     mutationFn: (v: { entryId: number; justified?: boolean; penalty?: number | null }) =>
       patch(`/absences/${v.entryId}`, { ...(v.justified !== undefined ? { justified: v.justified } : {}), ...("penalty" in v ? { penalty: v.penalty } : {}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["absences", month] }),
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  // ── Листування з працівником щодо пропуску + масове нагадування (20.09.2026) ──
+  const [msgFor, setMsgFor] = useState<Absence | null>(null);
+  const [msgText, setMsgText] = useState("");
+  const sendMsg = useMutation({
+    mutationFn: (v: { entryId: number; text: string }) => post<{ sent: boolean; workerName: string | null }>(`/absences/${v.entryId}/message`, { text: v.text }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["absences", month] });
+      toast.success(r.sent ? t("Надіслано в бот") : t("Збережено; працівник без Telegram — повідомлення не дійшло"));
+      setMsgFor(null); setMsgText("");
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const remindAll = useMutation({
+    mutationFn: () => post<{ workers: number; absences: number; noTelegram: string[] }>("/absences/remind", { month }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["absences", month] });
+      toast.success(t("Нагадано {w} працівникам про {a} пропусків", { w: r.workers, a: r.absences }), { description: r.noTelegram.length ? `${t("Без Telegram:")} ${r.noTelegram.join(", ")}` : undefined });
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
@@ -244,6 +267,15 @@ export default function Absences() {
             <Badge color="red">{t("Штрафи:")} {zl(sums.penaltyTotal)}</Badge>
           </div>
         )}
+        {canEdit && (
+          <Button variant="secondary" loading={remindAll.isPending} className="ml-auto"
+            title={t("Кожному з невиправданими пропусками за місяць — повідомлення в бот з інструкцією, списком дат і кнопками «Пояснити» / «Додати файл»")}
+            onClick={async () => {
+              if (await confirm({ title: t("Нагадати про невиправдані пропуски?"), message: t("Усі активні працівники з невиправданими пропусками за {m} отримають у бот інструкцію зі списком дат і можливістю дати пояснення та додати файл ще раз.", { m: months.find(x => x.value === month)?.label ?? month }), confirmText: t("Нагадати") })) remindAll.mutate();
+            }}>
+            <BellRing className="h-4 w-4" /> {t("Нагадати про невиправдані")}
+          </Button>
+        )}
       </div>
 
       {pending.length > 0 && (
@@ -337,7 +369,8 @@ export default function Absences() {
                   canSvodni={canSvodni} selectable={eligByWorker.has(w.key)} selected={sel.has(w.key)}
                   onSelToggle={() => toggleSel(w.key)} onUndo={(entryId) => undo.mutate(entryId)} undoing={undo.isPending}
                   onToggle={() => setOpenWorker(k => (k === w.key ? null : w.key))}
-                  onPatch={(v) => patchAbs.mutate(v)} patching={patchAbs.isPending} />
+                  onPatch={(v) => patchAbs.mutate(v)} patching={patchAbs.isPending}
+                  onMessage={canEdit ? (a) => { setMsgFor(a); setMsgText(""); } : undefined} />
               ))}
             </tbody>
             <tfoot>
@@ -398,17 +431,42 @@ export default function Absences() {
           </table>
         </Card>
       )}
+      {msgFor && (
+        <Modal open onClose={() => setMsgFor(null)} title={`${t("Написати працівнику")} — ${msgFor.name} · ${fmtDate(msgFor.date)} ${SHIFT_UK[msgFor.shift]}`}>
+          <div className="space-y-3 text-sm">
+            {msgFor.reason && <p className="rounded-md bg-slate-50 px-3 py-2 text-slate-600">📝 {msgFor.reason}</p>}
+            {(msgFor.messages ?? []).length > 0 && (
+              <ul className="max-h-48 space-y-1 overflow-y-auto text-xs">
+                {msgFor.messages!.map(m => (
+                  <li key={m.id} className={m.direction === "office" ? "text-slate-500" : "text-slate-800"}>
+                    <span className="font-medium">{m.direction === "office" ? (m.adminName ?? t("офіс")) : msgFor.name}</span> · {new Date(m.createdAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: {m.kind === "reminder" ? t("нагадування надіслано") : m.text}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <textarea autoFocus value={msgText} onChange={e => setMsgText(e.target.value)} rows={4} maxLength={2000}
+              placeholder={t("Напр.: Причина не підтверджена — надішліть, будь ласка, фото довідки від лікаря.")}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+            <p className="text-xs text-slate-400">{t("Працівник отримає повідомлення в бот своєю мовою з кнопками «Відповісти» і «Додати фото/документ» — зможе пояснити ще раз і надіслати підтвердження.")}</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setMsgFor(null)}>{t("Скасувати")}</Button>
+              <Button loading={sendMsg.isPending} disabled={!msgText.trim()} onClick={() => sendMsg.mutate({ entryId: msgFor.entryId, text: msgText.trim() })}>{t("Надіслати")}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
 
 // Рядок зведення по працівнику + розкриття його пропусків із діями
 // («виправдати», редагування/анулювання штрафу, відміна перенесення в сводну)
-function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, selected, onSelToggle, onUndo, undoing, onToggle, onPatch, patching }: {
+function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, selected, onSelToggle, onUndo, undoing, onToggle, onPatch, patching, onMessage }: {
   w: WorkerSum; open: boolean; canEdit: boolean; defaultPenalty: number;
   canSvodni: boolean; selectable: boolean; selected: boolean;
   onSelToggle: () => void; onUndo: (entryId: number) => void; undoing: boolean;
   onToggle: () => void;
+  onMessage?: (a: Absence) => void; // «Написати» працівнику щодо пропуску (бот)
   onPatch: (v: { entryId: number; justified?: boolean; penalty?: number | null }) => void;
   patching: boolean;
 }) {
@@ -449,6 +507,18 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, s
                     : <Badge color="rose">{t("Нез'явлення")}</Badge>}
                   {a.reason && <span className="text-slate-500">📝 {a.reason}{a.explainedAt && <span className="ml-1 text-xs text-slate-400">({t("пояснено")} {fmtExplained(a.explainedAt)})</span>}</span>}
                   <AbsenceFiles files={a.attachments} />
+                  {/* листування з працівником: остання репліка + лічильник; «Написати» відкриває модалку */}
+                  {(a.messages?.length ?? 0) > 0 && (() => {
+                    const last = a.messages![a.messages!.length - 1]!;
+                    const txt = last.kind === "reminder" ? t("нагадування надіслано") : last.text;
+                    return <span className="max-w-xs truncate text-xs text-slate-500" title={a.messages!.map(m => `${m.direction === "office" ? (m.adminName ?? t("офіс")) : w.name}: ${m.kind === "reminder" ? t("нагадування надіслано") : m.text}`).join("\n")}>
+                      💬 {a.messages!.length} · {last.direction === "office" ? "🏢" : "👷"} {txt}
+                    </span>;
+                  })()}
+                  {onMessage && (
+                    <button onClick={() => onMessage(a)} title={t("Написати працівнику в бот щодо цього пропуску")}
+                      className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">💬 {t("Написати")}</button>
+                  )}
                   <span className="ml-auto inline-flex items-center gap-1.5">
                     {a.deductedMonth ? (
                       <>

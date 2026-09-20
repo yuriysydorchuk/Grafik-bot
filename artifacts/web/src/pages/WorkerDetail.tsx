@@ -5,8 +5,9 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine, UserCheck,
+  Download, Printer, Mail, ScanLine, UserCheck, Phone,
 } from "lucide-react";
+import { fmtIban } from "../lib/iban";
 import { SendFileModal, printFile } from "../components/SendFileModal";
 import { PdfPreview } from "../components/PdfPreview";
 import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
@@ -24,6 +25,7 @@ import {
   MISMATCH_LABEL, REQUIRED_MISSING_LABEL, NAT_GROUP_LABEL, reasonText, daysUntil,
 } from "../lib/legality";
 import { fieldsFor, typeMatchesNationality, isEuNationality, type DocField, type DocFieldKey } from "../lib/documentFields";
+import { stayArticleOf } from "../lib/stayArticles";
 import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, SearchableSelect, Textarea } from "../components/ui";
 import { AbsenceFiles } from "../components/AbsenceFiles";
 import { WorkerTasksBlock, WorkerUpcomingEvents } from "../components/TasksWidgets";
@@ -58,6 +60,7 @@ interface WorkerProfile {
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
+  phone?: string | null; phoneSource?: "questionnaire" | "candidate" | null; // з анкети (канон) або з картки кандидата
   terminationDate?: string | null; // запланована дата звільнення (виповідзення)
   terminationFactoryId?: number | null; // з якої фабрики йде (null = з усіх)
   factoryCodes?: { factoryId: number; factoryName: string | null; code: string }[]; // ключі фабрик (Nr Osobowy); ведуться в Обліку годин → «🔑 Ключі»
@@ -126,7 +129,9 @@ export default function WorkerDetail() {
   const isOwner = me?.role === "owner";
   const [, params] = useRoute("/workers/:id");
   const id = params?.id;
-  const { data: w, isLoading, isError } = useQuery<WorkerProfile>({ queryKey: ["worker", id], queryFn: () => get(`/workers/${id}`), enabled: !!id });
+  // Шапка синхронна з документами: після скану/завантаження (у т.ч. з бота, поки сторінка відкрита)
+  // підтягуємо профіль при поверненні у вкладку й раз на 30 с (рішення 20.09.2026)
+  const { data: w, isLoading, isError } = useQuery<WorkerProfile>({ queryKey: ["worker", id], queryFn: () => get(`/workers/${id}`), enabled: !!id, refetchOnWindowFocus: true, refetchInterval: 30_000 });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
@@ -334,6 +339,18 @@ export default function WorkerDetail() {
             <InfoRow icon={Send} label="Telegram">
               <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} disabled={!canEdit} />
             </InfoRow>
+            {/* Телефон (20.09.2026): читається з анкети працівника (у workers колонки немає), у профілі
+                не редагується — анкета «яка є, така є» (рішення власника); фолбек — картка кандидата */}
+            <InfoRow icon={Phone} label={t("Телефон")}>
+              <span className="flex flex-wrap items-center gap-2">
+                {w.phone ? (
+                  <>
+                    <a href={`tel:${w.phone.replace(/[^\d+]/g, "")}`} className="font-medium text-slate-700 hover:text-red-600">{w.phone}</a>
+                    <span className="text-xs text-slate-400">{w.phoneSource === "candidate" ? t("з картки кандидата") : t("з анкети")}</span>
+                  </>
+                ) : <span className="text-slate-400">{t("немає в анкеті")}</span>}
+              </span>
+            </InfoRow>
             <Info icon={CalendarCheck} label={t("Додано")} value={new Date(w.createdAt).toLocaleDateString("uk-UA")} />
           </InfoGroup>
           <InfoGroup title={t("Фінанси й облік")}>
@@ -380,7 +397,7 @@ export default function WorkerDetail() {
       {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
       {/* Легалізація і документи — один блок на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
       <div className="mb-5 space-y-5">
-        <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} />
+        <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} companyId={w.companyId ?? null} />
         {/* Умови — теж на всю ширину, одразу під легалізацією (рішення власника 05.09.2026) */}
         {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
         {can(me, "workerDocs") && <WorkerFamily workerId={w.id} />}
@@ -1851,6 +1868,17 @@ function EffectiveStatusLine({ workerId, legality }: { workerId: number; legalit
           {legality.effectiveSince && src === "documents" ? ` · ${t("з")} ${fmtDocDate(legality.effectiveSince)}` : ""}
         </span>
       </div>
+      {/* Чому документи «не зараховуються» (кейс Svyrydiuk 16.09.2026: документи є, а умова
+          закінчилась → статус з ручного поля/порожній): назвати червоні осі прямо */}
+      {src !== "documents" && legality.overall !== "legal" && legality.overall !== "expiring" && (() => {
+        const red = (["stay", "work", "contract"] as const).filter(a => legality[a] !== "legal" && legality[a] !== "expiring");
+        if (!red.length) return null;
+        return (
+          <p className="text-[11px] text-amber-700">
+            {t("Документи не зараховуються для виплат, поки не зелені всі осі:")} {red.map(a => `${t(AXIS_LABEL[a])} — ${t(axisStatusLabel(a, legality))}`).join(" · ")}
+          </p>
+        );
+      })()}
       {pending && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -1876,6 +1904,7 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   const t = useT();
   const { data: legality, isLoading } = useQuery<WorkerLegality | null>({
     queryKey: ["worker-legality", workerId], queryFn: () => get(`/workers/${workerId}/legality`),
+    refetchOnWindowFocus: true, refetchInterval: 30_000, // синхронно з документами/шапкою
   });
   const ld = useLeadDays(); // хук — до умовних return (порядок хуків)
   const { data: wk } = useQuery<{ isActive: boolean }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
@@ -2190,10 +2219,10 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
 
 // Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
-function DocSlotList({ types, docs, companies, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
-  types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; nationality: string | null; requiresSanepid: boolean;
+function DocSlotList({ types, docs, companies, employers, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
+  types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; employers: DocEmployer[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
-  onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[]) => void;
+  onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[], employerCompanyId?: number | null) => void;
   onRequest: (docTypeId: number) => void; onHistory: (doc: WorkerDocument) => void; onDelete: (doc: WorkerDocument) => void;
   onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
   onSend: (doc: WorkerDocument) => void;
@@ -2223,6 +2252,23 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
         requestCandidates={[type]} requestTitle={requestTitle}
         onAdd={scanOnly ? undefined : onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={onScan} scanTitle={scanTitle} />
+    );
+  };
+
+  // Слот ПО ФІРМІ (powiadomienie, рішення 20.09.2026): людина на двох фірмах має два документи —
+  // окремий рядок на роботодавця; документ без фірми показуємо в рядку основної. «Додати»
+  // відкриває модалку з уже вибраним роботодавцем, щоб движок зарахував документ саме цій фірмі.
+  const employerSlot = (code: string, label: string, e: DocEmployer) => {
+    const type = byCode(code);
+    if (!type) return null;
+    const own = items.filter(it => it.doc.employerCompanyId === e.companyId || (e.primary && it.doc.employerCompanyId == null));
+    const state = resolveDocSlot(own, [code], globals);
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type, undefined, e.companyId);
+    return (
+      <DocRow key={`${code}-${e.companyId}`} icon={docTypeIcon(type.icon)} label={label} subLabel={e.companyName} state={state} canLegal={canLegal} companies={companies}
+        requestCandidates={[type]} requestTitle={requestTitle}
+        onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
     );
   };
 
@@ -2266,7 +2312,9 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
       {fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"))}
       {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard)}
       {fixedSlot("student_cert", t("Student"))}
-      {nationality === "ukraine" && fixedSlot("powiadomienie_ua", t("Powiadomienie"))}
+      {nationality === "ukraine" && (employers.length > 1
+        ? employers.map(e => employerSlot("powiadomienie_ua", t("Powiadomienie"), e))
+        : fixedSlot("powiadomienie_ua", t("Powiadomienie")))}
       {multiSlot("zezwolenie", t("Zezwolenie / Oświadczenie"), ZEZWOLENIE_CODES, ZEZWOLENIE_SHORT, FileSignature)}
       {fixedSlot("medical_exam", t("Badania"))}
       {requiresSanepid && fixedSlot("sanepid", t("Sanepid"))}
@@ -2290,20 +2338,40 @@ function DocSlotList({ types, docs, companies, nationality, requiresSanepid, glo
 // з обмеженим списком типів (клік по «Karta pobytu»/«Zezwolenie» — тип не
 // фіксований, обирається серед кодів слоту, restrictCodes).
 type DocModalState =
-  | { mode: "add"; type: DocumentType | null; restrictCodes?: string[] }
+  | { mode: "add"; type: DocumentType | null; restrictCodes?: string[]; employerCompanyId?: number | null } // employerCompanyId — слот «по фірмі»
   | { mode: "edit"; doc: WorkerDocument };
 
-function WorkerDocuments({ workerId, companies, nationality, factoryId }: { workerId: number; companies: Company[]; nationality: string | null; factoryId: number | null }) {
+// Роботодавець для слотів документів «по фірмі» (powiadomienie): фірма + чи основна
+type DocEmployer = { companyId: number; companyName: string; primary: boolean };
+
+function WorkerDocuments({ workerId, companies, nationality, factoryId, companyId }: { workerId: number; companies: Company[]; nationality: string | null; factoryId: number | null; companyId: number | null }) {
   const t = useT();
   const qc = useQueryClient();
   const me = useMe();
   const canLegal = can(me, "legalization");
   const confirm = useConfirm();
   const { data: types = [] } = useQuery<DocumentType[]>({ queryKey: ["document-types"], queryFn: () => get("/document-types") });
-  const { data: docs = [], isLoading } = useQuery<WorkerDocument[]>({ queryKey: ["worker-docs", workerId], queryFn: () => get(`/workers/${workerId}/documents`) });
+  // Роботодавці людини (основна фабрика + чинні додаткові з worker_factories) — для
+  // слота Powiadomienie ПО ФІРМІ (рішення 20.09.2026: Bimiz і Agram — два окремі документи)
+  const { data: extraFactories = [] } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", workerId], queryFn: () => get(`/workers/${workerId}/factories`) });
+  const { data: docs = [], isLoading } = useQuery<WorkerDocument[]>({ queryKey: ["worker-docs", workerId], queryFn: () => get(`/workers/${workerId}/documents`), refetchOnWindowFocus: true, refetchInterval: 30_000 });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: globals } = useQuery<LegalizationGlobals>({ queryKey: ["legalization-globals"], queryFn: () => get("/legalization/globals") });
   const requiresSanepid = !!factories.find(f => f.id === factoryId)?.requiresSanepid;
+  const employers: DocEmployer[] = (() => {
+    const out: DocEmployer[] = [];
+    const nameOf = (cid: number) => companies.find(c => c.id === cid)?.name ?? `#${cid}`;
+    const mainF = factoryId != null ? factories.find(f => f.id === factoryId) : undefined;
+    const primaryCid = mainF?.multiFirm ? companyId : (mainF?.companyId ?? companyId);
+    if (primaryCid != null) out.push({ companyId: primaryCid, companyName: nameOf(primaryCid), primary: true });
+    const today = new Date().toLocaleDateString("sv-SE");
+    for (const r of extraFactories) {
+      if ((r.validFrom && r.validFrom > today) || (r.validTo && r.validTo < today) || r.companyId == null) continue;
+      if (out.some(e => e.companyId === r.companyId)) continue;
+      out.push({ companyId: r.companyId, companyName: r.companyName ?? nameOf(r.companyId), primary: false });
+    }
+    return out;
+  })();
   const [docModal, setDocModal] = useState<DocModalState | null>(null);
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
@@ -2330,7 +2398,8 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
   });
   // «Легалізація» на профілі рахує на льоту з кешу — будь-яка зміна документа
   // (нова, дата, статус, верифікація, відхилення) мусить скинути й цей кеш.
-  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); };
+  // будь-яка зміна документів оновлює і шапку профілю (національність/дата нар./статус), не лише список
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); };
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-documents/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
   const verify = useMutation({ mutationFn: (id: number) => post(`/worker-documents/${id}/verify`), onSuccess: () => { inv(); toast.success(t("Підтверджено")); }, onError: (e: any) => toast.error(e.message) });
   const reject = useMutation({
@@ -2384,9 +2453,9 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
         <LegalitySummary workerId={workerId} />
         <div className="border-t border-slate-100" />
         {isLoading ? <Spinner /> : (
-          <DocSlotList types={types} docs={docs} companies={companies} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
+          <DocSlotList types={types} docs={docs} companies={companies} employers={employers} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
             onOpenDoc={doc => setDocModal({ mode: "edit", doc })}
-            onOpenEmpty={(type, restrictCodes) => setDocModal({ mode: "add", type, restrictCodes })}
+            onOpenEmpty={(type, restrictCodes, employerCompanyId) => setDocModal({ mode: "add", type, restrictCodes, employerCompanyId })}
             onRequest={docTypeId => request.mutate(docTypeId)}
             onHistory={doc => setAuditFor(doc)}
             onDelete={async doc => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }}
@@ -2408,6 +2477,7 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId }: { work
           doc={docModal.mode === "edit" ? docModal.doc : null}
           type={docModal.mode === "add" ? docModal.type : null}
           restrictCodes={docModal.mode === "add" ? docModal.restrictCodes ?? null : null}
+          defaultEmployerCompanyId={docModal.mode === "add" ? docModal.employerCompanyId ?? null : null}
           types={types} companies={companies} allDocs={docs} canLegal={canLegal} nationality={nationality} globals={globals}
           onClose={() => setDocModal(null)} onSaved={() => { inv(); setDocModal(null); }} />
       )}
@@ -2490,7 +2560,6 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
     onSuccess: inv, onError: (e: any) => toast.error(e.message),
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-bank-accounts/${id}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
-  const fmtIban = (s: string) => s.replace(/(.{4})/g, "$1 ").trim();
 
   return (
     <Section icon={Wallet} title={t("Банківські рахунки (для ЗП/авансів)")}>
@@ -2499,7 +2568,7 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
           {rows.map(r => (
             <div key={r.id} className="flex items-center gap-2 border-b border-slate-50 px-4 py-1.5 text-sm last:border-0">
               <span className="tabular-nums text-slate-700">{fmtIban(r.iban)}</span>
-              <span className="text-[10px] uppercase text-slate-400">{r.source === "auto" ? t("авто") : t("ручна")}</span>
+              <span className="text-[10px] uppercase text-slate-400">{r.source === "auto" ? t("авто") : r.source === "questionnaire" ? t("з анкети") : t("ручна")}</span>
               {r.isPrimary ? (
                 <Badge color="green">{t("основний")}</Badge>
               ) : (
@@ -2557,8 +2626,8 @@ function pairFields(fields: DocField[]): DocField[][] {
   return rows;
 }
 
-function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLegal, nationality, globals, onClose, onSaved }: {
-  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; restrictCodes: string[] | null;
+function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId = null, types, companies, canLegal, nationality, globals, onClose, onSaved }: {
+  workerId: number; doc: WorkerDocument | null; type: DocumentType | null; restrictCodes: string[] | null; defaultEmployerCompanyId?: number | null;
   types: DocumentType[]; companies: Company[]; allDocs: WorkerDocument[]; canLegal: boolean;
   nationality: string | null; globals: LegalizationGlobals | undefined; onClose: () => void; onSaved: () => void;
 }) {
@@ -2576,7 +2645,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   const [validFrom, setValidFrom] = useState(doc?.validFrom ?? "");
   const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? "");
   const [issuer, setIssuer] = useState(doc?.issuer ?? "");
-  const [employerCompanyId, setEmployerCompanyId] = useState(doc?.employerCompanyId != null ? String(doc.employerCompanyId) : "");
+  const [employerCompanyId, setEmployerCompanyId] = useState(doc?.employerCompanyId != null ? String(doc.employerCompanyId) : defaultEmployerCompanyId != null ? String(defaultEmployerCompanyId) : "");
   // caseStatus за замовчуванням "submitted" — лише для stay_case_certificate
   // (єдиний тип із цим полем у каталозі), не для решти типів документа.
   const [caseStatus, setCaseStatus] = useState<CaseStatus | "">(doc?.caseStatus ?? (!doc && type?.code === "stay_case_certificate" ? "submitted" : ""));
@@ -2589,6 +2658,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
   // через getStr/setStr нижче, як звичайне текстове поле (щоб потрапляти в required-перевірку).
   const [studyMode, setStudyMode] = useState<string>((doc?.attrs?.studyMode as string | undefined) ?? "");
   const [purpose, setPurpose] = useState<string>((doc?.attrs?.purpose as string | undefined) ?? ""); // мета TRC (attrs.purpose)
+  const [article, setArticle] = useState<string>((doc?.attrs?.article as string | undefined) ?? ""); // стаття decyzji (attrs.article, lib/stayArticles.ts)
   const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
   const fields = fieldsFor(selectedType);
@@ -2634,6 +2704,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "caseStatus": return caseStatus; // без цього required-перевірка не бачила обраний статус справи (баг 10.09.2026)
       case "studyMode": return studyMode;
       case "purpose": return purpose;
+      case "article": return article;
       default: return "";
     }
   };
@@ -2648,6 +2719,7 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
       case "employerCompanyId": setEmployerCompanyId(v); break;
       case "studyMode": setStudyMode(v); break;
       case "purpose": setPurpose(v); break;
+      case "article": { setArticle(v); const a = stayArticleOf(v); if (a) setPurpose(a.purpose); break; } // мета — зі статті
       case "expiresAt": setExpiresAt(v); break;
       case "validFrom": {
         setValidFrom(v);
@@ -2687,6 +2759,12 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
             {f.options?.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
           </Select>
           {f.hint && <p className="mt-0.5 text-[11px] text-slate-400">{t(f.hint)}</p>}
+          {/* стаття decyzji: що вона дає для праці (lib/stayArticles.ts) */}
+          {f.key === "article" && (() => { const a = stayArticleOf(article); return a ? (
+            <p className={`mt-0.5 text-[11px] ${a.grantsWork === true ? "text-emerald-700" : a.grantsWork === false ? "text-rose-700" : "text-amber-700"}`}>
+              {a.grantsWork === true ? t("Дає право на працю без zezwolenia") : a.grantsWork === false ? t("Права на працю не дає") : t("Право на працю — за анотацією карти")}{!a.verified ? ` · ${t("не підтверджено юристом")}` : ""}. {a.note}
+            </p>
+          ) : null; })()}
         </div>
       );
     }
@@ -2736,11 +2814,12 @@ function DocModal({ workerId, doc, type, restrictCodes, types, companies, canLeg
     caseStatus: caseStatus || null,
     replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
     // усі типоспецифічні атрибути — одним обʼєктом (окремі spread-и затирали б один одного)
-    ...(fields.some(f => f.key === "laborMarketAccess" || f.key === "studyMode" || f.key === "purpose") ? {
+    ...(fields.some(f => f.key === "laborMarketAccess" || f.key === "studyMode" || f.key === "purpose" || f.key === "article") ? {
       attrs: {
         ...(fields.some(f => f.key === "laborMarketAccess") ? { laborMarketAccess } : {}),
         ...(fields.some(f => f.key === "studyMode") ? { studyMode: studyMode || null } : {}),
         ...(fields.some(f => f.key === "purpose") ? { purpose: purpose || null } : {}),
+        ...(fields.some(f => f.key === "article") ? { article: article || null } : {}),
       },
     } : {}),
   });

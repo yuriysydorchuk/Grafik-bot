@@ -182,6 +182,7 @@ export interface Worker {
   student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)
   stud26?: boolean; // похідне: студент І до 26 (вік з birth_date, фолбек under26)
   status: string; isActive: boolean; language?: string | null;
+  terminationDate?: string | null; terminationFactoryId?: number | null; // виповідзення — пікери графіку ховають людину з цієї дати
   gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
   pesel?: string | null; // 11 цифр текстом (з картотек nexo; матчинг ліст по PESEL)
   middleName?: string | null; // необов'язкове; {%Drugie imię%} в Umowa — порожньо не йде в документ

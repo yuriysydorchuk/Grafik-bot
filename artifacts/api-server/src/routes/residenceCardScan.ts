@@ -15,6 +15,7 @@ import { processResidenceCard, RESIDENCE_CARD_CODES, type ResidenceCardTypeCode 
 import { imageToPdf, appendImageToPdf } from "../services/imagePdf";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { documentChanged } from "../services/documentEvents";
+import { STAY_ARTICLE_CODES, stayArticleOf } from "../services/stayArticles";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -70,6 +71,7 @@ router.post("/workers/:id/residence-card-scan/confirm", LG, async (req: AuthedRe
   if (!isDate(b.expiresAt)) return fail(res, 400, "expiresAt: дата YYYY-MM-DD");
   if (b.validFrom != null && b.validFrom !== "" && !isDate(b.validFrom)) return fail(res, 400, "validFrom: дата YYYY-MM-DD");
   if (b.purpose != null && b.purpose !== "" && !PURPOSES.has(b.purpose)) return fail(res, 400, "purpose: work|study|family|business|other");
+  if (b.article != null && b.article !== "" && !STAY_ARTICLE_CODES.includes(String(b.article))) return fail(res, 400, "article: невідома стаття decyzji");
   const tempFile = typeof b.tempFile === "string" ? path.basename(b.tempFile) : "";
   if (!tempFile.startsWith(TMP_PREFIX)) return fail(res, 400, "tempFile: невідомий файл скану");
   const tmpAbs = path.join(PASSPORT_SCAN_TMP_DIR, tempFile);
@@ -87,7 +89,9 @@ router.post("/workers/:id/residence-card-scan/confirm", LG, async (req: AuthedRe
     .orderBy(workerDocumentsTable.id).limit(1);
   const attrs: Record<string, unknown> = {};
   if (typeof b.laborMarketAccess === "boolean") attrs.laborMarketAccess = b.laborMarketAccess;
+  if (b.article) attrs.article = String(b.article);            // стаття decyzji (services/stayArticles.ts)
   if (b.purpose) attrs.purpose = b.purpose;
+  else if (stayArticleOf(attrs.article)) attrs.purpose = stayArticleOf(attrs.article)!.purpose; // мета — зі статті
   const [doc] = await db.insert(workerDocumentsTable).values({
     workerId, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
     number: typeof b.number === "string" && b.number.trim() ? b.number.trim().toUpperCase() : null,

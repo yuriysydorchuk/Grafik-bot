@@ -74,6 +74,7 @@ export type ResidenceCardDraft = {
   permitText: string | null;            // як надруковано (для показу офісу)
   cardNumber: string | null;
   expiresAt: string | null;
+  issuedAt: string | null;              // «DATA WYDANIA / DATE OF ISSUE» з тексту (у MRZ її немає) → validFrom
   birthDate: string | null;
   nationality: string | null;           // ICAO3 з MRZ (UKR/BLR/…)
   sex: "M" | "F" | null;
@@ -106,10 +107,15 @@ export function parseResidenceCardText(fullText: string, mrz: Td1Mrz | null): Re
   // строк дії з тексту — фолбек, якщо MRZ не зчитався: «WAZNA DO / DATE OF EXPIRY 12.05.2027»
   const expiryFromText = f.match(/(?:WAZN[AY] DO|DATE OF EXPIRY|EXPIRY)[^0-9]{0,20}(\d{2})[.\-/ ](\d{2})[.\-/ ](\d{4})/);
   const expiresAt = mrz?.expiryDate ?? (expiryFromText ? `${expiryFromText[3]}-${expiryFromText[2]}-${expiryFromText[1]}` : null);
+  // дата видачі — лише з тексту (MRZ TD1 її не містить): «DATA WYDANIA / DATE OF ISSUE 12.05.2024»;
+  // fold() уже зняв діакритику, тож WYDANIA/ISSUE ловляться без варіантів
+  const issuedFromText = f.match(/(?:DATA WYDANIA|DATE OF ISSUE|WYDANIA|ISSUE)[^0-9]{0,20}(\d{2})[.\-/ ](\d{2})[.\-/ ](\d{4})/);
+  let issuedAt = issuedFromText ? `${issuedFromText[3]}-${issuedFromText[2]}-${issuedFromText[1]}` : null;
+  if (issuedAt && expiresAt && issuedAt >= expiresAt) issuedAt = null; // видача після строку дії — зчитали не те поле
   return {
     typeCode, permitText,
     cardNumber: mrz?.documentNumber || null,
-    expiresAt,
+    expiresAt, issuedAt,
     birthDate: mrz?.birthDate ?? null,
     nationality: mrz?.nationality || null,
     sex: mrz?.sex ?? null,

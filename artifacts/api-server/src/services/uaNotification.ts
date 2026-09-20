@@ -37,6 +37,9 @@ export const UA_PARAMS_DEFAULT: UaRuleParams = { stage1Days: 3, stage2AdminId: n
 
 export interface UaWorker {
   id: number; name: string; factoryId: number | null; factoryName: string | null;
+  // фірма-роботодавець (20.09.2026: обовʼязок по КОЖНІЙ фірмі — людина на Bimiz+Agram має два
+  // powiadomienia; рядок списку = працівник×фірма, ключ uaKey). null — старі записи/без фірми.
+  companyId?: number | null; companyName?: string | null;
   start: string | null;        // перший робочий день (точка відліку)
   dueAt: string;               // строк подачі (start + 7 з правила легальності)
   sentAt?: string | null;      // ступінь 1 → 2 (ISO)
@@ -56,12 +59,18 @@ const paramsOf = (t: Task): UaParams => {
   const p = (t.autoParams ?? {}) as Partial<UaParams>;
   return { grouped: true, stage: (p.stage === 2 ? 2 : 1), workers: Array.isArray(p.workers) ? (p.workers as UaWorker[]) : [], count: p.workers?.length ?? 0, workerNames: [] };
 };
+// заголовок рахує ЛЮДЕЙ (рядків може бути більше — по фірмі)
 const titleFor = (stage: 1 | 2, n: number) => stage === 1 ? `Powiadomienie: ${n} ${n === 1 ? "нова людина чекає" : "нових людей чекають"} на подачу` : `Подати powiadomienie: ${n} ${n === 1 ? "особа" : "осіб"}`;
+const distinctWorkers = (ws: UaWorker[]) => new Set(ws.map(w => w.id)).size;
+// ключ рядка списку: працівник × фірма
+export const uaKey = (w: { id: number; companyId?: number | null }) => `${w.id}:${w.companyId ?? 0}`;
+const withCo = (w: UaWorker) => `${mdEsc(w.name)}${w.companyName ? ` (${mdEsc(w.companyName)})` : ""}`;
 
-async function pendingObligations(today: string): Promise<Map<number, { dueAt: string; start: string | null }>> {
+interface PendingObl { workerId: number; companyId: number | null; companyName: string | null; dueAt: string; start: string | null }
+async function pendingObligations(today: string): Promise<Map<string, PendingObl>> {
   const rows = await db.select({ workerId: workerLegalityTable.workerId, obligations: workerLegalityTable.obligations, isActive: workersTable.isActive })
     .from(workerLegalityTable).innerJoin(workersTable, eq(workerLegalityTable.workerId, workersTable.id)).where(eq(workersTable.isActive, true));
-  const out = new Map<number, { dueAt: string; start: string | null }>();
+  const out = new Map<string, PendingObl>();
   // «старі» без документів/умов (додані до запуску модуля) — не ретроактивно (taskLegacy.ts)
   const legacy = await loadLegacyWorkerIds(rows.map(r => r.workerId), (await loadTaskSettings()).legacyBefore);
   for (const r of rows) {
@@ -70,7 +79,10 @@ async function pendingObligations(today: string): Promise<Map<number, { dueAt: s
       if (o.code !== OBL_CODE || o.satisfied) continue;
       const dueAt = String(o.dueAt).slice(0, 10);
       const days = typeof o.params?.days === "number" ? (o.params.days as number) : 7;
-      out.set(r.workerId, { dueAt, start: dueAt ? addDays(dueAt, -days) : null });
+      const companyId = o.params?.companyId != null ? Number(o.params.companyId) : null;
+      const companyName = typeof o.params?.company === "string" ? (o.params.company as string) : null;
+      const p: PendingObl = { workerId: r.workerId, companyId, companyName, dueAt, start: dueAt ? addDays(dueAt, -days) : null };
+      out.set(uaKey({ id: r.workerId, companyId }), p);
     }
   }
   void today;
@@ -88,8 +100,8 @@ async function writeTask(t: Task, workers: UaWorker[], today: string, ld: { urge
   const dueAt = workers.map(w => w.dueAt).sort()[0]!;
   const minLeft = diffDays(dueAt, today);
   const priority: TaskPriority = minLeft < 0 ? "urgent" : priorityForDays(minLeft, ld.urgent, ld.warn);
-  const title = titleFor(p.stage, workers.length);
-  await db.update(tasksTable).set({ title, dueAt, priority, autoParams: { ...p, workers, count: workers.length, workerNames: workers.map(w => w.name).slice(0, 15) }, updatedAt: new Date() }).where(eq(tasksTable.id, t.id));
+  const title = titleFor(p.stage, distinctWorkers(workers));
+  await db.update(tasksTable).set({ title, dueAt, priority, autoParams: { ...p, workers, count: workers.length, workerNames: [...new Set(workers.map(w => w.name))].slice(0, 15) }, updatedAt: new Date() }).where(eq(tasksTable.id, t.id));
   if (t.priority !== priority) await logTaskEvent(t.id, "priority", null, { from: t.priority, to: priority });
 }
 
@@ -107,7 +119,7 @@ async function upsertStageTask(stage: 1 | 2, assigneeId: number | null, add: UaW
   const [ex] = await db.select().from(tasksTable).where(and(eq(tasksTable.sourceKey, key), inArray(tasksTable.status, OPEN_STATUSES)));
   if (ex) {
     const cur = paramsOf(ex).workers;
-    const merged = [...cur.filter(w => !add.some(a => a.id === w.id)), ...add];
+    const merged = [...cur.filter(w => !add.some(a => uaKey(a) === uaKey(w))), ...add];
     await writeTask(ex, merged, today, ld);
     const [fresh] = await db.select().from(tasksTable).where(eq(tasksTable.id, ex.id));
     return fresh!;
@@ -118,9 +130,9 @@ async function upsertStageTask(stage: 1 | 2, assigneeId: number | null, add: UaW
     ? [{ id: "", text: "Переглянути список і вислати людей до powiadomienia (кнопки нижче)", done: false, auto: "all_sent" }]
     : [{ id: "", text: "Зібрати дані по кожній людині (картка PSZ-PPWPU)", done: false, auto: "all_data" }, { id: "", text: "Подати повідомлення на praca.gov.pl по кожній людині", done: false, auto: "all_submitted" }, { id: "", text: "Завантажити підтвердження в профіль кожного", done: false, auto: "all_entered" }];
   const t = await createTask({
-    kind: "task", title: titleFor(stage, add.length), priority: minLeft < 0 ? "urgent" : priorityForDays(minLeft, ld.urgent, ld.warn), dueAt, assigneeAdminId: assigneeId,
+    kind: "task", title: titleFor(stage, distinctWorkers(add)), priority: minLeft < 0 ? "urgent" : priorityForDays(minLeft, ld.urgent, ld.warn), dueAt, assigneeAdminId: assigneeId,
     factoryId: stage === 1 && add.every(w => w.factoryId === add[0]!.factoryId) ? add[0]!.factoryId ?? null : null,
-    source: UA_SOURCE, sourceKey: key, autoParams: { grouped: true, stage, workers: add, count: add.length, workerNames: add.map(w => w.name).slice(0, 15) } satisfies UaParams,
+    source: UA_SOURCE, sourceKey: key, autoParams: { grouped: true, stage, workers: add, count: add.length, workerNames: [...new Set(add.map(w => w.name))].slice(0, 15) } satisfies UaParams,
     checklist: normalizeChecklist(checklist),
   }, actorAdminId);
   return t;
@@ -134,33 +146,48 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
   const ld = await loadLeadDays();
   const pending = await pendingObligations(today);
   const open = await openUaTasks();
-  // 1) чистка списків: обовʼязок виконано / людина неактивна
-  const listed = new Set<number>();
+  // 1) чистка списків: обовʼязок виконано / людина неактивна. Старі рядки без фірми
+  //    (до 20.09.2026) матчимо на будь-який відкритий обовʼязок цієї людини й дописуємо фірму.
+  const listed = new Set<string>();
+  const findPending = (w: UaWorker): PendingObl | undefined => {
+    if (w.companyId != null) return pending.get(uaKey(w));
+    return pending.get(uaKey(w)) ?? [...pending.values()].find(p => p.workerId === w.id && !listed.has(uaKey({ id: p.workerId, companyId: p.companyId })));
+  };
   for (const t of open) {
     const cur = paramsOf(t).workers;
-    const keep = cur.filter(w => pending.has(w.id)).map(w => ({ ...w, dueAt: pending.get(w.id)!.dueAt, start: pending.get(w.id)!.start ?? w.start }));
-    keep.forEach(w => listed.add(w.id));
-    if (keep.length !== cur.length || keep.some((w, i) => w.dueAt !== cur[i]?.dueAt)) { await writeTask(t, keep, today, ld); keep.length ? stats.updated++ : stats.resolved++; }
+    const keep: UaWorker[] = [];
+    for (const w of cur) {
+      const p = findPending(w);
+      if (!p) continue;
+      const row: UaWorker = { ...w, companyId: p.companyId, companyName: p.companyName ?? w.companyName ?? null, dueAt: p.dueAt, start: p.start ?? w.start };
+      keep.push(row); listed.add(uaKey(row));
+    }
+    const changed = keep.length !== cur.length || keep.some((w, i) => w.dueAt !== cur[i]?.dueAt || (w.companyId ?? null) !== (cur[i]?.companyId ?? null));
+    if (changed) { await writeTask(t, keep, today, ld); keep.length ? stats.updated++ : stats.resolved++; }
   }
-  // 2) нові: stage1Days-й день роботи настав → у ступінь 1 виконавцю фабрики
-  const ids = [...pending.keys()].filter(id => !listed.has(id));
-  if (!ids.length) return stats;
+  // 2) нові: stage1Days-й день роботи настав → у ступінь 1 виконавцю фабрики (рядок = людина×фірма)
+  const fresh = [...pending.values()].filter(p => !listed.has(uaKey({ id: p.workerId, companyId: p.companyId })));
+  if (!fresh.length) return stats;
+  const ids = [...new Set(fresh.map(p => p.workerId))];
   const ws = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, facName: factoriesTable.name })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(inArray(workersTable.id, ids));
   const byAssignee = new Map<number | null, UaWorker[]>();
-  for (const w of ws) {
-    const o = pending.get(w.id)!;
+  for (const o of fresh) {
+    const w = ws.find(x => x.id === o.workerId);
+    if (!w) continue;
     const start = o.start;
     if (start && addDays(start, rule.params.stage1Days - 1) > today) continue; // ще рано
     const assignee = await resolveAssignee({ factoryId: w.factoryId, ruleCode: UA_RULE, useScheduler: true });
-    const l = byAssignee.get(assignee) ?? []; l.push({ id: w.id, name: w.fullName, factoryId: w.factoryId, factoryName: w.facName ?? null, start, dueAt: o.dueAt }); byAssignee.set(assignee, l);
+    const l = byAssignee.get(assignee) ?? [];
+    l.push({ id: w.id, name: w.fullName, factoryId: w.factoryId, factoryName: w.facName ?? null, companyId: o.companyId, companyName: o.companyName, start, dueAt: o.dueAt });
+    byAssignee.set(assignee, l);
   }
   for (const [assignee, list] of byAssignee) {
     const before = (await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, `ua1:${assignee ?? 0}`), inArray(tasksTable.status, OPEN_STATUSES)))).length;
     const t = await upsertStageTask(1, assignee, list, today, ld, null);
     if (before) stats.updated++; else {
       stats.created++;
-      if (assignee) await notifyAdminById(assignee, "tasks", `🪪 *${mdEsc(t.title)}*\n${list.map(w => `• ${mdEsc(w.name)} · до ${fmtDate(w.dueAt)}`).join("\n")}`, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "📨 Вислати всіх до powiadomienia", callback_data: `tska:ua_send_all:${t.id}` }, ...(taskPanelUrl() ? [{ text: "🔗 Відкрити", url: `${taskPanelUrl()}/tasks?task=${t.id}` }] : [])]] } }).catch(() => {});
+      if (assignee) await notifyAdminById(assignee, "tasks", `🪪 *${mdEsc(t.title)}*\n${list.map(w => `• ${withCo(w)} · до ${fmtDate(w.dueAt)}`).join("\n")}`, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "📨 Вислати всіх до powiadomienia", callback_data: `tska:ua_send_all:${t.id}` }, ...(taskPanelUrl() ? [{ text: "🔗 Відкрити", url: `${taskPanelUrl()}/tasks?task=${t.id}` }] : [])]] } }).catch(() => {});
     }
   }
   return stats;
@@ -175,7 +202,7 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
   const cur = paramsOf(task).workers;
   const move = workerId ? cur.filter(w => w.id === workerId) : cur;
   if (!move.length) throw new Error("Людину в списку не знайдено");
-  const rest = cur.filter(w => !move.some(m => m.id === w.id));
+  const rest = cur.filter(w => !move.some(m => uaKey(m) === uaKey(w)));
   const stamped = move.map(w => ({ ...w, sentAt: new Date().toISOString(), sentBy: actor.adminId }));
   const to = await stage2Assignee(rule);
   const t2 = await upsertStageTask(2, to, stamped, today, ld, actor.adminId);
@@ -185,41 +212,51 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
     await logTaskEvent(task.id, "status", actor.adminId, { to: "done", via: "ua_send_all" });
   }
   await logTaskEvent(t2.id, "comment", actor.adminId, { system: true, text: `${actor.name ?? "Офіс"} вислав(ла) до powiadomienia: ${stamped.map(w => w.name).join(", ")}` }).catch(() => {});
-  if (to) await notifyAdminById(to, "tasks", `🪪 *Podać powiadomienie* — від ${mdEsc(actor.name ?? "офісу")}:\n${stamped.map(w => `• ${mdEsc(w.name)}${w.factoryName ? ` · ${mdEsc(w.factoryName)}` : ""} · до ${fmtDate(w.dueAt)}`).join("\n")}`,
+  if (to) await notifyAdminById(to, "tasks", `🪪 *Podać powiadomienie* — від ${mdEsc(actor.name ?? "офісу")}:\n${stamped.map(w => `• ${withCo(w)}${w.factoryName ? ` · ${mdEsc(w.factoryName)}` : ""} · до ${fmtDate(w.dueAt)}`).join("\n")}`,
     { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[...(taskPanelUrl() ? [{ text: "🔗 Відкрити задачу", url: `${taskPanelUrl()}/tasks?task=${t2.id}` }] : [])]] } }).catch(() => {});
   return workerId ? `${stamped[0]!.name} → задача «${t2.title}» (${await adminName(to)})` : `${stamped.length} ос. → задача «${t2.title}» (${await adminName(to)})`;
 }
 
 // Ступінь 2: «подано» руками (до появи підтвердження).
-export async function uaMarkSubmitted(task: Task, workerId: number, actor: { adminId: number }): Promise<string> {
+// companyId — який саме рядок (людина×фірма); без нього — усі рядки людини.
+export async function uaMarkSubmitted(task: Task, workerId: number, actor: { adminId: number }, companyId: number | null = null): Promise<string> {
   if (!isUa(task) || paramsOf(task).stage !== 2) throw new Error("Це не задача ступеня 2");
   const cur = paramsOf(task).workers;
-  const w = cur.find(x => x.id === workerId);
-  if (!w) throw new Error("Людину в списку не знайдено");
-  const next = cur.map(x => x.id === workerId ? { ...x, submittedAt: x.submittedAt ? null : new Date().toISOString() } : x);
+  // рядок = людина×фірма: з companyId — саме він; без — єдиний рядок людини (або старий без фірми);
+  // кілька рядків без вказаної фірми — помилка, інакше toggle зачепив би обидві фірми
+  const mine = cur.filter(x => x.id === workerId);
+  const w = companyId != null ? mine.find(x => (x.companyId ?? null) === companyId) : mine.length === 1 ? mine[0] : mine.find(x => x.companyId == null);
+  if (!w) throw new Error(mine.length > 1 ? "У людини кілька фірм — вкажіть фірму рядка" : "Людину в списку не знайдено");
+  const hit = (x: UaWorker) => x === w;
+  const next = cur.map(x => hit(x) ? { ...x, submittedAt: x.submittedAt ? null : new Date().toISOString() } : x);
   await db.update(tasksTable).set({ autoParams: { ...paramsOf(task), workers: next }, updatedAt: new Date() }).where(eq(tasksTable.id, task.id));
   void actor;
-  return w.submittedAt ? `${w.name}: позначку «подано» знято` : `${w.name}: подано на praca.gov.pl — лишилось внести підтвердження`;
+  const who = `${w.name}${w.companyName ? ` (${w.companyName})` : ""}`;
+  return w.submittedAt ? `${who}: позначку «подано» знято` : `${who}: подано на praca.gov.pl — лишилось внести підтвердження`;
 }
 
 // Ступінь 2: підтвердження (PDF/фото з praca.gov.pl) → документ powiadomienie_ua у профіль
 // (present, verified, submitted_at) → перерахунок легальності → людина зникає зі списку.
-export async function uaUploadConfirmation(task: Task, workerId: number, file: { relPath: string; fileName: string; mime: string | null }, submittedAt: string | null, actor: { adminId: number }): Promise<string> {
+// companyId — фірма рядка (людина×фірма); документ отримує employer_company_id саме цієї фірми,
+// інакше движок не зарахує його для другого роботодавця.
+export async function uaUploadConfirmation(task: Task, workerId: number, file: { relPath: string; fileName: string; mime: string | null }, submittedAt: string | null, actor: { adminId: number }, companyId: number | null = null): Promise<string> {
   if (!isUa(task) || paramsOf(task).stage !== 2) throw new Error("Це не задача ступеня 2");
-  const w = paramsOf(task).workers.find(x => x.id === workerId);
-  if (!w) throw new Error("Людину в списку не знайдено");
+  const rows = paramsOf(task).workers.filter(x => x.id === workerId);
+  const w = rows.find(x => companyId == null || (x.companyId ?? null) === companyId);
+  if (!w) throw new Error(companyId != null && rows.length ? "Цієї фірми немає в рядках людини — оновіть задачу" : "Людину в списку не знайдено");
   const { ensureDocumentType } = await import("./workerDocuments");
   const ty = await ensureDocumentType(DOC_CODE);
   const [worker] = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.id, workerId));
+  const employerCompanyId = companyId ?? w.companyId ?? worker?.companyId ?? null;
   const sub = submittedAt && /^\d{4}-\d{2}-\d{2}$/.test(submittedAt) ? submittedAt : warsawToday();
   const [d] = await db.insert(workerDocumentsTable).values({
     workerId, docTypeId: ty.id, title: ty.name, status: "present", filePath: file.relPath, fileName: file.fileName, fileMime: file.mime,
-    submittedAt: sub, validFrom: sub, issuedAt: sub, employerCompanyId: worker?.companyId ?? null, source: "office", verifiedAt: new Date(), verifiedBy: actor.adminId,
+    submittedAt: sub, validFrom: sub, issuedAt: sub, employerCompanyId, source: "office", verifiedAt: new Date(), verifiedBy: actor.adminId,
   }).returning();
   await documentChanged({ id: d!.id, workerId }, "created", { adminId: actor.adminId });
-  await logTaskEvent(task.id, "worker_upload", actor.adminId, { documentId: d!.id, title: `${ty.name} — ${w.name}` });
+  await logTaskEvent(task.id, "worker_upload", actor.adminId, { documentId: d!.id, title: `${ty.name} — ${w.name}${w.companyName ? ` (${w.companyName})` : ""}` });
   await syncUaNotificationTasks().catch(() => {});
-  return `${w.name}: підтвердження внесено в профіль (${ty.name})`;
+  return `${w.name}${w.companyName ? ` (${w.companyName})` : ""}: підтвердження внесено в профіль (${ty.name})`;
 }
 
 // ── Контекст для «Як вирішити» ────────────────────────────────────────────────
@@ -237,8 +274,10 @@ export async function uaContext(task: Task): Promise<{ stage: 1 | 2; rows: UaCon
   const docs = ty ? await db.select().from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, ids), eq(workerDocumentsTable.docTypeId, ty.id))).orderBy(desc(workerDocumentsTable.id)) : [];
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, ids));
   for (const w of p.workers) {
-    const doc = docs.find(d => d.workerId === w.id && d.status !== "missing");
-    const missing = p.stage === 2 ? (await uaCard(w.id)).missing : [];
+    // документ рахується для рядка лише коли виданий саме на його фірму (як у движку employerOk==="ok";
+    // документ без фірми = «роботодавець невідомий», обовʼязок не закриває); старий рядок без фірми — будь-який
+    const doc = docs.find(d => d.workerId === w.id && d.status !== "missing" && (w.companyId == null || d.employerCompanyId === w.companyId));
+    const missing = p.stage === 2 ? (await uaCard(w.id, w.companyId ?? null)).missing : [];
     rows.push({ ...w, daysLeft: diffDays(w.dueAt, today), missing, docId: doc?.id ?? null, docFileUrl: doc?.filePath ? `/api/worker-documents/${doc.id}/file` : null, nationality: ws.find(x => x.id === w.id)?.nationality ?? null,
       steps: { data: !missing.length, submitted: !!w.submittedAt || !!doc, entered: !!doc } });
   }
@@ -257,12 +296,14 @@ export function uaSatisfied(stage: 1 | 2, rows: UaContextRow[]): Set<string> {
 // ── Картка для форми PSZ-PPWPU (praca.gov.pl) ─────────────────────────────────
 export interface UaCardField { key: string; label: string; value: string; required?: boolean; source?: string }
 export interface UaCard { workerId: number; name: string; groups: { title: string; fields: UaCardField[] }[]; missing: string[] }
-export async function uaCard(workerId: number): Promise<UaCard> {
+// companyId — фірма-роботодавець для секції «Podmiot powierzający» (рядок людина×фірма);
+// без нього — фірма профілю / фабрики, як раніше.
+export async function uaCard(workerId: number, companyId: number | null = null): Promise<UaCard> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) throw new Error("Працівника не знайдено");
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const [f] = w.factoryId ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [undefined];
-  const cid = w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null);
+  const cid = companyId ?? w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null);
   const [c] = cid ? await db.select().from(companiesTable).where(eq(companiesTable.id, cid)) : [undefined];
   const [pos] = w.positionId ? await db.select().from(positionsTable).where(eq(positionsTable.id, w.positionId)) : [undefined];
   const [contract] = await db.select().from(contractsTable).where(and(eq(contractsTable.workerId, workerId), w.factoryId ? eq(contractsTable.factoryId, w.factoryId) : isNull(contractsTable.factoryId), sql`${contractsTable.status} in ('signed','sent','viewed','worker_signed')`)).orderBy(desc(contractsTable.id)).limit(1);

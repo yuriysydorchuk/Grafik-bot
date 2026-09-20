@@ -16,9 +16,11 @@ import { loadLeadDays } from "../services/legalityRecompute";
 const router: IRouter = Router();
 router.use("/workers-calendar", authRequired, requirePage("/workers-calendar"));
 
-export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "task" | "shift";
+// termination (20.09.2026) — звільнення: заплановане (workers.termination_date, людина ще активна)
+// і фактичне (fired_at) — щоб графікова бачила, на які дати шукати заміну
+export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "termination" | "task" | "shift";
 // «зміни з графіку» — лише за явним запитом (kinds=…,shift): їх багато, у макеті фільтр вимкнений
-const DEFAULT_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "task"];
+const DEFAULT_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "termination", "task"];
 export interface CalEvent {
   id: string; kind: CalKind; date: string; title: string; detail?: string | null;
   workerId: number; workerName: string; factoryId: number | null; factoryName: string | null;
@@ -41,9 +43,20 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
   if (opts.companyId) wWhere.push(eq(workersTable.companyId, opts.companyId));
   if (opts.city) wWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
   if (opts.factoryId) wWhere.push(sql`(${workersTable.factoryId} = ${opts.factoryId} or exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${opts.factoryId}))`);
-  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate })
+  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate, terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...wWhere));
-  if (!workers.length) return [];
+  // фактично звільнені в діапазоні (fired_at) — вид termination; окремий запит, бо основний бере лише активних
+  const firedEvents = async (): Promise<CalEvent[]> => {
+    const firedWhere = [eq(workersTable.isActive, false), isNotNull(workersTable.firedAt), sql`${workersTable.firedAt}::date >= ${from}`, sql`${workersTable.firedAt}::date <= ${to}`] as any[];
+    if (opts.workerId) firedWhere.push(eq(workersTable.id, opts.workerId));
+    if (opts.companyId) firedWhere.push(eq(workersTable.companyId, opts.companyId));
+    if (opts.city) firedWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
+    if (opts.factoryId) firedWhere.push(eq(workersTable.factoryId, opts.factoryId));
+    const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, firedAt: workersTable.firedAt })
+      .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...firedWhere));
+    return fired.map(w => ({ id: `fired:${w.id}`, kind: "termination" as CalKind, date: new Date(w.firedAt!).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), title: "Звільнено", workerId: w.id, workerName: w.fullName, factoryId: w.factoryId, factoryName: w.factoryName ?? null, severity: "info" as const }));
+  };
+  if (!workers.length) return want("termination") ? firedEvents() : [];
   const wmap = new Map(workers.map(w => [w.id, w]));
   const ids = [...wmap.keys()];
   const facs = new Map((await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable)).map(f => [f.id, f.name]));
@@ -93,6 +106,17 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
         out.push({ id: `bd:${w.id}:${y}`, kind: "birthday", date, title: `День народження · ${y - Number(bd.slice(0, 4))} р.`, ...base(w), severity: "info" });
       }
     }
+  }
+  if (want("termination")) {
+    // заплановане звільнення (виповідзення) — людина ще активна; по одній фабриці — з її назвою
+    for (const w of workers) {
+      const td = w.terminationDate ? String(w.terminationDate).slice(0, 10) : null;
+      if (!td || td < from || td > to) continue;
+      if (opts.factoryId && w.terminationFactoryId != null && w.terminationFactoryId !== opts.factoryId) continue; // йде лише з іншої фабрики
+      const fac = w.terminationFactoryId != null ? facs.get(w.terminationFactoryId) : null;
+      out.push({ id: `term:${w.id}`, kind: "termination", date: td, title: fac ? `Звільнення з фабрики · ${fac}` : "Звільнення", detail: fac ? "лишається на інших фабриках" : null, ...base(w, w.terminationFactoryId ?? undefined), severity: sev(td) });
+    }
+    out.push(...await firedEvents()); // фактично звільнені в діапазоні — теж «звільнення»
   }
   if (want("start") || want("end")) {
     const wf = await db.select().from(workerFactoriesTable).where(inArray(workerFactoriesTable.workerId, ids));
@@ -177,7 +201,7 @@ router.get("/workers-calendar/export.xlsx", async (req: AuthedRequest, res) => {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Kalendarz");
-  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Start pracy", end: "Koniec pracy", task: "Zadanie", shift: "Zmiana" };
+  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Start pracy", end: "Koniec pracy", termination: "Zwolnienie", task: "Zadanie", shift: "Zmiana" };
   ws.addRow(["Data", "Pracownik", "Zakład", "Rodzaj", "Zdarzenie", "Szczegóły"]).font = { bold: true };
   for (const e of events) ws.addRow([e.date, nameCaps(e.workerName), e.factoryName ?? "", KIND_PL[e.kind] ?? e.kind, e.title, e.detail ?? ""]);
   ws.columns.forEach((c, i) => { c.width = [12, 32, 22, 16, 44, 30][i] ?? 16; });

@@ -116,6 +116,8 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   const [q] = existing
     ? await db.update(workerQuestionnairesTable).set(patch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...patch }).returning();
+  // анкета → профіль: рахунок з анкети стає рахунком профілю (services/questionnaireSync.ts)
+  if (patch.bankIban !== undefined) await (await import("../services/questionnaireSync")).syncQuestionnaireToProfile(workerId);
   // поля, які людина реально змінила цим збереженням — їх значення виграє над профілем
   const changed = new Set(["citizenship", "sex"].filter(k => existing ? (existing as any)[k] !== (patch as any)[k] && patch[k] !== undefined : patch[k] != null));
 

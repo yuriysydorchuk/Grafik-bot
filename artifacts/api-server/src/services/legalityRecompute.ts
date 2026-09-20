@@ -16,6 +16,7 @@ import {
  readLeadDays, type LeadDays } from "./legality";
 import { mrzNationalityToCatalog } from "./docai";
 import { resolveEffectiveLegal, type EffectiveLegal } from "./effectiveStatus";
+import { articleGrantsWork, stayArticleOf } from "./stayArticles";
 import { logger } from "../lib/logger";
 
 export const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
@@ -45,10 +46,14 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     // Атрибути документа перекривають прапорець типу: TRC «z dostępem do rynku pracy» дає й працю;
     // zaświadczenie студента дає право на працю ЛИШЕ для стаціонару університету (attrs.studyMode='stationary') —
     // заочне/школа/policealna дають тільки студентську ставку (payroll), не work-basis (рішення власника 03.09.2026)
+    // TRC: право на працю — з анотації «dostęp do rynku pracy» АБО зі статті decyzji (attrs.article,
+    // довідник services/stayArticles.ts: 114/126/127/139a/144/158/159/186… дають працю без zezwolenia)
     grantsWork: t?.code === "student_cert"
       ? (d.attrs as Record<string, unknown> | null)?.studyMode === "stationary"
-      : (t?.grantsWork ?? false) || (t?.code === "trc" && (d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true),
-    requiresEmployerMatch: t?.requiresEmployerMatch ?? false,
+      : (t?.grantsWork ?? false) || (t?.code === "trc" && ((d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true || articleGrantsWork((d.attrs as Record<string, unknown> | null)?.article) === true)),
+    // TRC за статтею з привʼязкою до роботодавця (114/126/127/139a) — праця лише у фірми з decyzji:
+    // документ має нести employer_company_id, інакше движок дасть «роботодавець невідомий»
+    requiresEmployerMatch: (t?.requiresEmployerMatch ?? false) || (t?.code === "trc" && !!stayArticleOf((d.attrs as Record<string, unknown> | null)?.article)?.employerBound),
     validFrom: dateStr(d.validFrom), expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
     appliesToNationalities: t?.appliesToNationalities ?? null,
     employerCompanyId: d.employerCompanyId, caseStatus: d.caseStatus, submittedAt: dateStr(d.submittedAt),

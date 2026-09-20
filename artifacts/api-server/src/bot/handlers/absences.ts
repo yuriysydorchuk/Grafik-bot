@@ -11,9 +11,10 @@ import { Markup, type Telegraf } from "telegraf";
 import path from "node:path";
 import fs from "node:fs";
 import {
-  db, scheduleEntriesTable, scheduleWeeksTable, factoriesTable, absenceAttachmentsTable,
+  db, scheduleEntriesTable, scheduleWeeksTable, factoriesTable, absenceAttachmentsTable, absenceMessagesTable,
   type Shift, type DayOfWeek,
 } from "@workspace/db";
+import { workerReplyWindow, absenceMessagesFor } from "../../services/absenceMessages";
 import { and, eq, gte, lt, inArray, desc } from "drizzle-orm";
 import { logger } from "../../lib/logger";
 import { ABSENCE_DOCS_DIR, makeStoredName, sniffDocMime, shrinkDocBuffer, shrinkImageBuffer } from "../../lib/uploads";
@@ -27,6 +28,9 @@ import { notifyAdmins, notifyAdminsFile } from "../notify";
 
 export const S_REASON = "absent:explain_reason"; // data: entryId, day, shift, name
 const S_ATTACH = "absent:attach";                 // data: entryId, name, day, shift, date, reason; чекаємо один файл
+// Відповідь на повідомлення офісу (20.09.2026, services/absenceMessages.ts): текст у absence_messages
+// (direction=worker); дозволена лише поки відкрите «вікно» — є повідомлення офісу без відповіді.
+const S_REPLY = "absent:reply";                   // data: entryId, name, day, shift, date
 const MAX_BYTES = 15 * 1024 * 1024;
 
 type WorkerLike = { id: number; factoryId?: number | null; language?: string | null; fullName: string };
@@ -65,13 +69,22 @@ async function loadMonthAbsences(workerId: number, month: string) {
       gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
     ));
   const items = rows
-    .map(r => ({ ...r, date: entryDateStr(String(r.weekStart), r.day), files: 0 }))
+    .map(r => ({ ...r, date: entryDateStr(String(r.weekStart), r.day), files: 0, officeMsg: null as string | null, canReply: false, canAttach: false }))
     .filter(r => r.date >= monthStart && r.date < monthEnd)
     .sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
   if (items.length) {
     const att = await db.select({ entryId: absenceAttachmentsTable.entryId }).from(absenceAttachmentsTable)
       .where(inArray(absenceAttachmentsTable.entryId, items.map(i => i.id)));
     for (const a of att) { const it = items.find(i => i.id === a.entryId); if (it) it.files++; }
+    // останнє повідомлення офісу + «вікно» відповіді/файлу (services/absenceMessages.ts)
+    const msgs = await absenceMessagesFor(items.map(i => i.id));
+    for (const it of items) {
+      const last = [...(msgs.get(it.id) ?? [])].reverse().find(m => m.direction === "office" && m.kind !== "reminder");
+      it.officeMsg = last?.text ?? null;
+      const win = await workerReplyWindow(it.id);
+      it.canReply = win.text && !!it.reason; // без першого пояснення — кнопка «Пояснити», не «Відповісти»
+      it.canAttach = !!it.reason && !!it.explainedAt && win.file;
+    }
   }
   return items;
 }
@@ -84,7 +97,8 @@ async function renderAbsences(worker: WorkerLike, lang: Lang, month: string) {
     // Пояснення, внесене працівником у боті, — з датою внесення (може бути значно пізніше за пропуск).
     const at = i.explainedAt ? ` _(${t(lang, "wabs.explainedAt", { date: fmtDate(ymdWarsaw(i.explainedAt)) })})_` : "";
     const reason = i.reason ? `💬 ${mdSafe(i.reason)}${at}` : t(lang, "wabs.noReason");
-    return `${head}\n   ${reason}${i.files ? ` · 📎 ${i.files}` : ""}`;
+    const office = i.officeMsg ? `\n   ${t(lang, "wabs.fromOffice", { text: mdSafe(i.officeMsg) })}` : "";
+    return `${head}\n   ${reason}${i.files ? ` · 📎 ${i.files}` : ""}${office}`;
   };
   if (!items.length) msg += t(lang, "wabs.none");
   else {
@@ -93,12 +107,14 @@ async function renderAbsences(worker: WorkerLike, lang: Lang, month: string) {
     if (unjust.length) msg += t(lang, "wabs.unjustified", { n: unjust.length }) + unjust.map(line).join("");
     msg += t(lang, "wabs.hint");
   }
-  // Пояснити можна лише пропуск без пояснення (одноразово); документ — один,
-  // додається окремо до пропуску, який працівник уже пояснив сам.
+  // Пояснити можна лише пропуск без пояснення (одноразово); «Відповісти» — коли офіс написав
+  // і ще не отримав відповіді; файл — один, або ще один у відповідь на повідомлення офісу.
   const kb: { text: string; callback_data: string }[][] = items
     .filter(i => !i.reason)
     .map(i => [{ text: t(lang, "wabs.explainBtn", { date: fmtDate(i.date), shift: shiftLabel(lang, i.shift as Shift) }), callback_data: `wabs:ex:${i.id}` }]);
-  for (const i of items.filter(i => i.reason && i.explainedAt && !i.files))
+  for (const i of items.filter(i => i.canReply))
+    kb.push([{ text: t(lang, "wabs.replyListBtn", { date: fmtDate(i.date), shift: shiftLabel(lang, i.shift as Shift) }), callback_data: `wabs:re:${i.id}` }]);
+  for (const i of items.filter(i => i.canAttach))
     kb.push([{ text: t(lang, "wabs.attachListBtn", { date: fmtDate(i.date), shift: shiftLabel(lang, i.shift as Shift) }), callback_data: `wabs:att:${i.id}` }]);
   const cur = monthStr(nowWarsaw());
   if (month === cur) {
@@ -228,15 +244,65 @@ export function registerWorkerAbsences(bot: Telegraf<any>, menuFor: MenuFor) {
       .innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
       .where(and(eq(scheduleEntriesTable.id, entryId), eq(scheduleEntriesTable.workerId, worker.id)));
     if (!e || e.status !== "absent" || !e.reason || !e.explainedAt) return;
-    const [has] = await db.select({ id: absenceAttachmentsTable.id }).from(absenceAttachmentsTable).where(eq(absenceAttachmentsTable.entryId, e.id)).limit(1);
-    if (has) return ctx.reply(t(lang, "wabs.hasFile"));
+    // один файл; ще один — лише у відповідь на повідомлення офісу (вікно file)
+    const win = await workerReplyWindow(e.id);
+    if (!win.file) return ctx.reply(t(lang, "wabs.hasFile"));
     setState(tid, S_ATTACH, { entryId: e.id, day: e.day, shift: e.shift, name: worker.fullName, date: entryDateStr(String(e.weekStart), e.day), reason: e.reason });
     return ctx.reply(t(lang, "wabs.askFiles"), cancelKb(lang));
+  });
+
+  // «✍️ Відповісти» на повідомлення офісу — лише свій пропуск і лише поки вікно відкрите.
+  bot.action(/^wabs:re:(\d+)$/, async (ctx) => {
+    const tid = String(ctx.from!.id);
+    const worker = await getWorker(tid);
+    await ctx.answerCbQuery().catch(() => {});
+    if (!worker) return;
+    const lang = wlang(worker);
+    const entryId = Number((ctx.match as RegExpMatchArray)[1]);
+    const [e] = await db
+      .select({ id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, status: scheduleEntriesTable.status, reason: scheduleEntriesTable.absenceReason, weekStart: scheduleWeeksTable.weekStart })
+      .from(scheduleEntriesTable)
+      .innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+      .where(and(eq(scheduleEntriesTable.id, entryId), eq(scheduleEntriesTable.workerId, worker.id)));
+    if (!e || e.status !== "absent") return;
+    // без першого пояснення — той самий шлях, що «Пояснити» (пише absence_reason)
+    if (!e.reason) {
+      const date0 = entryDateStr(String(e.weekStart), e.day);
+      setState(tid, S_REASON, { entryId: e.id, day: e.day, shift: e.shift, name: worker.fullName, date: date0 });
+      return ctx.reply(t(lang, "wabs.askReason", { date: fmtDate(date0), shift: shiftLabel(lang, e.shift as Shift), factory: "—" }), { parse_mode: "Markdown", ...cancelKb(lang) });
+    }
+    const win = await workerReplyWindow(e.id);
+    if (!win.text) return ctx.reply(t(lang, "wabs.replyClosed"));
+    const date = entryDateStr(String(e.weekStart), e.day);
+    setState(tid, S_REPLY, { entryId: e.id, day: e.day, shift: e.shift, name: worker.fullName, date });
+    return ctx.reply(t(lang, "wabs.askReply", { date: fmtDate(date), shift: shiftLabel(lang, e.shift as Shift) }), { parse_mode: "Markdown", ...cancelKb(lang) });
   });
 
   bot.on("text", async (ctx, next) => {
     const tid = String(ctx.from.id);
     const state = getState(tid);
+    if (state?.action === S_REPLY) {
+      const { data } = state;
+      const text = ctx.message.text.trim();
+      if (MENU_TEXTS.has(text)) { clearState(tid); return next(); }
+      if (!text) return;
+      const worker = await getWorker(tid);
+      const lang = wlang(worker);
+      if (!worker) { clearState(tid); return next(); }
+      const win = await workerReplyWindow(Number(data.entryId));
+      if (!win.text) { clearState(tid); return ctx.reply(t(lang, "wabs.replyClosed"), await menuFor(worker, lang)); }
+      await db.insert(absenceMessagesTable).values({ entryId: Number(data.entryId), workerId: worker.id, direction: "worker", kind: "message", text });
+      clearState(tid);
+      await notifyAdmins("no_show",
+        `💬 *Відповідь щодо пропуску*\n\n👷 *${mdSafe(data.name)}*\n${whenLine(data)}\n\n${mdSafe(text)}\n_(також на сторінці «Відсутності»)_`,
+        { parse_mode: "Markdown" },
+      );
+      await ctx.reply(t(lang, "wabs.replySent"), await menuFor(worker, lang));
+      if (win.file) {
+        return ctx.reply(t(lang, "wabs.attachHint").trim(), { reply_markup: { inline_keyboard: [[{ text: t(lang, "wabs.attachBtn"), callback_data: `wabs:att:${data.entryId}` }]] } });
+      }
+      return;
+    }
     if (state?.action === S_REASON) {
       const { data } = state;
       const text = ctx.message.text.trim();

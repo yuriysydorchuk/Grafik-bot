@@ -289,8 +289,10 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       }
       if (c.stage === 2) {
         for (const r of c.rows) {
-          actions.push({ code: `ua_card.${r.id}`, label: `Картка PSZ-PPWPU: ${r.name}`, kind: "modal", bot: false });
-          actions.push({ code: `ua_submitted.${r.id}`, label: r.submittedAt ? `Зняти «подано»: ${r.name}` : `Подано на praca.gov.pl: ${r.name}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
+          const who = `${r.name}${r.companyName ? ` (${r.companyName})` : ""}`;
+          const coSeg = r.companyId != null ? `.${r.companyId}` : "";
+          actions.push({ code: `ua_card.${r.id}${coSeg}`, label: `Картка PSZ-PPWPU: ${who}`, kind: "modal", bot: false });
+          actions.push({ code: `ua_submitted.${r.id}${coSeg}`, label: r.submittedAt ? `Зняти «подано»: ${who}` : `Подано на praca.gov.pl: ${who}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
         }
       }
       break;
@@ -452,7 +454,10 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
     }
     case "ua_submitted": {
       if (!param) throw new Error("Немає працівника");
-      message = await (await import("./uaNotification")).uaMarkSubmitted(task, param, actor);
+      // третій сегмент коду — фірма рядка (людина×фірма): ua_submitted.<workerId>.<companyId>
+      const coSeg = rawCode.split(".")[2];
+      const companyId = coSeg && Number(coSeg) > 0 ? Number(coSeg) : null;
+      message = await (await import("./uaNotification")).uaMarkSubmitted(task, param, actor, companyId);
       break;
     }
     case "deliver_doc": {

@@ -146,7 +146,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     notifyHours: workersTable.notifyHours,
   }).from(workersTable));
   // ефективний статус виплат (за документами або вручну) — знімається в рядок при імпорті
-  const lgCache = await loadLegalityCache(allWorkers.map(w => w.id));
+  const lgCache = await (await import("./legalityMonth")).loadLegalityCacheForMonth(allWorkers.map(w => w.id), periodMonth); // за місяць сводної
   type WorkerLite = WithEffective<(typeof allWorkers)[number]>;
   const rowWorker = new Map<object, WorkerLite>(); // parsed row → матчнутий працівник
 

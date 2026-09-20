@@ -584,7 +584,7 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
 function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 1 | 2; rows: UaRow[] }; run: (code: string) => void; busy: boolean; inv: () => void }) {
   const tr = useT();
   const qc = useQueryClient();
-  const [card, setCard] = useState<number | null>(null);
+  const [card, setCard] = useState<UaRow | null>(null); // рядок = людина×фірма (картка PSZ на конкретну фірму)
   const [uploadFor, setUploadFor] = useState<UaRow | null>(null);
   const tone = (d: number) => d < 0 ? "text-rose-600 font-semibold" : d <= 2 ? "text-amber-600 font-semibold" : "text-slate-600";
   const chip = (ok: boolean, label: string, title?: string) => <span title={title} className={cn("rounded-full px-1.5 py-0.5 text-[10px]", ok ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>{ok ? "✓" : "○"} {label}</span>;
@@ -597,8 +597,9 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
       {!ua.rows.length && <div className="px-3 py-2 text-slate-400">{tr("Список порожній — усе подано")}</div>}
       <ul className="divide-y divide-slate-50">
         {ua.rows.map(r => (
-          <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
+          <li key={`${r.id}:${r.companyId ?? 0}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
             <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
+            {r.companyName && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title={tr("Фірма-роботодавець, на яку подається powiadomienie")}>{r.companyName}</span>}
             {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
             <span className="text-slate-500">{tr("з")} {r.start ? fmtD(r.start) : "—"}</span>
             <span className={tone(r.daysLeft)}>{tr("до")} {fmtD(r.dueAt)}{r.daysLeft < 0 ? ` · −${-r.daysLeft} ${tr("дн.")}` : r.daysLeft === 0 ? ` · ${tr("сьогодні")}` : ` · ${r.daysLeft} ${tr("дн.")}`}</span>
@@ -611,23 +612,23 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
             <span className="ml-auto flex flex-wrap gap-1">
               {ua.stage === 1 && <button disabled={busy} onClick={() => run(`ua_send.${r.id}`)} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
               {ua.stage === 2 && <>
-                <button onClick={() => setCard(r.id)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
-                {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
+                <button onClick={() => setCard(r)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
+                {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}${r.companyId != null ? `.${r.companyId}` : ""}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
                 {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
               </>}
             </span>
           </li>
         ))}
       </ul>
-      {card != null && <UaCardModal taskId={taskId} workerId={card} onClose={() => setCard(null)} />}
+      {card != null && <UaCardModal taskId={taskId} workerId={card.id} companyId={card.companyId ?? null} onClose={() => setCard(null)} />}
       {uploadFor && <UaUploadModal taskId={taskId} row={uploadFor} onClose={() => setUploadFor(null)} onDone={() => { setUploadFor(null); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); }} />}
     </div>
   );
 }
 
-function UaCardModal({ taskId, workerId, onClose }: { taskId: number; workerId: number; onClose: () => void }) {
+function UaCardModal({ taskId, workerId, companyId, onClose }: { taskId: number; workerId: number; companyId: number | null; onClose: () => void }) {
   const tr = useT();
-  const { data, isLoading } = useQuery<UaCard>({ queryKey: ["ua-card", taskId, workerId], queryFn: () => get(`/tasks/${taskId}/ua-card/${workerId}`) });
+  const { data, isLoading } = useQuery<UaCard>({ queryKey: ["ua-card", taskId, workerId, companyId], queryFn: () => get(`/tasks/${taskId}/ua-card/${workerId}${companyId != null ? `?companyId=${companyId}` : ""}`) });
   const copy = (v: string) => navigator.clipboard?.writeText(v).then(() => toast.success(tr("Скопійовано"))).catch(() => {});
   const all = () => data ? data.groups.map(g => `${g.title}\n${g.fields.map(f => `${f.label}: ${f.value || "—"}`).join("\n")}`).join("\n\n") : "";
   return (
@@ -661,7 +662,7 @@ function UaUploadModal({ taskId, row, onClose, onDone }: { taskId: number; row: 
   const [file, setFile] = useState<File | null>(null);
   const [date, setDate] = useState(todayStr());
   const up = useMutation({
-    mutationFn: () => { const fd = new FormData(); fd.append("file", file!); fd.append("submittedAt", date); return upload<{ message: string }>(`/tasks/${taskId}/ua-upload/${row.id}`, fd); },
+    mutationFn: () => { const fd = new FormData(); fd.append("file", file!); fd.append("submittedAt", date); if (row.companyId != null) fd.append("companyId", String(row.companyId)); return upload<{ message: string }>(`/tasks/${taskId}/ua-upload/${row.id}`, fd); },
     onSuccess: d => { toast.success(d.message); onDone(); },
     onError: (e: any) => toast.error(e.message),
   });

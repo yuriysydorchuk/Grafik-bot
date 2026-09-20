@@ -12,6 +12,8 @@ const PAYROLL_FILES = [
   "lib/payroll.ts", "routes/admin-api.ts", "services/factoryRules.ts", "services/gratyfikantExport.ts",
   "services/effectiveStatus.ts", // резолвер виплат (06.09.2026): читає лише кеш worker_legality, не движок
 ];
+// Єдиний санкціонований міст payroll → движок: services/legalityMonth.ts (рішення власника 20.09.2026 —
+// статус у рядку сводної рахується ЗА МІСЯЦЬ; модуль нічого не пише). Імпорт саме його — дозволений.
 const FORBIDDEN = /from\s+["'][^"']*\/(legality|legalityRecompute|legalizationSeed)["']/;
 
 test("payroll-код не імпортує services/legality* (інваріант listy płac)", () => {

@@ -3,11 +3,12 @@
 // має власний набір полів модалки замість одного спільного блоку «Легалізація»
 // (відгук власника 03.09.2026: «у кожного документа свої специфічні дані»).
 import type { DocumentType } from "./api";
+import { STAY_ARTICLE_OPTIONS } from "./stayArticles";
 
 export type DocFieldKey =
   | "number" | "validFrom" | "expiresAt" | "issuedAt" | "issuer"
   | "employerCompanyId" | "caseStatus" | "submittedAt" | "caseNumber" | "decisionAt"
-  | "laborMarketAccess" | "studyMode" | "purpose";
+  | "laborMarketAccess" | "studyMode" | "purpose" | "article";
 
 export interface DocFieldOption { value: string; label: string }
 
@@ -63,6 +64,10 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   trc: [
     F("expiresAt", "Дійсна до", "date", { required: true }),
     F("laborMarketAccess", "Z dostępem do rynku pracy — дає й право на працю", "boolean"),
+    // стаття decyzji (20.09.2026, lib/stayArticles.ts): мета підставляється зі статті, довідник каже, чи дає працю
+    F("article", "Podstawa — стаття decyzji", "select", { options: STAY_ARTICLE_OPTIONS, hint: "Мета перебування підставиться сама; підказка під полем — що стаття дає для праці" }),
+    // для статей з привʼязкою до роботодавця (114/126/127/139a) движок вимагає фірму з decyzji
+    F("employerCompanyId", "Роботодавець з decyzji (для art. 114/126/127/139a)", "company"),
     // мета перебування — з decyzji (на карті не друкується), інформаційно + для задач офісу
     F("purpose", "Мета перебування (з decyzji)", "select", { options: TRC_PURPOSE_OPTIONS }),
   ],

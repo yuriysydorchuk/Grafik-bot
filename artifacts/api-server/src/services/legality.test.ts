@@ -218,6 +218,14 @@ test("C2 PL-громадянин з підписаною умовою на ос�
   assert.deepEqual(none.reasons.filter(x => x.axis === "contract").map(x => [x.code, x.params?.factory]), [["contract_missing", "AGRAM"]]);
   assert.equal(none.reviewRequired, false, "без умови — червоне, але не «потребує перевірки»");
 });
+test("C3b оцінка за період (window, сводна місяця): умова 11–21.08 робить серпень legal, хоч на today вже закінчилась", () => {
+  const c = [C({ id: 1, dateFrom: "2026-08-11", dateTo: "2026-08-21" })];
+  assert.equal(runC({}, c).contract.status, "illegal", "на today — закінчилась");
+  const aug = runC({}, c, [AGRAM], { window: { from: "2026-08-01", to: "2026-08-31" } });
+  assert.equal(aug.contract.status, "legal"); assert.equal(aug.overall, "legal");
+  const sep = runC({}, c, [AGRAM], { window: { from: "2026-09-01", to: "2026-09-30" } });
+  assert.equal(sep.contract.status, "illegal", "у вересні умови вже немає");
+});
 test("C3 умова закінчилась → contract_expired з датою; безстрокова — чинна; спливає за ≤30 дн → expiring", () => {
   const exp = runC({}, [C({ id: 1, dateTo: "2026-08-31" })]);
   assert.equal(exp.contract.status, "illegal"); assert.equal(exp.reasons.find(x => x.code === "contract_expired")?.params?.expiresAt, "2026-08-31");

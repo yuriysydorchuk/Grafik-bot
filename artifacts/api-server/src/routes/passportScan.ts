@@ -384,6 +384,8 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   // чіпаємо — канонічне джерело для сортування/матчингу/бота лишається як є.
   workerPatch.pesel = v.pesel;
   await db.update(workersTable).set(workerPatch).where(eq(workersTable.id, row.workerId));
+  // анкета → профіль: рахунок з анкети стає рахунком профілю (services/questionnaireSync.ts)
+  await (await import("../services/questionnaireSync")).syncQuestionnaireToProfile(row.workerId);
 
   ok(res, { ok: true });
 });

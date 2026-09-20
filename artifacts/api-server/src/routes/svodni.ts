@@ -1115,7 +1115,7 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     hr.dataUrodzenia = `${d}.${m}.${y}`;
   }
   // ефективний статус (за документами або вручну) — снапшот у рядок на момент додавання
-  const effW = await effectiveViewOf(worker!);
+  const effW = effectiveView(worker!, (await (await import("../services/legalityMonth")).loadLegalityCacheForMonth([worker!.id], periodMonth)).get(worker!.id)); // за місяць рядка
   const stud26Add = effW.isStudent && !!under26;
   // Ставки — дзеркало from-hours: профіль (override) → правила фабрики (посада →
   // найдешевша посада → базова пара). Після чистки профільних ставок (07.08.2026)
@@ -2459,7 +2459,8 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   // ефективний статус виплат (за документами, коли людина повністю оформлена,
   // інакше ручне поле) — знімається в рядок на момент формування (06.09.2026)
   const workersRaw = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
-  const lgCache = await loadLegalityCache(workerIds);
+  // статус — ЗА МІСЯЦЬ сводної (services/legalityMonth.ts): умова, що перекриває місяць, зелена, документи — на кінець місяця
+  const lgCache = await (await import("../services/legalityMonth")).loadLegalityCacheForMonth(workerIds, month);
   const workers = workersRaw.map(w => effectiveView(w, lgCache.get(w.id)));
   const wById = new Map(workers.map(w => [w.id, w]));
   // дні з файлу фабрики (factory_hours.days) — теж точні дати активності
@@ -2778,7 +2779,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       await db.update(svodniRowsTable).set({
         hours: merged.hours, rateNetto: merged.rateNetto, zaliczka: merged.zaliczka, hostel: merged.hostel,
         firm: merged.firm,
-        ...(prev.legalStatus == null && prev.legalSource == null ? { legalStatus: w.legalStatus ?? null, legalSource: w.legalSource } : {}),
+        ...(prev.legalStatus == null && (prev.legalSource == null || prev.legalSource === "none") ? { legalStatus: w.legalStatus ?? null, legalSource: w.legalSource } : {}), // порожній снапшот («none») добирається за місяць
         ...(ec || unregU || isBonusFac || debtTouched ? { extras: merged.extras } : {}),
         ...(ec ? { rateBrutto: merged.rateBrutto, potracenia: merged.potracenia } : {}),
         ...(debtTouched ? {

@@ -7,7 +7,7 @@ import { and, eq, inArray, lte, or, isNull, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { notifyAdminById } from "../bot/notify";
 import { adminHasPage } from "../bot/roles";
-import { loadTaskSettings, mainAdminId, controlStats, logTaskEvent, warsawToday, fmtDate, dateStr, diffDays, mdEsc, OPEN_STATUSES, type TaskStatus } from "./tasks";
+import { loadTaskSettings, mainAdminId, controlStats, logTaskEvent, warsawToday, fmtDate, dateStr, diffDays, mdEsc, OPEN_STATUSES, effectiveDay, type TaskStatus } from "./tasks";
 import { logger } from "../lib/logger";
 
 const panelUrl = () => (process.env.WEB_APP_URL ?? "").replace(/\/$/, "");
@@ -28,7 +28,8 @@ async function openTasksOf(adminId: number, today: string) {
     or(eq(tasksTable.assigneeAdminId, adminId), sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId})`),
     or(isNull(tasksTable.snoozedUntil), lte(tasksTable.snoozedUntil, today)),
   ));
-  return rows.map(t => ({ ...t, due: dateStr(t.dueAt), planned: dateStr(t.plannedFor) }));
+  // due — «ефективний» день: план на майбутнє (→ понеділок) сильніший за dueAt (effectiveDay)
+  return rows.map(t => ({ ...t, due: t.kind === "meeting" ? dateStr(t.dueAt) : effectiveDay(dateStr(t.dueAt), dateStr(t.plannedFor), today), planned: dateStr(t.plannedFor) }));
 }
 
 const line = (t: { title: string; autoParams: unknown; kind: string; dueTime: string | null }, suffix = "") =>

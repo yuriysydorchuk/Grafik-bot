@@ -10,9 +10,10 @@ import { post, upload, type DocumentType } from "../lib/api";
 import { Button, Modal, Input, Label, Select } from "./ui";
 import { useT } from "../lib/i18n";
 import { TRC_PURPOSE_OPTIONS } from "../lib/documentFields";
+import { STAY_ARTICLE_OPTIONS, stayArticleOf } from "../lib/stayArticles";
 
 type Draft = {
-  typeCode: string | null; permitText: string | null; cardNumber: string | null; expiresAt: string | null;
+  typeCode: string | null; permitText: string | null; cardNumber: string | null; expiresAt: string | null; issuedAt: string | null;
   birthDate: string | null; nationality: string | null; laborMarketAccess: boolean | null; isResidenceCard: boolean; mrzValid: boolean;
 };
 const CARD_CODES = ["trc", "karta_stalego_pobytu", "rezydent_ue", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"];
@@ -31,6 +32,7 @@ export function ResidenceCardScanModal({ workerId, types, onClose, onSaved }: { 
   const [validFrom, setValidFrom] = useState("");
   const [laborMarketAccess, setLaborMarketAccess] = useState(false);
   const [purpose, setPurpose] = useState("");
+  const [article, setArticle] = useState(""); // стаття decyzji (lib/stayArticles.ts) — мета підставляється з неї
   const cardTypes = CARD_CODES.map(c => types.find(ty => ty.code === c)).filter((x): x is DocumentType => !!x);
 
   const analyze = useMutation({
@@ -43,7 +45,7 @@ export function ResidenceCardScanModal({ workerId, types, onClose, onSaved }: { 
     onSuccess: r => {
       setDraft(r.draft); setTempFile(r.tempFile);
       if (r.draft.typeCode) setTypeCode(r.draft.typeCode);
-      setNumber(r.draft.cardNumber ?? ""); setExpiresAt(r.draft.expiresAt ?? "");
+      setNumber(r.draft.cardNumber ?? ""); setExpiresAt(r.draft.expiresAt ?? ""); setValidFrom(r.draft.issuedAt ?? "");
       setLaborMarketAccess(r.draft.laborMarketAccess === true);
     },
     onError: (e: any) => toast.error(e.message),
@@ -52,17 +54,19 @@ export function ResidenceCardScanModal({ workerId, types, onClose, onSaved }: { 
     mutationFn: () => post(`/workers/${workerId}/residence-card-scan/confirm`, {
       tempFile, typeCode, number: number.trim() || null, expiresAt, validFrom: validFrom || null,
       laborMarketAccess: typeCode === "trc" ? laborMarketAccess : undefined, purpose: typeCode === "trc" ? (purpose || null) : null,
+      article: typeCode === "trc" ? (article || null) : null,
     }),
     onSuccess: () => { toast.success(t("Карту додано")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
   });
 
   const pick = (ref: React.RefObject<HTMLInputElement | null>, set: (f: File | null) => void, label: string, file: File | null) => (
+    // min-w-0 + overflow-hidden: довга назва файла не розтягує кнопку за межі вікна (баг 16.09.2026)
     <button type="button" onClick={() => ref.current?.click()}
-      className={`flex flex-1 flex-col items-center gap-1 rounded-lg border border-dashed px-3 py-4 text-sm ${file ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
+      className={`flex min-w-0 flex-1 flex-col items-center gap-1 overflow-hidden rounded-lg border border-dashed px-3 py-4 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 ${file ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
       {file ? <CheckCircle2 className="h-5 w-5" /> : <Camera className="h-5 w-5" />}
       <span className="font-medium">{label}</span>
-      <span className="max-w-full truncate text-xs text-slate-400">{file ? file.name : t("фото або PDF")}</span>
+      <span className="w-full truncate text-center text-xs text-slate-400" title={file?.name}>{file ? file.name : t("фото або PDF")}</span>
       <input ref={ref} type="file" accept="image/*,application/pdf" capture="environment" className="hidden" onChange={e => set(e.target.files?.[0] ?? null)} />
     </button>
   );
@@ -76,7 +80,7 @@ export function ResidenceCardScanModal({ workerId, types, onClose, onSaved }: { 
               {pick(frontRef, setFront, t("Лицьова сторона"), front)}
               {pick(backRef, setBack, t("Зворот (MRZ, adnotacje)"), back)}
             </div>
-            <p className="text-xs text-slate-400">{t("Зчитуються тип карти, номер, строк дії і «dostęp do rynku pracy». Мета перебування — з decyzji, вкажеш вручну.")}</p>
+            <p className="text-xs text-slate-400">{t("Зчитуються тип карти, номер, строк дії, дата видачі і «dostęp do rynku pracy». Стаття і мета перебування — з decyzji, вкажеш вручну.")}</p>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
               <Button loading={analyze.isPending} disabled={!front} onClick={() => analyze.mutate()}><ScanLine className="h-3.5 w-3.5" /> {t("Розпізнати")}</Button>
@@ -110,6 +114,18 @@ export function ResidenceCardScanModal({ workerId, types, onClose, onSaved }: { 
                   {t("Z dostępem do rynku pracy — дає й право на працю")}
                   {draft.laborMarketAccess === null && <span className="text-xs text-slate-400">({t("на звороті не побачили — перевір")})</span>}
                 </label>
+                <div>
+                  <Label>{t("Podstawa — стаття decyzji")}</Label>
+                  <Select value={article} onChange={e => { setArticle(e.target.value); const a = stayArticleOf(e.target.value); if (a) setPurpose(a.purpose); }}>
+                    <option value="">—</option>
+                    {STAY_ARTICLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </Select>
+                  {(() => { const a = stayArticleOf(article); return a ? (
+                    <p className={`mt-1 text-xs ${a.grantsWork === true ? "text-emerald-700" : a.grantsWork === false ? "text-rose-700" : "text-amber-700"}`}>
+                      {a.grantsWork === true ? t("Дає право на працю без zezwolenia") : a.grantsWork === false ? t("Права на працю не дає") : t("Право на працю — за анотацією карти")}{!a.verified ? ` · ${t("не підтверджено юристом")}` : ""}. {a.note}
+                    </p>
+                  ) : null; })()}
+                </div>
                 <div>
                   <Label>{t("Мета перебування (з decyzji)")}</Label>
                   <Select value={purpose} onChange={e => setPurpose(e.target.value)}>

@@ -198,7 +198,10 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
         const due = String(o.dueAt).slice(0, 10);
         const daysLeft = diffDays(due, today);
         const what = o.code === "obligation.ua_notification" || o.params?.docCode === "powiadomienie_ua" ? "Подати powiadomienie" : `Виконати обов'язок ${o.code}`;
-        out.push({ sourceKey: `obl:${w.id}:${o.code}`, rule: "obligation", title: `${what} до ${fmtDate(due)}${o.overdue ? " (прострочено)" : ""}`, priority: o.overdue ? "urgent" : priorityForDays(daysLeft, ld.urgent, ld.warn), dueAt: due,
+        // обовʼязок по фірмі (кілька роботодавців) — окрема задача на фірму, з назвою фірми в заголовку
+        const cid = o.params?.companyId != null ? Number(o.params.companyId) : null;
+        const co = typeof o.params?.company === "string" && o.params.company ? ` (${o.params.company})` : "";
+        out.push({ sourceKey: `obl:${w.id}:${o.code}${cid != null ? `:${cid}` : ""}`, rule: "obligation", title: `${what}${co} до ${fmtDate(due)}${o.overdue ? " (прострочено)" : ""}`, priority: o.overdue ? "urgent" : priorityForDays(daysLeft, ld.urgent, ld.warn), dueAt: due,
           workerId: w.id, factoryId: w.factoryId, autoParams: { code: o.code, ...(o.params ?? {}), workerName: w.fullName }, assign: { factoryId: w.factoryId } });
       }
     }

@@ -97,6 +97,10 @@ export interface LegalityInput {
   facts?: LegalityFacts;
   contracts?: LegalityContract[];     // модуль підпису; відсутнє = не завантажено → вісь «умова» unknown
   employers?: LegalityEmployer[];     // фабрики працівника з фірмами; відсутнє = лише фірма профілю (старі виклики/юніти)
+  // Оцінка «за період» (сводна місяця, рішення власника 20.09.2026): вісь «умова» зелена, якщо
+  // підписана умова перекриває хоч один день вікна — умова, що закінчилась у місяці, не робить
+  // місяць нелегальним. Осі перебування/праці рахуються на `today` (викликач ставить кінець місяця).
+  window?: { from: string; to: string };
 }
 
 export interface Reason { code: string; axis: Axis | "contract" | "overall"; severity: ReasonSeverity; params?: Record<string, unknown> }
@@ -428,21 +432,30 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     const hard = r.conditions.hard === true;
     if (!employerSince) { flag({ code: "employment_start_unknown", axis: "work", severity: "info", params: { rule: r.code } }); continue; }
     const dueAt = addDaysStr(employerSince, days);
-    const doc = documents.find(d => d.typeCode === docCode && d.status !== "missing" && employerOk(d, primaryCompany) === "ok");
-    const submittedAt = doc?.submittedAt ?? doc?.validFrom ?? input.facts?.notificationSubmittedAt ?? null;
-    const satisfied = !!doc || !!input.facts?.notificationSubmittedAt;
-    const overdue = !satisfied && today > dueAt;
-    const late = satisfied && !!submittedAt && submittedAt > dueAt;
-    obligations.push({ code: r.code, dueAt, overdue, satisfied, params: { docCode, days, submittedAt, hard, late } });
     // якщо праця вже тримається на іншій верифікованій підставі (student/dyplom/stały…) — обов'язок інформаційний
     const workOnOtherBasis = work.status === "legal" && work.basisDocId != null
       && documents.find(d => d.id === work.basisDocId)?.typeCode !== docCode;
-    if (overdue && !workOnOtherBasis) {
-      if (hard) { work.status = "illegal"; flag({ code: "notification_overdue", axis: "work", severity: "block", params: { rule: r.code, dueAt } }); }
-      else flag({ code: "notification_overdue", axis: "work", severity: "warn", params: { rule: r.code, dueAt } }, true);
-      if (!r.verifiedAt) flag({ code: "rule_unverified", axis: "work", severity: "warn", params: { rule: r.code } }, true);
-    } else if (late) {
-      flag({ code: "notification_late", axis: "work", severity: "warn", params: { rule: r.code, dueAt, submittedAt } }, true);
+    // ПО КОЖНОМУ роботодавцю (рішення власника 20.09.2026): людина на двох фірмах (Bimiz + Agram)
+    // має два powiadomienia — окремий обовʼязок на фірму, документ рахується лише для фірми,
+    // на яку виданий (employerOk === "ok"). Один роботодавець → як раніше.
+    const oblCompanies = [...new Set(employerCompanies.length ? employerCompanies : [primaryCompany])];
+    for (const cid of oblCompanies) {
+      const doc = documents.find(d => d.typeCode === docCode && d.status !== "missing" && employerOk(d, cid) === "ok");
+      // ручний прапорець «подано» (facts) — без фірми, тож закриває обовʼязок лише основної фірми
+      const manualSubmitted = cid === primaryCompany ? (input.facts?.notificationSubmittedAt ?? null) : null;
+      const submittedAt = doc?.submittedAt ?? doc?.validFrom ?? manualSubmitted;
+      const satisfied = !!doc || !!manualSubmitted;
+      const overdue = !satisfied && today > dueAt;
+      const late = satisfied && !!submittedAt && submittedAt > dueAt;
+      const company = cid == null ? null : companyNameOf(cid);
+      obligations.push({ code: r.code, dueAt, overdue, satisfied, params: { docCode, days, submittedAt, hard, late, companyId: cid, company } });
+      if (overdue && !workOnOtherBasis) {
+        if (hard) { work.status = "illegal"; flag({ code: "notification_overdue", axis: "work", severity: "block", params: { rule: r.code, dueAt, companyId: cid, company } }); }
+        else flag({ code: "notification_overdue", axis: "work", severity: "warn", params: { rule: r.code, dueAt, companyId: cid, company } }, true);
+        if (!r.verifiedAt) flag({ code: "rule_unverified", axis: "work", severity: "warn", params: { rule: r.code } }, true);
+      } else if (late) {
+        flag({ code: "notification_late", axis: "work", severity: "warn", params: { rule: r.code, dueAt, submittedAt, companyId: cid, company } }, true);
+      }
     }
   }
 
@@ -541,7 +554,9 @@ export function computeContractAxis(input: LegalityInput, g: Globals): AxisResul
     const cid = e.companyId ?? worker.companyId;
     const onFactory = input.contracts.filter(c => c.factoryId === e.factoryId);
     const mine = onFactory.filter(c => c.companyId == null || cid == null || c.companyId === cid);
-    const live = mine.filter(c => c.hasUmowa && (CONTRACT_VALID.has(c.status) || CONTRACT_PENDING.has(c.status)) && (!c.dateTo || c.dateTo >= today) && (!c.dateFrom || c.dateFrom <= today || CONTRACT_PENDING.has(c.status)));
+    // «чинна»: на today — або, при оцінці за період (input.window), перекриває хоч один день вікна
+    const wFrom = input.window?.from ?? today, wTo = input.window?.to ?? today;
+    const live = mine.filter(c => c.hasUmowa && (CONTRACT_VALID.has(c.status) || CONTRACT_PENDING.has(c.status)) && (!c.dateTo || c.dateTo >= wFrom) && (!c.dateFrom || c.dateFrom <= wTo || CONTRACT_PENDING.has(c.status)));
     // найкраща: signed > worker_signed; далі — найпізніша dateTo (безстрокова найкраща)
     live.sort((a, b) => (CONTRACT_VALID.has(b.status) ? 1 : 0) - (CONTRACT_VALID.has(a.status) ? 1 : 0) || (a.dateTo == null ? -1 : b.dateTo == null ? 1 : b.dateTo.localeCompare(a.dateTo)));
     const best = live[0];
@@ -560,7 +575,7 @@ export function computeContractAxis(input: LegalityInput, g: Globals): AxisResul
     if (CONTRACT_PENDING.has(best.status)) {
       push("contract_awaiting_company", "warn", { factoryId: e.factoryId, factory: fname, contractId: best.id });
       if (status !== "illegal") status = "pending";
-    } else if (best.dateTo && daysBetween(today, best.dateTo) <= g.defaultLeadDays) {
+    } else if (!input.window && best.dateTo && daysBetween(today, best.dateTo) <= g.defaultLeadDays) { // «спливає» — лише для оцінки на today, не за період
       push("contract_expiring", "warn", { factoryId: e.factoryId, factory: fname, expiresAt: best.dateTo, daysLeft: daysBetween(today, best.dateTo), contractId: best.id });
       if (status === "legal") status = "expiring";
     }
@@ -601,8 +616,13 @@ export function deriveLegacy(
 
   type Cand = { status: LegacyStatus | null; cls: PayrollClass; review: boolean; evidence: LegacyDerivation["evidence"] };
   const cands: Cand[] = [];
-  if (axes.stay.basisRuleCode === "stay.pl_citizen" || axes.work.basisRuleCode === "stay.pl_citizen") {
-    cands.push({ status: "polak", cls: "C_registered", review: false, evidence: { kind: "nationality", rule: "stay.pl_citizen" } });
+  // громадянин PL або ЄС/ЄЕЗ (рішення власника 20.09.2026: для виплат правила ті ж, що у
+  // поляків — група C, статус «polak»; до того eu_other падав у «не зголошений»)
+  for (const rule of ["stay.pl_citizen", "stay.eu_citizen"] as const) {
+    if (axes.stay.basisRuleCode === rule || axes.work.basisRuleCode === rule) {
+      cands.push({ status: "polak", cls: "C_registered", review: false, evidence: { kind: "nationality", rule } });
+      break;
+    }
   }
   let ukrOnly = false;
   // Тип документа → статус/група — з мапи services/legalStatusMap.ts (спільний

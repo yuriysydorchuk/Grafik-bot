@@ -55,6 +55,13 @@ export function dayDate(weekStart: string, offset: number): string {
   return d.toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" });
 }
 
+/** Дата клітинки тижня як YYYY-MM-DD (для порівнянь дат рядками, без toISOString). */
+export function isoDayDate(weekStart: string, offset: number): string {
+  const d = new Date(weekStart + "T00:00:00");
+  d.setDate(d.getDate() + offset);
+  return d.toLocaleDateString("sv-SE");
+}
+
 // ISO-8601 week number for a Monday date
 export function isoWeek(weekStart: string): number {
   const d = new Date(weekStart + "T00:00:00");

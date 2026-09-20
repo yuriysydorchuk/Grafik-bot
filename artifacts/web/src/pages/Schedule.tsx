@@ -7,7 +7,8 @@ import {
   get, post, patch, del, type Factory, type ScheduleEntry, type OrderRequirement, type Worker,
   DAYS, DAY_UK, DAY_FULL, SHIFT_UK, type DayCode, type ShiftCode,
 } from "../lib/api";
-import { upcomingWeeks, dayDate } from "../lib/dates";
+import { upcomingWeeks, dayDate, isoDayDate } from "../lib/dates";
+import { terminatedOn } from "../lib/termination";
 import { useConfirm } from "../components/confirm";
 import { usePersisted, useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
@@ -708,8 +709,11 @@ export default function Schedule() {
       {addTo && (() => {
         const inShiftIds = new Set(byDayShift(addTo.day, addTo.shift).map(e => e.workerId));
         const q = addQuery.trim().toLowerCase();
+        // виповідзення: на дату ≥ дати звільнення людину не пропонуємо (lib/termination.ts; сервер теж відхиляє)
+        const cellDate = isoDayDate(weekStart, DAYS.indexOf(addTo.day));
         const cands = factoryWorkers
           .filter(w => !inShiftIds.has(w.id))
+          .filter(w => !terminatedOn(w, factoryId ? Number(factoryId) : null, cellDate))
           .filter(w => !q || w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
           .sort((a, b) => a.fullName.localeCompare(b.fullName, "pl"))
           .slice(0, 50);
@@ -818,7 +822,7 @@ function GenerateModal({ loading, onClose, onGenerate }: {
 type CopyPerson = { workerId: number; name: string; shift: ShiftCode; note?: string | null };
 type CopyPlanDay = {
   day: DayCode; ok: CopyPerson[]; noAvail: CopyPerson[]; absence: CopyPerson[];
-  skipped: (CopyPerson & { reason: "cancelled" | "busy" })[];
+  skipped: (CopyPerson & { reason: "cancelled" | "busy" | "terminated" })[];
 };
 
 function CopyWeekModal({ sourceDay, sourceLabel, weekStart, factoryId, onClose, onDone }: {
@@ -904,7 +908,7 @@ function CopyWeekModal({ sourceDay, sourceLabel, weekStart, factoryId, onClose, 
                   </div>
                   {d.skipped.length > 0 && (
                     <p className="mt-1 text-[11px] text-slate-400">
-                      ⏭ {d.skipped.map(p => `${p.name} (${p.reason === "busy" ? t("вже має зміну") : t("зміну скасовано")})`).join(", ")}
+                      ⏭ {d.skipped.map(p => `${p.name} (${p.reason === "busy" ? t("вже має зміну") : p.reason === "terminated" ? t("звільняється") : t("зміну скасовано")})`).join(", ")}
                     </p>
                   )}
                 </div>
