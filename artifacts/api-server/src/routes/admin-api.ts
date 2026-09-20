@@ -3856,11 +3856,20 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
     created++;
   }
   if (created) import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
-  let saved = 0;
+  // Кілька рядків файла на одного працівника (дві посади/умови, або два
+  // написання імені, які матчер звів до одного профілю): upsert замінює
+  // значення, тож без злиття зберігся б лише останній рядок, а решта годин
+  // мовчки зникала (інцидент Sushi 08.2026 — загублено 16 год). Зливаємо:
+  // години — сума, розбивка по днях — сума по дню/зміні, extras — останній непорожній.
+  const skippedRows: { name: string; hours: number | null }[] = [];
+  const byWorker = new Map<number, { hours: number; days: Record<string, FactoryDayValue> | null; extras: FactoryHoursExtras | null; keys: string[]; names: string[]; rows: number }>();
   for (const r of rows) {
     const workerId = Number(r.workerId);
     const hours = Number(r.hours);
-    if (!workerId || !Number.isFinite(hours) || hours < 0 || hours > 500) continue;
+    if (!workerId || !Number.isFinite(hours) || hours < 0 || hours > 500) {
+      skippedRows.push({ name: String(r.name ?? "").trim(), hours: Number.isFinite(hours) ? hours : null });
+      continue;
+    }
     // розбивка по днях (день місяця → год АБО { зміна: год }) → ключі-дати "YYYY-MM-DD"
     let days: Record<string, FactoryDayValue> | null = null;
     if (r.days && typeof r.days === "object") {
@@ -3873,15 +3882,33 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
       }
       if (!Object.keys(days).length) days = null;
     }
+    const rawKey = typeof r.key === "string" && r.key.trim() ? r.key : (r.extras as any)?.nrOsobowy;
+    const extras = normFactoryHoursExtras(r.extras);
+    const acc = byWorker.get(workerId);
+    if (!acc) {
+      byWorker.set(workerId, { hours, days, extras, keys: typeof rawKey === "string" && rawKey.trim() ? [rawKey] : [], names: [String(r.name ?? "")], rows: 1 });
+      continue;
+    }
+    acc.rows++;
+    acc.hours += hours;
+    acc.days = mergeFactoryDays(acc.days, days);
+    if (extras) acc.extras = extras;
+    if (typeof rawKey === "string" && rawKey.trim()) acc.keys.push(rawKey);
+    acc.names.push(String(r.name ?? ""));
+  }
+  const merged = [...byWorker.entries()].filter(([, a]) => a.rows > 1)
+    .map(([workerId, a]) => ({ workerId, rows: a.rows, hours: Math.round(a.hours * 100) / 100, names: a.names }));
+  let saved = 0;
+  for (const [workerId, a] of byWorker) {
     // extras Eurocash (нічні/ставка/потроненя): імпорт файла завжди їх виставляє
     // (null для форматів без extras — застарілі значення не залипають)
-    await upsertFactoryHours(workerId, month, factoryId, Math.round(hours * 100) / 100, source, days, normFactoryHoursExtras(r.extras));
+    await upsertFactoryHours(workerId, month, factoryId, Math.round(a.hours * 100) / 100, source, a.days, a.extras);
     saved++;
     // Ключ фабрики з підтвердженого рядка (вставка або Nr Osobowy Eurocash) —
     // запам'ятовуємо пару, наступні імпорти заматчаться по ньому без fuzzy.
     // Ключ, зайнятий іншим працівником цієї фабрики, мовчки пропускаємо.
-    const rawKey = typeof r.key === "string" && r.key.trim()
-      ? r.key : (r.extras as any)?.nrOsobowy;
+    // У злитого працівника ключ один на профіль — беремо перший.
+    const rawKey = a.keys[0];
     if (typeof rawKey === "string" && rawKey.trim()) {
       try {
         await db.insert(workerFactoryCodesTable)
@@ -3893,8 +3920,29 @@ router.post("/hours/factory-apply", RW, async (req, res) => {
       } catch { /* unique (factory, code) — ключ уже за іншим профілем */ }
     }
   }
-  ok(res, { saved, skipped: rows.length - saved, created });
+  // skipped — рядки з некоректними годинами/без профілю (їх години НЕ збережено);
+  // merged — працівники, на яких зійшлось кілька рядків (години підсумовано)
+  ok(res, { saved, skipped: skippedRows.length, skippedRows, created, merged });
 });
+
+// Злиття розбивок по днях двох рядків одного працівника: по даті — сума;
+// якщо один бік число, а другий по змінах — зводимо до числа (разом за день).
+function mergeFactoryDays(a: Record<string, FactoryDayValue> | null, b: Record<string, FactoryDayValue> | null): Record<string, FactoryDayValue> | null {
+  if (!a) return b;
+  if (!b) return a;
+  const sumOf = (v: FactoryDayValue) => typeof v === "number" ? v : Object.values(v).reduce((s, h) => s + h, 0);
+  const out: Record<string, FactoryDayValue> = { ...a };
+  for (const [d, v] of Object.entries(b)) {
+    const cur = out[d];
+    if (cur == null) { out[d] = v; continue; }
+    if (typeof cur !== "number" && typeof v !== "number") {
+      const m: Record<string, number> = { ...cur };
+      for (const [s, h] of Object.entries(v)) m[s] = Math.round(((m[s] ?? 0) + h) * 100) / 100;
+      out[d] = m;
+    } else out[d] = Math.round((sumOf(cur) + sumOf(v)) * 100) / 100;
+  }
+  return out;
+}
 
 // ── Ключі фабрики: особисті номери працівників у системі фабрики ─────────────
 // Довідник пар «працівник ↔ номер» по фабриці; імпорт годин матчить рядки

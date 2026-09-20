@@ -1232,16 +1232,29 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
         .map((r, i) => ({ r, i }))
         .filter(({ i }) => checked[i] && (picked[i] != null || createSel[i]))
         .map(({ r, i }) => picked[i] != null
-          ? { workerId: picked[i]!, hours: r.hours, days: r.days, extras: r.extras, key: r.key ?? undefined }
+          ? { workerId: picked[i]!, name: r.name, hours: r.hours, days: r.days, extras: r.extras, key: r.key ?? undefined }
           : { create: true, name: r.name, hours: r.hours, days: r.days, extras: r.extras, key: r.key ?? undefined });
-      return post<{ saved: number; skipped: number; created: number }>("/hours/factory-apply", {
+      return post<{ saved: number; skipped: number; skippedRows: { name: string; hours: number | null }[]; created: number; merged: { workerId: number; rows: number; hours: number; names: string[] }[] }>("/hours/factory-apply", {
         month, factoryId: group.factoryId, source: srcKind, rows: out,
         ...(createCompanyId !== "" ? { createCompanyId } : {}),
       });
     },
     onSuccess: (r) => {
-      toast.success(t("Збережено годин фабрики: {n}", { n: r.saved }), {
-        description: r.created ? t("Створено профілів: {n}", { n: r.created }) : undefined,
+      // Рядки файла, що НЕ потрапили в базу: не вибрані/без профілю тут + відкинуті
+      // сервером. Показуємо їх години, щоб втрата не була мовчазною.
+      const left = (rows ?? []).filter((_, i) => !(checked[i] && (picked[i] != null || createSel[i])))
+        .map(r => ({ name: r.name, hours: r.hours as number | null }))
+        .concat(r.skippedRows ?? []);
+      const leftHours = Math.round(left.reduce((s, x) => s + (x.hours ?? 0), 0) * 100) / 100;
+      const parts = [
+        r.created ? t("Створено профілів: {n}", { n: r.created }) : null,
+        r.merged?.length ? t("Підсумовано дублів: {n}", { n: r.merged.length }) + " — " + r.merged.map(m => `${m.names.join(" + ")} = ${m.hours}`).join("; ") : null,
+        left.length ? t("Не збережено: {n} рядків ({h} год)", { n: left.length, h: leftHours }) + ": " + left.map(x => `${x.name} (${x.hours ?? "?"})`).join(", ") : null,
+      ].filter(Boolean);
+      const fn = left.length ? toast.warning : toast.success;
+      fn(t("Збережено годин фабрики: {n}", { n: r.saved }), {
+        description: parts.length ? parts.join(" · ") : undefined,
+        duration: left.length || r.merged?.length ? 12000 : undefined,
       });
       qc.invalidateQueries({ queryKey: ["hours", month] });
       qc.invalidateQueries({ queryKey: ["hours-day-compare"] });
@@ -1263,6 +1276,24 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
     [group],
   );
   const unmatchedMissing = missingWorkers.filter(w => !pickedIds.has(w.id));
+  // Дублі: кілька вибраних рядків файла ведуть на одного працівника (дві посади,
+  // або два написання імені, які матчер звів до одного профілю). Сервер їх
+  // ПІДСУМУЄ — тут показуємо, щоб адмін бачив і міг перевибрати профіль,
+  // якщо це насправді різні люди.
+  const dupGroups = useMemo(() => {
+    const byWorker = new Map<number, number[]>();
+    (rows ?? []).forEach((_, i) => {
+      const id = picked[i];
+      if (id == null || !checked[i]) return;
+      byWorker.set(id, [...(byWorker.get(id) ?? []), i]);
+    });
+    return new Map([...byWorker].filter(([, idx]) => idx.length > 1));
+  }, [rows, picked, checked]);
+  const dupIndex = useMemo(() => {
+    const m = new Map<number, number>(); // index → workerId
+    for (const [wid, idx] of dupGroups) for (const i of idx) m.set(i, wid);
+    return m;
+  }, [dupGroups]);
   return (
     <Modal open onClose={onClose} title={`${t("Імпорт годин фабрики")} — ${group.name} · ${month}`} size="xl">
       {!rows ? (
@@ -1316,7 +1347,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map((r, i) => (
-                  <tr key={i} className={checked[i] ? "" : "opacity-50"}>
+                  <tr key={i} className={`${checked[i] ? "" : "opacity-50"} ${dupIndex.has(i) ? "bg-amber-50" : ""}`}>
                     <td className="px-3 py-2"><input type="checkbox" checked={!!checked[i]} onChange={e => setChecked(c => ({ ...c, [i]: e.target.checked }))} className="h-4 w-4 accent-red-600" /></td>
                     {hasKeys && <td className="px-3 py-2 tabular-nums text-slate-500">{r.key ?? "—"}</td>}
                     <td className="px-3 py-2 font-medium text-slate-700">{r.name}</td>
@@ -1330,11 +1361,14 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
                       </>
                     )}
                     <td className="px-3 py-2">
-                      {r.workerId != null ? (
+                      {r.workerId != null && picked[i] === r.workerId && !createSel[i] && !dupIndex.has(i) ? (
                         <span className="inline-flex items-center gap-1 text-emerald-700" title={r.byKey ? t("Заматчено по ключу фабрики") : undefined}>
                           {r.byKey ? <KeyRound className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />} {r.matchName}
                         </span>
                       ) : (() => {
+                        // Дубль: рядок уже заматчено, але на цього ж працівника веде
+                        // ще один рядок — даємо перевибрати (інша людина / новий профіль).
+                        const matched = r.workerId != null && r.matchName ? { id: r.workerId, name: r.matchName } : null;
                         // «Чи це та сама людина?»: пропонуються ЛИШЕ люди з рапортом
                         // без збігу з фабрикою, найближчі за годинами — вгорі.
                         // Вибраний у ЦЬОМУ рядку лишається, вибрані в інших — ховаються.
@@ -1358,11 +1392,17 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
                             }
                           }} className={`w-full ${createSel[i] ? "border-red-300 text-red-700" : ""}`}>
                             <option value="">{opts.length ? t("— вибери, якщо це та сама людина —") : t("не знайдено в базі")}</option>
+                            {matched && !opts.some(w => w.id === matched.id) && <option value={matched.id}>{matched.name}</option>}
                             <option value="__create__">{t("➕ Створити профіль «{name}»", { name: r.name })}</option>
                             {opts.map(w => <option key={w.id} value={w.id}>{w.name} — {w.reportHours} {t("год")} ({t("рапорт")})</option>)}
                           </Select>
                         );
                       })()}
+                      {dupIndex.has(i) && (
+                        <div className="mt-0.5 text-xs text-amber-700">
+                          {t("Ще {n} рядків на цю людину — години підсумуються", { n: dupGroups.get(dupIndex.get(i)!)!.length - 1 })}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1379,6 +1419,19 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
               <span className="text-xs text-red-600">{t("Створяться активними на цій фабриці й одразу отримають години з файла.")}</span>
             </div>
           )}
+          {dupGroups.size > 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <span className="font-medium">{t("Кілька рядків файла на одного працівника ({n}) — години підсумуються:", { n: dupGroups.size })}</span>
+              <ul className="mt-0.5 list-disc pl-5">
+                {[...dupGroups].map(([wid, idx]) => (
+                  <li key={wid}>
+                    {rows[idx[0]!]!.matchName ?? wid}: {idx.map(i => `${rows[i]!.name} ${rows[i]!.hours}`).join(" + ")} = {Math.round(idx.reduce((s, i) => s + rows[i]!.hours, 0) * 100) / 100} {t("год")}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-0.5 text-xs text-amber-700">{t("Якщо це різні люди — у рядку вибери інший профіль або «Створити профіль».")}</div>
+            </div>
+          )}
           {unmatchedMissing.length > 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-700">
               <span className="font-medium">{t("Є в обліку, але без годин фабрики ({n}):", { n: unmatchedMissing.length })}</span>{" "}
@@ -1388,6 +1441,14 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
           )}
           <div className="flex items-center justify-between">
             <button onClick={() => { setRows(null); setText(""); }} className="text-sm text-slate-500 underline-offset-2 hover:underline">{t("← Назад до вибору файла")}</button>
+            {(() => {
+              // рядки, що не підуть у базу (не вибрані / без профілю) — з годинами,
+              // щоб втрата була видима ДО збереження
+              const left = rows.filter((_, i) => !(checked[i] && (picked[i] != null || createSel[i])));
+              if (!left.length) return null;
+              const h = Math.round(left.reduce((s, r) => s + r.hours, 0) * 100) / 100;
+              return <span className="text-xs text-amber-700" title={left.map(r => `${r.name} (${r.hours})`).join(", ")}>{t("Не потраплять: {n} рядків ({h} год)", { n: left.length, h })}</span>;
+            })()}
             <Button onClick={() => apply.mutate()} loading={apply.isPending} disabled={!nSelected}>
               <Check className="h-4 w-4" /> {t("Зберегти {n} рядків", { n: nSelected })}
             </Button>

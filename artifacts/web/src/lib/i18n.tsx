@@ -1254,6 +1254,12 @@ const EN: Record<string, string> = {
   "Лист про розбіжності": "Discrepancy letter",
   "Згенерувати лист клієнту про розбіжності годин": "Generate a client letter about hour discrepancies",
   "Збережено годин фабрики: {n}": "Factory hours saved: {n}",
+  "Підсумовано дублів: {n}": "Duplicates merged: {n}",
+  "Не збережено: {n} рядків ({h} год)": "Not saved: {n} rows ({h} h)",
+  "Не потраплять: {n} рядків ({h} год)": "Will be left out: {n} rows ({h} h)",
+  "Ще {n} рядків на цю людину — години підсумуються": "{n} more row(s) for this person — hours will be summed",
+  "Кілька рядків файла на одного працівника ({n}) — години підсумуються:": "Several file rows map to one worker ({n}) — hours will be summed:",
+  "Якщо це різні люди — у рядку вибери інший профіль або «Створити профіль».": "If these are different people, pick another profile in the row or use “Create profile”.",
   "Excel-файл від фабрики (зведена таблиця, lista dni szczegółowo або ewidencja I/II/III)": "Excel file from the factory (summary table, lista dni szczegółowo or ewidencja I/II/III)",
   "➕ Створити профіль «{name}»": "➕ Create profile «{name}»",
   "Натисни на число годин, щоб змінити (з'явиться ✓). 🗑 — прибрати день/зміну.": "Click the hours number to change it (a ✓ will appear). 🗑 removes the day/shift.",
@@ -3594,7 +3600,6 @@ const EN: Record<string, string> = {
   "Обрано за мовами": "Selected by language",
   "Обрано за фабриками": "Selected by factory",
   "Показати в списку": "Show in the list",
-
 
   // @i18n-append (new page translations get inserted above this line)
 };

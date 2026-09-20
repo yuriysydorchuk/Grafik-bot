@@ -92,6 +92,27 @@ test("factory-apply: upsert із днями → дати YYYY-MM-DD у factoryDa
   assert.equal(rows[0]!.source, "paste");
 });
 
+test("factory-apply: кілька рядків на одного працівника → години й дні підсумовуються, merged у відповіді", opts, async () => {
+  const { factoryId, workerId } = await seedFactoryWorker();
+  // два написання імені звело до одного профілю (Sushi 08.2026: «FERNANDEZ GABRIELA»
+  // + «VILLALBA FERNANDEZ GABRIELA») — раніше upsert лишав лише останній рядок
+  const apply = await request(app).post("/api/hours/factory-apply").set("Cookie", owner).set(H)
+    .send({ month: MONTH, factoryId, source: "excel", rows: [
+      { workerId, name: "FERNANDEZ GABRIELA", hours: 16, days: { 1: 8, 2: 8 } },
+      { workerId, name: "VILLALBA FERNANDEZ GABRIELA", hours: 266, days: { 2: 4, 3: { "1": 8 } } },
+      { workerId: null, name: "Nieznany Ktos", hours: 7 }, // без профілю → skipped, не мовчки
+    ] });
+  assert.equal(apply.status, 200);
+  assert.equal(apply.body.saved, 1);
+  assert.equal(apply.body.skipped, 1);
+  assert.deepEqual(apply.body.skippedRows, [{ name: "Nieznany Ktos", hours: 7 }]);
+  assert.deepEqual(apply.body.merged, [{ workerId, rows: 2, hours: 282, names: ["FERNANDEZ GABRIELA", "VILLALBA FERNANDEZ GABRIELA"] }]);
+  const [row] = await db.select().from(factoryHoursTable)
+    .where(and(eq(factoryHoursTable.workerId, workerId), eq(factoryHoursTable.month, MONTH)));
+  assert.equal(row!.hours, 282);
+  assert.deepEqual(row!.days, { "2026-06-01": 8, "2026-06-02": 12, "2026-06-03": { "1": 8 } });
+});
+
 test("ручна правка тоталу затирає денну розбивку (вона більше не відповідає сумі)", opts, async () => {
   const { factoryId, workerId } = await seedFactoryWorker();
   await request(app).post("/api/hours/factory-apply").set("Cookie", owner).set(H)
