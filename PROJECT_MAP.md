@@ -69,6 +69,7 @@ Grafik-bot/
 | Адміни / ролі | `routes/admin-api.ts` | admins CRUD + invite/reset-web, roles (лише `is_main`) |
 | Безпека | `routes/security.ts` | сесії, журнал входів, revoke, logout-everywhere (лише `is_main`) |
 | Інше | `routes/admin-api.ts` | dashboard, attention, live, notifications, broadcast, reports, drive/link |
+| SMS-кампанії | `routes/smsCampaigns.ts`, `routes/smsPublic.ts`, `services/sms/*` | панель `/sms-campaigns` (кампанії, імпорт xlsx, отримувачі, запуск — головний адмін), публічний `GET /r/:token` (продажна сторінка), бот `?start=sms<токен>`; крони відправки/статусів у `scheduler.ts`; спека `docs/tasks/2026-09-21-sms-campaigns.md` |
 | Задачі / календар працівників | `routes/tasks.ts`, `routes/taskIcal.ts`, `routes/workersCalendar.ts` | задачі/групові/зустрічі, «Мій день», автозадачі й «Як вирішити», шаблони, iCal, календар подій працівників |
 | Умови / підпис / шаблони | `routes/contracts.ts`, `routes/sign.ts`, `routes/documentDelivery.ts` | генерація пакетів, надсилання на підпис (Mini App), підпис працівника, підпис фірми з печаткою, дати, бібліотека шаблонів, анкета |
 | Скан паспорта / анкета | `routes/passportScan.ts` | публічні токен-сторінки скану (OCR MRZ), анкета, karta pobytu, конверт кандидата |

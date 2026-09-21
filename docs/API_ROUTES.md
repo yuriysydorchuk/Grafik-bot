@@ -80,4 +80,24 @@
 | GET | `/r/:token` | Дані продажної сторінки персонального SMS-лінка (імʼя, мова, пропозиція, лендінг, `telegram` = `t.me/<бот>?start=sms<токен>`); пише подію `view` і статус отримувача `viewed`. Телефон отримувача не віддається. |
 | GET | `/r/:token/e?k=cta_bot\|cta_call\|cta_wa` | Подія кнопки на сторінці (GET, щоб не впиратись у CSRF), статус `cta`; завжди 204. |
 
-Бот: `?start=sms<токен>` → `bot/handlers/smsCampaign.ts` (кандидат у воронці «SMS-кампанії», кнопки `sms:job|ref|later:<recipientId>`). Панельний API кампаній — батч 3 (`docs/tasks/2026-09-21-sms-campaigns.md`).
+Бот: `?start=sms<токен>` → `bot/handlers/smsCampaign.ts` (кандидат у воронці «SMS-кампанії», кнопки `sms:job|ref|later:<recipientId>`).
+
+## SMS-кампанії — панель (`routes/smsCampaigns.ts`, гейт `router.use("/sms-campaigns", authRequired, requireCap("editData"))`)
+
+| Метод | Шлях | Що робить |
+|---|---|---|
+| GET | `/sms-campaigns` | Список кампаній зі статистикою воронки + `summary` для плиток (кліки 7 дн, нові кандидати з SMS, «відкрили, не зайшли», у черзі, активних). |
+| GET | `/sms-campaigns/settings` | Провайдери (`configured` — чи є ключ в env, ціна PL/UA), підпис, база лінків, дефолти розкладу, мови, телефон офісу. |
+| POST | `/sms-campaigns` | Створити кампанію (`name`, `kind` job\|referral, `provider`, `sender`, `texts`, `offer`, `landing`, `schedule`, `factoryId`, `recruiterAdminId`). |
+| GET / PATCH | `/sms-campaigns/:id` | Картка / оновлення полів чернетки. |
+| POST | `/sms-campaigns/preview-text` | Підстановка `{імʼя}`/`{лінк}` + лічильник частин SMS (GSM-7 / UCS-2). |
+| POST | `/sms-campaigns/:id/import` | multipart `file` (xlsx/csv): `dry=1` — колонки, вгадане зіставлення (`guessed`), підсумок без запису; `dry=0` — запис отримувачів. Поля: `sheet`, `mapping` (JSON), `years`, `langs`, `segments`, `includeUa`, `uaMinYear`, `skipAlreadySent`. Активні працівники (телефон анкети/імʼя) → `skipped/active_worker`. |
+| GET | `/sms-campaigns/:id/recipients` | Отримувачі: `status`, `lang`, `q`, `limit`, `offset`; у рядку `link` і `candidateStage`. |
+| GET | `/sms-campaigns/:id/recipients/:rid/events` | Журнал подій отримувача. |
+| GET | `/sms-campaigns/:id/export.xlsx` | Експорт отримувачів (польські заголовки, імена капсом). |
+| POST | `/sms-campaigns/:id/start` | **Лише головний адмін.** `mode` test\|sending; перевіряє тексти, ключ провайдера, чергу. |
+| POST | `/sms-campaigns/:id/pause`, `/close` | Пауза / закриття (лінки закритої кампанії показують «закрито»). |
+| POST | `/sms-campaigns/:id/send-batch` | **Головний адмін.** Батч зараз, поза вікном розкладу (`force`). |
+| POST | `/sms-campaigns/:id/test-sms` | **Головний адмін.** Тестове SMS на свій номер (`phone`, `lang`). |
+
+Сторінка `/sms-campaigns` (група «Персонал»), ключ у `PAGE_KEYS`; `GET /candidates?campaignId=` — фільтр кандидатів з кампанії (у відповіді `source`, `campaignId`, `language`).

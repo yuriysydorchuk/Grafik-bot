@@ -57,6 +57,8 @@ import PassportScan from "./pages/PassportScan";
 import DocUpload from "./pages/DocUpload";
 import ZcnaForm from "./pages/ZcnaForm";
 import SmsLanding from "./pages/SmsLanding";
+import SmsCampaigns from "./pages/SmsCampaigns";
+import SmsCampaignCard from "./pages/SmsCampaignCard";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
@@ -188,6 +190,8 @@ export default function App() {
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>
         <Route path="/broadcast">{() => guard("/broadcast", <Broadcast />)}</Route>
+        <Route path="/sms-campaigns">{() => guard("/sms-campaigns", <SmsCampaigns />)}</Route>
+        <Route path="/sms-campaigns/:id">{() => guard("/sms-campaigns", <SmsCampaignCard />)}</Route>
         <Route path="/drivers">{() => guard("/drivers", <Drivers />)}</Route>
         <Route path="/factories">{() => guard("/factories", <Factories />)}</Route>
         <Route path="/settings">{() => guard("/settings", <Settings />)}</Route>

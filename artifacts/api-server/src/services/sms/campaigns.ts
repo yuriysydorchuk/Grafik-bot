@@ -98,6 +98,7 @@ export type ImportOptions = {
   includeUa?: boolean;      // слати на +380 (дорого) — за замовчуванням лише записи від uaMinYear
   uaMinYear?: number;       // 2024
   skipAlreadySent?: boolean; // номер уже отримував SMS в іншій кампанії → пропустити
+  dry?: boolean;             // лише підрахунок (крок «перевірка» у панелі), без запису
 };
 export type ImportSummary = {
   total: number; added: number; skipped: Record<string, number>; byLang: Record<string, number>; activeWorkers: number;
@@ -152,9 +153,38 @@ export async function importRecipients(campaignId: number, rows: ImportRow[], op
     summary.added++;
     summary.byLang[lang] = (summary.byLang[lang] ?? 0) + 1;
   }
-  for (let i = 0; i < toInsert.length; i += 500) await db.insert(smsRecipientsTable).values(toInsert.slice(i, i + 500));
-  logger.info({ campaignId, ...summary }, "SMS recipients imported");
+  if (!opts.dry) {
+    for (let i = 0; i < toInsert.length; i += 500) await db.insert(smsRecipientsTable).values(toInsert.slice(i, i + 500));
+    logger.info({ campaignId, ...summary }, "SMS recipients imported");
+  }
   return summary;
+}
+
+// ── Список отримувачів для картки (фільтри + пагінація) ───────────────────
+export type RecipientFilter = { status?: string; lang?: string; q?: string; limit?: number; offset?: number };
+export async function listRecipients(campaignId: number, f: RecipientFilter = {}): Promise<{ rows: SmsRecipient[]; total: number }> {
+  const conds = [eq(smsRecipientsTable.campaignId, campaignId)];
+  if (f.status) conds.push(eq(smsRecipientsTable.status, f.status));
+  if (f.lang) conds.push(eq(smsRecipientsTable.lang, f.lang));
+  if (f.q) { const like = `%${f.q.toLowerCase()}%`; conds.push(sql`(lower(coalesce(${smsRecipientsTable.name}, '')) like ${like} or ${smsRecipientsTable.phone} like ${like})`); }
+  const where = and(...conds);
+  const [{ n: total }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(where);
+  const rows = await db.select().from(smsRecipientsTable).where(where).orderBy(smsRecipientsTable.id).limit(Math.min(f.limit ?? 100, 1000)).offset(f.offset ?? 0);
+  return { rows, total: total ?? 0 };
+}
+export async function recipientEvents(recipientId: number) {
+  return db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, recipientId)).orderBy(smsEventsTable.id);
+}
+
+// Плитка на дашборді: кліки за 7 днів, нові кандидати з SMS, «відкрили, не зайшли», у черзі.
+export async function smsDashboardSummary(): Promise<{ views7d: number; newCandidates7d: number; viewedNoBot: number; queued: number; activeCampaigns: number }> {
+  const since = new Date(Date.now() - 7 * 86400 * 1000);
+  const [v] = await db.select({ n: sql<number>`count(distinct ${smsEventsTable.recipientId})::int` }).from(smsEventsTable).where(and(eq(smsEventsTable.kind, "view"), sql`${smsEventsTable.at} >= ${since}`));
+  const [c] = await db.select({ n: sql<number>`count(*)::int` }).from(candidatesTable).where(and(eq(candidatesTable.source, "sms"), sql`${candidatesTable.createdAt} >= ${since}`));
+  const [nb] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(inArray(smsRecipientsTable.status, ["viewed", "cta"]));
+  const [qd] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(eq(smsRecipientsTable.status, "queued"));
+  const [ac] = await db.select({ n: sql<number>`count(*)::int` }).from(smsCampaignsTable).where(inArray(smsCampaignsTable.status, ["sending", "test", "paused"]));
+  return { views7d: v?.n ?? 0, newCandidates7d: c?.n ?? 0, viewedNoBot: nb?.n ?? 0, queued: qd?.n ?? 0, activeCampaigns: ac?.n ?? 0 };
 }
 
 // ── Лінки, тексти, події ───────────────────────────────────────────────────

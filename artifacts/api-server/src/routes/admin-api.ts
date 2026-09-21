@@ -1660,6 +1660,8 @@ router.get("/candidates", RW, async (req, res) => {
   const wMap = new Map(workers.map(w => [w.id, w]));
   const fMap = new Map(factories.map(f => [f.id, f.name]));
   let filtered = funnelId != null ? rows.filter(c => c.funnelId === funnelId) : rows;
+  const campaignId = req.query.campaignId ? Number(req.query.campaignId) : null;
+  if (campaignId != null) filtered = filtered.filter(c => c.campaignId === campaignId);
   if (q) filtered = filtered.filter(c => {
     const refName = c.referrerWorkerId ? (wMap.get(c.referrerWorkerId)?.fullName ?? "") : "";
     const asgName = c.assignedAdminId ? (aMap.get(c.assignedAdminId) ?? "") : "";
@@ -1676,6 +1678,7 @@ router.get("/candidates", RW, async (req, res) => {
     workerActive: c.workerId ? !!wMap.get(c.workerId)?.isActive : false,
     workerCode: c.workerId ? (wMap.get(c.workerId)?.code ?? null) : null,
     bonusAmount: c.bonusAmount, bonusPaid: c.bonusPaid, notes: c.notes, createdAt: c.createdAt,
+    source: c.source, campaignId: c.campaignId, language: c.language,
   })));
 });
 

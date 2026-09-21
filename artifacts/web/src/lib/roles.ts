@@ -34,7 +34,7 @@ export const PAGE_LABEL: Record<string, string> = {
   "/hours": "Облік годин", "/absences": "Відсутності", "/advances": "Аванси", "/trips": "Поїздки",
   "/mileage": "Звіт по пробігу",
   "/reports": "Звіти", "/finance": "Фінанси", "/bank": "Витяги", "/cash": "Каса", "/cashflow": "Кешфлоу", "/cfo": "CFO", "/analytics": "Аналітика", "/balance": "Баланс", "/obligations": "Належності", "/cost-invoices": "Фактури", "/pnl": "P&L", "/payroll": "Зарплати", "/svodni": "Сводні", "/hostels": "Хостели", "/penalties": "Штрафи", "/fuel": "Пальне", "/cleaning": "Прибирання", "/settings": "Налаштування",
-  "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка",
+  "/workers": "Працівники", "/recruitment": "Рекрутинг", "/broadcast": "Розсилка", "/sms-campaigns": "SMS-кампанії",
   "/drivers": "Водії", "/fleet": "Автопарк", "/transport": "Транспорт", "/clothing": "Одяг", "/factories": "Фабрики", "/admins": "Адміни",
   "/sushi": "Суші (проєкт)", "/andros": "Андрос (проєкт)",
   "/contracts": "Документи й умови",

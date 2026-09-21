@@ -5,6 +5,7 @@ import {
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
+  MessageSquareText,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { useNavTracking } from "../lib/nav";
@@ -72,6 +73,7 @@ const NAV: NavGroup[] = [
       { href: "/recruitment", label: "Рекрутація", icon: UserPlus },
       { href: "/broadcast", label: "Розсилка", icon: Megaphone },
     ],
+      { href: "/sms-campaigns", label: "SMS-кампанії", icon: MessageSquareText },
   },
   {
     title: "Аналітика",

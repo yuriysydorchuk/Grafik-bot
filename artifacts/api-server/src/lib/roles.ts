@@ -32,7 +32,7 @@ export const CAP_LABEL: Record<Capability, string> = {
 export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
   "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/fuel", "/cleaning", "/settings",
-  "/workers", "/recruitment", "/broadcast", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
+  "/workers", "/recruitment", "/broadcast", "/sms-campaigns", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
   "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks", "/workers-calendar",
 ] as const;
 

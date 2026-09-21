@@ -36,6 +36,7 @@ import docRequestsRouter from "./docRequests";
 import zcnaPublicRouter from "./zcnaPublic";
 import taskIcalRouter from "./taskIcal";
 import smsPublicRouter from "./smsPublic";
+import smsCampaignsRouter from "./smsCampaigns";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
@@ -65,6 +66,7 @@ router.use(gratyfikantRouter);
 router.use(referralCampaignRouter);
 // Авторизаційні use-гейти фінансових роутерів скоуплені по префіксах шляхів
 // (напр. router.use("/bank", requireCap(...))) — неупакований router.use() в Express
+router.use(smsCampaignsRouter);
 // зачіпав би і прохідні запити до всіх роутерів, змонтованих нижче (латентний баг
 // до 12.08.2026: роль без viewFinance не діставалась до /cash, /cost-invoices, /fuel)
 router.use(svodniRouter);
