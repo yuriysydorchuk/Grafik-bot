@@ -84,7 +84,7 @@ export interface CalEvent {
 }
 export const CAL_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "termination", "task", "shift"];
 export const CAL_KINDS_DEFAULT: CalKind[] = CAL_KINDS.filter(k => k !== "shift"); // зміни з графіку — вимкнений фільтр (макет)
-export const CAL_KIND_LABEL: Record<CalKind, string> = { doc: "документи", contract: "умови", obligation: "обовʼязки", absence: "відпрошування", vacation: "відпустки / поза обліком", hostel: "хостел", birthday: "дні народження", start: "початок роботи", end: "кінець роботи", termination: "звільнення", task: "задачі", shift: "зміни з графіку" };
+export const CAL_KIND_LABEL: Record<CalKind, string> = { doc: "документи", contract: "умови", obligation: "обовʼязки", absence: "відпрошування", vacation: "відпустки / поза обліком", hostel: "хостел", birthday: "дні народження", start: "перший робочий день", end: "останній робочий день", termination: "звільнення", task: "задачі", shift: "зміни з графіку" };
 // повні класи (Tailwind v4 сканує літерали); дарк — через CSS-змінні
 export const CAL_KIND_CLS: Record<CalKind, string> = {
   doc: "bg-amber-100 text-amber-800", contract: "bg-violet-100 text-violet-800", obligation: "bg-rose-100 text-rose-800", absence: "bg-sky-100 text-sky-800",

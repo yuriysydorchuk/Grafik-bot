@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { useSessionState } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
@@ -27,20 +28,21 @@ export default function Workers() {
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const { data: positions = [] } = useQuery<Position[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
-  const [q, setQ] = useState("");
-  const [facFilter, setFacFilter] = useState("");
-  const [coFilter, setCoFilter] = useState("");
-  const [posFilter, setPosFilter] = useState("");
-  const [legFilter, setLegFilter] = useState("");
-  const [natFilter, setNatFilter] = useState("");
-  const [stud26Only, setStud26Only] = useState(false);
+  // фільтри переживають перехід у профіль і повернення (sessionStorage, lib/nav.ts — рішення 21.09.2026)
+  const [q, setQ] = useSessionState("workers.q", "");
+  const [facFilter, setFacFilter] = useSessionState("workers.fac", "");
+  const [coFilter, setCoFilter] = useSessionState("workers.co", "");
+  const [posFilter, setPosFilter] = useSessionState("workers.pos", "");
+  const [legFilter, setLegFilter] = useSessionState("workers.leg", "");
+  const [natFilter, setNatFilter] = useSessionState("workers.nat", "");
+  const [stud26Only, setStud26Only] = useSessionState("workers.stud26", false);
   // Легалізація за документами (движок worker_legality) — окремо від старого
   // поля «Форма легалізації» (legFilter вище, не чіпати).
-  const [docLegFilter, setDocLegFilter] = useState("");
+  const [docLegFilter, setDocLegFilter] = useSessionState("workers.docLeg", "");
   // Умова (контракти з модуля підпису): signed/pending/none/expired — по w.contracts.umowa.
-  const [umowaFilter, setUmowaFilter] = useState("");
-  const [expiringOnly, setExpiringOnly] = useState(false);
-  const [showInactive, setShowInactive] = useState(false);
+  const [umowaFilter, setUmowaFilter] = useSessionState("workers.umowa", "");
+  const [expiringOnly, setExpiringOnly] = useSessionState("workers.expiring", false);
+  const [showInactive, setShowInactive] = useSessionState("workers.inactive", false);
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
   const [firing, setFiring] = useState<Worker | null>(null);

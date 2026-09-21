@@ -7,6 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
+import { useNavTracking } from "../lib/nav";
 import { post, type Me } from "../lib/api";
 import { canAccessPage } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
@@ -143,6 +144,7 @@ function Brand({ rail = false }: { rail?: boolean }) {
 
 export function Layout({ me, children }: { me: Me; children: ReactNode }) {
   const [loc] = useLocation();
+  useNavTracking(); // стек «назад» + відновлення скролу при поверненні (lib/nav.ts)
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem("navCollapsed") === "1"; } catch { return false; }

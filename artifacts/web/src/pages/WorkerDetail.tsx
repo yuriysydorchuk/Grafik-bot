@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoute, Link } from "wouter";
+import { useBack } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -128,6 +129,9 @@ export default function WorkerDetail() {
   const me = useMe();
   const isOwner = me?.role === "owner";
   const [, params] = useRoute("/workers/:id");
+  // «назад»: попередня сторінка панелі; без історії — ?from=/schedule… (лише внутрішній шлях) або список працівників
+  const fromParam = new URLSearchParams(window.location.search).get("from") ?? "";
+  const goBack = useBack(fromParam.startsWith("/") ? fromParam : "/workers");
   const id = params?.id;
   // Шапка синхронна з документами: після скану/завантаження (у т.ч. з бота, поки сторінка відкрита)
   // підтягуємо профіль при поверненні у вкладку й раз на 30 с (рішення 20.09.2026)
@@ -201,10 +205,11 @@ export default function WorkerDetail() {
         const from = new URLSearchParams(window.location.search).get("from") ?? "";
         const isSchedule = from.startsWith("/schedule");
         const isHours = from.startsWith("/hours"); // з обліку годин (модалка днів працівника відкриється знову: ?w=&wn=)
+        // «назад» — у те саме місце, звідки прийшли (history.back + відновлений скрол, lib/nav.ts); без історії — fallback
         return (
-          <Link href={isSchedule || isHours ? from : "/workers"} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
-            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : isHours ? t("До обліку годин") : t("До працівників")}
-          </Link>
+          <button type="button" onClick={goBack} className="mb-3 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700">
+            <ArrowLeft className="h-4 w-4" /> {isSchedule ? t("До графіку") : isHours ? t("До обліку годин") : t("Назад")}
+          </button>
         );
       })()}
 

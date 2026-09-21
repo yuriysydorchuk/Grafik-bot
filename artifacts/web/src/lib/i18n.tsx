@@ -186,6 +186,7 @@ const EN: Record<string, string> = {
   "Право на працю — за анотацією карти": "Right to work — per the card annotation",
   "не підтверджено юристом": "not confirmed by a lawyer",
   "звільнення": "terminations",
+  "перший робочий день": "first working day", "останній робочий день": "last working day",
   "Документи не зараховуються для виплат, поки не зелені всі осі:": "Documents do not count for payroll until every axis is green:",
   "звільняється": "leaving",
   "Скопіювати посилання-запрошення": "Copy invite link",

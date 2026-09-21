@@ -7,6 +7,7 @@ import { and, eq, gte, lte, inArray, isNotNull, or, sql } from "drizzle-orm";
 import {
   db, workersTable, factoriesTable, workerDocumentsTable, documentTypesTable, contractsTable, workerLegalityTable,
   absenceRequestsTable, workerFactoriesTable, tasksTable, hoursMonthExclusionsTable, hostelStaysTable, hostelsTable, scheduleEntriesTable, scheduleWeeksTable,
+  workerChangesTable,
 } from "@workspace/db";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { addDaysStr } from "../lib/dates";
@@ -43,7 +44,7 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
   if (opts.companyId) wWhere.push(eq(workersTable.companyId, opts.companyId));
   if (opts.city) wWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
   if (opts.factoryId) wWhere.push(sql`(${workersTable.factoryId} = ${opts.factoryId} or exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${opts.factoryId}))`);
-  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate, terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId })
+  const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate, terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, firstWorkDate: workersTable.firstWorkDate })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...wWhere));
   // фактично звільнені в діапазоні (fired_at) — вид termination; окремий запит, бо основний бере лише активних
   const firedEvents = async (): Promise<CalEvent[]> => {
@@ -118,12 +119,79 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
     }
     out.push(...await firedEvents()); // фактично звільнені в діапазоні — теж «звільнення»
   }
+  // Перший / останній робочий день — ПО ФАБРИКАХ (рішення власника 21.09.2026): графіковій треба бачити,
+  // хто коли почав на якій фабриці й у кого коли останній день на якій. Раніше події були лише з
+  // worker_factories (додаткові фабрики) — для людей з однією фабрикою календар мовчав.
+  //   start: перша фактична зміна на фабриці (present, або розіслана минула scheduled без absent)
+  //          ∪ перший день з годинами фабрики (factory_hours.days) ∪ worker_factories.valid_from;
+  //          основна фабрика без жодної явки — workers.first_work_date.
+  //   end:   останній робочий день = день ПЕРЕД датою, з якої людина не працює: worker_factories.valid_to,
+  //          виповідзення (по фабриці — лише вона; з усіх — кожна чинна фабрика), фактичне звільнення
+  //          (worker_changes.fired.effective_date ?? fired_at) — по всіх фабриках людини на той момент.
   if (want("start") || want("end")) {
     const wf = await db.select().from(workerFactoriesTable).where(inArray(workerFactoriesTable.workerId, ids));
-    for (const r of wf) {
-      const w = wmap.get(r.workerId)!;
-      if (want("start") && r.validFrom && String(r.validFrom) >= from && String(r.validFrom) <= to) out.push({ id: `start:${r.id}`, kind: "start", date: String(r.validFrom), title: `Початок роботи · ${facs.get(r.factoryId) ?? ""}`, ...base(w, r.factoryId), severity: "info" });
-      if (want("end") && r.validTo && String(r.validTo) >= from && String(r.validTo) <= to) out.push({ id: `end:${r.id}`, kind: "end", date: String(r.validTo), title: `Кінець роботи · ${facs.get(r.factoryId) ?? ""}`, ...base(w, r.factoryId), severity: sev(String(r.validTo)) });
+    const dayBefore = (d: string) => addDaysStr(d, -1);
+    const pushStart = (w: (typeof workers)[number], factoryId: number, date: string, key: string) => {
+      if (date < from || date > to) return;
+      out.push({ id: `start:${key}`, kind: "start", date, title: `Перший робочий день · ${facs.get(factoryId) ?? ""}`, ...base(w, factoryId), severity: "info" });
+    };
+    const pushEnd = (w: { id: number; fullName: string; factoryId: number | null; factoryName: string | null }, factoryId: number, leaveDate: string, key: string, detail?: string | null) => {
+      const last = dayBefore(leaveDate);
+      if (last < from || last > to) return;
+      out.push({ id: `end:${key}`, kind: "end", date: last, title: `Останній робочий день · ${facs.get(factoryId) ?? ""}`, detail: detail ?? null, ...base(w, factoryId), severity: sev(last) });
+    };
+    if (want("start")) {
+      // перша фактична зміна по (людина, фабрика): present або розіслана минула scheduled; лише затверджені/розіслані тижні
+      const firstShift = await db.execute(sql`
+        select e.worker_id, e.factory_id, min(k.week_start + (case e.day_of_week when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end))::text as d
+        from schedule_entries e join schedule_weeks k on k.id = e.week_id
+        where e.worker_id in (${sql.join(ids.map(i => sql`${i}`), sql`, `)})
+          and (k.status = 'approved' or e.sent_at is not null)
+          and (e.status = 'present' or (e.status = 'scheduled' and e.sent_at is not null
+               and k.week_start + (case e.day_of_week when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end) < ${today}::date))
+        group by e.worker_id, e.factory_id`);
+      const firstHours = await db.execute(sql`
+        select h.worker_id, h.factory_id, min(d.key) as d
+        from factory_hours h, jsonb_each(coalesce(h.days, '{}'::jsonb)) d
+        where h.worker_id in (${sql.join(ids.map(i => sql`${i}`), sql`, `)}) and d.key ~ '^\\d{4}-\\d{2}-\\d{2}$'
+        group by h.worker_id, h.factory_id`);
+      const first = new Map<string, string>(); // `${workerId}:${factoryId}` → date
+      const take = (wid: number, fid: number | null, d: string | null) => { if (fid == null || !d) return; const k = `${wid}:${fid}`; const cur = first.get(k); if (!cur || d < cur) first.set(k, d); };
+      for (const r of firstShift.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d ? String(r.d).slice(0, 10) : null);
+      for (const r of firstHours.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d);
+      for (const r of wf) if (r.validFrom) take(r.workerId, r.factoryId, String(r.validFrom));
+      for (const w of workers) if (w.factoryId != null && w.firstWorkDate && !first.has(`${w.id}:${w.factoryId}`)) first.set(`${w.id}:${w.factoryId}`, String(w.firstWorkDate).slice(0, 10));
+      for (const [k, d] of first) { const [wid, fid] = k.split(":").map(Number); const w = wmap.get(wid!); if (w) pushStart(w, fid!, d, k); }
+    }
+    if (want("end")) {
+      for (const r of wf) { const w = wmap.get(r.workerId)!; if (r.validTo) pushEnd(w, r.factoryId, String(r.validTo), `wf:${r.id}`); }
+      // виповідзення активних: по фабриці — лише вона; з усіх — основна + чинні додаткові
+      for (const w of workers) {
+        const td = w.terminationDate ? String(w.terminationDate).slice(0, 10) : null;
+        if (!td) continue;
+        const live = wf.filter(r => r.workerId === w.id && !r.validTo).map(r => r.factoryId);
+        const facIds = w.terminationFactoryId != null ? [w.terminationFactoryId] : [...new Set([w.factoryId, ...live].filter((x): x is number => x != null))];
+        for (const fid of facIds) pushEnd(w, fid, td, `term:${w.id}:${fid}`, w.terminationFactoryId != null ? "лишається на інших фабриках" : "звільнення");
+      }
+      // фактично звільнені (неактивні): день перед датою звільнення по кожній фабриці, яку мали
+      const firedWhere = [eq(workersTable.isActive, false), isNotNull(workersTable.firedAt), sql`${workersTable.firedAt}::date >= ${from}::date - interval '40 days'`, sql`${workersTable.firedAt}::date <= ${to}::date + interval '2 days'`] as any[];
+      if (opts.workerId) firedWhere.push(eq(workersTable.id, opts.workerId));
+      if (opts.companyId) firedWhere.push(eq(workersTable.companyId, opts.companyId));
+      if (opts.city) firedWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
+      const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, firedAt: workersTable.firedAt })
+        .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...firedWhere));
+      if (fired.length) {
+        const fIds = fired.map(f => f.id);
+        const journal = await db.select({ workerId: workerChangesTable.workerId, effectiveDate: workerChangesTable.effectiveDate }).from(workerChangesTable)
+          .where(and(inArray(workerChangesTable.workerId, fIds), eq(workerChangesTable.field, "fired")));
+        const fireDateOf = new Map(journal.filter(j => j.effectiveDate).map(j => [j.workerId, String(j.effectiveDate).slice(0, 10)]));
+        const fwf = await db.select().from(workerFactoriesTable).where(inArray(workerFactoriesTable.workerId, fIds));
+        for (const f of fired) {
+          const leave = fireDateOf.get(f.id) ?? new Date(f.firedAt!).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+          const facIds = [...new Set([f.factoryId, ...fwf.filter(r => r.workerId === f.id && (!r.validTo || String(r.validTo) >= leave)).map(r => r.factoryId)].filter((x): x is number => x != null))];
+          for (const fid of facIds) if (!opts.factoryId || opts.factoryId === fid) pushEnd(f, fid, leave, `fired:${f.id}:${fid}`, "звільнено");
+        }
+      }
     }
   }
   if (want("vacation")) {
@@ -201,7 +269,7 @@ router.get("/workers-calendar/export.xlsx", async (req: AuthedRequest, res) => {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Kalendarz");
-  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Start pracy", end: "Koniec pracy", termination: "Zwolnienie", task: "Zadanie", shift: "Zmiana" };
+  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Pierwszy dzień pracy", end: "Ostatni dzień pracy", termination: "Zwolnienie", task: "Zadanie", shift: "Zmiana" };
   ws.addRow(["Data", "Pracownik", "Zakład", "Rodzaj", "Zdarzenie", "Szczegóły"]).font = { bold: true };
   for (const e of events) ws.addRow([e.date, nameCaps(e.workerName), e.factoryName ?? "", KIND_PL[e.kind] ?? e.kind, e.title, e.detail ?? ""]);
   ws.columns.forEach((c, i) => { c.width = [12, 32, 22, 16, 44, 30][i] ?? 16; });
