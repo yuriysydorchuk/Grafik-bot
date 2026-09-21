@@ -70,6 +70,8 @@ async function loadSentToday(): Promise<void> {
 let weeklyReminderTask: ScheduledTask | null = null;
 let smsSendTask: ScheduledTask | null = null;
 let smsStatusTask: ScheduledTask | null = null;
+let smsReportTask: ScheduledTask | null = null;
+let smsRemindTask: ScheduledTask | null = null;
 let preShiftTask: ScheduledTask | null = null;
 let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
@@ -153,6 +155,15 @@ export function startScheduler() {
   smsStatusTask = cron.schedule("7,22,37,52 * * * *", async () => {
     try { const { pollSmsStatuses } = await import("./sms/sender"); await pollSmsStatuses(); }
     catch (e: any) { logger.error({ err: e }, "sms status poll failed"); }
+  }, { timezone: TZ });
+  // денний звіт хвилі в бот (тип `sms`) після вікна відправки і нагадування «без анкети» (24–72 год, одне)
+  smsReportTask = cron.schedule("5 15 * * *", async () => {
+    try { const { sendSmsDailyReport } = await import("./sms/automation"); await sendSmsDailyReport(); }
+    catch (e: any) { logger.error({ err: e }, "sms daily report failed"); }
+  }, { timezone: TZ });
+  smsRemindTask = cron.schedule("40 * * * *", async () => {
+    try { const { sendSmsReminders } = await import("./sms/automation"); await sendSmsReminders(); }
+    catch (e: any) { logger.error({ err: e }, "sms reminders failed"); }
   }, { timezone: TZ });
   void loadSentToday(); // restore today's dedup keys after a restart
 
@@ -427,6 +438,8 @@ async function pruneNotifications(): Promise<void> {
 export function stopScheduler() {
   smsSendTask?.stop();        smsSendTask = null;
   smsStatusTask?.stop();      smsStatusTask = null;
+  smsReportTask?.stop();      smsReportTask = null;
+  smsRemindTask?.stop();      smsRemindTask = null;
   weeklyReminderTask?.stop(); weeklyReminderTask = null;
   preShiftTask?.stop();       preShiftTask = null;
   midnightResetTask?.stop();  midnightResetTask = null;

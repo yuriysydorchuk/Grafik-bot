@@ -15,7 +15,7 @@ export type SmsStats = { recipients: number; queued: number; sent: number; deliv
 export type Campaign = {
   id: number; name: string; kind: "job" | "referral"; status: string; provider: "smsapi" | "smsfly"; sender: string;
   texts: Record<string, string>; landing: any; offer: Record<string, any>; schedule: { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number };
-  recruiterAdminId: number | null; factoryName: string | null; stats: SmsStats; candidates: number; inFlight: boolean; startedAt: string | null; finishedAt: string | null; createdAt: string;
+  recruiterAdminId: number | null; factoryName: string | null; stats: SmsStats; candidates: number; activeWorkersPending?: number; inFlight: boolean; startedAt: string | null; finishedAt: string | null; createdAt: string;
 };
 type ListResp = { campaigns: Campaign[]; summary: { views7d: number; newCandidates7d: number; viewedNoBot: number; queued: number; activeCampaigns: number } };
 type Settings = { providers: { name: string; configured: boolean; pricePl: number; priceUa: number }[]; sender: string; linkBase: string; defaults: Campaign["schedule"]; officePhone: string };

@@ -1820,6 +1820,9 @@ const EN: Record<string, string> = {
   "Персонал": "Staff",
   "Рекрутація": "Recruitment",
   // ── SMS-кампанії ──
+  "Надіслати «приведи друга» активним працівникам?": "Send “bring a friend” to active workers?",
+  "людей з імпорту — це наші активні працівники; вони отримають реферальну розсилку в боті (не SMS)": "people from the import are our active workers; they get the referral message in the bot (not SMS)",
+  "Приведи друга активним": "Bring-a-friend to active",
   "SMS-кампанії": "SMS campaigns",
   "Нова кампанія": "New campaign",
   "Налаштування SMS-кампаній": "SMS campaign settings",

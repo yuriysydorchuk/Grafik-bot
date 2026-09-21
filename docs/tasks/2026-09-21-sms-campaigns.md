@@ -3,7 +3,7 @@
 > Контекст проєкту: [`HANDOFF.md`](../../HANDOFF.md) · [`CLAUDE.md`](../../CLAUDE.md) · [`PROJECT_MAP.md`](../../PROJECT_MAP.md)
 > Пропозиція (узгоджена 21.09.2026): https://claude.ai/code/artifact/08e29f9f-d103-4f2b-ace5-27d388a3b6a4 · база отримувачів: `docs/DRIVE_MAP.md` → «Таблиці контактів» (`Drive-контакти-ES-combined-2026-09-17.xlsx`, аркуш «Перевірені номери»)
 
-- **Статус:** 🔄 в роботі — батчі 1–3 зроблено 21.09 (локально, чекає тесту власника); далі батч 4 (автоматика) і 5 (прод)
+- **Статус:** 🔄 в роботі — батчі 1–4 зроблено 21.09 (локально, чекає тесту власника); далі батч 5 (прод: ключі, міграції, тест 300)
 - **Дата:** 2026-09-21
 - **Автор/сесія:** Claude (Fable), сесія «карта Drive → контакти → SMS»
 
@@ -71,6 +71,8 @@
 
 ## Реалізація
 
+**Батч 4 (21.09.2026):** `services/sms/automation.ts`: (1) правило автозадач `sms_no_bot` (у `AUTO_RULE_DEFS`, lead 2 дн, вікно 7 дн) — одна групова задача на кампанію `smsnb:<id>` зі списком людей (імʼя · телефон · мова · лінк) у description, виконавець — рекрутер кампанії → `resolveAssignee`; auto_resolved, коли у вікні нікого; блок стоїть перед раннім виходом `collectCandidates` (порожня база працівників) і `Candidate.description` тепер оновлюється нічним прогоном; (2) денний звіт хвилі в бот (крон 15:05 Warsaw, тип сповіщень `sms` у `NOTIFY_KEYS` обох `roles.ts`, міграція `2026-09-22-sms-campaigns-notify.sql` вмикає owner і ролям зі сторінкою) + повідомлення про завершення кампанії із `sender.ts`; (3) нагадування «без анкети» (крон щогодини :40): статус `bot` 24–72 год, кандидат з Telegram і без worker_id, одне на людину (подія `remind`), текст `sms.remind` 5 мовами з кнопками анкети/пізніше; (4) `POST /sms-campaigns/:id/referral-active` + кнопка в картці «Приведи друга активним (N)» — пропущені `active_worker` отримують реферальну розсилку бота (`sendReferralCampaign` з чинними умовами), подія `referral_bot`, `activeWorkersPending` у відповіді картки. Тест: `services/sms/automation.integration.test.ts` (4/4), `routes/tasks.integration.test.ts` не зламано.
+
 **Батч 3 (21.09.2026):** `routes/smsCampaigns.ts` (гейт по префіксу `/sms-campaigns` + `editData`; список/картка/PATCH, `preview-text`, імпорт xlsx у два кроки — `dry=1` з вгадуванням колонок за заголовками і підсумком, `dry=0` запис; отримувачі з фільтрами/пагінацією, журнал подій, експорт xlsx польською; `start`/`send-batch`/`test-sms` — лише `requireMainAdmin`; `pause`/`close`), сервіс: `importRecipients({dry})`, `listRecipients`, `recipientEvents`, `smsDashboardSummary`. Веб: `pages/SmsCampaigns.tsx` (плитки, список з воронками, модалка «Налаштування» з статусом ключів провайдерів, майстер 3 кроки: параметри+пропозиція → тексти з лічильником частин → імпорт з перевіркою), `pages/SmsCampaignCard.tsx` (плитки воронки, дії за статусом і `isMain`, вкладки Отримувачі / Тексти SMS / Сторінка / Розклад і пропозиція / Імпорт, модалка подій, тест на мій номер), `lib/smsParts.ts`. Роль: `/sms-campaigns` у `PAGE_KEYS` обох `roles.ts`, нав «Персонал», міграція `2026-09-22-sms-campaigns-page.sql` (сторінка ролі `scheduler`). Рекрутація: бейдж «📨 SMS» + лінк на кампанію в картці кандидата, `GET /candidates?campaignId=`. Тест: `routes/smsCampaigns.integration.test.ts`. Смоук через web-screens: список/майстер/картка/вкладки у світлій і темній темі — без console errors.
 
 **Батч 2 (21.09.2026):** `routes/smsPublic.ts` (`GET /r/:token` → дані сторінки + подія view; `GET /r/:token/e?k=` → cta-події; rate-limit; монтується до auth у `routes/index.ts`), веб `pages/SmsLanding.tsx` (мобільна продажна сторінка uk/ru/en з перемикачем, чіпи/FAQ з лендінгу кампанії або вбудовані, кнопки Telegram/дзвінок/WhatsApp з подіями через GET-beacon) + гілка `/r/` в `App.tsx` (без /auth/me), бот `bot/handlers/smsCampaign.ts` (`?start=sms<токен>`: подія bot_start, кандидат з даними отримувача у воронці «SMS-кампанії» з source/campaign_id/language, привітання мовою з пропозицією, кнопки job/ref/later; job → `createSelfScanToken` з candidateId; ref → реферальний код лише для отримувача-працівника), i18n `sms.*` 5 мовами, хуки `markCandidateSmsEvent` (анкета → form у passport-scan confirm, convert → hired). Тести: `routes/smsPublic.integration.test.ts`, `bot/smsCampaign.integration.test.ts`.
@@ -100,7 +102,7 @@
 
 ## Handoff для наступної сесії
 
-- **Зроблено:** пропозиція узгоджена; батчі 1–3 закомічено 21.09 (ядро, публічна сторінка, бот, панель `/sms-campaigns`).
-- **Лишилось:** батч 4 (автоправило «відкрив, не в боті», пост-хвильовий звіт у бот, нагадування 24 год, «приведи друга» активним через бот), батч 5 (прод: ключі в `.env`, міграції через `/deploy`, реєстрація підпису, HLR, тест 300 номерів, хвиля 1).
+- **Зроблено:** пропозиція узгоджена; батчі 1–4 закомічено 21.09 (ядро, публічна сторінка, бот, панель `/sms-campaigns`, автоматика).
+- **Лишилось:** батч 5 — прод (лише після явного схвалення власника): ключі в `.env` (`SMS_SMSAPI_TOKEN`, `SMS_SMSFLY_KEY`, `SMS_SENDER`, `SMS_LINK_BASE`, `SMS_OFFICE_PHONE`), 4 міграції `2026-09-22-sms-campaigns*.sql` через `/deploy`, реєстрація підпису відправника у провайдера, HLR-перевірка, тест 300 номерів (по 150 на провайдера), вибір провайдера, хвиля 1. Перед деплоєм — ревʼю diff через `agy`/`codex`.
 - **Відкриті питання / рішення власника:** короткий домен; цифри пропозиції; вікно/ліміт; UA-номери — див. «Припущення».
 - **Як перевірити поточний стан:** артефакт + цей файл; база отримувачів у `data-import/drive-map-combined-2026-09-17/`.

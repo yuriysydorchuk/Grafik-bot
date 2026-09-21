@@ -99,5 +99,6 @@
 | POST | `/sms-campaigns/:id/pause`, `/close` | Пауза / закриття (лінки закритої кампанії показують «закрито»). |
 | POST | `/sms-campaigns/:id/send-batch` | **Головний адмін.** Батч зараз, поза вікном розкладу (`force`). |
 | POST | `/sms-campaigns/:id/test-sms` | **Головний адмін.** Тестове SMS на свій номер (`phone`, `lang`). |
+| POST | `/sms-campaigns/:id/referral-active` | «Приведи друга» активним працівникам з імпорту (пропущені `active_worker`) — реферальна розсилка в боті, не SMS; один раз на людину (подія `referral_bot`); 409, якщо розсилка вже триває. |
 
-Сторінка `/sms-campaigns` (група «Персонал»), ключ у `PAGE_KEYS`; `GET /candidates?campaignId=` — фільтр кандидатів з кампанії (у відповіді `source`, `campaignId`, `language`).
+Сторінка `/sms-campaigns` (група «Персонал»), ключ у `PAGE_KEYS`; автоматика — `services/sms/automation.ts` (правило автозадач `sms_no_bot`, денний звіт у бот типом `sms` о 15:05, нагадування «без анкети» щогодини); `GET /candidates?campaignId=` — фільтр кандидатів з кампанії (у відповіді `source`, `campaignId`, `language`).

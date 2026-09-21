@@ -44,10 +44,12 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   // документи звільнення (services/contractEndDocs.ts): zaświadczenie o zatrudnieniu (з печаткою) і wypowiedzenie від працівника — на підпис через лінк
   { code: "termination_doc", label: "Документ звільнення — надіслати на підпис", description: "Після звільнення: zaświadczenie o zatrudnieniu на кожну умову (печатка фірми вже стоїть) і wypowiedzenie від працівника, якщо звільнення раніше кінця умови → графікова надсилає лінк на підпис", leadDays: null, enabledByDefault: true, scheduler: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
+  // SMS-кампанії (services/sms/automation.ts): групова задача на кампанію — подзвонити тим, хто відкрив сторінку, але в бот не зайшов
+  { code: "sms_no_bot", label: "SMS: відкрили сторінку, не зайшли в бот", description: "Отримувачі SMS-кампанії відкрили персональну сторінку N+ днів тому і не зайшли в бот — список на обдзвон рекрутеру кампанії (вікно 7 днів)", leadDays: 2, enabledByDefault: true },
 ];
 
 // Ідемпотентний сід правил (нові коди додаються, наявні не чіпаються).
-const RELATIVE_DUE_RULES = new Set(["required_missing", "review_required", "pending_doc", "payroll_change", "doc_no_response", "absence_unexplained"]);
+const RELATIVE_DUE_RULES = new Set(["required_missing", "review_required", "pending_doc", "payroll_change", "doc_no_response", "absence_unexplained", "sms_no_bot"]);
 
 export async function ensureAutoRules(): Promise<void> {
   const have = new Set((await db.select({ code: taskAutoRulesTable.code }).from(taskAutoRulesTable)).map(r => r.code));
@@ -57,7 +59,7 @@ export async function ensureAutoRules(): Promise<void> {
 }
 
 interface Candidate {
-  sourceKey: string; rule: string; title: string; priority: TaskPriority; dueAt: string | null;
+  sourceKey: string; rule: string; title: string; description?: string | null; priority: TaskPriority; dueAt: string | null;
   workerId?: number | null; factoryId?: number | null; documentId?: number | null; contractId?: number | null; candidateId?: number | null;
   autoParams: Record<string, unknown>; assign: { factoryId?: number | null; prefer?: number | null; useScheduler?: boolean };
 }
@@ -113,6 +115,13 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       if (!c || !["draft", "pending_approval", "approved"].includes(c.status)) continue; // надіслано/підписано/скасовано → зникне
       out.push({ sourceKey: t.sourceKey, rule: "termination_doc", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, contractId: t.contractId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: t.factoryId, useScheduler: true } });
     }
+  }
+
+  // SMS-кампанії: групова задача «відкрили сторінку, не зайшли в бот» — не залежить від працівників,
+  // тож стоїть перед раннім виходом (порожня база працівників)
+  if (on("sms_no_bot")) {
+    try { const { smsNoBotCandidates } = await import("./sms/automation"); out.push(...await smsNoBotCandidates(today, lead("sms_no_bot") ?? 2)); }
+    catch (e: any) { logger.warn({ err: e?.message }, "sms_no_bot candidates failed"); }
   }
 
   if (!ids.length) return out;
@@ -352,7 +361,7 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     const ex = byKey.get(c.sourceKey);
     if (!ex) {
       const assignee = await resolveAssignee({ factoryId: c.assign.factoryId, ruleCode: c.rule, prefer: c.assign.prefer, useScheduler: c.assign.useScheduler });
-      await createTask({ kind: "task", title: c.title, priority: c.priority, dueAt: c.dueAt, assigneeAdminId: assignee, workerId: c.workerId, factoryId: c.factoryId, documentId: c.documentId, contractId: c.contractId, candidateId: c.candidateId, source: `auto:${c.rule}`, sourceKey: c.sourceKey, autoParams: c.autoParams, checklist: c.autoParams.grouped ? [] : defaultChecklist(c.rule, c.autoParams) }, null);
+      await createTask({ kind: "task", title: c.title, description: c.description ?? null, priority: c.priority, dueAt: c.dueAt, assigneeAdminId: assignee, workerId: c.workerId, factoryId: c.factoryId, documentId: c.documentId, contractId: c.contractId, candidateId: c.candidateId, source: `auto:${c.rule}`, sourceKey: c.sourceKey, autoParams: c.autoParams, checklist: c.autoParams.grouped ? [] : defaultChecklist(c.rule, c.autoParams) }, null);
       stats.created++;
       // «Документ прострочений: копія головному» (макет) — коли виконавець не головний
       if (c.rule === "doc_expired") { const main = await mainAdminId(); if (main && assignee !== main) await notifyAdminById(main, "tasks", `📄 *Прострочений документ* (копія): ${mdEsc(c.title)}\n${mdEsc(String(c.autoParams.workerName ?? ""))} · виконавець: ${mdEsc(await adminName(assignee))}`, { parse_mode: "Markdown" }).catch(() => {}); }
@@ -370,14 +379,15 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     // правила зі строком «сьогодні + N» (не з дати документа) інакше щодня переписували б dueAt і
     // задача ніколи не ставала простроченою — тримаємо перший призначений строк
     const dueAt = RELATIVE_DUE_RULES.has(c.rule) && ex.dueAt ? dateStr(ex.dueAt) : c.dueAt;
-    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== dueAt || ex.priority !== c.priority;
+    const descChanged = c.description !== undefined && (ex.description ?? null) !== (c.description ?? null);
+    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== dueAt || ex.priority !== c.priority || descChanged;
     // бекфіл дефолтного чекліста для задач, створених до появи чеклістів (лише якщо порожній)
     // (і заміна старого чекліста без auto-ключів, поки в ньому нічого не відмічено)
     const exList = (ex.checklist ?? []) as { done: boolean; auto?: string }[];
     const stale = exList.length > 0 && !exList.some(x => x.auto) && !exList.some(x => x.done);
     const defaults = (!exList.length || stale) && !c.autoParams.grouped ? defaultChecklist(c.rule, c.autoParams) : [];
     if (changed || defaults.length) {
-      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
+      await db.update(tasksTable).set({ title: c.title, priority: c.priority, dueAt, autoParams: c.autoParams, updatedAt: new Date(), ...(descChanged ? { description: c.description ?? null } : {}), ...(defaults.length ? { checklist: normalizeChecklist(defaults) } : {}) }).where(eq(tasksTable.id, ex.id));
       if (ex.priority !== c.priority) await logTaskEvent(ex.id, "priority", null, { from: ex.priority, to: c.priority });
       if (changed) stats.updated++;
     }

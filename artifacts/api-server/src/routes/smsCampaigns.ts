@@ -17,6 +17,7 @@ import {
 import { getSmsProvider, smsLinkBase, SMS_SENDER, type SmsProviderName } from "../services/sms/provider";
 import { sendCampaignBatch, sendTestSms, isSmsCampaignInFlight } from "../services/sms/sender";
 import { smsParts, normalizePhone } from "../services/sms/phone";
+import { notifyActiveWorkersReferral, pendingActiveWorkers } from "../services/sms/automation";
 
 const router: IRouter = Router();
 router.use("/sms-campaigns", authRequired, requireCap("editData"));
@@ -24,10 +25,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 
 const me = (req: AuthedRequest) => req.admin?.adminId ?? null;
 
 async function withStats(c: NonNullable<Awaited<ReturnType<typeof getCampaign>>>) {
-  const [stats, candidates] = await Promise.all([campaignStats(c), campaignCandidateCount(c.id)]);
+  const [stats, candidates, activeWorkersPending] = await Promise.all([campaignStats(c), campaignCandidateCount(c.id), pendingActiveWorkers(c.id)]);
   const factoryId = (c.offer as any)?.factoryId;
   const fac = factoryId ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, Number(factoryId))))[0] : null;
-  return { ...c, stats, candidates, factoryName: fac?.name ?? null, inFlight: isSmsCampaignInFlight(c.id) };
+  return { ...c, stats, candidates, activeWorkersPending, factoryName: fac?.name ?? null, inFlight: isSmsCampaignInFlight(c.id) };
 }
 
 router.get("/sms-campaigns", async (_req, res) => {
@@ -157,6 +158,17 @@ router.post("/sms-campaigns/:id/start", requireMainAdmin, async (req, res) => {
   logger.info({ campaignId: c.id, mode, by: me(req as AuthedRequest) }, "SMS campaign started");
   res.json(await withStats(updated!));
 });
+// «Приведи друга» активним працівникам з імпорту — через бот (реферальна розсилка з чинними умовами), не SMS.
+router.post("/sms-campaigns/:id/referral-active", async (req, res) => {
+  const c = await getCampaign(Number(req.params.id));
+  if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
+  try { res.json(await notifyActiveWorkersReferral(c.id)); }
+  catch (e: any) {
+    if (e?.message === "campaign_in_progress") { res.status(409).json({ error: "Реферальна розсилка вже триває — зачекайте" }); return; }
+    throw e;
+  }
+});
+
 router.post("/sms-campaigns/:id/pause", async (req, res) => {
   const c = await setCampaignStatus(Number(req.params.id), "paused");
   if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }

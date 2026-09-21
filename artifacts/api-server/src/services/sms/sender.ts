@@ -53,7 +53,11 @@ export async function sendCampaignBatch(c: SmsCampaign, opts: { force?: boolean;
       .where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.status, "queued")))
       .orderBy(smsRecipientsTable.id).limit(take);
     if (!queue.length) {
-      if (c.status === "sending") await db.update(smsCampaignsTable).set({ status: "sent", finishedAt: new Date(), updatedAt: new Date() }).where(eq(smsCampaignsTable.id, c.id));
+      if (c.status === "sending") {
+        await db.update(smsCampaignsTable).set({ status: "sent", finishedAt: new Date(), updatedAt: new Date() }).where(eq(smsCampaignsTable.id, c.id));
+        const { notifySmsCampaignFinished } = await import("./automation");
+        await notifySmsCampaignFinished({ ...c, status: "sent" });
+      }
       return { sent: 0, failed: 0, remaining: 0 };
     }
     const provider = getSmsProvider(c.provider as SmsProviderName);

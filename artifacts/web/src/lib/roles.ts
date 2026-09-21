@@ -49,7 +49,7 @@ export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 // Owner is NOT auto-included here (unlike caps/pages) — plain per-role list.
 export const NOTIFY_KEYS = [
   "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
-  "absence_warning", "weekly_summary", "finance_alerts", "tasks",
+  "absence_warning", "weekly_summary", "finance_alerts", "tasks", "sms",
 ] as const;
 export type NotifyType = (typeof NOTIFY_KEYS)[number];
 export const NOTIFY_LABEL: Record<NotifyType, string> = {
@@ -63,6 +63,7 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
   weekly_summary: "🤖 Тижневий звіт розсилки нагадувань",
   finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
   tasks: "📋 Задачі (призначено мені, нагадування, дайджест, зустрічі)",
+  sms: "📨 SMS-кампанії (денний звіт хвилі, завершення кампанії)",
 };
 
 // The resolved access carried on the current user (from /auth/me).

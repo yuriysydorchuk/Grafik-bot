@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Link, useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play, Pause, Square, Send, Download, FlaskConical, ArrowLeft } from "lucide-react";
+import { Play, Pause, Square, Send, Download, FlaskConical, ArrowLeft, Users } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Label, Modal, Textarea } from "../components/ui";
@@ -31,7 +31,7 @@ export default function SmsCampaignCard() {
   const [testPhone, setTestPhone] = useState("");
   const [testLang, setTestLang] = useState("uk");
   const refresh = () => { qc.invalidateQueries({ queryKey: ["sms-campaign", id] }); qc.invalidateQueries({ queryKey: ["sms-recipients", id] }); qc.invalidateQueries({ queryKey: ["sms-campaigns"] }); };
-  const act = useMutation({ mutationFn: (p: { path: string; body?: any }) => post(`/sms-campaigns/${id}/${p.path}`, p.body), onSuccess: (r: any, v) => { refresh(); if (v.path === "send-batch") toast.success(`${t("Відправлено")}: ${r.sent}, ${t("помилок")}: ${r.failed}, ${t("у черзі")}: ${r.remaining}`); if (v.path === "test-sms") toast[r.ok ? "success" : "error"](r.ok ? `${t("Тест надіслано")} (${r.parts} SMS)` : r.error); }, onError: (e: any) => toast.error(e?.message ?? t("Помилка")) });
+  const act = useMutation({ mutationFn: (p: { path: string; body?: any }) => post(`/sms-campaigns/${id}/${p.path}`, p.body), onSuccess: (r: any, v) => { refresh(); if (v.path === "send-batch") toast.success(`${t("Відправлено")}: ${r.sent}, ${t("помилок")}: ${r.failed}, ${t("у черзі")}: ${r.remaining}`); if (v.path === "test-sms") toast[r.ok ? "success" : "error"](r.ok ? `${t("Тест надіслано")} (${r.parts} SMS)` : r.error); if (v.path === "referral-active") toast.success(`${t("Надіслано в бот")}: ${r.notified}, ${t("пропущено")}: ${r.skipped}`); }, onError: (e: any) => toast.error(e?.message ?? t("Помилка")) });
 
   if (isLoading || !c) return <Spinner />;
   const s = c.stats;
@@ -51,6 +51,7 @@ export default function SmsCampaignCard() {
         {(c.status === "sending" || c.status === "test") && <Button variant="secondary" onClick={() => act.mutate({ path: "pause" })}><Pause size={16} /> {t("Пауза")}</Button>}
         {isMain && ["sending", "test", "paused"].includes(c.status) && <Button variant="secondary" onClick={() => act.mutate({ path: "send-batch" })}><Send size={16} /> {t("Батч зараз")}</Button>}
         {isMain && <Button variant="secondary" onClick={() => setTestOpen(true)}>{t("Тест на мій номер")}</Button>}
+        {(c.activeWorkersPending ?? 0) > 0 && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Надіслати «приведи друга» активним працівникам?"), message: `${c.activeWorkersPending} ${t("людей з імпорту — це наші активні працівники; вони отримають реферальну розсилку в боті (не SMS)")}`, confirmText: t("Надіслати") })) act.mutate({ path: "referral-active" }); }}><Users size={16} /> {t("Приведи друга активним")} ({c.activeWorkersPending})</Button>}
         <a href={`/api/sms-campaigns/${id}/export.xlsx`} className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md border border-slate-300"><Download size={16} /> xlsx</a>
         {c.status !== "closed" && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Закрити кампанію?"), message: t("Відправка зупиниться."), confirmText: t("Закрити"), danger: true })) act.mutate({ path: "close" }); }}><Square size={16} /> {t("Закрити")}</Button>}
       </div>
