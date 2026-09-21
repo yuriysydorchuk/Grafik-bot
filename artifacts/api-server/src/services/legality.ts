@@ -62,6 +62,7 @@ export interface LegalityDocument {
   submittedAt: string | null;
   verifiedAt: string | null;
   replacesDocumentId: number | null;
+  hasFile?: boolean;                  // є завантажений файл (скан); імпортовані з HRappka без файлу — false
 }
 
 export interface LegalRuleInput {
@@ -505,7 +506,9 @@ export function computeLegality(input: LegalityInput): LegalityResult {
   if (legacy.legacyMappingRequiresReview) review = true;
   // Порожній профіль (жодного документа) — це «немає даних», а не «потребує перевірки»:
   // перевіряти нема чого, reviewRequired на 400 людей без документів був би шумом.
-  if (documents.length === 0 && worst(stay.status, work.status) === "unknown") review = false;
+  // Паспорт (identity) відкриває гейт лише коли доданий файлом (рішення власника 21.09.2026):
+  // імпортовані з HRappka паспорти без скану відкрили б його 44 людям зі старими попередженнями.
+  if (!documents.some(d => d.category !== "identity" || d.hasFile) && worst(stay.status, work.status) === "unknown") review = false;
 
   // ── контрольні підказки (НЕ вхід payroll) ──
   const under26 = isUnder26At(worker.birthDate, today);

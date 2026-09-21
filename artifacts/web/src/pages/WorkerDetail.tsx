@@ -42,6 +42,7 @@ import { useClothingTypes } from "../lib/clothingTypes";
 import { docTypeIcon } from "../lib/docTypeIcons";
 import { TAX_OFFICES } from "../lib/taxOffices";
 import { NFZ_BRANCHES } from "../lib/nfzBranches";
+import { peselCheck, fmtPeselDate } from "../lib/pesel";
 
 type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null };
 
@@ -242,7 +243,7 @@ export default function WorkerDetail() {
                 </button>
               )}
               <NatFlag value={w.nationality} className="cursor-default text-lg" />
-              <span className={`text-lg font-semibold ${genderClass(w.gender)}`} title={t("Стать")}>
+              <span className={`text-lg font-semibold ${genderClass(w.gender)} ${peselCheck(w.pesel, null, w.gender).genderMismatch ? "rounded bg-red-100 ring-1 ring-red-400" : ""}`} title={t("Стать")}>
                 <select value={w.gender ?? ""} onChange={e => wpatch.mutate({ gender: e.target.value || null })}
                   className="w-6 cursor-pointer appearance-none border-0 bg-transparent text-center font-semibold focus:outline-none">
                   <option value="">—</option>
@@ -250,6 +251,7 @@ export default function WorkerDetail() {
                   <option value="female">{genderIcon("female")}</option>
                 </select>
               </span>
+              {peselCheck(w.pesel, null, w.gender).genderMismatch && <PeselMismatch what={peselCheck(w.pesel, null, w.gender).sex === "M" ? t("Чоловіча") : t("Жіноча")} />}
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
               {w.isActive && w.terminationDate && <Badge color="amber">{w.terminationFactoryId != null ? `${t("йде з")} ${factories.find(f => f.id === w.terminationFactoryId)?.name ?? `#${w.terminationFactoryId}`} ` : `${t("звільнення з")} `}{fmtDocDate(w.terminationDate)}</Badge>}
               {w.isActive && canEdit && (
@@ -323,12 +325,13 @@ export default function WorkerDetail() {
             <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
-            <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
+            <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} pesel={w.pesel ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
             {/* Порожні PESEL/друге ім'я — не показуємо рядок (менше інфи в профілі);
                 заповнити все одно можна через «Редагувати» (WorkerModal). */}
             {w.pesel && (
               <InfoRow icon={KeyRound} label="PESEL">
                 <InlineText value={w.pesel} placeholder={t("вказати")} width="w-32" onSave={v => wpatch.mutate({ pesel: v.trim() || null })} disabled={!canEdit} />
+                {peselCheck(w.pesel, null, null).invalid && <span className="rounded bg-red-100 px-1 text-[10px] font-semibold text-red-700 ring-1 ring-red-300">{t("Невалідний PESEL (контрольна сума)")}</span>}
               </InfoRow>
             )}
             {w.middleName && (
@@ -509,6 +512,18 @@ function InfoRow({ icon: Icon, label, children, title }: { icon: any; label: str
 }
 function Info({ icon, label, value }: { icon: any; label: string; value: string }) {
   return <InfoRow icon={icon} label={label} title={value}><span className="truncate">{value}</span></InfoRow>;
+}
+// Червона позначка «не збігається з PESEL» (рішення власника 21.09.2026): PESEL кодує
+// дату народження і стать, тож рядок профілю/анкети з іншим значенням підсвічується,
+// а підказка каже, що саме зашито в PESEL. Формули — lib/pesel.ts.
+function PeselMismatch({ what }: { what: string }) {
+  const t = useT();
+  return (
+    <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-red-100 px-1 text-[10px] font-semibold text-red-700 ring-1 ring-red-300"
+      title={`${t("Не збігається з PESEL")}. ${t("за PESEL")}: ${what}`}>
+      <AlertTriangle className="h-3 w-3" />≠ PESEL: {what}
+    </span>
+  );
 }
 
 // Текстове значення «клік → інпут» для інлайн-редагування рядка інфо-картки
@@ -692,7 +707,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   // Ім'я/по-батькові/прізвище — поля workersTable (той самий поділ, що в
   // routes/passportScan.ts), не анкети; той самий "worker" кеш, що на сторінці
   // профілю ["worker", id] — React Query дедублює запит.
-  const { data: worker } = useQuery<{ firstName?: string | null; middleName?: string | null; lastName?: string | null }>({ queryKey: ["worker", workerId], queryFn: () => get(`/workers/${workerId}`) });
+  const { data: worker } = useQuery<{ firstName?: string | null; middleName?: string | null; lastName?: string | null; pesel?: string | null }>({ queryKey: ["worker", workerId], queryFn: () => get(`/workers/${workerId}`) });
   const [form, setForm] = useState<Record<string, any>>({});
   const [name, setName] = useState({ firstName: "", middleName: "", lastName: "" });
   useEffect(() => { setForm(q ?? {}); }, [q]);
@@ -762,8 +777,8 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
           <div><Label>{t("Паспорт дійсний до")}</Label><Input type="date" value={form.passportExpiresAt ?? ""} onChange={e => set("passportExpiresAt", e.target.value)} /></div>
           <div><Label>{t("Місце народження")}</Label><Input value={form.birthPlace ?? ""} onChange={e => set("birthPlace", e.target.value)} /></div>
           <div>
-            <Label>{t("Стать (документ)")}</Label>
-            <Select value={form.sex ?? ""} onChange={e => set("sex", e.target.value)}>
+            <Label>{t("Стать (документ)")}{peselCheck(worker?.pesel, null, form.sex).genderMismatch && <PeselMismatch what={peselCheck(worker?.pesel, null, form.sex).sex === "M" ? t("Чоловіча") : t("Жіноча")} />}</Label>
+            <Select value={form.sex ?? ""} onChange={e => set("sex", e.target.value)} className={peselCheck(worker?.pesel, null, form.sex).genderMismatch ? "border-red-400 bg-red-50" : undefined}>
               <option value="">—</option><option value="M">{t("Чоловіча")}</option><option value="F">{t("Жіноча")}</option>
             </Select>
           </div>
@@ -3127,8 +3142,9 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
   );
 }
 
-function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { workerId: number; birthDate: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange }) {
+function BirthDateRow({ workerId, birthDate, pesel, under26Fallback, onRequest }: { workerId: number; birthDate: string | null; pesel?: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange }) {
   const t = useT();
+  const pc = peselCheck(pesel, birthDate, null);
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(birthDate ?? "");
@@ -3157,11 +3173,12 @@ function BirthDateRow({ workerId, birthDate, under26Fallback, onRequest }: { wor
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : (
-        <button className="font-medium text-slate-700 hover:text-red-600" onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }}>
+        <button className={`font-medium hover:text-red-600 ${pc.birthMismatch ? "rounded bg-red-100 px-1 text-red-700 ring-1 ring-red-400" : "text-slate-700"}`} onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }}>
           {birthDate ? new Date(birthDate + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
           {under26 != null && <span className={under26 ? "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" : "ml-1 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500"}>{under26 ? "<26" : "26+"}</span>}
         </button>
       )}
+      {!editing && pc.birthMismatch && <PeselMismatch what={fmtPeselDate(pc.birthDate)} />}
     </InfoRow>
   );
 }
