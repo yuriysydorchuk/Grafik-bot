@@ -105,11 +105,12 @@ export default function SmsCampaigns() {
 // ── Майстер: 1 параметри → 2 тексти → 3 імпорт ─────────────────────────────
 type Factory = { id: number; name: string; city?: string | null };
 type Staff = { id: number; name: string };
-// Дефолтні тексти — ОДНА частина SMS (рішення власника 21.09.2026): кирилиця = 70 знаків разом з
-// лінком (~27 знаків при короткому домені), латиниця (GSM-7) = 160. Тому uk/ru без імені.
+// Дефолтні тексти — ОДНА частина SMS (рішення власника 21.09.2026): латиниця/транслітерація = GSM-7,
+// 160 знаків з іменем і лінком (~27 знаків при короткому домені); кирилиця дала б лише 70. Без ł/ą/ę/ś/ż (zl, не zł).
 const TEXT_DEFAULTS: Record<string, Record<string, string>> = {
-  job: { uk: "Робота в Польщі 31zl/год+житло. Деталі: {лінк}", ru: "Работа в Польше 31zl/час+жильё. Детали: {ссылка}", en: "{name}, job in Poland: 31 PLN/h net + housing + transport, no experience needed. Details and callback: {link}" },
-  referral: { uk: "Приведи друга = 300zl тобі. Деталі: {лінк}", ru: "Приведи друга = 300zl тебе. Детали: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Details: {link}" },
+  // текст власника 21.09.2026: «у нас є вакансія для вас, або порекомендуйте нас друзям і отримайте 300 zl; вихід від зараз»
+  job: { uk: "{імʼя}, u nas ye vakansiia dlia vas! Abo porekomenduite nas druziam i otrymaite bonus 300zl. Vykhid vid zaraz. Detali: {лінк}", ru: "{имя}, u nas est vakansiya dlya vas! Ili porekomenduyte nas druzyam i poluchite bonus 300zl. Vykhod s segodnya. Detali: {ссылка}", en: "{name}, we have a job for you! Or recommend us to friends and get a 300 PLN bonus. Start right away. Details: {link}" },
+  referral: { uk: "{імʼя}, pryvedy druga na robotu v Polshchi i otrymai 300zl pislia yoho 10 zmin. Robota 31zl/god + zhytlo. Detali: {лінк}", ru: "{имя}, privedi druga na rabotu v Polshe i poluchi 300zl posle ego 10 smen. Rabota 31zl/chas + zhilyo. Detali: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Job 31 PLN/h + housing. Details: {link}" },
 };
 
 function Wizard({ onClose, settings }: { onClose: () => void; settings?: Settings }) {
