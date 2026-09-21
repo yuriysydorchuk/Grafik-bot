@@ -216,11 +216,11 @@ export const nameCaps = (s: string | null | undefined) => (s ?? "").toLocaleUppe
 
 type SchedRow = { day: string; shift: string; workerId?: number | null; workerName: string | null; workerCode: string | null; positionId?: number | null; positionName?: string | null; gender?: string | null };
 
-// «(nowy)» біля імені для клієнта: перші NEW_WORKER_DAYS календарних днів людини на ЦІЙ
-// фабриці (не в агенції взагалі — на іншу фабрику вона приходить як нова). Перша дата =
-// min(фактична зміна на фабриці з затвердженого/розісланого тижня, день у factory_hours,
-// найраніший запис у тижні, що експортується). Повторно найнятий через рік — не «nowy».
-const NEW_WORKER_DAYS = 7;
+// «(nowy)» біля імені для клієнта: ЛИШЕ перший робочий день людини на ЦІЙ фабриці
+// (рішення власника 21.09.2026; не в агенції взагалі — на іншу фабрику вона приходить як
+// нова). Перша дата = min(фактична зміна на фабриці з затвердженого/розісланого тижня,
+// день у factory_hours, найраніший запис у тижні, що експортується). Повторно найнятий
+// через рік — не «nowy».
 const NEW_WORKER_LABEL = "nowy";
 async function loadFirstDatesAtFactory(workerIds: number[], factoryId: number, today: string): Promise<Map<number, string>> {
   const out = new Map<number, string>();
@@ -246,7 +246,6 @@ async function loadFirstDatesAtFactory(workerIds: number[], factoryId: number, t
   return out;
 }
 const isoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const daysBetween = (a: string, b: string) => Math.round((new Date(b + "T00:00:00").getTime() - new Date(a + "T00:00:00").getTime()) / 86400000);
 type SegConfig = { usesPositions: boolean; usesGender: boolean; showCode: boolean; posOrder: { id: number; name: string }[] };
 
 const genderTagPL = (g?: string | null) => g === "female" ? "K" : g === "male" ? "M" : "";
@@ -309,7 +308,7 @@ async function buildFactoryWorkbook(
   const fShifts = factoryShifts(fac);
   // One-off per-day shift times (extra shift / changed hours for a single date)
   const ov: ShiftOverrideMap = await loadWeekShiftOverrides(weekStart, factoryId);
-  // Перший день людини на фабриці (БД ∪ записи цього тижня) → «nowy pracownik» у колонці приміток
+  // Перший день людини на фабриці (БД ∪ записи цього тижня) → «(nowy)» біля імені в той день
   const firstAt = await loadFirstDatesAtFactory([...new Set(fEntries.map(e => e.workerId).filter((x): x is number => x != null))], factoryId, warsawToday());
   for (const e of fEntries) {
     if (e.workerId == null) continue;
@@ -317,7 +316,7 @@ async function buildFactoryWorkbook(
     const cur = firstAt.get(e.workerId);
     if (!cur || d < cur) firstAt.set(e.workerId, d);
   }
-  const isNewOn = (p: SchedRow, dateIso: string) => { const f = p.workerId != null ? firstAt.get(p.workerId) : undefined; return !!f && daysBetween(f, dateIso) < NEW_WORKER_DAYS; };
+  const isNewOn = (p: SchedRow, dateIso: string) => p.workerId != null && firstAt.get(p.workerId) === dateIso;
   const thin = (argb: string) => ({
     top: { style: "thin", color: { argb } }, left: { style: "thin", color: { argb } },
     bottom: { style: "thin", color: { argb } }, right: { style: "thin", color: { argb } },
