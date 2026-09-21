@@ -83,7 +83,7 @@ const smsfly: SmsProvider = {
     const out: SendResult[] = [];
     for (const it of items) {
       try {
-        const d = await smsflyCall("SEND", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
+        const d = await smsflyCall("SENDMESSAGE", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
         const id = d?.messageID ?? d?.messageId ?? d?.id;
         if (id) out.push({ recipientId: it.recipientId, ok: true, msgId: String(id) });
         else out.push({ recipientId: it.recipientId, ok: false, error: "SMS-Fly: відповідь без messageID" });
@@ -98,8 +98,11 @@ const smsfly: SmsProvider = {
     for (const id of msgIds) {
       try {
         const d = await smsflyCall("GETMESSAGESTATUS", { messageID: id });
+        // SMS-Fly віддає SMPP-коди (перевірено 21.09.2026 на живому SMS: "DELIVRD"), не повні слова
         const st = String(d?.sms?.status ?? d?.status ?? "").toUpperCase();
-        out.push({ msgId: id, status: st === "DELIVERED" ? "delivered" : ["UNDELIVERED", "EXPIRED", "REJECTED", "ERROR", "FAILED"].includes(st) ? "failed" : "pending", reason: st || undefined });
+        const delivered = st === "DELIVRD" || st === "DELIVERED";
+        const failed = ["UNDELIV", "UNDELIVERED", "EXPIRED", "REJECTD", "REJECTED", "DELETED", "ERROR", "FAILED", "INVALID"].includes(st);
+        out.push({ msgId: id, status: delivered ? "delivered" : failed ? "failed" : "pending", reason: st || undefined });
       } catch (e: any) {
         logger.warn({ err: e, id }, "SMS-Fly status failed");
       }

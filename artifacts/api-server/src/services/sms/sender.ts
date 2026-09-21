@@ -5,7 +5,8 @@ import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, smsCampaignsTable, smsRecipientsTable, type SmsCampaign, type SmsSchedule } from "@workspace/db";
 import { logger } from "../../lib/logger";
 import { getSmsProvider, type SmsProviderName } from "./provider";
-import { renderForRecipient, logSmsEvent, advanceRecipient } from "./campaigns";
+import { renderForRecipient, logSmsEvent, advanceRecipient, recipientLink } from "./campaigns";
+import { randomInviteCode } from "../../lib/invite";
 
 const TZ = "Europe/Warsaw";
 
@@ -122,9 +123,23 @@ export async function pollSmsStatuses(): Promise<{ delivered: number; failed: nu
 }
 
 // Тестове SMS на свій номер: без запису в отримувачі, лише результат провайдера.
-export async function sendTestSms(c: SmsCampaign, phone: string, lang: string, name = "Test"): Promise<{ ok: boolean; error?: string; text: string; parts: number }> {
-  const t = renderForRecipient(c, { lang, firstName: name, name, token: "TEST0000000000000000000" });
+// Тест на свій номер = справжній отримувач у кампанії з сегментом «тест» (лінк, сторінка, бот і
+// кандидат працюють наскрізно). Повторний тест на той самий номер переюзує токен.
+export async function sendTestSms(c: SmsCampaign, phone: string, lang: string, name = "Test"): Promise<{ ok: boolean; error?: string; text: string; parts: number; msgId?: string; link: string }> {
+  let [rec] = await db.select().from(smsRecipientsTable).where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.phone, phone)));
+  if (!rec) {
+    [rec] = await db.insert(smsRecipientsTable).values({ campaignId: c.id, phone, name, firstName: name, lang, segment: "тест", token: randomInviteCode(24), status: "queued" }).returning();
+  }
+  const t = renderForRecipient(c, { lang, firstName: rec!.firstName || name, name: rec!.name || name, token: rec!.token });
   const provider = getSmsProvider(c.provider as SmsProviderName);
-  const [res] = await provider.send([{ recipientId: 0, phone, text: t.text, from: c.sender }]);
-  return { ok: !!res?.ok, error: res?.error, text: t.text, parts: t.parts };
+  const [res] = await provider.send([{ recipientId: rec!.id, phone, text: t.text, from: c.sender }]);
+  const now = new Date();
+  if (res?.ok) {
+    await db.update(smsRecipientsTable).set({ status: "sent", sentAt: now, providerMsgId: res.msgId ?? null, parts: res.parts ?? t.parts, failReason: null }).where(eq(smsRecipientsTable.id, rec!.id));
+    await logSmsEvent(rec!.id, "sent", { meta: { provider: provider.name, msgId: res.msgId, parts: res.parts ?? t.parts, test: true } });
+  } else {
+    await logSmsEvent(rec!.id, "failed", { meta: { provider: provider.name, error: res?.error, test: true } });
+  }
+  logger.info({ campaignId: c.id, recipientId: rec!.id, ok: !!res?.ok, msgId: res?.msgId, error: res?.error }, "SMS test sent");
+  return { ok: !!res?.ok, error: res?.error, text: t.text, parts: t.parts, msgId: res?.msgId, link: recipientLink(rec!.token) };
 }
