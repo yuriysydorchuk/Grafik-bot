@@ -155,13 +155,19 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
   );
   return (
     <Card className="p-4 space-y-3">
-      <p className="text-xs text-slate-500">{t("Порожні поля → вбудовані тексти сторінки з пропозиції кампанії. Головна кнопка «Мені цікаво» лише фіксує телефон — форми немає, рекрутер кампанії отримує картку в бот і обдзвонює.")}</p>
+      <p className="text-xs text-slate-500">{t("Плитки вакансій → опис і переваги → «Мене цікавить» (телефон уже відомий, рекрутер отримує картку в бот) і «Порекомендувати друга» (імʼя + телефон → кандидат у воронці). Без вакансій сторінка показує одну з пропозиції кампанії. Порожні контакти → дані офісу.")}</p>
       {tri("title", t("Заголовок"))}{tri("about", t("Що за робота"))}{tri("give", t("Що ми даємо"))}
       <div><Label>{t("Чіпи вигод (через ;)")}</Label><Input value={(ld.chips ?? []).join("; ")} onChange={(e) => setLd((s: any) => ({ ...s, chips: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
       <div className="grid md:grid-cols-3 gap-2">
         <div><Label>{t("Міста (через ;)")}</Label><Input value={(ld.cities ?? []).join("; ")} placeholder={t("порожньо — міста фабрик")} onChange={(e) => setLd((s: any) => ({ ...s, cities: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
         <div><Label>{t("Хто передзвонить")}</Label><Input value={ld.recruiterName ?? ""} placeholder="Володимир" onChange={(e) => setLd((s: any) => ({ ...s, recruiterName: e.target.value }))} /></div>
         <div><Label>{t("Години дзвінків")}</Label><Input value={ld.hours ?? ""} placeholder="10–17" onChange={(e) => setLd((s: any) => ({ ...s, hours: e.target.value }))} /></div>
+      </div>
+      <VacanciesEditor value={ld.vacancies ?? []} onChange={(v) => setLd((s: any) => ({ ...s, vacancies: v }))} />
+      <div className="grid md:grid-cols-3 gap-2">
+        {([["phone", t("Телефон на сторінці"), "+48 792 991 524"], ["address", t("Адреса"), "ul. Krakowskie Przedmieście 55, 20-076 Lublin"], ["maps", "Google Maps (URL)", ""], ["site", t("Сайт"), "https://eurosupp.pl/"], ["instagram", "Instagram (URL)", "https://instagram.com/euro_support_"], ["facebook", "Facebook (URL)", ""]] as const).map(([k, l, ph]) => (
+          <div key={k}><Label>{l}</Label><Input value={ld.contacts?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, contacts: { ...(s.contacts ?? {}), [k]: e.target.value } }))} /></div>
+        ))}
       </div>
       <div><Label>{t("Фото (URL через ;)")}</Label><Input value={(ld.photos ?? []).join("; ")} onChange={(e) => setLd((s: any) => ({ ...s, photos: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
       <div className="flex gap-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.call !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, call: e.target.checked } }))} /> {t("кнопка «Подзвонити»")}</label><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.whatsapp !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, whatsapp: e.target.checked } }))} /> WhatsApp</label>
@@ -204,5 +210,41 @@ function ScheduleTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
       </div>
       <div className="md:col-span-2 flex justify-end"><Button disabled={save.isPending} onClick={() => save.mutate()}>{t("Зберегти")}</Button></div>
     </Card>
+  );
+}
+
+// Редактор вакансій сторінки: плитки з назвою 3 мовами, містом, ставкою/житлом/довозом/змінами,
+// коротким описом і перевагами (через ;). Порожній список → одна вакансія з пропозиції кампанії.
+type Vac = { id: string; title: Record<string, string>; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Record<string, string>; perks?: string[]; photo?: string };
+function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[]) => void }) {
+  const t = useT();
+  const upd = (i: number, patch: Partial<Vac>) => onChange(value.map((v, j) => (j === i ? { ...v, ...patch } : v)));
+  const add = () => onChange([...value, { id: `v${Date.now().toString(36)}`, title: {}, desc: {}, perks: [] }]);
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between"><Label>{t("Вакансії на сторінці")} ({value.length})</Label><Button variant="secondary" onClick={add}>+ {t("Додати вакансію")}</Button></div>
+      {value.map((v, i) => (
+        <div key={v.id} className="rounded-lg border border-slate-200 p-3 space-y-2">
+          <div className="grid md:grid-cols-3 gap-2">
+            {(["uk", "ru", "en"] as const).map((l) => <div key={l}><Label>{t("Назва")} · {l}</Label><Input value={v.title?.[l] ?? ""} onChange={(e) => upd(i, { title: { ...(v.title ?? {}), [l]: e.target.value } })} /></div>)}
+          </div>
+          <div className="grid md:grid-cols-5 gap-2">
+            <div><Label>{t("Місто")}</Label><Input value={v.city ?? ""} onChange={(e) => upd(i, { city: e.target.value })} /></div>
+            <div><Label>{t("Ставка")}</Label><Input value={v.rate ?? ""} placeholder="31 zł/год" onChange={(e) => upd(i, { rate: e.target.value })} /></div>
+            <div><Label>{t("Житло")}</Label><Input value={v.housing ?? ""} placeholder="від 450 zł" onChange={(e) => upd(i, { housing: e.target.value })} /></div>
+            <div><Label>{t("Довіз")}</Label><Input value={v.transport ?? ""} placeholder={t("довіз на зміну")} onChange={(e) => upd(i, { transport: e.target.value })} /></div>
+            <div><Label>{t("Зміни")}</Label><Input value={v.shifts ?? ""} placeholder="2 зміни / 12 год" onChange={(e) => upd(i, { shifts: e.target.value })} /></div>
+          </div>
+          <div className="grid md:grid-cols-3 gap-2">
+            {(["uk", "ru", "en"] as const).map((l) => <div key={l}><Label>{t("Короткий опис")} · {l}</Label><Textarea rows={2} value={v.desc?.[l] ?? ""} onChange={(e) => upd(i, { desc: { ...(v.desc ?? {}), [l]: e.target.value } })} /></div>)}
+          </div>
+          <div className="grid md:grid-cols-[1fr_auto] gap-2 items-end">
+            <div><Label>{t("Переваги (через ;)")}</Label><Input value={(v.perks ?? []).join("; ")} placeholder={t("Житло біля фабрики; Довіз; Аванс після 2 тижнів")} onChange={(e) => upd(i, { perks: e.target.value.split(";").map((x) => x.trim()).filter(Boolean) })} /></div>
+            <div><Label>{t("Фото (URL)")}</Label><Input value={v.photo ?? ""} onChange={(e) => upd(i, { photo: e.target.value })} /></div>
+          </div>
+          <div className="flex justify-end"><Button variant="secondary" onClick={() => onChange(value.filter((_, j) => j !== i))}>{t("Прибрати")}</Button></div>
+        </div>
+      ))}
+    </div>
   );
 }

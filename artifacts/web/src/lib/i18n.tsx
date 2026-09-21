@@ -1823,6 +1823,9 @@ const EN: Record<string, string> = {
   "Персонал": "Staff",
   "Рекрутація": "Recruitment",
   // ── SMS-кампанії ──
+  "Телефон на сторінці": "Phone on the page", "Вакансії на сторінці": "Vacancies on the page", "Додати вакансію": "Add vacancy", "Короткий опис": "Short description",
+  "Переваги (через ;)": "Perks (separated by ;)", "Житло біля фабрики; Довіз; Аванс після 2 тижнів": "Housing near the factory; Transport; Advance after 2 weeks", "Фото (URL)": "Photo (URL)",
+  "Плитки вакансій → опис і переваги → «Мене цікавить» (телефон уже відомий, рекрутер отримує картку в бот) і «Порекомендувати друга» (імʼя + телефон → кандидат у воронці). Без вакансій сторінка показує одну з пропозиції кампанії. Порожні контакти → дані офісу.": "Vacancy tiles → description and perks → “I'm interested” (phone already known, recruiter gets a card in the bot) and “Recommend a friend” (name + phone → candidate in the funnel). Without vacancies the page shows one built from the campaign offer. Empty contacts → office defaults.",
   "зацікавлені": "interested", "на обдзвон": "call list", "Міста (через ;)": "Cities (separated by ;)", "порожньо — міста фабрик": "empty — factory cities",
   "Хто передзвонить": "Who calls back", "Години дзвінків": "Call hours", "лінк у Telegram-бот (вимкнено — без форми, лише обдзвон)": "Telegram bot link (off — no form, calls only)",
   "Порожні поля → вбудовані тексти сторінки з пропозиції кампанії. Головна кнопка «Мені цікаво» лише фіксує телефон — форми немає, рекрутер кампанії отримує картку в бот і обдзвонює.": "Empty fields → built-in page texts from the campaign offer. The main button “I'm interested” only records the phone — no form; the campaign recruiter gets a card in the bot and calls.",

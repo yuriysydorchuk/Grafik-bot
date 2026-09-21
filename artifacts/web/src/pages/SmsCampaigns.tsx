@@ -109,7 +109,7 @@ type Staff = { id: number; name: string };
 // 160 знаків з іменем і лінком (~27 знаків при короткому домені); кирилиця дала б лише 70. Без ł/ą/ę/ś/ż (zl, не zł).
 const TEXT_DEFAULTS: Record<string, Record<string, string>> = {
   // текст власника 21.09.2026: «у нас є вакансія для вас, або порекомендуйте нас друзям і отримайте 300 zl; вихід від зараз»
-  job: { uk: "{імʼя}, u nas ye vakansiia dlia vas! Abo porekomenduite nas druziam i otrymaite bonus 300zl. Vykhid vid zaraz. Detali: {лінк}", ru: "{имя}, u nas est vakansiya dlya vas! Ili porekomenduyte nas druzyam i poluchite bonus 300zl. Vykhod s segodnya. Detali: {ссылка}", en: "{name}, we have a job for you! Or recommend us to friends and get a 300 PLN bonus. Start right away. Details: {link}" },
+  job: { uk: "{імʼя}, u nas ye vakansiia dlia vas! Abo porekomenduite nas druziam i otrymaite bonus 300zl. Start cioho tyzhnia. Detali: {лінк}", ru: "{имя}, u nas est vakansiya dlya vas! Ili porekomenduyte nas druzyam i poluchite bonus 300zl. Start na etoy nedele. Detali: {ссылка}", en: "{name}, we have a job for you! Or recommend us to friends and get a 300 PLN bonus. Start this week. Details: {link}" },
   referral: { uk: "{імʼя}, pryvedy druga na robotu v Polshchi i otrymai 300zl pislia yoho 10 zmin. Robota 31zl/god + zhytlo. Detali: {лінк}", ru: "{имя}, privedi druga na rabotu v Polshe i poluchi 300zl posle ego 10 smen. Rabota 31zl/chas + zhilyo. Detali: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Job 31 PLN/h + housing. Details: {link}" },
 };
 

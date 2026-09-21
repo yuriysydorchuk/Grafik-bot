@@ -2,7 +2,7 @@
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { resetDb, db, app, closeDb, factoriesTable, smsRecipientsTable, smsEventsTable } from "../test/harness.ts";
+import { resetDb, db, app, closeDb, factoriesTable, smsRecipientsTable, smsEventsTable, candidatesTable } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 import { createCampaign, importRecipients } from "../services/sms/campaigns.ts";
 
@@ -39,10 +39,23 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   const kinds = (await db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, rec!.id))).map((x) => x.kind);
   assert.deepEqual(kinds, ["view", "cta_bot"]);
   // «Мені цікаво» — головна конверсія без форми: подія, статус cta, сторінка далі знає interested=true; повтор не дублює
-  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested`)).status, 204);
-  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested`)).status, 204);
-  assert.equal((await request(app).get(`/api/r/${rec!.token}`)).body.interested, true);
-  assert.deepEqual((await request(app).get(`/api/r/${rec!.token}`)).body.cities, ["Lublin"]);
+  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested&v=offer`)).status, 204);
+  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested&v=offer`)).status, 204);
+  const page = (await request(app).get(`/api/r/${rec!.token}`)).body;
+  assert.equal(page.interested, true); assert.deepEqual(page.interestedVacancies, ["offer"]);
+  assert.deepEqual(page.cities, ["Lublin"]);
+  assert.equal(page.vacancies.length, 1); assert.equal(page.vacancies[0].id, "offer"); assert.match(page.vacancies[0].title.uk, /AGRAM LUBLIN/);
+  assert.match(page.contacts.maps, /google\.com\/maps/); assert.equal(page.contacts.phone, "+48 731 000 000");
+  // «Порекомендувати друга»: кандидат у воронці SMS з нотаткою про рекомендувача; дубль телефону — не створюється; свій номер — 400
+  const fr = await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Ivan Koval", phone: "+48 601 234 567", vacancyId: "offer" });
+  assert.equal(fr.status, 200, JSON.stringify(fr.body)); assert.equal(fr.body.duplicate, false);
+  const cands = await db.select().from(candidatesTable).where(eq(candidatesTable.source, "sms_friend"));
+  assert.equal(cands.length, 1); assert.equal(cands[0]!.phone, "+48601234567"); assert.equal(cands[0]!.fullName, "Ivan Koval"); assert.equal(cands[0]!.campaignId, c.id); assert.match(cands[0]!.notes ?? "", /Oksana Melnychenko/);
+  const fr2 = await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Ivan Koval", phone: "48601234567" });
+  assert.equal(fr2.body.duplicate, true);
+  assert.equal((await db.select().from(candidatesTable).where(eq(candidatesTable.source, "sms_friend"))).length, 1);
+  assert.equal((await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Me", phone: "+48573000214" })).status, 400);
+  assert.deepEqual((await request(app).get(`/api/r/${rec!.token}`)).body.friends, ["Ivan Koval"]);
   const ev = (await db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, rec!.id)))[0]!;
   assert.match(ev.device ?? "", /iPhone|iOS|Mobile/i);
 

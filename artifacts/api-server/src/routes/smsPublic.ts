@@ -5,9 +5,10 @@
 // БЕЗ authRequired — монтується до auth-роутерів (routes/index.ts), rate-limit по префіксу.
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
-import { db, factoriesTable, adminsTable, smsEventsTable } from "@workspace/db";
+import { db, factoriesTable, adminsTable, smsEventsTable, candidatesTable, candidateActivityTable, type SmsVacancy, type SmsContacts } from "@workspace/db";
 import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
-import { findRecipientByToken, logSmsEvent, advanceRecipient } from "../services/sms/campaigns";
+import { findRecipientByToken, logSmsEvent, advanceRecipient, ensureSmsFunnel } from "../services/sms/campaigns";
+import { normalizePhone } from "../services/sms/phone";
 import { clientIp, parseDevice } from "../lib/clientInfo";
 import { bot } from "../bot/instance";
 import { escapeHtml } from "../bot/display";
@@ -38,45 +39,95 @@ router.get("/r/:token", async (req, res) => {
   // міста на сторінці: з лендінгу кампанії, інакше — міста фабрик (без офісу), в алфавіті
   const cities: string[] = landing.cities?.length ? landing.cities : (await db.select({ city: factoriesTable.city }).from(factoriesTable).where(and(isNotNull(factoriesTable.city), ne(factoriesTable.city, ""), sql`coalesce(${factoriesTable.isOffice}, false) = false`)))
     .map((r) => String(r.city).trim()).filter((v, i, a) => v && a.indexOf(v) === i).sort((a, b) => a.localeCompare(b, "uk"));
-  const [interested] = await db.select({ id: smsEventsTable.id }).from(smsEventsTable).where(and(eq(smsEventsTable.recipientId, rec.id), inArray(smsEventsTable.kind, ["interested", "interested_ref"]))).limit(1);
+  const evs = await db.select({ kind: smsEventsTable.kind, meta: smsEventsTable.meta }).from(smsEventsTable).where(and(eq(smsEventsTable.recipientId, rec.id), inArray(smsEventsTable.kind, ["interested", "interested_ref", "friend"])));
+  const interestedVacancies = [...new Set(evs.filter((e) => e.kind === "interested").map((e) => String((e.meta as any)?.vacancyId ?? "")).filter(Boolean))];
+  const friends = [...new Set(evs.filter((e) => e.kind === "friend" && !(e.meta as any)?.duplicate).map((e) => String((e.meta as any)?.name ?? "")).filter(Boolean))];
+  // вакансії: з лендінгу кампанії; порожньо → одна з пропозиції кампанії (щоб сторінка працювала до заповнення списку)
+  const vacancies: SmsVacancy[] = landing.vacancies?.length ? landing.vacancies : [{
+    id: "offer", title: { uk: fac?.name ? `Робота на фабриці ${fac.name}` : "Робота на фабриці", ru: fac?.name ? `Работа на фабрике ${fac.name}` : "Работа на фабрике", en: fac?.name ? `Job at ${fac.name}` : "Factory job" },
+    city: offer.city || fac?.city || cities[0] || "", rate: offer.rate, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
+  }];
+  const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", instagram: "https://instagram.com/euro_support_", facebook: "https://facebook.com/eurosupportES", ...(landing.contacts ?? {}) };
+  if (!contacts.maps && contacts.address) contacts.maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(contacts.address)}`;
   return res.json({
     firstName: rec.firstName || (rec.name || "").split(" ")[0] || "",
     lang: rec.lang, kind: c.kind, campaign: c.name,
     offer: { ...offer, factoryName: fac?.name ?? null, city: offer.city || fac?.city || null, phone, whatsapp: offer.whatsapp || phone },
-    landing, cities,
+    landing, cities, vacancies, contacts,
     recruiter: { name: landing.recruiterName || process.env.SMS_RECRUITER_NAME || "", hours: landing.hours || process.env.SMS_RECRUITER_HOURS || "10–17" },
-    interested: !!interested,
+    interested: interestedVacancies.length > 0 || evs.some((e) => e.kind === "interested_ref"),
+    interestedVacancies, friends,
     telegram: botLink(token),
     closed: c.status === "closed",
   });
 });
 
-// Кнопки сторінки. «Мені цікаво» / «Хочу привести друга» (interested*) — головна конверсія:
-// телефон уже відомий, форми немає (рішення власника 21.09.2026) → рекрутер кампанії
-// отримує в бот картку на обдзвон; повторне натискання не дублює сповіщення.
+async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, text: string): Promise<void> {
+  if (!campaign.recruiterAdminId) return;
+  try {
+    const [a] = await db.select({ telegramId: adminsTable.telegramId }).from(adminsTable).where(eq(adminsTable.id, campaign.recruiterAdminId));
+    if (a?.telegramId) await bot.telegram.sendMessage(a.telegramId, text, { parse_mode: "HTML" });
+  } catch (e) { logger.warn({ err: e }, "sms recruiter notify failed"); }
+}
+const vacancyTitle = (landing: Record<string, any>, id: string): string => {
+  const v = (landing.vacancies as SmsVacancy[] | undefined)?.find((x) => x.id === id);
+  return v ? (v.title?.uk || v.title?.ru || v.title?.en || id) : "";
+};
+
+// Кнопки сторінки. «Мене цікавить вакансія» (interested, ?v=<id вакансії>) — головна конверсія:
+// телефон уже відомий, форми немає (рішення власника 21.09.2026) → рекрутер кампанії отримує в
+// бот картку на обдзвон; людині — «консультант звʼяжеться протягом 1 робочого дня». Повторне
+// натискання по тій самій вакансії не дублює сповіщення.
 const EVENTS = new Set(["cta_bot", "cta_call", "cta_wa", "interested", "interested_ref"]);
 router.get("/r/:token/e", async (req, res) => {
   const token = String(req.params.token || "").toUpperCase();
   const k = String(req.query.k || "");
+  const vacancyId = String(req.query.v || "").slice(0, 40);
   if (!TOKEN_RE.test(token) || !EVENTS.has(k)) return res.status(204).end();
   const rec = await findRecipientByToken(token);
   if (rec) {
     const first = k.startsWith("interested")
-      ? !(await db.select({ id: smsEventsTable.id }).from(smsEventsTable).where(and(eq(smsEventsTable.recipientId, rec.id), inArray(smsEventsTable.kind, ["interested", "interested_ref"]))).limit(1))[0]
+      ? !(await db.select({ id: smsEventsTable.id, meta: smsEventsTable.meta }).from(smsEventsTable).where(and(eq(smsEventsTable.recipientId, rec.id), eq(smsEventsTable.kind, k))))
+          .some((e) => k !== "interested" || String((e.meta as any)?.vacancyId ?? "") === vacancyId)
       : false;
-    await logSmsEvent(rec.id, k, { ip: clientIp(req), userAgent: req.headers["user-agent"] as string, device: parseDevice(req.headers["user-agent"]) });
+    await logSmsEvent(rec.id, k, { ip: clientIp(req), userAgent: req.headers["user-agent"] as string, device: parseDevice(req.headers["user-agent"]), meta: vacancyId ? { vacancyId } : undefined });
     await advanceRecipient(rec.id, "cta");
-    if (first && rec.campaign.recruiterAdminId) {
-      try {
-        const [a] = await db.select({ telegramId: adminsTable.telegramId }).from(adminsTable).where(eq(adminsTable.id, rec.campaign.recruiterAdminId));
-        if (a?.telegramId) await bot.telegram.sendMessage(a.telegramId,
-          `📞 <b>Зацікавлений з SMS</b>${k === "interested_ref" ? " · хоче привести друга" : ""}
-<b>${escapeHtml(rec.name || "—")}</b> · ${escapeHtml(rec.phone)} · ${rec.lang}
-Кампанія «${escapeHtml(rec.campaign.name)}». Передзвонити.`, { parse_mode: "HTML" });
-      } catch (e) { logger.warn({ err: e, recipientId: rec.id }, "sms interested notify failed"); }
+    if (first) {
+      const title = vacancyTitle((rec.campaign.landing ?? {}) as Record<string, any>, vacancyId);
+      await notifyRecruiter(rec.campaign, `📞 <b>Зацікавлений з SMS</b>${k === "interested_ref" ? " · хоче привести друга" : ""}\n<b>${escapeHtml(rec.name || "—")}</b> · ${escapeHtml(rec.phone)} · ${rec.lang}${title ? `\nВакансія: ${escapeHtml(title)}` : ""}\nКампанія «${escapeHtml(rec.campaign.name)}». Звʼязатись протягом 1 робочого дня.`);
     }
   }
   return res.status(204).end();
+});
+
+// «Порекомендувати друга»: імʼя + телефон друга → кандидат у воронці «SMS-кампанії» (source
+// sms_friend, нотатка з рекомендувачем) + подія friend у рекомендувача + картка рекрутеру.
+// POST з нашого JS — шле X-Requested-With (CSRF-гард). Дубль телефону в кампанії — не створюємо.
+router.post("/r/:token/friend", async (req, res) => {
+  const token = String(req.params.token || "").toUpperCase();
+  if (!TOKEN_RE.test(token)) return res.status(404).json({ error: "Лінк недійсний." });
+  const rec = await findRecipientByToken(token);
+  if (!rec) return res.status(404).json({ error: "Лінк недійсний." });
+  const name = String(req.body?.name ?? "").trim().slice(0, 80);
+  const phone = normalizePhone(String(req.body?.phone ?? ""));
+  const vacancyId = String(req.body?.vacancyId ?? "").slice(0, 40);
+  if (!name || !phone) return res.status(400).json({ error: "name_phone" });
+  if (phone === rec.phone) return res.status(400).json({ error: "own_phone" });
+  const c = rec.campaign;
+  const title = vacancyTitle((c.landing ?? {}) as Record<string, any>, vacancyId);
+  const [dup] = await db.select({ id: candidatesTable.id }).from(candidatesTable).where(and(eq(candidatesTable.campaignId, c.id), eq(candidatesTable.phone, phone))).limit(1);
+  if (!dup) {
+    const [cand] = await db.insert(candidatesTable).values({
+      funnelId: c.funnelId ?? await ensureSmsFunnel(), fullName: name, phone, stage: "new", source: "sms_friend", campaignId: c.id, language: rec.lang,
+      assignedAdminId: c.recruiterAdminId ?? null, factoryId: (c.offer as any)?.factoryId ?? null,
+      notes: `Рекомендація друга з SMS-кампанії «${c.name}»: від ${rec.name || "—"} ${rec.phone}${title ? ` · вакансія: ${title}` : ""}`,
+    }).returning();
+    await db.insert(candidateActivityTable).values({ candidateId: cand!.id, kind: "created", detail: `Рекомендував(ла) ${rec.name || rec.phone} з SMS-сторінки` });
+  }
+  await logSmsEvent(rec.id, "friend", { ip: clientIp(req), userAgent: req.headers["user-agent"] as string, device: parseDevice(req.headers["user-agent"]), meta: { name, phone, vacancyId, duplicate: !!dup } });
+  await advanceRecipient(rec.id, "cta");
+  if (!dup) await notifyRecruiter(c, `🎁 <b>Рекомендація друга з SMS</b>\n<b>${escapeHtml(name)}</b> · ${escapeHtml(phone)}${title ? ` · ${escapeHtml(title)}` : ""}\nВід: ${escapeHtml(rec.name || "—")} ${escapeHtml(rec.phone)} (бонус ${escapeHtml(String((c.offer as any)?.bonus || "300 zł"))} після 10 змін друга)\nКампанія «${escapeHtml(c.name)}». Кандидат у воронці «SMS-кампанії».`);
+  return res.json({ ok: true, duplicate: !!dup });
 });
 
 export default router;

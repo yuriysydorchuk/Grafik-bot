@@ -2564,12 +2564,21 @@ export type SmsOffer = {
   factoryId?: number | null; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string;
   startDate?: string; bonus?: string; phone?: string; whatsapp?: string;
 };
+// Вакансія на сторінці SMS-лінка (рішення власника 21.09.2026: плитки вакансій → опис і переваги →
+// «мене цікавить» / «порекомендувати друга»). Живе в sms_campaigns.landing.vacancies (jsonb).
+export type SmsVacancy = {
+  id: string; title: SmsTexts; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string;
+  desc?: SmsTexts; perks?: string[]; photo?: string;
+};
+export type SmsContacts = { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string };
 export type SmsLanding = {
   title?: SmsTexts; chips?: string[]; about?: SmsTexts; give?: SmsTexts; faq?: { q: SmsTexts; a: SmsTexts }[];
   photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };
   cities?: string[];        // список міст на сторінці (порожньо → міста активних фабрик)
-  recruiterName?: string;   // хто передзвонить («Володимир передзвонить сьогодні з 10 до 17»)
+  recruiterName?: string;   // хто передзвонить
   hours?: string;           // години дзвінків, напр. "10–17"
+  vacancies?: SmsVacancy[]; // порожньо → одна вакансія з пропозиції кампанії
+  contacts?: SmsContacts;   // низ сторінки: телефон, адреса + Google Maps, сайт, Instagram
 };
 export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number }; // days: 1=пн … 7=нд, Europe/Warsaw
 
