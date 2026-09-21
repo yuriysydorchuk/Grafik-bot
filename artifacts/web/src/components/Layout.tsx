@@ -72,8 +72,8 @@ const NAV: NavGroup[] = [
       { href: "/clothing", label: "Одяг", icon: Shirt },
       { href: "/recruitment", label: "Рекрутація", icon: UserPlus },
       { href: "/broadcast", label: "Розсилка", icon: Megaphone },
-    ],
       { href: "/sms-campaigns", label: "SMS-кампанії", icon: MessageSquareText },
+    ],
   },
   {
     title: "Аналітика",
