@@ -2180,6 +2180,11 @@ export const workerQuestionnairesTable = pgTable("worker_questionnaires", {
   consentsIp: text("consents_ip"),
   consentsUserAgent: text("consents_user_agent"),
   consentsVersion: text("consents_version"),
+  // Походження анкети (21.09.2026): NULL = заповнена працівником/офісом у системі,
+  // "hrappka" = залита разовим імпортом з експорту HRappka (без підпису й згод —
+  // status лишається draft, verified не ставиться, поля лише доповнюються).
+  source: text("source"),
+  importedAt: timestamp("imported_at"),
   submittedAt: timestamp("submitted_at"),
   verifiedBy: integer("verified_by").references(() => adminsTable.id),
   verifiedAt: timestamp("verified_at"),
