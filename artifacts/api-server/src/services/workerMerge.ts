@@ -79,10 +79,17 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
     // Решта таблиць з worker_id (21.09.2026, злиття Moyo падало на factory_hours: FK без
     // ON DELETE, а каскадні тихо втрачали рахунки/журнал/умови дубля). Прості FK — переносимо;
     // «один рядок на працівника» — лишаємо запис keep, дубль drop прибираємо.
-    const plain = ["clothing_items", "contracts", "factory_hours", "gratyfikant_umowy", "hostel_deductions", "hostel_payments", "hostel_stays",
-      "hours_notes", "passport_scan_tokens", "penalties", "transport_deductions", "tasks", "worker_changes", "worker_badania",
+    const plain = ["clothing_items", "contracts", "gratyfikant_umowy", "hostel_deductions", "hostel_payments", "hostel_stays",
+      "passport_scan_tokens", "penalties", "transport_deductions", "tasks", "worker_changes", "worker_badania",
       "worker_family_members", "worker_self_transport", "absence_attachments", "absence_messages"];
     for (const t of plain) await tx.execute(sql`UPDATE ${sql.identifier(t)} SET worker_id = ${keepId} WHERE worker_id = ${dropId}`);
+    // години/нотатки фабрик: unique (worker, month, factory) — рядок keep за той самий місяць
+    // і фабрику лишається, дубль drop видаляємо (FK без каскаду, інакше delete профілю впаде)
+    for (const t of ["factory_hours", "hours_notes"]) {
+      await tx.execute(sql`DELETE FROM ${sql.identifier(t)} d WHERE d.worker_id = ${dropId}
+        AND EXISTS (SELECT 1 FROM ${sql.identifier(t)} k WHERE k.worker_id = ${keepId} AND k.month = d.month AND k.factory_id IS NOT DISTINCT FROM d.factory_id)`);
+      await tx.execute(sql`UPDATE ${sql.identifier(t)} SET worker_id = ${keepId} WHERE worker_id = ${dropId}`);
+    }
     // унікальні пари (worker, factory/month): переносимо лише ті, яких у keep ще нема
     for (const [t, col] of [["worker_factories", "factory_id"], ["worker_factory_codes", "factory_id"], ["transport_fee_members", "factory_id"], ["hours_month_exclusions", "month"]] as const) {
       await tx.execute(sql`UPDATE ${sql.identifier(t)} d SET worker_id = ${keepId} WHERE d.worker_id = ${dropId}
