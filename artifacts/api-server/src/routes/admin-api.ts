@@ -1834,6 +1834,7 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
     } catch (e) { logger.error({ err: e }, "notify referrer (convert) failed"); }
 
     await logActivity(id, actingAdminId(req), "converted", "Переведено у працівники (профіль уже існував)");
+    try { const { markCandidateSmsEvent } = await import("../services/sms/campaigns"); await markCandidateSmsEvent(id, "hired"); } catch { /* best-effort */ }
     return ok(res, { notified: true, link: null, worker: updated });
   }
 

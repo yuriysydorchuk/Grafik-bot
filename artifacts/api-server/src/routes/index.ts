@@ -35,6 +35,7 @@ import passportScanRouter from "./passportScan";
 import docRequestsRouter from "./docRequests";
 import zcnaPublicRouter from "./zcnaPublic";
 import taskIcalRouter from "./taskIcal";
+import smsPublicRouter from "./smsPublic";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
@@ -53,6 +54,7 @@ router.use(passportScanRouter);
 router.use(docRequestsRouter);
 router.use(zcnaPublicRouter);
 router.use(taskIcalRouter);
+router.use(smsPublicRouter); // /r/:token — публічна сторінка SMS-лінка, до auth
 router.use(authRouter);
 router.use(adminApiRouter);
 router.use(searchRouter);

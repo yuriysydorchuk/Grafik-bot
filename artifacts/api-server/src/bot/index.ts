@@ -114,6 +114,7 @@ import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
 import { registerTaskActions } from "./handlers/tasks";
 import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
+import { registerSmsCampaign, handleSmsStart } from "./handlers/smsCampaign";
 import { loadSelfTransport, isSelfOn } from "../services/selfTransport";
 
 bot.use(async (ctx, next) => {
@@ -140,6 +141,7 @@ registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
 registerRehire(bot as any, workerMenuFor);
+registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кнопки sms:*
 // «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
 registerTaskActions(bot as any);
 
@@ -271,6 +273,10 @@ bot.start(async (ctx) => {
       setState(tid, "worker_signup:lang", { factoryId, factoryName: fac.name, mode });
       return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
+
+    // SMS-кампанія: персональний лінк ?start=sms<токен> (bot/handlers/smsCampaign.ts) —
+    // людина вже відома (імʼя/телефон/мова з отримувача), кандидат створюється без питань.
+    if (lower.startsWith("sms") && code.length > 3) return handleSmsStart(ctx, code.slice(3).toUpperCase());
 
     // Worker invite link: ?start=emp<code> — binds via an unguessable invite_code (NOT the
     // public sequential worker_code, which used to be enumerable and hijackable).

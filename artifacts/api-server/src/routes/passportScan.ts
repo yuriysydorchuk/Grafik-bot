@@ -281,6 +281,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     // цього моменту (candidateId на токені) — див. POST /candidates/:id/convert.
     if (row.candidateId) {
       await db.update(candidatesTable).set({ workerId: worker.id, stage: "hired" }).where(eq(candidatesTable.id, row.candidateId));
+      try { const { markCandidateSmsEvent } = await import("../services/sms/campaigns"); await markCandidateSmsEvent(row.candidateId, "form"); } catch (e) { logger.warn({ err: e }, "sms form event failed"); }
     }
 
     // Повернення: запит офісу «✅ Відновити / ❌ Відхилити» (фабрика — з лінка,

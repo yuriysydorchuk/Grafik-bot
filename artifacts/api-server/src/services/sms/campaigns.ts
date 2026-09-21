@@ -188,6 +188,15 @@ export async function advanceRecipient(id: number, status: string, extra: Partia
   if (Object.keys(set).length) await db.update(smsRecipientsTable).set(set).where(eq(smsRecipientsTable.id, id));
 }
 
+// Кандидат з SMS заповнив анкету (passport-scan confirm) або переведений у працівники (convert):
+// просуваємо його отримувача у воронці кампанії. Best-effort, кандидат може бути не з SMS.
+export async function markCandidateSmsEvent(candidateId: number, kind: "form" | "hired"): Promise<void> {
+  const [r] = await db.select({ id: smsRecipientsTable.id }).from(smsRecipientsTable).where(eq(smsRecipientsTable.candidateId, candidateId));
+  if (!r) return;
+  await advanceRecipient(r.id, kind);
+  await logSmsEvent(r.id, kind);
+}
+
 // ── Статистика ─────────────────────────────────────────────────────────────
 export type CampaignStats = {
   recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; bot: number; form: number; hired: number; skipped: number;
