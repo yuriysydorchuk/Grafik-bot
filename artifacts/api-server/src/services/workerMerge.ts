@@ -76,6 +76,26 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
     await tx.update(unplannedWorkersTable).set({ replacesWorkerId: keepId }).where(eq(unplannedWorkersTable.replacesWorkerId, dropId));
     await tx.update(workerDocumentsTable).set({ workerId: keepId }).where(eq(workerDocumentsTable.workerId, dropId));
 
+    // Решта таблиць з worker_id (21.09.2026, злиття Moyo падало на factory_hours: FK без
+    // ON DELETE, а каскадні тихо втрачали рахунки/журнал/умови дубля). Прості FK — переносимо;
+    // «один рядок на працівника» — лишаємо запис keep, дубль drop прибираємо.
+    const plain = ["clothing_items", "contracts", "factory_hours", "gratyfikant_umowy", "hostel_deductions", "hostel_payments", "hostel_stays",
+      "hours_notes", "passport_scan_tokens", "penalties", "transport_deductions", "tasks", "worker_changes", "worker_badania",
+      "worker_family_members", "worker_self_transport", "absence_attachments", "absence_messages"];
+    for (const t of plain) await tx.execute(sql`UPDATE ${sql.identifier(t)} SET worker_id = ${keepId} WHERE worker_id = ${dropId}`);
+    // унікальні пари (worker, factory/month): переносимо лише ті, яких у keep ще нема
+    for (const [t, col] of [["worker_factories", "factory_id"], ["worker_factory_codes", "factory_id"], ["transport_fee_members", "factory_id"], ["hours_month_exclusions", "month"]] as const) {
+      await tx.execute(sql`UPDATE ${sql.identifier(t)} d SET worker_id = ${keepId} WHERE d.worker_id = ${dropId}
+        AND NOT EXISTS (SELECT 1 FROM ${sql.identifier(t)} k WHERE k.worker_id = ${keepId} AND k.${sql.identifier(col)} = d.${sql.identifier(col)})`);
+    }
+    // рахунки: IBAN унікальний глобально, основний — один на профіль
+    await tx.execute(sql`UPDATE worker_bank_accounts SET worker_id = ${keepId},
+      is_primary = (is_primary AND NOT EXISTS (SELECT 1 FROM worker_bank_accounts k WHERE k.worker_id = ${keepId} AND k.is_primary)) WHERE worker_id = ${dropId}`);
+    // анкета: keep без анкети бере анкету drop; інакше дубль зникне каскадом
+    await tx.execute(sql`UPDATE worker_questionnaires SET worker_id = ${keepId} WHERE worker_id = ${dropId}
+      AND NOT EXISTS (SELECT 1 FROM worker_questionnaires k WHERE k.worker_id = ${keepId})`);
+    // кеш легальності drop — просто зникне каскадом (перерахується з подій)
+
     await tx.delete(workersTable).where(eq(workersTable.id, dropId));
   });
   return { ok: true };

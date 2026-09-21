@@ -58,6 +58,7 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     appliesToNationalities: t?.appliesToNationalities ?? null,
     employerCompanyId: d.employerCompanyId, caseStatus: d.caseStatus, submittedAt: dateStr(d.submittedAt),
     verifiedAt: d.verifiedAt ? d.verifiedAt.toISOString() : null, replacesDocumentId: d.replacesDocumentId,
+    hasFile: !!d.filePath,
   }));
 }
 
