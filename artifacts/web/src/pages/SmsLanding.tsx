@@ -14,7 +14,7 @@ type Data = {
   firstName: string; lang: string; kind: "job" | "referral"; campaign: string; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
   cities: string[]; vacancies: Vacancy[]; recruiter: { name: string; hours: string };
-  contacts: { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string };
+  contacts: { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
   offer: { bonus?: string; phone?: string; whatsapp?: string };
   landing: { title?: Txt; about?: Txt; faq?: { q: Txt; a: Txt }[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean } };
 };
@@ -22,7 +22,7 @@ type Data = {
 const S: Record<L, Record<string, string>> = {
   uk: {
     hi: "Привіт", title: "Робота в Польщі", sub: "Легально, з житлом і довозом. Без досвіду.", bonusLine: "Або порекомендуйте друга — {bonus} вам після його 10 змін.",
-    vacancies: "Вакансії", rate: "{n} zł/год netto", housing: "житло від {n} zł", transport: "довіз", noexp: "без досвіду", perks: "Наші переваги", more: "Детальніше", less: "Згорнути",
+    vacancies: "Вакансії", rateNetto: "zł/год netto", rateBrutto: "zł/год brutto", from: "від", allVac: "Усі вакансії на сайті", housing: "житло від {n} zł", transport: "довіз", noexp: "без досвіду", perks: "Наші переваги", more: "Детальніше", less: "Згорнути",
     interest: "Мене цікавить ця вакансія", friend: "Порекомендувати друга", friendName: "Імʼя друга", friendPhone: "Телефон друга", send: "Надіслати", cancel: "Скасувати",
     thanksInterest: "Дякуємо! Консультант звʼяжеться з вами протягом 1 робочого дня.", thanksFriend: "Дякуємо! Ми зателефонуємо {friend}. Після 10 змін друга бонус {bonus} — ваш.",
     friendErr: "Вкажіть імʼя і номер телефону.", ownPhone: "Це ваш номер — впишіть номер друга.", dup: "Цей номер уже в нашій базі, дякуємо!",
@@ -33,7 +33,7 @@ const S: Record<L, Record<string, string>> = {
   },
   ru: {
     hi: "Привет", title: "Работа в Польше", sub: "Легально, с жильём и довозом. Без опыта.", bonusLine: "Или порекомендуйте друга — {bonus} вам после его 10 смен.",
-    vacancies: "Вакансии", rate: "{n} zł/час netto", housing: "жильё от {n} zł", transport: "довоз", noexp: "без опыта", perks: "Наши преимущества", more: "Подробнее", less: "Свернуть",
+    vacancies: "Вакансии", rateNetto: "zł/час netto", rateBrutto: "zł/час brutto", from: "от", allVac: "Все вакансии на сайте", housing: "жильё от {n} zł", transport: "довоз", noexp: "без опыта", perks: "Наши преимущества", more: "Подробнее", less: "Свернуть",
     interest: "Меня интересует эта вакансия", friend: "Порекомендовать друга", friendName: "Имя друга", friendPhone: "Телефон друга", send: "Отправить", cancel: "Отмена",
     thanksInterest: "Спасибо! Консультант свяжется с вами в течение 1 рабочего дня.", thanksFriend: "Спасибо! Мы позвоним {friend}. После 10 смен друга бонус {bonus} — ваш.",
     friendErr: "Укажите имя и номер телефона.", ownPhone: "Это ваш номер — впишите номер друга.", dup: "Этот номер уже есть в нашей базе, спасибо!",
@@ -44,7 +44,7 @@ const S: Record<L, Record<string, string>> = {
   },
   en: {
     hi: "Hi", title: "Work in Poland", sub: "Legal job with housing and transport. No experience needed.", bonusLine: "Or recommend a friend — {bonus} for you after their 10 shifts.",
-    vacancies: "Vacancies", rate: "{n} zł/h net", housing: "housing from {n} zł", transport: "transport", noexp: "no experience", perks: "Why us", more: "Details", less: "Hide",
+    vacancies: "Vacancies", rateNetto: "zł/h net", rateBrutto: "zł/h gross", from: "from", allVac: "All vacancies on our website", housing: "housing from {n} zł", transport: "transport", noexp: "no experience", perks: "Why us", more: "Details", less: "Hide",
     interest: "I'm interested in this job", friend: "Recommend a friend", friendName: "Friend's name", friendPhone: "Friend's phone", send: "Send", cancel: "Cancel",
     thanksInterest: "Thank you! A consultant will contact you within 1 working day.", thanksFriend: "Thank you! We will call {friend}. After your friend's 10 shifts the {bonus} bonus is yours.",
     friendErr: "Enter a name and a phone number.", ownPhone: "That is your own number — enter your friend's.", dup: "This number is already in our database, thank you!",
@@ -56,6 +56,13 @@ const S: Record<L, Record<string, string>> = {
 };
 const pick = (m: Txt | undefined, l: L): string => (m?.[l] || m?.uk || m?.ru || m?.en || "").trim();
 const num = (v?: string): string => { const m = (v ?? "").replace(/\s/g, "").match(/\d+([.,]\d+)?/); return m ? m[0] : ""; };
+// ставка: усі числа (діапазон через –), префікс «від», brutto/netto — рендеримо мовою сторінки
+const rateChip = (v: string | undefined, s: Record<string, string>): string => {
+  if (!v) return "";
+  const nums = v.replace(/\s/g, "").match(/\d+([.,]\d+)?/g); if (!nums) return v;
+  const from = /^(від|от|from|od)\b/i.test(v.trim()) ? s.from + " " : "";
+  return `${from}${nums.join("–")} ${/brutto/i.test(v) ? s.rateBrutto : s.rateNetto}`;
+};
 const fill = (tpl: string, vars: Record<string, string>): string => tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
 
 export default function SmsLanding() {
@@ -128,7 +135,7 @@ export default function SmsLanding() {
               const isOpen = open === v.id;
               const done = interested.has(v.id);
               const perks = v.perks?.length ? v.perks : s.defaultPerks.split(";");
-              const chips = [num(v.rate) && fill(s.rate, { n: num(v.rate) }), num(v.housing) && fill(s.housing, { n: num(v.housing) }), v.transport && s.transport, v.shifts, s.noexp].filter(Boolean) as string[];
+              const chips = [rateChip(v.rate, s), num(v.housing) && fill(s.housing, { n: num(v.housing) }), v.transport && s.transport, v.shifts, s.noexp].filter(Boolean) as string[];
               return (
                 <section key={v.id} className={`rounded-xl border ${isOpen ? "border-slate-900" : "border-slate-200"} overflow-hidden`}>
                   <button onClick={() => setOpen(isOpen ? "" : v.id)} className="w-full text-left p-4">
@@ -187,6 +194,7 @@ export default function SmsLanding() {
             <div className="space-y-2 text-sm">
               {phoneHref && <a href={`tel:${phoneHref}`} onClick={() => ev("cta_call")} className="flex items-center gap-2 font-semibold"><span>📞</span><span>{ct.phone || d.offer.phone}</span></a>}
               {ct.address && <div className="flex items-start gap-2"><span>📍</span><span>{ct.address}{ct.maps && <> · <a href={ct.maps} target="_blank" rel="noreferrer" className="underline text-blue-700">{s.maps}</a></>}</span></div>}
+              {ct.vacanciesUrl && <a href={ct.vacanciesUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>📋</span><span className="underline text-blue-700">{s.allVac}</span></a>}
               {ct.site && <a href={ct.site} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>🌐</span><span className="underline text-blue-700">{ct.site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span></a>}
               {ct.instagram && <a href={ct.instagram} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>📸</span><span className="underline text-blue-700">{s.insta}</span></a>}
               {ct.facebook && <a href={ct.facebook} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>👥</span><span className="underline text-blue-700">{s.fb}</span></a>}

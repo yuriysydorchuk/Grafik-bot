@@ -47,7 +47,7 @@ router.get("/r/:token", async (req, res) => {
     id: "offer", title: { uk: fac?.name ? `Робота на фабриці ${fac.name}` : "Робота на фабриці", ru: fac?.name ? `Работа на фабрике ${fac.name}` : "Работа на фабрике", en: fac?.name ? `Job at ${fac.name}` : "Factory job" },
     city: offer.city || fac?.city || cities[0] || "", rate: offer.rate, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
   }];
-  const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", instagram: "https://instagram.com/euro_support_", facebook: "https://facebook.com/eurosupportES", ...(landing.contacts ?? {}) };
+  const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", vacanciesUrl: "https://eurosupp.pl/dla-pracownika/", instagram: "https://instagram.com/euro_support_", facebook: "https://facebook.com/eurosupportES", ...(landing.contacts ?? {}) };
   if (!contacts.maps && contacts.address) contacts.maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(contacts.address)}`;
   return res.json({
     firstName: rec.firstName || (rec.name || "").split(" ")[0] || "",

@@ -2570,7 +2570,7 @@ export type SmsVacancy = {
   id: string; title: SmsTexts; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string;
   desc?: SmsTexts; perks?: string[]; photo?: string;
 };
-export type SmsContacts = { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string };
+export type SmsContacts = { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
 export type SmsLanding = {
   title?: SmsTexts; chips?: string[]; about?: SmsTexts; give?: SmsTexts; faq?: { q: SmsTexts; a: SmsTexts }[];
   photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };

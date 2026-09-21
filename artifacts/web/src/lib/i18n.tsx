@@ -1823,7 +1823,7 @@ const EN: Record<string, string> = {
   "Персонал": "Staff",
   "Рекрутація": "Recruitment",
   // ── SMS-кампанії ──
-  "Телефон на сторінці": "Phone on the page", "Вакансії на сторінці": "Vacancies on the page", "Додати вакансію": "Add vacancy", "Короткий опис": "Short description",
+  "Телефон на сторінці": "Phone on the page", "Усі вакансії (URL)": "All vacancies (URL)", "Вакансії на сторінці": "Vacancies on the page", "Додати вакансію": "Add vacancy", "Короткий опис": "Short description",
   "Переваги (через ;)": "Perks (separated by ;)", "Житло біля фабрики; Довіз; Аванс після 2 тижнів": "Housing near the factory; Transport; Advance after 2 weeks", "Фото (URL)": "Photo (URL)",
   "Плитки вакансій → опис і переваги → «Мене цікавить» (телефон уже відомий, рекрутер отримує картку в бот) і «Порекомендувати друга» (імʼя + телефон → кандидат у воронці). Без вакансій сторінка показує одну з пропозиції кампанії. Порожні контакти → дані офісу.": "Vacancy tiles → description and perks → “I'm interested” (phone already known, recruiter gets a card in the bot) and “Recommend a friend” (name + phone → candidate in the funnel). Without vacancies the page shows one built from the campaign offer. Empty contacts → office defaults.",
   "зацікавлені": "interested", "на обдзвон": "call list", "Міста (через ;)": "Cities (separated by ;)", "порожньо — міста фабрик": "empty — factory cities",
