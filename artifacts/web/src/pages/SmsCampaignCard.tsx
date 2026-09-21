@@ -215,7 +215,7 @@ function ScheduleTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
 
 // Редактор вакансій сторінки: плитки з назвою 3 мовами, містом, ставкою/житлом/довозом/змінами,
 // коротким описом і перевагами (через ;). Порожній список → одна вакансія з пропозиції кампанії.
-type Vac = { id: string; title: Record<string, string>; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Record<string, string>; perks?: string[]; photo?: string };
+type Vac = { id: string; title: Record<string, string>; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Record<string, string>; perks?: string[]; photo?: string; experience?: boolean };
 function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[]) => void }) {
   const t = useT();
   const upd = (i: number, patch: Partial<Vac>) => onChange(value.map((v, j) => (j === i ? { ...v, ...patch } : v)));
@@ -242,7 +242,7 @@ function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[
             <div><Label>{t("Переваги (через ;)")}</Label><Input value={(v.perks ?? []).join("; ")} placeholder={t("Житло біля фабрики; Довіз; Аванс після 2 тижнів")} onChange={(e) => upd(i, { perks: e.target.value.split(";").map((x) => x.trim()).filter(Boolean) })} /></div>
             <div><Label>{t("Фото (URL)")}</Label><Input value={v.photo ?? ""} onChange={(e) => upd(i, { photo: e.target.value })} /></div>
           </div>
-          <div className="flex justify-end"><Button variant="secondary" onClick={() => onChange(value.filter((_, j) => j !== i))}>{t("Прибрати")}</Button></div>
+          <div className="flex items-center justify-between"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!v.experience} onChange={(e) => upd(i, { experience: e.target.checked })} /> {t("потрібен досвід")}</label><Button variant="secondary" onClick={() => onChange(value.filter((_, j) => j !== i))}>{t("Прибрати")}</Button></div>
         </div>
       ))}
     </div>

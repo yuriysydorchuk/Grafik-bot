@@ -9,7 +9,7 @@ import { useRoute } from "wouter";
 
 type L = "uk" | "ru" | "en";
 type Txt = Partial<Record<L, string>>;
-type Vacancy = { id: string; title: Txt; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string };
+type Vacancy = { id: string; title: Txt; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
 type Data = {
   firstName: string; lang: string; kind: "job" | "referral"; campaign: string; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
@@ -22,7 +22,7 @@ type Data = {
 const S: Record<L, Record<string, string>> = {
   uk: {
     hi: "Привіт", title: "Робота в Польщі", sub: "Легально, з житлом і довозом. Без досвіду.", bonusLine: "Або порекомендуйте друга — {bonus} вам після його 10 змін.",
-    vacancies: "Вакансії", rateNetto: "zł/год netto", rateBrutto: "zł/год brutto", from: "від", allVac: "Усі вакансії на сайті", housing: "житло від {n} zł", transport: "довіз", noexp: "без досвіду", perks: "Наші переваги", more: "Детальніше", less: "Згорнути",
+    vacancies: "Вакансії", rateNetto: "zł/год netto", rateBrutto: "zł/год brutto", from: "від", allVac: "Усі вакансії на сайті", housing: "житло від {n} zł", transport: "довіз", noexp: "без досвіду", exp: "з досвідом", perks: "Наші переваги", more: "Детальніше", less: "Згорнути",
     interest: "Мене цікавить ця вакансія", friend: "Порекомендувати друга", friendName: "Імʼя друга", friendPhone: "Телефон друга", send: "Надіслати", cancel: "Скасувати",
     thanksInterest: "Дякуємо! Консультант звʼяжеться з вами протягом 1 робочого дня.", thanksFriend: "Дякуємо! Ми зателефонуємо {friend}. Після 10 змін друга бонус {bonus} — ваш.",
     friendErr: "Вкажіть імʼя і номер телефону.", ownPhone: "Це ваш номер — впишіть номер друга.", dup: "Цей номер уже в нашій базі, дякуємо!",
@@ -33,7 +33,7 @@ const S: Record<L, Record<string, string>> = {
   },
   ru: {
     hi: "Привет", title: "Работа в Польше", sub: "Легально, с жильём и довозом. Без опыта.", bonusLine: "Или порекомендуйте друга — {bonus} вам после его 10 смен.",
-    vacancies: "Вакансии", rateNetto: "zł/час netto", rateBrutto: "zł/час brutto", from: "от", allVac: "Все вакансии на сайте", housing: "жильё от {n} zł", transport: "довоз", noexp: "без опыта", perks: "Наши преимущества", more: "Подробнее", less: "Свернуть",
+    vacancies: "Вакансии", rateNetto: "zł/час netto", rateBrutto: "zł/час brutto", from: "от", allVac: "Все вакансии на сайте", housing: "жильё от {n} zł", transport: "довоз", noexp: "без опыта", exp: "с опытом", perks: "Наши преимущества", more: "Подробнее", less: "Свернуть",
     interest: "Меня интересует эта вакансия", friend: "Порекомендовать друга", friendName: "Имя друга", friendPhone: "Телефон друга", send: "Отправить", cancel: "Отмена",
     thanksInterest: "Спасибо! Консультант свяжется с вами в течение 1 рабочего дня.", thanksFriend: "Спасибо! Мы позвоним {friend}. После 10 смен друга бонус {bonus} — ваш.",
     friendErr: "Укажите имя и номер телефона.", ownPhone: "Это ваш номер — впишите номер друга.", dup: "Этот номер уже есть в нашей базе, спасибо!",
@@ -44,7 +44,7 @@ const S: Record<L, Record<string, string>> = {
   },
   en: {
     hi: "Hi", title: "Work in Poland", sub: "Legal job with housing and transport. No experience needed.", bonusLine: "Or recommend a friend — {bonus} for you after their 10 shifts.",
-    vacancies: "Vacancies", rateNetto: "zł/h net", rateBrutto: "zł/h gross", from: "from", allVac: "All vacancies on our website", housing: "housing from {n} zł", transport: "transport", noexp: "no experience", perks: "Why us", more: "Details", less: "Hide",
+    vacancies: "Vacancies", rateNetto: "zł/h net", rateBrutto: "zł/h gross", from: "from", allVac: "All vacancies on our website", housing: "housing from {n} zł", transport: "transport", noexp: "no experience", exp: "experience required", perks: "Why us", more: "Details", less: "Hide",
     interest: "I'm interested in this job", friend: "Recommend a friend", friendName: "Friend's name", friendPhone: "Friend's phone", send: "Send", cancel: "Cancel",
     thanksInterest: "Thank you! A consultant will contact you within 1 working day.", thanksFriend: "Thank you! We will call {friend}. After your friend's 10 shifts the {bonus} bonus is yours.",
     friendErr: "Enter a name and a phone number.", ownPhone: "That is your own number — enter your friend's.", dup: "This number is already in our database, thank you!",
@@ -60,7 +60,7 @@ const num = (v?: string): string => { const m = (v ?? "").replace(/\s/g, "").mat
 const rateChip = (v: string | undefined, s: Record<string, string>): string => {
   if (!v) return "";
   const nums = v.replace(/\s/g, "").match(/\d+([.,]\d+)?/g); if (!nums) return v;
-  const from = /^(від|от|from|od)\b/i.test(v.trim()) ? s.from + " " : "";
+  const from = /^(від|от|from|od)(\s|\d)/i.test(v.trim()) ? s.from + " " : ""; // \b не працює з кирилицею
   return `${from}${nums.join("–")} ${/brutto/i.test(v) ? s.rateBrutto : s.rateNetto}`;
 };
 const fill = (tpl: string, vars: Record<string, string>): string => tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
@@ -135,7 +135,7 @@ export default function SmsLanding() {
               const isOpen = open === v.id;
               const done = interested.has(v.id);
               const perks = v.perks?.length ? v.perks : s.defaultPerks.split(";");
-              const chips = [rateChip(v.rate, s), num(v.housing) && fill(s.housing, { n: num(v.housing) }), v.transport && s.transport, v.shifts, s.noexp].filter(Boolean) as string[];
+              const chips = [rateChip(v.rate, s), num(v.housing) && fill(s.housing, { n: num(v.housing) }), v.transport && s.transport, v.shifts, v.experience ? s.exp : s.noexp].filter(Boolean) as string[];
               return (
                 <section key={v.id} className={`rounded-xl border ${isOpen ? "border-slate-900" : "border-slate-200"} overflow-hidden`}>
                   <button onClick={() => setOpen(isOpen ? "" : v.id)} className="w-full text-left p-4">
