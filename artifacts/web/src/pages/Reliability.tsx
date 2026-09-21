@@ -6,6 +6,8 @@ import { PageHeader } from "../components/Layout";
 import { WorkerDaysModal } from "../components/DetailModals";
 import { useT, useLang } from "../lib/i18n";
 import { monthOptions } from "../lib/dates";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface Row { workerId: number; name: string; code: string | null; factory: string | null; present: number; absent: number; cancelled: number; rate: number | null; hours: number }
 
@@ -26,12 +28,15 @@ export default function Reliability() {
     queryKey: ["reliability", month], queryFn: () => get(`/reliability?month=${month}`),
   });
 
+  const [q, setQ] = useSessionState("reliability.q", ""); // пошук по імені/фабриці (памʼять на вкладку)
+  const shown = (data?.workers ?? []).filter(w => matchesQuery(q, w.name, w.code, w.factory));
   return (
     <>
       <PageHeader title={t("Надійність")} subtitle={t("Явка та пропуски працівників за місяць")} />
       <div className="mb-4 flex items-center gap-3">
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select>
-        {data && data.workers.length > 0 && <Badge color="slate">{data.workers.length} {t("людей")}</Badge>}
+        <SearchBox value={q} onChange={setQ} placeholder={t("Пошук: працівник, фабрика")} />
+        {data && data.workers.length > 0 && <Badge color="slate">{shown.length}{q ? ` / ${data.workers.length}` : ""} {t("людей")}</Badge>}
       </div>
       {isFetching && !data ? <Spinner /> : !data?.workers.length ? <Empty>{t("За цей місяць немає затверджених змін")}</Empty> : (
         <Card className="overflow-x-auto">
@@ -46,7 +51,7 @@ export default function Reliability() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
-              {data.workers.map(w => (
+              {shown.map(w => (
                 <tr key={w.workerId} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }} className="cursor-pointer hover:bg-red-50/40">
                   <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">{w.name}</td>
                   <td className="px-4 py-2.5 text-slate-500">{w.factory ?? "—"}</td>

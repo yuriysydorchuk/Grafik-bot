@@ -37,6 +37,7 @@ import zcnaPublicRouter from "./zcnaPublic";
 import taskIcalRouter from "./taskIcal";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
+import searchRouter from "./search";
 
 const router: IRouter = Router();
 
@@ -54,6 +55,7 @@ router.use(zcnaPublicRouter);
 router.use(taskIcalRouter);
 router.use(authRouter);
 router.use(adminApiRouter);
+router.use(searchRouter);
 router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);

@@ -6,6 +6,8 @@ import { Card, Spinner, Badge, Empty } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 const fmt = (iso: string) => new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -48,9 +50,11 @@ export default function Security() {
 
   if (isLoading) return <Spinner />;
 
+  const [q, setQ] = useSessionState("security.q", ""); // пошук по обох таблицях
   return (
     <>
       <PageHeader title={t("Безпека / Сесії")} subtitle={t("Хто заходив у панель, коли, звідки — і блокування підозрілих сесій")} />
+      <div className="mb-4"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: хто, IP, пристрій")} /></div>
 
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><Monitor className="h-4 w-4 text-red-600" /> {t("Активні сесії")}</h3>
       <Card className="overflow-x-auto">
@@ -68,7 +72,7 @@ export default function Security() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {sessions.map(s => (
+              {sessions.filter(s => matchesQuery(q, s.adminName, s.ip, s.device, s.geo)).map(s => (
                 <tr key={s.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium text-slate-700">{s.adminName ?? `#${s.adminId}`}{s.current && <span className="ml-2"><Badge color="blue">{t("цей пристрій")}</Badge></span>}</td>
                   <td className="px-4 py-2.5 text-slate-500">{s.device ?? "—"}</td>
@@ -112,7 +116,7 @@ export default function Security() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {events.map(e => (
+              {events.filter(e => matchesQuery(q, e.adminName, e.usernameTried, e.ip, e.device, e.geo)).map(e => (
                 <tr key={e.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 text-slate-500 tabular-nums">{fmt(e.at)}</td>
                   <td className="px-4 py-2.5"><Badge color={EVENT_COLOR[e.event]}>{t(EVENT_LABEL[e.event])}</Badge></td>

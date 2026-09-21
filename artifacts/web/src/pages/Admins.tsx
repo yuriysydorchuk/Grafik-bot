@@ -7,6 +7,8 @@ import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, 
 import { Card, Spinner, Badge, Empty, Select, Button, Modal, Input, Label } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface AdminRow {
   id: number; name: string; username: string | null; role: string;
@@ -25,6 +27,8 @@ export default function Admins({ me }: { me: Me }) {
   const [editing, setEditing] = useState<AdminRow | null>(null);
   const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["admins"] });
+  const [q, setQ] = useSessionState("admins.q", ""); // пошук по імені/логіну/ролі
+  const shown = (data ?? []).filter(a => matchesQuery(q, a.name, a.username, roleLabel(a.role)));
 
   const setRole = useMutation({
     mutationFn: (v: { id: number; role: string }) => patch(`/admins/${v.id}`, { role: v.role }),
@@ -58,14 +62,15 @@ export default function Admins({ me }: { me: Me }) {
         </div>
       )}
 
+      <div className="mb-4"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: імʼя, логін, роль")} /></div>
       <Card className="overflow-x-auto">
-        {!data?.length ? <Empty>{t("Немає користувачів")}</Empty> : (
+        {!data?.length ? <Empty>{t("Немає користувачів")}</Empty> : !shown.length ? <Empty>{t("Нічого не знайдено")}</Empty> : (
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
               <tr><th className="px-4 py-2.5">{t("Імʼя")}</th><th className="px-4 py-2.5">{t("Веб-логін")}</th><th className="px-4 py-2.5">{t("Статус")}</th><th className="px-4 py-2.5">{t("Роль")}</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {data.map(a => (
+              {shown.map(a => (
                 <tr key={a.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium text-slate-700">{a.name}{a.isMain && " 👑"}</td>
                   <td className="px-4 py-2.5">{a.username ? <span className="font-mono text-slate-600">{a.username}</span> : <span className="text-slate-300">—</span>}</td>

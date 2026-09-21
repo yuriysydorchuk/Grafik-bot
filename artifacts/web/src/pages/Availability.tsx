@@ -11,6 +11,8 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
 
@@ -57,6 +59,7 @@ type Group = { key: string; name: string; rows: AvailRow[]; summary: Summary };
 export default function Availability() {
   const t = useT();
   const [weekStart, setWeekStart] = useState(upcomingWeeks()[0]!.value);
+  const [sq, setSq] = useSessionState("availability.q", ""); // пошук по працівнику
   const [hist, setHist] = useState<AvailRow | null>(null); // модалка історії заповнення
   const me = useMe();
   const canRemind = can(me, "editData");
@@ -100,6 +103,7 @@ export default function Availability() {
           нижче, щоб вони ховалися під бар, а не просвічували. */}
       <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-40 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
         <WeekSelect value={weekStart} onChange={setWeekStart} />
+        <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник")} />
         {canRemind && (
           <div className="flex items-center gap-2">
             <Badge color={missing.length ? "amber" : "green"}>{t("Не заповнили:")} {missing.length}</Badge>
@@ -181,7 +185,7 @@ export default function Availability() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {g.rows.map((r, i) => (
+                    {g.rows.filter(r => matchesQuery(sq, r.name, r.factoryName)).map((r, i) => (
                       <tr key={i} className="hover:bg-slate-50">
                         <td className="px-4 py-2 font-medium text-slate-700">{r.name}</td>
                         {DAYS.map(d => (

@@ -12,6 +12,8 @@ import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
 import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface Dispute { workerId: number; status: string }
 
@@ -81,6 +83,7 @@ export default function Hours() {
     return m && months.some(x => x.value === m) ? m : months[0]!.value;
   });
   const [cityTab, setCityTab] = useState(() => new URLSearchParams(window.location.search).get("city") ?? "");   // "" = всі міста
+  const [sq, setSq] = useSessionState("hours.q", ""); // пошук по працівнику (памʼять на вкладку)
   const [facTab, setFacTab] = useState(() => new URLSearchParams(window.location.search).get("fac") ?? "");      // ключ групи ("" = всі фабрики)
   // ?w=<id>&wn=<імʼя> — відкрита модалка днів працівника (повернення з профілю «назад де був»)
   const [sel, setSel] = useState<{ id: number; name: string } | null>(() => {
@@ -287,6 +290,7 @@ export default function Hours() {
           -mx-8/px-8 undo the main padding so the opaque strip spans full width. */}
       <div className="mb-4 md:sticky md:top-[52px] md:z-20 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
       <div className="flex flex-wrap items-center gap-3">
+        <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник")} className="w-48" />
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </Select>
@@ -599,7 +603,7 @@ export default function Hours() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {/* клік відкриває деталі; виділення тексту (копіювання імені) — ні */}
-                      {g.rows.map(w => (
+                      {g.rows.filter(w => matchesQuery(sq, w.name)).map(w => (
                         <tr key={`${w.workerId}-${w.factoryId ?? 0}`} onClick={() => { if (window.getSelection()?.toString()) return; setSel({ id: w.workerId, name: w.name }); }}
                           className={`cursor-pointer ${w.unlegalized ? "bg-rose-50/70 hover:bg-rose-100/60" : "even:bg-slate-50/60 hover:bg-red-50/40"}`}>
                           {canEdit && (

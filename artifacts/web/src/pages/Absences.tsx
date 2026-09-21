@@ -11,6 +11,8 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 // Дата внесення пояснення працівником (бот) — показуємо, бо пояснення може прийти значно пізніше за пропуск
 const fmtExplained = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -71,6 +73,7 @@ export default function Absences() {
   const me = useMe();
   const canEdit = can(me, "editData");
   const [month, setMonth] = useState(months[0]!.value);
+  const [sq, setSq] = useSessionState("absences.q", ""); // пошук по працівнику
   const [filter, setFilter] = useState<"all" | "excused" | "noshow" | "justified">("all");
   const [cityF, setCityF] = useState("");  // "" = всі міста
   const [facF, setFacF] = useState("");    // "" = всі фабрики
@@ -241,6 +244,7 @@ export default function Absences() {
     <>
       <PageHeader title={t("Відсутності")} subtitle={t("Пропуски змін із причинами (із затвердженого графіку)")} />
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник, код")} />
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </Select>
@@ -363,7 +367,7 @@ export default function Absences() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {byWorker.map(w => (
+              {byWorker.filter(w => matchesQuery(sq, w.name, w.code)).map(w => (
                 <WorkerRows key={w.key} w={w} open={openWorker === w.key} canEdit={canEdit}
                   defaultPenalty={data?.defaultPenalty ?? 200}
                   canSvodni={canSvodni} selectable={eligByWorker.has(w.key)} selected={sel.has(w.key)}

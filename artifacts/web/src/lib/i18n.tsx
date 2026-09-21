@@ -187,6 +187,17 @@ const EN: Record<string, string> = {
   "не підтверджено юристом": "not confirmed by a lawyer",
   "звільнення": "terminations",
   "перший робочий день": "first working day", "останній робочий день": "last working day",
+  // загальний пошук (components/GlobalSearch.tsx)
+  "Пошук по панелі (Ctrl+K)": "Search the panel (Ctrl+K)", "Працівник, кандидат, водій, фабрика, хостел, задача…": "Worker, candidate, driver, factory, hostel, task…",
+  "Введіть щонайменше 2 символи — ім'я, код, PESEL, телефон, назву": "Type at least 2 characters — name, code, PESEL, phone, title",
+  "працівник": "worker", "кандидат": "candidate", "водій": "driver",
+  "Пошук за іменем": "Search by name",
+  "Всі фірми": "All companies", "розділ": "section", "дія": "action",
+  // плейсхолдери полів пошуку списків (components/SearchBox.tsx на сторінках)
+  "Пошук: працівник, фабрика": "Search: worker, factory", "Пошук: водій, авто": "Search: driver, vehicle", "Пошук: водій, авто, телефон": "Search: driver, vehicle, phone",
+  "Пошук: імʼя, логін, роль": "Search: name, login, role", "Пошук: хто, IP, пристрій": "Search: who, IP, device", "Пошук: номер, марка, фірма, власник, місто": "Search: plate, brand, company, owner, city",
+  "Пошук: працівник, код": "Search: worker, code", "Пошук: працівник": "Search: worker", "Пошук: водій": "Search: driver", "Контрагент, опис": "Counterparty, description",
+  "Пошук: хостел, місто, мешканець": "Search: hostel, city, resident", "Пошук: фабрика, місто": "Search: factory, city",
   "Документи не зараховуються для виплат, поки не зелені всі осі:": "Documents do not count for payroll until every axis is green:",
   "звільняється": "leaving",
   "Скопіювати посилання-запрошення": "Copy invite link",

@@ -12,6 +12,7 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { dotClass, topClass } from "../lib/colors";
+import { useSessionState } from "../lib/nav";
 
 const initials = (n: string) => n.split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase();
 const overdue = (iso?: string | null) => !!iso && new Date(iso).getTime() < Date.now();
@@ -32,7 +33,7 @@ export default function Recruitment() {
   const active = funnels.find(f => f.id === funnelId) ?? funnels[0];
   const isReferral = active?.kind === "referral";
 
-  const [q, setQ] = useState("");
+  const [q, setQ] = useSessionState("recruitment.q", ""); // памʼять на вкладку; ключ заповнює й загальний пошук (GlobalSearch)
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [showFilter, setShowFilter] = useState(false);
   const [dragId, setDragId] = useState<number | null>(null);

@@ -38,7 +38,8 @@ export default function Settings() {
   const t = useT();
   const me = useMe();
   const tabs = me ? TABS.filter(tab => tab.show(me)) : [];
-  const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "factories");
+  // ?tab=… — дип-лінк із загального пошуку (Ctrl+K «Налаштування → …»)
+  const [tab, setTab] = useState<TabId>(() => (new URLSearchParams(window.location.search).get("tab") as TabId | null) || tabs[0]?.id || "factories");
   const active = tabs.some(t => t.id === tab) ? tab : (tabs[0]?.id ?? "factories");
 
   return (

@@ -8,6 +8,8 @@ import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 export default function Drivers() {
   const t = useT();
@@ -18,6 +20,9 @@ export default function Drivers() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Driver | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["drivers"] });
+  // пошук по імені/авто/телефону; ключ drivers.q — його ж заповнює загальний пошук (GlobalSearch)
+  const [q, setQ] = useSessionState("drivers.q", "");
+  const shown = (drivers ?? []).filter(d => matchesQuery(q, d.name, d.vehicle, d.phone));
 
   const setHead = useMutation({ mutationFn: (id: number) => patch(`/drivers/${id}`, { isHeadDriver: true }), onSuccess: () => { inv(); toast.success(t("Головного водія призначено")); } });
   const remove = useMutation({ mutationFn: (id: number) => del(`/drivers/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); } });
@@ -33,14 +38,15 @@ export default function Drivers() {
     <>
       <PageHeader title={t("Водії")} subtitle={`${drivers?.length ?? 0} ${t("активних")}`}
         action={<Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>} />
+      <div className="mb-4 flex flex-wrap items-center gap-3"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: водій, авто, телефон")} />{q && <span className="text-xs text-slate-400">{shown.length} / {drivers?.length ?? 0}</span>}</div>
       <Card className="overflow-x-auto">
-        {!drivers?.length ? <Empty>{t("Немає водіїв")}</Empty> : (
+        {!drivers?.length ? <Empty>{t("Немає водіїв")}</Empty> : !shown.length ? <Empty>{t("Нічого не знайдено")}</Empty> : (
           <table className="w-full min-w-120 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
               <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Авто")}</th><th className="px-4 py-2.5">{t("Телефон")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {drivers.map(d => (
+              {shown.map(d => (
                 <tr key={d.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium text-slate-700">{d.isHeadDriver && "👑 "}{d.name}</td>
                   <td className="px-4 py-2.5 text-slate-500">{d.vehicle ?? "—"}</td>

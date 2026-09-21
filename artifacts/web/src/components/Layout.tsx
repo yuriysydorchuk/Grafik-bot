@@ -11,6 +11,7 @@ import { useNavTracking } from "../lib/nav";
 import { post, type Me } from "../lib/api";
 import { canAccessPage } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
+import { GlobalSearch } from "./GlobalSearch";
 import { useT, useLang } from "../lib/i18n";
 import { useTheme } from "../lib/theme";
 
@@ -237,7 +238,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
           </button>
           <Logo className="h-7 w-7" />
           <span className="font-semibold text-slate-800">{t(titleFor(loc))}</span>
-          <div className="ml-auto flex items-center gap-2"><ThemeToggle /><LangToggle /><NotificationBell /></div>
+          <div className="ml-auto flex items-center gap-2"><GlobalSearch compact /><ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
         {/* desktop top bar */}
         <header className="sticky top-0 z-30 hidden items-center gap-2 border-b border-slate-200 bg-white/80 px-8 py-2.5 shadow-[0_1px_3px_rgb(15_23_42/0.04)] backdrop-blur md:flex">
@@ -245,7 +246,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
             {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </button>
           <span className="text-sm font-semibold text-slate-700">{t(titleFor(loc))}</span>
-          <div className="ml-auto flex items-center gap-2"><ThemeToggle /><LangToggle /><NotificationBell /></div>
+          <div className="ml-auto flex items-center gap-2"><GlobalSearch /><ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
         <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-8">{children}</main>
       </div>

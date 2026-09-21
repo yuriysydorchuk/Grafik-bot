@@ -6,6 +6,8 @@ import { Card, Spinner, Select, Empty, Button } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 import { ObligationModal, type Obligation as Ob } from "../components/ObligationModal";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface Meta { companies: { id: number; name: string }[] }
 
@@ -16,6 +18,7 @@ export default function Obligations() {
   const qc = useQueryClient();
   const [status, setStatus] = useState("open");
   const [companyId, setCompanyId] = useState("");
+  const [sq, setSq] = useSessionState("obligations.q", ""); // пошук: контрагент, опис
   const [editing, setEditing] = useState<Ob | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -50,6 +53,10 @@ export default function Obligations() {
             {meta.data?.companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </Select>
         </div>
+        <div>
+          <div className="mb-1 text-xs text-slate-500">{t("Пошук")}</div>
+          <SearchBox value={sq} onChange={setSq} placeholder={t("Контрагент, опис")} />
+        </div>
         <Button onClick={() => setAdding(true)}><Plus className="mr-1 h-4 w-4" />{t("Запис")}</Button>
       </div>
 
@@ -73,7 +80,7 @@ export default function Obligations() {
               <th className="px-2 py-2"></th>
             </tr></thead>
             <tbody>
-              {d!.rows.map(o => (
+              {d!.rows.filter(o => matchesQuery(sq, o.counterparty, o.description)).map(o => (
                 <tr key={o.id} className={`border-b border-slate-100 ${o.status === "settled" ? "opacity-50" : ""} ${overdue(o) ? "bg-amber-50" : ""}`}>
                   <td className="px-4 py-2">
                     <span className={`mr-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${o.direction === "receivable" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>

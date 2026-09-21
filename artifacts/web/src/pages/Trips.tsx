@@ -6,6 +6,8 @@ import { PageHeader } from "../components/Layout";
 import { DriverDaysModal } from "../components/DetailModals";
 import { useT, useLang } from "../lib/i18n";
 import { monthOptions } from "../lib/dates";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface Row { driverId: number; name: string; vehicle: string | null; total: number; latePickup: number; lateFactory: number }
 
@@ -20,10 +22,12 @@ export default function Trips() {
     queryKey: ["trips", month], queryFn: () => get(`/trips?month=${month}`),
   });
 
+  const [q, setQ] = useSessionState("trips.q", ""); // пошук по водію/авто
+  const shown = (data?.drivers ?? []).filter(d => matchesQuery(q, d.name, d.vehicle));
   return (
     <>
       <PageHeader title={t("Поїздки водіїв")} subtitle={t("Кількість поїздок і запізнення за місяць")} />
-      <div className="mb-4"><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
+      <div className="mb-4 flex flex-wrap items-center gap-3"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: водій, авто")} /><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
       {isFetching && !data ? <Spinner /> : !data?.drivers.length ? <Empty>{t("За цей місяць немає зафіксованих поїздок")}</Empty> : (
         <Card className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -31,7 +35,7 @@ export default function Trips() {
               <tr><th className="px-4 py-2.5">{t("Водій")}</th><th className="px-4 py-2.5">{t("Авто")}</th><th className="px-4 py-2.5 text-center">{t("Поїздок")}</th><th className="px-4 py-2.5 text-center">{t("Спізн. на збір")}</th><th className="px-4 py-2.5 text-center">{t("Спізн. на фабрику")}</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {data.drivers.map(d => (
+              {shown.map(d => (
                 <tr key={d.driverId} onClick={() => setSel({ id: d.driverId, name: d.name })} className="cursor-pointer hover:bg-red-50/40">
                   <td className="px-4 py-2.5 font-medium text-red-700 underline-offset-2 hover:underline">{d.name}</td>
                   <td className="px-4 py-2.5 text-slate-500">{d.vehicle ?? "—"}</td>

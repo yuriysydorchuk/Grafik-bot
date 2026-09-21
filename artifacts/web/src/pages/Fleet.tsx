@@ -12,6 +12,8 @@ import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 type FleetVehicle = {
   id: number; plate: string; brandModel: string | null; seats: number | null; isActive: boolean;
@@ -63,10 +65,11 @@ export default function Fleet() {
   const { data: vehicles = [], isLoading } = useQuery<FleetVehicle[]>({ queryKey: ["fleet-vehicles"], queryFn: () => get("/fleet/vehicles?all=1") });
   const { data: alerts = [] } = useQuery<FleetAlert[]>({ queryKey: ["fleet-alerts"], queryFn: () => get("/fleet/alerts") });
   const [editing, setEditing] = useState<FleetVehicle | null>(null);
+  const [q, setQ] = useSessionState("fleet.q", ""); // пошук: номер, марка, фірма, власник, місто
 
   const shown = useMemo(
-    () => vehicles.filter(v => showAll || (v.isActive && v.status === "active")),
-    [vehicles, showAll],
+    () => vehicles.filter(v => (showAll || (v.isActive && v.status === "active")) && matchesQuery(q, v.plate, v.brandModel, v.companyName, v.ownerName, v.city)),
+    [vehicles, showAll, q],
   );
   const activeCount = vehicles.filter(v => v.isActive && v.status === "active").length;
 
@@ -82,6 +85,7 @@ export default function Fleet() {
           </label>
         } />
 
+      <div className="mb-4"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: номер, марка, фірма, власник, місто")} /></div>
       {alerts.length > 0 && (
         <Card className="mb-4 border-amber-300 bg-amber-50 p-3">
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-amber-800">

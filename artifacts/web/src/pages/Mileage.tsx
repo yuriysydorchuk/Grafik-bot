@@ -9,6 +9,8 @@ import { useT, useLang } from "../lib/i18n";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { monthOptions } from "../lib/dates";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null }
 interface Row { driverId: number; name: string; vehicle: string | null; days: Day[]; totalKm: number; closedShifts: number; avgKm: number | null }
@@ -49,16 +51,17 @@ export default function Mileage() {
 
   const drivers = data?.drivers ?? [];
   const active = drivers.find(d => d.driverId === driverId) ?? drivers[0];
+  const [q, setQ] = useSessionState("mileage.q", ""); // пошук водія серед вкладок
 
   return (
     <>
       <PageHeader title={t("Звіт по пробігу")} subtitle={t("Пробіг авто по змінах водіїв (початок/кінець зміни)")} />
-      <div className="mb-4"><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
+      <div className="mb-4 flex flex-wrap items-center gap-3"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: водій, авто")} /><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
       {isFetching && !data ? <Spinner /> : !drivers.length ? <Empty>{t("За цей місяць немає записів пробігу")}</Empty> : (
         <>
           {/* Driver tabs */}
           <div className="mb-4 flex flex-wrap gap-2">
-            {drivers.map(d => (
+            {drivers.filter(d => matchesQuery(q, d.name, d.vehicle)).map(d => (
               <button key={d.driverId} onClick={() => setDriverId(d.driverId)}
                 className={cn(
                   "rounded-lg border px-3 py-1.5 text-sm font-medium transition",

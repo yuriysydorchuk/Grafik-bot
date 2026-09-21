@@ -25,6 +25,8 @@ const STATUS_COLOR: Record<string, "amber" | "blue" | "rose" | "green"> = {
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "numeric" });
 const r2 = (n: number) => Math.round(n * 100) / 100;
 import { fmtIban } from "../lib/iban";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 const addMonths = (ym: string, n: number) => {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y!, m! - 1 + n, 1);
@@ -83,8 +85,16 @@ export default function Advances() {
   };
 
   // запити на розгляді — завжди зверху, незалежно від вибраного місяця
-  const pending = data.filter(r => r.status === "pending");
-  const monthRows = useMemo(() => data.filter(r => r.status !== "pending" && rowMonth(r) === month), [data, month]);
+  const pendingAll = data.filter(r => r.status === "pending");
+  // фільтри фірма / фабрика / імʼя (рішення власника 21.09.2026) — памʼять на вкладку; діють на список і підсумки місяця
+  const [coF, setCoF] = useSessionState("advances.co", "");
+  const [facF, setFacF] = useSessionState("advances.fac", "");
+  const [sq, setSq] = useSessionState("advances.q", "");
+  const monthAll = useMemo(() => data.filter(r => r.status !== "pending" && rowMonth(r) === month), [data, month]);
+  const companyOpts = useMemo(() => [...new Set(monthAll.map(r => r.company).filter((x): x is string => !!x))].sort(), [monthAll]);
+  const factoryOpts = useMemo(() => [...new Set(monthAll.map(r => r.factory).filter((x): x is string => !!x))].sort((a, b) => a.localeCompare(b, "pl")), [monthAll]);
+  const monthRows = useMemo(() => monthAll.filter(r => (!coF || r.company === coF) && (!facF || r.factory === facF) && matchesQuery(sq, r.name, r.code)), [monthAll, coF, facF, sq]);
+  const pending = pendingAll.filter(r => (!coF || r.company === coF) && (!facF || r.factory === facF) && matchesQuery(sq, r.name, r.code)); // ті ж фільтри й на запити на розгляді
   const rows = useMemo(() => filter === "all" ? monthRows : monthRows.filter(r => r.status === filter), [monthRows, filter]);
   const totals = useMemo(() => {
     const sum = (s: string) => r2(monthRows.filter(r => r.status === s).reduce((a, r) => a + r.amount, 0));
@@ -196,6 +206,15 @@ export default function Advances() {
           <option value="paid">{t("Виплачено")}</option>
           <option value="rejected">{t("Відхилено")}</option>
         </Select>
+        <Select value={coF} onChange={e => setCoF(e.target.value)} className="w-40">
+          <option value="">{t("Всі фірми")}</option>
+          {companyOpts.map(c => <option key={c} value={c}>{c}</option>)}
+        </Select>
+        <Select value={facF} onChange={e => setFacF(e.target.value)} className="w-48">
+          <option value="">{t("Всі фабрики")}</option>
+          {factoryOpts.map(f => <option key={f} value={f}>{f}</option>)}
+        </Select>
+        <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник, код")} className="w-48" />
         <Button onClick={() => setSubmitting(true)}><Plus className="h-4 w-4" /> {t("Подати залічку")}</Button>
         {canGrat && (
           <Button variant="secondary" onClick={() => setGratOpen(true)} title={t("Файл для імпорту naliczeń у Gratyfikant nexo")}>

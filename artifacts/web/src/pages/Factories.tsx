@@ -10,6 +10,8 @@ import { useT } from "../lib/i18n";
 import { useConfirm } from "../components/confirm";
 import { badgeClass, dotClass } from "../lib/colors";
 import { can } from "../lib/roles";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 // New backend fields not yet in the shared Factory type (fin-gated ones come per-cap:
 // rates — viewFinance|factoryRates, NIP/P&L — viewFinance only)
@@ -59,14 +61,17 @@ export default function Factories() {
     onError: (e: any) => toast.error(e.message),
   });
 
+  const [fq, setFq] = useSessionState("factories.q", ""); // пошук: назва, місто (ключ заповнює й GlobalSearch)
+  const shownFactories = (factories ?? []).filter(f => matchesQuery(fq, f.name, f.city));
   if (isLoading) return <Spinner />;
   return (
     <>
       <PageHeader title={t("Фабрики")} subtitle={`${factories?.length ?? 0}`}
         action={<Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>} />
+      <div className="mb-4"><SearchBox value={fq} onChange={setFq} placeholder={t("Пошук: фабрика, місто")} /></div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {!factories?.length && <Empty>{t("Немає фабрик")}</Empty>}
-        {factories?.map(f => (
+        {shownFactories.map(f => (
           <Card key={f.id} className="p-5">
             <div className="flex items-start justify-between">
               <div>

@@ -16,6 +16,8 @@ import { monthOptions } from "../lib/dates";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 type HostelRow = { id: number; workerId: number; workerName: string | null; city: string | null; factoryId: number | null; factoryLabel: string | null; amount: number; note: string | null };
 type DeductionsData = { month: string; months: string[]; rows: HostelRow[] };
@@ -45,6 +47,7 @@ export default function Hostels() {
   const me = useMe();
   const months = useMemo(() => monthOptions(), []);
   const [month, setMonth] = useState(months[0]!.value);
+  const [sq, setSq] = useSessionState("hostels.q", ""); // пошук: хостел, місто, мешканець (ключ заповнює й GlobalSearch)
   const [tab, setTab] = useState<"registry" | "grid" | "payments" | "deductions">("registry");
   const canOps = can(me, "hostelOps") || can(me, "viewFinance");
 
@@ -63,8 +66,9 @@ export default function Hostels() {
         <Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">
           {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
         </Select>
+        {tab === "registry" && <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: хостел, місто, мешканець")} />}
       </div>
-      {tab === "registry" && <RegistryTab month={month} canFin={can(me, "viewFinance")} canSvodni={can(me, "svodni") || can(me, "hostelOps")} />}
+      {tab === "registry" && <RegistryTab month={month} search={sq} canFin={can(me, "viewFinance")} canSvodni={can(me, "svodni") || can(me, "hostelOps")} />}
       {tab === "grid" && <GridTab month={month} canOps={canOps} />}
       {tab === "payments" && <PaymentsTab month={month} canOps={canOps} />}
       {tab === "deductions" && <DeductionsTab month={month} canSvodni={can(me, "svodni")} />}
@@ -74,7 +78,10 @@ export default function Hostels() {
 
 // ── Вкладка «Хостели» (довідник) ─────────────────────────────────────────────
 
-function RegistryTab({ month, canFin, canSvodni }: { month: string; canFin: boolean; canSvodni: boolean }) {
+function RegistryTab({ month, search = "", canFin, canSvodni }: { month: string; search?: string; canFin: boolean; canSvodni: boolean }) {
+  // пошук: хостел за назвою/містом — цілком; інакше лишаємо хостели, де є збіг по мешканцю, і показуємо лише його
+  const hostelHit = (h: { name: string; city: string }) => matchesQuery(search, h.name, h.city);
+  const residentsOf = <R extends { workerName: string }>(h: { name: string; city: string; residents: R[] }): R[] => (!search || hostelHit(h)) ? h.residents : h.residents.filter(r => matchesQuery(search, r.workerName));
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState<Hostel | "new" | null>(null);
@@ -125,7 +132,7 @@ function RegistryTab({ month, canFin, canSvodni }: { month: string; canFin: bool
                 <Badge color="slate">{hostels.length}</Badge>
               </div>
               <div className="grid gap-4 xl:grid-cols-2">
-                {hostels.map(h => (
+                {hostels.filter(h => !search || hostelHit(h) || h.residents.some(r => matchesQuery(search, r.workerName))).map(h => (
                   <Card key={h.id} className={`overflow-hidden ${h.active ? "" : "opacity-60"}`}>
                     <div className="flex items-start gap-2 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white px-4 py-3">
                       <Home className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
@@ -183,7 +190,7 @@ function RegistryTab({ month, canFin, canSvodni }: { month: string; canFin: bool
                       ) : (
                         <table className="w-full text-sm">
                           <tbody className="divide-y divide-slate-100">
-                            {h.residents.map(r => (
+                            {residentsOf(h).map(r => (
                               <tr key={r.stayId} className="group">
                                 <td className="py-1 pr-2">
                                   <Link href={`/workers/${r.workerId}`} className="text-slate-700 hover:text-red-600 hover:underline">{r.workerName}</Link>

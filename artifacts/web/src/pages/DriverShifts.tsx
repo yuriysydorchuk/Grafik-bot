@@ -19,6 +19,8 @@ function SelfTag({ n, on }: { n?: number; on?: boolean }) {
   return <span title={t("Доїжджають самі — не рахуються до посадки")} className={`ml-1 text-[10px] font-medium ${on ? "text-red-200" : "text-sky-500"}`}>+{n} 🚗</span>;
 }
 import { isTelegramWebApp } from "../lib/telegram";
+import { SearchBox, matchesQuery } from "../components/SearchBox";
+import { useSessionState } from "../lib/nav";
 
 type PickupGap = { reason: "none" | "capacity"; people: number; seats: number | null } | null;
 type Cell = { day: DayCode; shift: ShiftCode; start: string | null; end: string | null; headcount: number; selfCount?: number; drivers: { id: number; name: string | null }[]; pickupDrivers: { id: number; name: string | null }[]; pickupGap: PickupGap; cancelled?: boolean };
@@ -78,6 +80,7 @@ export default function DriverShifts() {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [weekStart, setWeekStart] = usePersisted<string>("sel.dshift.week", upcomingWeeks()[0]!.value);
+  const [sq, setSq] = useSessionState("driver-shifts.q", ""); // пошук водія у списку
   const [editDriver, setEditDriver] = useState<DriverRow | null>(null);
   const [mobileDay, setMobileDay] = useState<DayCode>(() => dayToday(weekStart));
   useEffect(() => { setMobileDay(dayToday(weekStart)); }, [weekStart]);
@@ -144,8 +147,9 @@ export default function DriverShifts() {
               </Button>
             )}
           </div>
+          {drivers.length > 6 && <div className="mt-2"><SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: водій")} /></div>}
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {!drivers.length ? <Empty>{t("Немає водіїв. Додайте їх на вкладці «Водії».")}</Empty> : drivers.map(d => {
+            {!drivers.length ? <Empty>{t("Немає водіїв. Додайте їх на вкладці «Водії».")}</Empty> : drivers.filter(d => matchesQuery(sq, d.name)).map(d => {
               const load = driverLoad.get(d.id) ?? 0;
               return (
                 <button key={d.id} onClick={() => setEditDriver(d)}
