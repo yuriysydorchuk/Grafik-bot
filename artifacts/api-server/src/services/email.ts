@@ -67,6 +67,48 @@ export async function getScheduleEmailTemplate(): Promise<{ subject: string; bod
   return { subject: def.subject, body: def.body };
 }
 
+// ─── Лист роботодавцю про виповідзення працівника ────────────────────────────
+// Один редагований шаблон (Налаштування → Email-шаблони), зберігається в settings.
+// Плейсхолдери: {pracownik} — імʼя, {data} — дата, з якої людина вже не працює
+// (workers.termination_date), {ostatni_dzien} — останній робочий день (день перед),
+// {fabryka} — фабрика, {firma} — фірма-роботодавець працівника.
+export const TERMINATION_EMAIL_DEFAULTS = {
+  subject: "Zakończenie pracy – {pracownik}",
+  body: `Dzień dobry,
+
+informujemy, że pracownik {pracownik} poinformował nas o zakończeniu pracy w zakładzie {fabryka}.
+Ostatnim dniem pracy będzie {ostatni_dzien}; od {data} pracownik nie będzie już ujmowany w grafiku.
+
+Pozdrawiamy,
+Euro Support`,
+} as const;
+const TERM_TPL_KEYS = { subject: "email_tpl_termination_subject", body: "email_tpl_termination_body" } as const;
+
+export async function getTerminationEmailTemplate(): Promise<{ subject: string; body: string }> {
+  const rows = await db.select().from(settingsTable).where(inArray(settingsTable.key, [TERM_TPL_KEYS.subject, TERM_TPL_KEYS.body]));
+  const byKey = new Map(rows.map(r => [r.key, r.value]));
+  return {
+    subject: byKey.get(TERM_TPL_KEYS.subject)?.trim() || TERMINATION_EMAIL_DEFAULTS.subject,
+    body: byKey.get(TERM_TPL_KEYS.body)?.trim() || TERMINATION_EMAIL_DEFAULTS.body,
+  };
+}
+
+export async function saveTerminationEmailTemplate(tpl: { subject: string; body: string }): Promise<void> {
+  for (const [key, value] of [[TERM_TPL_KEYS.subject, tpl.subject], [TERM_TPL_KEYS.body, tpl.body]] as const) {
+    await db.insert(settingsTable).values({ key, value }).onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+  }
+}
+
+export type TerminationEmailVars = { pracownik: string; data: string; fabryka: string; firma: string };
+// `data` — YYYY-MM-DD; у листі дати польським форматом DD.MM.YYYY
+export function renderTerminationEmail(tpl: { subject: string; body: string }, v: TerminationEmailVars): { subject: string; body: string } {
+  const d = new Date(v.data + "T00:00:00");
+  const last = new Date(d); last.setDate(d.getDate() - 1);
+  const map: Record<string, string> = { pracownik: v.pracownik, data: fmtDate(d), ostatni_dzien: fmtDate(last), fabryka: v.fabryka, firma: v.firma };
+  const fill = (s: string) => s.replace(/\{(pracownik|data|ostatni_dzien|fabryka|firma)\}/g, (_m, k) => map[k] ?? "");
+  return { subject: fill(tpl.subject), body: fill(tpl.body) };
+}
+
 export type FactoryRecipient = { id: number; email: string; name: string | null; templateId: number | null };
 
 // Отримувачі графіку фабрики. Якщо таблиця для фабрики порожня, а legacy

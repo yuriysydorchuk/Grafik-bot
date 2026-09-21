@@ -3219,9 +3219,13 @@ function TerminationRow({ workerId, date, factoryId, primaryFactoryId, factories
       qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", workerId] }); qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] });
       setEditing(false);
       toast.success(r.firedNow ? (v.factoryId != null ? t("Дата вже настала — роботу на фабриці закінчено") : t("Дата вже настала — працівника звільнено")) : t("Збережено"));
+      // одразу пропонуємо лист роботодавцю (рішення 21.09.2026); дату передаємо явно —
+      // профіль ще міг не перезавантажитись
+      if (v.date) setMail({ date: v.date, factoryId: v.factoryId });
     },
     onError: (e: any) => toast.error(e.message),
   });
+  const [mail, setMail] = useState<{ date: string; factoryId: number | null } | null>(null);
   const submit = async (d: string, f: string) => {
     if (!d) return;
     const fid = f ? Number(f) : null;
@@ -3235,6 +3239,7 @@ function TerminationRow({ workerId, date, factoryId, primaryFactoryId, factories
   const label = date ? `${factoryId != null ? `${t("йде з")} ${nameOf(factoryId)}` : t("звільнення з")} ${new Date(date + "T00:00:00").toLocaleDateString("uk-UA")}` : null;
   return (
     <InfoRow icon={UserX} label={t("Виповідзення")}>
+      {mail && <TerminationEmailModal workerId={workerId} date={mail.date} factoryId={mail.factoryId} onClose={() => setMail(null)} />}
       {editing ? (
         <span className="flex flex-wrap items-center justify-end gap-1">
           {options.length > 1 && (
@@ -3251,11 +3256,86 @@ function TerminationRow({ workerId, date, factoryId, primaryFactoryId, factories
       ) : readOnly ? (
         <span className="font-medium text-slate-700">{label ?? "—"}</span>
       ) : (
-        <button className={date ? "font-medium text-amber-700 hover:text-red-600" : "font-medium text-slate-400 hover:text-red-600"} title={t("Працівник подав дату, з якої звільняється (з усіх фабрик або лише з однієї): у цю дату система зробить це сама")} onClick={() => { setDraft(date ?? ""); setDraftFactory(factoryId != null ? String(factoryId) : ""); setEditing(true); }}>
-          {label ?? t("немає — вказати дату")}
-        </button>
+        <span className="flex flex-wrap items-center justify-end gap-2">
+          <button className={date ? "font-medium text-amber-700 hover:text-red-600" : "font-medium text-slate-400 hover:text-red-600"} title={t("Працівник подав дату, з якої звільняється (з усіх фабрик або лише з однієї): у цю дату система зробить це сама")} onClick={() => { setDraft(date ?? ""); setDraftFactory(factoryId != null ? String(factoryId) : ""); setEditing(true); }}>
+            {label ?? t("немає — вказати дату")}
+          </button>
+          {date && <button className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-red-600" title={t("Надіслати роботодавцю лист про виповідзення (шаблон — у Налаштуваннях → Email-шаблони)")} onClick={() => setMail({ date, factoryId })}><Mail className="h-3.5 w-3.5" /> {t("лист роботодавцю")}</button>}
+        </span>
       )}
     </InfoRow>
+  );
+}
+
+// Лист роботодавцю про виповідзення: чернетка з сервера (шаблон + плейсхолдери),
+// фабрика — з тих, де людина працює; адреси — отримувачі фабрики (галочки) + довільні.
+type TermMailDraft = { date: string; factoryId: number | null; subject: string; body: string; factories: { id: number; name: string; company: string; recipients: { email: string; name: string | null }[] }[] };
+function TerminationEmailModal({ workerId, date, factoryId, onClose }: { workerId: number; date: string; factoryId: number | null; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [fac, setFac] = useState<number | null>(factoryId);
+  const q = new URLSearchParams({ date });
+  if (fac != null) q.set("factoryId", String(fac));
+  const { data, isLoading, error } = useQuery<TermMailDraft>({ queryKey: ["termination-email", workerId, date, fac], queryFn: () => get(`/workers/${workerId}/termination-email?${q}`) });
+  const [subject, setSubject] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
+  const [checked, setChecked] = useState<Set<string> | null>(null);
+  const [extra, setExtra] = useState("");
+  // зміна фабрики → нова чернетка й адреси
+  useEffect(() => { setSubject(null); setBody(null); setChecked(null); }, [fac]);
+  const cur = data?.factories.find(f => f.id === (fac ?? data.factoryId));
+  const recipients = cur?.recipients ?? [];
+  const sel = checked ?? new Set(recipients.map(r => r.email));
+  const extraList = extra.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+  const to = [...new Set([...recipients.filter(r => sel.has(r.email)).map(r => r.email), ...extraList])];
+  const subj = subject ?? data?.subject ?? "";
+  const txt = body ?? data?.body ?? "";
+  const send = useMutation({
+    mutationFn: () => post<{ sent: boolean; to: string }>(`/workers/${workerId}/termination-email`, { factoryId: cur?.id ?? null, to, subject: subj, body: txt }),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Лист надіслано: {to}", { to: r.to })); onClose(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Лист роботодавцю про виповідзення")} size="lg">
+      {isLoading ? <Spinner /> : error ? <p className="text-sm text-rose-600">{(error as Error).message}</p> : data && (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">{t("Працівник повідомив, що закінчує роботу з {date}. Текст із шаблону (Налаштування → Email-шаблони), можна відредагувати перед надсиланням.", { date: fmtDocDate(date) })}</p>
+          {data.factories.length > 1 && (
+            <div>
+              <Label>{t("Фабрика")}</Label>
+              <Select value={String(cur?.id ?? "")} onChange={e => setFac(Number(e.target.value))}>
+                {data.factories.map(f => <option key={f.id} value={String(f.id)}>{f.name}{f.company ? ` · ${f.company}` : ""}</option>)}
+              </Select>
+            </div>
+          )}
+          <div>
+            <Label>{t("Кому (адреси фабрики)")}</Label>
+            {recipients.length === 0 && <p className="text-xs text-amber-600">{t("У фабрики немає адрес — впишіть адресу нижче або додайте отримувачів у налаштуваннях фабрики.")}</p>}
+            <div className="flex flex-wrap gap-2">
+              {recipients.map(r => (
+                <label key={r.email} className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-xs ${sel.has(r.email) ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 text-slate-600"}`}>
+                  <input type="checkbox" className="accent-red-600" checked={sel.has(r.email)} onChange={() => setChecked(() => { const n = new Set(sel); n.has(r.email) ? n.delete(r.email) : n.add(r.email); return n; })} />
+                  <span>{r.email}{r.name ? <span className="text-slate-400"> · {r.name}</span> : null}</span>
+                </label>
+              ))}
+            </div>
+            <Input className="mt-2" value={extra} onChange={e => setExtra(e.target.value)} placeholder={t("інші адреси через кому")} />
+          </div>
+          <div>
+            <Label>{t("Тема листа")}</Label>
+            <Input value={subj} onChange={e => setSubject(e.target.value)} />
+          </div>
+          <div>
+            <Label>{t("Текст листа")}</Label>
+            <Textarea value={txt} onChange={e => setBody(e.target.value)} rows={10} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={onClose}>{t("Пізніше")}</Button>
+            <Button loading={send.isPending} disabled={!to.length || !subj.trim() || !txt.trim()} onClick={() => send.mutate()}><Mail className="h-4 w-4" /> {t("Надіслати")}</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

@@ -705,6 +705,79 @@ router.post("/workers/:id/termination", RW, async (req, res) => {
   ok(res, { ...stripWorkerEcho(r.worker, req), firedNow: r.firedNow });
 });
 
+// ─── Лист роботодавцю про виповідзення ───────────────────────────────────────
+// Шаблон (один, у settings) редагується в Налаштування → Email-шаблони; чернетка
+// рендериться на сервері (плейсхолдери), адреси — отримувачі фабрики (factory_email_recipients
+// ∪ legacy client_email) + довільні; факт надсилання — у журнал worker_changes (terminationEmail).
+router.get("/termination-email-template", RW, async (_req, res) => {
+  const { getTerminationEmailTemplate, TERMINATION_EMAIL_DEFAULTS } = await import("../services/email");
+  ok(res, { template: await getTerminationEmailTemplate(), defaults: TERMINATION_EMAIL_DEFAULTS });
+});
+router.put("/termination-email-template", RW, async (req, res) => {
+  const subject = String(req.body?.subject ?? "").trim();
+  const body = String(req.body?.body ?? "").trim();
+  if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
+  const { saveTerminationEmailTemplate } = await import("../services/email");
+  await saveTerminationEmailTemplate({ subject, body });
+  ok(res, { subject, body });
+});
+
+// Чернетка листа для працівника: фабрики, де людина працює (з адресами), і текст
+// під обрану (?factoryId=, типово termination_factory_id → основна). Без дати
+// виповідзення можна передати ?date= (превʼю до збереження).
+router.get("/workers/:id/termination-email", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "Працівника не знайдено");
+  const qDate = typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : null;
+  const date = qDate ?? (w.terminationDate ? String(w.terminationDate) : null);
+  if (!date) return fail(res, 400, "Дата виповідзення не вказана");
+  const { liveFactoriesOf } = await import("../services/workerFire");
+  const { factoryEmailRecipients, getTerminationEmailTemplate, renderTerminationEmail } = await import("../services/email");
+  const live = await liveFactoriesOf(w, date);
+  const facRows = live.length ? await db.select({ id: factoriesTable.id, name: factoriesTable.name, clientEmail: factoriesTable.clientEmail, companyId: factoriesTable.companyId }).from(factoriesTable).where(inArray(factoriesTable.id, live.map(f => f.factoryId))) : [];
+  const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
+  const compName = (cid: number | null | undefined) => companies.find(c => c.id === cid)?.name ?? "";
+  const factories = await Promise.all(live.map(async lf => {
+    const f = facRows.find(x => x.id === lf.factoryId);
+    const recipients = await factoryEmailRecipients(lf.factoryId, f?.clientEmail);
+    // legacy client_email може прийти одним рядком «a@b.pl, c@d.pl»
+    const seen = new Set<string>();
+    const flat = recipients.flatMap(r => r.email.split(/[,;]/).map(x => x.trim()).filter(Boolean).map(email => ({ email, name: r.name })))
+      .filter(r => !seen.has(r.email) && seen.add(r.email));
+    return { id: lf.factoryId, name: f?.name ?? `#${lf.factoryId}`, company: compName(lf.companyId ?? w.companyId ?? f?.companyId), recipients: flat };
+  }));
+  const reqF = req.query.factoryId != null && req.query.factoryId !== "" ? Number(req.query.factoryId) : null;
+  const pick = factories.find(f => f.id === reqF) ?? factories.find(f => f.id === w.terminationFactoryId) ?? factories.find(f => f.id === w.factoryId) ?? factories[0];
+  const tpl = await getTerminationEmailTemplate();
+  const draft = renderTerminationEmail(tpl, { pracownik: w.fullName, data: date, fabryka: pick?.name ?? "", firma: pick?.company ?? "" });
+  ok(res, { date, factoryId: pick?.id ?? null, factories, ...draft });
+});
+
+router.post("/workers/:id/termination-email", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const [w] = await db.select({ id: workersTable.id, fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "Працівника не знайдено");
+  const subject = String(req.body?.subject ?? "").trim();
+  const body = String(req.body?.body ?? "").trim();
+  if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
+  const toList = parseEmailList(req.body?.to);
+  if (!toList) return fail(res, 400, "Некоректний email отримувача");
+  const factoryId = Number.isInteger(Number(req.body?.factoryId)) ? Number(req.body.factoryId) : null;
+  try {
+    const { sendEmailWithAttachments } = await import("../services/email");
+    await sendEmailWithAttachments(toList.join(", "), subject, body, []);
+  } catch (e: any) {
+    logger.error({ err: e, workerId: id }, "termination email failed");
+    return fail(res, 500, e?.message ?? "Помилка надсилання email");
+  }
+  await db.insert(workerChangesTable).values({
+    workerId: id, field: "terminationEmail", oldValue: null, newValue: `${toList.join(", ")}${factoryId != null ? ` @${factoryId}` : ""}`,
+    effectiveDate: warsawToday(), adminId: (req as AuthedRequest).admin?.adminId ?? null,
+  }).catch(() => {});
+  ok(res, { sent: true, to: toList.join(", ") });
+});
+
 // Відновлення звільненого — services/workerRehire.ts (спільно з «✅ Відновити»
 // офіса в боті). Опційні factoryId/positionId — «Відновити його» з модалки дубля
 // одразу ставить нову фабрику/посаду; кожна зміна — у журнал worker_changes.

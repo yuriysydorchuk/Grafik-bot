@@ -7,7 +7,7 @@ import {
   positionsTable, factoryPositionsTable, monthlyReportsTable, factoryHoursTable,
   type DayOfWeek, type Shift,
 } from "@workspace/db";
-import { eq, and, gte, lt, ne } from "drizzle-orm";
+import { eq, and, gte, lt, ne, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { factoryShifts } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
@@ -213,7 +213,39 @@ async function uploadOrUpdateFile(
 // Імена людей у згенерованих файлах (скачування з сайту, Drive-експорти, email) — завжди КАПСОМ.
 export const nameCaps = (s: string | null | undefined) => (s ?? "").toLocaleUpperCase("pl-PL");
 
-type SchedRow = { day: string; shift: string; workerName: string | null; workerCode: string | null; positionId?: number | null; positionName?: string | null; gender?: string | null };
+type SchedRow = { day: string; shift: string; workerId?: number | null; workerName: string | null; workerCode: string | null; positionId?: number | null; positionName?: string | null; gender?: string | null };
+
+// «(nowy)» біля імені для клієнта: перші NEW_WORKER_DAYS календарних днів людини на ЦІЙ
+// фабриці (не в агенції взагалі — на іншу фабрику вона приходить як нова). Перша дата =
+// min(фактична зміна на фабриці з затвердженого/розісланого тижня, день у factory_hours,
+// найраніший запис у тижні, що експортується). Повторно найнятий через рік — не «nowy».
+const NEW_WORKER_DAYS = 7;
+const NEW_WORKER_LABEL = "nowy";
+async function loadFirstDatesAtFactory(workerIds: number[], factoryId: number, today: string): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!workerIds.length) return out;
+  const ids = sql.join(workerIds.map(i => sql`${i}`), sql`, `);
+  const dayOff = (col: any) => sql`(case ${col} when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end)`;
+  const shifts = await db.execute(sql`
+    select e.worker_id, min(k.week_start + ${dayOff(sql`e.day_of_week`)})::text as d
+    from schedule_entries e join schedule_weeks k on k.id = e.week_id
+    where e.worker_id in (${ids}) and e.factory_id = ${factoryId}
+      and (k.status = 'approved' or e.sent_at is not null)
+      and (e.status = 'present' or (e.status = 'scheduled' and e.sent_at is not null
+           and k.week_start + ${dayOff(sql`e.day_of_week`)} < ${today}::date))
+    group by e.worker_id`);
+  const hours = await db.execute(sql`
+    select h.worker_id, min(d.key) as d
+    from factory_hours h, jsonb_each(coalesce(h.days, '{}'::jsonb)) d
+    where h.worker_id in (${ids}) and h.factory_id = ${factoryId} and d.key ~ '^\\d{4}-\\d{2}-\\d{2}$'
+    group by h.worker_id`);
+  const take = (wid: number, d: string | null) => { if (!d) return; const v = String(d).slice(0, 10); const cur = out.get(wid); if (!cur || v < cur) out.set(wid, v); };
+  for (const r of shifts.rows as { worker_id: number; d: string | null }[]) take(r.worker_id, r.d);
+  for (const r of hours.rows as { worker_id: number; d: string | null }[]) take(r.worker_id, r.d);
+  return out;
+}
+const isoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const daysBetween = (a: string, b: string) => Math.round((new Date(b + "T00:00:00").getTime() - new Date(a + "T00:00:00").getTime()) / 86400000);
 type SegConfig = { usesPositions: boolean; usesGender: boolean; showCode: boolean; posOrder: { id: number; name: string }[] };
 
 const genderTagPL = (g?: string | null) => g === "female" ? "K" : g === "male" ? "M" : "";
@@ -276,6 +308,15 @@ async function buildFactoryWorkbook(
   const fShifts = factoryShifts(fac);
   // One-off per-day shift times (extra shift / changed hours for a single date)
   const ov: ShiftOverrideMap = await loadWeekShiftOverrides(weekStart, factoryId);
+  // Перший день людини на фабриці (БД ∪ записи цього тижня) → «nowy pracownik» у колонці приміток
+  const firstAt = await loadFirstDatesAtFactory([...new Set(fEntries.map(e => e.workerId).filter((x): x is number => x != null))], factoryId, isoDate(new Date()));
+  for (const e of fEntries) {
+    if (e.workerId == null) continue;
+    const d = isoDate(dayDate(weekStart, e.day));
+    const cur = firstAt.get(e.workerId);
+    if (!cur || d < cur) firstAt.set(e.workerId, d);
+  }
+  const isNewOn = (p: SchedRow, dateIso: string) => { const f = p.workerId != null ? firstAt.get(p.workerId) : undefined; return !!f && daysBetween(f, dateIso) < NEW_WORKER_DAYS; };
   const thin = (argb: string) => ({
     top: { style: "thin", color: { argb } }, left: { style: "thin", color: { argb } },
     bottom: { style: "thin", color: { argb } }, right: { style: "thin", color: { argb } },
@@ -305,6 +346,7 @@ async function buildFactoryWorkbook(
     const ws = wb.addWorksheet(DAY_NAMES_PL[day]!.slice(0, 31), { views: [{ showGridLines: false }] });
     ws.columns = widths.map(w => ({ width: w }));
     const date = dayDate(weekStart, day);
+    const dateIso = isoDate(date);
     let r = 1;
     // ALL shifts, entries-driven: a shift outside the configured shiftCount (one-off
     // extra shift, or entries kept after lowering the count) still goes to the client.
@@ -336,7 +378,11 @@ async function buildFactoryWorkbook(
         }
         for (const p of grp.people) {
           const row = ws.getRow(r);
-          const vals: any[] = [n, nameCaps(p.workerName)];
+          // «(nowy)» — у клітинці імені, дрібними червоними літерами (rich text)
+          const nameCell = isNewOn(p, dateIso)
+            ? { richText: [{ text: nameCaps(p.workerName) }, { text: ` (${NEW_WORKER_LABEL})`, font: { size: 7, color: { argb: "FFDC2626" } } }] }
+            : nameCaps(p.workerName);
+          const vals: any[] = [n, nameCell];
           if (seg.usesGender) vals.push(genderTagPL(p.gender));
           if (seg.showCode) vals.push(p.workerCode ?? "");
           vals.push("");            // blank notes column
@@ -390,7 +436,7 @@ export async function buildScheduleExcelBuffer(weekId: number, factoryId: number
   const week = (await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, weekId)))[0];
   const weekStart = week?.weekStart ?? "";
   const entries = await db
-    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, workerName: workersTable.fullName, workerCode: workersTable.workerCode, positionId: workersTable.positionId, positionName: positionsTable.name, gender: workersTable.gender })
+    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, workerId: scheduleEntriesTable.workerId, workerName: workersTable.fullName, workerCode: workersTable.workerCode, positionId: workersTable.positionId, positionName: positionsTable.name, gender: workersTable.gender })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(positionsTable, eq(workersTable.positionId, positionsTable.id))
@@ -419,6 +465,7 @@ export async function exportScheduleToDrive(weekId: number, weekStart: string, o
       .select({
         day: scheduleEntriesTable.dayOfWeek,
         shift: scheduleEntriesTable.shift,
+        workerId: scheduleEntriesTable.workerId,
         workerName: workersTable.fullName,
         workerCode: workersTable.workerCode,
         positionId: workersTable.positionId,

@@ -66,7 +66,7 @@ export default function Settings() {
       {active === "documents" && <DocTypesSettings />}
       {active === "legalRules" && <LegalRulesSettings />}
       {active === "funnels" && <FunnelsSettings />}
-      {active === "email" && <EmailTemplatesSettings />}
+      {active === "email" && <><EmailTemplatesSettings /><TerminationEmailSettings /></>}
       {active === "gratyfikant" && <GratyfikantSettings />}
       {active === "tasks" && <TasksSettings />}
       {active === "users" && me && <Admins me={me} />}
@@ -642,6 +642,46 @@ function EmailTemplatesSettings() {
         )}
       </Card>
     </div>
+  );
+}
+
+// Лист роботодавцю про виповідзення працівника — один шаблон у settings
+// (GET/PUT /termination-email-template); надсилається з профілю після внесення дати.
+function TerminationEmailSettings() {
+  const t = useT();
+  const qc = useQueryClient();
+  const { data } = useQuery<{ template: EmailTpl; defaults: EmailTpl }>({ queryKey: ["termination-email-template"], queryFn: () => get("/termination-email-template") });
+  const [subject, setSubject] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
+  const subj = subject ?? data?.template.subject ?? "";
+  const txt = body ?? data?.template.body ?? "";
+  const save = useMutation({
+    mutationFn: () => put("/termination-email-template", { subject: subj, body: txt }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["termination-email-template"] }); setSubject(null); setBody(null); toast.success(t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  if (!data) return null;
+  return (
+    <Card className="mt-3 max-w-4xl p-4">
+      <h3 className="mb-1 text-sm font-semibold text-slate-700">{t("Лист роботодавцю про виповідзення")}</h3>
+      <p className="mb-3 text-xs text-slate-500">{t("Пропонується одразу після внесення дати виповідзення в профілі (і кнопкою «Лист роботодавцю» біля дати). Адреса обирається зі списку отримувачів фабрики. Лист — польською.")}</p>
+      <div className="space-y-3">
+        <div>
+          <Label>{t("Тема листа")}</Label>
+          <Input value={subj} onChange={e => setSubject(e.target.value)} />
+        </div>
+        <div>
+          <Label>{t("Текст листа")}</Label>
+          <textarea value={txt} onChange={e => setBody(e.target.value)} rows={9}
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
+        </div>
+        <p className="text-xs text-slate-400">{t("Плейсхолдери: {pracownik} — імʼя працівника, {data} — дата, з якої вже не працює, {ostatni_dzien} — останній робочий день, {fabryka} — фабрика, {firma} — фірма-роботодавець.")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button loading={save.isPending} disabled={!subj.trim() || !txt.trim()} onClick={() => save.mutate()}>{t("Зберегти")}</Button>
+          <Button variant="secondary" onClick={() => { setSubject(data.defaults.subject); setBody(data.defaults.body); }}>{t("Скинути до стандартного")}</Button>
+        </div>
+      </div>
+    </Card>
   );
 }
 

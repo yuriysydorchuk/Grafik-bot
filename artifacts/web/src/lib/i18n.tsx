@@ -436,6 +436,15 @@ const EN: Record<string, string> = {
   "Текст листа": "Body",
   "Плейсхолдери: {data} — дата дня або період тижня, {fabryka} — назва фабрики.": "Placeholders: {data} — day date or week range, {fabryka} — factory name.",
   "Скинути до стандартного": "Reset to default",
+  // лист роботодавцю про виповідзення (21.09.2026)
+  "Лист роботодавцю про виповідзення": "Termination notice to the employer",
+  "Пропонується одразу після внесення дати виповідзення в профілі (і кнопкою «Лист роботодавцю» біля дати). Адреса обирається зі списку отримувачів фабрики. Лист — польською.": "Offered right after a termination date is entered in the profile (and via the “email employer” button next to the date). The address is picked from the factory's recipients. The email is in Polish.",
+  "Плейсхолдери: {pracownik} — імʼя працівника, {data} — дата, з якої вже не працює, {ostatni_dzien} — останній робочий день, {fabryka} — фабрика, {firma} — фірма-роботодавець.": "Placeholders: {pracownik} — worker name, {data} — date from which they no longer work, {ostatni_dzien} — last working day, {fabryka} — factory, {firma} — employer company.",
+  "лист роботодавцю": "email employer",
+  "Надіслати роботодавцю лист про виповідзення (шаблон — у Налаштуваннях → Email-шаблони)": "Email the employer about the termination (template in Settings → Email templates)",
+  "Працівник повідомив, що закінчує роботу з {date}. Текст із шаблону (Налаштування → Email-шаблони), можна відредагувати перед надсиланням.": "The worker informed us they stop working from {date}. Text comes from the template (Settings → Email templates) and can be edited before sending.",
+  "У фабрики немає адрес — впишіть адресу нижче або додайте отримувачів у налаштуваннях фабрики.": "The factory has no addresses — type one below or add recipients in the factory settings.",
+  "Лист надіслано: {to}": "Email sent: {to}",
   // email-шаблони 2.0 (список) + отримувачі фабрики
   "Шаблони": "Templates",
   "Новий": "New",
