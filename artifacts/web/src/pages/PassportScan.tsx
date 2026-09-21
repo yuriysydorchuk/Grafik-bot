@@ -17,6 +17,10 @@ type Lang = "uk" | "en" | "es" | "ru" | "pl";
 const STR: Record<string, Record<Lang, string>> = {
   loading: { uk: "Завантаження…", en: "Loading…", es: "Cargando…", ru: "Загрузка…", pl: "Ładowanie…" },
   invalidTitle: { uk: "Лінк недійсний", en: "Invalid link", es: "Enlace no válido", ru: "Ссылка недействительна", pl: "Nieprawidłowy link" },
+  // причини недійсного лінка (сервер віддає укр. текст — мапимо на мову сторінки) + як отримати новий
+  reasonExpired: { uk: "Термін дії посилання вичерпано.", en: "This link has expired.", es: "El enlace ha caducado.", ru: "Срок действия ссылки истёк.", pl: "Link wygasł." },
+  reasonUsed: { uk: "Це посилання вже використано.", en: "This link has already been used.", es: "Este enlace ya se ha utilizado.", ru: "Эта ссылка уже использована.", pl: "Ten link został już użyty." },
+  restartHint: { uk: "Натисніть у боті /start ще раз — прийде нове посилання.", en: "Press /start in the bot again — you will get a new link.", es: "Pulsa /start en el bot de nuevo — recibirás un enlace nuevo.", ru: "Нажмите /start в боте ещё раз — придёт новая ссылка.", pl: "Naciśnij /start w bocie jeszcze raz — dostaniesz nowy link." },
   contact: { uk: "Зверніться до офісу за новим посиланням.", en: "Contact the office for a new link.", es: "Contacta con la oficina para un nuevo enlace.", ru: "Обратитесь в офис за новой ссылкой.", pl: "Skontaktuj się z biurem po nowy link." },
   title: { uk: "Скан паспорта", en: "Passport scan", es: "Escaneo de pasaporte", ru: "Скан паспорта", pl: "Skan paszportu" },
   hint: { uk: "Розмісти паспорт (сторінку з фото та рядками внизу) у рамці й зроби фото — або завантаж наявне фото/PDF.", en: "Place the passport (photo page with the lines at the bottom) inside the frame and take a photo — or upload an existing photo/PDF.", es: "Coloca el pasaporte (página con foto y líneas abajo) dentro del marco y toma una foto — o sube una foto/PDF existente.", ru: "Разместите паспорт (страницу с фото и строками внизу) в рамке и сделайте фото — или загрузите готовое фото/PDF.", pl: "Umieść paszport (strona ze zdjęciem i liniami na dole) w ramce i zrób zdjęcie — albo prześlij istniejące zdjęcie/PDF." },
@@ -274,9 +278,17 @@ export default function PassportScan() {
     } finally { setBusy(false); }
   }
 
-  if (error) return (
-    <Centered><Card className="max-w-md p-6 text-center"><h1 className="mb-2 text-lg font-bold text-rose-600">{s("invalidTitle")}</h1><p className="text-sm text-slate-500">{s("contact")}</p></Card></Centered>
-  );
+  if (error) {
+    const reason = /вичерпано/i.test(error) ? s("reasonExpired") : /використано/i.test(error) ? s("reasonUsed") : null;
+    return (
+      <Centered><Card className="max-w-md p-6 text-center">
+        <h1 className="mb-2 text-lg font-bold text-rose-600">{s("invalidTitle")}</h1>
+        {reason && <p className="mb-1 text-sm text-slate-700">{reason}</p>}
+        <p className="text-sm text-slate-500">{s("restartHint")}</p>
+        <p className="mt-1 text-xs text-slate-400">{s("contact")}</p>
+      </Card></Centered>
+    );
+  }
   if (step === "success") return (
     <Centered><Card className="max-w-md p-6 text-center"><h1 className="mb-2 text-lg font-bold text-emerald-600">{s("successTitle")}</h1><p className="text-sm text-slate-500">{s("successBody")}</p></Card></Centered>
   );

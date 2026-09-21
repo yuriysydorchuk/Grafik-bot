@@ -63,8 +63,14 @@ async function loadValidToken(token: string) {
 }
 
 router.get("/passport-scan/:token", async (req, res) => {
-  const { row, error } = await loadValidToken(req.params.token);
-  if (error || !row) return fail(res, 404, error ?? "Лінк недійсний.");
+  // Використаний токен З workerId (паспорт уже підтверджено) — лінк далі веде на анкету: працівник
+  // міг закрити сторінку після скану й відкрити лінк з бота знову (прод 21.09.2026 — два такі випадки
+  // давали «Лінк недійсний»). Без workerId «використано» = справді мертвий.
+  const [row0] = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.token, req.params.token));
+  if (!row0) return fail(res, 404, "Лінк недійсний.");
+  if (new Date(row0.expiresAt).getTime() < Date.now()) return fail(res, 404, "Термін дії лінку вичерпано.");
+  if (row0.usedAt && !row0.workerId) return fail(res, 404, "Лінк уже використано.");
+  const row = row0;
   const [factory] = row.factoryId ? await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)) : [undefined];
 
   // purpose=anketa (bot "📄 Документи → заповнити анкету", запрошення
@@ -99,7 +105,7 @@ router.get("/passport-scan/:token", async (req, res) => {
         lastName: w.lastName ?? (guessRest.join(" ") || null),
       };
     }
-    if (row.purpose === "anketa") {
+    if (row.purpose === "anketa" || row.usedAt) { // повторне відкриття після скану — одразу анкета, якщо паспорт уже є
       const [passportDoc] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable)
         .innerJoin(documentTypesTable, eq(workerDocumentsTable.docTypeId, documentTypesTable.id))
         .where(and(eq(workerDocumentsTable.workerId, row.workerId), eq(documentTypesTable.code, "passport"), eq(workerDocumentsTable.status, "present")));
@@ -264,10 +270,10 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     if (existingQ) await db.update(workerQuestionnairesTable).set(qPatch).where(eq(workerQuestionnairesTable.workerId, worker.id));
     else await db.insert(workerQuestionnairesTable).values({ workerId: worker.id, ...qPatch });
 
-    // expiresAt продовжуємо ще на SCAN_TOKEN_TTL_MS — токен далі живе для кроку
-    // анкети (questionnaire нижче), а не тільки для самого сканування.
+    // expiresAt продовжуємо на ANKETA_TOKEN_TTL_MS — токен далі живе для кроку анкети
+    // (questionnaire нижче), яку працівник може дозаповнити пізніше за тим самим лінком з бота.
     await db.update(passportScanTokensTable).set({
-      usedAt: new Date(), workerId: worker.id, tempFilePath: null, expiresAt: new Date(Date.now() + SCAN_TOKEN_TTL_MS),
+      usedAt: new Date(), workerId: worker.id, tempFilePath: null, expiresAt: new Date(Date.now() + ANKETA_TOKEN_TTL_MS),
     }).where(eq(passportScanTokensTable.id, row.id));
     logger.info({ tokenId: row.id, workerId: worker.id, purpose: row.purpose, isExistingWorker }, "passport-scan confirmed");
 
@@ -412,7 +418,8 @@ router.post("/passport-scan/:token/student-cert", uploadScan.single("file"), asy
 });
 
 // ── Токен-генерація для бот-флоу (office/self) — імпортується з bot/ ────────
-const SCAN_TOKEN_TTL_MS = 30 * 60 * 1000; // 30хв — набагато коротше за signature_tokens (72г): це разова дія «зайшов і відсканував», не «підпиши коли зручно»
+const SCAN_TOKEN_TTL_MS = 30 * 60 * 1000; // 30хв — офісний лінк «зайшов і відсканував» (кандидат поруч)
+const SELF_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // самореєстрація з бота — 7 днів, відкривають коли зручно
 
 export async function createOfficeScanToken(adminId: number, candidateId?: number): Promise<string> {
   const token = randomInviteCode(24);
@@ -426,7 +433,9 @@ export async function createSelfScanToken(opts: { factoryId: number; telegramId:
   const token = randomInviteCode(24);
   await db.insert(passportScanTokensTable).values({
     token, purpose: "self", factoryId: opts.factoryId, telegramId: opts.telegramId, language: opts.language,
-    candidateId: opts.candidateId ?? null, expiresAt: new Date(Date.now() + SCAN_TOKEN_TTL_MS),
+    // самореєстрація з бота: лінк відкривають не «зайшов і відсканував», а коли зручно — 7 днів
+    // (30 хв убивали лінк, поки людина доходила до телефону; прод 21.09.2026)
+    candidateId: opts.candidateId ?? null, expiresAt: new Date(Date.now() + SELF_TOKEN_TTL_MS),
   });
   return token;
 }
