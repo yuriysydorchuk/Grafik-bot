@@ -38,6 +38,11 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   assert.equal(after2.status, "cta");
   const kinds = (await db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, rec!.id))).map((x) => x.kind);
   assert.deepEqual(kinds, ["view", "cta_bot"]);
+  // «Мені цікаво» — головна конверсія без форми: подія, статус cta, сторінка далі знає interested=true; повтор не дублює
+  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested`)).status, 204);
+  assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested`)).status, 204);
+  assert.equal((await request(app).get(`/api/r/${rec!.token}`)).body.interested, true);
+  assert.deepEqual((await request(app).get(`/api/r/${rec!.token}`)).body.cities, ["Lublin"]);
   const ev = (await db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, rec!.id)))[0]!;
   assert.match(ev.device ?? "", /iPhone|iOS|Mobile/i);
 
@@ -45,6 +50,8 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=hack`)).status, 204);
   assert.equal((await request(app).get(`/api/r/NOPE`)).status, 404);
   assert.equal((await request(app).get(`/api/r/${"A".repeat(24)}`)).status, 404);
+  assert.equal((await request(app).get(`/api/r/${"A".repeat(8)}`)).status, 404);
+  assert.match(rec!.token, /^[0-9A-Z]{8}$/); // короткий токен — SMS в одну частину
   // токен у нижньому регістрі теж працює (людина набрала руками)
   assert.equal((await request(app).get(`/api/r/${rec!.token.toLowerCase()}`)).status, 200);
 });

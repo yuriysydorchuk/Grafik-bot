@@ -48,7 +48,7 @@ test("кампанія: створити → імпорт dry/real → отри�
   const list = await request(app).get(`/api/sms-campaigns/${id}/recipients?status=queued`).set("Cookie", sched.cookie);
   assert.equal(list.body.total, 2);
   const oks = list.body.rows.find((r: any) => r.phone === "+48573000214");
-  assert.equal(oks.name, "Oksana Melnychenko"); assert.equal(oks.firstName, "Oksana"); assert.match(oks.link, /\/r\/[0-9A-Z]{24}$/);
+  assert.equal(oks.name, "Oksana Melnychenko"); assert.equal(oks.firstName, "Oksana"); assert.match(oks.link, /\/r\/[0-9A-Z]{8}$/);
 
   // запуск: графікова — 403, owner без ключа провайдера — 400, з мок-провайдером — 200
   assert.equal((await request(app).post(`/api/sms-campaigns/${id}/start`).set("Cookie", sched.cookie).set("X-Requested-With", "grafik").send({})).status, 403);

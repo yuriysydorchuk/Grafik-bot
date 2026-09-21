@@ -11,7 +11,7 @@ import { authRequired, requireCap, requireMainAdmin, type AuthedRequest } from "
 import { logger } from "../lib/logger";
 import {
   createCampaign, updateCampaign, getCampaign, listCampaigns, setCampaignStatus, importRecipients, campaignStats, campaignCandidateCount,
-  listRecipients, recipientEvents, renderForRecipient, recipientLink, smsDashboardSummary, DEFAULT_SCHEDULE, SMS_LANGS,
+  listRecipients, recipientEvents, renderForRecipient, recipientLink, smsDashboardSummary, DEFAULT_SCHEDULE, SMS_LANGS, SMS_TOKEN_LEN,
   type ImportRow, type CampaignInput,
 } from "../services/sms/campaigns";
 import { getSmsProvider, smsLinkBase, SMS_SENDER, type SmsProviderName } from "../services/sms/provider";
@@ -65,7 +65,7 @@ router.patch("/sms-campaigns/:id", async (req, res) => {
 // Прев'ю тексту для мови: підстановка імені/лінка + частини SMS (лічильник у модалці рахує так само, як провайдер).
 router.post("/sms-campaigns/preview-text", async (req, res) => {
   const text = String(req.body?.text ?? "");
-  const rendered = text.replace(/\{(імʼя|ім'я|імя|name|имя)\}/giu, String(req.body?.name ?? "Oksana")).replace(/\{(лінк|link|ссылка|посилання)\}/giu, `${smsLinkBase()}/r/${"7KQ2M9X1A2B3C4D5E6F7G8H9".slice(0, 24)}`);
+  const rendered = text.replace(/\{(імʼя|ім'я|імя|name|имя)\}/giu, String(req.body?.name ?? "Oksana")).replace(/\{(лінк|link|ссылка|посилання)\}/giu, `${smsLinkBase()}/r/${"7KQ2M9X1".slice(0, SMS_TOKEN_LEN)}`);
   res.json({ rendered, ...smsParts(rendered) });
 });
 
@@ -129,8 +129,9 @@ router.get("/sms-campaigns/:id/recipients/:rid/events", async (req, res) => {
 router.get("/sms-campaigns/:id/export.xlsx", async (req, res) => {
   const c = await getCampaign(Number(req.params.id));
   if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
-  const { rows } = await listRecipients(c.id, { limit: 100000 });
-  const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet("Odbiorcy");
+  const status = String(req.query.status ?? "") || undefined;
+  const { rows } = await listRecipients(c.id, { limit: 100000, status });
+  const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet(status === "cta" ? "Zainteresowani" : "Odbiorcy");
   ws.columns = [
     { header: "Telefon", key: "phone", width: 16 }, { header: "Imię i nazwisko", key: "name", width: 28 }, { header: "Język", key: "lang", width: 6 }, { header: "Segment", key: "segment", width: 22 },
     { header: "Rok", key: "year", width: 6 }, { header: "Status", key: "status", width: 12 }, { header: "Powód pominięcia", key: "skippedReason", width: 16 }, { header: "Wysłano", key: "sentAt", width: 18 },

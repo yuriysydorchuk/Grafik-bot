@@ -60,7 +60,7 @@ test("імпорт: дедуп, невалідні, активні праців�
   assert.equal(anna.status, "skipped"); assert.equal(anna.skippedReason, "active_worker"); assert.equal(anna.workerId, w!.id);
   assert.equal(rows.find((r) => r.phone === "+48729000880")!.workerId, w2!.id);
   const oks = rows.find((r) => r.phone === "+48573000214")!;
-  assert.equal(oks.status, "queued"); assert.equal(oks.firstName, "Oksana"); assert.equal(oks.token.length, 24);
+  assert.equal(oks.status, "queued"); assert.equal(oks.firstName, "Oksana"); assert.equal(oks.token.length, 8);
   assert.equal(rows.find((r) => r.phone === "+380671239568")!.lang, "uk");
   const st = await campaignStats(c);
   assert.equal(st.recipients, 2); assert.equal(st.queued, 2); assert.equal(st.skipped, 5); assert.equal(st.activeWorkers, 2); // дубль і номер без цифр не вставляються
@@ -85,7 +85,7 @@ test("відправка: поза вікном нічого, у вікні ба
   // вівторок у вікні: батч 2
   const r1 = await sendCampaignBatch(cSending, { now: new Date("2026-10-20T09:30:00Z") });
   assert.equal(r1.sent, 2); assert.equal(r1.remaining, 2);
-  assert.match(prov.sent[0]!.text, /^Oksana, робота: https:\/\/es-job\.pl\/r\/[0-9A-Z]{24}$/);
+  assert.match(prov.sent[0]!.text, /^Oksana, робота: https:\/\/es-job\.pl\/r\/[0-9A-Z]{8}$/);
   assert.equal(prov.sent[1]!.text.startsWith("Two, job: "), true);
   // денний ліміт 3 → лише 1 у наступному батчі; один з них падає
   const r2 = await sendCampaignBatch(cSending, { now: new Date("2026-10-20T10:30:00Z") });

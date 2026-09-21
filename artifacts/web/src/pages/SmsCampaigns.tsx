@@ -105,9 +105,11 @@ export default function SmsCampaigns() {
 // ── Майстер: 1 параметри → 2 тексти → 3 імпорт ─────────────────────────────
 type Factory = { id: number; name: string; city?: string | null };
 type Staff = { id: number; name: string };
+// Дефолтні тексти — ОДНА частина SMS (рішення власника 21.09.2026): кирилиця = 70 знаків разом з
+// лінком (~27 знаків при короткому домені), латиниця (GSM-7) = 160. Тому uk/ru без імені.
 const TEXT_DEFAULTS: Record<string, Record<string, string>> = {
-  job: { uk: "{імʼя}, робота в Любліні: 31 zl/год, до 5500 zl/міс, житло є, без досвіду. Старт 27.10. Запис за 2 хв: {лінк}", ru: "{имя}, работа в Люблине: 31 zl/час, до 5500 zl/мес, жилье есть, без опыта. Старт 27.10. Запись за 2 мин: {ссылка}", en: "{name}, factory job in Lublin: 31 PLN/h, up to 5500 PLN/month, housing, no experience needed. Start 27.10. Sign up in 2 min: {link}" },
-  referral: { uk: "{імʼя}, приведи друга на роботу в Польщі і отримай 300 zl після його 10 змін. Твій лінк для друга: {лінк}", ru: "{имя}, приведи друга на работу в Польше и получи 300 zl после его 10 смен. Ссылка для друга: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Your link for a friend: {link}" },
+  job: { uk: "Робота в Польщі 31zl/год+житло. Деталі: {лінк}", ru: "Работа в Польше 31zl/час+жильё. Детали: {ссылка}", en: "{name}, job in Poland: 31 PLN/h net + housing + transport, no experience needed. Details and callback: {link}" },
+  referral: { uk: "Приведи друга = 300zl тобі. Деталі: {лінк}", ru: "Приведи друга = 300zl тебе. Детали: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Details: {link}" },
 };
 
 function Wizard({ onClose, settings }: { onClose: () => void; settings?: Settings }) {

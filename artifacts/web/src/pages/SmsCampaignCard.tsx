@@ -53,11 +53,12 @@ export default function SmsCampaignCard() {
         {isMain && <Button variant="secondary" onClick={() => setTestOpen(true)}>{t("Тест на мій номер")}</Button>}
         {(c.activeWorkersPending ?? 0) > 0 && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Надіслати «приведи друга» активним працівникам?"), message: `${c.activeWorkersPending} ${t("людей з імпорту — це наші активні працівники; вони отримають реферальну розсилку в боті (не SMS)")}`, confirmText: t("Надіслати") })) act.mutate({ path: "referral-active" }); }}><Users size={16} /> {t("Приведи друга активним")} ({c.activeWorkersPending})</Button>}
         <a href={`/api/sms-campaigns/${id}/export.xlsx`} className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md border border-slate-300"><Download size={16} /> xlsx</a>
+        {s.cta > 0 && <a href={`/api/sms-campaigns/${id}/export.xlsx?status=cta`} className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md border border-slate-300"><Download size={16} /> {t("на обдзвон")} ({s.cta})</a>}
         {c.status !== "closed" && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Закрити кампанію?"), message: t("Відправка зупиниться."), confirmText: t("Закрити"), danger: true })) act.mutate({ path: "close" }); }}><Square size={16} /> {t("Закрити")}</Button>}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
-        {[[s.recipients, t("отримувачів")], [s.sent, t("відправлено")], [s.delivered, t("доставлено") + pct(s.delivered, s.sent)], [s.viewed, t("відкрили сторінку") + pct(s.viewed, s.delivered)], [s.bot, t("зайшли в бот")], [s.form, t("анкети")], [s.hired, t("на зміні")], [`~${s.costEstimate} zł`, `${t("витрати")} · ${s.parts} ${t("частин")}`]].map(([n, l], i) => (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-2">
+        {[[s.recipients, t("отримувачів")], [s.sent, t("відправлено")], [s.delivered, t("доставлено") + pct(s.delivered, s.sent)], [s.viewed, t("відкрили сторінку") + pct(s.viewed, s.delivered)], [s.cta, t("зацікавлені") + pct(s.cta, s.viewed)], [s.bot, t("зайшли в бот")], [s.form, t("анкети")], [s.hired, t("на зміні")], [`~${s.costEstimate} zł`, `${t("витрати")} · ${s.parts} ${t("частин")}`]].map(([n, l], i) => (
           <Card key={i} className="p-3"><div className="text-2xl font-bold tabular-nums">{n as any}</div><div className="text-xs text-slate-500">{l as string}</div></Card>
         ))}
       </div>
@@ -154,11 +155,17 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
   );
   return (
     <Card className="p-4 space-y-3">
-      <p className="text-xs text-slate-500">{t("Порожні поля → вбудовані тексти сторінки з пропозиції кампанії. Заголовок: {імʼя} підставиться.")}</p>
+      <p className="text-xs text-slate-500">{t("Порожні поля → вбудовані тексти сторінки з пропозиції кампанії. Головна кнопка «Мені цікаво» лише фіксує телефон — форми немає, рекрутер кампанії отримує картку в бот і обдзвонює.")}</p>
       {tri("title", t("Заголовок"))}{tri("about", t("Що за робота"))}{tri("give", t("Що ми даємо"))}
       <div><Label>{t("Чіпи вигод (через ;)")}</Label><Input value={(ld.chips ?? []).join("; ")} onChange={(e) => setLd((s: any) => ({ ...s, chips: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
+      <div className="grid md:grid-cols-3 gap-2">
+        <div><Label>{t("Міста (через ;)")}</Label><Input value={(ld.cities ?? []).join("; ")} placeholder={t("порожньо — міста фабрик")} onChange={(e) => setLd((s: any) => ({ ...s, cities: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
+        <div><Label>{t("Хто передзвонить")}</Label><Input value={ld.recruiterName ?? ""} placeholder="Володимир" onChange={(e) => setLd((s: any) => ({ ...s, recruiterName: e.target.value }))} /></div>
+        <div><Label>{t("Години дзвінків")}</Label><Input value={ld.hours ?? ""} placeholder="10–17" onChange={(e) => setLd((s: any) => ({ ...s, hours: e.target.value }))} /></div>
+      </div>
       <div><Label>{t("Фото (URL через ;)")}</Label><Input value={(ld.photos ?? []).join("; ")} onChange={(e) => setLd((s: any) => ({ ...s, photos: e.target.value.split(";").map((x: string) => x.trim()).filter(Boolean) }))} /></div>
-      <div className="flex gap-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.call !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, call: e.target.checked } }))} /> {t("кнопка «Подзвонити»")}</label><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.whatsapp !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, whatsapp: e.target.checked } }))} /> WhatsApp</label></div>
+      <div className="flex gap-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.call !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, call: e.target.checked } }))} /> {t("кнопка «Подзвонити»")}</label><label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.whatsapp !== false} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, whatsapp: e.target.checked } }))} /> WhatsApp</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={ld.buttons?.telegram === true} onChange={(e) => setLd((s: any) => ({ ...s, buttons: { ...s.buttons, telegram: e.target.checked } }))} /> {t("лінк у Telegram-бот (вимкнено — без форми, лише обдзвон)")}</label></div>
       <div className="flex justify-end"><Button disabled={save.isPending} onClick={() => save.mutate()}>{t("Зберегти")}</Button></div>
     </Card>
   );

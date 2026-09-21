@@ -46,7 +46,7 @@ test("sms_no_bot: групова задача на кампанію з людь�
   await runAutoTasks("2026-09-21");
   const [task] = await db.select().from(tasksTable).where(eq(tasksTable.sourceKey, `smsnb:${c.id}`));
   assert.ok(task); assert.equal(task!.status, "open"); assert.equal(task!.source, "auto:sms_no_bot");
-  assert.match(task!.description ?? "", /\/r\/[0-9A-Z]{24}/);
+  assert.match(task!.description ?? "", /\/r\/[0-9A-Z]{8}/);
   await db.update(smsRecipientsTable).set({ status: "bot", botAt: new Date() }).where(eq(smsRecipientsTable.id, a!.id));
   await runAutoTasks("2026-09-22");
   const [after1] = await db.select().from(tasksTable).where(eq(tasksTable.id, task!.id));

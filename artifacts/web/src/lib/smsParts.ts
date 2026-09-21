@@ -14,7 +14,7 @@ export function smsParts(text: string): { encoding: "GSM-7" | "UCS-2"; chars: nu
   return { encoding: "UCS-2", chars: n, parts: n <= 70 ? 1 : Math.ceil(n / 67) };
 }
 export const SMS_STATUS_LABEL: Record<string, string> = {
-  queued: "у черзі", sent: "відправлено", delivered: "доставлено", failed: "не доставлено", viewed: "відкрив сторінку", cta: "натиснув кнопку", bot: "у боті", form: "анкета", hired: "на зміні", skipped: "пропущено",
+  queued: "у черзі", sent: "відправлено", delivered: "доставлено", failed: "не доставлено", viewed: "відкрив сторінку", cta: "зацікавлений (обдзвонити)", bot: "у боті", form: "анкета", hired: "на зміні", skipped: "пропущено",
 };
 export const SMS_STATUS_COLOR: Record<string, "slate" | "green" | "amber" | "blue" | "rose"> = {
   queued: "slate", sent: "slate", delivered: "blue", failed: "rose", viewed: "amber", cta: "amber", bot: "blue", form: "green", hired: "green", skipped: "slate",

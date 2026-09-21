@@ -29,6 +29,9 @@ export async function ensureSmsFunnel(): Promise<number> {
   return created!.id;
 }
 
+// Токен лінка: 8 символів base32 (40 біт) — щоб SMS з лінком вмістилось в одну частину (рішення
+// власника 21.09.2026). Сторінка не віддає телефон, /r під rate-limit; старі 24-символьні токени чинні.
+export const SMS_TOKEN_LEN = 8;
 export const SMS_LANGS = ["uk", "ru", "en"] as const;
 export type SmsLang = (typeof SMS_LANGS)[number];
 // Мова-оцінка з таблиці Drive («uk?», «uk/ru», «?», «ka»…) → мова тексту SMS.
@@ -142,7 +145,7 @@ export async function importRecipients(campaignId: number, rows: ImportRow[], op
     const lang = smsLangOf(row.lang, phone);
     const base = {
       campaignId, phone, name: row.name?.trim() || null, firstName: firstNameOf(row.name) || null, lang, segment: row.segment ?? null,
-      year: Number.isFinite(year as number) ? year : null, sourceFile: row.sourceFile ?? null, token: randomInviteCode(24),
+      year: Number.isFinite(year as number) ? year : null, sourceFile: row.sourceFile ?? null, token: randomInviteCode(SMS_TOKEN_LEN),
     };
     const workerId = activeByPhone.get(phone) ?? (row.name ? activeByName.get(nameKey(row.name)) : undefined);
     if (workerId) { summary.activeWorkers++; skip("active_worker"); toInsert.push({ ...base, status: "skipped", skippedReason: "active_worker", workerId }); continue; }

@@ -5,7 +5,7 @@ import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, smsCampaignsTable, smsRecipientsTable, type SmsCampaign, type SmsSchedule } from "@workspace/db";
 import { logger } from "../../lib/logger";
 import { getSmsProvider, type SmsProviderName } from "./provider";
-import { renderForRecipient, logSmsEvent, advanceRecipient, recipientLink } from "./campaigns";
+import { renderForRecipient, logSmsEvent, advanceRecipient, recipientLink, SMS_TOKEN_LEN } from "./campaigns";
 import { randomInviteCode } from "../../lib/invite";
 
 const TZ = "Europe/Warsaw";
@@ -128,7 +128,7 @@ export async function pollSmsStatuses(): Promise<{ delivered: number; failed: nu
 export async function sendTestSms(c: SmsCampaign, phone: string, lang: string, name = "Test"): Promise<{ ok: boolean; error?: string; text: string; parts: number; msgId?: string; link: string }> {
   let [rec] = await db.select().from(smsRecipientsTable).where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.phone, phone)));
   if (!rec) {
-    [rec] = await db.insert(smsRecipientsTable).values({ campaignId: c.id, phone, name, firstName: name, lang, segment: "тест", token: randomInviteCode(24), status: "queued" }).returning();
+    [rec] = await db.insert(smsRecipientsTable).values({ campaignId: c.id, phone, name, firstName: name, lang, segment: "тест", token: randomInviteCode(SMS_TOKEN_LEN), status: "queued" }).returning();
   }
   const t = renderForRecipient(c, { lang, firstName: rec!.firstName || name, name: rec!.name || name, token: rec!.token });
   const provider = getSmsProvider(c.provider as SmsProviderName);

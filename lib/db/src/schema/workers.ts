@@ -2185,6 +2185,11 @@ export const workerQuestionnairesTable = pgTable("worker_questionnaires", {
   consentsIp: text("consents_ip"),
   consentsUserAgent: text("consents_user_agent"),
   consentsVersion: text("consents_version"),
+  // Походження анкети (21.09.2026): NULL = заповнена працівником/офісом у системі,
+  // "hrappka" = залита разовим імпортом з експорту HRappka (без підпису й згод —
+  // status лишається draft, verified не ставиться, поля лише доповнюються).
+  source: text("source"),
+  importedAt: timestamp("imported_at"),
   submittedAt: timestamp("submitted_at"),
   verifiedBy: integer("verified_by").references(() => adminsTable.id),
   verifiedAt: timestamp("verified_at"),
@@ -2561,7 +2566,10 @@ export type SmsOffer = {
 };
 export type SmsLanding = {
   title?: SmsTexts; chips?: string[]; about?: SmsTexts; give?: SmsTexts; faq?: { q: SmsTexts; a: SmsTexts }[];
-  photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean };
+  photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };
+  cities?: string[];        // список міст на сторінці (порожньо → міста активних фабрик)
+  recruiterName?: string;   // хто передзвонить («Володимир передзвонить сьогодні з 10 до 17»)
+  hours?: string;           // години дзвінків, напр. "10–17"
 };
 export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number }; // days: 1=пн … 7=нд, Europe/Warsaw
 
