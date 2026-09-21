@@ -58,7 +58,7 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     appliesToNationalities: t?.appliesToNationalities ?? null,
     employerCompanyId: d.employerCompanyId, caseStatus: d.caseStatus, submittedAt: dateStr(d.submittedAt),
     verifiedAt: d.verifiedAt ? d.verifiedAt.toISOString() : null, replacesDocumentId: d.replacesDocumentId,
-    hasFile: !!d.filePath,
+    hasFile: !!(d.filePath || d.fileUrl), // локальний скан або зовнішній лінк (Drive), як у taskResolve
   }));
 }
 
