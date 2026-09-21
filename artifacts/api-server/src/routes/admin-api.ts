@@ -770,7 +770,7 @@ router.post("/workers/:id/termination-email", RW, async (req, res) => {
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
   const toList = parseEmailList(req.body?.to);
   if (!toList) return fail(res, 400, "Некоректний email отримувача");
-  const factoryId = Number.isInteger(Number(req.body?.factoryId)) ? Number(req.body.factoryId) : null;
+  const factoryId = req.body?.factoryId != null && req.body.factoryId !== "" && Number.isInteger(Number(req.body.factoryId)) ? Number(req.body.factoryId) : null;
   try {
     const { sendEmailWithAttachments } = await import("../services/email");
     await sendEmailWithAttachments(toList.join(", "), subject, body, []);

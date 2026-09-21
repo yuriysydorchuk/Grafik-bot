@@ -3314,7 +3314,7 @@ function TerminationEmailModal({ workerId, date, factoryId, onClose }: { workerI
             <div className="flex flex-wrap gap-2">
               {recipients.map(r => (
                 <label key={r.email} className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1 text-xs ${sel.has(r.email) ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 text-slate-600"}`}>
-                  <input type="checkbox" className="accent-red-600" checked={sel.has(r.email)} onChange={() => setChecked(() => { const n = new Set(sel); n.has(r.email) ? n.delete(r.email) : n.add(r.email); return n; })} />
+                  <input type="checkbox" className="accent-red-600" checked={sel.has(r.email)} onChange={() => setChecked(prev => { const n = new Set(prev ?? recipients.map(x => x.email)); n.has(r.email) ? n.delete(r.email) : n.add(r.email); return n; })} />
                   <span>{r.email}{r.name ? <span className="text-slate-400"> · {r.name}</span> : null}</span>
                 </label>
               ))}

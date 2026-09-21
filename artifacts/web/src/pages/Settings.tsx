@@ -656,8 +656,12 @@ function TerminationEmailSettings() {
   const subj = subject ?? data?.template.subject ?? "";
   const txt = body ?? data?.template.body ?? "";
   const save = useMutation({
-    mutationFn: () => put("/termination-email-template", { subject: subj, body: txt }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["termination-email-template"] }); setSubject(null); setBody(null); toast.success(t("Збережено")); },
+    mutationFn: () => put<EmailTpl>("/termination-email-template", { subject: subj, body: txt }),
+    onSuccess: (saved) => {
+      // спершу кеш, потім скидання локального стану — інакше поля на мить показують старий текст
+      qc.setQueryData<{ template: EmailTpl; defaults: EmailTpl }>(["termination-email-template"], (old) => old ? { ...old, template: saved } : old);
+      setSubject(null); setBody(null); toast.success(t("Збережено"));
+    },
     onError: (e: any) => toast.error(e.message),
   });
   if (!data) return null;
