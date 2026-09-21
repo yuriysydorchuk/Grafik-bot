@@ -1,0 +1,116 @@
+// Адаптери SMS-провайдерів (SMSAPI.pl, SMS-Fly.pl) за одним інтерфейсом.
+// Ключі — лише з env (як KSEF_TOKEN_*): SMS_SMSAPI_TOKEN, SMS_SMSFLY_KEY (+ SMS_SMSFLY_URL),
+// SMS_SENDER (підпис), SMS_LINK_BASE (короткий домен лінків; фолбек WEB_APP_URL).
+// Тести підміняють провайдера через setSmsProviderForTests().
+import { logger } from "../../lib/logger";
+
+export type SmsProviderName = "smsapi" | "smsfly";
+export type SendItem = { recipientId: number; phone: string; text: string; from: string };
+export type SendResult = { recipientId: number; ok: boolean; msgId?: string; parts?: number; error?: string };
+export type StatusResult = { msgId: string; status: "delivered" | "failed" | "pending"; reason?: string };
+
+export interface SmsProvider {
+  readonly name: SmsProviderName;
+  configured(): boolean;
+  send(items: SendItem[]): Promise<SendResult[]>;
+  status(msgIds: string[]): Promise<StatusResult[]>;
+  // орієнтовна ціна за частину (для оцінки витрат у панелі), zł без VAT
+  price(phone: string): number;
+}
+
+export const SMS_SENDER = (): string => process.env.SMS_SENDER || "EuroSupport";
+export const smsLinkBase = (): string => (process.env.SMS_LINK_BASE || process.env.WEB_APP_URL || "").replace(/\/$/, "");
+export const smsConfigured = (name: SmsProviderName): boolean => getSmsProvider(name).configured();
+
+const priceFor = (pl: number, ua: number, other: number) => (phone: string) => phone.startsWith("+48") ? pl : phone.startsWith("+380") ? ua : other;
+
+// ── SMSAPI.pl (https://www.smsapi.pl/docs) ─────────────────────────────────
+// POST https://api.smsapi.pl/sms.do, Bearer token; персоналізований текст = запит на номер.
+const SMSAPI_URL = process.env.SMS_SMSAPI_URL || "https://api.smsapi.pl/sms.do";
+const smsapi: SmsProvider = {
+  name: "smsapi",
+  configured: () => !!process.env.SMS_SMSAPI_TOKEN,
+  price: priceFor(0.10, 0.85, 0.35),
+  async send(items) {
+    const token = process.env.SMS_SMSAPI_TOKEN;
+    if (!token) throw new Error("SMSAPI не налаштований (SMS_SMSAPI_TOKEN)");
+    const out: SendResult[] = [];
+    for (const it of items) {
+      const body = new URLSearchParams({ to: it.phone.replace(/^\+/, ""), message: it.text, from: it.from, encoding: "utf-8", format: "json", details: "1", idx: String(it.recipientId) });
+      try {
+        const res = await fetch(SMSAPI_URL, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body });
+        const data: any = await res.json().catch(() => ({}));
+        const first = data?.list?.[0];
+        if (res.ok && first?.id && !data?.error) out.push({ recipientId: it.recipientId, ok: true, msgId: String(first.id), parts: Number(first.parts) || undefined });
+        else out.push({ recipientId: it.recipientId, ok: false, error: `${data?.error ?? res.status}: ${data?.message ?? data?.invalid_numbers?.[0]?.message ?? "помилка SMSAPI"}` });
+      } catch (e: any) {
+        out.push({ recipientId: it.recipientId, ok: false, error: e?.message ?? String(e) });
+      }
+    }
+    return out;
+  },
+  async status(msgIds) {
+    const token = process.env.SMS_SMSAPI_TOKEN;
+    if (!token || !msgIds.length) return [];
+    const res = await fetch(`${SMSAPI_URL}?status=${encodeURIComponent(msgIds.join(","))}&format=json`, { headers: { Authorization: `Bearer ${token}` } });
+    const data: any = await res.json().catch(() => ({}));
+    const list: any[] = data?.list ?? [];
+    return list.map((r) => {
+      const code = Number(r.status_code ?? r.status);
+      const name = String(r.status_name ?? r.status ?? "").toUpperCase();
+      const delivered = code === 404 || name === "DELIVERED";
+      const failed = [402, 405, 406, 407, 412].includes(code) || ["EXPIRED", "UNDELIVERED", "FAILED", "REJECTED", "STOP"].includes(name);
+      return { msgId: String(r.id), status: delivered ? "delivered" : failed ? "failed" : "pending", reason: failed ? (r.status_name ?? String(code)) : undefined } as StatusResult;
+    });
+  },
+};
+
+// ── SMS-Fly.pl (API v2, JSON) ──────────────────────────────────────────────
+const SMSFLY_URL = () => process.env.SMS_SMSFLY_URL || "https://sms-fly.pl/api/v2/api.php";
+async function smsflyCall(action: string, data: unknown): Promise<any> {
+  const key = process.env.SMS_SMSFLY_KEY;
+  if (!key) throw new Error("SMS-Fly не налаштований (SMS_SMSFLY_KEY)");
+  const res = await fetch(SMSFLY_URL(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ auth: { key }, action, data }) });
+  const json: any = await res.json().catch(() => ({}));
+  if (!res.ok || json?.success === 0 || json?.success === false) throw new Error(`SMS-Fly ${action}: ${json?.error?.description ?? json?.error?.code ?? res.status}`);
+  return json?.data ?? json;
+}
+const smsfly: SmsProvider = {
+  name: "smsfly",
+  configured: () => !!process.env.SMS_SMSFLY_KEY,
+  price: priceFor(0.069, 0.64, 0.4),
+  async send(items) {
+    const out: SendResult[] = [];
+    for (const it of items) {
+      try {
+        const d = await smsflyCall("SEND", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
+        const id = d?.messageID ?? d?.messageId ?? d?.id;
+        if (id) out.push({ recipientId: it.recipientId, ok: true, msgId: String(id) });
+        else out.push({ recipientId: it.recipientId, ok: false, error: "SMS-Fly: відповідь без messageID" });
+      } catch (e: any) {
+        out.push({ recipientId: it.recipientId, ok: false, error: e?.message ?? String(e) });
+      }
+    }
+    return out;
+  },
+  async status(msgIds) {
+    const out: StatusResult[] = [];
+    for (const id of msgIds) {
+      try {
+        const d = await smsflyCall("GETMESSAGESTATUS", { messageID: id });
+        const st = String(d?.sms?.status ?? d?.status ?? "").toUpperCase();
+        out.push({ msgId: id, status: st === "DELIVERED" ? "delivered" : ["UNDELIVERED", "EXPIRED", "REJECTED", "ERROR", "FAILED"].includes(st) ? "failed" : "pending", reason: st || undefined });
+      } catch (e: any) {
+        logger.warn({ err: e, id }, "SMS-Fly status failed");
+      }
+    }
+    return out;
+  },
+};
+
+let override: SmsProvider | null = null;
+export function setSmsProviderForTests(p: SmsProvider | null): void { override = p; }
+export function getSmsProvider(name: SmsProviderName): SmsProvider {
+  if (override) return override;
+  return name === "smsfly" ? smsfly : smsapi;
+}

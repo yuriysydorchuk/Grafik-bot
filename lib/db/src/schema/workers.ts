@@ -710,6 +710,11 @@ export const candidatesTable = pgTable("candidates", {
   assignedAdminId: integer("assigned_admin_id").references(() => adminsTable.id), // recruiter handling this candidate
   nextActionAt: timestamp("next_action_at"), // scheduled follow-up
   email: text("email"),
+  // SMS-кампанії (21.09.2026): звідки прийшов кандидат і якою мовою з ним говорити.
+  // source: null (адмін/реферал) | "sms"; campaignId → sms_campaigns; language: uk|ru|en.
+  source: text("source"),
+  campaignId: integer("campaign_id"),
+  language: text("language"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -2541,3 +2546,86 @@ export type Task = typeof tasksTable.$inferSelect;
 export type TaskAssignee = typeof taskAssigneesTable.$inferSelect;
 export type TaskTemplate = typeof taskTemplatesTable.$inferSelect;
 export type TaskAutoRule = typeof taskAutoRulesTable.$inferSelect;
+
+// ── SMS-кампанії (пропозиція узгоджена 21.09.2026, spec docs/tasks/2026-09-21-sms-campaigns.md) ──
+// Кампанія = список отримувачів з Drive-бази + тексти uk/ru/en + розклад відправки.
+// Кожен отримувач має персональний токен: лінк /r/<токен> відкриває продажну
+// сторінку (подія view), кнопка «Записатись» веде в бот ?start=sms<токен>, і бот
+// створює кандидата (candidates.source='sms', campaign_id). Активним працівникам
+// SMS не йде — вони відокремлюються при імпорті (status=skipped, worker_id) і
+// отримують «приведи друга» через реферальну розсилку в Telegram.
+export type SmsTexts = { uk?: string; ru?: string; en?: string };
+export type SmsOffer = {
+  factoryId?: number | null; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string;
+  startDate?: string; bonus?: string; phone?: string; whatsapp?: string;
+};
+export type SmsLanding = {
+  title?: SmsTexts; chips?: string[]; about?: SmsTexts; give?: SmsTexts; faq?: { q: SmsTexts; a: SmsTexts }[];
+  photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean };
+};
+export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number }; // days: 1=пн … 7=нд, Europe/Warsaw
+
+export const smsCampaignsTable = pgTable("sms_campaigns", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("job"), // job («є робота») | referral («приведи друга»)
+  status: text("status").notNull().default("draft"), // draft | test | sending | paused | sent | closed
+  provider: text("provider").notNull().default("smsapi"), // smsapi | smsfly
+  sender: text("sender").notNull().default("EuroSupport"),
+  texts: jsonb("texts").$type<SmsTexts>().notNull().default({}),
+  landing: jsonb("landing").$type<SmsLanding>().notNull().default({}),
+  offer: jsonb("offer").$type<SmsOffer>().notNull().default({}),
+  schedule: jsonb("schedule").$type<SmsSchedule>().notNull().default({ days: [2, 3, 4], from: "10:00", to: "14:00", dailyLimit: 1500, batchSize: 200 }),
+  recruiterAdminId: integer("recruiter_admin_id").references(() => adminsTable.id), // кому призначаються кандидати
+  funnelId: integer("funnel_id").references(() => funnelsTable.id),
+  createdBy: integer("created_by").references(() => adminsTable.id),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"), // черга спорожніла
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const smsRecipientsTable = pgTable("sms_recipients", {
+  id: serial("id").primaryKey(),
+  campaignId: integer("campaign_id").notNull().references(() => smsCampaignsTable.id, { onDelete: "cascade" }),
+  phone: text("phone").notNull(), // E.164, напр. +48573000214
+  name: text("name"),
+  firstName: text("first_name"),
+  lang: text("lang").notNull().default("uk"), // uk | ru | en
+  segment: text("segment"), // працівник ES | кандидат ES | Uber … (як у таблиці Drive-контактів)
+  year: integer("year"), // рік запису в джерелі
+  sourceFile: text("source_file"),
+  token: text("token").notNull().unique(), // 24 симв. Crockford base32 (randomInviteCode)
+  status: text("status").notNull().default("queued"),
+  // queued | sent | delivered | failed | viewed | cta | bot | form | hired | skipped
+  skippedReason: text("skipped_reason"), // active_worker | duplicate | invalid | already_sent | ua_excluded
+  workerId: integer("worker_id").references(() => workersTable.id), // активний працівник → «приведи друга» через бот
+  candidateId: integer("candidate_id").references(() => candidatesTable.id),
+  providerMsgId: text("provider_msg_id"),
+  parts: integer("parts"), // скільки частин SMS пішло (ціна)
+  sentAt: timestamp("sent_at"),
+  deliveredAt: timestamp("delivered_at"),
+  failReason: text("fail_reason"),
+  viewedAt: timestamp("viewed_at"),
+  botAt: timestamp("bot_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sms_recipients_campaign_status_idx").on(t.campaignId, t.status),
+  uniqueIndex("sms_recipients_campaign_phone_uq").on(t.campaignId, t.phone),
+]);
+
+// Незмінний журнал подій отримувача (шаблон: signature_events) — доказ і воронка.
+export const smsEventsTable = pgTable("sms_events", {
+  id: serial("id").primaryKey(),
+  recipientId: integer("recipient_id").notNull().references(() => smsRecipientsTable.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(), // queued | sent | delivered | failed | view | cta_bot | cta_call | cta_wa | bot_start | form | hired | skipped
+  at: timestamp("at").notNull().defaultNow(),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  device: text("device"),
+  meta: jsonb("meta"),
+}, (t) => [index("sms_events_recipient_idx").on(t.recipientId)]);
+
+export type SmsCampaign = typeof smsCampaignsTable.$inferSelect;
+export type SmsRecipient = typeof smsRecipientsTable.$inferSelect;
+export type SmsEvent = typeof smsEventsTable.$inferSelect;

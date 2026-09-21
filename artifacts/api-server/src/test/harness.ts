@@ -5,7 +5,7 @@ import {
   factoriesTable, positionsTable, factoryOrdersTable, availabilityTable, absenceRequestsTable,
   scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, notificationsTable, bankTransactionsTable, pnlEntriesTable,
   companiesTable, documentTypesTable, vehiclesTable, workerDocumentsTable, advanceRequestsTable,
-  funnelsTable, candidatesTable, candidateActivityTable, driverWorkdaysTable,
+  funnelsTable, candidatesTable, candidateActivityTable, smsCampaignsTable, smsRecipientsTable, smsEventsTable, driverWorkdaysTable,
   driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
@@ -30,7 +30,7 @@ export {
   driversTable, workersTable, factoriesTable, positionsTable, factoryOrdersTable,
   availabilityTable, absenceRequestsTable, scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, notificationsTable,
   bankTransactionsTable, pnlEntriesTable, companiesTable, documentTypesTable, vehiclesTable,
-  workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable,
+  workerDocumentsTable, advanceRequestsTable, funnelsTable, candidatesTable, candidateActivityTable, smsCampaignsTable, smsRecipientsTable, smsEventsTable,
   driverWorkdaysTable, driverShiftAssignmentsTable, svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, monthlyReportsTable,
   expenseCategoriesTable, counterpartyRulesTable, payrollSourcesTable, payrollFactoryMonthsTable,
   factoryHoursTable, factoryShiftOverridesTable, shiftCancellationsTable,
@@ -82,7 +82,7 @@ async function truncateAll(): Promise<void> {
     "document_templates, contracts, contract_files, signature_tokens, signature_events, " +
     "legal_rules, worker_legality, document_audit, " +
     "tasks, task_assignees, task_comments, task_events, task_templates, task_auto_rules, " +
-    "funnels, candidates, candidate_activity, " +
+    "funnels, candidates, candidate_activity, sms_campaigns, sms_recipients, sms_events, " +
     "expense_categories, counterparty_rules, " +
     "payroll_sources, payroll_factory_months RESTART IDENTITY CASCADE",
   ));

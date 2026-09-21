@@ -68,6 +68,8 @@ async function loadSentToday(): Promise<void> {
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
 let weeklyReminderTask: ScheduledTask | null = null;
+let smsSendTask: ScheduledTask | null = null;
+let smsStatusTask: ScheduledTask | null = null;
 let preShiftTask: ScheduledTask | null = null;
 let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
@@ -142,6 +144,16 @@ export async function runBankApiSyncCycle(): Promise<import("./bankApi").BankApi
 
 export function startScheduler() {
   stopScheduler();
+
+  // SMS-кампанії: черга батчами у вікні розкладу (кожні 5 хв) і статуси доставки (кожні 15 хв)
+  smsSendTask = cron.schedule("*/5 * * * *", async () => {
+    try { const { runSmsSender } = await import("./sms/sender"); await runSmsSender(); }
+    catch (e: any) { logger.error({ err: e }, "sms sender failed"); void sendAlert({ service: "cron", kind: e?.name, source: "smsSender", message: e?.message ?? String(e) }); }
+  }, { timezone: TZ });
+  smsStatusTask = cron.schedule("7,22,37,52 * * * *", async () => {
+    try { const { pollSmsStatuses } = await import("./sms/sender"); await pollSmsStatuses(); }
+    catch (e: any) { logger.error({ err: e }, "sms status poll failed"); }
+  }, { timezone: TZ });
   void loadSentToday(); // restore today's dedup keys after a restart
 
   // Weekly availability reminder — Sunday at `reminderHour`:00 Warsaw
@@ -413,6 +425,8 @@ async function pruneNotifications(): Promise<void> {
 }
 
 export function stopScheduler() {
+  smsSendTask?.stop();        smsSendTask = null;
+  smsStatusTask?.stop();      smsStatusTask = null;
   weeklyReminderTask?.stop(); weeklyReminderTask = null;
   preShiftTask?.stop();       preShiftTask = null;
   midnightResetTask?.stop();  midnightResetTask = null;
