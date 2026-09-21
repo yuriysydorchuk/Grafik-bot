@@ -94,9 +94,11 @@ export async function getTerminationEmailTemplate(): Promise<{ subject: string; 
 }
 
 export async function saveTerminationEmailTemplate(tpl: { subject: string; body: string }): Promise<void> {
-  for (const [key, value] of [[TERM_TPL_KEYS.subject, tpl.subject], [TERM_TPL_KEYS.body, tpl.body]] as const) {
-    await db.insert(settingsTable).values({ key, value }).onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
-  }
+  await db.transaction(async (tx) => {
+    for (const [key, value] of [[TERM_TPL_KEYS.subject, tpl.subject], [TERM_TPL_KEYS.body, tpl.body]] as const) {
+      await tx.insert(settingsTable).values({ key, value }).onConflictDoUpdate({ target: settingsTable.key, set: { value, updatedAt: new Date() } });
+    }
+  });
 }
 
 export type TerminationEmailVars = { pracownik: string; data: string; fabryka: string; firma: string };

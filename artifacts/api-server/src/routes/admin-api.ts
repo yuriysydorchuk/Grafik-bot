@@ -734,7 +734,15 @@ router.get("/workers/:id/termination-email", RW, async (req, res) => {
   if (!date) return fail(res, 400, "Дата виповідзення не вказана");
   const { liveFactoriesOf } = await import("../services/workerFire");
   const { factoryEmailRecipients, getTerminationEmailTemplate, renderTerminationEmail } = await import("../services/email");
-  const live = await liveFactoriesOf(w, date);
+  // Фабрики — на ОСТАННІЙ робочий день (день перед датою): якщо дата вже настала,
+  // endWorkerAtFactory уже поставив valid_to = date і сама фабрика випала б зі списку.
+  // Явно запитану / записану в виповідзенні фабрику додаємо завжди.
+  const lastDay = (() => { const d = new Date(date + "T00:00:00"); d.setDate(d.getDate() - 1); return d.toLocaleDateString("sv-SE"); })();
+  const live = await liveFactoriesOf(w, lastDay);
+  const reqF = req.query.factoryId != null && req.query.factoryId !== "" ? Number(req.query.factoryId) : null;
+  for (const fid of [reqF, w.terminationFactoryId ?? null]) {
+    if (fid != null && Number.isInteger(fid) && !live.some(f => f.factoryId === fid)) live.push({ factoryId: fid, primary: false, rowId: null, companyId: null, validFrom: null, validTo: null });
+  }
   const facRows = live.length ? await db.select({ id: factoriesTable.id, name: factoriesTable.name, clientEmail: factoriesTable.clientEmail, companyId: factoriesTable.companyId }).from(factoriesTable).where(inArray(factoriesTable.id, live.map(f => f.factoryId))) : [];
   const companies = await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable);
   const compName = (cid: number | null | undefined) => companies.find(c => c.id === cid)?.name ?? "";
@@ -747,7 +755,6 @@ router.get("/workers/:id/termination-email", RW, async (req, res) => {
       .filter(r => !seen.has(r.email) && seen.add(r.email));
     return { id: lf.factoryId, name: f?.name ?? `#${lf.factoryId}`, company: compName(lf.companyId ?? w.companyId ?? f?.companyId), recipients: flat };
   }));
-  const reqF = req.query.factoryId != null && req.query.factoryId !== "" ? Number(req.query.factoryId) : null;
   const pick = factories.find(f => f.id === reqF) ?? factories.find(f => f.id === w.terminationFactoryId) ?? factories.find(f => f.id === w.factoryId) ?? factories[0];
   const tpl = await getTerminationEmailTemplate();
   const draft = renderTerminationEmail(tpl, { pracownik: w.fullName, data: date, fabryka: pick?.name ?? "", firma: pick?.company ?? "" });

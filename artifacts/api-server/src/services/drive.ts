@@ -8,6 +8,7 @@ import {
   type DayOfWeek, type Shift,
 } from "@workspace/db";
 import { eq, and, gte, lt, ne, sql } from "drizzle-orm";
+import { warsawToday } from "./taskUtils";
 import { logger } from "../lib/logger";
 import { factoryShifts } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, type ShiftOverrideMap } from "./shiftOverrides";
@@ -309,7 +310,7 @@ async function buildFactoryWorkbook(
   // One-off per-day shift times (extra shift / changed hours for a single date)
   const ov: ShiftOverrideMap = await loadWeekShiftOverrides(weekStart, factoryId);
   // Перший день людини на фабриці (БД ∪ записи цього тижня) → «nowy pracownik» у колонці приміток
-  const firstAt = await loadFirstDatesAtFactory([...new Set(fEntries.map(e => e.workerId).filter((x): x is number => x != null))], factoryId, isoDate(new Date()));
+  const firstAt = await loadFirstDatesAtFactory([...new Set(fEntries.map(e => e.workerId).filter((x): x is number => x != null))], factoryId, warsawToday());
   for (const e of fEntries) {
     if (e.workerId == null) continue;
     const d = isoDate(dayDate(weekStart, e.day));
