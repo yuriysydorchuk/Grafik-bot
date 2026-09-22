@@ -42,6 +42,10 @@ const S: Record<L, Record<string, string>> = {
     q3: "Коли перша зарплата?", a3: "До 10 числа наступного місяця на картку. Аванс можливий після 2 тижнів роботи.",
     q4: "Досвід потрібен?", a4: "На більшості вакансій ні: перший день з бригадиром, навчання на місці. Де досвід потрібен — це вказано на вакансії.",
     q5: "Я з України без візи, чи можна?", a5: "Так. Оформимо oświadczenie або працюєте за статусом UKR — консультант підкаже, що саме у вашому випадку.",
+    svcTitle: "Допомагаємо з документами в Польщі", svcSub: "Не лише робота. Натисніть, що цікавить — консультант розкаже умови.", svcCta: "Цікавить — звʼяжіться зі мною",
+    svc1: "Карта побиту", svc1t: "Збираємо документи, заповнюємо wniosek, записуємо до urzędu wojewódzkiego і супроводжуємо до отримання карти. Для тих, хто працює в нас — умови окремі.",
+    svc2: "PESEL UKR / статус UKR", svc2t: "Оформлення та поновлення статусу UKR і номера PESEL, консультація, що робити, якщо статус втрачено після виїзду.",
+    svc3: "Заміна водійського посвідчення", svc3t: "Обмін українських прав на польські: переклад, заява у wydział komunikacji, супровід до отримання.",
     contacts: "Контакти", call: "Подзвонити", maps: "Показати на мапі", allVac: "Усі вакансії на сайті",
     closed: "Ця пропозиція вже завершена. Зателефонуйте нам — роботу знайдемо.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
@@ -62,6 +66,10 @@ const S: Record<L, Record<string, string>> = {
     q3: "Когда первая зарплата?", a3: "До 10 числа следующего месяца на карту. Аванс возможен после 2 недель работы.",
     q4: "Нужен ли опыт?", a4: "На большинстве вакансий нет: первый день с бригадиром, обучение на месте. Где опыт нужен — это указано в вакансии.",
     q5: "Я из Украины без визы, можно?", a5: "Да. Оформим oświadczenie или работаете по статусу UKR — консультант подскажет, что именно в вашем случае.",
+    svcTitle: "Помогаем с документами в Польше", svcSub: "Не только работа. Нажмите, что интересует — консультант расскажет условия.", svcCta: "Интересует — свяжитесь со мной",
+    svc1: "Карта побыту", svc1t: "Собираем документы, заполняем wniosek, записываем в urząd wojewódzki и сопровождаем до получения карты. Для тех, кто работает у нас — отдельные условия.",
+    svc2: "PESEL UKR / статус UKR", svc2t: "Оформление и восстановление статуса UKR и номера PESEL, консультация, что делать, если статус потерян после выезда.",
+    svc3: "Замена водительского удостоверения", svc3t: "Обмен украинских прав на польские: перевод, заявление в wydział komunikacji, сопровождение до получения.",
     contacts: "Контакты", call: "Позвонить", maps: "Показать на карте", allVac: "Все вакансии на сайте",
     closed: "Это предложение уже завершено. Позвоните нам — работу найдём.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
@@ -82,6 +90,10 @@ const S: Record<L, Record<string, string>> = {
     q3: "When is the first salary?", a3: "By the 10th of the next month to your card. An advance is possible after 2 weeks.",
     q4: "Do I need experience?", a4: "For most jobs no: first day with a team leader, training on site. Where experience is required, the vacancy says so.",
     q5: "I'm from Ukraine without a visa — can I work?", a5: "Yes. We arrange the oświadczenie or you work under UKR status — the consultant tells you what applies to you.",
+    svcTitle: "We help with documents in Poland", svcSub: "Not only jobs. Tap what you need — a consultant explains the terms.", svcCta: "Interested — contact me",
+    svc1: "Residence card (karta pobytu)", svc1t: "We collect documents, fill in the application, book the voivodeship office and guide you until you get the card. Special terms for our workers.",
+    svc2: "PESEL UKR / UKR status", svc2t: "Obtaining or restoring UKR status and a PESEL number, advice on what to do if the status was lost after leaving Poland.",
+    svc3: "Driving licence exchange", svc3t: "Exchange of a Ukrainian licence for a Polish one: translation, application at the transport office, support until you receive it.",
     contacts: "Contacts", call: "Call us", maps: "Show on map", allVac: "All vacancies on our website",
     closed: "This offer has ended. Call us — we will find you a job.", footer: "Euro Support Group Sp. z o.o. · employment agency · Lublin, Poland",
   },
@@ -111,6 +123,7 @@ export default function SmsLanding() {
   const [friendMsg, setFriendMsg] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [faqOpen, setFaqOpen] = useState(0);
+  const [svcOpen, setSvcOpen] = useState("");
 
   useEffect(() => {
     fetch(`/api/r/${encodeURIComponent(token)}`).then(async (r) => {
@@ -137,7 +150,7 @@ export default function SmsLanding() {
   const wa = digits(ld.messengers?.whatsapp || d.offer.whatsapp || ct.phone);
   const viber = digits(ld.messengers?.viber);
   const tg = (ld.messengers?.telegram || "").replace(/^@/, "");
-  const done = interested.size > 0;
+  const done = [...interested].some((id) => !id.startsWith("svc:"));
   const mark = (id: string) => { ev("interested", id); setInterested((p) => new Set([...p, id])); if (id === "any") window.scrollTo({ top: 0, behavior: "smooth" }); };
   const sendFriend = async (vId: string) => {
     if (!friend.name.trim() || digits(friend.phone).length < 9) { setFriendMsg((m) => ({ ...m, [vId]: s.friendErr })); return; }
@@ -295,6 +308,30 @@ export default function SmsLanding() {
               {s.refSteps!.split(";").map((t, i) => <li key={i} className="flex gap-2 text-sm text-amber-900/90"><span className="w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span><span>{t}</span></li>)}
             </ol>
             {friendForm("any")}
+          </section>
+
+          <section className="px-4 mt-6">
+            <h2 className="font-bold text-lg">{s.svcTitle}</h2>
+            <p className="text-sm text-slate-600 mt-0.5 mb-2">{s.svcSub}</p>
+            <div className="space-y-2">
+              {([["svc:karta", "🪪", s.svc1, s.svc1t], ["svc:ukr", "🇺🇦", s.svc2, s.svc2t], ["svc:prawko", "🚗", s.svc3, s.svc3t]] as const).map(([id, ico, title, txt]) => {
+                const isOpen = svcOpen === id; const sDone = interested.has(id);
+                return (
+                  <article key={id} className={`rounded-2xl border-2 ${isOpen ? "border-slate-900" : "border-slate-200"}`}>
+                    <button onClick={() => setSvcOpen(isOpen ? "" : id)} className="w-full text-left px-4 py-3 flex items-center gap-3">
+                      <span className="text-2xl">{ico}</span><span className="font-bold flex-1">{title}</span><span className={`text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`}>▾</span>
+                    </button>
+                    {isOpen && (
+                      <div className="px-4 pb-4">
+                        <p className="text-sm text-slate-700">{txt}</p>
+                        {sDone ? <div className="mt-3 rounded-xl bg-green-50 border border-green-200 text-green-900 p-3 text-sm font-semibold">✅ {fill(s.thanksShort, { who })}</div>
+                          : <button onClick={() => mark(id)} className="mt-3 w-full rounded-xl bg-slate-900 text-white font-bold py-3">{s.svcCta}</button>}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
           </section>
 
           {ld.reviews?.length ? (

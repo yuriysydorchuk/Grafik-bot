@@ -44,7 +44,7 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   const page = (await request(app).get(`/api/r/${rec!.token}`)).body;
   assert.equal(page.interested, true); assert.deepEqual(page.interestedVacancies, ["offer"]);
   assert.deepEqual(page.cities, ["Lublin"]);
-  assert.equal(page.vacancies.length, 1); assert.equal(page.vacancies[0].id, "offer"); assert.match(page.vacancies[0].title.uk, /AGRAM LUBLIN/);
+  assert.equal(page.vacancies.length, 1); assert.equal(page.vacancies[0].id, "offer"); assert.equal(page.vacancies[0].title.uk, "Робота на виробництві"); assert.equal(JSON.stringify(page.vacancies).includes("AGRAM"), false); // назв клієнтів на сторінці нема
   assert.match(page.contacts.maps, /google\.com\/maps/); assert.equal(page.contacts.phone, "+48 731 000 000");
   // «Порекомендувати друга»: кандидат у воронці SMS з нотаткою про рекомендувача; дубль телефону — не створюється; свій номер — 400
   const fr = await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Ivan Koval", phone: "+48 601 234 567", vacancyId: "offer" });

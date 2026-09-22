@@ -44,7 +44,8 @@ router.get("/r/:token", async (req, res) => {
   const friends = [...new Set(evs.filter((e) => e.kind === "friend" && !(e.meta as any)?.duplicate).map((e) => String((e.meta as any)?.name ?? "")).filter(Boolean))];
   // вакансії: з лендінгу кампанії; порожньо → одна з пропозиції кампанії (щоб сторінка працювала до заповнення списку)
   const vacancies: SmsVacancy[] = landing.vacancies?.length ? landing.vacancies : [{
-    id: "offer", title: { uk: fac?.name ? `Робота на фабриці ${fac.name}` : "Робота на фабриці", ru: fac?.name ? `Работа на фабрике ${fac.name}` : "Работа на фабрике", en: fac?.name ? `Job at ${fac.name}` : "Factory job" },
+    // без назв клієнтів на сторінці (рішення власника 22.09.2026 — не давати інфу конкурентам)
+    id: "offer", title: { uk: "Робота на виробництві", ru: "Работа на производстве", en: "Production job" },
     city: offer.city || fac?.city || cities[0] || "", rate: offer.rate, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
   }];
   const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", vacanciesUrl: "https://eurosupp.pl/dla-pracownika/", instagram: "https://instagram.com/euro_support_", facebook: "https://facebook.com/eurosupportES", ...(landing.contacts ?? {}) };
@@ -69,7 +70,10 @@ async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, te
     if (a?.telegramId) await bot.telegram.sendMessage(a.telegramId, text, { parse_mode: "HTML" });
   } catch (e) { logger.warn({ err: e }, "sms recruiter notify failed"); }
 }
+// Послуги легалізації на сторінці (svc:*) — картка рекрутеру з назвою послуги, не вакансії.
+const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: PESEL UKR / статус UKR", "svc:prawko": "Послуга: заміна водійського посвідчення" };
 const vacancyTitle = (landing: Record<string, any>, id: string): string => {
+  if (SERVICE_TITLES[id]) return SERVICE_TITLES[id]!;
   const v = (landing.vacancies as SmsVacancy[] | undefined)?.find((x) => x.id === id);
   return v ? (v.title?.uk || v.title?.ru || v.title?.en || id) : "";
 };
