@@ -49,7 +49,8 @@ router.get("/r/:token", async (req, res) => {
     city: offer.city || fac?.city || cities[0] || "", rate: offer.rate, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
   }];
   const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", vacanciesUrl: "https://eurosupp.pl/dla-pracownika/", instagram: "https://instagram.com/euro_support_", facebook: "https://facebook.com/eurosupportES", ...(landing.contacts ?? {}) };
-  if (!contacts.maps && contacts.address) contacts.maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(contacts.address)}`;
+  // мапа — за назвою бізнесу + адресою, не лише адресою (за адресою Google відкривав сусідню агенцію)
+if (!contacts.maps) contacts.maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`EuroSupport agencja pracy tymczasowej ${contacts.address ?? "Lublin"}`)}`;
   return res.json({
     firstName: rec.firstName || (rec.name || "").split(" ")[0] || "",
     lang: rec.lang, kind: c.kind, campaign: c.name,
@@ -78,18 +79,21 @@ const vacancyTitle = (landing: Record<string, any>, id: string): string => {
   return v ? (v.title?.uk || v.title?.ru || v.title?.en || id) : "";
 };
 
-// Кнопки сторінки. «Мене цікавить вакансія» (interested, ?v=<id вакансії>) — головна конверсія:
-// телефон уже відомий, форми немає (рішення власника 21.09.2026) → рекрутер кампанії отримує в
-// бот картку на обдзвон; людині — «консультант звʼяжеться протягом 1 робочого дня». Повторне
-// натискання по тій самій вакансії не дублює сповіщення.
-const EVENTS = new Set(["cta_bot", "cta_call", "cta_wa", "interested", "interested_ref"]);
+// Кнопки й кліки сторінки — усе логується в sms_events з id отримувача (власник хоче знати, хто
+// куди клікнув). Конверсійні (cta_*, interested*) ще й піднімають статус до `cta`; «Мене цікавить»
+// (interested, ?v=<вакансія|svc:послуга>) шле рекрутеру кампанії картку в бот (перший раз по
+// кожній вакансії). Решта (open_*, link_*, lang) — лише журнал.
+const CTA_EVENTS = new Set(["cta_bot", "cta_call", "cta_wa", "cta_viber", "interested", "interested_ref"]);
+const TRACK_EVENTS = new Set(["open_vacancy", "open_service", "open_faq", "link_maps", "link_site", "link_insta", "link_fb", "link_vacancies", "link_reviews", "lang"]);
 router.get("/r/:token/e", async (req, res) => {
   const token = String(req.params.token || "").toUpperCase();
   const k = String(req.query.k || "");
   const vacancyId = String(req.query.v || "").slice(0, 40);
-  if (!TOKEN_RE.test(token) || !EVENTS.has(k)) return res.status(204).end();
+  if (!TOKEN_RE.test(token) || !(CTA_EVENTS.has(k) || TRACK_EVENTS.has(k))) return res.status(204).end();
   const rec = await findRecipientByToken(token);
-  if (rec) {
+  if (rec && TRACK_EVENTS.has(k)) {
+    await logSmsEvent(rec.id, k, { ip: clientIp(req), userAgent: req.headers["user-agent"] as string, device: parseDevice(req.headers["user-agent"]), meta: vacancyId ? { v: vacancyId } : undefined });
+  } else if (rec) {
     const first = k.startsWith("interested")
       ? !(await db.select({ id: smsEventsTable.id, meta: smsEventsTable.meta }).from(smsEventsTable).where(and(eq(smsEventsTable.recipientId, rec.id), eq(smsEventsTable.kind, k))))
           .some((e) => k !== "interested" || String((e.meta as any)?.vacancyId ?? "") === vacancyId)

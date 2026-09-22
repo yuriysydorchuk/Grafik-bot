@@ -22,3 +22,10 @@ export const SMS_STATUS_COLOR: Record<string, "slate" | "green" | "amber" | "blu
 export const SMS_CAMPAIGN_STATUS: Record<string, { label: string; color: "slate" | "green" | "amber" | "blue" | "rose" }> = {
   draft: { label: "чернетка", color: "slate" }, test: { label: "тест", color: "amber" }, sending: { label: "відправляється", color: "blue" }, paused: { label: "пауза", color: "amber" }, sent: { label: "відправлено", color: "green" }, closed: { label: "закрита", color: "slate" },
 };
+export const SMS_EVENT_LABEL: Record<string, string> = {
+  sent: "SMS відправлено", failed: "SMS не доставлено", delivered: "SMS доставлено", view: "відкрив сторінку", lang: "перемкнув мову",
+  open_vacancy: "розгорнув вакансію", open_service: "розгорнув послугу", open_faq: "відкрив питання", interested: "🔥 мене цікавить", interested_ref: "🔥 хочу привести друга", friend: "🎁 порекомендував друга",
+  cta_call: "📞 натиснув «подзвонити»", cta_wa: "натиснув WhatsApp", cta_viber: "натиснув Viber", cta_bot: "натиснув Telegram",
+  link_maps: "відкрив мапу", link_site: "перейшов на сайт", link_insta: "відкрив Instagram", link_fb: "відкрив Facebook", link_vacancies: "усі вакансії на сайті", link_reviews: "відгуки в Google",
+  bot_start: "зайшов у бот", remind: "нагадування в бот", referral_bot: "«приведи друга» в бот",
+};

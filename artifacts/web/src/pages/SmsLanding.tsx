@@ -175,7 +175,7 @@ export default function SmsLanding() {
   const messengers = (
     <div className="flex flex-wrap gap-2 mt-3">
       {wa && <a href={`https://wa.me/${wa}?text=${encodeURIComponent(`${name}: ${d.campaign}`)}`} onClick={() => ev("cta_wa")} className="flex-1 min-w-[30%] text-center rounded-xl border border-green-300 bg-green-50 text-green-900 py-2 text-sm font-semibold">WhatsApp</a>}
-      {viber && <a href={`viber://chat?number=%2B${viber}`} className="flex-1 min-w-[30%] text-center rounded-xl border border-violet-300 bg-violet-50 text-violet-900 py-2 text-sm font-semibold">Viber</a>}
+      {viber && <a href={`viber://chat?number=%2B${viber}`} onClick={() => ev("cta_viber")} className="flex-1 min-w-[30%] text-center rounded-xl border border-violet-300 bg-violet-50 text-violet-900 py-2 text-sm font-semibold">Viber</a>}
       {tg && <a href={`https://t.me/${tg}`} onClick={() => ev("cta_bot")} className="flex-1 min-w-[30%] text-center rounded-xl border border-sky-300 bg-sky-50 text-sky-900 py-2 text-sm font-semibold">Telegram</a>}
       {phoneHref && <a href={`tel:+${phoneHref}`} onClick={() => ev("cta_call")} className="flex-1 min-w-[30%] text-center rounded-xl border border-slate-300 bg-white py-2 text-sm font-semibold">📞 {s.call}</a>}
     </div>
@@ -205,7 +205,7 @@ export default function SmsLanding() {
           <img src="/logo.png" alt="Euro Support" className="h-8 dark:hidden" /><img src="/logo-dark.png" alt="" className="h-8 hidden dark:block" />
           <span className="flex-1" />
           {(["uk", "ru", "en"] as L[]).map((l) => (
-            <button key={l} onClick={() => setLang(l)} className={`text-xs px-2.5 py-1 rounded-full border ${l === lang ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-500"}`}>{l.toUpperCase()}</button>
+            <button key={l} onClick={() => { setLang(l); ev("lang", l); }} className={`text-xs px-2.5 py-1 rounded-full border ${l === lang ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-500"}`}>{l.toUpperCase()}</button>
           ))}
         </header>
 
@@ -273,7 +273,7 @@ export default function SmsLanding() {
                 return (
                   <article key={v.id} className={`rounded-2xl border-2 overflow-hidden ${isOpen ? "border-red-500" : "border-slate-200"}`}>
                     {v.photo && <img src={v.photo} alt="" className="w-full h-36 object-cover" loading="lazy" />}
-                    <button onClick={() => setOpen(isOpen ? "" : v.id)} className="w-full text-left p-4">
+                    <button onClick={() => { setOpen(isOpen ? "" : v.id); if (!isOpen) ev("open_vacancy", v.id); }} className="w-full text-left p-4">
                       <div className="flex items-start gap-2">
                         <div className="flex-1 min-w-0">
                           <div className="font-bold text-lg leading-snug">{pick(v.title, lang)}</div>
@@ -299,7 +299,7 @@ export default function SmsLanding() {
                 );
               })}
             </div>
-            {ct.vacanciesUrl && <a href={ct.vacanciesUrl} target="_blank" rel="noreferrer" className="block text-center text-sm text-slate-500 underline mt-3">{s.allVac}</a>}
+            {ct.vacanciesUrl && <a href={ct.vacanciesUrl} onClick={() => ev("link_vacancies")} target="_blank" rel="noreferrer" className="block text-center text-sm text-slate-500 underline mt-3">{s.allVac}</a>}
           </section>
 
           <section className="mx-4 mt-6 rounded-2xl bg-amber-50 border border-amber-200 p-4">
@@ -318,7 +318,7 @@ export default function SmsLanding() {
                 const isOpen = svcOpen === id; const sDone = interested.has(id);
                 return (
                   <article key={id} className={`rounded-2xl border-2 ${isOpen ? "border-slate-900" : "border-slate-200"}`}>
-                    <button onClick={() => setSvcOpen(isOpen ? "" : id)} className="w-full text-left px-4 py-3 flex items-center gap-3">
+                    <button onClick={() => { setSvcOpen(isOpen ? "" : id); if (!isOpen) ev("open_service", id); }} className="w-full text-left px-4 py-3 flex items-center gap-3">
                       <span className="text-2xl">{ico}</span><span className="font-bold flex-1">{title}</span><span className={`text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`}>▾</span>
                     </button>
                     {isOpen && (
@@ -346,7 +346,7 @@ export default function SmsLanding() {
                   </figure>
                 ))}
               </div>
-              {pf.reviewsUrl && <a href={pf.reviewsUrl} target="_blank" rel="noreferrer" className="block px-4 mt-2 text-sm text-blue-700 underline">{s.reviewsAll}</a>}
+              {pf.reviewsUrl && <a href={pf.reviewsUrl} onClick={() => ev("link_reviews")} target="_blank" rel="noreferrer" className="block px-4 mt-2 text-sm text-blue-700 underline">{s.reviewsAll}</a>}
             </section>
           ) : null}
 
@@ -355,7 +355,7 @@ export default function SmsLanding() {
             <div className="divide-y divide-slate-200 rounded-2xl border border-slate-200">
               {faq.map((f, i) => (
                 <div key={i}>
-                  <button onClick={() => setFaqOpen(faqOpen === i ? -1 : i)} className="w-full text-left px-4 py-3 font-semibold flex justify-between gap-3"><span>{f.q}</span><span className="text-slate-400">{faqOpen === i ? "−" : "+"}</span></button>
+                  <button onClick={() => { setFaqOpen(faqOpen === i ? -1 : i); if (faqOpen !== i) ev("open_faq", String(i + 1)); }} className="w-full text-left px-4 py-3 font-semibold flex justify-between gap-3"><span>{f.q}</span><span className="text-slate-400">{faqOpen === i ? "−" : "+"}</span></button>
                   {faqOpen === i && <p className="px-4 pb-3 text-sm text-slate-600">{f.a}</p>}
                 </div>
               ))}
@@ -366,11 +366,11 @@ export default function SmsLanding() {
             <div className="font-bold mb-2">{s.contacts}</div>
             <div className="space-y-2 text-sm">
               {phoneHref && <a href={`tel:+${phoneHref}`} onClick={() => ev("cta_call")} className="flex items-center gap-2 font-semibold"><span>📞</span><span>{ct.phone || d.offer.phone}</span></a>}
-              {ct.address && <div className="flex items-start gap-2"><span>📍</span><span>{ct.address}{ct.maps && <> · <a href={ct.maps} target="_blank" rel="noreferrer" className="underline text-blue-700">{s.maps}</a></>}</span></div>}
-              {ct.site && <a href={ct.site} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>🌐</span><span className="underline text-blue-700">{ct.site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span></a>}
+              {ct.address && <div className="flex items-start gap-2"><span>📍</span><span>{ct.address}{ct.maps && <> · <a href={ct.maps} onClick={() => ev("link_maps")} target="_blank" rel="noreferrer" className="underline text-blue-700">{s.maps}</a></>}</span></div>}
+              {ct.site && <a href={ct.site} onClick={() => ev("link_site")} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>🌐</span><span className="underline text-blue-700">{ct.site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span></a>}
               <div className="flex gap-3 pt-1">
-                {ct.instagram && <a href={ct.instagram} target="_blank" rel="noreferrer" className="underline text-blue-700">Instagram</a>}
-                {ct.facebook && <a href={ct.facebook} target="_blank" rel="noreferrer" className="underline text-blue-700">Facebook</a>}
+                {ct.instagram && <a href={ct.instagram} onClick={() => ev("link_insta")} target="_blank" rel="noreferrer" className="underline text-blue-700">Instagram</a>}
+                {ct.facebook && <a href={ct.facebook} onClick={() => ev("link_fb")} target="_blank" rel="noreferrer" className="underline text-blue-700">Facebook</a>}
               </div>
             </div>
             {messengers}

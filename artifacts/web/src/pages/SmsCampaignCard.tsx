@@ -9,7 +9,7 @@ import { get, post, patch } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Label, Modal, Textarea } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
-import { smsParts, SMS_STATUS_LABEL, SMS_STATUS_COLOR, SMS_CAMPAIGN_STATUS } from "../lib/smsParts";
+import { smsParts, SMS_STATUS_LABEL, SMS_STATUS_COLOR, SMS_CAMPAIGN_STATUS, SMS_EVENT_LABEL } from "../lib/smsParts";
 import { FunnelBar, ImportStep, type Campaign } from "./SmsCampaigns";
 
 type Recipient = { id: number; phone: string; name: string | null; firstName: string | null; lang: string; segment: string | null; year: number | null; status: string; skippedReason: string | null; sentAt: string | null; deliveredAt: string | null; failReason: string | null; viewedAt: string | null; botAt: string | null; parts: number | null; candidateId: number | null; candidateStage: string | null; link: string; workerId: number | null };
@@ -125,7 +125,7 @@ function Recipients({ id }: { id: number }) {
       <div className="flex gap-2 justify-end"><Button variant="secondary" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>←</Button><Button variant="secondary" disabled={(page + 1) * limit >= (data?.total ?? 0)} onClick={() => setPage((p) => p + 1)}>→</Button></div>
       <Modal open={!!evFor} onClose={() => setEvFor(null)} title={`${evFor?.name ?? evFor?.phone ?? ""} · ${t("журнал")}`}>
         {!events ? <Spinner /> : !events.length ? <div className="text-sm text-slate-500">{t("Подій ще немає")}</div> : (
-          <table className="w-full text-sm"><tbody>{events.map((e) => <tr key={e.id} className="border-b border-slate-100"><td className="py-1 text-slate-500 whitespace-nowrap">{fmt(e.at)}</td><td className="py-1 font-medium">{e.kind}</td><td className="py-1 text-slate-500">{e.device ?? ""}{e.meta ? ` ${JSON.stringify(e.meta)}` : ""}</td></tr>)}</tbody></table>
+          <table className="w-full text-sm"><tbody>{events.map((e) => <tr key={e.id} className="border-b border-slate-100"><td className="py-1 text-slate-500 whitespace-nowrap">{fmt(e.at)}</td><td className="py-1 font-medium">{t(SMS_EVENT_LABEL[e.kind] ?? e.kind)}</td><td className="py-1 text-slate-500">{[e.device, (e.meta as any)?.v ?? (e.meta as any)?.vacancyId, (e.meta as any)?.name ? `${(e.meta as any).name} ${(e.meta as any).phone ?? ""}` : null].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table>
         )}
       </Modal>
     </div>
