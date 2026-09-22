@@ -172,7 +172,7 @@ export async function listRecipients(campaignId: number, f: RecipientFilter = {}
   if (f.q) { const like = `%${f.q.toLowerCase()}%`; conds.push(sql`(lower(coalesce(${smsRecipientsTable.name}, '')) like ${like} or ${smsRecipientsTable.phone} like ${like})`); }
   const where = and(...conds);
   const [{ n: total }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(where);
-  const rows = await db.select().from(smsRecipientsTable).where(where).orderBy(smsRecipientsTable.id).limit(Math.min(f.limit ?? 100, 1000)).offset(f.offset ?? 0);
+  const rows = await db.select().from(smsRecipientsTable).where(where).orderBy(smsRecipientsTable.id).limit(Math.min(f.limit ?? 100, 100000)).offset(f.offset ?? 0);
   return { rows, total: total ?? 0 };
 }
 export async function recipientEvents(recipientId: number) {
@@ -213,12 +213,15 @@ export async function findRecipientByToken(token: string): Promise<(SmsRecipient
 
 // Просування статусу воронки лише вперед (delivered → viewed → cta → bot → form → hired).
 const ORDER = ["queued", "sent", "failed", "delivered", "viewed", "cta", "bot", "form", "hired"];
+// Просування статусу лише вперед — одним UPDATE з перевіркою порядку в SQL (без гонки SELECT→UPDATE:
+// паралельні «зайшов у бот» і «відкрив сторінку» не відкочують статус). extra пишеться завжди.
 export async function advanceRecipient(id: number, status: string, extra: Partial<typeof smsRecipientsTable.$inferInsert> = {}): Promise<void> {
-  const [r] = await db.select({ status: smsRecipientsTable.status }).from(smsRecipientsTable).where(eq(smsRecipientsTable.id, id));
-  if (!r) return;
-  const cur = ORDER.indexOf(r.status), next = ORDER.indexOf(status);
-  const set = next > cur ? { status, ...extra } : extra;
-  if (Object.keys(set).length) await db.update(smsRecipientsTable).set(set).where(eq(smsRecipientsTable.id, id));
+  const next = ORDER.indexOf(status);
+  if (next < 0) return;
+  const orderArr = sql`array[${sql.join(ORDER.map((o) => sql`${o}`), sql`, `)}]::text[]`;
+  await db.update(smsRecipientsTable)
+    .set({ ...extra, status: sql`case when coalesce(array_position(${orderArr}, ${smsRecipientsTable.status}), 0) < ${next + 1} then ${status} else ${smsRecipientsTable.status} end` })
+    .where(eq(smsRecipientsTable.id, id));
 }
 
 // Кандидат з SMS заповнив анкету (passport-scan confirm) або переведений у працівники (convert):

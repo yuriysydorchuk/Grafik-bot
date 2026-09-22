@@ -53,8 +53,9 @@ router.get("/r/:token", async (req, res) => {
 if (!contacts.maps) contacts.maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`EuroSupport agencja pracy tymczasowej ${contacts.address ?? "Lublin"}`)}`;
   return res.json({
     firstName: rec.firstName || (rec.name || "").split(" ")[0] || "",
-    lang: rec.lang, kind: c.kind, campaign: c.name,
-    offer: { ...offer, factoryName: fac?.name ?? null, city: offer.city || fac?.city || null, phone, whatsapp: offer.whatsapp || phone },
+    lang: rec.lang, kind: c.kind,
+    // без внутрішньої назви кампанії й назви фабрики (клієнта) у публічній відповіді (ревʼю 22.09.2026)
+    offer: { ...offer, factoryId: undefined, city: offer.city || fac?.city || null, phone, whatsapp: offer.whatsapp || phone },
     landing, cities, vacancies, contacts,
     recruiter: { name: landing.recruiterName || process.env.SMS_RECRUITER_NAME || "", hours: landing.hours || process.env.SMS_RECRUITER_HOURS || "10–17" },
     interested: interestedVacancies.length > 0 || evs.some((e) => e.kind === "interested_ref"),
@@ -135,7 +136,7 @@ router.post("/r/:token/friend", async (req, res) => {
   await logSmsEvent(rec.id, "friend", { ip: clientIp(req), userAgent: req.headers["user-agent"] as string, device: parseDevice(req.headers["user-agent"]), meta: { name, phone, vacancyId, duplicate: !!dup } });
   await advanceRecipient(rec.id, "cta");
   if (!dup) await notifyRecruiter(c, `🎁 <b>Рекомендація друга з SMS</b>\n<b>${escapeHtml(name)}</b> · ${escapeHtml(phone)}${title ? ` · ${escapeHtml(title)}` : ""}\nВід: ${escapeHtml(rec.name || "—")} ${escapeHtml(rec.phone)} (бонус ${escapeHtml(String((c.offer as any)?.bonus || "300 zł"))} після 10 змін друга)\nКампанія «${escapeHtml(c.name)}». Кандидат у воронці «SMS-кампанії».`);
-  return res.json({ ok: true, duplicate: !!dup });
+  return res.json({ ok: true }); // без «дубль/не дубль» назовні — не даємо перевіряти чужі номери
 });
 
 export default router;

@@ -16,7 +16,7 @@ import {
 } from "../services/sms/campaigns";
 import { getSmsProvider, smsLinkBase, SMS_SENDER, type SmsProviderName } from "../services/sms/provider";
 import { sendCampaignBatch, sendTestSms, isSmsCampaignInFlight } from "../services/sms/sender";
-import { smsParts, normalizePhone } from "../services/sms/phone";
+import { smsParts, normalizePhone, renderSmsText } from "../services/sms/phone";
 import { notifyActiveWorkersReferral, pendingActiveWorkers } from "../services/sms/automation";
 
 const router: IRouter = Router();
@@ -57,7 +57,8 @@ router.get("/sms-campaigns/:id", async (req, res) => {
 });
 
 router.patch("/sms-campaigns/:id", async (req, res) => {
-  const c = await updateCampaign(Number(req.params.id), req.body ?? {});
+  const { status: _ignored, ...patch } = (req.body ?? {}) as Record<string, unknown>; // статус — лише через /start|/pause|/close (головний адмін), не PATCH-ом (ревʼю 22.09.2026)
+  const c = await updateCampaign(Number(req.params.id), patch);
   if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
   res.json(await withStats(c));
 });
@@ -65,7 +66,7 @@ router.patch("/sms-campaigns/:id", async (req, res) => {
 // Прев'ю тексту для мови: підстановка імені/лінка + частини SMS (лічильник у модалці рахує так само, як провайдер).
 router.post("/sms-campaigns/preview-text", async (req, res) => {
   const text = String(req.body?.text ?? "");
-  const rendered = text.replace(/\{(імʼя|ім'я|імя|name|имя)\}/giu, String(req.body?.name ?? "Oksana")).replace(/\{(лінк|link|ссылка|посилання)\}/giu, `${smsLinkBase()}/r/${"7KQ2M9X1".slice(0, SMS_TOKEN_LEN)}`);
+  const rendered = renderSmsText(text, { name: req.body?.name === undefined ? "Oksana" : String(req.body.name ?? ""), link: `${smsLinkBase()}/r/${"7KQ2M9X1".slice(0, SMS_TOKEN_LEN)}` }); // та сама підстановка, що й при відправці
   res.json({ rendered, ...smsParts(rendered) });
 });
 

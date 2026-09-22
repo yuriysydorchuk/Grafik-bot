@@ -14,7 +14,7 @@ import { smsParts, SMS_CAMPAIGN_STATUS } from "../lib/smsParts";
 export type SmsStats = { recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; bot: number; form: number; hired: number; skipped: number; activeWorkers: number; parts: number; costEstimate: number; byLang: Record<string, number> };
 export type Campaign = {
   id: number; name: string; kind: "job" | "referral"; status: string; provider: "smsapi" | "smsfly"; sender: string;
-  texts: Record<string, string>; landing: any; offer: Record<string, any>; schedule: { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number };
+  texts: Record<string, string>; landing: any; offer: Record<string, any>; schedule: { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number; testLimit?: number };
   recruiterAdminId: number | null; factoryName: string | null; stats: SmsStats; candidates: number; activeWorkersPending?: number; inFlight: boolean; startedAt: string | null; finishedAt: string | null; createdAt: string;
 };
 type ListResp = { campaigns: Campaign[]; summary: { views7d: number; newCandidates7d: number; viewedNoBot: number; queued: number; activeCampaigns: number } };
@@ -119,7 +119,7 @@ function Wizard({ onClose, settings }: { onClose: () => void; settings?: Setting
   const { data: staff = [] } = useQuery<Staff[]>({ queryKey: ["staff"], queryFn: () => get("/staff") });
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [c, setC] = useState<Campaign | null>(null);
-  const [form, setForm] = useState({ name: "", kind: "job" as "job" | "referral", provider: "smsapi" as "smsapi" | "smsfly", sender: settings?.sender ?? "EuroSupport", factoryId: "", city: "", rate: "31 zł/год netto", monthly: "до 5 500 zł/міс", housing: "від 450 zł", transport: "довіз на зміну", startDate: "", bonus: "300 zł", phone: settings?.officePhone ?? "", recruiterAdminId: "", days: [2, 3, 4] as number[], from: "10:00", to: "14:00", dailyLimit: 1500, batchSize: 200 });
+  const [form, setForm] = useState({ name: "", kind: "job" as "job" | "referral", provider: "smsapi" as "smsapi" | "smsfly", sender: settings?.sender ?? "EuroSupport", factoryId: "", city: "", rate: "31 zł/год netto", monthly: "до 5 500 zł/міс", housing: "від 450 zł", transport: "довіз на зміну", startDate: "", bonus: "300 zł", phone: settings?.officePhone ?? "", recruiterAdminId: "", days: [2, 3, 4] as number[], from: "10:00", to: "14:00", dailyLimit: 1500, batchSize: 200, testLimit: 300 });
   const [texts, setTexts] = useState<Record<string, string>>(TEXT_DEFAULTS.job!);
   useEffect(() => { setTexts(TEXT_DEFAULTS[form.kind]!); }, [form.kind]);
   const f = (k: keyof typeof form) => (e: any) => setForm((s) => ({ ...s, [k]: e.target.value }));
@@ -128,7 +128,7 @@ function Wizard({ onClose, settings }: { onClose: () => void; settings?: Setting
     mutationFn: async () => {
       const body = { name: form.name, kind: form.kind, provider: form.provider, sender: form.sender, texts, recruiterAdminId: form.recruiterAdminId ? Number(form.recruiterAdminId) : null,
         offer: { factoryId: form.factoryId ? Number(form.factoryId) : null, city: form.city, rate: form.rate, monthly: form.monthly, housing: form.housing, transport: form.transport, startDate: form.startDate, bonus: form.bonus, phone: form.phone },
-        schedule: { days: form.days, from: form.from, to: form.to, dailyLimit: Number(form.dailyLimit), batchSize: Number(form.batchSize) } };
+        schedule: { days: form.days, from: form.from, to: form.to, dailyLimit: Number(form.dailyLimit), batchSize: Number(form.batchSize), testLimit: Number(form.testLimit) || 300 } };
       return c ? patch<Campaign>(`/sms-campaigns/${c.id}`, body) : post<Campaign>("/sms-campaigns", body);
     },
     onSuccess: (x) => { setC(x); setStep((s) => (s === 1 ? 2 : 3)); },
@@ -155,7 +155,7 @@ function Wizard({ onClose, settings }: { onClose: () => void; settings?: Setting
             <Label>{t("Дні відправки")}</Label>
             <div className="flex gap-1">{DAYS.map((d) => <button key={d.v} type="button" onClick={() => setForm((s) => ({ ...s, days: s.days.includes(d.v) ? s.days.filter((x) => x !== d.v) : [...s.days, d.v].sort() }))} className={`px-2 py-1 rounded border text-xs ${form.days.includes(d.v) ? "bg-slate-900 text-white border-slate-900" : "border-slate-300"}`}>{d.l}</button>)}</div>
             <div className="grid grid-cols-2 gap-2"><div><Label>{t("З")}</Label><Input type="time" value={form.from} onChange={f("from")} /></div><div><Label>{t("До")}</Label><Input type="time" value={form.to} onChange={f("to")} /></div></div>
-            <div className="grid grid-cols-2 gap-2"><div><Label>{t("Ліміт на день")}</Label><Input type="number" value={form.dailyLimit} onChange={f("dailyLimit")} /></div><div><Label>{t("Батч (кожні 5 хв)")}</Label><Input type="number" value={form.batchSize} onChange={f("batchSize")} /></div></div>
+            <div className="grid grid-cols-3 gap-2"><div><Label>{t("Ліміт на день")}</Label><Input type="number" value={form.dailyLimit} onChange={f("dailyLimit")} /></div><div><Label>{t("Батч (кожні 5 хв)")}</Label><Input type="number" value={form.batchSize} onChange={f("batchSize")} /></div><div><Label>{t("Стеля тест-режиму")}</Label><Input type="number" value={form.testLimit} onChange={f("testLimit")} /></div></div>
           </div>
           <div className="md:col-span-2 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button><Button disabled={!form.name.trim() || save.isPending} onClick={() => save.mutate()}>{t("Далі: тексти")} →</Button></div>
         </div>

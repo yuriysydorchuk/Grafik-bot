@@ -2592,7 +2592,7 @@ export type SmsLanding = {
   recruiterPhoto?: string;  // фото консультанта (URL); без нього — ініціали
   messengers?: { whatsapp?: string; viber?: string; telegram?: string }; // «написати» — номер/юзернейм
 };
-export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number }; // days: 1=пн … 7=нд, Europe/Warsaw
+export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number; testLimit?: number }; // days: 1=пн … 7=нд, Europe/Warsaw; testLimit — стеля тест-режиму (дефолт 300), далі пауза
 
 export const smsCampaignsTable = pgTable("sms_campaigns", {
   id: serial("id").primaryKey(),

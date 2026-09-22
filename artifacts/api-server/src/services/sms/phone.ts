@@ -92,7 +92,7 @@ export function smsParts(text: string): { encoding: "GSM-7" | "UCS-2"; chars: nu
     else { gsm = false; break; }
   }
   if (gsm) return { encoding: "GSM-7", chars: len, parts: len <= 160 ? 1 : Math.ceil(len / 153) };
-  const n = [...text].length;
+  const n = text.length; // UTF-16 одиниці, як рахує провайдер (емодзі = 2), не кодові точки
   return { encoding: "UCS-2", chars: n, parts: n <= 70 ? 1 : Math.ceil(n / 67) };
 }
 

@@ -12,7 +12,7 @@ type L = "uk" | "ru" | "en";
 type Txt = Partial<Record<L, string>>;
 type Vacancy = { id: string; title: Txt; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
 type Data = {
-  firstName: string; lang: string; kind: "job" | "referral"; campaign: string; closed: boolean; telegram: string;
+  firstName: string; lang: string; kind: "job" | "referral"; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
   cities: string[]; vacancies: Vacancy[]; recruiter: { name: string; hours: string };
   contacts: { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
@@ -46,6 +46,8 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Карта побиту", svc1t: "Збираємо документи, заповнюємо wniosek, записуємо до urzędu wojewódzkiego і супроводжуємо до отримання карти. Для тих, хто працює в нас — умови окремі.",
     svc2: "PESEL UKR / статус UKR", svc2t: "Оформлення та поновлення статусу UKR і номера PESEL, консультація, що робити, якщо статус втрачено після виїзду.",
     svc3: "Заміна водійського посвідчення", svc3t: "Обмін українських прав на польські: переклад, заява у wydział komunikacji, супровід до отримання.",
+    waText: "Добрий день! Я {name}, отримав(ла) SMS про роботу. Хочу дізнатись більше.",
+    netErr: "Не вдалося надіслати. Перевірте інтернет і спробуйте ще раз, або подзвоніть нам.",
     contacts: "Контакти", call: "Подзвонити", maps: "Показати на мапі", allVac: "Усі вакансії на сайті",
     closed: "Ця пропозиція вже завершена. Зателефонуйте нам — роботу знайдемо.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
@@ -70,6 +72,8 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Карта побыту", svc1t: "Собираем документы, заполняем wniosek, записываем в urząd wojewódzki и сопровождаем до получения карты. Для тех, кто работает у нас — отдельные условия.",
     svc2: "PESEL UKR / статус UKR", svc2t: "Оформление и восстановление статуса UKR и номера PESEL, консультация, что делать, если статус потерян после выезда.",
     svc3: "Замена водительского удостоверения", svc3t: "Обмен украинских прав на польские: перевод, заявление в wydział komunikacji, сопровождение до получения.",
+    waText: "Добрый день! Я {name}, получил(а) SMS о работе. Хочу узнать больше.",
+    netErr: "Не удалось отправить. Проверьте интернет и попробуйте ещё раз, или позвоните нам.",
     contacts: "Контакты", call: "Позвонить", maps: "Показать на карте", allVac: "Все вакансии на сайте",
     closed: "Это предложение уже завершено. Позвоните нам — работу найдём.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
@@ -94,6 +98,8 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Residence card (karta pobytu)", svc1t: "We collect documents, fill in the application, book the voivodeship office and guide you until you get the card. Special terms for our workers.",
     svc2: "PESEL UKR / UKR status", svc2t: "Obtaining or restoring UKR status and a PESEL number, advice on what to do if the status was lost after leaving Poland.",
     svc3: "Driving licence exchange", svc3t: "Exchange of a Ukrainian licence for a Polish one: translation, application at the transport office, support until you receive it.",
+    waText: "Hello! I am {name}, I received your SMS about a job. I would like to know more.",
+    netErr: "Could not send. Check your connection and try again, or call us.",
     contacts: "Contacts", call: "Call us", maps: "Show on map", allVac: "All vacancies on our website",
     closed: "This offer has ended. Call us — we will find you a job.", footer: "Euro Support Group Sp. z o.o. · employment agency · Lublin, Poland",
   },
@@ -151,16 +157,24 @@ export default function SmsLanding() {
   const viber = digits(ld.messengers?.viber);
   const tg = (ld.messengers?.telegram || "").replace(/^@/, "");
   const done = [...interested].some((id) => !id.startsWith("svc:"));
-  const mark = (id: string) => { ev("interested", id); setInterested((p) => new Set([...p, id])); if (id === "any") window.scrollTo({ top: 0, behavior: "smooth" }); };
+  // «Мені цікаво» — підтверджуємо лише після відповіді сервера (ревʼю 22.09.2026: без мережі сторінка обіцяла дзвінок)
+  const mark = async (id: string) => {
+    try {
+      const r = await fetch(`/api/r/${encodeURIComponent(token)}/e?k=interested&v=${encodeURIComponent(id)}`);
+      if (!r.ok) throw new Error(String(r.status));
+      setInterested((p) => new Set([...p, id]));
+      if (id === "any") window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch { alert(s.netErr); }
+  };
   const sendFriend = async (vId: string) => {
     if (!friend.name.trim() || digits(friend.phone).length < 9) { setFriendMsg((m) => ({ ...m, [vId]: s.friendErr })); return; }
     setBusy(true);
     try {
       const r = await fetch(`/api/r/${encodeURIComponent(token)}/friend`, { method: "POST", headers: { "Content-Type": "application/json", "X-Requested-With": "grafik" }, body: JSON.stringify({ ...friend, vacancyId: vId === "any" ? "" : vId }) });
-      const j = await r.json().catch(() => ({}));
+      const j: { error?: string } = await r.json().catch(() => ({}));
       if (r.status === 400 && j.error === "own_phone") { setFriendMsg((m) => ({ ...m, [vId]: s.ownPhone })); return; }
       if (!r.ok) { setFriendMsg((m) => ({ ...m, [vId]: s.friendErr })); return; }
-      setFriendMsg((m) => ({ ...m, [vId]: j.duplicate ? s.dup : fill(s.thanksFriend, { friend: friend.name.trim(), bonus }) }));
+      setFriendMsg((m) => ({ ...m, [vId]: fill(s.thanksFriend, { friend: friend.name.trim(), bonus }) }));
       setFriendFor(""); setFriend({ name: "", phone: "" });
     } finally { setBusy(false); }
   };
@@ -174,7 +188,7 @@ export default function SmsLanding() {
     : <div className={`${cls} rounded-full bg-red-600 text-white font-bold flex items-center justify-center shrink-0`}>{initials(who)}</div>;
   const messengers = (
     <div className="flex flex-wrap gap-2 mt-3">
-      {wa && <a href={`https://wa.me/${wa}?text=${encodeURIComponent(`${name}: ${d.campaign}`)}`} onClick={() => ev("cta_wa")} className="flex-1 min-w-[30%] text-center rounded-xl border border-green-300 bg-green-50 text-green-900 py-2 text-sm font-semibold">WhatsApp</a>}
+      {wa && <a href={`https://wa.me/${wa}?text=${encodeURIComponent(fill(s.waText, { name }))}`} onClick={() => ev("cta_wa")} className="flex-1 min-w-[30%] text-center rounded-xl border border-green-300 bg-green-50 text-green-900 py-2 text-sm font-semibold">WhatsApp</a>}
       {viber && <a href={`viber://chat?number=%2B${viber}`} onClick={() => ev("cta_viber")} className="flex-1 min-w-[30%] text-center rounded-xl border border-violet-300 bg-violet-50 text-violet-900 py-2 text-sm font-semibold">Viber</a>}
       {tg && <a href={`https://t.me/${tg}`} onClick={() => ev("cta_bot")} className="flex-1 min-w-[30%] text-center rounded-xl border border-sky-300 bg-sky-50 text-sky-900 py-2 text-sm font-semibold">Telegram</a>}
       {phoneHref && <a href={`tel:+${phoneHref}`} onClick={() => ev("cta_call")} className="flex-1 min-w-[30%] text-center rounded-xl border border-slate-300 bg-white py-2 text-sm font-semibold">📞 {s.call}</a>}
@@ -382,7 +396,7 @@ export default function SmsLanding() {
           <div className="fixed bottom-0 left-0 right-0 z-10">
             <div className="max-w-md mx-auto bg-white/95 backdrop-blur border-t border-slate-200 p-3 grid grid-cols-[1fr_auto] gap-2">
               <button onClick={() => mark("any")} className="rounded-xl bg-red-600 text-white font-bold py-3">📞 {s.cta}</button>
-              {wa && <a href={`https://wa.me/${wa}?text=${encodeURIComponent(`${name}: ${d.campaign}`)}`} onClick={() => ev("cta_wa")} className="rounded-xl border border-green-300 bg-green-50 text-green-900 font-semibold px-3 py-3 text-sm flex items-center">WhatsApp</a>}
+              {wa && <a href={`https://wa.me/${wa}?text=${encodeURIComponent(fill(s.waText, { name }))}`} onClick={() => ev("cta_wa")} className="rounded-xl border border-green-300 bg-green-50 text-green-900 font-semibold px-3 py-3 text-sm flex items-center">WhatsApp</a>}
             </div>
           </div>
         )}

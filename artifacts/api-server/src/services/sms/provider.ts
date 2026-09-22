@@ -95,7 +95,10 @@ const smsfly: SmsProvider = {
   },
   async status(msgIds) {
     const out: StatusResult[] = [];
-    for (const id of msgIds) {
+    // SMS-Fly має лише по-одному GETMESSAGESTATUS — робимо по 10 паралельно (ревʼю 22.09.2026)
+    for (let i = 0; i < msgIds.length; i += 10) await Promise.all(msgIds.slice(i, i + 10).map((id) => one(id)));
+    return out;
+    async function one(id: string) {
       try {
         const d = await smsflyCall("GETMESSAGESTATUS", { messageID: id });
         // SMS-Fly віддає SMPP-коди (перевірено 21.09.2026 на живому SMS: "DELIVRD"), не повні слова
@@ -107,7 +110,6 @@ const smsfly: SmsProvider = {
         logger.warn({ err: e, id }, "SMS-Fly status failed");
       }
     }
-    return out;
   },
 };
 

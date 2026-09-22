@@ -62,7 +62,7 @@ export async function smsNoBotCandidates(today: string, leadDays = 2, windowDays
 
 // ── 2. Денний звіт хвилі ───────────────────────────────────────────────────
 // Крон після вікна відправки (15:05 Warsaw): кампанії, з яких сьогодні щось пішло.
-const warsawDateExpr = (col: unknown) => sql`to_char(${col} at time zone 'Europe/Warsaw', 'YYYY-MM-DD')`;
+const warsawDateExpr = (col: unknown) => sql`to_char((${col} at time zone 'UTC') at time zone 'Europe/Warsaw', 'YYYY-MM-DD')`; // колонка naive-UTC (як sentToday у sender)
 export async function sendSmsDailyReport(now = new Date()): Promise<number> {
   const date = warsawNow(now).date;
   const today = await db.select({

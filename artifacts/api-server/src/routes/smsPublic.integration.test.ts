@@ -22,7 +22,7 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   assert.equal(r.status, 200);
   assert.equal(r.body.firstName, "Oksana");
   assert.equal(r.body.lang, "uk");
-  assert.equal(r.body.offer.factoryName, "AGRAM LUBLIN");
+  assert.equal(r.body.offer.factoryName, undefined); assert.equal(r.body.campaign, undefined); // назва клієнта/кампанії назовні не йде
   assert.equal(r.body.offer.city, "Lublin");
   assert.equal(r.body.offer.phone, "+48 731 000 000");
   assert.equal(r.body.telegram, `https://t.me/ES_test_bot?start=sms${rec!.token}`);
@@ -48,11 +48,11 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   assert.match(page.contacts.maps, /google\.com\/maps/); assert.equal(page.contacts.phone, "+48 731 000 000");
   // «Порекомендувати друга»: кандидат у воронці SMS з нотаткою про рекомендувача; дубль телефону — не створюється; свій номер — 400
   const fr = await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Ivan Koval", phone: "+48 601 234 567", vacancyId: "offer" });
-  assert.equal(fr.status, 200, JSON.stringify(fr.body)); assert.equal(fr.body.duplicate, false);
+  assert.equal(fr.status, 200, JSON.stringify(fr.body)); assert.equal(fr.body.duplicate, undefined); // «дубль» назовні не віддаємо
   const cands = await db.select().from(candidatesTable).where(eq(candidatesTable.source, "sms_friend"));
   assert.equal(cands.length, 1); assert.equal(cands[0]!.phone, "+48601234567"); assert.equal(cands[0]!.fullName, "Ivan Koval"); assert.equal(cands[0]!.campaignId, c.id); assert.match(cands[0]!.notes ?? "", /Oksana Melnychenko/);
   const fr2 = await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Ivan Koval", phone: "48601234567" });
-  assert.equal(fr2.body.duplicate, true);
+  assert.equal(fr2.status, 200);
   assert.equal((await db.select().from(candidatesTable).where(eq(candidatesTable.source, "sms_friend"))).length, 1);
   assert.equal((await request(app).post(`/api/r/${rec!.token}/friend`).set("X-Requested-With", "grafik").send({ name: "Me", phone: "+48573000214" })).status, 400);
   assert.deepEqual((await request(app).get(`/api/r/${rec!.token}`)).body.friends, ["Ivan Koval"]);

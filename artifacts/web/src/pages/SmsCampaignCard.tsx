@@ -46,7 +46,7 @@ export default function SmsCampaignCard() {
         <Badge color={st?.color ?? "slate"}>{t(st?.label ?? c.status)}</Badge>
         {c.inFlight && <Badge color="amber">{t("батч іде")}</Badge>}
         <span className="flex-1" />
-        {isMain && (c.status === "draft" || c.status === "paused") && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Запустити тестову відправку?"), message: t("Черга піде батчами у вікні розкладу."), confirmText: t("Тест") })) act.mutate({ path: "start", body: { mode: "test" } }); }}><FlaskConical size={16} /> {t("Тест")}</Button>}
+        {isMain && (c.status === "draft" || c.status === "paused") && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Запустити тестову відправку?"), message: `${t("Черга піде батчами у вікні розкладу.")} ${t("Стеля тест-режиму")}: ${c.schedule.testLimit ?? 300} SMS, далі пауза.`, confirmText: t("Тест") })) act.mutate({ path: "start", body: { mode: "test" } }); }}><FlaskConical size={16} /> {t("Тест")}</Button>}
         {isMain && (c.status === "draft" || c.status === "paused" || c.status === "test") && <Button onClick={async () => { if (await confirm({ title: t("Запустити відправку?"), message: `${s.queued} SMS · ~${(s.queued * (c.provider === "smsfly" ? 0.07 : 0.1)).toFixed(0)} zł. ${t("Це незворотно.")}`, confirmText: t("Запустити"), danger: true })) act.mutate({ path: "start", body: { mode: "sending" } }); }}><Play size={16} /> {t("Запустити")}</Button>}
         {(c.status === "sending" || c.status === "test") && <Button variant="secondary" onClick={() => act.mutate({ path: "pause" })}><Pause size={16} /> {t("Пауза")}</Button>}
         {isMain && ["sending", "test", "paused"].includes(c.status) && <Button variant="secondary" onClick={() => act.mutate({ path: "send-batch" })}><Send size={16} /> {t("Батч зараз")}</Button>}
@@ -203,7 +203,7 @@ function ScheduleTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
   const { data: factories = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: staff = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["staff"], queryFn: () => get("/staff") });
   const [rec, setRec] = useState(c.recruiterAdminId ? String(c.recruiterAdminId) : "");
-  const save = useMutation({ mutationFn: () => patch(`/sms-campaigns/${c.id}`, { ...meta, schedule: { ...sch, dailyLimit: Number(sch.dailyLimit), batchSize: Number(sch.batchSize) }, offer, recruiterAdminId: rec ? Number(rec) : null }), onSuccess: () => { toast.success(t("Збережено")); onSaved(); } });
+  const save = useMutation({ mutationFn: () => patch(`/sms-campaigns/${c.id}`, { ...meta, schedule: { ...sch, dailyLimit: Number(sch.dailyLimit), batchSize: Number(sch.batchSize), testLimit: Number(sch.testLimit) || 300 }, offer, recruiterAdminId: rec ? Number(rec) : null }), onSuccess: () => { toast.success(t("Збережено")); onSaved(); } });
   const DAYS = [[1, "Пн"], [2, "Вт"], [3, "Ср"], [4, "Чт"], [5, "Пт"], [6, "Сб"], [7, "Нд"]] as const;
   const o = (k: string) => (e: any) => setOffer((s) => ({ ...s, [k]: e.target.value }));
   return (
@@ -216,7 +216,7 @@ function ScheduleTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
         <Label>{t("Дні відправки")}</Label>
         <div className="flex gap-1">{DAYS.map(([v, l]) => <button key={v} type="button" onClick={() => setSch((s) => ({ ...s, days: s.days.includes(v) ? s.days.filter((x) => x !== v) : [...s.days, v].sort() }))} className={`px-2 py-1 rounded border text-xs ${sch.days.includes(v) ? "bg-slate-900 text-white border-slate-900" : "border-slate-300"}`}>{l}</button>)}</div>
         <div className="grid grid-cols-2 gap-2"><div><Label>{t("З")}</Label><Input type="time" value={sch.from} onChange={(e) => setSch((s) => ({ ...s, from: e.target.value }))} /></div><div><Label>{t("До")}</Label><Input type="time" value={sch.to} onChange={(e) => setSch((s) => ({ ...s, to: e.target.value }))} /></div></div>
-        <div className="grid grid-cols-2 gap-2"><div><Label>{t("Ліміт на день")}</Label><Input type="number" value={sch.dailyLimit} onChange={(e) => setSch((s) => ({ ...s, dailyLimit: Number(e.target.value) }))} /></div><div><Label>{t("Батч (кожні 5 хв)")}</Label><Input type="number" value={sch.batchSize} onChange={(e) => setSch((s) => ({ ...s, batchSize: Number(e.target.value) }))} /></div></div>
+        <div className="grid grid-cols-3 gap-2"><div><Label>{t("Ліміт на день")}</Label><Input type="number" value={sch.dailyLimit} onChange={(e) => setSch((s) => ({ ...s, dailyLimit: Number(e.target.value) }))} /></div><div><Label>{t("Батч (кожні 5 хв)")}</Label><Input type="number" value={sch.batchSize} onChange={(e) => setSch((s) => ({ ...s, batchSize: Number(e.target.value) }))} /></div><div><Label>{t("Стеля тест-режиму")}</Label><Input type="number" value={sch.testLimit ?? 300} onChange={(e) => setSch((s) => ({ ...s, testLimit: Number(e.target.value) }))} /></div></div>
       </div>
       <div className="space-y-2">
         <Label>{t("Фабрика пропозиції")}</Label><Select value={offer.factoryId ?? ""} onChange={(e) => setOffer((s) => ({ ...s, factoryId: e.target.value ? Number(e.target.value) : null }))}><option value="">—</option>{factories.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>

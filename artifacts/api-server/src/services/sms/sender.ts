@@ -48,11 +48,28 @@ export async function sendCampaignBatch(c: SmsCampaign, opts: { force?: boolean;
   try {
     const already = await sentToday(c.id, now);
     const room = Math.max(0, (sched.dailyLimit || 1500) - already);
-    const take = Math.min(opts.limit ?? sched.batchSize ?? 200, room);
+    let take = Math.min(opts.limit ?? sched.batchSize ?? 200, room);
+    // тест-режим = стеля на всю кампанію (дефолт 300), далі кампанія сама стає на паузу (ревʼю 22.09.2026)
+    if (c.status === "test") {
+      const testLimit = sched.testLimit ?? 300;
+      const [{ n: sentTotal }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(and(eq(smsRecipientsTable.campaignId, c.id), isNotNull(smsRecipientsTable.sentAt)));
+      take = Math.min(take, Math.max(0, testLimit - (sentTotal ?? 0)));
+      if (take <= 0) {
+        await db.update(smsCampaignsTable).set({ status: "paused", updatedAt: new Date() }).where(and(eq(smsCampaignsTable.id, c.id), eq(smsCampaignsTable.status, "test")));
+        logger.info({ campaignId: c.id, testLimit }, "SMS test limit reached → paused");
+        return { sent: 0, failed: 0, remaining: -1 };
+      }
+    }
     if (take <= 0) return { sent: 0, failed: 0, remaining: -1 };
-    const queue = await db.select().from(smsRecipientsTable)
+    const candidates = await db.select({ id: smsRecipientsTable.id }).from(smsRecipientsTable)
       .where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.status, "queued")))
       .orderBy(smsRecipientsTable.id).limit(take);
+    // резервуємо рядки ДО виклику провайдера (status=sent, sentAt=now, лише з queued): падіння посеред
+    // батча чи паралельний виклик не відправить ті самі SMS двічі; конверсія, що прийде під час батча,
+    // не перезапишеться — після відправки міняємо лише providerMsgId/parts
+    const queue = candidates.length
+      ? await db.update(smsRecipientsTable).set({ status: "sent", sentAt: now }).where(and(inArray(smsRecipientsTable.id, candidates.map((r) => r.id)), eq(smsRecipientsTable.status, "queued"))).returning()
+      : [];
     if (!queue.length) {
       if (c.status === "sending") {
         await db.update(smsCampaignsTable).set({ status: "sent", finishedAt: new Date(), updatedAt: new Date() }).where(eq(smsCampaignsTable.id, c.id));
@@ -69,11 +86,11 @@ export async function sendCampaignBatch(c: SmsCampaign, opts: { force?: boolean;
       const it = items.find((x) => x.recipientId === res.recipientId)!;
       if (res.ok) {
         sent++;
-        await db.update(smsRecipientsTable).set({ status: "sent", sentAt: now, providerMsgId: res.msgId ?? null, parts: res.parts ?? it.parts }).where(eq(smsRecipientsTable.id, res.recipientId));
+        await db.update(smsRecipientsTable).set({ providerMsgId: res.msgId ?? null, parts: res.parts ?? it.parts }).where(eq(smsRecipientsTable.id, res.recipientId));
         await logSmsEvent(res.recipientId, "sent", { meta: { provider: provider.name, msgId: res.msgId, parts: res.parts ?? it.parts } });
       } else {
         failed++;
-        await db.update(smsRecipientsTable).set({ status: "failed", sentAt: now, failReason: res.error?.slice(0, 300) ?? "помилка" }).where(eq(smsRecipientsTable.id, res.recipientId));
+        await db.update(smsRecipientsTable).set({ status: "failed", failReason: res.error?.slice(0, 300) ?? "помилка" }).where(and(eq(smsRecipientsTable.id, res.recipientId), eq(smsRecipientsTable.status, "sent")));
         await logSmsEvent(res.recipientId, "failed", { meta: { provider: provider.name, error: res.error } });
       }
     }
@@ -99,7 +116,8 @@ export async function pollSmsStatuses(): Promise<{ delivered: number; failed: nu
   const since = new Date(Date.now() - 72 * 3600 * 1000);
   const pending = await db.select({ id: smsRecipientsTable.id, msgId: smsRecipientsTable.providerMsgId, campaignId: smsRecipientsTable.campaignId })
     .from(smsRecipientsTable)
-    .where(and(eq(smsRecipientsTable.status, "sent"), isNotNull(smsRecipientsTable.providerMsgId), gte(smsRecipientsTable.sentAt, since)));
+    .where(and(isNotNull(smsRecipientsTable.providerMsgId), sql`${smsRecipientsTable.deliveredAt} is null`, sql`${smsRecipientsTable.status} not in ('queued', 'failed')`, gte(smsRecipientsTable.sentAt, since)))
+    .orderBy(smsRecipientsTable.sentAt).limit(500); // людина могла вже відкрити лінк (viewed/cta) — статус доставки все одно потрібен; стеля — щоб прогін не тягнувся годинами
   if (!pending.length) return { delivered: 0, failed: 0 };
   const campaigns = new Map<number, SmsCampaign>();
   for (const c of await db.select().from(smsCampaignsTable).where(inArray(smsCampaignsTable.id, [...new Set(pending.map((p) => p.campaignId))]))) campaigns.set(c.id, c);
@@ -126,18 +144,22 @@ export async function pollSmsStatuses(): Promise<{ delivered: number; failed: nu
 // Тест на свій номер = справжній отримувач у кампанії з сегментом «тест» (лінк, сторінка, бот і
 // кандидат працюють наскрізно). Повторний тест на той самий номер переюзує токен.
 export async function sendTestSms(c: SmsCampaign, phone: string, lang: string, name = "Test"): Promise<{ ok: boolean; error?: string; text: string; parts: number; msgId?: string; link: string }> {
+  const now = new Date();
   let [rec] = await db.select().from(smsRecipientsTable).where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.phone, phone)));
   if (!rec) {
-    [rec] = await db.insert(smsRecipientsTable).values({ campaignId: c.id, phone, name, firstName: name, lang, segment: "тест", token: randomInviteCode(SMS_TOKEN_LEN), status: "queued" }).returning();
+    [rec] = await db.insert(smsRecipientsTable).values({ campaignId: c.id, phone, name, firstName: name, lang, segment: "тест", token: randomInviteCode(SMS_TOKEN_LEN), status: "sent", sentAt: now }).returning();
+  } else if (rec.status === "queued") {
+    // номер уже в черзі — резервуємо, щоб крон не надіслав удруге; статус далі за sent не чіпаємо (ревʼю 22.09.2026)
+    await db.update(smsRecipientsTable).set({ status: "sent", sentAt: now }).where(and(eq(smsRecipientsTable.id, rec.id), eq(smsRecipientsTable.status, "queued")));
   }
   const t = renderForRecipient(c, { lang, firstName: rec!.firstName || name, name: rec!.name || name, token: rec!.token });
   const provider = getSmsProvider(c.provider as SmsProviderName);
   const [res] = await provider.send([{ recipientId: rec!.id, phone, text: t.text, from: c.sender }]);
-  const now = new Date();
   if (res?.ok) {
-    await db.update(smsRecipientsTable).set({ status: "sent", sentAt: now, providerMsgId: res.msgId ?? null, parts: res.parts ?? t.parts, failReason: null }).where(eq(smsRecipientsTable.id, rec!.id));
+    await db.update(smsRecipientsTable).set({ providerMsgId: res.msgId ?? null, parts: res.parts ?? t.parts, failReason: null, sentAt: rec!.sentAt ?? now }).where(eq(smsRecipientsTable.id, rec!.id));
     await logSmsEvent(rec!.id, "sent", { meta: { provider: provider.name, msgId: res.msgId, parts: res.parts ?? t.parts, test: true } });
   } else {
+    await db.update(smsRecipientsTable).set({ status: "failed", failReason: res?.error?.slice(0, 300) ?? "помилка" }).where(and(eq(smsRecipientsTable.id, rec!.id), eq(smsRecipientsTable.status, "sent"), sql`${smsRecipientsTable.providerMsgId} is null`));
     await logSmsEvent(rec!.id, "failed", { meta: { provider: provider.name, error: res?.error, test: true } });
   }
   logger.info({ campaignId: c.id, recipientId: rec!.id, ok: !!res?.ok, msgId: res?.msgId, error: res?.error }, "SMS test sent");

@@ -4,7 +4,7 @@ import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { resetDb, db, workersTable, workerQuestionnairesTable, smsRecipientsTable, smsEventsTable, funnelsTable, closeDb } from "../../test/harness.ts";
 import { eq } from "drizzle-orm";
-import { createCampaign, importRecipients, campaignStats, ensureSmsFunnel, renderForRecipient, findRecipientByToken, advanceRecipient } from "./campaigns.ts";
+import { createCampaign, importRecipients, campaignStats, ensureSmsFunnel, renderForRecipient, findRecipientByToken, advanceRecipient, setCampaignStatus, getCampaign } from "./campaigns.ts";
 import { sendCampaignBatch, pollSmsStatuses, inSendWindow, setSmsProviderForTests } from "./index.ts";
 import type { SmsProvider, SendItem } from "./provider.ts";
 
@@ -112,4 +112,35 @@ test("відправка: поза вікном нічого, у вікні ба
   // текст для отримувача без імені
   const t = renderForRecipient(c, { lang: "uk", firstName: null, name: null, token: "X".repeat(24) });
   assert.equal(t.text.startsWith("робота: "), true);
+});
+
+// Ревʼю 22.09.2026 (Codex/Gemini): тест-режим має стелю і сам стає на паузу; рядки резервуються
+// до виклику провайдера (паралельний батч не шле ті самі SMS); статус не відкочується назад.
+test("тест-режим: стеля → пауза; резерв рядків проти дублів; advanceRecipient лише вперед", { skip: SKIP }, async () => {
+  const prov = mockProvider({});
+  setSmsProviderForTests(prov);
+  const c = await createCampaign({ name: "Тест", texts: { uk: "{імʼя}: {лінк}" }, schedule: { days: [2], from: "10:00", to: "14:00", dailyLimit: 100, batchSize: 10, testLimit: 3 } }, null);
+  await importRecipients(c.id, [1, 2, 3, 4, 5].map((i) => ({ phone: `+4857300030${i}`, name: `Person ${i}`, lang: "uk" })));
+  await db.update(smsRecipientsTable).set({ status: "queued" }).where(eq(smsRecipientsTable.campaignId, c.id));
+  await setCampaignStatus(c.id, "test");
+  const cTest = { ...c, status: "test" as const };
+  const now = new Date("2026-10-20T09:30:00Z");
+  const r1 = await sendCampaignBatch(cTest, { now });
+  assert.equal(r1.sent, 3); // стеля 3, хоч батч 10 і в черзі 5
+  const r2 = await sendCampaignBatch(cTest, { now: new Date("2026-10-20T09:40:00Z") });
+  assert.equal(r2.sent, 0);
+  assert.equal((await getCampaign(c.id))!.status, "paused"); // стелю досягнуто → пауза
+  assert.equal(prov.sent.length, 3);
+  // паралельний батч на тій самій кампанії (sending): два виклики одночасно не дублюють
+  await setCampaignStatus(c.id, "sending");
+  const cSend = { ...c, status: "sending" as const };
+  const [a, b] = await Promise.all([sendCampaignBatch(cSend, { now, limit: 5 }), sendCampaignBatch(cSend, { now, limit: 5 })]);
+  assert.equal(a.sent + b.sent, 2); // лишалось 2 у черзі — і рівно 2 SMS
+  assert.equal(prov.sent.length, 5);
+  // статус лише вперед
+  const [p1] = await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.campaignId, c.id)).orderBy(smsRecipientsTable.id);
+  await advanceRecipient(p1!.id, "bot", { botAt: now });
+  await advanceRecipient(p1!.id, "viewed", { viewedAt: now });
+  const [after] = await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.id, p1!.id));
+  assert.equal(after!.status, "bot"); assert.ok(after!.viewedAt); // extra записано, статус не відкотився
 });
