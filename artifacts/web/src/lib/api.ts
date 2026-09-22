@@ -182,6 +182,7 @@ export interface Worker {
   student?: boolean; // похідне: is_student АБО legal_status='student' (усі ролі)
   stud26?: boolean; // похідне: студент І до 26 (вік з birth_date, фолбек under26)
   status: string; isActive: boolean; language?: string | null;
+  doNotHire?: boolean; doNotHireReason?: string | null; doNotHireAt?: string | null; // чорний список (окрема вкладка списку; повернення лише force)
   terminationDate?: string | null; terminationFactoryId?: number | null; // виповідзення — пікери графіку ховають людину з цієї дати
   gratyfikantName?: string | null; // точне написання в Gratyfikant nexo (лише для експорту naliczeń)
   pesel?: string | null; // 11 цифр текстом (з картотек nexo; матчинг ліст по PESEL)

@@ -374,6 +374,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       nationality: workersTable.nationality, language: workersTable.language,
       gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
+      doNotHire: workersTable.doNotHire, doNotHireReason: workersTable.doNotHireReason, // чорний список — окрема вкладка списку
       terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, // пікери графіку ховають з цієї дати
       hourlyRate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
       legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
@@ -713,9 +714,34 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
   const b = req.body ?? {};
   const optId = (v: unknown): number | null | undefined => v === undefined ? undefined : (Number.isInteger(v) ? Number(v) : null);
   const { restoreWorker } = await import("../services/workerRehire");
-  const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null });
+  // force = свідоме повернення людини з чорного списку; лише той, хто може видаляти працівників
+  const force = b.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers");
+  const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force });
   if (!r.ok) return fail(res, 400, r.error);
   ok(res, stripWorkerEcho(r.worker, req));
+});
+
+// ─── Чорний список (рішення власника 21.09.2026): «не наймати» з причиною ────────────────
+// Прапорець не звільняє і нічого не ховає; звільнений з прапорцем показується лише у вкладці
+// «Чорний список», повернення — лише force з підтвердженням, кандидат-тезка — 409 на створенні.
+router.post("/workers/:id/do-not-hire", requireCap("deleteWorkers"), async (req, res) => {
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason ?? "").trim() || null;
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "Не знайдено");
+  const adminId = (req as AuthedRequest).admin?.adminId ?? null;
+  const [row] = await db.update(workersTable).set({ doNotHire: true, doNotHireReason: reason, doNotHireAt: new Date(), doNotHireBy: adminId }).where(eq(workersTable.id, id)).returning();
+  await db.insert(workerChangesTable).values({ workerId: id, field: "doNotHire", oldValue: w.doNotHire ? "1" : "0", newValue: reason ? `1: ${reason}` : "1", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId });
+  ok(res, stripWorkerEcho(row, req));
+});
+router.delete("/workers/:id/do-not-hire", requireCap("deleteWorkers"), async (req, res) => {
+  const id = Number(req.params.id);
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "Не знайдено");
+  const adminId = (req as AuthedRequest).admin?.adminId ?? null;
+  const [row] = await db.update(workersTable).set({ doNotHire: false, doNotHireReason: null, doNotHireAt: null, doNotHireBy: null }).where(eq(workersTable.id, id)).returning();
+  if (w.doNotHire) await db.insert(workerChangesTable).values({ workerId: id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId });
+  ok(res, stripWorkerEcho(row, req));
 });
 
 // ─── Залічки за бадання: список записів у профілі (додати/позначити/видалити) ─
@@ -1023,6 +1049,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
       .where(eq(workerBadaniaTable.workerId, id)).orderBy(desc(workerBadaniaTable.enteredAt), desc(workerBadaniaTable.id)),
     nationality: w.nationality,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
+    doNotHire: w.doNotHire, doNotHireReason: w.doNotHireReason, doNotHireAt: w.doNotHireAt,
     language: w.language,
     birthDate: w.birthDate,
     // старі ключі статусів (oswiadczenie/student_do26/…) нормалізуються до
@@ -1660,6 +1687,12 @@ router.post("/candidates/:id/followup", RW, async (req, res) => {
 router.post("/candidates", RW, async (req, res) => {
   const { fullName, phone, factoryId, stage, notes } = req.body ?? {};
   if (!fullName?.trim()) return fail(res, 400, "Вкажіть ім'я");
+  // чорний список: тезка або той самий телефон → 409, клієнт перепитує і шле force
+  if (req.body?.force !== true) {
+    const { findBlacklisted } = await import("../services/blacklist");
+    const bl = await findBlacklisted({ fullName, phone });
+    if (bl) return res.status(409).json({ error: "blacklisted", worker: bl });
+  }
   // Реферер — id або код «ES-XXXXX», який кандидат назвав по телефону/в офісі (кампанія 17.09.2026).
   let referrerWorkerId: number | null = req.body?.referrerWorkerId ? Number(req.body.referrerWorkerId) : null;
   if (!referrerWorkerId && typeof req.body?.referrerCode === "string" && req.body.referrerCode.trim()) {

@@ -160,6 +160,13 @@ export const workersTable = pgTable("workers", {
   // eu_other/other додано 02.09.2026 для правил легальності: EU = poland|romania|eu_other)
   nationality: text("nationality"),
   firedAt: timestamp("fired_at"),
+  // Чорний список (21.09.2026): «не наймати» — окрема вкладка списку працівників;
+  // повернення (restoreWorker) і кандидат з тим самим імʼям/телефоном — лише з підтвердженням
+  // (services/blacklist.ts). Прапорець НЕ звільняє і не ховає історію.
+  doNotHire: boolean("do_not_hire").notNull().default(false),
+  doNotHireReason: text("do_not_hire_reason"),
+  doNotHireAt: timestamp("do_not_hire_at"),
+  doNotHireBy: integer("do_not_hire_by").references(() => adminsTable.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

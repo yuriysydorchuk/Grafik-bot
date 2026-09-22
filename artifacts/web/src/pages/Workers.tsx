@@ -42,7 +42,9 @@ export default function Workers() {
   // Умова (контракти з модуля підпису): signed/pending/none/expired — по w.contracts.umowa.
   const [umowaFilter, setUmowaFilter] = useSessionState("workers.umowa", "");
   const [expiringOnly, setExpiringOnly] = useSessionState("workers.expiring", false);
-  const [showInactive, setShowInactive] = useSessionState("workers.inactive", false);
+  // режим списку: активні | звільнені | чорний список (людина з прапорцем do_not_hire — лише у своїй вкладці)
+  const [mode, setMode] = useSessionState<"active" | "fired" | "blacklist">("workers.mode", "active");
+  const showInactive = mode !== "active";
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
   const [firing, setFiring] = useState<Worker | null>(null);
@@ -95,7 +97,7 @@ export default function Workers() {
   });
 
   const filtered = useMemo(() => (workers ?? []).filter(w =>
-    (showInactive ? !w.isActive : w.isActive) &&
+    (mode === "blacklist" ? !!w.doNotHire : mode === "fired" ? (!w.isActive && !w.doNotHire) : w.isActive) &&
     (!facFilter || String(w.factoryId) === facFilter) &&
     (!coFilter || String(w.companyId) === coFilter) &&
     (!posFilter || String(w.positionId) === posFilter) &&
@@ -116,13 +118,13 @@ export default function Workers() {
     })()) &&
     (!expiringOnly || (() => { const d = daysUntil(w.legality?.nextExpiryAt); return d != null && d <= 30; })()) &&
     (!q || w.fullName.toLowerCase().includes(q.toLowerCase()) || (w.workerCode ?? "").includes(q))
-  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, showInactive]);
+  ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, mode]);
 
   if (isLoading) return <Spinner />;
 
   return (
     <>
-      <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${showInactive ? t("звільнених") : t("активних")}`}
+      <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${mode === "blacklist" ? t("у чорному списку") : mode === "fired" ? t("звільнених") : t("активних")}`}
         action={canEdit ? (
           <div className="flex items-center gap-3">
             <Button loading={scanInvite.isPending} onClick={() => scanInvite.mutate()}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
@@ -179,9 +181,12 @@ export default function Workers() {
           <option value="none">{t("без umowy")}</option>
           <option value="expired">{t("прострочена")}</option>
         </Select>
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> {t("Звільнені")}
-        </label>
+        <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 text-xs font-medium">
+          {([["active", t("Активні")], ["fired", t("Звільнені")], ["blacklist", t("Чорний список")]] as const).map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setMode(k)}
+              className={`px-3 py-1.5 ${mode === k ? (k === "blacklist" ? "bg-slate-800 text-white" : "bg-red-600 text-white") : "bg-white text-slate-600 hover:bg-slate-50"}`}>{label}</button>
+          ))}
+        </div>
         {(() => { const targets = filtered.filter(w => w.isActive && !w.telegramId); return targets.length > 0 ? (
           <Button variant="secondary" loading={inviteAll.isPending} onClick={() => inviteAll.mutate(targets)}>
             <Link2 className="h-4 w-4" /> {t("Скопіювати всі посилання")} ({targets.length})
@@ -220,7 +225,9 @@ export default function Workers() {
                       {canEdit && w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
                       {canEdit && (w.isActive
                         ? <button onClick={() => setFiring(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
-                        : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>)}
+                        : w.doNotHire
+                          ? <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-white" title={w.doNotHireReason ?? ""}>{t("не наймати")}</span>
+                          : <button onClick={() => restore.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Відновити")}><UserCheck className="h-4 w-4" /></button>)}
                       {canEdit && !w.isActive && isOwner && <button onClick={async () => { if (await confirm({ title: t("Видалити назавжди {name}?", { name: w.fullName }), message: t("Працівника та всю його історію буде видалено безповоротно."), danger: true, confirmText: t("Видалити") })) remove.mutate(w.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити назавжди")}><Trash2 className="h-4 w-4" /></button>}
                     </div>
                   </td>

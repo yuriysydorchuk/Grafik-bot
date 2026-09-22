@@ -60,6 +60,7 @@ interface WorkerProfile {
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
+  doNotHire?: boolean; doNotHireReason?: string | null; doNotHireAt?: string | null; // чорний список
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
   phone?: string | null; phoneSource?: "questionnaire" | "candidate" | null; // з анкети (канон) або з картки кандидата
@@ -157,8 +158,22 @@ export default function WorkerDetail() {
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setFiring(false); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
     onError: (e: any) => toast.error(e.message),
   });
+  // чорний список (21.09.2026): лише cap deleteWorkers (власник); причина — в модалці нижче
+  const canDeleteWorkers = can(me, "deleteWorkers");
+  const [blacklisting, setBlacklisting] = useState(false);
+  const [blReason, setBlReason] = useState("");
+  const blacklistOn = useMutation({
+    mutationFn: () => post(`/workers/${id}/do-not-hire`, { reason: blReason.trim() || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setBlacklisting(false); setBlReason(""); toast.success(t("Додано в чорний список")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const blacklistOff = useMutation({
+    mutationFn: () => del(`/workers/${id}/do-not-hire`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Прибрано з чорного списку")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const restore = useMutation({
-    mutationFn: () => post(`/workers/${id}/restore`),
+    mutationFn: (force?: boolean) => post(`/workers/${id}/restore`, force ? { force: true } : {}),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Відновлено")); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -253,19 +268,25 @@ export default function WorkerDetail() {
               </span>
               {peselCheck(w.pesel, null, w.gender).genderMismatch && <PeselMismatch what={peselCheck(w.pesel, null, w.gender).sex === "M" ? t("Чоловіча") : t("Жіноча")} />}
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
+              {w.doNotHire && <span className="inline-flex items-center gap-1 rounded bg-slate-800 px-1.5 py-0.5 text-xs font-semibold text-white" title={w.doNotHireReason ?? ""}><Ban className="h-3 w-3" /> {t("Чорний список")}{w.doNotHireReason ? `: ${w.doNotHireReason}` : ""}</span>}
               {w.isActive && w.terminationDate && <Badge color="amber">{w.terminationFactoryId != null ? `${t("йде з")} ${factories.find(f => f.id === w.terminationFactoryId)?.name ?? `#${w.terminationFactoryId}`} ` : `${t("звільнення з")} `}{fmtDocDate(w.terminationDate)}</Badge>}
               {w.isActive && canEdit && (
                 <button type="button" onClick={() => setFiring(true)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
                   <UserX className="h-3.5 w-3.5" /> {t("Звільнити")}
                 </button>
               )}
-              {!w.isActive && (
+              {!w.isActive && (!w.doNotHire || canDeleteWorkers) && (
                 <button type="button" onClick={async () => {
-                  if (await confirmDlg({ title: t("Відновити працівника?"), message: t("Профіль знову стане активним, історія і документи збережуться."), confirmText: t("Відновити") })) restore.mutate();
+                  if (w.doNotHire) {
+                    if (await confirmDlg({ title: t("Людина в чорному списку. Повернути?"), message: `${w.doNotHireReason ?? t("без причини")}. ${t("Прапорець буде знято, профіль знову стане активним.")}`, danger: true, confirmText: t("Повернути") })) restore.mutate(true);
+                  } else if (await confirmDlg({ title: t("Відновити працівника?"), message: t("Профіль знову стане активним, історія і документи збережуться."), confirmText: t("Відновити") })) restore.mutate(false);
                 }} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100" disabled={restore.isPending}>
                   <UserCheck className="h-3.5 w-3.5" /> {t("Відновити")}
                 </button>
               )}
+              {canDeleteWorkers && (w.doNotHire
+                ? <button type="button" onClick={() => blacklistOff.mutate()} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" disabled={blacklistOff.isPending}>{t("Прибрати з чорного списку")}</button>
+                : <button type="button" onClick={() => setBlacklisting(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"><Ban className="h-3.5 w-3.5" /> {t("У чорний список")}</button>)}
             </h1>
             {/* Фірма/фабрика/посада — редаговані прямо тут (badge-select), щоб
                 не дублювати те саме ще й рядками в групі «Робота» нижче. */}
@@ -486,6 +507,18 @@ export default function WorkerDetail() {
       </div>
 
       {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
+      {blacklisting && (
+        <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">{t("Людина лишиться в базі з історією, але зʼявиться лише у вкладці «Чорний список». Повернути зможе лише той, хто може видаляти працівників.")}</p>
+            <div><Label>{t("Причина")}</Label><Textarea value={blReason} onChange={e => setBlReason(e.target.value)} rows={3} placeholder={t("напр. не вийшов на зміну без попередження, крадіжка, конфлікт")} /></div>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setBlacklisting(false)}>{t("Скасувати")}</Button>
+              <Button onClick={() => blacklistOn.mutate()} loading={blacklistOn.isPending}><Ban className="h-4 w-4" /> {t("У чорний список")}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {editing && (
         <WorkerModal worker={workerForEdit} factories={factories} companies={companies} isOwner={isOwner}
           onClose={() => setEditing(false)}

@@ -344,9 +344,17 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
     assignedAdminId: assignedAdminId ? Number(assignedAdminId) : null,
   });
   const save = useMutation({
-    mutationFn: () => isEdit ? patch(`/candidates/${candidate!.id}`, body()) : post(`/candidates`, body()),
+    mutationFn: async (force?: boolean) => isEdit ? patch(`/candidates/${candidate!.id}`, body()) : post(`/candidates`, { ...body(), ...(force ? { force: true } : {}) }),
     onSuccess: () => { toast.success(isEdit ? t("Збережено") : t("Додано")); onSaved(); },
-    onError: (e: any) => toast.error(e.message),
+    onError: async (e: any) => {
+      // чорний список (21.09.2026): тезка або той самий телефон — створюємо лише свідомо
+      if (e?.status === 409 && e?.data?.error === "blacklisted") {
+        const w = e.data.worker;
+        if (window.confirm(`${t("Людина в чорному списку")}: ${w.fullName}${w.reason ? ` — ${w.reason}` : ""}. ${t("Все одно створити кандидата?")}`)) save.mutate(true);
+        return;
+      }
+      toast.error(e.message);
+    },
   });
   return (
     <Modal open onClose={onClose} title={isEdit ? t("Редагувати кандидата") : t("Новий кандидат")}>
@@ -397,7 +405,7 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
         <div><Label>{t("Нотатки")}</Label><Input value={notes} onChange={e => setNotes(e.target.value)} placeholder={t("коментар рекрутера")} /></div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={save.isPending} onClick={() => fullName.trim() && save.mutate()}>{isEdit ? t("Зберегти") : t("Додати")}</Button>
+          <Button loading={save.isPending} onClick={() => fullName.trim() && save.mutate(false)}>{isEdit ? t("Зберегти") : t("Додати")}</Button>
         </div>
       </div>
     </Modal>

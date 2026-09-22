@@ -25,7 +25,7 @@ export const CHANGE_FIELD_LABEL: Record<string, string> = {
   employmentStartDate: "Дата працевлаштування", agramStazBonus: "Бонус Agram: стаж",
   agramCashBonus: "Бонус Agram: нал", hourlyRate: "Ставка брутто", hourlyRateNetto: "Ставка нетто",
   isStudent: "Студент", payoutPrefKind: "Побажання по виплаті", payoutPrefValue: "Значення побажання",
-  fired: "Звільнення", restored: "Поновлення", nationality: "Національність", telegramId: "Telegram",
+  fired: "Звільнення", restored: "Поновлення", doNotHire: "Чорний список", nationality: "Національність", telegramId: "Telegram",
   terminationDate: "Виповідзення", factoryEnded: "Кінець роботи на фабриці",
 };
 export const DIFF_KEY_LABEL: Record<string, string> = {
