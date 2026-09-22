@@ -1838,6 +1838,12 @@ const EN: Record<string, string> = {
   "Персонал": "Staff",
   "Рекрутація": "Recruitment",
   // ── SMS-кампанії ──
+ "усі події xlsx": "all events xlsx", "Унікальні люди на кожному кроці. Оновлюється щохвилини.": "Unique people at each step. Refreshes every minute.", "подій": "events",
+  "Воронка сторінки": "Page funnel", "SMS відправлено": "SMS sent", "щось натиснули на сторінці": "tapped something on the page", "мене цікавить": "interested", "порекомендували друга": "recommended a friend", "натиснули подзвонити / написати": "tapped call / message",
+  "Відсоток — від попереднього кроку (відкрили — від доставлених; далі — від тих, хто відкрив).": "Percent of the previous step (opened — of delivered; the rest — of those who opened).", "Повернулись на сторінку повторно": "Returned to the page again",
+  "Вакансія": "Vacancy", "розгорнули": "expanded", "цікавить": "interested", "друзів": "friends", "Послуги з документами": "Document services", "Послуга": "Service", "Питання FAQ": "FAQ questions",
+  "Кнопки контактів і посилання": "Contact buttons and links", "мапа": "map", "сайт": "website", "усі вакансії": "all vacancies", "відгуки Google": "Google reviews", "Мови": "Languages", "перемикали мову": "switched language", "Пристрої": "Devices",
+  "Коли відкривають (година, Варшава)": "When they open (hour, Warsaw)", "Час від SMS до відкриття": "Time from SMS to opening", "медіана": "median", "за 1 год": "within 1 h", "за 24 год": "within 24 h", "По днях": "By day", "відкр.": "opened", "цікав.": "interested", "дн": "d",
   "Довіра на першому екрані (порожнє — не показується)": "Trust strip on the first screen (empty — hidden)", "З якого року": "Since year", "Працевлаштовано": "People employed", "Підприємств": "Factories", "Рейтинг Google": "Google rating", "Відгуки Google (URL)": "Google reviews (URL)", "№ KRAZ": "KRAZ no.",
   "Фото консультанта (URL)": "Consultant photo (URL)", "Відгуки (рядок = відгук: Імʼя | Місто | текст uk | текст ru | текст en)": "Reviews (one per line: Name | City | text uk | text ru | text en)",
   "Стеля тест-режиму": "Test-mode cap", "Відгуків у Google": "Google reviews count",

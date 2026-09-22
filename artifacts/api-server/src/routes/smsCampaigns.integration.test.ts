@@ -6,6 +6,7 @@ import request from "supertest";
 import ExcelJS from "exceljs";
 import { resetDb, db, app, closeDb, workersTable, smsRecipientsTable, seedAdmin, seedRole } from "../test/harness.ts";
 import { setSmsProviderForTests } from "../services/sms/provider.ts";
+import { eq } from "drizzle-orm";
 
 const SKIP = !process.env.TEST_DATABASE_URL;
 before(async () => { if (!SKIP) await resetDb(); });
@@ -71,4 +72,30 @@ test("кампанія: створити → імпорт dry/real → отри�
   assert.equal(all.body.campaigns.length, 1); assert.equal(typeof all.body.summary.queued, "number");
   const settings = await request(app).get("/api/sms-campaigns/settings").set("Cookie", sched.cookie);
   assert.equal(settings.body.providers.length, 2);
+});
+
+// Аналітика сторінки: воронка унікальних людей, по вакансіях/послугах, кнопки, події xlsx.
+test("аналітика: воронка, вакансії, послуги, кнопки, експорт подій", { skip: SKIP }, async () => {
+  await seedRole("scheduler", ["editData"], ["/sms-campaigns"]);
+  const sched = await seedAdmin({ role: "scheduler" });
+  const created = await request(app).post("/api/sms-campaigns").set("Cookie", sched.cookie).set("X-Requested-With", "grafik")
+    .send({ name: "Аналітика", texts: { uk: "{лінк}" }, landing: { vacancies: [{ id: "v1", title: { uk: "Пакування" } }, { id: "v2", title: { uk: "Склад" } }] } });
+  const id = created.body.id;
+  const file = await xlsx([{ "Телефон (E.164)": "+48573000214", "Імʼя": "Oksana", "Прізвище": "M", "Мова (оцінка)": "uk", "Хто це": "кандидат", "Рік": "2025" }, { "Телефон (E.164)": "+48729000880", "Імʼя": "Dmytro", "Прізвище": "S", "Мова (оцінка)": "ru", "Хто це": "кандидат", "Рік": "2025" }]);
+  await request(app).post(`/api/sms-campaigns/${id}/import`).set("Cookie", sched.cookie).set("X-Requested-With", "grafik").field("dry", "0").attach("file", file, "c.xlsx");
+  const recs = await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.campaignId, id));
+  await db.update(smsRecipientsTable).set({ status: "sent", sentAt: new Date(Date.now() - 3600_000), deliveredAt: new Date() }).where(eq(smsRecipientsTable.campaignId, id));
+  const [a, b] = recs;
+  const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)";
+  for (const k of ["", "/e?k=open_vacancy&v=v1", "/e?k=open_vacancy&v=v2", "/e?k=interested&v=v1", "/e?k=open_service&v=svc:karta", "/e?k=cta_call", "/e?k=open_faq&v=2", "/e?k=lang&v=ru"]) await request(app).get(`/api/r/${a!.token}${k}`).set("User-Agent", ua);
+  for (const k of ["", "", "/e?k=open_vacancy&v=v1"]) await request(app).get(`/api/r/${b!.token}${k}`).set("User-Agent", ua);
+  const an = (await request(app).get(`/api/sms-campaigns/${id}/analytics`).set("Cookie", sched.cookie)).body;
+  assert.equal(an.people.sent, 2); assert.equal(an.people.delivered, 2); assert.equal(an.people.viewed, 2); assert.equal(an.people.interested, 1); assert.equal(an.people.contact, 1); assert.equal(an.people.returning, 1);
+  assert.deepEqual(an.vacancies.find((v: any) => v.id === "v1"), { id: "v1", title: "Пакування", opens: 2, interested: 1, friends: 0 });
+  assert.equal(an.services.find((v: any) => v.id === "svc:karta").opens, 1);
+  assert.equal(an.buttons.cta_call, 1); assert.deepEqual(an.faq, [{ n: 2, opens: 1 }]); assert.equal(an.langs.ru, 1);
+  assert.ok(Object.keys(an.devices)[0]!.match(/iOS|iPhone|Safari/)); assert.equal(an.byHour.reduce((s: number, n: number) => s + n, 0), 3);
+  assert.equal(typeof an.timeToView.medianMin, "number"); assert.equal(an.timeToView.within24h, 2);
+  const xl = await request(app).get(`/api/sms-campaigns/${id}/events.xlsx`).set("Cookie", sched.cookie);
+  assert.equal(xl.status, 200); assert.match(xl.headers["content-type"], /spreadsheetml/);
 });

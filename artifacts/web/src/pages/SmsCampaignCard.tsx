@@ -15,7 +15,7 @@ import { FunnelBar, ImportStep, type Campaign } from "./SmsCampaigns";
 type Recipient = { id: number; phone: string; name: string | null; firstName: string | null; lang: string; segment: string | null; year: number | null; status: string; skippedReason: string | null; sentAt: string | null; deliveredAt: string | null; failReason: string | null; viewedAt: string | null; botAt: string | null; parts: number | null; candidateId: number | null; candidateStage: string | null; link: string; workerId: number | null };
 type Ev = { id: number; kind: string; at: string; device: string | null; meta: any };
 const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
-type Tab = "recipients" | "texts" | "landing" | "schedule" | "import";
+type Tab = "recipients" | "analytics" | "texts" | "landing" | "schedule" | "import";
 
 export default function SmsCampaignCard() {
   const t = useT();
@@ -65,7 +65,7 @@ export default function SmsCampaignCard() {
       <div className="flex items-center gap-3"><FunnelBar s={s} width={520} /><span className="text-xs text-slate-500">{t("у черзі")}: {s.queued} · {t("не доставлено")}: {s.failed} · {t("пропущено")}: {s.skipped} ({t("активних працівників")}: {s.activeWorkers}) · {t("кандидатів")}: {c.candidates}</span></div>
 
       <div className="flex gap-2 border-b border-slate-200">
-        {([["recipients", t("Отримувачі")], ["texts", t("Тексти SMS")], ["landing", t("Сторінка")], ["schedule", t("Розклад і пропозиція")], ["import", t("Імпорт")]] as [Tab, string][]).map(([k, l]) => (
+        {([["recipients", t("Отримувачі")], ["analytics", t("Аналітика")], ["texts", t("Тексти SMS")], ["landing", t("Сторінка")], ["schedule", t("Розклад і пропозиція")], ["import", t("Імпорт")]] as [Tab, string][]).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === k ? "border-red-600 font-semibold" : "border-transparent text-slate-500"}`}>{l}</button>
         ))}
       </div>
@@ -75,6 +75,7 @@ export default function SmsCampaignCard() {
       {tab === "landing" && <LandingTab c={c} onSaved={refresh} />}
       {tab === "schedule" && <ScheduleTab c={c} onSaved={refresh} />}
       {tab === "import" && <Card className="p-4"><ImportStep campaignId={id} onDone={refresh} /></Card>}
+      {tab === "analytics" && <AnalyticsTab id={id} />}
 
       <Modal open={testOpen} onClose={() => setTestOpen(false)} title={t("Тест на мій номер")}>
         <div className="space-y-2">
@@ -263,6 +264,83 @@ function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[
           <div className="flex items-center justify-between"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!v.experience} onChange={(e) => upd(i, { experience: e.target.checked })} /> {t("потрібен досвід")}</label><Button variant="secondary" onClick={() => onChange(value.filter((_, j) => j !== i))}>{t("Прибрати")}</Button></div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Аналітика сторінки: воронка кроків, вакансії/послуги, кнопки, FAQ, години, пристрої ─────
+type Analytics = {
+  people: { sent: number; delivered: number; viewed: number; engaged: number; interested: number; friend: number; contact: number; returning: number };
+  vacancies: { id: string; title: string; opens: number; interested: number; friends: number }[];
+  services: { id: string; title: string; opens: number; interested: number }[];
+  buttons: Record<string, number>; faq: { n: number; opens: number }[]; langs: Record<string, number>; devices: Record<string, number>;
+  byHour: number[]; byDay: { date: string; views: number; interested: number }[];
+  timeToView: { medianMin: number | null; p75Min: number | null; within1h: number; within24h: number }; events: number;
+};
+function AnalyticsTab({ id }: { id: number }) {
+  const t = useT();
+  const { data: a } = useQuery<Analytics>({ queryKey: ["sms-analytics", id], queryFn: () => get(`/sms-campaigns/${id}/analytics`), refetchInterval: 60_000 });
+  if (!a) return <Spinner />;
+  const p = a.people;
+  const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : "—");
+  const steps: [string, number, number][] = [
+    [t("SMS відправлено"), p.sent, p.sent], [t("доставлено"), p.delivered, p.sent], [t("відкрили сторінку"), p.viewed, p.delivered || p.sent],
+    [t("щось натиснули на сторінці"), p.engaged, p.viewed], [t("мене цікавить"), p.interested, p.viewed], [t("порекомендували друга"), p.friend, p.viewed], [t("натиснули подзвонити / написати"), p.contact, p.viewed],
+  ];
+  const maxHour = Math.max(1, ...a.byHour);
+  const fmtMin = (m: number | null) => (m == null ? "—" : m < 60 ? `${m} ${t("хв")}` : m < 1440 ? `${(m / 60).toFixed(1)} ${t("год")}` : `${(m / 1440).toFixed(1)} ${t("дн")}`);
+  const BTN: Record<string, string> = { cta_call: t("подзвонити"), cta_wa: "WhatsApp", cta_viber: "Viber", cta_bot: "Telegram", link_maps: t("мапа"), link_site: t("сайт"), link_insta: "Instagram", link_fb: "Facebook", link_vacancies: t("усі вакансії"), link_reviews: t("відгуки Google") };
+  const Bar = ({ n, d }: { n: number; d: number }) => <div className="h-2 rounded bg-slate-200 overflow-hidden"><div className="h-full bg-red-600" style={{ width: d ? `${Math.min(100, (n / d) * 100)}%` : 0 }} /></div>;
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between text-sm text-slate-500">
+        <span>{t("Унікальні люди на кожному кроці. Оновлюється щохвилини.")} · {t("подій")}: {a.events}</span>
+        <a href={`/api/sms-campaigns/${id}/events.xlsx`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-slate-700"><Download size={14} /> {t("усі події xlsx")}</a>
+      </div>
+      <Card className="p-4">
+        <div className="font-semibold mb-3">{t("Воронка сторінки")}</div>
+        <div className="space-y-2">
+          {steps.map(([l, n, d], i) => (
+            <div key={i} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-sm">
+              <div className="min-w-0"><div className="truncate">{l}</div><Bar n={n} d={p.sent || 1} /></div>
+              <div className="tabular-nums font-semibold w-12 text-right">{n}</div>
+              <div className="tabular-nums text-slate-500 w-14 text-right">{i === 0 ? "" : pct(n, d)}</div>
+            </div>
+          ))}
+        </div>
+        <div className="text-xs text-slate-500 mt-3">{t("Відсоток — від попереднього кроку (відкрили — від доставлених; далі — від тих, хто відкрив).")} {t("Повернулись на сторінку повторно")}: {p.returning}.</div>
+      </Card>
+      <div className="grid md:grid-cols-2 gap-4">
+        <Card className="p-4">
+          <div className="font-semibold mb-2">{t("Вакансії")}</div>
+          <table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-1">{t("Вакансія")}</th><th className="py-1 text-right">{t("розгорнули")}</th><th className="py-1 text-right">{t("цікавить")}</th><th className="py-1 text-right">%</th><th className="py-1 text-right">{t("друзів")}</th></tr></thead>
+            <tbody>{a.vacancies.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 text-right tabular-nums">{v.opens || "—"}</td><td className="py-1.5 text-right tabular-nums font-semibold">{v.interested}</td><td className="py-1.5 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td><td className="py-1.5 text-right tabular-nums">{v.friends}</td></tr>)}</tbody></table>
+        </Card>
+        <Card className="p-4">
+          <div className="font-semibold mb-2">{t("Послуги з документами")}</div>
+          <table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-1">{t("Послуга")}</th><th className="py-1 text-right">{t("розгорнули")}</th><th className="py-1 text-right">{t("цікавить")}</th><th className="py-1 text-right">%</th></tr></thead>
+            <tbody>{a.services.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 text-right tabular-nums">{v.opens || "—"}</td><td className="py-1.5 text-right tabular-nums font-semibold">{v.interested}</td><td className="py-1.5 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td></tr>)}</tbody></table>
+          <div className="font-semibold mt-4 mb-2">{t("Питання FAQ")}</div>
+          {a.faq.length ? <div className="flex flex-wrap gap-2 text-sm">{a.faq.map((f) => <span key={f.n} className="rounded-full bg-slate-100 px-2.5 py-1">№{f.n}: {f.opens}</span>)}</div> : <div className="text-sm text-slate-400">—</div>}
+        </Card>
+        <Card className="p-4">
+          <div className="font-semibold mb-2">{t("Кнопки контактів і посилання")}</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">{Object.entries(a.buttons).map(([k, n]) => <div key={k} className="flex justify-between border-b border-slate-100 py-1"><span>{BTN[k] ?? k}</span><span className="tabular-nums font-semibold">{n}</span></div>)}</div>
+          <div className="font-semibold mt-4 mb-1">{t("Мови")}</div>
+          <div className="text-sm text-slate-600">{t("перемикали мову")}: {Object.entries(a.langs).map(([l, n]) => `${l.toUpperCase()} ${n}`).join(" · ") || "—"}</div>
+          <div className="font-semibold mt-4 mb-1">{t("Пристрої")}</div>
+          <div className="text-sm text-slate-600">{Object.entries(a.devices).sort((x, y) => y[1] - x[1]).map(([d, n]) => `${d}: ${n}`).join(" · ") || "—"}</div>
+        </Card>
+        <Card className="p-4">
+          <div className="font-semibold mb-2">{t("Коли відкривають (година, Варшава)")}</div>
+          <div className="flex items-end gap-0.5 h-24">{a.byHour.map((n, h) => <div key={h} title={`${h}:00 — ${n}`} className="flex-1 bg-red-500/80 rounded-t" style={{ height: `${(n / maxHour) * 100}%`, minHeight: n ? 2 : 0 }} />)}</div>
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div>
+          <div className="font-semibold mt-4 mb-1">{t("Час від SMS до відкриття")}</div>
+          <div className="text-sm text-slate-600">{t("медіана")}: {fmtMin(a.timeToView.medianMin)} · 75%: {fmtMin(a.timeToView.p75Min)} · {t("за 1 год")}: {a.timeToView.within1h} · {t("за 24 год")}: {a.timeToView.within24h}</div>
+          {a.byDay.length ? (<><div className="font-semibold mt-4 mb-1">{t("По днях")}</div>
+            <table className="w-full text-sm"><tbody>{a.byDay.slice(-14).map((d) => <tr key={d.date} className="border-t border-slate-100"><td className="py-1">{d.date.split("-").reverse().join(".")}</td><td className="py-1 text-right tabular-nums">{d.views} {t("відкр.")}</td><td className="py-1 text-right tabular-nums font-semibold">{d.interested} {t("цікав.")}</td></tr>)}</tbody></table></>) : null}
+        </Card>
+      </div>
     </div>
   );
 }

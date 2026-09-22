@@ -18,6 +18,8 @@ import { getSmsProvider, smsLinkBase, SMS_SENDER, type SmsProviderName } from ".
 import { sendCampaignBatch, sendTestSms, isSmsCampaignInFlight } from "../services/sms/sender";
 import { smsParts, normalizePhone, renderSmsText } from "../services/sms/phone";
 import { notifyActiveWorkersReferral, pendingActiveWorkers } from "../services/sms/automation";
+import { campaignAnalytics, SERVICE_TITLES } from "../services/sms/analytics";
+import { db as _db, smsEventsTable, smsRecipientsTable } from "@workspace/db";
 
 const router: IRouter = Router();
 router.use("/sms-campaigns", authRequired, requireCap("editData"));
@@ -127,6 +129,36 @@ router.get("/sms-campaigns/:id/recipients/:rid/events", async (req, res) => {
 });
 
 // Експорт отримувачів зі статусами (звірка з кабінетом провайдера).
+// Аналітика сторінки: воронка кроків, по вакансіях/послугах, кнопки, FAQ, мови, пристрої, години/дні, час до відкриття.
+router.get("/sms-campaigns/:id/analytics", async (req, res) => {
+  const c = await getCampaign(Number(req.params.id));
+  if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
+  res.json(await campaignAnalytics(c));
+});
+
+// Усі події кампанії в xlsx (історія рухів по сайту для аналізу в Excel).
+router.get("/sms-campaigns/:id/events.xlsx", async (req, res) => {
+  const c = await getCampaign(Number(req.params.id));
+  if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
+  const rows = await _db.select({ at: smsEventsTable.at, kind: smsEventsTable.kind, meta: smsEventsTable.meta, device: smsEventsTable.device, phone: smsRecipientsTable.phone, name: smsRecipientsTable.name, lang: smsRecipientsTable.lang, status: smsRecipientsTable.status, rid: smsRecipientsTable.id })
+    .from(smsEventsTable).innerJoin(smsRecipientsTable, eq(smsRecipientsTable.id, smsEventsTable.recipientId)).where(eq(smsRecipientsTable.campaignId, c.id)).orderBy(smsEventsTable.id);
+  const vacTitle = (id: string) => SERVICE_TITLES[id] ?? ((c.landing as any)?.vacancies?.find((x: any) => x.id === id)?.title?.uk ?? id);
+  const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet("Zdarzenia");
+  ws.columns = [
+    { header: "Czas (Warszawa)", key: "at", width: 20 }, { header: "Telefon", key: "phone", width: 16 }, { header: "Imię i nazwisko", key: "name", width: 26 }, { header: "Język", key: "lang", width: 6 },
+    { header: "Zdarzenie", key: "kind", width: 18 }, { header: "Szczegół", key: "detail", width: 36 }, { header: "Urządzenie", key: "device", width: 18 }, { header: "Status odbiorcy", key: "status", width: 14 }, { header: "ID odbiorcy", key: "rid", width: 10 },
+  ];
+  for (const r of rows) {
+    const m = (r.meta ?? {}) as Record<string, any>;
+    const detail = m.v ?? m.vacancyId ? vacTitle(String(m.v ?? m.vacancyId)) : m.name ? `${m.name} ${m.phone ?? ""}` : m.error ?? "";
+    ws.addRow({ at: r.at.toLocaleString("pl-PL", { timeZone: "Europe/Warsaw" }), phone: r.phone, name: (r.name ?? "").toLocaleUpperCase("pl-PL"), lang: r.lang, kind: r.kind, detail, device: r.device ?? "", status: r.status, rid: r.rid });
+  }
+  ws.getRow(1).font = { bold: true };
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`SMS-zdarzenia-${c.name}.xlsx`)}`);
+  await wb.xlsx.write(res); res.end();
+});
+
 router.get("/sms-campaigns/:id/export.xlsx", async (req, res) => {
   const c = await getCampaign(Number(req.params.id));
   if (!c) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
