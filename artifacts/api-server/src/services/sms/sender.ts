@@ -61,9 +61,11 @@ export async function sendCampaignBatch(c: SmsCampaign, opts: { force?: boolean;
       }
     }
     if (take <= 0) return { sent: 0, failed: 0, remaining: -1 };
+    // порядок черги: спершу свіжі контакти (рік запису), далі старі — у них вищий шанс живого номера
+    // й теплішого відгуку; тест-хвиля на старих 2019–2022 занижувала б конверсію (22.09.2026)
     const candidates = await db.select({ id: smsRecipientsTable.id }).from(smsRecipientsTable)
       .where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.status, "queued")))
-      .orderBy(smsRecipientsTable.id).limit(take);
+      .orderBy(sql`${smsRecipientsTable.year} desc nulls last`, smsRecipientsTable.id).limit(take);
     // резервуємо рядки ДО виклику провайдера (status=sent, sentAt=now, лише з queued): падіння посеред
     // батча чи паралельний виклик не відправить ті самі SMS двічі; конверсія, що прийде під час батча,
     // не перезапишеться — після відправки міняємо лише providerMsgId/parts
