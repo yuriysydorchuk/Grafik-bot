@@ -163,6 +163,24 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
         <div><Label>{t("Хто передзвонить")}</Label><Input value={ld.recruiterName ?? ""} placeholder="Володимир" onChange={(e) => setLd((s: any) => ({ ...s, recruiterName: e.target.value }))} /></div>
         <div><Label>{t("Години дзвінків")}</Label><Input value={ld.hours ?? ""} placeholder="10–17" onChange={(e) => setLd((s: any) => ({ ...s, hours: e.target.value }))} /></div>
       </div>
+      <div className="rounded-lg border border-slate-200 p-3 space-y-2">
+        <Label>{t("Довіра на першому екрані (порожнє — не показується)")}</Label>
+        <div className="grid md:grid-cols-6 gap-2">
+          {([["since", t("З якого року"), "2019"], ["placed", t("Працевлаштовано"), "2000"], ["factories", t("Підприємств"), "15"], ["rating", t("Рейтинг Google"), "4.8"], ["reviewsUrl", t("Відгуки Google (URL)"), ""], ["kraz", t("№ KRAZ"), ""]] as const).map(([k, l, ph]) => (
+            <div key={k}><Label>{l}</Label><Input value={ld.proof?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, proof: { ...(s.proof ?? {}), [k]: e.target.value } }))} /></div>
+          ))}
+        </div>
+        <div className="grid md:grid-cols-4 gap-2">
+          <div><Label>{t("Фото консультанта (URL)")}</Label><Input value={ld.recruiterPhoto ?? ""} onChange={(e) => setLd((s: any) => ({ ...s, recruiterPhoto: e.target.value }))} /></div>
+          {([["whatsapp", "WhatsApp", "+48…"], ["viber", "Viber", "+48…"], ["telegram", "Telegram (@юзернейм)", "@eurosupport"]] as const).map(([k, l, ph]) => (
+            <div key={k}><Label>{l}</Label><Input value={ld.messengers?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, messengers: { ...(s.messengers ?? {}), [k]: e.target.value } }))} /></div>
+          ))}
+        </div>
+        <div><Label>{t("Відгуки (рядок = відгук: Імʼя | Місто | текст uk | текст ru | текст en)")}</Label>
+          <Textarea rows={3} value={(ld.reviews ?? []).map((r: any) => [r.name, r.city ?? "", r.text?.uk ?? "", r.text?.ru ?? "", r.text?.en ?? ""].join(" | ")).join("\n")}
+            onChange={(e) => setLd((s: any) => ({ ...s, reviews: e.target.value.split("\n").map((line: string) => line.split("|").map((x) => x.trim())).filter((a: string[]) => a[0] && a[2]).map((a: string[]) => ({ name: a[0], city: a[1] || undefined, text: { uk: a[2], ru: a[3] || undefined, en: a[4] || undefined } })) }))} />
+        </div>
+      </div>
       <VacanciesEditor value={ld.vacancies ?? []} onChange={(v) => setLd((s: any) => ({ ...s, vacancies: v }))} />
       <div className="grid md:grid-cols-3 gap-2">
         {([["phone", t("Телефон на сторінці"), "+48 792 991 524"], ["address", t("Адреса"), "ul. Krakowskie Przedmieście 55, 20-076 Lublin"], ["maps", "Google Maps (URL)", ""], ["site", t("Сайт"), "https://eurosupp.pl/"], ["vacanciesUrl", t("Усі вакансії (URL)"), "https://eurosupp.pl/dla-pracownika/"], ["instagram", "Instagram (URL)", "https://instagram.com/euro_support_"], ["facebook", "Facebook (URL)", ""]] as const).map(([k, l, ph]) => (

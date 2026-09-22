@@ -2579,6 +2579,11 @@ export type SmsLanding = {
   hours?: string;           // години дзвінків, напр. "10–17"
   vacancies?: SmsVacancy[]; // порожньо → одна вакансія з пропозиції кампанії
   contacts?: SmsContacts;   // низ сторінки: телефон, адреса + Google Maps, сайт, Instagram
+  // довіра (сторінка v3, 22.09.2026): порожні поля не показуються — нічого не вигадуємо
+  proof?: { since?: string; placed?: string; factories?: string; rating?: string; reviewsUrl?: string; kraz?: string };
+  reviews?: { name: string; city?: string; text: SmsTexts }[];
+  recruiterPhoto?: string;  // фото консультанта (URL); без нього — ініціали
+  messengers?: { whatsapp?: string; viber?: string; telegram?: string }; // «написати» — номер/юзернейм
 };
 export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number }; // days: 1=пн … 7=нд, Europe/Warsaw
 
