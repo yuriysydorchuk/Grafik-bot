@@ -1771,7 +1771,11 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
     : undefined;
 
   if (existingWorker) {
-    await db.update(workersTable).set({ isActive: true, status: "active", factoryId: factoryId ?? existingWorker.factoryId }).where(eq(workersTable.id, existingWorker.id));
+    // чорний список: конвертація кандидата не має обходити force/deleteWorkers з restoreWorker
+    if (existingWorker.doNotHire && !(req.body?.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers")))
+      return res.status(409).json({ error: "blacklisted", worker: { id: existingWorker.id, fullName: existingWorker.fullName, reason: existingWorker.doNotHireReason } });
+    await db.update(workersTable).set({ isActive: true, status: "active", factoryId: factoryId ?? existingWorker.factoryId, ...(existingWorker.doNotHire ? { doNotHire: false, doNotHireReason: null, doNotHireAt: null, doNotHireBy: null } : {}) }).where(eq(workersTable.id, existingWorker.id));
+    if (existingWorker.doNotHire) await db.insert(workerChangesTable).values({ workerId: existingWorker.id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId: actingAdminId(req) });
     const [updated] = await db.update(candidatesTable)
       .set({ workerId: existingWorker.id, stage: "hired", factoryId: factoryId ?? c.factoryId })
       .where(eq(candidatesTable.id, id)).returning();
