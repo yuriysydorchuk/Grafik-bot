@@ -17,6 +17,7 @@ export type RestoreOpts = {
   positionId?: number | null;  // undefined = не чіпати
   telegramId?: string | null;  // undefined/null = не чіпати; інший tg = перепривʼязати
   adminId: number | null;      // хто відновив (журнал)
+  force?: boolean;             // зняти «чорний список» (лише cap deleteWorkers у веб-панелі; бот не передає)
 };
 export type RestoreResult = { ok: true; worker: Worker } | { ok: false; error: string };
 
@@ -24,6 +25,9 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, opts.workerId));
   if (!w) return { ok: false, error: "Працівника не знайдено" };
   if (w.isActive) return { ok: false, error: "Профіль уже активний" };
+  // чорний список: повернути можна лише свідомо з веб-панелі (force) — бот і звичайне
+  // «Відновити» відмовляють, щоб дубль не проліз повз рішення власника
+  if (w.doNotHire && !opts.force) return { ok: false, error: `Чорний список${w.doNotHireReason ? `: ${w.doNotHireReason}` : ""} — повернути можна лише з веб-панелі з підтвердженням` };
 
   const tg = opts.telegramId?.trim() || null;
   const tgChanged = !!tg && tg !== w.telegramId;
@@ -47,10 +51,12 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
     if (factoryChanged) patch.factoryId = opts.factoryId ?? null;
     if (positionChanged) patch.positionId = opts.positionId ?? null;
     if (tgChanged) patch.telegramId = tg;
+    if (w.doNotHire && opts.force) { patch.doNotHire = false; patch.doNotHireReason = null; patch.doNotHireAt = null; patch.doNotHireBy = null; }
     const [row] = await tx.update(workersTable).set(patch).where(eq(workersTable.id, w.id)).returning();
     const journal: (typeof workerChangesTable.$inferInsert)[] = [
       { workerId: w.id, field: "restored", oldValue: "fired", newValue: "active", effectiveDate: today, adminId: opts.adminId },
     ];
+    if (w.doNotHire && opts.force) journal.push({ workerId: w.id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: today, adminId: opts.adminId });
     if (factoryChanged) journal.push({ workerId: w.id, field: "factoryId", oldValue: w.factoryId != null ? String(w.factoryId) : null, newValue: opts.factoryId != null ? String(opts.factoryId) : null, effectiveDate: today, adminId: opts.adminId });
     if (positionChanged) journal.push({ workerId: w.id, field: "positionId", oldValue: w.positionId != null ? String(w.positionId) : null, newValue: opts.positionId != null ? String(opts.positionId) : null, effectiveDate: today, adminId: opts.adminId });
     if (tgChanged) journal.push({ workerId: w.id, field: "telegramId", oldValue: w.telegramId, newValue: tg, effectiveDate: today, adminId: opts.adminId });
