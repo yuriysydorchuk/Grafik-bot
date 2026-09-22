@@ -5,7 +5,7 @@
 // БЕЗ authRequired — монтується до auth-роутерів (routes/index.ts), rate-limit по префіксу.
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
-import { db, factoriesTable, adminsTable, smsEventsTable, candidatesTable, candidateActivityTable, type SmsVacancy, type SmsContacts } from "@workspace/db";
+import { db, factoriesTable, adminsTable, smsEventsTable, smsRecipientsTable, candidatesTable, candidateActivityTable, type SmsVacancy, type SmsContacts } from "@workspace/db";
 import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { findRecipientByToken, logSmsEvent, advanceRecipient, ensureSmsFunnel } from "../services/sms/campaigns";
 import { normalizePhone } from "../services/sms/phone";
@@ -65,6 +65,30 @@ if (!contacts.maps) contacts.maps = `https://www.google.com/maps/search/?api=1&q
   });
 });
 
+// «Мене цікавить» = заявка в рекрутації (рішення власника 22.09.2026): кандидат у воронці «SMS-кампанії»
+// (стадія «Нові заявки», source=sms, нотатка з вакансією/послугою, наступна дія — сьогодні), один на
+// отримувача; повторний інтерес по іншій вакансії — лише запис в активність кандидата.
+async function upsertInterestedCandidate(rec: { id: number; name: string | null; phone: string; lang: string; candidateId: number | null }, c: { id: number; name: string; funnelId: number | null; recruiterAdminId: number | null; offer: unknown }, label: string): Promise<number> {
+  let candId = rec.candidateId;
+  if (!candId) {
+    const [byPhone] = await db.select({ id: candidatesTable.id }).from(candidatesTable).where(and(eq(candidatesTable.campaignId, c.id), eq(candidatesTable.phone, rec.phone))).limit(1);
+    candId = byPhone?.id ?? null;
+  }
+  if (!candId) {
+    const [cand] = await db.insert(candidatesTable).values({
+      funnelId: c.funnelId ?? await ensureSmsFunnel(), fullName: rec.name || rec.phone, phone: rec.phone, stage: "new", source: "sms", campaignId: c.id, language: rec.lang,
+      assignedAdminId: c.recruiterAdminId ?? null, factoryId: (c.offer as any)?.factoryId ?? null, nextActionAt: new Date(),
+      notes: `Зацікавлений з SMS-кампанії «${c.name}»${label ? `: ${label}` : ""}. Звʼязатись протягом 1 робочого дня.`,
+    }).returning({ id: candidatesTable.id });
+    candId = cand!.id;
+    await db.insert(candidateActivityTable).values({ candidateId: candId, kind: "created", detail: `Натиснув(ла) «Мене цікавить» на SMS-сторінці${label ? ` — ${label}` : ""}` });
+  } else {
+    await db.insert(candidateActivityTable).values({ candidateId: candId, kind: "note", detail: `Ще раз «Мене цікавить» на SMS-сторінці${label ? ` — ${label}` : ""}` });
+  }
+  if (rec.candidateId !== candId) await db.update(smsRecipientsTable).set({ candidateId: candId }).where(eq(smsRecipientsTable.id, rec.id));
+  return candId;
+}
+
 async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, text: string): Promise<void> {
   if (!campaign.recruiterAdminId) return;
   try {
@@ -76,6 +100,8 @@ async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, te
 const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: PESEL UKR / статус UKR", "svc:prawko": "Послуга: заміна водійського посвідчення" };
 const vacancyTitle = (landing: Record<string, any>, id: string): string => {
   if (SERVICE_TITLES[id]) return SERVICE_TITLES[id]!;
+  if (id === "offer") return "Робота на виробництві"; // дефолтна вакансія з пропозиції (без landing.vacancies)
+  if (id === "any" || !id) return "головна кнопка";
   const v = (landing.vacancies as SmsVacancy[] | undefined)?.find((x) => x.id === id);
   return v ? (v.title?.uk || v.title?.ru || v.title?.en || id) : "";
 };
@@ -103,6 +129,8 @@ router.get("/r/:token/e", async (req, res) => {
     await advanceRecipient(rec.id, "cta");
     if (first) {
       const title = vacancyTitle((rec.campaign.landing ?? {}) as Record<string, any>, vacancyId);
+      try { await upsertInterestedCandidate(rec, rec.campaign, k === "interested_ref" ? "хоче привести друга" : title); }
+      catch (e) { logger.warn({ err: e, recipientId: rec.id }, "sms interested candidate failed"); }
       await notifyRecruiter(rec.campaign, `📞 <b>Зацікавлений з SMS</b>${k === "interested_ref" ? " · хоче привести друга" : ""}\n<b>${escapeHtml(rec.name || "—")}</b> · ${escapeHtml(rec.phone)} · ${rec.lang}${title ? `\nВакансія: ${escapeHtml(title)}` : ""}\nКампанія «${escapeHtml(rec.campaign.name)}». Звʼязатись протягом 1 робочого дня.`);
     }
   }

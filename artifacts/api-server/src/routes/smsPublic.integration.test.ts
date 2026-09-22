@@ -41,6 +41,10 @@ test("GET /api/r/:token — сторінка, подія view, кнопки → 
   // «Мені цікаво» — головна конверсія без форми: подія, статус cta, сторінка далі знає interested=true; повтор не дублює
   assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested&v=offer`)).status, 204);
   assert.equal((await request(app).get(`/api/r/${rec!.token}/e?k=interested&v=offer`)).status, 204);
+  // «мене цікавить» = заявка: кандидат у воронці SMS зі стадією new, один на людину, повтор — активність
+  const leads = await db.select().from(candidatesTable).where(eq(candidatesTable.source, "sms"));
+  assert.equal(leads.length, 1); assert.equal(leads[0]!.phone, "+48573000214"); assert.equal(leads[0]!.stage, "new"); assert.equal(leads[0]!.campaignId, c.id); assert.match(leads[0]!.notes ?? "", /Робота на виробництві/); assert.ok(leads[0]!.nextActionAt);
+  assert.equal((await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.id, rec!.id)))[0]!.candidateId, leads[0]!.id);
   const page = (await request(app).get(`/api/r/${rec!.token}`)).body;
   assert.equal(page.interested, true); assert.deepEqual(page.interestedVacancies, ["offer"]);
   assert.deepEqual(page.cities, ["Lublin"]);
