@@ -19,7 +19,7 @@ type Data = {
   offer: { bonus?: string; phone?: string; whatsapp?: string };
   landing: {
     title?: Txt; about?: Txt; faq?: { q: Txt; a: Txt }[]; photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };
-    proof?: { since?: string; placed?: string; factories?: string; rating?: string; reviewsUrl?: string; kraz?: string };
+    proof?: { since?: string; placed?: string; factories?: string; rating?: string; reviewsCount?: string; reviewsUrl?: string; kraz?: string };
     reviews?: { name: string; city?: string; text: Txt }[]; recruiterPhoto?: string; messengers?: { whatsapp?: string; viber?: string; telegram?: string };
   };
 };
@@ -27,7 +27,7 @@ type Data = {
 const S: Record<L, Record<string, string>> = {
   uk: {
     hi: "Привіт, {name}!", h1: "У нас є робота для вас", sub: "Легальна робота в Польщі з житлом і довозом. Досвід не потрібен — навчимо на місці.",
-    licensed: "Ліцензована агенція", since: "з {y} року", placed: "{n}+ працевлаштованих", factories: "{n} підприємств", rating: "{n} у Google",
+    licensed: "Ліцензована агенція", since: "з {y} року", placed: "{n}+ працевлаштованих", factories: "{n} підприємств", rating: "{n} у Google", reviewsCount: "{c} відгуків",
     cta: "Мені цікаво — передзвоніть", ctaSub: "Без анкети. Ми вже знаємо ваш номер — просто натисніть.",
     recruiterTitle: "Ваш консультант", recruiterTxt: "{name} зателефонує з {hours}, розкаже про вакансію, житло і документи. Українською або російською.", recruiterDefault: "Консультант",
     howTitle: "Як це працює", how1: "Натисніть «Мені цікаво»", how2: "Дзвінок консультанта протягом 1 робочого дня", how3: "Житло, довіз, документи — і старт цього тижня",
@@ -53,7 +53,7 @@ const S: Record<L, Record<string, string>> = {
   },
   ru: {
     hi: "Привет, {name}!", h1: "У нас есть работа для вас", sub: "Легальная работа в Польше с жильём и довозом. Опыт не нужен — научим на месте.",
-    licensed: "Лицензированное агентство", since: "с {y} года", placed: "{n}+ трудоустроенных", factories: "{n} предприятий", rating: "{n} в Google",
+    licensed: "Лицензированное агентство", since: "с {y} года", placed: "{n}+ трудоустроенных", factories: "{n} предприятий", rating: "{n} в Google", reviewsCount: "{c} отзывов",
     cta: "Мне интересно — перезвоните", ctaSub: "Без анкеты. Мы уже знаем ваш номер — просто нажмите.",
     recruiterTitle: "Ваш консультант", recruiterTxt: "{name} позвонит с {hours}, расскажет о вакансии, жилье и документах. На русском или украинском.", recruiterDefault: "Консультант",
     howTitle: "Как это работает", how1: "Нажмите «Мне интересно»", how2: "Звонок консультанта в течение 1 рабочего дня", how3: "Жильё, довоз, документы — и старт на этой неделе",
@@ -79,7 +79,7 @@ const S: Record<L, Record<string, string>> = {
   },
   en: {
     hi: "Hi {name}!", h1: "We have a job for you", sub: "Legal work in Poland with housing and transport. No experience needed — we train you on site.",
-    licensed: "Licensed agency", since: "since {y}", placed: "{n}+ people employed", factories: "{n} factories", rating: "{n} on Google",
+    licensed: "Licensed agency", since: "since {y}", placed: "{n}+ people employed", factories: "{n} factories", rating: "{n} on Google", reviewsCount: "{c} reviews",
     cta: "I'm interested — call me back", ctaSub: "No forms. We already have your number — just tap.",
     recruiterTitle: "Your consultant", recruiterTxt: "{name} will call you {hours} to talk about the job, housing and documents.", recruiterDefault: "Consultant",
     howTitle: "How it works", how1: "Tap “I'm interested”", how2: "A consultant calls within 1 working day", how3: "Housing, transport, documents — and you start this week",
@@ -180,7 +180,7 @@ export default function SmsLanding() {
   };
   const proofChips = [
     s.licensed + (pf.kraz ? ` · KRAZ ${pf.kraz}` : ""),
-    pf.since && fill(s.since, { y: pf.since }), pf.placed && fill(s.placed, { n: pf.placed }), pf.factories && fill(s.factories, { n: pf.factories }), pf.rating && `⭐ ${fill(s.rating, { n: pf.rating })}`,
+    pf.since && fill(s.since, { y: pf.since }), pf.placed && fill(s.placed, { n: pf.placed }), pf.factories && fill(s.factories, { n: pf.factories }), pf.rating && `⭐ ${fill(s.rating, { n: pf.rating })}${pf.reviewsCount ? ` · ${fill(s.reviewsCount, { c: pf.reviewsCount })}` : ""}`,
   ].filter(Boolean) as string[];
   const faq = ld.faq?.length ? ld.faq.map((f) => ({ q: pick(f.q, lang), a: pick(f.a, lang) })) : [1, 2, 3, 4, 5].map((i) => ({ q: s[`q${i}`]!, a: s[`a${i}`]! }));
   const avatar = (cls: string) => ld.recruiterPhoto

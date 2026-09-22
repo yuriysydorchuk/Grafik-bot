@@ -165,8 +165,8 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
       </div>
       <div className="rounded-lg border border-slate-200 p-3 space-y-2">
         <Label>{t("Довіра на першому екрані (порожнє — не показується)")}</Label>
-        <div className="grid md:grid-cols-6 gap-2">
-          {([["since", t("З якого року"), "2019"], ["placed", t("Працевлаштовано"), "2000"], ["factories", t("Підприємств"), "15"], ["rating", t("Рейтинг Google"), "4.8"], ["reviewsUrl", t("Відгуки Google (URL)"), ""], ["kraz", t("№ KRAZ"), ""]] as const).map(([k, l, ph]) => (
+        <div className="grid md:grid-cols-7 gap-2">
+          {([["since", t("З якого року"), "2019"], ["placed", t("Працевлаштовано"), "2000"], ["factories", t("Підприємств"), "15"], ["rating", t("Рейтинг Google"), "4.2"], ["reviewsCount", t("Відгуків у Google"), "157"], ["reviewsUrl", t("Відгуки Google (URL)"), ""], ["kraz", t("№ KRAZ"), ""]] as const).map(([k, l, ph]) => (
             <div key={k}><Label>{l}</Label><Input value={ld.proof?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, proof: { ...(s.proof ?? {}), [k]: e.target.value } }))} /></div>
           ))}
         </div>
