@@ -85,7 +85,9 @@ router.post("/sms-campaigns/:id/import", upload.single("file"), async (req, res)
   let wb: XLSX.WorkBook;
   try { wb = XLSX.read(req.file.buffer, { type: "buffer" }); } catch { res.status(400).json({ error: "Не вдалося прочитати xlsx" }); return; }
   const wanted = String(req.body?.sheet ?? "");
-  const sheetName = wb.SheetNames.includes(wanted) ? wanted : (wb.SheetNames.find((n) => /перевірен|телефон|phones/i.test(n)) ?? wb.SheetNames[0]!);
+  // порядок важливий: «Перевірені номери» (готовий до розсилки) сильніший за «Телефони» (усі знайдені)
+  const bySheet = (re: RegExp) => wb.SheetNames.find((n) => re.test(n));
+  const sheetName = wb.SheetNames.includes(wanted) ? wanted : (bySheet(/перевірен|verified/i) ?? bySheet(/телефон|phones/i) ?? wb.SheetNames[0]!);
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName]!, { defval: "" });
   const columns = rows.length ? Object.keys(rows[0]!) : [];
   const guessed: Record<string, string> = {};
