@@ -3,7 +3,7 @@
 > Контекст проєкту: [`HANDOFF.md`](../../HANDOFF.md) · [`CLAUDE.md`](../../CLAUDE.md) · [`PROJECT_MAP.md`](../../PROJECT_MAP.md)
 > Пропозиція (узгоджена 21.09.2026): https://claude.ai/code/artifact/08e29f9f-d103-4f2b-ace5-27d388a3b6a4 · база отримувачів: `docs/DRIVE_MAP.md` → «Таблиці контактів» (`Drive-контакти-ES-combined-2026-09-17.xlsx`, аркуш «Перевірені номери»)
 
-- **Статус:** 🔄 в роботі — батчі 1–4 зроблено 21.09 (локально, чекає тесту власника); далі батч 5 (прод: ключі, міграції, тест 300)
+- **Статус:** ✅ ЗАДЕПЛОЄНО 22.09.2026 (6e38b61): домен `https://espraca.pl` (A → 161.97.117.151, Caddy), `.env` з SMS-Fly, 3 міграції, кампанія «Хвиля 1 · вересень 2026» (draft, рекрутер Володимир id=10). Далі: тест-SMS з панелі, роль рекрутера (editData + сторінка), поповнення балансу, тест 300, хвиля
 - **Дата:** 2026-09-21
 - **Автор/сесія:** Claude (Fable), сесія «карта Drive → контакти → SMS»
 
@@ -85,6 +85,8 @@
 - [ ] Tailwind v4: класи буквально
 - [ ] Ролі: `api-server/src/lib/roles.ts` ↔ `web/src/lib/roles.ts`; запуск відправки — `requireMainAdmin`
 - [ ] Схема БД: SQL через `psql`; `pnpm run typecheck:libs`
+
+**Деплой (22.09.2026):** прод був на гілці `hotfix/pesel-merge-gate` іншої сесії — перевірено `git cherry`, що весь її вміст є в main; сервер переведено на `main` (6e38b61). Бекап `pre-sms`. Міграції `2026-09-22-sms-campaigns*.sql` (3), `.env`: `SMS_SMSFLY_KEY/URL`, `SMS_SENDER=EuroSupport`, `SMS_LINK_BASE=https://espraca.pl`, `SMS_OFFICE_PHONE`. Caddy: блок `espraca.pl` поруч зі `sslip.io`. Ревʼю Codex/Gemini перед деплоєм — правки в 3f8ae9e (не підтверджено: «немає CSRF на /friend» — глобальний гард). Кампанія на проді створена SQL-копією локальної (без factoryId у offer, testLimit 300).
 
 ## Тести
 
