@@ -46,7 +46,7 @@ router.get("/r/:token", async (req, res) => {
   const vacancies: SmsVacancy[] = landing.vacancies?.length ? landing.vacancies : [{
     // без назв клієнтів на сторінці (рішення власника 22.09.2026 — не давати інфу конкурентам)
     id: "offer", title: { uk: "Робота на виробництві", ru: "Работа на производстве", en: "Production job" },
-    city: offer.city || fac?.city || cities[0] || "", rate: offer.rate, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
+    city: offer.city || fac?.city || cities[0] || "", monthly: offer.monthly, housing: offer.housing, transport: offer.transport, shifts: "", desc: {}, perks: [],
   }];
   const contacts: SmsContacts = { phone, address: "ul. Krakowskie Przedmieście 55, 20-076 Lublin", site: "https://eurosupp.pl/", vacanciesUrl: "https://eurosupp.pl/dla-pracownika/", instagram: "https://www.instagram.com/eurosupport.eu", facebook: "https://www.facebook.com/share/1DEH5b7CnP/", ...(landing.contacts ?? {}) };
   // мапа — за назвою бізнесу + адресою, не лише адресою (за адресою Google відкривав сусідню агенцію)

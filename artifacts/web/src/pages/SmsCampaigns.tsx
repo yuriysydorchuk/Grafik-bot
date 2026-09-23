@@ -110,7 +110,7 @@ type Staff = { id: number; name: string };
 const TEXT_DEFAULTS: Record<string, Record<string, string>> = {
   // текст власника 21.09.2026: «у нас є вакансія для вас, або порекомендуйте нас друзям і отримайте 300 zl; вихід від зараз»
   job: { uk: "{імʼя}, u nas ye vakansiia dlia vas! Abo porekomenduite nas druziam i otrymaite bonus 300zl. Start cioho tyzhnia. Detali: {лінк}", ru: "{имя}, u nas est vakansiya dlya vas! Ili porekomenduyte nas druzyam i poluchite bonus 300zl. Start na etoy nedele. Detali: {ссылка}", en: "{name}, we have a job for you! Or recommend us to friends and get a 300 PLN bonus. Start this week. Details: {link}" },
-  referral: { uk: "{імʼя}, pryvedy druga na robotu v Polshchi i otrymai 300zl pislia yoho 10 zmin. Robota 31zl/god + zhytlo. Detali: {лінк}", ru: "{имя}, privedi druga na rabotu v Polshe i poluchi 300zl posle ego 10 smen. Rabota 31zl/chas + zhilyo. Detali: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Job 31 PLN/h + housing. Details: {link}" },
+  referral: { uk: "{імʼя}, pryvedy druga na robotu v Polshchi i otrymai 300zl pislia yoho 10 zmin. Robota z zhytlom i doizdom. Detali: {лінк}", ru: "{имя}, privedi druga na rabotu v Polshe i poluchi 300zl posle ego 10 smen. Rabota s zhilyom i dovozom. Detali: {ссылка}", en: "{name}, bring a friend to work in Poland and get 300 PLN after their 10 shifts. Job with housing and transport. Details: {link}" },
 };
 
 function Wizard({ onClose, settings }: { onClose: () => void; settings?: Settings }) {
@@ -119,7 +119,7 @@ function Wizard({ onClose, settings }: { onClose: () => void; settings?: Setting
   const { data: staff = [] } = useQuery<Staff[]>({ queryKey: ["staff"], queryFn: () => get("/staff") });
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [c, setC] = useState<Campaign | null>(null);
-  const [form, setForm] = useState({ name: "", kind: "job" as "job" | "referral", provider: "smsapi" as "smsapi" | "smsfly", sender: settings?.sender ?? "EuroSupport", factoryId: "", city: "", rate: "31 zł/год netto", monthly: "до 5 500 zł/міс", housing: "від 450 zł", transport: "довіз на зміну", startDate: "", bonus: "300 zł", phone: settings?.officePhone ?? "", recruiterAdminId: "", days: [2, 3, 4] as number[], from: "10:00", to: "14:00", dailyLimit: 1500, batchSize: 200, testLimit: 300 });
+  const [form, setForm] = useState({ name: "", kind: "job" as "job" | "referral", provider: "smsapi" as "smsapi" | "smsfly", sender: settings?.sender ?? "EuroSupport", factoryId: "", city: "", rate: "", monthly: "до 6 500 zł/міс", housing: "від 450 zł", transport: "довіз на зміну", startDate: "", bonus: "300 zł", phone: settings?.officePhone ?? "", recruiterAdminId: "", days: [2, 3, 4] as number[], from: "10:00", to: "14:00", dailyLimit: 1500, batchSize: 200, testLimit: 300 });
   const [texts, setTexts] = useState<Record<string, string>>(TEXT_DEFAULTS.job!);
   useEffect(() => { setTexts(TEXT_DEFAULTS[form.kind]!); }, [form.kind]);
   const f = (k: keyof typeof form) => (e: any) => setForm((s) => ({ ...s, [k]: e.target.value }));

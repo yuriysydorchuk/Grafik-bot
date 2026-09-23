@@ -10,7 +10,7 @@ import { useRoute } from "wouter";
 
 type L = "uk" | "ru" | "en";
 type Txt = Partial<Record<L, string>>;
-type Vacancy = { id: string; title: Txt; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
+type Vacancy = { id: string; title: Txt; city?: string; monthly?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
 type Data = {
   firstName: string; lang: string; kind: "job" | "referral"; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
@@ -105,13 +105,6 @@ const S: Record<L, Record<string, string>> = {
   },
 };
 const pick = (m: Txt | undefined, l: L): string => (m?.[l] || m?.uk || m?.ru || m?.en || "").trim();
-const num = (v?: string): string => { const m = (v ?? "").replace(/\s/g, "").match(/\d+([.,]\d+)?/); return m ? m[0] : ""; };
-const rateChip = (v: string | undefined, s: Record<string, string>): string => {
-  if (!v) return "";
-  const nums = v.replace(/\s/g, "").match(/\d+([.,]\d+)?/g); if (!nums) return v;
-  const from = /^(від|от|from|od)(\s|\d)/i.test(v.trim()) ? s.from + " " : "";
-  return `${from}${nums.join("–")} ${/brutto/i.test(v) ? s.rateBrutto : s.rateNetto}`;
-};
 const fill = (tpl: string, vars: Record<string, string>): string => tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
 const digits = (v?: string) => (v ?? "").replace(/\D/g, "");
 const initials = (name: string) => name.split(/\s+/).map((w) => w[0] ?? "").join("").slice(0, 2).toUpperCase();
@@ -304,7 +297,8 @@ export default function SmsLanding() {
               {d.vacancies.map((v) => {
                 const isOpen = open === v.id;
                 const vDone = interested.has(v.id);
-                const chips = [v.monthly && `${s.upTo} ${v.monthly}`, rateChip(v.rate, s), v.housing && s.housingGiven, v.transport && s.transportGiven, v.shifts, v.experience ? s.exp : s.noexp].filter(Boolean) as string[];
+                // на сторінці лише місячна сума — годинну ставку не показуємо (рішення власника 23.09.2026)
+                const chips = [v.monthly && `${s.upTo} ${v.monthly}`, v.housing && s.housingGiven, v.transport && s.transportGiven, v.shifts, v.experience ? s.exp : s.noexp].filter(Boolean) as string[];
                 return (
                   <article key={v.id} className={`rounded-2xl border-2 overflow-hidden ${isOpen ? "border-red-500" : "border-slate-200"}`}>
                     {v.photo && <img src={v.photo} alt="" className="w-full h-36 object-cover" loading="lazy" />}
