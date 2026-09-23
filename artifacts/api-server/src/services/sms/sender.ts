@@ -4,6 +4,7 @@
 import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, smsCampaignsTable, smsRecipientsTable, type SmsCampaign, type SmsSchedule } from "@workspace/db";
 import { logger } from "../../lib/logger";
+import { sendAlert } from "../../lib/alerts";
 import { getSmsProvider, type SmsProviderName } from "./provider";
 import { renderForRecipient, logSmsEvent, advanceRecipient, recipientLink, SMS_TOKEN_LEN } from "./campaigns";
 import { randomInviteCode } from "../../lib/invite";
@@ -95,6 +96,18 @@ export async function sendCampaignBatch(c: SmsCampaign, opts: { force?: boolean;
         await db.update(smsRecipientsTable).set({ status: "failed", failReason: res.error?.slice(0, 300) ?? "помилка" }).where(and(eq(smsRecipientsTable.id, res.recipientId), eq(smsRecipientsTable.status, "sent")));
         await logSmsEvent(res.recipientId, "failed", { meta: { provider: provider.name, error: res.error } });
       }
+    }
+    // Провайдер відмовив майже всьому батчу (скінчились гроші, ліг API, заблокований підпис) — це не
+    // «номери погані»: повертаємо їх у чергу й зупиняємо кампанію, щоб не спалити решту бази
+    // порожніми відмовами (інцидент 23.09.2026: баланс закінчився на 680-му, 320 рядків згоріли).
+    if (queue.length >= 5 && failed >= Math.ceil(queue.length * 0.5)) {
+      const ids = results.filter((r) => !r.ok).map((r) => r.recipientId);
+      await db.update(smsRecipientsTable).set({ status: "queued", sentAt: null, failReason: null }).where(and(inArray(smsRecipientsTable.id, ids), eq(smsRecipientsTable.status, "failed")));
+      await db.update(smsCampaignsTable).set({ status: "paused", updatedAt: new Date() }).where(eq(smsCampaignsTable.id, c.id));
+      const msg = results.find((r) => !r.ok)?.error ?? "провайдер відмовив";
+      logger.error({ campaignId: c.id, failed, batch: queue.length, msg }, "SMS batch: провайдер відмовив більшості — кампанія на паузі, рядки повернуто в чергу");
+      void sendAlert({ service: "cron", kind: "SmsProviderDown", source: "sendCampaignBatch", message: `Кампанія «${c.name}»: ${failed} з ${queue.length} не прийнято (${msg}). Перевір баланс SMS-Fly. Кампанія на паузі, ${ids.length} повернуто в чергу.` });
+      return { sent, failed: 0, remaining: -1 };
     }
     const [{ n: remaining }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(and(eq(smsRecipientsTable.campaignId, c.id), eq(smsRecipientsTable.status, "queued")));
     logger.info({ campaignId: c.id, sent, failed, remaining }, "SMS batch sent");

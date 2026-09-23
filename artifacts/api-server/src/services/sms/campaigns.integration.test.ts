@@ -144,3 +144,18 @@ test("тест-режим: стеля → пауза; резерв рядків 
   const [after] = await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.id, p1!.id));
   assert.equal(after!.status, "bot"); assert.ok(after!.viewedAt); // extra записано, статус не відкотився
 });
+
+// Провайдер відмовив батчу (скінчились гроші): рядки назад у чергу, кампанія на паузі — не спалюємо базу.
+test("провайдер відмовив батчу → рядки в чергу, кампанія на паузі", { skip: SKIP }, async () => {
+  const prov = mockProvider({ failPhones: ["+48573000401", "+48573000402", "+48573000403", "+48573000404", "+48573000405"] });
+  setSmsProviderForTests(prov);
+  const c = await createCampaign({ name: "Баланс", texts: { uk: "{лінк}" }, schedule: { days: [2], from: "10:00", to: "14:00", dailyLimit: 100, batchSize: 10 } }, null);
+  await importRecipients(c.id, [1, 2, 3, 4, 5].map((i) => ({ phone: `+4857300040${i}`, name: `P ${i}`, lang: "uk" })));
+  await db.update(smsRecipientsTable).set({ status: "queued" }).where(eq(smsRecipientsTable.campaignId, c.id));
+  const r = await sendCampaignBatch({ ...c, status: "sending" as const }, { now: new Date("2026-10-20T09:30:00Z") });
+  assert.equal(r.sent, 0);
+  const rows = await db.select().from(smsRecipientsTable).where(eq(smsRecipientsTable.campaignId, c.id));
+  assert.equal(rows.filter((x) => x.status === "queued").length, 5, "усі повернуті в чергу");
+  assert.equal(rows.filter((x) => x.sentAt).length, 0, "sentAt знято — денний ліміт не з'їдено");
+  assert.equal((await getCampaign(c.id))!.status, "paused");
+});
