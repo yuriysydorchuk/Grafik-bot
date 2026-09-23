@@ -26,6 +26,14 @@ router.use("/sms-campaigns", authRequired, requireCap("editData"));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 const me = (req: AuthedRequest) => req.admin?.adminId ?? null;
 
+// Невалідний :id (застарілий лінк виду /sms-campaigns/null або /undefined) → 404 одразу:
+// інакше Number() дає NaN, Drizzle шле його в запит і падає помилкою в алерти (23.09.2026).
+router.param("id", (_req, res, next, raw) => {
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) { res.status(404).json({ error: "Кампанію не знайдено" }); return; }
+  next();
+});
+
 async function withStats(c: NonNullable<Awaited<ReturnType<typeof getCampaign>>>) {
   const [stats, candidates, activeWorkersPending] = await Promise.all([campaignStats(c), campaignCandidateCount(c.id), pendingActiveWorkers(c.id)]);
   const factoryId = (c.offer as any)?.factoryId;

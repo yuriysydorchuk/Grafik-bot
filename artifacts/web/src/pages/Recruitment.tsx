@@ -242,7 +242,7 @@ function CandidateDetail({ id, funnel, factories, workers, staff, meId, onClose,
               {c.telegramId && <div className="flex items-center gap-2 text-slate-600"><Send className="h-3.5 w-3.5 text-slate-400" /> {c.telegramId}</div>}
               {c.factoryName && <div className="flex items-center gap-2 text-slate-600"><UsersIcon className="h-3.5 w-3.5 text-slate-400" /> {c.factoryName}</div>}
               {isReferral && c.referrerName && <div className="mt-1 text-slate-500">🙋 {t("Запросив:")} <b className="text-slate-700">{c.referrerName}</b></div>}
-              {(c as any).source === "sms" && <div className="mt-1 text-xs"><Badge color="blue">📨 SMS</Badge> <Link href={`/sms-campaigns/${(c as any).campaignId}`} className="text-slate-500 underline">{t("кампанія")} #{(c as any).campaignId}</Link>{(c as any).language ? <span className="text-slate-400"> · {(c as any).language}</span> : null}</div>}
+              {String((c as any).source ?? "").startsWith("sms") && <div className="mt-1 text-xs"><Badge color="blue">📨 SMS</Badge> {(c as any).campaignId ? <Link href={`/sms-campaigns/${(c as any).campaignId}`} className="text-slate-500 underline">{t("кампанія")} #{(c as any).campaignId}</Link> : null}{(c as any).language ? <span className="text-slate-400"> · {(c as any).language}</span> : null}</div>}
               {c.notes && <div className="mt-1 whitespace-pre-line text-slate-600">📝 {c.notes}</div>}
               {!c.phone && !c.email && !c.telegramId && !c.factoryName && !c.notes && <div className="text-slate-400">{t("Немає контактних даних")}</div>}
             </div>

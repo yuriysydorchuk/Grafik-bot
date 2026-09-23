@@ -23,7 +23,8 @@ export default function SmsCampaignCard() {
   const qc = useQueryClient();
   const [, params] = useRoute("/sms-campaigns/:id");
   const id = Number(params?.id);
-  const { data: c, isLoading } = useQuery<Campaign>({ queryKey: ["sms-campaign", id], queryFn: () => get(`/sms-campaigns/${id}`), refetchInterval: 30000 });
+  const validId = Number.isInteger(id) && id > 0; // /sms-campaigns/null із застарілого лінка не має бити в API
+  const { data: c, isLoading } = useQuery<Campaign>({ queryKey: ["sms-campaign", id], enabled: validId, queryFn: () => get(`/sms-campaigns/${id}`), refetchInterval: 30000 });
   const { data: me } = useQuery<any>({ queryKey: ["me"], queryFn: () => get("/auth/me") });
   const isMain = !!me?.isMain;
   const [tab, setTab] = useState<Tab>("recipients");
@@ -33,6 +34,7 @@ export default function SmsCampaignCard() {
   const refresh = () => { qc.invalidateQueries({ queryKey: ["sms-campaign", id] }); qc.invalidateQueries({ queryKey: ["sms-recipients", id] }); qc.invalidateQueries({ queryKey: ["sms-campaigns"] }); };
   const act = useMutation({ mutationFn: (p: { path: string; body?: any }) => post(`/sms-campaigns/${id}/${p.path}`, p.body), onSuccess: (r: any, v) => { refresh(); if (v.path === "send-batch") toast.success(`${t("Відправлено")}: ${r.sent}, ${t("помилок")}: ${r.failed}, ${t("у черзі")}: ${r.remaining}`); if (v.path === "test-sms") toast[r.ok ? "success" : "error"](r.ok ? `${t("Тест надіслано")} (${r.parts} SMS)` : r.error); if (v.path === "referral-active") toast.success(`${t("Надіслано в бот")}: ${r.notified}, ${t("пропущено")}: ${r.skipped}`); }, onError: (e: any) => toast.error(e?.message ?? t("Помилка")) });
 
+  if (!validId) return <Card className="p-6 text-center text-slate-500">{t("Кампанію не знайдено")}</Card>;
   if (isLoading || !c) return <Spinner />;
   const s = c.stats;
   const pct = (n: number, d: number) => (d ? ` · ${Math.round((n / d) * 100)}%` : "");
