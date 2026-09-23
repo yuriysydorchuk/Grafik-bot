@@ -2591,7 +2591,7 @@ export type SmsLanding = {
   proof?: { since?: string; placed?: string; factories?: string; rating?: string; reviewsCount?: string; reviewsUrl?: string; kraz?: string };
   reviews?: { name: string; city?: string; text: SmsTexts }[];
   recruiterPhoto?: string;  // фото консультанта (URL); без нього — ініціали
-  messengers?: { whatsapp?: string; viber?: string; telegram?: string }; // «написати» — номер/юзернейм
+  messengers?: { whatsapp?: string; whatsappEn?: string; viber?: string; telegram?: string }; // whatsappEn — окремий номер для англомовних // «написати» — номер/юзернейм
 };
 export type SmsSchedule = { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number; testLimit?: number }; // days: 1=пн … 7=нд, Europe/Warsaw; testLimit — стеля тест-режиму (дефолт 300), далі пауза
 

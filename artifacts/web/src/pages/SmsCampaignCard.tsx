@@ -173,9 +173,9 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
             <div key={k}><Label>{l}</Label><Input value={ld.proof?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, proof: { ...(s.proof ?? {}), [k]: e.target.value } }))} /></div>
           ))}
         </div>
-        <div className="grid md:grid-cols-4 gap-2">
+        <div className="grid md:grid-cols-5 gap-2">
           <div><Label>{t("Фото консультанта (URL)")}</Label><Input value={ld.recruiterPhoto ?? ""} onChange={(e) => setLd((s: any) => ({ ...s, recruiterPhoto: e.target.value }))} /></div>
-          {([["whatsapp", "WhatsApp", "+48…"], ["viber", "Viber", "+48…"], ["telegram", "Telegram (@юзернейм)", "@eurosupport"]] as const).map(([k, l, ph]) => (
+          {([["whatsapp", "WhatsApp", "+48…"], ["whatsappEn", "WhatsApp (en)", "+48…"], ["viber", "Viber", "+48…"], ["telegram", "Telegram (@юзернейм)", "@eurosupport"]] as const).map(([k, l, ph]) => (
             <div key={k}><Label>{l}</Label><Input value={ld.messengers?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, messengers: { ...(s.messengers ?? {}), [k]: e.target.value } }))} /></div>
           ))}
         </div>

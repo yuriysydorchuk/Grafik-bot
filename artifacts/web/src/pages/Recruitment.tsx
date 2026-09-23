@@ -158,6 +158,11 @@ export default function Recruitment() {
   );
 }
 
+// Мова кандидата з SMS-кампанії — рекрутер має знати, якою говорити (рішення власника 23.09.2026)
+const LANG_NOTE: Record<string, { label: string; color: "blue" | "amber" | "slate" }> = {
+  uk: { label: "🇺🇦 українською", color: "blue" }, ru: { label: "🇷🇺 російською", color: "slate" }, en: { label: "🇬🇧 англійською", color: "amber" },
+};
+
 function CandidateCard({ c, isReferral, onDragStart, onOpen, onDelete }: {
   c: Candidate; isReferral: boolean; onDragStart: () => void; onOpen: () => void; onDelete: (e: React.MouseEvent) => void;
 }) {
@@ -173,6 +178,7 @@ function CandidateCard({ c, isReferral, onDragStart, onOpen, onDelete }: {
       {c.telegramId && <div className="flex items-center gap-1 text-xs text-slate-400"><Send className="h-3 w-3" /> {c.telegramId}</div>}
       {isReferral && c.referrerName && <div className="mt-1 text-xs text-slate-500">🙋 {t("Запросив:")} <span className="font-medium text-slate-700">{c.referrerName}</span></div>}
       <div className="mt-1.5 flex flex-wrap gap-1">
+        {(c as any).language && LANG_NOTE[(c as any).language] && <Badge color={LANG_NOTE[(c as any).language]!.color}>{t(LANG_NOTE[(c as any).language]!.label)}</Badge>}
         {c.factoryName && <Badge color="slate">{c.factoryName}</Badge>}
         {c.workerId && (c.workerActive ? <Badge color="green">👷 {t("активний")}{c.workerCode ? ` · ${c.workerCode}` : ""}</Badge> : <Badge color="slate">{t("переведений")}</Badge>)}
         {isReferral && c.workerId && (c.bonusPaid
@@ -242,7 +248,7 @@ function CandidateDetail({ id, funnel, factories, workers, staff, meId, onClose,
               {c.telegramId && <div className="flex items-center gap-2 text-slate-600"><Send className="h-3.5 w-3.5 text-slate-400" /> {c.telegramId}</div>}
               {c.factoryName && <div className="flex items-center gap-2 text-slate-600"><UsersIcon className="h-3.5 w-3.5 text-slate-400" /> {c.factoryName}</div>}
               {isReferral && c.referrerName && <div className="mt-1 text-slate-500">🙋 {t("Запросив:")} <b className="text-slate-700">{c.referrerName}</b></div>}
-              {String((c as any).source ?? "").startsWith("sms") && <div className="mt-1 text-xs"><Badge color="blue">📨 SMS</Badge> {(c as any).campaignId ? <Link href={`/sms-campaigns/${(c as any).campaignId}`} className="text-slate-500 underline">{t("кампанія")} #{(c as any).campaignId}</Link> : null}{(c as any).language ? <span className="text-slate-400"> · {(c as any).language}</span> : null}</div>}
+              {String((c as any).source ?? "").startsWith("sms") && <div className="mt-1 text-xs"><Badge color="blue">📨 SMS</Badge> {(c as any).campaignId ? <Link href={`/sms-campaigns/${(c as any).campaignId}`} className="text-slate-500 underline">{t("кампанія")} #{(c as any).campaignId}</Link> : null}{(c as any).language && LANG_NOTE[(c as any).language] ? <span> · <Badge color={LANG_NOTE[(c as any).language]!.color}>{t(LANG_NOTE[(c as any).language]!.label)}</Badge></span> : null}</div>}
               {c.notes && <div className="mt-1 whitespace-pre-line text-slate-600">📝 {c.notes}</div>}
               {!c.phone && !c.email && !c.telegramId && !c.factoryName && !c.notes && <div className="text-slate-400">{t("Немає контактних даних")}</div>}
             </div>

@@ -20,7 +20,7 @@ type Data = {
   landing: {
     title?: Txt; about?: Txt; faq?: { q: Txt; a: Txt }[]; photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };
     proof?: { since?: string; placed?: string; factories?: string; rating?: string; reviewsCount?: string; reviewsUrl?: string; kraz?: string };
-    reviews?: { name: string; city?: string; text: Txt }[]; recruiterPhoto?: string; messengers?: { whatsapp?: string; viber?: string; telegram?: string };
+    reviews?: { name: string; city?: string; text: Txt }[]; recruiterPhoto?: string; messengers?: { whatsapp?: string; whatsappEn?: string; viber?: string; telegram?: string };
   };
 };
 
@@ -169,7 +169,7 @@ export default function SmsLanding() {
   // англомовним — окремий номер, якщо заданий у контактах кампанії
   const shownPhone = (lang === "en" && ct.phoneEn) || ct.phone || d.offer.phone || "";
   const phoneHref = digits(shownPhone);
-  const wa = digits(ld.messengers?.whatsapp || d.offer.whatsapp || ct.phone);
+  const wa = digits((lang === "en" && ld.messengers?.whatsappEn) || ld.messengers?.whatsapp || d.offer.whatsapp || ct.phone);
   const viber = digits(ld.messengers?.viber);
   const tg = (ld.messengers?.telegram || "").replace(/^@/, "");
   const done = [...interested].some((id) => !id.startsWith("svc:"));
