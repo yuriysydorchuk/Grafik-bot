@@ -5,7 +5,7 @@
 // (імʼя + телефон), відгуки, FAQ під заперечення, контакти. Липка кнопка знизу, поки не натиснуто.
 // Усе, чого власник ще не дав (цифри, відгуки, фото), ховається — нічого не вигадуємо.
 // Події — GET /api/r/:token/e?k=…&v=<вакансія>; друг — POST /api/r/:token/friend (CSRF-заголовок).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
 
 type L = "uk" | "ru" | "en";
@@ -38,7 +38,7 @@ const S: Record<L, Record<string, string>> = {
     refTitle: "Приведіть друга — отримайте {bonus}", refSteps: "Ви вписуєте імʼя і телефон друга;Ми телефонуємо і працевлаштовуємо;Друг відпрацьовує 10 змін — бонус вам на картку",
     reviews: "Що кажуть наші працівники", reviewsAll: "Усі відгуки в Google", faq: "Часті питання",
     q1: "Це легально?", a1: "Так. Umowa zlecenie з першого дня, внески ZUS, допомога з документами і легалізацією перебування.",
-    q2: "Скільки коштує житло і довіз?", a2: "Житло 500–850 zł на місяць залежно від міста, довіз близько 270 zł на місяць. Точні цифри скаже консультант по вашій вакансії.",
+    q2: "Житло і доїзд — як це працює?", a2: "Житло та доїзд надаємо ми: кімната неподалік підприємства і транспорт на кожну зміну. Умови по вашій вакансії скаже консультант під час дзвінка.",
     q3: "Коли перша зарплата?", a3: "До 10 числа наступного місяця на картку. Аванс можливий після 2 тижнів роботи.",
     q4: "Досвід потрібен?", a4: "На більшості вакансій ні: перший день з бригадиром, навчання на місці. Де досвід потрібен — це вказано на вакансії.",
     q5: "Я з України без візи, чи можна?", a5: "Так. Оформимо oświadczenie або працюєте за статусом UKR — консультант підкаже, що саме у вашому випадку.",
@@ -64,7 +64,7 @@ const S: Record<L, Record<string, string>> = {
     refTitle: "Приведите друга — получите {bonus}", refSteps: "Вы вписываете имя и телефон друга;Мы звоним и трудоустраиваем;Друг отрабатывает 10 смен — бонус вам на карту",
     reviews: "Что говорят наши работники", reviewsAll: "Все отзывы в Google", faq: "Частые вопросы",
     q1: "Это легально?", a1: "Да. Umowa zlecenie с первого дня, взносы ZUS, помощь с документами и легализацией пребывания.",
-    q2: "Сколько стоит жильё и довоз?", a2: "Жильё 500–850 zł в месяц в зависимости от города, довоз около 270 zł в месяц. Точные цифры скажет консультант по вашей вакансии.",
+    q2: "Жильё и довоз — как это работает?", a2: "Жильё и довоз предоставляем мы: комната недалеко от предприятия и транспорт на каждую смену. Условия по вашей вакансии скажет консультант во время звонка.",
     q3: "Когда первая зарплата?", a3: "До 10 числа следующего месяца на карту. Аванс возможен после 2 недель работы.",
     q4: "Нужен ли опыт?", a4: "На большинстве вакансий нет: первый день с бригадиром, обучение на месте. Где опыт нужен — это указано в вакансии.",
     q5: "Я из Украины без визы, можно?", a5: "Да. Оформим oświadczenie или работаете по статусу UKR — консультант подскажет, что именно в вашем случае.",
@@ -90,7 +90,7 @@ const S: Record<L, Record<string, string>> = {
     refTitle: "Bring a friend — get {bonus}", refSteps: "You enter your friend's name and phone;We call and employ them;After their 10 shifts the bonus goes to your card",
     reviews: "What our workers say", reviewsAll: "All reviews on Google", faq: "FAQ",
     q1: "Is it legal?", a1: "Yes. Contract from day one, social insurance, help with documents and residence legalisation.",
-    q2: "How much are housing and transport?", a2: "Housing 500–850 zł per month depending on the city, transport about 270 zł per month. Your consultant gives exact numbers for your job.",
+    q2: "Housing and transport — how does it work?", a2: "We provide both: a room near the plant and transport to every shift. Your consultant explains the details for your job during the call.",
     q3: "When is the first salary?", a3: "By the 10th of the next month to your card. An advance is possible after 2 weeks.",
     q4: "Do I need experience?", a4: "For most jobs no: first day with a team leader, training on site. Where experience is required, the vacancy says so.",
     q5: "I'm from Ukraine without a visa — can I work?", a5: "Yes. We arrange the oświadczenie or you work under UKR status — the consultant tells you what applies to you.",
@@ -142,7 +142,28 @@ export default function SmsLanding() {
       if (x.vacancies?.length === 1) setOpen(x.vacancies[0]!.id);
     }).catch((e) => setErr(e.message));
   }, [token]);
-  const ev = (k: string, v?: string) => { try { fetch(`/api/r/${encodeURIComponent(token)}/e?k=${k}${v ? `&v=${encodeURIComponent(v)}` : ""}`, { keepalive: true }).catch(() => {}); } catch { /* ignore */ } };
+  // Кожен клік лишає слід; при виході шлемо `leave` з часом на сторінці й останньою дією —
+  // щоб у аналітиці було видно, скільки читали і після чого пішли (рішення власника 23.09.2026).
+  const lastRef = useRef<string>("view");
+  const startRef = useRef<number>(Date.now());
+  const ev = (k: string, v?: string) => {
+    if (k !== "leave") lastRef.current = v ? `${k}:${v}` : k;
+    try { fetch(`/api/r/${encodeURIComponent(token)}/e?k=${k}${v ? `&v=${encodeURIComponent(v)}` : ""}`, { keepalive: true }).catch(() => {}); } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (!token) return;
+    let sent = false;
+    const leave = () => {
+      if (sent) return; sent = true;
+      const sec = Math.round((Date.now() - startRef.current) / 1000);
+      const url = `/api/r/${encodeURIComponent(token)}/e?k=leave&v=${encodeURIComponent(`${sec}s|${lastRef.current}`)}`;
+      try { navigator.sendBeacon ? navigator.sendBeacon(url) : fetch(url, { keepalive: true }).catch(() => {}); } catch { /* ignore */ }
+    };
+    const onHide = () => { if (document.visibilityState === "hidden") leave(); };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", leave);
+    return () => { document.removeEventListener("visibilitychange", onHide); window.removeEventListener("pagehide", leave); };
+  }, [token]);
   const s = S[lang];
 
   if (err) return <div className="min-h-screen flex items-center justify-center p-6 text-center text-slate-600">{err}</div>;

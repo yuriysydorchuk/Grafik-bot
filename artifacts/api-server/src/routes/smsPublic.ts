@@ -97,7 +97,7 @@ async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, te
   } catch (e) { logger.warn({ err: e }, "sms recruiter notify failed"); }
 }
 // Послуги легалізації на сторінці (svc:*) — картка рекрутеру з назвою послуги, не вакансії.
-const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: PESEL UKR / статус UKR", "svc:prawko": "Послуга: заміна водійського посвідчення" };
+const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: карта ЦУКР", "svc:prawko": "Послуга: заміна водійського посвідчення" };
 const vacancyTitle = (landing: Record<string, any>, id: string): string => {
   if (SERVICE_TITLES[id]) return SERVICE_TITLES[id]!;
   if (id === "offer") return "Робота на виробництві"; // дефолтна вакансія з пропозиції (без landing.vacancies)
@@ -111,7 +111,7 @@ const vacancyTitle = (landing: Record<string, any>, id: string): string => {
 // (interested, ?v=<вакансія|svc:послуга>) шле рекрутеру кампанії картку в бот (перший раз по
 // кожній вакансії). Решта (open_*, link_*, lang) — лише журнал.
 const CTA_EVENTS = new Set(["cta_bot", "cta_call", "cta_wa", "cta_viber", "interested", "interested_ref"]);
-const TRACK_EVENTS = new Set(["open_vacancy", "open_service", "open_faq", "link_maps", "link_site", "link_insta", "link_fb", "link_vacancies", "link_reviews", "lang"]);
+const TRACK_EVENTS = new Set(["open_vacancy", "open_service", "open_faq", "link_maps", "link_site", "link_insta", "link_fb", "link_vacancies", "link_reviews", "lang", "leave"]);
 router.get("/r/:token/e", async (req, res) => {
   const token = String(req.params.token || "").toUpperCase();
   const k = String(req.query.k || "");

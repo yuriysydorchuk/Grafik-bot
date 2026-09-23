@@ -165,7 +165,7 @@ export async function importRecipients(campaignId: number, rows: ImportRow[], op
 
 // ── Список отримувачів для картки (фільтри + пагінація) ───────────────────
 export type RecipientFilter = { status?: string; lang?: string; q?: string; limit?: number; offset?: number };
-export async function listRecipients(campaignId: number, f: RecipientFilter = {}): Promise<{ rows: SmsRecipient[]; total: number }> {
+export async function listRecipients(campaignId: number, f: RecipientFilter = {}): Promise<{ rows: (SmsRecipient & { secondsOnPage?: number })[]; total: number }> {
   const conds = [eq(smsRecipientsTable.campaignId, campaignId)];
   if (f.status) conds.push(eq(smsRecipientsTable.status, f.status));
   if (f.lang) conds.push(eq(smsRecipientsTable.lang, f.lang));
@@ -173,7 +173,16 @@ export async function listRecipients(campaignId: number, f: RecipientFilter = {}
   const where = and(...conds);
   const [{ n: total }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(where);
   const rows = await db.select().from(smsRecipientsTable).where(where).orderBy(smsRecipientsTable.id).limit(Math.min(f.limit ?? 100, 100000)).offset(f.offset ?? 0);
-  return { rows, total: total ?? 0 };
+  // час на сторінці з подій leave (meta.v = "45s|остання дія") — найдовший візит людини
+  const ids = rows.map((r) => r.id);
+  const secByRid = new Map<number, number>();
+  if (ids.length) {
+    for (const e of await db.select({ rid: smsEventsTable.recipientId, meta: smsEventsTable.meta }).from(smsEventsTable).where(and(inArray(smsEventsTable.recipientId, ids), eq(smsEventsTable.kind, "leave")))) {
+      const sec = Number(String((e.meta as any)?.v ?? "").split("|")[0]?.replace(/[^0-9]/g, ""));
+      if (Number.isFinite(sec) && sec >= 0 && sec < 3600) secByRid.set(e.rid, Math.max(secByRid.get(e.rid) ?? 0, sec));
+    }
+  }
+  return { rows: rows.map((r) => ({ ...r, secondsOnPage: secByRid.get(r.id) })), total: total ?? 0 };
 }
 export async function recipientEvents(recipientId: number) {
   return db.select().from(smsEventsTable).where(eq(smsEventsTable.recipientId, recipientId)).orderBy(smsEventsTable.id);

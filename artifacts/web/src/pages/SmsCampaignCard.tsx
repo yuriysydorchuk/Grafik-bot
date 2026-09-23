@@ -12,7 +12,7 @@ import { useT } from "../lib/i18n";
 import { smsParts, SMS_STATUS_LABEL, SMS_STATUS_COLOR, SMS_CAMPAIGN_STATUS, SMS_EVENT_LABEL } from "../lib/smsParts";
 import { FunnelBar, ImportStep, type Campaign } from "./SmsCampaigns";
 
-type Recipient = { id: number; phone: string; name: string | null; firstName: string | null; lang: string; segment: string | null; year: number | null; status: string; skippedReason: string | null; sentAt: string | null; deliveredAt: string | null; failReason: string | null; viewedAt: string | null; botAt: string | null; parts: number | null; candidateId: number | null; candidateStage: string | null; link: string; workerId: number | null };
+type Recipient = { id: number; phone: string; name: string | null; firstName: string | null; lang: string; segment: string | null; year: number | null; status: string; skippedReason: string | null; sentAt: string | null; deliveredAt: string | null; failReason: string | null; viewedAt: string | null; botAt: string | null; parts: number | null; candidateId: number | null; candidateStage: string | null; link: string; workerId: number | null ; secondsOnPage?: number };
 type Ev = { id: number; kind: string; at: string; device: string | null; meta: any };
 const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
 type Tab = "recipients" | "analytics" | "texts" | "landing" | "schedule" | "import";
@@ -109,7 +109,7 @@ function Recipients({ id }: { id: number }) {
       {isLoading ? <Spinner /> : (
         <Card className="overflow-x-auto p-0">
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-slate-500 border-b border-slate-200">{[t("Імʼя"), t("Телефон"), t("Мова"), t("Сегмент · рік"), t("Статус"), t("Відправлено"), t("Доставлено"), t("Відкрив"), t("У боті"), t("Кандидат"), ""].map((h, i) => <th key={i} className="px-3 py-2 font-medium whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead><tr className="text-left text-slate-500 border-b border-slate-200">{[t("Імʼя"), t("Телефон"), t("Мова"), t("Сегмент · рік"), t("Статус"), t("Відправлено"), t("Доставлено"), t("Відкрив"), t("на сторінці"), t("У боті"), t("Кандидат"), ""].map((h, i) => <th key={i} className="px-3 py-2 font-medium whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>{(data?.rows ?? []).map((r) => (
               <tr key={r.id} className="border-b border-slate-100">
                 <td className="px-3 py-1.5"><button className="hover:underline text-left" onClick={() => setEvFor(r)}>{r.name || <span className="text-slate-400">—</span>}</button></td>
@@ -117,7 +117,7 @@ function Recipients({ id }: { id: number }) {
                 <td className="px-3 py-1.5"><Badge>{r.lang}</Badge></td>
                 <td className="px-3 py-1.5 text-slate-500">{r.segment ?? "—"}{r.year ? ` · ${r.year}` : ""}</td>
                 <td className="px-3 py-1.5"><Badge color={SMS_STATUS_COLOR[r.status] ?? "slate"}>{t(SMS_STATUS_LABEL[r.status] ?? r.status)}</Badge>{r.skippedReason && <div className="text-xs text-slate-400">{r.skippedReason}</div>}{r.failReason && <div className="text-xs text-rose-500">{r.failReason}</div>}</td>
-                <td className="px-3 py-1.5 text-slate-500">{fmt(r.sentAt)}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.deliveredAt)}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.viewedAt)}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.botAt)}</td>
+                <td className="px-3 py-1.5 text-slate-500">{fmt(r.sentAt)}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.deliveredAt)}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.viewedAt)}</td><td className="px-3 py-1.5 text-slate-500 tabular-nums">{r.secondsOnPage == null ? "—" : r.secondsOnPage < 60 ? `${r.secondsOnPage} ${t("с")}` : `${Math.floor(r.secondsOnPage / 60)}:${String(r.secondsOnPage % 60).padStart(2, "0")}`}</td><td className="px-3 py-1.5 text-slate-500">{fmt(r.botAt)}</td>
                 <td className="px-3 py-1.5">{r.candidateId ? <Link href="/recruitment" className="underline">#{r.candidateId}{r.candidateStage ? ` · ${r.candidateStage}` : ""}</Link> : r.workerId ? <span className="text-slate-400">{t("працівник")} #{r.workerId}</span> : "—"}</td>
                 <td className="px-3 py-1.5"><a href={r.link} target="_blank" rel="noreferrer" className="text-xs text-slate-400 hover:text-slate-700">{t("лінк")}</a></td>
               </tr>
@@ -278,7 +278,9 @@ type Analytics = {
   services: { id: string; title: string; opens: number; interested: number }[];
   buttons: Record<string, number>; faq: { n: number; opens: number }[]; langs: Record<string, number>; devices: Record<string, number>;
   byHour: number[]; byDay: { date: string; views: number; interested: number }[];
-  timeToView: { medianMin: number | null; p75Min: number | null; within1h: number; within24h: number }; events: number;
+  timeToView: { medianMin: number | null; p75Min: number | null; within1h: number; within24h: number };
+  timeOnPage: { medianSec: number | null; p75Sec: number | null; buckets: { label: string; n: number }[]; measured: number };
+  exitAfter: { label: string; n: number }[]; events: number;
 };
 function AnalyticsTab({ id }: { id: number }) {
   const t = useT();
@@ -291,6 +293,7 @@ function AnalyticsTab({ id }: { id: number }) {
     [t("щось натиснули на сторінці"), p.engaged, p.viewed], [t("мене цікавить"), p.interested, p.viewed], [t("порекомендували друга"), p.friend, p.viewed], [t("натиснули подзвонити / написати"), p.contact, p.viewed],
   ];
   const maxHour = Math.max(1, ...a.byHour);
+  const fmtSec = (x: number | null) => (x == null ? "—" : x < 60 ? `${x} ${t("с")}` : `${Math.floor(x / 60)}:${String(x % 60).padStart(2, "0")} ${t("хв")}`);
   const fmtMin = (m: number | null) => (m == null ? "—" : m < 60 ? `${m} ${t("хв")}` : m < 1440 ? `${(m / 60).toFixed(1)} ${t("год")}` : `${(m / 1440).toFixed(1)} ${t("дн")}`);
   const BTN: Record<string, string> = { cta_call: t("подзвонити"), cta_wa: "WhatsApp", cta_viber: "Viber", cta_bot: "Telegram", link_maps: t("мапа"), link_site: t("сайт"), link_insta: "Instagram", link_fb: "Facebook", link_vacancies: t("усі вакансії"), link_reviews: t("відгуки Google") };
   const Bar = ({ n, d }: { n: number; d: number }) => <div className="h-2 rounded bg-slate-200 overflow-hidden"><div className="h-full bg-red-600" style={{ width: d ? `${Math.min(100, (n / d) * 100)}%` : 0 }} /></div>;
@@ -340,6 +343,17 @@ function AnalyticsTab({ id }: { id: number }) {
           <div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>0</span><span>6</span><span>12</span><span>18</span><span>23</span></div>
           <div className="font-semibold mt-4 mb-1">{t("Час від SMS до відкриття")}</div>
           <div className="text-sm text-slate-600">{t("медіана")}: {fmtMin(a.timeToView.medianMin)} · 75%: {fmtMin(a.timeToView.p75Min)} · {t("за 1 год")}: {a.timeToView.within1h} · {t("за 24 год")}: {a.timeToView.within24h}</div>
+          <div className="font-semibold mt-4 mb-1">{t("Скільки часу на сторінці")}</div>
+          {a.timeOnPage.measured ? (
+            <>
+              <div className="text-sm text-slate-600">{t("медіана")}: {fmtSec(a.timeOnPage.medianSec)} · 75%: {fmtSec(a.timeOnPage.p75Sec)} · {t("вимірів")}: {a.timeOnPage.measured}</div>
+              <div className="mt-1 space-y-1">{a.timeOnPage.buckets.map((b) => (
+                <div key={b.label} className="grid grid-cols-[5.5rem_1fr_2rem] items-center gap-2 text-xs"><span className="text-slate-500">{t(b.label)}</span><div className="h-2 rounded bg-slate-200 overflow-hidden"><div className="h-full bg-slate-700" style={{ width: `${Math.round((b.n / Math.max(1, a.timeOnPage.measured)) * 100)}%` }} /></div><span className="tabular-nums text-right">{b.n}</span></div>
+              ))}</div>
+            </>
+          ) : <div className="text-sm text-slate-400">{t("ще немає даних")}</div>}
+          <div className="font-semibold mt-4 mb-1">{t("Після чого пішли зі сторінки")}</div>
+          {a.exitAfter.length ? <div className="flex flex-wrap gap-2 text-sm">{a.exitAfter.map((x) => <span key={x.label} className="rounded-full bg-slate-100 px-2.5 py-1">{t(SMS_EVENT_LABEL[x.label] ?? x.label)}: {x.n}</span>)}</div> : <div className="text-sm text-slate-400">{t("ще немає даних")}</div>}
           {a.byDay.length ? (<><div className="font-semibold mt-4 mb-1">{t("По днях")}</div>
             <table className="w-full text-sm"><tbody>{a.byDay.slice(-14).map((d) => <tr key={d.date} className="border-t border-slate-100"><td className="py-1">{d.date.split("-").reverse().join(".")}</td><td className="py-1 text-right tabular-nums">{d.views} {t("відкр.")}</td><td className="py-1 text-right tabular-nums font-semibold">{d.interested} {t("цікав.")}</td></tr>)}</tbody></table></>) : null}
         </Card>

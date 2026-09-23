@@ -16,10 +16,12 @@ export type SmsAnalytics = {
   byHour: number[];                                   // відкриття сторінки (події view) за годинами Варшави
   byDay: { date: string; views: number; interested: number }[];
   timeToView: { medianMin: number | null; p75Min: number | null; within1h: number; within24h: number };
+  timeOnPage: { medianSec: number | null; p75Sec: number | null; buckets: { label: string; n: number }[]; measured: number };
+  exitAfter: { label: string; n: number }[];
   events: number;
 };
 
-export const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Карта побиту", "svc:ukr": "PESEL UKR / статус UKR", "svc:prawko": "Заміна водійського посвідчення" };
+export const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Карта побиту", "svc:ukr": "Карта ЦУКР", "svc:prawko": "Заміна водійського посвідчення" };
 const BUTTON_KINDS = ["cta_call", "cta_wa", "cta_viber", "cta_bot", "link_maps", "link_site", "link_insta", "link_fb", "link_vacancies", "link_reviews"];
 
 export async function campaignAnalytics(c: SmsCampaign): Promise<SmsAnalytics> {
@@ -83,5 +85,29 @@ export async function campaignAnalytics(c: SmsCampaign): Promise<SmsAnalytics> {
   const q = (p: number) => (deltas.length ? Math.round(deltas[Math.min(deltas.length - 1, Math.floor(p * deltas.length))]!) : null);
   const timeToView = { medianMin: q(0.5), p75Min: q(0.75), within1h: deltas.filter((m) => m <= 60).length, within24h: deltas.filter((m) => m <= 1440).length };
 
-  return { people, vacancies, services, buttons, faq, langs, devices, byHour, byDay, timeToView, events: evs.length };
+  // Скільки часу читали і після чого пішли — з події `leave` (meta.v = "45s|open_vacancy:food")
+  const secs: number[] = []; const exitMap = new Map<string, Set<number>>();
+  const bestPerPerson = new Map<number, number>();
+  for (const e of evs) {
+    if (e.kind !== "leave") continue;
+    const raw = v(e.meta); const [secPart, lastPart] = raw.split("|");
+    const sec = Number(String(secPart ?? "").replace(/[^0-9]/g, ""));
+    if (Number.isFinite(sec) && sec >= 0 && sec < 3600) bestPerPerson.set(e.rid, Math.max(bestPerPerson.get(e.rid) ?? 0, sec));
+    const last = (lastPart ?? "view").split(":")[0] ?? "view";
+    if (!exitMap.has(last)) exitMap.set(last, new Set());
+    exitMap.get(last)!.add(e.rid);
+  }
+  secs.push(...bestPerPerson.values());
+  secs.sort((a, b) => a - b);
+  const qs = (p: number) => (secs.length ? secs[Math.min(secs.length - 1, Math.floor(p * secs.length))]! : null);
+  const bucket = (from: number, to: number) => secs.filter((x) => x >= from && x < to).length;
+  const timeOnPage = {
+    medianSec: qs(0.5), p75Sec: qs(0.75), measured: secs.length,
+    buckets: [
+      { label: "до 10 с", n: bucket(0, 10) }, { label: "10–30 с", n: bucket(10, 30) }, { label: "30–60 с", n: bucket(30, 60) },
+      { label: "1–3 хв", n: bucket(60, 180) }, { label: "понад 3 хв", n: bucket(180, 3600) },
+    ],
+  };
+  const exitAfter = [...exitMap.entries()].map(([label, set]) => ({ label, n: set.size })).sort((a, b) => b.n - a.n).slice(0, 8);
+  return { people, vacancies, services, buttons, faq, langs, devices, byHour, byDay, timeToView, timeOnPage, exitAfter, events: evs.length };
 }

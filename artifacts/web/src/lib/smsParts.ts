@@ -27,5 +27,6 @@ export const SMS_EVENT_LABEL: Record<string, string> = {
   open_vacancy: "розгорнув вакансію", open_service: "розгорнув послугу", open_faq: "відкрив питання", interested: "🔥 мене цікавить", interested_ref: "🔥 хочу привести друга", friend: "🎁 порекомендував друга",
   cta_call: "📞 натиснув «подзвонити»", cta_wa: "натиснув WhatsApp", cta_viber: "натиснув Viber", cta_bot: "натиснув Telegram",
   link_maps: "відкрив мапу", link_site: "перейшов на сайт", link_insta: "відкрив Instagram", link_fb: "відкрив Facebook", link_vacancies: "усі вакансії на сайті", link_reviews: "відгуки в Google",
+  leave: "пішов зі сторінки",
   bot_start: "зайшов у бот", remind: "нагадування в бот", referral_bot: "«приведи друга» в бот",
 };
