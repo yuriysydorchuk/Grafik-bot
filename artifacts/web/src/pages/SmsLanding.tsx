@@ -46,6 +46,7 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Карта побиту", svc1t: "Ведемо справу від першого документа до пластику: збираємо комплект, заповнюємо wniosek, записуємо в urząd wojewódzki і супроводжуємо до рішення. У наших відгуках Google люди пишуть, що отримали карту за 4 місяці — навіть коли вже втратили надію. Нашим працівникам — окремі умови.",
     svc2: "Карта ЦУКР", svc2t: "Легальний побут для громадян України на 3 роки замість щоразового продовження статусу. Перевіримо, чи вам належить, зберемо документи й подамо заяву. Пояснюємо кожен крок українською, без юридичної мови.",
     svc3: "Заміна водійського посвідчення", svc3t: "Міняємо українські права на польські — без іспитів. Переклад, заява у wydział komunikacji, супровід до видачі. Ви приходите один раз, решту робимо ми.",
+    svc4: "Посвідка на проживання в Словаччині", svc4t: "Для громадян України, які хочуть легалізуватись у Словаччині. Аналізуємо вашу ситуацію й кажемо чесно, чи є підстава; готуємо повний комплект документів, подаємо й супроводжуємо до рішення. Ви не їздите наосліп і не втрачаєте місяці на переробку паперів.",
     waText: "Добрий день! Я {name}, отримав(ла) SMS про роботу. Хочу дізнатись більше.",
     netErr: "Не вдалося надіслати. Перевірте інтернет і спробуйте ще раз, або подзвоніть нам.",
     contacts: "Контакти", call: "Подзвонити", maps: "Показати на мапі", allVac: "Усі вакансії на сайті",
@@ -72,6 +73,7 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Карта побыту", svc1t: "Ведём дело от первого документа до пластика: собираем комплект, заполняем wniosek, записываем в urząd wojewódzki и сопровождаем до решения. В наших отзывах Google люди пишут, что получили карту за 4 месяца — даже когда уже потеряли надежду. Нашим работникам — отдельные условия.",
     svc2: "Карта ЦУКР", svc2t: "Легальное пребывание для граждан Украины на 3 года вместо постоянного продления статуса. Проверим, положено ли вам, соберём документы и подадим заявление. Объясняем каждый шаг по-русски или по-украински.",
     svc3: "Замена водительского удостоверения", svc3t: "Меняем украинские права на польские — без экзаменов. Перевод, заявление в wydział komunikacji, сопровождение до выдачи. Вы приходите один раз, остальное делаем мы.",
+    svc4: "Вид на жительство в Словакии", svc4t: "Для граждан Украины, которые хотят легализоваться в Словакии. Анализируем вашу ситуацию и честно говорим, есть ли основание; готовим полный комплект документов, подаём и сопровождаем до решения. Вы не едете вслепую и не теряете месяцы на переделку бумаг.",
     waText: "Добрый день! Я {name}, получил(а) SMS о работе. Хочу узнать больше.",
     netErr: "Не удалось отправить. Проверьте интернет и попробуйте ещё раз, или позвоните нам.",
     contacts: "Контакты", call: "Позвонить", maps: "Показать на карте", allVac: "Все вакансии на сайте",
@@ -98,6 +100,7 @@ const S: Record<L, Record<string, string>> = {
     svc1: "Residence card (karta pobytu)", svc1t: "We run your case from the first document to the plastic card: collect the set, fill in the application, book the voivodeship office and follow it to the decision. In our Google reviews people write they got the card in 4 months — even after losing hope. Special terms for our workers.",
     svc2: "CUKR card", svc2t: "Legal stay for Ukrainian citizens for 3 years instead of renewing the status again and again. We check whether you qualify, collect the documents and file the application. Every step explained in plain language.",
     svc3: "Driving licence exchange", svc3t: "We exchange a Ukrainian licence for a Polish one — no exams. Translation, application at the transport office, support until it is issued. You come once, we do the rest.",
+    svc4: "Residence permit in Slovakia", svc4t: "For Ukrainian citizens who want to legalise their stay in Slovakia. We assess your case and tell you honestly whether you qualify, prepare the full set of documents, file them and follow the case to the decision.",
     waText: "Hello! I am {name}, I received your SMS about a job. I would like to know more.",
     netErr: "Could not send. Check your connection and try again, or call us.",
     contacts: "Contacts", call: "Call us", maps: "Show on map", allVac: "All vacancies on our website",
@@ -345,7 +348,7 @@ export default function SmsLanding() {
             <h2 className="font-bold text-lg">{s.svcTitle}</h2>
             <p className="text-sm text-slate-600 mt-0.5 mb-2">{s.svcSub}</p>
             <div className="space-y-2">
-              {([["svc:karta", "🪪", s.svc1, s.svc1t], ["svc:ukr", "🇺🇦", s.svc2, s.svc2t], ["svc:prawko", "🚗", s.svc3, s.svc3t]] as const).map(([id, ico, title, txt]) => {
+              {([["svc:karta", "🪪", s.svc1, s.svc1t], ["svc:ukr", "🇺🇦", s.svc2, s.svc2t], ["svc:prawko", "🚗", s.svc3, s.svc3t], ["svc:slovakia", "🇸🇰", s.svc4, s.svc4t]] as const).map(([id, ico, title, txt]) => {
                 const isOpen = svcOpen === id; const sDone = interested.has(id);
                 return (
                   <article key={id} className={`rounded-2xl border-2 ${isOpen ? "border-slate-900" : "border-slate-200"}`}>

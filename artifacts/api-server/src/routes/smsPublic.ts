@@ -97,7 +97,7 @@ async function notifyRecruiter(campaign: { recruiterAdminId: number | null }, te
   } catch (e) { logger.warn({ err: e }, "sms recruiter notify failed"); }
 }
 // Послуги легалізації на сторінці (svc:*) — картка рекрутеру з назвою послуги, не вакансії.
-const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: карта ЦУКР", "svc:prawko": "Послуга: заміна водійського посвідчення" };
+const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Послуга: карта побиту", "svc:ukr": "Послуга: карта ЦУКР", "svc:prawko": "Послуга: заміна водійського посвідчення", "svc:slovakia": "Послуга: ВНЖ у Словаччині" };
 const vacancyTitle = (landing: Record<string, any>, id: string): string => {
   if (SERVICE_TITLES[id]) return SERVICE_TITLES[id]!;
   if (id === "offer") return "Робота на виробництві"; // дефолтна вакансія з пропозиції (без landing.vacancies)

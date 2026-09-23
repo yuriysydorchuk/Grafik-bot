@@ -21,7 +21,7 @@ export type SmsAnalytics = {
   events: number;
 };
 
-export const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Карта побиту", "svc:ukr": "Карта ЦУКР", "svc:prawko": "Заміна водійського посвідчення" };
+export const SERVICE_TITLES: Record<string, string> = { "svc:karta": "Карта побиту", "svc:ukr": "Карта ЦУКР", "svc:prawko": "Заміна водійського посвідчення", "svc:slovakia": "ВНЖ у Словаччині" };
 const BUTTON_KINDS = ["cta_call", "cta_wa", "cta_viber", "cta_bot", "link_maps", "link_site", "link_insta", "link_fb", "link_vacancies", "link_reviews"];
 
 export async function campaignAnalytics(c: SmsCampaign): Promise<SmsAnalytics> {
