@@ -11,7 +11,7 @@ import { Button, Input, Select, Card, Spinner, Badge, Empty, Label, Modal, Texta
 import { useT } from "../lib/i18n";
 import { smsParts, SMS_CAMPAIGN_STATUS } from "../lib/smsParts";
 
-export type SmsStats = { recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; bot: number; form: number; hired: number; skipped: number; activeWorkers: number; parts: number; costEstimate: number; byLang: Record<string, number> };
+export type SmsStats = { recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; interested: number; contacted: number; bot: number; form: number; hired: number; skipped: number; activeWorkers: number; parts: number; costEstimate: number; byLang: Record<string, number> };
 export type Campaign = {
   id: number; name: string; kind: "job" | "referral"; status: string; provider: "smsapi" | "smsfly"; sender: string;
   texts: Record<string, string>; landing: any; offer: Record<string, any>; schedule: { days: number[]; from: string; to: string; dailyLimit: number; batchSize: number; testLimit?: number };

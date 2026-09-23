@@ -48,6 +48,15 @@ const smsapi: SmsProvider = {
       }
     }
     return out;
+
+    async function sendOne(it: SendItem, retries = 2): Promise<any> {
+      try {
+        return await smsflyCall("SENDMESSAGE", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
+      } catch (e: any) {
+        if (retries > 0 && String(e?.message ?? "").includes("429")) { await sleep(1500); return sendOne(it, retries - 1); }
+        throw e;
+      }
+    }
   },
   async status(msgIds) {
     const token = process.env.SMS_SMSAPI_TOKEN;
@@ -82,9 +91,12 @@ const smsfly: SmsProvider = {
   price: priceFor(0.069, 0.64, 0.4),
   async send(items) {
     const out: SendResult[] = [];
+    // SMS-Fly лімітує частоту: батч 1000 без пауз дав 429 на 244 повідомленнях (23.09.2026).
+    // Тримаємо ~5 SMS/с і на 429 чекаємо довше й пробуємо ще раз — інакше людина просто не отримає SMS.
     for (const it of items) {
+      if (out.length) await sleep(200);
       try {
-        const d = await smsflyCall("SENDMESSAGE", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
+        const d = await sendOne(it);
         const id = d?.messageID ?? d?.messageId ?? d?.id;
         if (id) out.push({ recipientId: it.recipientId, ok: true, msgId: String(id) });
         else out.push({ recipientId: it.recipientId, ok: false, error: "SMS-Fly: відповідь без messageID" });
@@ -93,6 +105,16 @@ const smsfly: SmsProvider = {
       }
     }
     return out;
+
+    // на 429 (ліміт частоти) чекаємо довше й пробуємо ще раз — інакше людина просто не отримає SMS
+    async function sendOne(it: SendItem, retries = 2): Promise<any> {
+      try {
+        return await smsflyCall("SENDMESSAGE", { recipient: it.phone.replace(/^\+/, ""), channels: ["sms"], sms: { source: it.from, ttl: 86400, text: it.text } });
+      } catch (e: any) {
+        if (retries > 0 && String(e?.message ?? "").includes("429")) { await sleep(1500); return sendOne(it, retries - 1); }
+        throw e;
+      }
+    }
   },
   async status(msgIds) {
     const out: StatusResult[] = [];

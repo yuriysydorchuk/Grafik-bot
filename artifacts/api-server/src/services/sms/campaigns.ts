@@ -250,14 +250,14 @@ export async function markCandidateSmsEvent(candidateId: number, kind: "form" | 
 
 // ── Статистика ─────────────────────────────────────────────────────────────
 export type CampaignStats = {
-  recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; bot: number; form: number; hired: number; skipped: number;
+  recipients: number; queued: number; sent: number; delivered: number; failed: number; viewed: number; cta: number; interested: number; contacted: number; bot: number; form: number; hired: number; skipped: number;
   activeWorkers: number; parts: number; costEstimate: number; byLang: Record<string, number>;
 };
 export async function campaignStats(c: SmsCampaign): Promise<CampaignStats> {
   const rows = await db.select({ status: smsRecipientsTable.status, skippedReason: smsRecipientsTable.skippedReason, lang: smsRecipientsTable.lang, parts: smsRecipientsTable.parts, phone: smsRecipientsTable.phone, sentAt: smsRecipientsTable.sentAt })
     .from(smsRecipientsTable).where(eq(smsRecipientsTable.campaignId, c.id));
   const provider = getSmsProvider(c.provider as SmsProviderName);
-  const s: CampaignStats = { recipients: 0, queued: 0, sent: 0, delivered: 0, failed: 0, viewed: 0, cta: 0, bot: 0, form: 0, hired: 0, skipped: 0, activeWorkers: 0, parts: 0, costEstimate: 0, byLang: {} };
+  const s: CampaignStats = { recipients: 0, queued: 0, sent: 0, delivered: 0, failed: 0, viewed: 0, cta: 0, interested: 0, contacted: 0, bot: 0, form: 0, hired: 0, skipped: 0, activeWorkers: 0, parts: 0, costEstimate: 0, byLang: {} };
   for (const r of rows) {
     if (r.status === "skipped") { s.skipped++; if (r.skippedReason === "active_worker") s.activeWorkers++; continue; }
     s.recipients++;
@@ -274,6 +274,12 @@ export async function campaignStats(c: SmsCampaign): Promise<CampaignStats> {
     if (i >= ORDER.indexOf("hired")) s.hired++;
     if (r.sentAt) { const p = r.parts ?? 1; s.parts += p; s.costEstimate += p * provider.price(r.phone); }
   }
+  // «зацікавлені» — саме натискання «Мене цікавить»; окремо ті, хто пішов у месенджер або на дзвінок
+  const ev = await db.select({ rid: smsEventsTable.recipientId, kind: smsEventsTable.kind }).from(smsEventsTable)
+    .innerJoin(smsRecipientsTable, eq(smsRecipientsTable.id, smsEventsTable.recipientId))
+    .where(and(eq(smsRecipientsTable.campaignId, c.id), inArray(smsEventsTable.kind, ["interested", "interested_ref", "cta_call", "cta_wa", "cta_viber", "cta_bot"])));
+  s.interested = new Set(ev.filter((e) => e.kind.startsWith("interested")).map((e) => e.rid)).size;
+  s.contacted = new Set(ev.filter((e) => e.kind.startsWith("cta_")).map((e) => e.rid)).size;
   s.costEstimate = Math.round(s.costEstimate * 100) / 100;
   return s;
 }

@@ -59,8 +59,8 @@ export default function SmsCampaignCard() {
         {c.status !== "closed" && <Button variant="secondary" onClick={async () => { if (await confirm({ title: t("Закрити кампанію?"), message: t("Відправка зупиниться."), confirmText: t("Закрити"), danger: true })) act.mutate({ path: "close" }); }}><Square size={16} /> {t("Закрити")}</Button>}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-2">
-        {[[s.recipients, t("отримувачів")], [s.sent, t("відправлено")], [s.delivered, t("доставлено") + pct(s.delivered, s.sent)], [s.viewed, t("відкрили сторінку") + pct(s.viewed, s.delivered)], [s.cta, t("зацікавлені") + pct(s.cta, s.viewed)], [s.bot, t("зайшли в бот")], [s.form, t("анкети")], [s.hired, t("на зміні")], [`~${s.costEstimate} zł`, `${t("витрати")} · ${s.parts} ${t("частин")}`]].map(([n, l], i) => (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-10 gap-2">
+        {[[s.recipients, t("отримувачів")], [s.sent, t("відправлено")], [s.delivered, t("доставлено") + pct(s.delivered, s.sent)], [s.viewed, t("відкрили сторінку") + pct(s.viewed, s.delivered)], [s.interested, t("зацікавлені") + pct(s.interested, s.viewed)], [s.contacted, t("написали / дзвонили")], [s.bot, t("зайшли в бот")], [s.form, t("анкети")], [s.hired, t("на зміні")], [`~${s.costEstimate} zł`, `${t("витрати")} · ${s.parts} ${t("частин")}`]].map(([n, l], i) => (
           <Card key={i} className="p-3"><div className="text-2xl font-bold tabular-nums">{n as any}</div><div className="text-xs text-slate-500">{l as string}</div></Card>
         ))}
       </div>
