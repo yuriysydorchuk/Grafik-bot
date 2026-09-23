@@ -15,7 +15,7 @@ type Data = {
   firstName: string; lang: string; kind: "job" | "referral"; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
   cities: string[]; vacancies: Vacancy[]; recruiter: { name: string; hours: string };
-  contacts: { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
+  contacts: { phone?: string; phoneEn?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
   offer: { bonus?: string; phone?: string; whatsapp?: string };
   landing: {
     title?: Txt; about?: Txt; faq?: { q: Txt; a: Txt }[]; photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };
@@ -166,7 +166,9 @@ export default function SmsLanding() {
   const bonus = d.offer.bonus || "300 zł";
   const name = d.firstName || "";
   const who = d.recruiter.name || s.recruiterDefault;
-  const phoneHref = digits(ct.phone || d.offer.phone);
+  // англомовним — окремий номер, якщо заданий у контактах кампанії
+  const shownPhone = (lang === "en" && ct.phoneEn) || ct.phone || d.offer.phone || "";
+  const phoneHref = digits(shownPhone);
   const wa = digits(ld.messengers?.whatsapp || d.offer.whatsapp || ct.phone);
   const viber = digits(ld.messengers?.viber);
   const tg = (ld.messengers?.telegram || "").replace(/^@/, "");
@@ -394,7 +396,7 @@ export default function SmsLanding() {
           <section className="mx-4 mt-6 rounded-2xl bg-slate-50 border border-slate-200 p-4">
             <div className="font-bold mb-2">{s.contacts}</div>
             <div className="space-y-2 text-sm">
-              {phoneHref && <a href={`tel:+${phoneHref}`} onClick={() => ev("cta_call")} className="flex items-center gap-2 font-semibold"><span>📞</span><span>{ct.phone || d.offer.phone}</span></a>}
+              {phoneHref && <a href={`tel:+${phoneHref}`} onClick={() => ev("cta_call")} className="flex items-center gap-2 font-semibold"><span>📞</span><span>{shownPhone}</span></a>}
               {ct.address && <div className="flex items-start gap-2"><span>📍</span><span>{ct.address}{ct.maps && <> · <a href={ct.maps} onClick={() => ev("link_maps")} target="_blank" rel="noreferrer" className="underline text-blue-700">{s.maps}</a></>}</span></div>}
               {ct.site && <a href={ct.site} onClick={() => ev("link_site")} target="_blank" rel="noreferrer" className="flex items-center gap-2"><span>🌐</span><span className="underline text-blue-700">{ct.site.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span></a>}
               <div className="flex gap-3 pt-1">

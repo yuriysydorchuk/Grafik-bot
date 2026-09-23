@@ -2577,7 +2577,8 @@ export type SmsVacancy = {
   id: string; title: SmsTexts; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string; shifts?: string;
   desc?: SmsTexts; perks?: string[]; photo?: string; experience?: boolean; // true = потрібен досвід (чіп «з досвідом»)
 };
-export type SmsContacts = { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
+export type SmsContacts = { phone?: string; phoneEn?: string; // окремий номер для англомовних (рішення власника 23.09.2026)
+  address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };
 export type SmsLanding = {
   title?: SmsTexts; chips?: string[]; about?: SmsTexts; give?: SmsTexts; faq?: { q: SmsTexts; a: SmsTexts }[];
   photos?: string[]; buttons?: { call?: boolean; whatsapp?: boolean; telegram?: boolean };

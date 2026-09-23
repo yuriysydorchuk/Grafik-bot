@@ -186,7 +186,7 @@ function LandingTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
       </div>
       <VacanciesEditor value={ld.vacancies ?? []} onChange={(v) => setLd((s: any) => ({ ...s, vacancies: v }))} />
       <div className="grid md:grid-cols-3 gap-2">
-        {([["phone", t("Телефон на сторінці"), "+48 792 991 524"], ["address", t("Адреса"), "ul. Krakowskie Przedmieście 55, 20-076 Lublin"], ["maps", "Google Maps (URL)", ""], ["site", t("Сайт"), "https://eurosupp.pl/"], ["vacanciesUrl", t("Усі вакансії (URL)"), "https://eurosupp.pl/dla-pracownika/"], ["instagram", "Instagram (URL)", "https://www.instagram.com/eurosupport.eu"], ["facebook", "Facebook (URL)", "https://www.facebook.com/share/1DEH5b7CnP/"]] as const).map(([k, l, ph]) => (
+        {([["phone", t("Телефон на сторінці"), "+48 792 991 524"], ["phoneEn", t("Телефон для англомовних"), "+48 579 249 245"], ["address", t("Адреса"), "ul. Krakowskie Przedmieście 55, 20-076 Lublin"], ["maps", "Google Maps (URL)", ""], ["site", t("Сайт"), "https://eurosupp.pl/"], ["vacanciesUrl", t("Усі вакансії (URL)"), "https://eurosupp.pl/dla-pracownika/"], ["instagram", "Instagram (URL)", "https://www.instagram.com/eurosupport.eu"], ["facebook", "Facebook (URL)", "https://www.facebook.com/share/1DEH5b7CnP/"]] as const).map(([k, l, ph]) => (
           <div key={k}><Label>{l}</Label><Input value={ld.contacts?.[k] ?? ""} placeholder={ph} onChange={(e) => setLd((s: any) => ({ ...s, contacts: { ...(s.contacts ?? {}), [k]: e.target.value } }))} /></div>
         ))}
       </div>
