@@ -66,6 +66,7 @@ const smsapi: SmsProvider = {
 };
 
 // ── SMS-Fly.pl (API v2, JSON) ──────────────────────────────────────────────
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const SMSFLY_URL = () => process.env.SMS_SMSFLY_URL || "https://sms-fly.pl/api/v2/api.php";
 async function smsflyCall(action: string, data: unknown): Promise<any> {
   const key = process.env.SMS_SMSFLY_KEY;
@@ -95,10 +96,16 @@ const smsfly: SmsProvider = {
   },
   async status(msgIds) {
     const out: StatusResult[] = [];
-    // SMS-Fly має лише по-одному GETMESSAGESTATUS — робимо по 10 паралельно (ревʼю 22.09.2026)
-    for (let i = 0; i < msgIds.length; i += 10) await Promise.all(msgIds.slice(i, i + 10).map((id) => one(id)));
+    // SMS-Fly має лише по-одному GETMESSAGESTATUS і лімітує частоту: по 10 паралельно давало 429
+    // і статуси не підтягувались (перша хвиля 23.09.2026) → по 3 з паузою і однією повторною спробою.
+    let rateLimited = 0;
+    for (let i = 0; i < msgIds.length; i += 3) {
+      await Promise.all(msgIds.slice(i, i + 3).map((id) => one(id)));
+      if (i + 3 < msgIds.length) await sleep(250);
+    }
+    if (rateLimited) logger.warn({ rateLimited, total: msgIds.length }, "SMS-Fly status: ліміт частоти, статуси доберуться наступним прогоном");
     return out;
-    async function one(id: string) {
+    async function one(id: string, retry = true): Promise<void> {
       try {
         const d = await smsflyCall("GETMESSAGESTATUS", { messageID: id });
         // SMS-Fly віддає SMPP-коди (перевірено 21.09.2026 на живому SMS: "DELIVRD"), не повні слова
@@ -107,6 +114,11 @@ const smsfly: SmsProvider = {
         const failed = ["UNDELIV", "UNDELIVERED", "EXPIRED", "REJECTD", "REJECTED", "DELETED", "ERROR", "FAILED", "INVALID"].includes(st);
         out.push({ msgId: id, status: delivered ? "delivered" : failed ? "failed" : "pending", reason: st || undefined });
       } catch (e: any) {
+        if (String(e?.message ?? "").includes("429")) {
+          rateLimited++;
+          if (retry) { await sleep(1500); return one(id, false); }
+          return; // доберемо наступним прогоном крона
+        }
         logger.warn({ err: e, id }, "SMS-Fly status failed");
       }
     }
