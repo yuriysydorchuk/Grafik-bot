@@ -2574,7 +2574,7 @@ export type SmsOffer = {
 // Вакансія на сторінці SMS-лінка (рішення власника 21.09.2026: плитки вакансій → опис і переваги →
 // «мене цікавить» / «порекомендувати друга»). Живе в sms_campaigns.landing.vacancies (jsonb).
 export type SmsVacancy = {
-  id: string; title: SmsTexts; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string;
+  id: string; title: SmsTexts; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string; shifts?: string;
   desc?: SmsTexts; perks?: string[]; photo?: string; experience?: boolean; // true = потрібен досвід (чіп «з досвідом»)
 };
 export type SmsContacts = { phone?: string; address?: string; maps?: string; site?: string; instagram?: string; facebook?: string; vacanciesUrl?: string };

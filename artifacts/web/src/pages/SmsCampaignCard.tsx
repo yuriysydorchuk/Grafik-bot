@@ -236,7 +236,7 @@ function ScheduleTab({ c, onSaved }: { c: Campaign; onSaved: () => void }) {
 
 // Редактор вакансій сторінки: плитки з назвою 3 мовами, містом, ставкою/житлом/довозом/змінами,
 // коротким описом і перевагами (через ;). Порожній список → одна вакансія з пропозиції кампанії.
-type Vac = { id: string; title: Record<string, string>; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Record<string, string>; perks?: string[]; photo?: string; experience?: boolean };
+type Vac = { id: string; title: Record<string, string>; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string; shifts?: string; desc?: Record<string, string>; perks?: string[]; photo?: string; experience?: boolean };
 function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[]) => void }) {
   const t = useT();
   const upd = (i: number, patch: Partial<Vac>) => onChange(value.map((v, j) => (j === i ? { ...v, ...patch } : v)));
@@ -249,7 +249,8 @@ function VacanciesEditor({ value, onChange }: { value: Vac[]; onChange: (v: Vac[
           <div className="grid md:grid-cols-3 gap-2">
             {(["uk", "ru", "en"] as const).map((l) => <div key={l}><Label>{t("Назва")} · {l}</Label><Input value={v.title?.[l] ?? ""} onChange={(e) => upd(i, { title: { ...(v.title ?? {}), [l]: e.target.value } })} /></div>)}
           </div>
-          <div className="grid md:grid-cols-5 gap-2">
+          <div className="grid md:grid-cols-6 gap-2">
+            <div><Label>{t("На місяць")}</Label><Input value={v.monthly ?? ""} placeholder="6 500 zł" onChange={(e) => upd(i, { monthly: e.target.value })} /></div>
             <div><Label>{t("Місто")}</Label><Input value={v.city ?? ""} onChange={(e) => upd(i, { city: e.target.value })} /></div>
             <div><Label>{t("Ставка")}</Label><Input value={v.rate ?? ""} placeholder="31 zł/год" onChange={(e) => upd(i, { rate: e.target.value })} /></div>
             <div><Label>{t("Житло")}</Label><Input value={v.housing ?? ""} placeholder="від 450 zł" onChange={(e) => upd(i, { housing: e.target.value })} /></div>

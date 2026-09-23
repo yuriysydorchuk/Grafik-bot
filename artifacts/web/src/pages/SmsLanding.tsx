@@ -10,7 +10,7 @@ import { useRoute } from "wouter";
 
 type L = "uk" | "ru" | "en";
 type Txt = Partial<Record<L, string>>;
-type Vacancy = { id: string; title: Txt; city?: string; rate?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
+type Vacancy = { id: string; title: Txt; city?: string; rate?: string; monthly?: string; housing?: string; transport?: string; shifts?: string; desc?: Txt; perks?: string[]; photo?: string; experience?: boolean };
 type Data = {
   firstName: string; lang: string; kind: "job" | "referral"; closed: boolean; telegram: string;
   interested: boolean; interestedVacancies: string[]; friends: string[];
@@ -26,12 +26,12 @@ type Data = {
 
 const S: Record<L, Record<string, string>> = {
   uk: {
-    hi: "Привіт, {name}!", h1: "У нас є робота для вас", sub: "Легальна робота в Польщі з житлом і довозом. Досвід не потрібен — навчимо на місці.",
+    hi: "Привіт, {name}!", h1: "У нас є робота для вас", sub: "Легальна робота з житлом і доїздом від агенції. Досвід не потрібен — навчимо на місці.",
     licensed: "Ліцензована агенція", since: "з {y} року", placed: "{n}+ працевлаштованих", factories: "{n} підприємств", rating: "{n} у Google", reviewsCount: "{c} відгуків",
     cta: "Мені цікаво — передзвоніть", ctaSub: "Без анкети. Ми вже знаємо ваш номер — просто натисніть.",
     recruiterTitle: "Ваш консультант", recruiterTxt: "{name} зателефонує з {hours}, розкаже про вакансію, житло і документи. Українською або російською.", recruiterDefault: "Консультант",
     howTitle: "Як це працює", how1: "Натисніть «Мені цікаво»", how2: "Дзвінок консультанта протягом 1 робочого дня", how3: "Житло, довіз, документи — і старт цього тижня",
-    vacancies: "Вакансії зараз", rateNetto: "zł/год netto", rateBrutto: "zł/год brutto", from: "від", housing: "житло від {n} zł", transport: "довіз", noexp: "без досвіду", exp: "з досвідом", perks: "Що отримуєте",
+    vacancies: "Вакансії зараз", rateNetto: "zł/год netto", rateBrutto: "zł/год brutto", from: "від", housingGiven: "житло надаємо", transportGiven: "доїзд надаємо", upTo: "до", noexp: "без досвіду", exp: "з досвідом", perks: "Що отримуєте",
     interest: "Мене цікавить ця вакансія", friend: "Порекомендувати друга", friendName: "Імʼя друга", friendPhone: "Телефон друга", send: "Надіслати", cancel: "Скасувати",
     thanksTitle: "Дякуємо, {name}!", thanksTxt: "{who} зателефонує вам протягом 1 робочого дня ({hours}). Якщо зручніше — напишіть нам самі:", thanksShort: "{who} зателефонує протягом 1 робочого дня.", thanksFriend: "Дякуємо! Ми зателефонуємо {friend}. Після 10 змін друга бонус {bonus} — ваш.",
     friendErr: "Вкажіть імʼя і номер телефону.", ownPhone: "Це ваш номер — впишіть номер друга.", dup: "Цей номер уже в нашій базі, дякуємо!",
@@ -42,22 +42,22 @@ const S: Record<L, Record<string, string>> = {
     q3: "Коли перша зарплата?", a3: "До 10 числа наступного місяця на картку. Аванс можливий після 2 тижнів роботи.",
     q4: "Досвід потрібен?", a4: "На більшості вакансій ні: перший день з бригадиром, навчання на місці. Де досвід потрібен — це вказано на вакансії.",
     q5: "Я з України без візи, чи можна?", a5: "Так. Оформимо oświadczenie або працюєте за статусом UKR — консультант підкаже, що саме у вашому випадку.",
-    svcTitle: "Допомагаємо з документами в Польщі", svcSub: "Не лише робота. Натисніть, що цікавить — консультант розкаже умови.", svcCta: "Цікавить — звʼяжіться зі мною",
-    svc1: "Карта побиту", svc1t: "Збираємо документи, заповнюємо wniosek, записуємо до urzędu wojewódzkiego і супроводжуємо до отримання карти. Для тих, хто працює в нас — умови окремі.",
-    svc2: "PESEL UKR / статус UKR", svc2t: "Оформлення та поновлення статусу UKR і номера PESEL, консультація, що робити, якщо статус втрачено після виїзду.",
-    svc3: "Заміна водійського посвідчення", svc3t: "Обмін українських прав на польські: переклад, заява у wydział komunikacji, супровід до отримання.",
+    svcTitle: "Допомагаємо з документами в Польщі", svcSub: "Не лише робота. Натисніть, що потрібно — консультант скаже умови й строки.", svcCta: "Цікавить — звʼяжіться зі мною",
+    svc1: "Карта побиту", svc1t: "Ведемо справу від першого документа до пластику: збираємо комплект, заповнюємо wniosek, записуємо в urząd wojewódzki і супроводжуємо до рішення. У наших відгуках Google люди пишуть, що отримали карту за 4 місяці — навіть коли вже втратили надію. Нашим працівникам — окремі умови.",
+    svc2: "Карта ЦУКР", svc2t: "Легальний побут для громадян України на 3 роки замість щоразового продовження статусу. Перевіримо, чи вам належить, зберемо документи й подамо заяву. Пояснюємо кожен крок українською, без юридичної мови.",
+    svc3: "Заміна водійського посвідчення", svc3t: "Міняємо українські права на польські — без іспитів. Переклад, заява у wydział komunikacji, супровід до видачі. Ви приходите один раз, решту робимо ми.",
     waText: "Добрий день! Я {name}, отримав(ла) SMS про роботу. Хочу дізнатись більше.",
     netErr: "Не вдалося надіслати. Перевірте інтернет і спробуйте ще раз, або подзвоніть нам.",
     contacts: "Контакти", call: "Подзвонити", maps: "Показати на мапі", allVac: "Усі вакансії на сайті",
     closed: "Ця пропозиція вже завершена. Зателефонуйте нам — роботу знайдемо.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
   ru: {
-    hi: "Привет, {name}!", h1: "У нас есть работа для вас", sub: "Легальная работа в Польше с жильём и довозом. Опыт не нужен — научим на месте.",
+    hi: "Привет, {name}!", h1: "У нас есть работа для вас", sub: "Легальная работа с жильём и довозом от агентства. Опыт не нужен — научим на месте.",
     licensed: "Лицензированное агентство", since: "с {y} года", placed: "{n}+ трудоустроенных", factories: "{n} предприятий", rating: "{n} в Google", reviewsCount: "{c} отзывов",
     cta: "Мне интересно — перезвоните", ctaSub: "Без анкеты. Мы уже знаем ваш номер — просто нажмите.",
     recruiterTitle: "Ваш консультант", recruiterTxt: "{name} позвонит с {hours}, расскажет о вакансии, жилье и документах. На русском или украинском.", recruiterDefault: "Консультант",
     howTitle: "Как это работает", how1: "Нажмите «Мне интересно»", how2: "Звонок консультанта в течение 1 рабочего дня", how3: "Жильё, довоз, документы — и старт на этой неделе",
-    vacancies: "Вакансии сейчас", rateNetto: "zł/час netto", rateBrutto: "zł/час brutto", from: "от", housing: "жильё от {n} zł", transport: "довоз", noexp: "без опыта", exp: "с опытом", perks: "Что вы получаете",
+    vacancies: "Вакансии сейчас", rateNetto: "zł/час netto", rateBrutto: "zł/час brutto", from: "от", housingGiven: "жильё предоставляем", transportGiven: "довоз предоставляем", upTo: "до", noexp: "без опыта", exp: "с опытом", perks: "Что вы получаете",
     interest: "Меня интересует эта вакансия", friend: "Порекомендовать друга", friendName: "Имя друга", friendPhone: "Телефон друга", send: "Отправить", cancel: "Отмена",
     thanksTitle: "Спасибо, {name}!", thanksTxt: "{who} позвонит вам в течение 1 рабочего дня ({hours}). Если удобнее — напишите нам сами:", thanksShort: "{who} позвонит в течение 1 рабочего дня.", thanksFriend: "Спасибо! Мы позвоним {friend}. После 10 смен друга бонус {bonus} — ваш.",
     friendErr: "Укажите имя и номер телефона.", ownPhone: "Это ваш номер — впишите номер друга.", dup: "Этот номер уже есть в нашей базе, спасибо!",
@@ -68,22 +68,22 @@ const S: Record<L, Record<string, string>> = {
     q3: "Когда первая зарплата?", a3: "До 10 числа следующего месяца на карту. Аванс возможен после 2 недель работы.",
     q4: "Нужен ли опыт?", a4: "На большинстве вакансий нет: первый день с бригадиром, обучение на месте. Где опыт нужен — это указано в вакансии.",
     q5: "Я из Украины без визы, можно?", a5: "Да. Оформим oświadczenie или работаете по статусу UKR — консультант подскажет, что именно в вашем случае.",
-    svcTitle: "Помогаем с документами в Польше", svcSub: "Не только работа. Нажмите, что интересует — консультант расскажет условия.", svcCta: "Интересует — свяжитесь со мной",
-    svc1: "Карта побыту", svc1t: "Собираем документы, заполняем wniosek, записываем в urząd wojewódzki и сопровождаем до получения карты. Для тех, кто работает у нас — отдельные условия.",
-    svc2: "PESEL UKR / статус UKR", svc2t: "Оформление и восстановление статуса UKR и номера PESEL, консультация, что делать, если статус потерян после выезда.",
-    svc3: "Замена водительского удостоверения", svc3t: "Обмен украинских прав на польские: перевод, заявление в wydział komunikacji, сопровождение до получения.",
+    svcTitle: "Помогаем с документами в Польше", svcSub: "Не только работа. Нажмите, что нужно — консультант скажет условия и сроки.", svcCta: "Интересует — свяжитесь со мной",
+    svc1: "Карта побыту", svc1t: "Ведём дело от первого документа до пластика: собираем комплект, заполняем wniosek, записываем в urząd wojewódzki и сопровождаем до решения. В наших отзывах Google люди пишут, что получили карту за 4 месяца — даже когда уже потеряли надежду. Нашим работникам — отдельные условия.",
+    svc2: "Карта ЦУКР", svc2t: "Легальное пребывание для граждан Украины на 3 года вместо постоянного продления статуса. Проверим, положено ли вам, соберём документы и подадим заявление. Объясняем каждый шаг по-русски или по-украински.",
+    svc3: "Замена водительского удостоверения", svc3t: "Меняем украинские права на польские — без экзаменов. Перевод, заявление в wydział komunikacji, сопровождение до выдачи. Вы приходите один раз, остальное делаем мы.",
     waText: "Добрый день! Я {name}, получил(а) SMS о работе. Хочу узнать больше.",
     netErr: "Не удалось отправить. Проверьте интернет и попробуйте ещё раз, или позвоните нам.",
     contacts: "Контакты", call: "Позвонить", maps: "Показать на карте", allVac: "Все вакансии на сайте",
     closed: "Это предложение уже завершено. Позвоните нам — работу найдём.", footer: "Euro Support Group Sp. z o.o. · agencja zatrudnienia · Lublin",
   },
   en: {
-    hi: "Hi {name}!", h1: "We have a job for you", sub: "Legal work in Poland with housing and transport. No experience needed — we train you on site.",
+    hi: "Hi {name}!", h1: "We have a job for you", sub: "Legal job with housing and transport provided by the agency. No experience needed — we train you on site.",
     licensed: "Licensed agency", since: "since {y}", placed: "{n}+ people employed", factories: "{n} factories", rating: "{n} on Google", reviewsCount: "{c} reviews",
     cta: "I'm interested — call me back", ctaSub: "No forms. We already have your number — just tap.",
     recruiterTitle: "Your consultant", recruiterTxt: "{name} will call you {hours} to talk about the job, housing and documents.", recruiterDefault: "Consultant",
     howTitle: "How it works", how1: "Tap “I'm interested”", how2: "A consultant calls within 1 working day", how3: "Housing, transport, documents — and you start this week",
-    vacancies: "Open vacancies", rateNetto: "zł/h net", rateBrutto: "zł/h gross", from: "from", housing: "housing from {n} zł", transport: "transport", noexp: "no experience", exp: "experience required", perks: "What you get",
+    vacancies: "Open vacancies", rateNetto: "zł/h net", rateBrutto: "zł/h gross", from: "from", housingGiven: "housing provided", transportGiven: "transport provided", upTo: "up to", noexp: "no experience", exp: "experience required", perks: "What you get",
     interest: "I'm interested in this job", friend: "Recommend a friend", friendName: "Friend's name", friendPhone: "Friend's phone", send: "Send", cancel: "Cancel",
     thanksTitle: "Thank you, {name}!", thanksTxt: "{who} will call you within 1 working day ({hours}). Prefer to write? Message us:", thanksShort: "{who} will call within 1 working day.", thanksFriend: "Thank you! We will call {friend}. After your friend's 10 shifts the {bonus} bonus is yours.",
     friendErr: "Enter a name and a phone number.", ownPhone: "That is your own number — enter your friend's.", dup: "This number is already in our database, thank you!",
@@ -94,10 +94,10 @@ const S: Record<L, Record<string, string>> = {
     q3: "When is the first salary?", a3: "By the 10th of the next month to your card. An advance is possible after 2 weeks.",
     q4: "Do I need experience?", a4: "For most jobs no: first day with a team leader, training on site. Where experience is required, the vacancy says so.",
     q5: "I'm from Ukraine without a visa — can I work?", a5: "Yes. We arrange the oświadczenie or you work under UKR status — the consultant tells you what applies to you.",
-    svcTitle: "We help with documents in Poland", svcSub: "Not only jobs. Tap what you need — a consultant explains the terms.", svcCta: "Interested — contact me",
-    svc1: "Residence card (karta pobytu)", svc1t: "We collect documents, fill in the application, book the voivodeship office and guide you until you get the card. Special terms for our workers.",
-    svc2: "PESEL UKR / UKR status", svc2t: "Obtaining or restoring UKR status and a PESEL number, advice on what to do if the status was lost after leaving Poland.",
-    svc3: "Driving licence exchange", svc3t: "Exchange of a Ukrainian licence for a Polish one: translation, application at the transport office, support until you receive it.",
+    svcTitle: "We help with documents in Poland", svcSub: "Not only jobs. Tap what you need — a consultant explains terms and timing.", svcCta: "Interested — contact me",
+    svc1: "Residence card (karta pobytu)", svc1t: "We run your case from the first document to the plastic card: collect the set, fill in the application, book the voivodeship office and follow it to the decision. In our Google reviews people write they got the card in 4 months — even after losing hope. Special terms for our workers.",
+    svc2: "CUKR card", svc2t: "Legal stay for Ukrainian citizens for 3 years instead of renewing the status again and again. We check whether you qualify, collect the documents and file the application. Every step explained in plain language.",
+    svc3: "Driving licence exchange", svc3t: "We exchange a Ukrainian licence for a Polish one — no exams. Translation, application at the transport office, support until it is issued. You come once, we do the rest.",
     waText: "Hello! I am {name}, I received your SMS about a job. I would like to know more.",
     netErr: "Could not send. Check your connection and try again, or call us.",
     contacts: "Contacts", call: "Call us", maps: "Show on map", allVac: "All vacancies on our website",
@@ -283,7 +283,7 @@ export default function SmsLanding() {
               {d.vacancies.map((v) => {
                 const isOpen = open === v.id;
                 const vDone = interested.has(v.id);
-                const chips = [rateChip(v.rate, s), num(v.housing) && fill(s.housing, { n: num(v.housing) }), v.transport && s.transport, v.shifts, v.experience ? s.exp : s.noexp].filter(Boolean) as string[];
+                const chips = [v.monthly && `${s.upTo} ${v.monthly}`, rateChip(v.rate, s), v.housing && s.housingGiven, v.transport && s.transportGiven, v.shifts, v.experience ? s.exp : s.noexp].filter(Boolean) as string[];
                 return (
                   <article key={v.id} className={`rounded-2xl border-2 overflow-hidden ${isOpen ? "border-red-500" : "border-slate-200"}`}>
                     {v.photo && <img src={v.photo} alt="" className="w-full h-36 object-cover" loading="lazy" />}
