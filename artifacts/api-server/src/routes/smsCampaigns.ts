@@ -127,6 +127,7 @@ router.get("/sms-campaigns/:id/recipients", async (req, res) => {
   const r = await listRecipients(Number(req.params.id), {
     status: String(req.query.status ?? "") || undefined, lang: String(req.query.lang ?? "") || undefined, q: String(req.query.q ?? "").trim() || undefined,
     limit: Number(req.query.limit) || 100, offset: Number(req.query.offset) || 0,
+    event: String(req.query.event ?? "") || undefined, eventValue: String(req.query.v ?? "") || undefined,
   });
   const candIds = r.rows.map((x) => x.candidateId).filter((x): x is number => !!x);
   const cands = candIds.length ? await db.select({ id: candidatesTable.id, stage: candidatesTable.stage }).from(candidatesTable).where(inArray(candidatesTable.id, candIds)) : [];

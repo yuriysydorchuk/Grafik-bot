@@ -164,11 +164,17 @@ export async function importRecipients(campaignId: number, rows: ImportRow[], op
 }
 
 // ── Список отримувачів для картки (фільтри + пагінація) ───────────────────
-export type RecipientFilter = { status?: string; lang?: string; q?: string; limit?: number; offset?: number };
+export type RecipientFilter = { status?: string; lang?: string; q?: string; limit?: number; offset?: number; event?: string; eventValue?: string };
 export async function listRecipients(campaignId: number, f: RecipientFilter = {}): Promise<{ rows: (SmsRecipient & { secondsOnPage?: number })[]; total: number }> {
   const conds = [eq(smsRecipientsTable.campaignId, campaignId)];
   if (f.status) conds.push(eq(smsRecipientsTable.status, f.status));
   if (f.lang) conds.push(eq(smsRecipientsTable.lang, f.lang));
+  // «хто саме» за подією аналітики: клік по цифрі в панелі (розгорнули вакансію, натиснули кнопку…)
+  if (f.event) {
+    const val = f.eventValue;
+    conds.push(sql`exists (select 1 from ${smsEventsTable} e where e.recipient_id = ${smsRecipientsTable.id} and e.kind = ${f.event}`
+      .append(val ? sql` and coalesce(e.meta->>'v', e.meta->>'vacancyId') = ${val}` : sql``).append(sql`)`));
+  }
   if (f.q) { const like = `%${f.q.toLowerCase()}%`; conds.push(sql`(lower(coalesce(${smsRecipientsTable.name}, '')) like ${like} or ${smsRecipientsTable.phone} like ${like})`); }
   const where = and(...conds);
   const [{ n: total }] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable).where(where);

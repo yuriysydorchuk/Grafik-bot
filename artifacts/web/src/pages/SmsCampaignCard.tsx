@@ -284,10 +284,13 @@ type Analytics = {
 };
 function AnalyticsTab({ id }: { id: number }) {
   const t = useT();
+  // клік по будь-якій цифрі → список людей за цією подією (рішення власника 23.09.2026)
+  const [who, setWho] = useState<{ title: string; event: string; v?: string } | null>(null);
   const { data: a } = useQuery<Analytics>({ queryKey: ["sms-analytics", id], queryFn: () => get(`/sms-campaigns/${id}/analytics`), refetchInterval: 60_000 });
   if (!a) return <Spinner />;
   const p = a.people;
   const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : "—");
+  const STEP_EVENT = ["sent", "delivered", "view", "", "interested", "friend", "cta_call"]; // подія для списку людей на кроці
   const steps: [string, number, number][] = [
     [t("SMS відправлено"), p.sent, p.sent], [t("доставлено"), p.delivered, p.sent], [t("відкрили сторінку"), p.viewed, p.delivered || p.sent],
     [t("щось натиснули на сторінці"), p.engaged, p.viewed], [t("мене цікавить"), p.interested, p.viewed], [t("порекомендували друга"), p.friend, p.viewed], [t("натиснули подзвонити / написати"), p.contact, p.viewed],
@@ -296,6 +299,9 @@ function AnalyticsTab({ id }: { id: number }) {
   const fmtSec = (x: number | null) => (x == null ? "—" : x < 60 ? `${x} ${t("с")}` : `${Math.floor(x / 60)}:${String(x % 60).padStart(2, "0")} ${t("хв")}`);
   const fmtMin = (m: number | null) => (m == null ? "—" : m < 60 ? `${m} ${t("хв")}` : m < 1440 ? `${(m / 60).toFixed(1)} ${t("год")}` : `${(m / 1440).toFixed(1)} ${t("дн")}`);
   const BTN: Record<string, string> = { cta_call: t("подзвонити"), cta_wa: "WhatsApp", cta_viber: "Viber", cta_bot: "Telegram", link_maps: t("мапа"), link_site: t("сайт"), link_insta: "Instagram", link_fb: "Facebook", link_vacancies: t("усі вакансії"), link_reviews: t("відгуки Google") };
+  // число-кнопка: показує, ХТО це зробив; нуль не клікабельний
+  const N = ({ n, title, event, v }: { n: number; title: string; event: string; v?: string }) =>
+    n > 0 ? <button onClick={() => setWho({ title: `${title} · ${n}`, event, v })} className="tabular-nums font-semibold text-red-700 hover:underline">{n}</button> : <span className="tabular-nums text-slate-400">0</span>;
   const Bar = ({ n, d }: { n: number; d: number }) => <div className="h-2 rounded bg-slate-200 overflow-hidden"><div className="h-full bg-red-600" style={{ width: d ? `${Math.min(100, (n / d) * 100)}%` : 0 }} /></div>;
   return (
     <div className="space-y-4">
@@ -309,7 +315,7 @@ function AnalyticsTab({ id }: { id: number }) {
           {steps.map(([l, n, d], i) => (
             <div key={i} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-sm">
               <div className="min-w-0"><div className="truncate">{l}</div><Bar n={n} d={p.sent || 1} /></div>
-              <div className="tabular-nums font-semibold w-12 text-right">{n}</div>
+              <div className="w-12 text-right">{STEP_EVENT[i] ? <N n={n} title={l} event={STEP_EVENT[i]!} /> : <span className="tabular-nums font-semibold">{n}</span>}</div>
               <div className="tabular-nums text-slate-500 w-14 text-right">{i === 0 ? "" : pct(n, d)}</div>
             </div>
           ))}
@@ -320,18 +326,18 @@ function AnalyticsTab({ id }: { id: number }) {
         <Card className="p-4">
           <div className="font-semibold mb-2">{t("Вакансії")}</div>
           <table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-1">{t("Вакансія")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">{t("розгорнули")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">{t("цікавить")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">%</th><th className="py-1 pl-3 text-right whitespace-nowrap">{t("друзів")}</th></tr></thead>
-            <tbody>{a.vacancies.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 pl-3 text-right tabular-nums">{v.opens || "—"}</td><td className="py-1.5 pl-3 text-right tabular-nums font-semibold">{v.interested}</td><td className="py-1.5 pl-3 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td><td className="py-1.5 pl-3 text-right tabular-nums">{v.friends}</td></tr>)}</tbody></table>
+            <tbody>{a.vacancies.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 pl-3 text-right"><N n={v.opens} title={`${t("розгорнули")}: ${v.title}`} event="open_vacancy" v={v.id} /></td><td className="py-1.5 pl-3 text-right"><N n={v.interested} title={`${t("цікавить")}: ${v.title}`} event="interested" v={v.id} /></td><td className="py-1.5 pl-3 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td><td className="py-1.5 pl-3 text-right"><N n={v.friends} title={`${t("друзів")}: ${v.title}`} event="friend" v={v.id} /></td></tr>)}</tbody></table>
         </Card>
         <Card className="p-4">
           <div className="font-semibold mb-2">{t("Послуги з документами")}</div>
           <table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-1">{t("Послуга")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">{t("розгорнули")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">{t("цікавить")}</th><th className="py-1 pl-3 text-right whitespace-nowrap">%</th></tr></thead>
-            <tbody>{a.services.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 pl-3 text-right tabular-nums">{v.opens || "—"}</td><td className="py-1.5 pl-3 text-right tabular-nums font-semibold">{v.interested}</td><td className="py-1.5 pl-3 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td></tr>)}</tbody></table>
+            <tbody>{a.services.map((v) => <tr key={v.id} className="border-t border-slate-100"><td className="py-1.5 pr-2">{v.title}</td><td className="py-1.5 pl-3 text-right"><N n={v.opens} title={`${t("розгорнули")}: ${v.title}`} event="open_service" v={v.id} /></td><td className="py-1.5 pl-3 text-right"><N n={v.interested} title={`${t("цікавить")}: ${v.title}`} event="interested" v={v.id} /></td><td className="py-1.5 pl-3 text-right tabular-nums text-slate-500">{v.opens ? pct(v.interested, v.opens) : ""}</td></tr>)}</tbody></table>
           <div className="font-semibold mt-4 mb-2">{t("Питання FAQ")}</div>
-          {a.faq.length ? <div className="flex flex-wrap gap-2 text-sm">{a.faq.map((f) => <span key={f.n} className="rounded-full bg-slate-100 px-2.5 py-1">№{f.n}: {f.opens}</span>)}</div> : <div className="text-sm text-slate-400">—</div>}
+          {a.faq.length ? <div className="flex flex-wrap gap-2 text-sm">{a.faq.map((f) => <button key={f.n} onClick={() => setWho({ title: `${t("Питання FAQ")} №${f.n} · ${f.opens}`, event: "open_faq", v: String(f.n) })} className="rounded-full bg-slate-100 px-2.5 py-1 hover:bg-slate-200">№{f.n}: <b className="text-red-700">{f.opens}</b></button>)}</div> : <div className="text-sm text-slate-400">—</div>}
         </Card>
         <Card className="p-4">
           <div className="font-semibold mb-2">{t("Кнопки контактів і посилання")}</div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">{Object.entries(a.buttons).map(([k, n]) => <div key={k} className="flex justify-between border-b border-slate-100 py-1"><span>{BTN[k] ?? k}</span><span className="tabular-nums font-semibold">{n}</span></div>)}</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">{Object.entries(a.buttons).map(([k, n]) => <div key={k} className="flex justify-between border-b border-slate-100 py-1"><span>{BTN[k] ?? k}</span><N n={n} title={BTN[k] ?? k} event={k} /></div>)}</div>
           <div className="font-semibold mt-4 mb-1">{t("Мови")}</div>
           <div className="text-sm text-slate-600">{t("перемикали мову")}: {Object.entries(a.langs).map(([l, n]) => `${l.toUpperCase()} ${n}`).join(" · ") || "—"}</div>
           <div className="font-semibold mt-4 mb-1">{t("Пристрої")}</div>
@@ -358,6 +364,40 @@ function AnalyticsTab({ id }: { id: number }) {
             <table className="w-full text-sm"><tbody>{a.byDay.slice(-14).map((d) => <tr key={d.date} className="border-t border-slate-100"><td className="py-1">{d.date.split("-").reverse().join(".")}</td><td className="py-1 text-right tabular-nums">{d.views} {t("відкр.")}</td><td className="py-1 text-right tabular-nums font-semibold">{d.interested} {t("цікав.")}</td></tr>)}</tbody></table></>) : null}
         </Card>
       </div>
+      <WhoModal id={id} who={who} onClose={() => setWho(null)} />
     </div>
+  );
+}
+
+// Список людей за подією аналітики: імʼя, телефон, мова, статус, час на сторінці, персональний лінк.
+function WhoModal({ id, who, onClose }: { id: number; who: { title: string; event: string; v?: string } | null; onClose: () => void }) {
+  const t = useT();
+  const { data } = useQuery<{ total: number; rows: Recipient[] }>({
+    queryKey: ["sms-who", id, who?.event, who?.v], enabled: !!who,
+    queryFn: () => get(`/sms-campaigns/${id}/recipients?limit=500&event=${encodeURIComponent(who!.event)}${who!.v ? `&v=${encodeURIComponent(who!.v)}` : ""}`),
+  });
+  const fmtAt = (d: string | null) => (d ? new Date(d).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+  return (
+    <Modal open={!!who} onClose={onClose} title={who?.title ?? ""}>
+      {!data ? <Spinner /> : !data.rows.length ? <div className="text-sm text-slate-500">{t("Нікого не знайдено")}</div> : (
+        <div className="max-h-[60vh] overflow-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-slate-500 border-b border-slate-200">{[t("Імʼя"), t("Телефон"), t("Мова"), t("Статус"), t("на сторінці"), t("Відкрив"), ""].map((h, i2) => <th key={i2} className="px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>)}</tr></thead>
+            <tbody>{data.rows.map((r) => (
+              <tr key={r.id} className="border-b border-slate-100">
+                <td className="px-2 py-1.5">{r.name || "—"}</td>
+                <td className="px-2 py-1.5 tabular-nums">{r.phone}</td>
+                <td className="px-2 py-1.5"><Badge>{r.lang}</Badge></td>
+                <td className="px-2 py-1.5"><Badge color={SMS_STATUS_COLOR[r.status] ?? "slate"}>{t(SMS_STATUS_LABEL[r.status] ?? r.status)}</Badge></td>
+                <td className="px-2 py-1.5 tabular-nums text-slate-500">{r.secondsOnPage == null ? "—" : r.secondsOnPage < 60 ? `${r.secondsOnPage} ${t("с")}` : `${Math.floor(r.secondsOnPage / 60)}:${String(r.secondsOnPage % 60).padStart(2, "0")}`}</td>
+                <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{fmtAt(r.viewedAt)}</td>
+                <td className="px-2 py-1.5"><a href={r.link} target="_blank" rel="noreferrer" className="text-xs text-slate-400 underline">{t("лінк")}</a></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          <div className="text-xs text-slate-500 mt-2">{t("Показано")}: {data.rows.length} {t("з")} {data.total}</div>
+        </div>
+      )}
+    </Modal>
   );
 }
