@@ -31,7 +31,7 @@ import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
 import { findWorkerByReferralCode } from "../lib/referral";
 import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
-import { loadWeekShiftOverrides, loadDateShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
+import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
@@ -3397,12 +3397,117 @@ router.get("/mileage", async (req, res) => {
     .leftJoin(vehiclesTable, eq(driverWorkdaysTable.vehicleId, vehiclesTable.id))
     .where(and(gte(driverWorkdaysTable.workDate, monthStart), lt(driverWorkdaysTable.workDate, monthEnd)))
     .orderBy(driverWorkdaysTable.workDate, driverWorkdaysTable.id);
+  // Which factories the driver went to that day: planned assignments (delivery /
+  // pickup) ∪ actual trip tracking. A workday is one row per driver per date, so
+  // several factories collapse into one list; the week straddling the month
+  // boundary is resolved per real date (entryDateStr), not by the week's Monday.
+  type DayFactory = { factoryId: number; name: string; shift: string; kind: string; at: Date | null; m?: number | null };
+  const factoriesByDay = new Map<string, DayFactory[]>(); // `${driverId}|${date}`
+  // The day before the month is loaded too: its overnight-shift pickups roll over to the 1st.
+  const fromDate = addDaysStr(monthStart, -1);
+  const addFactory = (driverId: number, date: string, f: DayFactory) => {
+    if (date < fromDate || date >= monthEnd) return;
+    const key = `${driverId}|${date}`;
+    const list = factoriesByDay.get(key) ?? [];
+    const dup = list.find(x => x.factoryId === f.factoryId && x.shift === f.shift && x.kind === f.kind);
+    if (dup) { dup.at ??= f.at; return; } // the tracked trip refines the planned row with a real timestamp
+    list.push(f);
+    factoriesByDay.set(key, list);
+  };
+  const assigns = await db
+    .select({
+      driverId: driverShiftAssignmentsTable.driverId, factoryId: driverShiftAssignmentsTable.factoryId, name: factoriesTable.name,
+      day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift, kind: driverShiftAssignmentsTable.kind,
+      weekStart: scheduleWeeksTable.weekStart,
+    })
+    .from(driverShiftAssignmentsTable)
+    .innerJoin(scheduleWeeksTable, eq(driverShiftAssignmentsTable.weekId, scheduleWeeksTable.id))
+    .leftJoin(factoriesTable, eq(driverShiftAssignmentsTable.factoryId, factoriesTable.id))
+    .where(and(gte(scheduleWeeksTable.weekStart, weekFromForMonth(fromDate)), lt(scheduleWeeksTable.weekStart, monthEnd)));
+  for (const a of assigns) addFactory(a.driverId, entryDateStr(String(a.weekStart), a.day), { factoryId: a.factoryId, name: a.name ?? "—", shift: a.shift, kind: a.kind, at: null });
+  const trips = await db
+    .select({
+      driverId: driverTripsTable.driverId, factoryId: driverTripsTable.factoryId, name: factoriesTable.name, shift: driverTripsTable.shift,
+      tripDate: driverTripsTable.tripDate, pickupAt: driverTripsTable.pickupStartedAt,
+    })
+    .from(driverTripsTable)
+    .leftJoin(factoriesTable, eq(driverTripsTable.factoryId, factoriesTable.id))
+    .where(and(gte(driverTripsTable.tripDate, fromDate), lt(driverTripsTable.tripDate, monthEnd)));
+  for (const tr of trips) addFactory(tr.driverId, String(tr.tripDate), { factoryId: tr.factoryId, name: tr.name ?? "—", shift: tr.shift, kind: "delivery", at: tr.pickupAt });
+
+  // A driver may open several workdays on one date (morning run, afternoon run…).
+  // Then each trip goes to the workday whose leave→return window covers the moment
+  // of the trip: real pickup timestamp when tracked, else the shift's start
+  // (delivery) / end (pickup) from the factory settings + one-off overrides.
+  // Everything is measured in Warsaw wall-clock minutes from the workday's midnight.
+  // Wall-clock minutes (not elapsed ms — on a DST switch day those differ by an hour
+  // and would no longer be comparable with the factory's "HH:MM" shift times).
+  const wallFmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Warsaw", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const minutesRel = (ts: Date, date: string) => {
+    const part = Object.fromEntries(wallFmt.formatToParts(new Date(ts)).map(x => [x.type, Number(x.value)]));
+    const dayDiff = Math.round((Date.UTC(part.year!, part.month! - 1, part.day!) - Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)))) / 86_400_000);
+    return dayDiff * 24 * 60 + part.hour! * 60 + part.minute!;
+  };
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h ?? 0) * 60 + (m ?? 0); };
+  const facIds = new Set<number>(), facDates = new Set<string>();
+  for (const [key, list] of factoriesByDay) { facDates.add(key.split("|")[1]!); for (const f of list) facIds.add(f.factoryId); }
+  const facById = new Map(facIds.size
+    ? (await db.select({ id: factoriesTable.id, shifts: factoriesTable.shifts, shift1Start: factoriesTable.shift1Start, shift2Start: factoriesTable.shift2Start, shift3Start: factoriesTable.shift3Start })
+        .from(factoriesTable).where(inArray(factoriesTable.id, [...facIds]))).map(f => [f.id, f] as const)
+    : []);
+  const ov = await loadDatesShiftOverrides([...facDates]);
+  const momentOf = (f: DayFactory, date: string): number | null => {
+    if (f.m !== undefined) return f.m;
+    if (f.at) return minutesRel(f.at, date);
+    const st = ov.get(shiftOverrideKey(f.factoryId, date, f.shift)) ?? factoryShifts(facById.get(f.factoryId))[Number(f.shift) - 1];
+    if (!st) return null;
+    if (f.kind !== "pickup") return toMin(st.start);
+    return toMin(st.end) + (toMin(st.end) <= toMin(st.start) ? 24 * 60 : 0); // overnight shift ends next day
+  };
+  // A pickup from an overnight shift (22:00–06:00) happens the NEXT morning, but its
+  // assignment row lives on the day the shift started — move it to the next date so
+  // it lands in that morning's workday (moment frozen relative to the new date).
+  // Two passes: first detach every rolling pickup (so a pickup moved onto a date does
+  // not collide with that date's own still-unmoved pickup of the same shift), then attach.
+  const moved: { driverId: number; date: string; f: DayFactory }[] = [];
+  for (const [key, list] of factoriesByDay) {
+    const [driverId, date] = key.split("|") as [string, string];
+    for (const f of list.filter(x => x.kind === "pickup" && !x.at)) {
+      const m = momentOf(f, date);
+      if (m == null || m < 24 * 60) continue;
+      list.splice(list.indexOf(f), 1);
+      moved.push({ driverId: Number(driverId), date: addDaysStr(date, 1), f: { ...f, m: m - 24 * 60 } });
+    }
+  }
+  for (const x of moved) addFactory(x.driverId, x.date, x.f);
+  for (const [key, list] of factoriesByDay) if (!list.length || key.split("|")[1]! < monthStart) factoriesByDay.delete(key);
+  const stripAt = ({ at: _at, m: _m, ...rest }: DayFactory) => rest;
+  const rowsByDay = new Map<string, typeof rows>();
+  for (const r of rows) { const k = `${r.driverId}|${r.workDate}`; rowsByDay.set(k, [...(rowsByDay.get(k) ?? []), r]); }
+  const factoriesFor = (r: (typeof rows)[number]) => {
+    const key = `${r.driverId}|${r.workDate}`;
+    const all = factoriesByDay.get(key) ?? [];
+    const siblings = rowsByDay.get(key) ?? [r];
+    const picked = siblings.length <= 1 ? all : all.filter(f => {
+      const m = momentOf(f, String(r.workDate));
+      if (m == null) return siblings[0]!.id === r.id; // unknown shift time → first workday of the day
+      // distance from the trip moment to each workday's window; 0 = inside
+      const dist = (w: (typeof rows)[number]) => {
+        const s = minutesRel(w.startedAt, String(r.workDate));
+        const e = w.endedAt ? minutesRel(w.endedAt, String(r.workDate)) : Number.POSITIVE_INFINITY;
+        return m < s ? s - m : m > e ? m - e : 0;
+      };
+      const best = siblings.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+      return best.id === r.id;
+    });
+    return picked.map(stripAt).sort((a, b) => a.shift.localeCompare(b.shift) || a.name.localeCompare(b.name));
+  };
   const byDriver = new Map<number, any>();
   for (const r of rows) {
     if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { driverId: r.driverId, name: r.name, vehicle: r.vehicle, days: [], totalKm: 0, closedShifts: 0 });
     const s = byDriver.get(r.driverId);
     const km = r.odoEnd != null ? r.odoEnd - r.odoStart : null; // open workday → km unknown yet
-    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km, vehiclePlate: r.vehiclePlate });
+    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km, vehiclePlate: r.vehiclePlate, factories: factoriesFor(r) });
     if (km != null) { s.totalKm += km; s.closedShifts++; }
   }
   const drivers = [...byDriver.values()].map(d => ({ ...d, avgKm: d.closedShifts ? Math.round(d.totalKm / d.closedShifts) : null }));

@@ -12,7 +12,8 @@ import { monthOptions } from "../lib/dates";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
 
-interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null }
+interface DayFactory { factoryId: number; name: string; shift: string; kind: string } // kind: delivery | pickup
+interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null; factories: DayFactory[] }
 interface Row { driverId: number; name: string; vehicle: string | null; days: Day[]; totalKm: number; closedShifts: number; avgKm: number | null }
 
 const fmtTime = (iso: string | null) =>
@@ -56,12 +57,12 @@ export default function Mileage() {
   return (
     <>
       <PageHeader title={t("Звіт по пробігу")} subtitle={t("Пробіг авто по змінах водіїв (початок/кінець зміни)")} />
-      <div className="mb-4 flex flex-wrap items-center gap-3"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: водій, авто")} /><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
+      <div className="mb-4 flex flex-wrap items-center gap-3"><SearchBox value={q} onChange={setQ} placeholder={t("Пошук: водій, авто, фабрика")} /><Select value={month} onChange={e => setMonth(e.target.value)} className="w-56">{months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</Select></div>
       {isFetching && !data ? <Spinner /> : !drivers.length ? <Empty>{t("За цей місяць немає записів пробігу")}</Empty> : (
         <>
           {/* Driver tabs */}
           <div className="mb-4 flex flex-wrap gap-2">
-            {drivers.filter(d => matchesQuery(q, d.name, d.vehicle)).map(d => (
+            {drivers.filter(d => matchesQuery(q, d.name, d.vehicle, d.days.flatMap(x => x.factories.map(f => f.name)).join(" "))).map(d => (
               <button key={d.driverId} onClick={() => setDriverId(d.driverId)}
                 className={cn(
                   "rounded-lg border px-3 py-1.5 text-sm font-medium transition",
@@ -87,6 +88,7 @@ export default function Mileage() {
                   <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
                     <tr>
                       <th className="px-4 py-2.5">{t("Дата")}</th>
+                      <th className="px-4 py-2.5">{t("Фабрика")}</th>
                       <th className="px-4 py-2.5">{t("Авто")}</th>
                       <th className="px-4 py-2.5">{t("Виїзд")}</th>
                       <th className="px-4 py-2.5">{t("Повернення")}</th>
@@ -100,6 +102,18 @@ export default function Mileage() {
                     {active.days.map((d) => (
                       <tr key={d.id}>
                         <td className="px-4 py-2.5 font-medium text-slate-700">{fmtDate(d.date, locale)}</td>
+                        <td className="px-4 py-2.5 text-slate-600">
+                          {d.factories.length ? (
+                            <div className="flex flex-wrap gap-1">
+                              {d.factories.map((f, i) => (
+                                <span key={i} className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700" title={`${t("Зміна")} ${f.shift}`}>
+                                  {f.name}<span className="text-slate-400">·{f.shift}</span>
+                                  {f.kind === "pickup" && <span className="text-amber-600">{t("забір")}</span>}
+                                </span>
+                              ))}
+                            </div>
+                          ) : <span className="text-slate-300">—</span>}
+                        </td>
                         <td className="px-4 py-2.5 text-slate-600">{d.vehiclePlate ?? <span className="text-slate-300">—</span>}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.startedAt)}</td>
                         <td className="px-4 py-2.5 text-slate-500">{fmtTime(d.endedAt)}</td>
