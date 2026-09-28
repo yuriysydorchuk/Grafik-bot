@@ -8,7 +8,7 @@ import {
   vehiclesTable, shiftCancellationsTable, factoryHoursTable,
   type DayOfWeek, type Shift, type Driver,
 } from "@workspace/db";
-import { eq, and, desc, inArray, ne, isNull, isNotNull, gte, lt, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, ne, isNull, isNotNull, gte, lt, sql, count } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import {
   getWorkersWhoHaventSubmitted,
@@ -23,6 +23,7 @@ import {
 import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
 import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, type WeekRow } from "../services/weeks";
+import { plannedTripCount } from "../services/driverWorkdays";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
@@ -2274,6 +2275,29 @@ bot.action(/^wdfix:(start|end):(\d+)$/, async (ctx) => {
 });
 
 // Vehicle chosen for the started workday (or the step skipped).
+// Factory of an off-plan run (asked right after «Почати зміну» when the run is not
+// covered by a driver assignment). 0 = skipped.
+bot.action(/^wdfac:(\d+):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from!.id);
+  const driver = await getDriver(tid);
+  if (!driver) return ctx.answerCbQuery();
+  const dl = olang(driver);
+  const wdId = Number((ctx as any).match[1]);
+  const facId = Number((ctx as any).match[2]);
+  const [wd] = await db.select().from(driverWorkdaysTable).where(eq(driverWorkdaysTable.id, wdId));
+  if (!wd || wd.driverId !== driver.id) return ctx.answerCbQuery(tb(dl, "Запис не знайдено."));
+  await ctx.answerCbQuery();
+  if (facId === 0) {
+    try { await ctx.editMessageText(tb(dl, "Фабрику не вказано.")); } catch { /* ignore */ }
+    return;
+  }
+  const [fac] = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, facId));
+  if (!fac) return;
+  await db.update(driverWorkdaysTable).set({ factoryId: fac.id }).where(eq(driverWorkdaysTable.id, wd.id));
+  try { await ctx.editMessageText(tb(dl, "🏭 Фабрика: *{name}*", { name: mdSafe(fac.name) }), { parse_mode: "Markdown" }); } catch { /* ignore */ }
+  return;
+});
+
 bot.action(/^wdveh:(\d+):(\d+)$/, async (ctx) => {
   const tid = String(ctx.from!.id);
   const driver = await getDriver(tid);
@@ -4759,7 +4783,7 @@ bot.on("text", async (ctx) => {
       // until then the step is silently skipped (vehicle_id stays null).
       const fleet = await db.select().from(vehiclesTable).where(eq(vehiclesTable.isActive, true));
       if (fleet.length > 0) {
-        return ctx.reply(
+        await ctx.reply(
           tb(dl, "🚙 Яке авто ви берете?"),
           Markup.inlineKeyboard([
             ...fleet.map(v => [Markup.button.callback(v.plate, `wdveh:${wd!.id}:${v.id}`)]),
@@ -4767,12 +4791,29 @@ bot.on("text", async (ctx) => {
             [Markup.button.callback(tb(dl, "✏️ Виправити пробіг"), `wdfix:start:${wd!.id}`)],
           ]),
         );
+      } else {
+        // Separate message: a reply-keyboard menu and an inline button can't share one message
+        await ctx.reply(
+          tb(dl, "Помилилися з пробігом? Виправити можна протягом 24 годин:"),
+          Markup.inlineKeyboard([[Markup.button.callback(tb(dl, "✏️ Виправити пробіг"), `wdfix:start:${wd!.id}`)]]),
+        );
       }
-      // Separate message: a reply-keyboard menu and an inline button can't share one message
-      return ctx.reply(
-        tb(dl, "Помилилися з пробігом? Виправити можна протягом 24 годин:"),
-        Markup.inlineKeyboard([[Markup.button.callback(tb(dl, "✏️ Виправити пробіг"), `wdfix:start:${wd!.id}`)]]),
-      );
+      // Off-plan run: more workdays opened today than planned trips (assignments +
+      // overnight pickups) → the mileage report has no factory to attach, so ask.
+      try {
+        const today = warsawDateStr();
+        const [opened] = await db.select({ n: count() }).from(driverWorkdaysTable)
+          .where(and(eq(driverWorkdaysTable.driverId, driver.id), eq(driverWorkdaysTable.workDate, today)));
+        if (Number(opened?.n ?? 0) > await plannedTripCount(driver.id, today)) {
+          const facs = (await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.isOffice, false)))
+            .sort((a, b) => a.name.localeCompare(b.name, "pl"));
+          const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+          for (let i = 0; i < facs.length; i += 2) rows.push(facs.slice(i, i + 2).map(f => Markup.button.callback(f.name, `wdfac:${wd!.id}:${f.id}`)));
+          rows.push([Markup.button.callback(tb(dl, "⏭ Пропустити"), `wdfac:${wd!.id}:0`)]);
+          await ctx.reply(tb(dl, "🏭 Цей рейс не з графіку. На яку фабрику їдете?"), Markup.inlineKeyboard(rows));
+        }
+      } catch (e) { logger.warn({ err: e }, "workday factory prompt failed"); }
+      return;
     }
 
     // workday:end_km

@@ -848,6 +848,9 @@ const BOT_EN: Record<string, string> = {
   "✅ *{name}* додано як заміну для *{replaced}*.": "✅ *{name}* added as a substitute for *{replaced}*.",
   // ── vehicles (fleet + workday picker) ──
   "🚙 Яке авто ви берете?": "🚙 Which vehicle are you taking?",
+  "🏭 Цей рейс не з графіку. На яку фабрику їдете?": "🏭 This run is not in the schedule. Which factory are you going to?",
+  "🏭 Фабрика: *{name}*": "🏭 Factory: *{name}*",
+  "Фабрику не вказано.": "Factory not set.",
   "⏭ Пропустити": "⏭ Skip",
   "Авто не вказано. Помилилися з пробігом? Виправити можна протягом 24 годин:": "Vehicle not set. Mistyped the odometer? You can fix it within 24 hours:",
   "🚙 Авто: *{plate}*. Помилилися з пробігом? Виправити можна протягом 24 годин:": "🚙 Vehicle: *{plate}*. Mistyped the odometer? You can fix it within 24 hours:",
@@ -1040,6 +1043,9 @@ const BOT_RU: Record<string, string> = {
   "✅ *{name}* додано як заміну для *{replaced}*.": "✅ *{name}* добавлен(а) как замена для *{replaced}*.",
   // ── vehicles (fleet + workday picker) ──
   "🚙 Яке авто ви берете?": "🚙 Какое авто вы берёте?",
+  "🏭 Цей рейс не з графіку. На яку фабрику їдете?": "🏭 Этот рейс не по графику. На какую фабрику едете?",
+  "🏭 Фабрика: *{name}*": "🏭 Фабрика: *{name}*",
+  "Фабрику не вказано.": "Фабрика не указана.",
   "⏭ Пропустити": "⏭ Пропустить",
   "Авто не вказано. Помилилися з пробігом? Виправити можна протягом 24 годин:": "Авто не указано. Ошиблись с пробегом? Исправить можно в течение 24 часов:",
   "🚙 Авто: *{plate}*. Помилилися з пробігом? Виправити можна протягом 24 годин:": "🚙 Авто: *{plate}*. Ошиблись с пробегом? Исправить можно в течение 24 часов:",

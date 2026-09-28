@@ -3390,7 +3390,7 @@ router.get("/mileage", async (req, res) => {
       driverId: driverWorkdaysTable.driverId, name: driversTable.name, vehicle: driversTable.vehicle,
       workDate: driverWorkdaysTable.workDate, startedAt: driverWorkdaysTable.startedAt, endedAt: driverWorkdaysTable.endedAt,
       odoStart: driverWorkdaysTable.odometerStart, odoEnd: driverWorkdaysTable.odometerEnd,
-      vehiclePlate: vehiclesTable.plate,
+      vehiclePlate: vehiclesTable.plate, manualFactoryId: driverWorkdaysTable.factoryId,
     })
     .from(driverWorkdaysTable)
     .leftJoin(driversTable, eq(driverWorkdaysTable.driverId, driversTable.id))
@@ -3451,8 +3451,9 @@ router.get("/mileage", async (req, res) => {
   const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h ?? 0) * 60 + (m ?? 0); };
   const facIds = new Set<number>(), facDates = new Set<string>();
   for (const [key, list] of factoriesByDay) { facDates.add(key.split("|")[1]!); for (const f of list) facIds.add(f.factoryId); }
+  for (const r of rows) if (r.manualFactoryId != null) facIds.add(r.manualFactoryId);
   const facById = new Map(facIds.size
-    ? (await db.select({ id: factoriesTable.id, shifts: factoriesTable.shifts, shift1Start: factoriesTable.shift1Start, shift2Start: factoriesTable.shift2Start, shift3Start: factoriesTable.shift3Start })
+    ? (await db.select({ id: factoriesTable.id, name: factoriesTable.name, shifts: factoriesTable.shifts, shift1Start: factoriesTable.shift1Start, shift2Start: factoriesTable.shift2Start, shift3Start: factoriesTable.shift3Start })
         .from(factoriesTable).where(inArray(factoriesTable.id, [...facIds]))).map(f => [f.id, f] as const)
     : []);
   const ov = await loadDatesShiftOverrides([...facDates]);
@@ -3484,10 +3485,19 @@ router.get("/mileage", async (req, res) => {
   const stripAt = ({ at: _at, m: _m, ...rest }: DayFactory) => rest;
   const rowsByDay = new Map<string, typeof rows>();
   for (const r of rows) { const k = `${r.driverId}|${r.workDate}`; rowsByDay.set(k, [...(rowsByDay.get(k) ?? []), r]); }
+  // Planned trips are attributed among the day's workdays; a workday whose factory
+  // the driver picked by hand (off-plan run) stays out of that attribution as long
+  // as the day has other rows to carry the plan.
   const factoriesFor = (r: (typeof rows)[number]) => {
     const key = `${r.driverId}|${r.workDate}`;
     const all = factoriesByDay.get(key) ?? [];
-    const siblings = rowsByDay.get(key) ?? [r];
+    const dayRows = rowsByDay.get(key) ?? [r];
+    const planRows = dayRows.filter(w => w.manualFactoryId == null);
+    const siblings = planRows.length ? planRows : dayRows;
+    const manual = r.manualFactoryId != null
+      ? [{ factoryId: r.manualFactoryId, name: facById.get(r.manualFactoryId)?.name ?? "—", shift: "", kind: "manual" }]
+      : [];
+    if (!siblings.some(w => w.id === r.id)) return manual;
     const picked = siblings.length <= 1 ? all : all.filter(f => {
       const m = momentOf(f, String(r.workDate));
       if (m == null) return siblings[0]!.id === r.id; // unknown shift time → first workday of the day
@@ -3500,14 +3510,14 @@ router.get("/mileage", async (req, res) => {
       const best = siblings.reduce((a, b) => (dist(b) < dist(a) ? b : a));
       return best.id === r.id;
     });
-    return picked.map(stripAt).sort((a, b) => a.shift.localeCompare(b.shift) || a.name.localeCompare(b.name));
+    return [...manual, ...picked.map(stripAt).sort((a, b) => a.shift.localeCompare(b.shift) || a.name.localeCompare(b.name))];
   };
   const byDriver = new Map<number, any>();
   for (const r of rows) {
     if (!byDriver.has(r.driverId)) byDriver.set(r.driverId, { driverId: r.driverId, name: r.name, vehicle: r.vehicle, days: [], totalKm: 0, closedShifts: 0 });
     const s = byDriver.get(r.driverId);
     const km = r.odoEnd != null ? r.odoEnd - r.odoStart : null; // open workday → km unknown yet
-    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km, vehiclePlate: r.vehiclePlate, factories: factoriesFor(r) });
+    s.days.push({ id: r.id, date: r.workDate, startedAt: r.startedAt, endedAt: r.endedAt, odoStart: r.odoStart, odoEnd: r.odoEnd, km, vehiclePlate: r.vehiclePlate, manualFactoryId: r.manualFactoryId, factories: factoriesFor(r) });
     if (km != null) { s.totalKm += km; s.closedShifts++; }
   }
   const drivers = [...byDriver.values()].map(d => ({ ...d, avgKm: d.closedShifts ? Math.round(d.totalKm / d.closedShifts) : null }));
@@ -3524,7 +3534,17 @@ router.patch("/driver-workdays/:id", DRIVER_RW, async (req, res) => {
     const n = Number(v);
     return Number.isInteger(n) && n >= 0 && n <= 3_000_000 ? n : null;
   };
-  const patch: { odometerStart?: number; odometerEnd?: number } = {};
+  const patch: { odometerStart?: number; odometerEnd?: number; factoryId?: number | null } = {};
+  // Factory of an off-plan run (null clears it) — same field the driver picks in the bot.
+  if (req.body?.factoryId !== undefined) {
+    if (req.body.factoryId === null || req.body.factoryId === "" || req.body.factoryId === 0) patch.factoryId = null;
+    else {
+      const fid = Number(req.body.factoryId);
+      const fac = Number.isInteger(fid) ? (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, fid)))[0] : undefined;
+      if (!fac) return fail(res, 400, "Фабрику не знайдено");
+      patch.factoryId = fid;
+    }
+  }
   if (req.body?.odometerStart !== undefined) {
     const n = parseKm(req.body.odometerStart);
     if (n == null) return fail(res, 400, "Пробіг має бути цілим числом у км");

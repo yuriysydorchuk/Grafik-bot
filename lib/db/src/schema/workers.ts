@@ -665,6 +665,10 @@ export const driverWorkdaysTable = pgTable("driver_workdays", {
   startedAt: timestamp("started_at").notNull().defaultNow(),
   odometerStart: integer("odometer_start").notNull(), // km
   vehicleId: integer("vehicle_id").references(() => vehiclesTable.id), // null = skipped (no fleet yet)
+  // Destination picked by the driver in the bot for an OFF-PLAN run (no driver
+  // assignment covers it) or set by the office in the mileage report. Planned
+  // runs get their factories from driver_shift_assignments / driver_trips instead.
+  factoryId: integer("factory_id").references(() => factoriesTable.id),
   endedAt: timestamp("ended_at"),
   odometerEnd: integer("odometer_end"),               // km
   createdAt: timestamp("created_at").notNull().defaultNow(),

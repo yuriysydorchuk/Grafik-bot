@@ -12,8 +12,8 @@ import { monthOptions } from "../lib/dates";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
 
-interface DayFactory { factoryId: number; name: string; shift: string; kind: string } // kind: delivery | pickup
-interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null; factories: DayFactory[] }
+interface DayFactory { factoryId: number; name: string; shift: string; kind: string } // kind: delivery | pickup | manual (off-plan run, picked by hand)
+interface Day { id: number; date: string; startedAt: string; endedAt: string | null; odoStart: number; odoEnd: number | null; km: number | null; vehiclePlate: string | null; manualFactoryId: number | null; factories: DayFactory[] }
 interface Row { driverId: number; name: string; vehicle: string | null; days: Day[]; totalKm: number; closedShifts: number; avgKm: number | null }
 
 const fmtTime = (iso: string | null) =>
@@ -34,13 +34,15 @@ export default function Mileage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [eStart, setEStart] = useState("");
   const [eEnd, setEEnd] = useState("");
+  const [eFactory, setEFactory] = useState(""); // "" = без фабрики (позаплановий рейс без вибору)
   const { data, isFetching } = useQuery<{ month: string; drivers: Row[] }>({
     queryKey: ["mileage", month], queryFn: () => get(`/mileage?month=${month}`),
   });
+  const { data: factories = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
 
   const save = useMutation({
     mutationFn: (d: Day) => {
-      const body: any = { odometerStart: Number(eStart) };
+      const body: any = { odometerStart: Number(eStart), factoryId: eFactory ? Number(eFactory) : null };
       if (d.odoEnd != null) body.odometerEnd = Number(eEnd);
       return patch(`/driver-workdays/${d.id}`, body);
     },
@@ -48,7 +50,7 @@ export default function Mileage() {
     onError: (e: any) => toast.error(e.message),
   });
 
-  const startEdit = (d: Day) => { setEditId(d.id); setEStart(String(d.odoStart)); setEEnd(d.odoEnd != null ? String(d.odoEnd) : ""); };
+  const startEdit = (d: Day) => { setEditId(d.id); setEStart(String(d.odoStart)); setEEnd(d.odoEnd != null ? String(d.odoEnd) : ""); setEFactory(d.manualFactoryId != null ? String(d.manualFactoryId) : ""); };
 
   const drivers = data?.drivers ?? [];
   const active = drivers.find(d => d.driverId === driverId) ?? drivers[0];
@@ -103,11 +105,17 @@ export default function Mileage() {
                       <tr key={d.id}>
                         <td className="px-4 py-2.5 font-medium text-slate-700">{fmtDate(d.date, locale)}</td>
                         <td className="px-4 py-2.5 text-slate-600">
-                          {d.factories.length ? (
+                          {editId === d.id ? (
+                            <Select value={eFactory} onChange={e => setEFactory(e.target.value)} className="w-44" title={t("Фабрика позапланового рейсу")}>
+                              <option value="">{t("— без фабрики —")}</option>
+                              {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                            </Select>
+                          ) : d.factories.length ? (
                             <div className="flex flex-wrap gap-1">
                               {d.factories.map((f, i) => (
-                                <span key={i} className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700" title={`${t("Зміна")} ${f.shift}`}>
-                                  {f.name}<span className="text-slate-400">·{f.shift}</span>
+                                <span key={i} className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs", f.kind === "manual" ? "bg-sky-100 text-sky-700" : "bg-slate-100 text-slate-700")} title={f.kind === "manual" ? t("Фабрика позапланового рейсу") : `${t("Зміна")} ${f.shift}`}>
+                                  {f.name}
+                                  {f.kind === "manual" ? <span className="opacity-70">{t("вручну")}</span> : <span className="text-slate-400">·{f.shift}</span>}
                                   {f.kind === "pickup" && <span className="text-amber-600">{t("забір")}</span>}
                                 </span>
                               ))}
