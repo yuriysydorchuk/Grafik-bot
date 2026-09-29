@@ -92,7 +92,25 @@ async function main() {
   });
 }
 
-main().catch((err) => {
+// Разові сервісні команди без підняття сервера/бота (прод: node dist/index.mjs <cmd>).
+//   archive-invoices --month=YYYY-MM [--dry]  — залити/розкласти архів фактур місяця на Drive
+//   (relocate: вже залиті звіряються з поточною структурою папок; --dry — лише план)
+async function cli(argv: string[]): Promise<boolean> {
+  const [cmd, ...rest] = argv;
+  if (cmd !== "archive-invoices") return false;
+  const month = rest.find(a => a.startsWith("--month="))?.slice(8);
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) throw new Error("usage: archive-invoices --month=YYYY-MM [--dry]");
+  const { archiveInvoicesToDrive } = await import("./services/invoiceArchive");
+  const r = await archiveInvoicesToDrive({ month, relocate: true, dryRun: rest.includes("--dry") });
+  for (const line of r.plan ?? []) console.log(line);
+  console.log(JSON.stringify({ ...r, plan: undefined }));
+  return true;
+}
+
+cli(process.argv.slice(2)).then((handled) => {
+  if (handled) process.exit(0);
+  return main();
+}).catch((err) => {
   logger.error({ err }, "Fatal startup error");
   process.exit(1);
 });

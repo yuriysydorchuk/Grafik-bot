@@ -280,12 +280,14 @@ router.post("/cost-invoices/sync", async (_req, res) => {
 });
 
 // Підтягнути на Drive ВСІ фактури вибраного місяця (KSeF-закупівлі + продажі +
-// скани/ручні), пропускаючи вже залиті (зелені). Синхронно — кнопка чекає з
-// прогрес-спінером; місяць обмежений, тож це десятки секунд, не години.
+// скани/ручні); вже залиті (зелені) не перезаливаються, але звіряються з поточною
+// структурою папок і за потреби переносяться/перейменовуються (relocate).
+// Синхронно — кнопка чекає з прогрес-спінером; місяць обмежений, тож це десятки
+// секунд, не години. ?dry=1 — лише звіт, без змін (для перевірки перед переносом).
 router.post("/cost-invoices/drive-month", async (req, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
-  const r = await archiveInvoicesToDrive({ month });
+  const r = await archiveInvoicesToDrive({ month, relocate: true, dryRun: req.query.dry === "1" });
   if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
   ok(res, r);
 });

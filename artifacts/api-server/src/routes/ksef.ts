@@ -3,7 +3,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { ksefInvoicesTable, companiesTable } from "@workspace/db";
-import { and, asc, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { archiveInvoicesToDrive } from "../services/invoiceArchive";
 import { logInvoiceAudit, auditDiff } from "../services/invoiceAudit";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
@@ -125,19 +125,19 @@ router.post("/ksef/invoices/:id/drive", async (req, res) => {
   ok(res, { driveFileId: updated?.drivePdfId ?? null, driveError: updated?.driveError ?? null });
 });
 
-// Залити на Drive всі фактури місяця вкладки (sale АБО purchase), крім уже
-// залитих. Місяць — той, яким групує сторінка (revenue_month: для продажів це
-// «місяць роботи», папка на Диску все одно за датою виставлення).
+// Залити на Drive всі фактури місяця вкладки (sale АБО purchase); вже залиті
+// звіряються з поточною структурою папок і переносяться за потреби (relocate).
+// Місяць — той, яким групує сторінка (revenue_month: для продажів це «місяць
+// роботи», папка на Диску все одно за датою виставлення).
 router.post("/ksef/drive-month", async (req, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const kind = validKind(req.body?.kind);
   const ids = (await db.select({ id: ksefInvoicesTable.id }).from(ksefInvoicesTable)
-    .where(and(eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind),
-      or(isNull(ksefInvoicesTable.drivePdfId), isNotNull(ksefInvoicesTable.driveFileId))!)))
+    .where(and(eq(ksefInvoicesTable.revenueMonth, month), eq(ksefInvoicesTable.kind, kind))))
     .map(r => r.id);
-  if (!ids.length) return ok(res, { processed: 0, uploaded: 0, failed: 0, errors: [] });
-  const r = await archiveInvoicesToDrive({ ksefIds: ids });
+  if (!ids.length) return ok(res, { processed: 0, uploaded: 0, failed: 0, moved: 0, errors: [] });
+  const r = await archiveInvoicesToDrive({ ksefIds: ids, relocate: true, dryRun: req.query.dry === "1" });
   if (r.alreadyRunning) return fail(res, 409, "Архів уже виконується у фоні — спробуй за хвилину");
   ok(res, r);
 });

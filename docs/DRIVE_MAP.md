@@ -91,7 +91,7 @@ CV Юрія (2018), `Yuriy Sydorchuk/` (дипломна), `exam_questions`, `St
 | `Графіки/<ФАБРИКА>/` (50 xlsx) | Затверджені тижневі графіки (експорт `exportScheduleToDrive`): AGRAM LUBLIN, AGRAM MOTYCZ, ALMIZ, ANDROS, BIMIZ, DORKO, Karton-Pak, LST, Mlekovita, PREMIUM FRUITS, Scandic Food, Test. 06.2026 → |
 | `Облік годин/<ФАБРИКА>/` (66) | `Ewidencja godzin 2026` по фабриках (`updateHoursTracking`). |
 | `Рапорти/<ФАБРИКА>/` (697 pdf/фото) | Фото рапортів із бота (`uploadReportPhoto`): ANDROS 235, ALMIZ 146, LST 85, BIMIZ 72, PREMIUM FRUITS 42, DORKO 34, AGRAM ×2 31, Scandic 13, DAWTONA 10, RECYKLING 10, KUŹNIA 9, SUPERDROB 5, EUROCASH BIAŁYSTOK 4, SERWIS PLUS 1. |
-| `Faktury kosztowe/2026/` (343), `Faktury sprzedażowe/2026/` (72) | Архів фактур XML+PDF (Фактури 2.0, KSeF). |
+| `Faktury kosztowe/2026/` (343), `Faktury sprzedażowe/2026/` (72) | Архів фактур XML+PDF (Фактури 2.0, KSeF). **З 29.09.2026 архів пише в папки офісу** `FAKTURY` / `FAKTURY SPRZEDAŻOWI` (розділ 2, Vlada; акаунту Юрія — доступ редактора); тут — лише історія до M8.26. |
 | `Umowy/ES/` (2) | Підписані умови оренди житла. |
 | `Поїздки водіїв/` (3) | `Przejazdy kierowców 2026.xlsx` (`updateDriverTripsExcel`). |
 

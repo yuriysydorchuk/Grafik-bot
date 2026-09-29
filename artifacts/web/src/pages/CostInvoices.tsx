@@ -202,8 +202,8 @@ export default function CostInvoices() {
     try {
       const r = await post("/cost-invoices/drive-month", { month });
       if (r?.failed || r?.errors?.length) {
-        toast.warning(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: (r?.failed ?? 0) + (r?.errors?.length ?? 0) }) + (r?.errors?.[0] ? ` — ${r.errors[0]}` : ""));
-      } else toast.success(t("Drive: залито {u}, помилок {f}", { u: r?.uploaded ?? 0, f: 0 }));
+        toast.warning(t("Drive: залито {u}, перенесено {m}, помилок {f}", { u: r?.uploaded ?? 0, m: r?.moved ?? 0, f: (r?.failed ?? 0) + (r?.errors?.length ?? 0) }) + (r?.errors?.[0] ? ` — ${r.errors[0]}` : ""));
+      } else toast.success(t("Drive: залито {u}, перенесено {m}, помилок {f}", { u: r?.uploaded ?? 0, m: r?.moved ?? 0, f: 0 }));
       invalidate();
     } catch (e: any) { toast.error(e?.message || "error"); }
     finally { setMonthPushing(false); }
