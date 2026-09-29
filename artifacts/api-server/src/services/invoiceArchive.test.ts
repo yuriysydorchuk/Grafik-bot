@@ -6,7 +6,7 @@ import { archivePath, folderKey, firmFolderName, archiveFileName, driveMonthFold
 test("firm folder: ES → ESG, решта як у довіднику, без фірми — Inne", () => {
   assert.equal(firmFolderName("ES"), "ESG");
   assert.equal(firmFolderName("ESO"), "ESO");
-  assert.equal(firmFolderName("Klinex"), "Klinex");
+  assert.equal(firmFolderName("Klinex"), "KLINEX");
   assert.equal(firmFolderName(null), "Inne");
 });
 
@@ -21,7 +21,7 @@ test("archivePath: закупівлі з роком і підпапками, п�
   assert.deepEqual(archivePath("Faktury kosztowe", "2026-09-03", "ES"), ["2026", "M9.26", "ESG"]);
   assert.deepEqual(archivePath("Faktury kosztowe", "2026-09-03", "ES", "scan"), ["2026", "M9.26", "ESG", "Skany"]);
   assert.deepEqual(archivePath("Faktury kosztowe", "2026-09-03", "ESO", "proforma"), ["2026", "M9.26", "ESO", "Proformy"]);
-  assert.deepEqual(archivePath("Faktury sprzedażowe", "2026-07-31", "Klinex"), ["M7.26", "Klinex"]);
+  assert.deepEqual(archivePath("Faktury sprzedażowe", "2026-07-31", "Klinex"), ["M7.26", "KLINEX"]);
 });
 
 test("driveMonthFolder / archiveFileName", () => {

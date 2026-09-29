@@ -31,7 +31,7 @@ const SALES_BRANCH = "Faktury sprzedażowe";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 // Назви папок фірм у офісному архіві (довідник companies → папка офісу)
-const FIRM_FOLDER: Record<string, string> = { ES: "ESG" };
+const FIRM_FOLDER: Record<string, string> = { ES: "ESG", Klinex: "KLINEX" };
 export const firmFolderName = (companyName: string | null | undefined): string =>
   FIRM_FOLDER[companyName ?? ""] ?? companyName ?? "Inne";
 
