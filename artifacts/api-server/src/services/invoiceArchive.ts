@@ -86,12 +86,13 @@ export function archivePath(branch: string, issueDate: string, companyName: stri
 // ── Кеш папок (у межах процесу) ────────────────────────────────────────────────
 const folderMemo = new Map<string, string>();
 
-async function branchRootId(branch: string): Promise<string> {
+async function branchRootId(branch: string, dryRun = false): Promise<string | null> {
   const settingKey = branch === COST_BRANCH ? "drive_faktury_cost_folder_id" : "drive_faktury_sales_folder_id";
   const memoKey = `root|${branch}`;
   if (folderMemo.has(memoKey)) return folderMemo.get(memoKey)!;
   let id = await getSetting(settingKey);
   if (!id) {
+    if (dryRun) return null; // сухий прогін нічого не створює і не пише
     let rootId = await getSetting("drive_root_folder_id");
     if (!rootId) rootId = (await ensureFolderStructure()).rootId;
     id = await getOrCreateFolder(branch, rootId!);
@@ -108,11 +109,17 @@ async function findOrCreateFolder(name: string, parentId: string, aliases: reado
   if (folderMemo.has(memoKey)) return folderMemo.get(memoKey)!;
   const drive = google.drive({ version: "v3", auth: getDriveAuth() });
   const keys = new Set([folderKey(name), ...aliases.map(folderKey)]);
-  const listed = await drive.files.list({
-    q: `'${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
-    fields: "files(id,name)", pageSize: 200, supportsAllDrives: true, includeItemsFromAllDrives: true,
-  });
-  const hits = (listed.data.files ?? []).filter(f => keys.has(folderKey(f.name ?? "")));
+  const children: { id?: string | null; name?: string | null }[] = [];
+  let pageToken: string | undefined;
+  do {
+    const listed = await drive.files.list({
+      q: `'${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+      fields: "nextPageToken,files(id,name)", pageSize: 200, pageToken, supportsAllDrives: true, includeItemsFromAllDrives: true,
+    });
+    children.push(...(listed.data.files ?? []));
+    pageToken = listed.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  const hits = children.filter(f => keys.has(folderKey(f.name ?? "")));
   // точний збіг канонічної назви має пріоритет, далі — перший за назвою (стабільно)
   const hit = hits.find(f => f.name === name) ?? hits.sort((x, y) => (x.name ?? "").localeCompare(y.name ?? ""))[0];
   let id = hit?.id ?? null;
@@ -129,12 +136,12 @@ async function findOrCreateFolder(name: string, parentId: string, aliases: reado
 
 // id цільової папки фактури; у dryRun — null, якщо якоїсь ланки ще нема
 async function invoiceFolderId(branch: string, issueDate: string, companyName: string | null | undefined, sub: ArchiveSubfolder = "main", dryRun = false): Promise<string | null> {
-  let parent: string | null = await branchRootId(branch);
+  let parent: string | null = await branchRootId(branch, dryRun);
   const s = SUBFOLDERS[sub];
   for (const seg of archivePath(branch, issueDate, companyName, sub)) {
-    const aliases: readonly string[] = s && seg === s.name ? s.aliases : [];
-    parent = await findOrCreateFolder(seg, parent!, aliases, dryRun);
     if (!parent) return null;
+    const aliases: readonly string[] = s && seg === s.name ? s.aliases : [];
+    parent = await findOrCreateFolder(seg, parent, aliases, dryRun);
   }
   return parent;
 }
@@ -142,13 +149,18 @@ async function invoiceFolderId(branch: string, issueDate: string, companyName: s
 async function uploadFile(folderId: string, name: string, mimeType: string, buffer: Buffer, existingId: string | null): Promise<string> {
   const drive = google.drive({ version: "v3", auth: getDriveAuth() });
   if (existingId) {
+    let updated = false;
     try {
-      // разом із вмістом оновлюємо й імʼя — force-перезалив підтягує нову схему назв;
-      // і місце — файл, залитий у стару структуру, переїжджає в поточну папку
+      // разом із вмістом оновлюємо й імʼя — force-перезалив підтягує нову схему назв
       await drive.files.update({ fileId: existingId, supportsAllDrives: true, requestBody: { name }, media: { mimeType, body: Readable.from(buffer) } });
+      updated = true;
+    } catch { /* stale id — падаємо на create */ }
+    if (updated) {
+      // і місце — файл, залитий у стару структуру, переїжджає в поточну папку. Помилка
+      // переміщення НЕ має плодити дублікат через create — летить у drive_error рядка.
       await ensurePlacement(existingId, folderId, name, false);
       return existingId;
-    } catch { /* stale id — падаємо на create */ }
+    }
   }
   const created = await drive.files.create({
     requestBody: { name, parents: [folderId], mimeType },
@@ -181,7 +193,11 @@ async function ensurePlacement(fileId: string, folderId: string, name: string, d
   let meta: { name?: string | null; parents?: string[] | null; trashed?: boolean | null };
   try {
     meta = (await drive.files.get({ fileId, fields: "name,parents,trashed", supportsAllDrives: true })).data;
-  } catch { return { status: "missing" }; }
+  } catch (e: any) {
+    // лише 404 = файла нема; тимчасові 429/5xx летять далі, щоб не плодити дублікати
+    if (Number(e?.code ?? e?.status ?? e?.response?.status) === 404) return { status: "missing" };
+    throw e;
+  }
   if (meta.trashed) return { status: "missing" };
   const parents = meta.parents ?? [];
   const inPlace = parents.includes(folderId);
@@ -231,24 +247,42 @@ export interface ArchiveResult {
 
 let running = false;
 
+// Міжпроцесний лізинг у settings (крон сервера ↔ CLI archive-invoices на тому ж
+// сервері): рядок з часом старту; чужий лізинг молодший за 30 хв = «уже виконується».
+const LEASE_KEY = "invoice_archive_lease";
+const LEASE_TTL_MS = 30 * 60_000;
+async function acquireLease(): Promise<boolean> {
+  const now = new Date().toISOString();
+  const stale = new Date(Date.now() - LEASE_TTL_MS).toISOString();
+  const r: any = await db.execute(sql`INSERT INTO settings (key, value) VALUES (${LEASE_KEY}, ${now})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now() WHERE settings.value < ${stale}
+    RETURNING key`);
+  return (r?.rows ?? r ?? []).length > 0;
+}
+const releaseLease = () => db.delete(settingsTable).where(eq(settingsTable.key, LEASE_KEY));
+
 export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise<ArchiveResult> {
-  if (running) return { processed: 0, uploaded: 0, failed: 0, moved: 0, alreadyRunning: true, errors: [] };
-  running = true;
   const dryRun = !!opts.dryRun;
+  if (running) return { processed: 0, uploaded: 0, failed: 0, moved: 0, alreadyRunning: true, errors: [] };
+  if (!dryRun && !(await acquireLease())) return { processed: 0, uploaded: 0, failed: 0, moved: 0, alreadyRunning: true, errors: [] };
+  running = true;
   const relocate = !!opts.relocate || dryRun;
   const res: ArchiveResult = { processed: 0, uploaded: 0, failed: 0, moved: 0, errors: [], ...(dryRun ? { plan: [] } : {}) };
   const note = (line: string) => { res.plan?.push(line); };
-  // вже залитий файл: звірити місце/імʼя; повертає true, якщо рядок закрито (нічого заливати)
-  const settle = async (fileId: string | null, branch: string, issueDate: string, companyName: string | null | undefined, sub: ArchiveSubfolder, name: string, label: string): Promise<boolean> => {
-    if (!fileId || opts.force) return false;
-    if (!relocate) return true;
+  // вже залитий файл: звірити місце/імʼя. "done" — рядок закрито (нічого заливати),
+  // "upload" — заливати (id ще нема або force), "reupload" — id є, але файла на Диску
+  // нема (кошик/видалено): заливати як новий, старий id не використовувати.
+  type Settle = "done" | "upload" | "reupload";
+  const settle = async (fileId: string | null, branch: string, issueDate: string, companyName: string | null | undefined, sub: ArchiveSubfolder, name: string, label: string): Promise<Settle> => {
+    if (!fileId || opts.force) return "upload";
+    if (!relocate) return "done";
     const pathStr = [branch, ...archivePath(branch, issueDate, companyName, sub)].join("/");
     const folderId = await invoiceFolderId(branch, issueDate, companyName, sub, dryRun);
-    if (!folderId) { note(`MOVE  ${label} → ${pathStr}/${name}  (папку буде створено)`); res.moved++; return true; }
+    if (!folderId) { note(`MOVE  ${label} → ${pathStr}/${name}  (папку буде створено)`); res.moved++; return "done"; }
     const p = await ensurePlacement(fileId, folderId, name, dryRun);
-    if (p.status === "missing") { note(`RE-UP ${label} → ${pathStr}/${name}  (файла на Диску нема)`); return false; }
+    if (p.status === "missing") { note(`RE-UP ${label} → ${pathStr}/${name}  (файла на Диску нема)`); return "reupload"; }
     if (p.status !== "ok") { res.moved++; note(`${p.status === "moved" ? "MOVE " : "RENAME"} ${label}: «${p.oldName}» → ${pathStr}/${name}`); }
-    return true;
+    return "done";
   };
   try {
     const companies = new Map((await db.select().from(companiesTable)).map(c => [c.id, c]));
@@ -271,24 +305,21 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
         const firmName = companies.get(row.companyId ?? -1)?.name;
         const sub: ArchiveSubfolder = row.docType === "PROFORMA" ? "proforma" : "scan";
         const fileName = archiveFileName(row.number, row.counterparty);
-        if (await settle(row.driveFileId, COST_BRANCH, row.issueDate, firmName, sub, `${fileName}.pdf`, `local#${row.id} ${row.number}`)) continue;
+        // формат файла на Диску: PDF (фото загортається в PDF), екзотика (webp тощо) — як є
+        const abs = row.filePath ? path.resolve(UPLOADS_ROOT, row.filePath) : null;
+        const raw = abs && abs.startsWith(UPLOADS_ROOT) && fs.existsSync(abs) ? fs.readFileSync(abs) : null;
+        const mime = raw ? (sniffDocMime(raw) ?? "application/octet-stream") : "application/pdf";
+        const isImage = mime === "image/jpeg" || mime === "image/png";
+        const ext = isImage || mime.includes("pdf") ? ".pdf" : (path.extname(abs ?? "") || "");
+        const uploadMime = ext === ".pdf" ? "application/pdf" : mime;
+        const st = await settle(row.driveFileId, COST_BRANCH, row.issueDate, firmName, sub, `${fileName}${ext}`, `local#${row.id} ${row.number}`);
+        if (st === "done") { if (row.driveError) await setRow({ driveError: null, driveSyncedAt: new Date() }); continue; }
         if (!row.filePath) { await fail("внесена без файла — додай скан або PDF"); continue; }
-        const abs = path.resolve(UPLOADS_ROOT, row.filePath);
-        if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) { await fail("файл не знайдено на сервері"); continue; }
-        const raw = fs.readFileSync(abs);
-        const mime = sniffDocMime(raw) ?? "application/octet-stream";
-        let buffer: Buffer = raw;
-        let ext = ".pdf";
-        let uploadMime = "application/pdf";
-        if (mime === "image/jpeg" || mime === "image/png") {
-          buffer = await imageToPdf(raw, mime); // фото → одно­сторінковий PDF
-        } else if (!mime.includes("pdf")) {
-          ext = path.extname(abs) || ""; // екзотика (webp тощо) — заливаємо як є
-          uploadMime = mime;
-        }
+        if (!raw) { await fail("файл не знайдено на сервері"); continue; }
+        const buffer: Buffer = isImage ? await imageToPdf(raw, mime) : raw; // фото → одно­сторінковий PDF
         if (dryRun) { note(`UP    local#${row.id} → ${[COST_BRANCH, ...archivePath(COST_BRANCH, row.issueDate, firmName, sub)].join("/")}/${fileName}${ext}`); res.uploaded++; continue; }
         const folderId = (await invoiceFolderId(COST_BRANCH, row.issueDate, firmName, sub))!;
-        const fileId = await uploadFile(folderId, `${fileName}${ext}`, uploadMime, buffer, row.driveFileId);
+        const fileId = await uploadFile(folderId, `${fileName}${ext}`, uploadMime, buffer, st === "reupload" ? null : row.driveFileId);
         res.uploaded++;
         await setRow({ driveFileId: fileId, driveError: null, driveSyncedAt: new Date() });
       } catch (e: any) {
@@ -336,7 +367,9 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
         const baseName = archiveFileName(row.invoiceNumber, counterparty);
         try {
           // вже є PDF (і legacy-XML прибрано) — лише звірка місця/імені
-          if (!row.driveFileId && await settle(row.drivePdfId, branch, row.issueDate, firmName, "main", `${baseName}.pdf`, `ksef#${row.id} ${row.invoiceNumber}`)) continue;
+          const st = row.driveFileId ? "upload" : await settle(row.drivePdfId, branch, row.issueDate, firmName, "main", `${baseName}.pdf`, `ksef#${row.id} ${row.invoiceNumber}`);
+          if (st === "done") { if (row.driveError) await setRow({ driveError: null, driveSyncedAt: new Date() }); continue; }
+          const existingPdfId = st === "reupload" ? null : row.drivePdfId;
           if (dryRun) { note(`UP    ksef#${row.id} → ${[branch, ...archivePath(branch, row.issueDate, firmName)].join("/")}/${baseName}.pdf${row.xmlPath ? "" : "  (XML з KSeF)"}`); res.uploaded++; continue; }
           // XML: локальна копія або скачування з KSeF
           let xml: string | null = null;
@@ -364,20 +397,20 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
             await retireDriveFile(row.driveFileId);
             patch.driveFileId = null;
           }
-          if (!row.drivePdfId || opts.force) {
+          if (!existingPdfId || opts.force) {
             const pdf = await buildKsefInvoicePdf(xml, { ksefNumber: row.ksefNumber, invoicingDate: row.invoicingDate });
-            patch.drivePdfId = await uploadFile(folderId, `${baseName}.pdf`, "application/pdf", Buffer.from(pdf), row.drivePdfId);
+            patch.drivePdfId = await uploadFile(folderId, `${baseName}.pdf`, "application/pdf", Buffer.from(pdf), existingPdfId);
             res.uploaded++;
           } else if (relocate) {
             // PDF уже був, ми лише прибрали XML — заодно звіряємо місце й імʼя
-            const p = await ensurePlacement(row.drivePdfId, folderId, `${baseName}.pdf`, false);
+            const p = await ensurePlacement(existingPdfId, folderId, `${baseName}.pdf`, false);
             if (p.status === "missing") {
               const pdf = await buildKsefInvoicePdf(xml, { ksefNumber: row.ksefNumber, invoicingDate: row.invoicingDate });
               patch.drivePdfId = await uploadFile(folderId, `${baseName}.pdf`, "application/pdf", Buffer.from(pdf), null);
               res.uploaded++;
             } else if (p.status !== "ok") res.moved++;
           } else {
-            await renameDriveFile(row.drivePdfId, `${baseName}.pdf`);
+            await renameDriveFile(existingPdfId, `${baseName}.pdf`);
           }
           await setRow(patch);
         } catch (e: any) {
@@ -392,6 +425,7 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
     return res;
   } finally {
     running = false;
+    if (!dryRun) await releaseLease().catch(() => {});
   }
 }
 
