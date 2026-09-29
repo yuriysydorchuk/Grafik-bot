@@ -3,7 +3,7 @@
 // народження, початок/кінець роботи на фабриці, відкриті задачі з привʼязкою.
 // Три види: Місяць (сітка + панель дня), Таймлайн (люди × дні, 6 тижнів), Рік (теплокарта).
 // Клік на подію → картка з переходами і «Створити задачу» з предзаповненням.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, CalendarDays, Plus, ExternalLink, X } from "lucide-react";
@@ -22,6 +22,21 @@ const monthStart = (d: string) => d.slice(0, 7) + "-01";
 const addMonths = (d: string, n: number) => { const x = new Date(d.slice(0, 7) + "-01T00:00:00"); x.setMonth(x.getMonth() + n); return x.toLocaleDateString("sv-SE"); };
 const daysInMonth = (d: string) => new Date(Number(d.slice(0, 4)), Number(d.slice(5, 7)), 0).getDate();
 
+const CAL_PREFS_KEY = "workersCalendar.prefs";
+type CalPrefs = { view?: View; factoryId?: string; city?: string; companyId?: string; kinds?: CalKind[] };
+function loadCalPrefs(): CalPrefs {
+  try {
+    const p = JSON.parse(localStorage.getItem(CAL_PREFS_KEY) ?? "{}") as CalPrefs;
+    return {
+      view: p.view === "month" || p.view === "timeline" || p.view === "year" ? p.view : undefined,
+      factoryId: typeof p.factoryId === "string" ? p.factoryId : undefined,
+      city: typeof p.city === "string" ? p.city : undefined,
+      companyId: typeof p.companyId === "string" ? p.companyId : undefined,
+      kinds: Array.isArray(p.kinds) ? p.kinds.filter((k): k is CalKind => CAL_KINDS.includes(k as CalKind)) : undefined,
+    };
+  } catch { return {}; }
+}
+
 function calQuery(from: string, to: string, factoryId: string, city: string, companyId: string, kinds: Set<CalKind>) {
   const kindsKey = CAL_KINDS.filter(k => kinds.has(k)).join(",");
   return `from=${from}&to=${to}${factoryId ? `&factoryId=${factoryId}` : ""}${city ? `&city=${encodeURIComponent(city)}` : ""}${companyId ? `&companyId=${companyId}` : ""}${kindsKey ? `&kinds=${kindsKey}` : ""}`;
@@ -36,12 +51,19 @@ export default function WorkersCalendar() {
   const me = useMe();
   const [loc] = useLocation();
   const initialWorker = useMemo(() => { const m = (typeof window !== "undefined" ? window.location.search : "").match(/worker=(\d+)/); return m ? Number(m[1]) : null; }, [loc]);
-  const [view, setView] = useState<View>("month");
+  // Фільтри живуть у localStorage: перехід у профіль людини і назад не скидає вибір
+  // типів подій / виду / міста / фабрики / фірми (прохання офісу 29.09.2026). Місяць не
+  // зберігаємо — календар завжди відкривається на сьогодні.
+  const saved = useMemo(loadCalPrefs, []);
+  const [view, setView] = useState<View>(saved.view ?? "month");
   const [cursor, setCursor] = useState(todayStr());
-  const [factoryId, setFactoryId] = useState("");
-  const [city, setCity] = useState("");
-  const [companyId, setCompanyId] = useState("");
-  const [kinds, setKinds] = useState<Set<CalKind>>(new Set(CAL_KINDS_DEFAULT));
+  const [factoryId, setFactoryId] = useState(saved.factoryId ?? "");
+  const [city, setCity] = useState(saved.city ?? "");
+  const [companyId, setCompanyId] = useState(saved.companyId ?? "");
+  const [kinds, setKinds] = useState<Set<CalKind>>(new Set(saved.kinds ?? CAL_KINDS_DEFAULT));
+  useEffect(() => {
+    try { localStorage.setItem(CAL_PREFS_KEY, JSON.stringify({ view, factoryId, city, companyId, kinds: CAL_KINDS.filter(k => kinds.has(k)) })); } catch { /* ignore */ }
+  }, [view, factoryId, city, companyId, kinds]);
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
   const [q, setQ] = useState("");
   const [workerFilter, setWorkerFilter] = useState<number | null>(initialWorker);
