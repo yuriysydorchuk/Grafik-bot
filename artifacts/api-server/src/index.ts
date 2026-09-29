@@ -93,15 +93,17 @@ async function main() {
 }
 
 // Разові сервісні команди без підняття сервера/бота (прод: node dist/index.mjs <cmd>).
-//   archive-invoices --month=YYYY-MM [--dry]  — залити/розкласти архів фактур місяця на Drive
+//   archive-invoices --month=YYYY-MM [--kind=sale|purchase] [--dry]  — залити/розкласти архів фактур місяця на Drive
 //   (relocate: вже залиті звіряються з поточною структурою папок; --dry — лише план)
 async function cli(argv: string[]): Promise<boolean> {
   const [cmd, ...rest] = argv;
   if (cmd !== "archive-invoices") return false;
   const month = rest.find(a => a.startsWith("--month="))?.slice(8);
-  if (!month || !/^\d{4}-\d{2}$/.test(month)) throw new Error("usage: archive-invoices --month=YYYY-MM [--dry]");
+  const kindArg = rest.find(a => a.startsWith("--kind="))?.slice(7);
+  const kind = kindArg === "sale" || kindArg === "purchase" ? kindArg : undefined;
+  if (!month || !/^\d{4}-\d{2}$/.test(month) || (kindArg && !kind)) throw new Error("usage: archive-invoices --month=YYYY-MM [--kind=sale|purchase] [--dry]");
   const { archiveInvoicesToDrive } = await import("./services/invoiceArchive");
-  const r = await archiveInvoicesToDrive({ month, relocate: true, dryRun: rest.includes("--dry") });
+  const r = await archiveInvoicesToDrive({ month, kind, relocate: true, dryRun: rest.includes("--dry") });
   for (const line of r.plan ?? []) console.log(line);
   console.log(JSON.stringify({ ...r, plan: undefined }));
   return true;

@@ -234,6 +234,7 @@ export interface ArchiveOptions {
   ksefIds?: number[];    // конкретні KSeF-рядки
   force?: boolean;       // перезалити навіть якщо drive_file_id уже є
   skipKsef?: boolean;    // лише локальні (скани) — без походу в KSeF
+  kind?: "sale" | "purchase"; // лише KSeF-рядки цього виду (sale = без локальних сканів)
   relocate?: boolean;    // і вже залиті рядки: звірити папку/імʼя на Диску, перенести за потреби
   dryRun?: boolean;      // нічого не міняти (ні на Диску, ні в БД) — лише звіт у plan
 }
@@ -293,7 +294,8 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
     if (opts.month) lConds.push(eq(invoicesTable.periodMonth, opts.month));
     if (opts.fromMonth) lConds.push(sql`${invoicesTable.periodMonth} >= ${opts.fromMonth}`);
     if (!opts.force && !relocate) lConds.push(isNull(invoicesTable.driveFileId));
-    const locals = await db.select().from(invoicesTable).where(and(...lConds));
+    // локальні (скани/ручні) — лише закупівлі; для kind=sale їх нема
+    const locals = opts.kind === "sale" ? [] : await db.select().from(invoicesTable).where(and(...lConds));
 
     for (const row of locals) {
       res.processed++;
@@ -331,6 +333,7 @@ export async function archiveInvoicesToDrive(opts: ArchiveOptions = {}): Promise
     if (!opts.skipKsef) {
       const kConds = [];
       if (opts.ksefIds?.length) kConds.push(inArray(ksefInvoicesTable.id, opts.ksefIds));
+      if (opts.kind) kConds.push(eq(ksefInvoicesTable.kind, opts.kind));
       if (opts.month) kConds.push(sql`substring(${ksefInvoicesTable.issueDate}::text, 1, 7) = ${opts.month}`);
       if (opts.fromMonth) kConds.push(sql`substring(${ksefInvoicesTable.issueDate}::text, 1, 7) >= ${opts.fromMonth}`);
       // «не залито» = бракує PDF-візуалізації. На Диск їде ЛИШЕ PDF (рішення
