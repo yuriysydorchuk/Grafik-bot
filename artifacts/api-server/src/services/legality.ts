@@ -26,6 +26,8 @@ export interface LegalityWorker {
   legalStatus: string | null;         // легасі-поле — лише для порівняння
   notifyHours: number | null;
   factoryId?: number | null;          // основна фабрика (workers.factory_id)
+  /** офіс підтвердив громадянство вручну (workers.nationality_verified_at) — документи іноземця не ставлять його під сумнів */
+  nationalityVerified?: boolean;
 }
 
 // Умова з модуля підпису (contracts): для осі «умова». hasUmowa — у пакеті є
@@ -268,7 +270,6 @@ export function computeLegality(input: LegalityInput): LegalityResult {
   else if (input.facts?.passportNationality && input.facts.passportNationality !== worker.nationality) {
     flag({ code: "nationality_conflict", axis: "overall", severity: "warn", params: { profile: worker.nationality, passport: input.facts.passportNationality } }, true);
   }
-
   // ефективна дата закінчення документа (status_ukr → глобальна дата)
   const effExpiry = (d: LegalityDocument): string | null => {
     if (d.expiresAt) return d.expiresAt;
@@ -281,6 +282,30 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     const e = effExpiry(d);
     return !e || e >= at;
   };
+  // Громадянство PL/ЄС у профілі, а в документах — те, що видають лише іноземцям (TRC, віза,
+  // zezwolenie…; каталог appliesToNationalities). Інцидент 28.09.2026: nexo-бекфіл поставив
+  // «poland» 12 іноземцям → правило громадянства малювало всі осі зеленими без жодного документа
+  // й пропонувало «polak» для виплат. Поки офіс не звірить громадянство, правило не застосовуємо:
+  // осі рахуються лише з документів, а конфлікт іде в причини з review.
+  // Знімається: ручним підтвердженням офісу (кнопка в профілі, workers.nationality_verified_at)
+  // або документом громадянина з файлом (dowód osobisty PL / dowód UE) — людина могла отримати
+  // громадянство вже після старої karta pobytu.
+  // «документ іноземця» = ЧИННИЙ (дати як у осях) документ, чий каталог дозволяє лише не-ЄС групи
+  // (TRC, візи, zezwolenia, status UKR…); dowód PL у румуна — не підстава для сумніву (ревʼю codex 29.09)
+  const nonEuOnly = (groups: string[]) => groups.length > 0 && !groups.some(g => g === "eu" || EU_NATIONALITIES.has(g));
+  const foreignerDocs = EU_NATIONALITIES.has(worker.nationality ?? "")
+    ? documents.filter(d => isValidAt(d, today) && d.appliesToNationalities && nonEuOnly(d.appliesToNationalities))
+    : [];
+  const citizenIdDoc = documents.some(d => d.status === "present" && d.hasFile && d.category === "identity" && d.typeCode !== "passport"
+    && d.appliesToNationalities && nationalityMatches(d.appliesToNationalities, worker.nationality) === true);
+  const nationalityDoubtful = foreignerDocs.length > 0 && !worker.nationalityVerified && !citizenIdDoc;
+  const foreignerCodes = [...new Set(foreignerDocs.map(d => d.typeCode).filter(Boolean))];
+  if (nationalityDoubtful) {
+    flag({ code: "nationality_doc_conflict", axis: "overall", severity: "warn", params: { nationality: worker.nationality, typeCodes: foreignerCodes } }, true);
+  } else if (foreignerDocs.length) {
+    flag({ code: "nationality_verified", axis: "overall", severity: "info", params: { nationality: worker.nationality, typeCodes: foreignerCodes, by: citizenIdDoc && !worker.nationalityVerified ? "document" : "manual" } });
+  }
+
   // Роботодавці: фірми фабрик працівника; без списку — фірма профілю (старі виклики).
   // Документ, привʼязаний до роботодавця, рахується для фірми, на яку виданий:
   // "ok" — для цієї фірми; "other" — на іншу НАШУ фірму зі списку (не помилка, просто
@@ -307,8 +332,9 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     const out: AxisResult = { status: "unknown", basisDocId: null, basisRuleCode: null, expiresAt: null, reasons: [] };
     const push = (r: Omit<Reason, "axis">, needsReview = false) => { const rr = { ...r, axis }; out.reasons.push(rr); if (collect) flag(rr, needsReview); };
 
-    // 1) підстава за громадянством
+    // 1) підстава за громадянством (не застосовується, поки громадянство під сумнівом — див. nationality_doc_conflict)
     for (const r of rules) {
+      if (nationalityDoubtful) break;
       if (r.kind !== "basis_by_nationality" || !(r.axis === axis || r.axis === "both")) continue;
       const nats = Array.isArray(r.conditions.nationalities) ? (r.conditions.nationalities as string[]) : null;
       if (nationalityMatches(nats, worker.nationality) === true) {
@@ -343,7 +369,7 @@ export function computeLegality(input: LegalityInput): LegalityResult {
       if (emp === "unknown" && !employerFlagged.has(d.id)) { employerFlagged.add(d.id); needsReview = true; push({ code: "employer_unknown", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true); }
       if (!exp && d.hasExpiry) { needsReview = true; push({ code: "expiry_missing", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true); }
       if (d.typeCode === "status_ukr" && !g.ukrRuleVerified) { needsReview = true; push({ code: "rule_unverified", severity: "warn", params: { rule: "global.ukr_status_end" } }, true); }
-      if (d.appliesToNationalities && nationalityMatches(d.appliesToNationalities, worker.nationality) === false) {
+      if (!nationalityDoubtful && d.appliesToNationalities && nationalityMatches(d.appliesToNationalities, worker.nationality) === false) {
         push({ code: "doc_nationality_mismatch", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true);
       }
       usable.push({ d, exp, review: needsReview });

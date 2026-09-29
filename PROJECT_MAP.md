@@ -73,7 +73,7 @@ Grafik-bot/
 | Задачі / календар працівників | `routes/tasks.ts`, `routes/taskIcal.ts`, `routes/workersCalendar.ts` | задачі/групові/зустрічі, «Мій день», автозадачі й «Як вирішити», шаблони, iCal, календар подій працівників |
 | Умови / підпис / шаблони | `routes/contracts.ts`, `routes/sign.ts`, `routes/documentDelivery.ts` | генерація пакетів, надсилання на підпис (Mini App), підпис працівника, підпис фірми з печаткою, дати, бібліотека шаблонів, анкета |
 | Скан паспорта / анкета | `routes/passportScan.ts` | публічні токен-сторінки скану (OCR MRZ), анкета, karta pobytu, конверт кандидата |
-| Легалізація | `routes/legalization.ts` | дашборд, документи-слоти, правила легальності, типи документів, worker_factories, статус для виплат |
+| Легалізація | `routes/legalization.ts` | дашборд, документи-слоти, правила легальності, типи документів, worker_factories, статус для виплат, ручне підтвердження громадянства (`POST/DELETE /workers/:id/nationality/verify`); зміни статусу за документами авто-застосовуються в незалочену сводну (`svodni.ts` `autoApplyEffectiveChange`, `POST /svodni/profile-change/:id/restore`) |
 | Проєкти | `routes/sushi.ts`/`routes/andros.ts` (очік.) | вкладки-заготовки /sushi, /andros — функціонал переносить колега PR-ами |
 
 > `routes/bot.ts` має `POST /webhook`, але **не змонтований** — бот працює в polling.

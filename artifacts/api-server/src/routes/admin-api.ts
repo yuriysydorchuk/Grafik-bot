@@ -578,6 +578,8 @@ router.patch("/workers/:id", RW, async (req, res) => {
     const n = strOrNull(req.body.nationality);
     if (n && !NATIONALITIES.includes(n)) return fail(res, 400, "Невідома національність");
     patch.nationality = n;
+    // інше громадянство — ручне підтвердження старого втрачає сенс (движок перевірить документи заново)
+    if (before && n !== before.nationality) { patch.nationalityVerifiedAt = null; patch.nationalityVerifiedBy = null; }
   }
   const { birthDate } = req.body ?? {};
   if (birthDate !== undefined) {

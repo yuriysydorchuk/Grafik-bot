@@ -180,6 +180,36 @@ test("L16b гуманітарні підстави: wiza humanitarna BY → stay
   const r3 = run({ nationality: "ukraine" }, [doc("humanitarian_visa", { expiresAt: "2027-01-01" })]);
   assert.ok(has(r3, "doc_nationality_mismatch"));
 });
+test("L16d «поляк» із TRC/візою: громадянство сумнівне → правило PL не застосовано, nationality_doc_conflict + review, без пропозиції polak", () => {
+  // інцидент 28.09.2026: nexo-бекфіл поставив poland іноземним студентам → усе зелене без документів
+  const r = run({ nationality: "poland", legalStatus: "student" }, [doc("passport", { expiresAt: "2032-01-01" }), doc("trc", { expiresAt: "2028-09-23" })]);
+  assert.ok(has(r, "nationality_doc_conflict")); assert.equal(r.reviewRequired, true);
+  assert.notEqual(r.stay.basisRuleCode, "stay.pl_citizen"); assert.notEqual(r.work.basisRuleCode, "stay.pl_citizen");
+  assert.notEqual(r.legacy.derivedLegalStatus, "polak");
+  assert.ok(!has(r, "doc_nationality_mismatch"), "подокументний дубль не потрібен");
+  // лише паспорт (без документів іноземця) — правило PL діє як раніше
+  const ok = run({ nationality: "poland" }, [doc("passport", { expiresAt: "2032-01-01" })]);
+  assert.equal(ok.stay.basisRuleCode, "stay.pl_citizen"); assert.ok(!has(ok, "nationality_doc_conflict"));
+  // громадянин Румунії з TRC — те саме для правила ЄС
+  const ro = run({ nationality: "romania" }, [doc("trc", { expiresAt: "2030-01-01" })]);
+  assert.ok(has(ro, "nationality_doc_conflict")); assert.notEqual(ro.stay.basisRuleCode, "stay.eu_citizen"); assert.notEqual(ro.legacy.derivedLegalStatus, "polak");
+  // ручне підтвердження офісу — правило знову діє, конфлікт стає інфо-приміткою
+  const verified = run({ nationality: "poland", nationalityVerified: true }, [doc("trc", { expiresAt: "2028-09-23" })]);
+  assert.ok(!has(verified, "nationality_doc_conflict")); assert.ok(has(verified, "nationality_verified"));
+  assert.equal(verified.stay.basisRuleCode, "stay.pl_citizen"); assert.equal(verified.legacy.derivedLegalStatus, "polak");
+  // dowód osobisty PL із файлом — те саме автоматично (params.by=document)
+  const withId = run({ nationality: "poland" }, [doc("trc", { expiresAt: "2028-09-23" }), doc("id_card_pl", { expiresAt: "2030-01-01", hasFile: true })]);
+  assert.ok(!has(withId, "nationality_doc_conflict")); assert.equal(withId.stay.basisRuleCode, "stay.pl_citizen");
+  assert.equal(withId.reasons.find(r => r.code === "nationality_verified")?.params?.by, "document");
+  // dowód без файлу (імпорт) — не знімає сумнів
+  const idNoFile = run({ nationality: "poland" }, [doc("trc", { expiresAt: "2028-09-23" }), doc("id_card_pl", { expiresAt: "2030-01-01" })]);
+  assert.ok(has(idNoFile, "nationality_doc_conflict"));
+  // ревʼю codex 29.09: прострочена TRC — історія, не конфлікт; dowód PL у румуна — не «документ іноземця»
+  const expired = run({ nationality: "poland" }, [doc("trc", { expiresAt: "2025-01-01" })]);
+  assert.ok(!has(expired, "nationality_doc_conflict")); assert.equal(expired.stay.basisRuleCode, "stay.pl_citizen");
+  const roWithPlId = run({ nationality: "romania" }, [doc("id_card_pl", { expiresAt: "2030-01-01" })]);
+  assert.ok(!has(roWithPlId, "nationality_doc_conflict")); assert.equal(roWithPlId.stay.basisRuleCode, "stay.eu_citizen");
+});
 test("L16c правило payroll.status_map перекриває мапу: studentMaxAge, manualOnly, статус документа", () => {
   const mapRule: LegalRuleInput = {
     code: "payroll.status_map", kind: "global", axis: null, effectiveFrom: "2026-01-01", effectiveTo: null, verifiedAt: "2026-09-04T00:00:00Z",

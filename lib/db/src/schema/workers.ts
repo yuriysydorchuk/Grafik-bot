@@ -159,6 +159,10 @@ export const workersTable = pgTable("workers", {
   // (показ прапорцем біля імені: профіль, довози, сводна; каталог — lib/nationality.tsx;
   // eu_other/other додано 02.09.2026 для правил легальності: EU = poland|romania|eu_other)
   nationality: text("nationality"),
+  // Ручне підтвердження громадянства (29.09.2026): «поляк/ЄС» з документами іноземця (TRC/віза) —
+  // движок не застосовує правило громадянства, поки офіс не підтвердить; скидається при зміні nationality
+  nationalityVerifiedAt: timestamp("nationality_verified_at"),
+  nationalityVerifiedBy: integer("nationality_verified_by"),
   firedAt: timestamp("fired_at"),
   // Чорний список (21.09.2026): «не наймати» — окрема вкладка списку працівників;
   // повернення (restoreWorker) і кандидат з тим самим імʼям/телефоном — лише з підтвердженням

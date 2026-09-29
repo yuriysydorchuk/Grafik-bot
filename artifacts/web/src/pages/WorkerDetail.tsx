@@ -1910,6 +1910,12 @@ function EffectiveStatusLine({ workerId, legality }: { workerId: number; legalit
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); toast.success(t("Зміну відхилено — сводна без змін")); },
     onError: (e: any) => toast.error(e.message),
   });
+  const recent = legality.recentEffectiveChange ?? null;
+  const restore = useMutation({
+    mutationFn: (id: number) => post<{ applied: number; skippedLocked: number }>(`/svodni/profile-change/${id}/restore`),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); toast.success(t("Зміну повернуто: застосовано до {n} рядків, {m} чекають розлоку", { n: r.applied, m: r.skippedLocked })); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const label = (s: string | null) => s ? t(LEGAL_LABEL[s as LegalStatus] ?? s) : t("не зголошений");
   return (
     <div className="space-y-1.5">
@@ -1945,6 +1951,21 @@ function EffectiveStatusLine({ workerId, legality }: { workerId: number; legalit
           </span>
         </div>
       )}
+      {/* авто-застосування (29.09.2026): незалочені рядки вже отримали статус; відхилену при розлоку можна повернути */}
+      {!pending && recent && recent.state === "applied" && (
+        <p className="text-[11px] text-slate-500">
+          {t("Статус за документами")}: {label(recent.oldValue)} → <b>{label(recent.newValue)}</b> {t("з")} {fmtDocDate(recent.effectiveDate)} — {recent.byAdmin ? t("прийнято офісом") : t("застосовано до сводної автоматично")}
+          {" "}({t("рядків")}: {recent.appliedCount}{recent.lockedCount ? `, ${t("чекають розлоку")}: ${recent.lockedCount}` : ""}). {t("Відкат — «Видалити зміну» в журналі профілю.")}
+        </p>
+      )}
+      {!pending && recent && recent.state === "dismissed" && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <span>
+            {t("Зміну за документами")} {label(recent.oldValue)} → <b>{label(recent.newValue)}</b> {t("відхилено")} {recent.dismissedAt ? fmtDocDate(recent.dismissedAt) : ""}. {t("Сводна лишається за старим статусом.")}
+          </span>
+          <button type="button" onClick={() => restore.mutate(recent.id)} disabled={restore.isPending} className="ml-auto rounded-md border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-100">{t("Повернути")}</button>
+        </div>
+      )}
       {review && pending && (
         <ProfileChangeModal workerId={workerId} changes={{ effectiveLegalStatus: pending.newValue }} title={t("Статус для виплат за документами → сводна")}
           initialFrom={pending.effectiveDate} onClose={() => { setReview(false); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); }} />
@@ -1961,6 +1982,14 @@ function LegalitySummary({ workerId }: { workerId: number }) {
   });
   const ld = useLeadDays(); // хук — до умовних return (порядок хуків)
   const { data: wk } = useQuery<{ isActive: boolean }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
+  const me = useMe();
+  const canLegalization = can(me, "legalization");
+  const qc = useQueryClient();
+  const natVerify = useMutation({
+    mutationFn: (v: boolean) => v ? post(`/workers/${workerId}/nationality/verify`) : del(`/workers/${workerId}/nationality/verify`),
+    onSuccess: (_r, v) => { qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); toast.success(v ? t("Громадянство підтверджено — правило PL/ЄС знову діє") : t("Підтвердження знято")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const fired = wk ? wk.isActive === false : false; // звільнений — стан на момент звільнення, не «нелегально»
 
   if (isLoading) return <div className="px-4 py-3"><Spinner /></div>;
@@ -2005,7 +2034,20 @@ function LegalitySummary({ workerId }: { workerId: number }) {
             {(["stay", "work", "contract", "overall"] as const).filter(ax => reasonsByAxis[ax]?.length).map(ax => (
               <div key={ax}>
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t(AXIS_LABEL[ax])}</div>
-                {reasonsByAxis[ax]!.map((r, i) => <div key={i} className={`text-xs ${severityCls(r.severity)}`}>• {reasonText(t, r)}</div>)}
+                {reasonsByAxis[ax]!.map((r, i) => (
+                  <div key={i} className={`text-xs ${severityCls(r.severity)}`}>
+                    • {reasonText(t, r)}
+                    {/* ручне підтвердження громадянства: «поляк/ЄС» з документами іноземця (29.09.2026) */}
+                    {canLegalization && r.code === "nationality_doc_conflict" && (
+                      <button type="button" onClick={() => natVerify.mutate(true)} disabled={natVerify.isPending}
+                        className="ml-2 rounded-md bg-amber-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-amber-700">{t("Підтвердити громадянство")}</button>
+                    )}
+                    {canLegalization && r.code === "nationality_verified" && r.params?.by === "manual" && (
+                      <button type="button" onClick={() => natVerify.mutate(false)} disabled={natVerify.isPending}
+                        className="ml-2 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100">{t("Скасувати підтвердження громадянства")}</button>
+                    )}
+                  </div>
+                ))}
               </div>
             ))}
           </div>

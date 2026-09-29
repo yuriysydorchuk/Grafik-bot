@@ -138,6 +138,7 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
     employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate), firstWorkDate: dateStr(w.firstWorkDate) }),
     isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
     factoryId: w.factoryId,
+    nationalityVerified: !!w.nationalityVerifiedAt,
   };
   const [contracts, employers, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerEmployers({ id: w.id, factoryId: w.factoryId }, today), scheduleFactoriesOf(workerId, today)]);
   return {
@@ -168,16 +169,26 @@ function effectiveSinceOf(input: LegalityInput, r: LegalityResult, eff: Effectiv
 // профілі «вплине на сводну» і приймає/відхиляє через profile-impact/apply (незалочені
 // місяці) або ревʼю при розлоку. Відкритий (не прийнятий і не відхилений) запис
 // оновлюється замість дублювання; повернення до старого статусу знімає його.
+// Рішення власника 29.09.2026: незалочені рядки сводної отримують зміну ОДРАЗУ
+// (routes/svodni autoApplyEffectiveChange), залочені — чекають ревʼю при розлоку.
 async function journalEffectiveChange(workerId: number, oldStatus: string | null, newStatus: string | null, since: string): Promise<void> {
   const [pending] = await db.select().from(workerChangesTable)
     .where(and(eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "effectiveLegalStatus"), isNull(workerChangesTable.reviewDismissedAt), isNull(workerChangesTable.appliedRows)))
     .orderBy(desc(workerChangesTable.id)).limit(1);
+  let entryId: number;
   if (pending) {
     if ((pending.oldValue ?? null) === (newStatus ?? null)) { await db.delete(workerChangesTable).where(eq(workerChangesTable.id, pending.id)); return; }
     await db.update(workerChangesTable).set({ newValue: newStatus, effectiveDate: since }).where(eq(workerChangesTable.id, pending.id));
-    return;
+    entryId = pending.id;
+  } else {
+    const [ins] = await db.insert(workerChangesTable).values({ workerId, field: "effectiveLegalStatus", oldValue: oldStatus, newValue: newStatus, effectiveDate: since, adminId: null }).returning({ id: workerChangesTable.id });
+    entryId = ins!.id;
   }
-  await db.insert(workerChangesTable).values({ workerId, field: "effectiveLegalStatus", oldValue: oldStatus, newValue: newStatus, effectiveDate: since, adminId: null });
+  try {
+    const { autoApplyEffectiveChange } = await import("../routes/svodni");
+    const r = await autoApplyEffectiveChange(entryId);
+    logger.info({ workerId, entryId, oldStatus, newStatus, since, ...r }, "effective legal status change auto-applied to svodni");
+  } catch (e: any) { logger.warn({ workerId, entryId, err: e?.message }, "auto-apply effective change failed"); }
 }
 
 export async function saveLegality(workerId: number, input: LegalityInput, r: LegalityResult): Promise<void> {

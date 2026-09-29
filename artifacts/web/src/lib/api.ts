@@ -129,6 +129,9 @@ export interface WorkerLegality {
   effectiveLegalStatus?: string | null; effectiveSource?: "documents" | "manual" | "none" | null; effectiveSince?: string | null;
   // відкрита зміна ефективного статусу (за документами) — банер «вплине на сводну» з прийняти/відхилити
   pendingEffectiveChange?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string; createdAt: string } | null;
+  // остання зміна за документами будь-якого стану (29.09.2026): applied = авто/прийнято, dismissed → «Повернути»
+  recentEffectiveChange?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string; createdAt: string;
+    state: "pending" | "applied" | "dismissed"; appliedCount: number; lockedCount: number; byAdmin: boolean; dismissedAt: string | null } | null;
   computedAt: string;
 }
 // Зріз умов (contracts) для списку /workers: umowa — останній факторі-пакет, чия фабрика належить

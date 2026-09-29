@@ -20,7 +20,7 @@ export type RequestChange = ((changes: Record<string, unknown>, title: string, f
 // Людські назви полів журналу/дифів (укр-рядок-як-ключ для t())
 export const CHANGE_FIELD_LABEL: Record<string, string> = {
   factoryId: "Фабрика", positionId: "Посада", legalStatus: "Форма легалізації",
-  effectiveLegalStatus: "Статус для виплат (за документами)",
+  effectiveLegalStatus: "Статус для виплат (за документами)", nationalityVerified: "Підтвердження громадянства",
   birthDate: "Дата народження", notifyHours: "Год. у повідомленні",
   employmentStartDate: "Дата працевлаштування", agramStazBonus: "Бонус Agram: стаж",
   agramCashBonus: "Бонус Agram: нал", hourlyRate: "Ставка брутто", hourlyRateNetto: "Ставка нетто",

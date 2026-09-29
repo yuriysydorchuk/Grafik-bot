@@ -1159,3 +1159,80 @@ test("from-hours після «Очистити вкладку»: рядки по
   assert.equal(mine[0]!.factoryLabel, "AGRAM");
   assert.equal(mine[0]!.hours, 100);
 });
+
+// ── Авто-застосування зміни статусу за документами (29.09.2026) ─────────────
+import { autoApplyEffectiveChange } from "./svodni.ts";
+test("зміна за документами: незалочений рядок отримує статус одразу; dismiss застосованої — 400", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Kowalski Jan", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false, birthDate: "2004-05-05",
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false });
+  // запис журналу, який пише движок (adminId NULL, ще не застосований)
+  const [c] = await db.insert(workerChangesTable).values({ workerId: w!.id, field: "effectiveLegalStatus", oldValue: null, newValue: "student", effectiveDate: "2026-06-01", adminId: null }).returning();
+  const r = await autoApplyEffectiveChange(c!.id);
+  assert.deepEqual(r, { applied: 1, skippedLocked: 0 });
+  const [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.legalStatus, "student"); assert.equal(row!.legalSource, "documents");
+  assert.equal(row!.isStudent, true); assert.equal(row!.konto, 5024, "студент до 26 → все на конто");
+  const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, c!.id));
+  assert.equal((entry!.appliedRows as any[]).length, 1); assert.equal(entry!.skippedLocked, null); assert.equal(entry!.adminId, null, "автоматично");
+  // повторний виклик — ідемпотентний (уже застосовано)
+  assert.deepEqual(await autoApplyEffectiveChange(c!.id), { applied: 0, skippedLocked: 0 });
+  const d = await request(app).post(`/api/svodni/profile-change/${c!.id}/dismiss`).set("Cookie", owner).set(H);
+  assert.equal(d.status, 400, "застосовану зміну не відхиляють — лише «Видалити зміну»");
+});
+
+test("зміна за документами під локом: чекає розлоку; відхилена при розлоку має admin_id і повертається кнопкою «Повернути»", opts, async () => {
+  const { cookie: owner, adminId } = await seedAdmin({ role: "owner" });
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Nowak Anna", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false, birthDate: "2004-05-05",
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false });
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  const [c] = await db.insert(workerChangesTable).values({ workerId: w!.id, field: "effectiveLegalStatus", oldValue: null, newValue: "student", effectiveDate: "2026-06-01", adminId: null }).returning();
+  assert.deepEqual(await autoApplyEffectiveChange(c!.id), { applied: 0, skippedLocked: 1 });
+  let [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.isStudent, false, "залочений рядок не чіпаємо");
+  // у ревʼю при розлоку зміна є; розлок без прийняття → відхилено з admin_id
+  const p = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA" });
+  assert.equal(p.body.changes.length, 1); assert.equal(p.body.changes[0].field, "effectiveLegalStatus");
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "TESTOWA", applyChangeIds: [] });
+  let [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, c!.id));
+  assert.ok(entry!.reviewDismissedAt, "відхилено при розлоку"); assert.equal(entry!.adminId, adminId, "хто відхилив — записано");
+  // «Повернути»: область уже незалочена → застосовується одразу
+  const rs = await request(app).post(`/api/svodni/profile-change/${c!.id}/restore`).set("Cookie", owner).set(H);
+  assert.equal(rs.status, 200); assert.equal(rs.body.applied, 1);
+  [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, c!.id));
+  assert.equal(entry!.reviewDismissedAt, null); assert.equal((entry!.appliedRows as any[]).length, 1);
+  [row] = await db.select().from(svodniRowsTable);
+  assert.equal(row!.legalStatus, "student"); assert.equal(row!.konto, 5024);
+  // повторне «Повернути» — 400 (не відхилена)
+  assert.equal((await request(app).post(`/api/svodni/profile-change/${c!.id}/restore`).set("Cookie", owner).set(H)).status, 400);
+});
+
+test("зміна за документами: авто в незалочену A, залочена B відхилена при розлоку → «Повернути» добирає лише B", opts, async () => {
+  const owner = (await seedAdmin({ role: "owner" })).cookie;
+  const [w] = await db.insert(workersTable).values({
+    fullName: "Wisniewski Piotr", hourlyRate: 31.4, hourlyRateNetto: 25.35, isStudent: false, under26: false, birthDate: "2004-05-05",
+  }).returning();
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false, factoryLabel: "TESTOWA" });
+  await seedRow({ workerId: w!.id, linkStatus: "confirmed", isStudent: false, under26: false, factoryLabel: "DRUGA" });
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "DRUGA" });
+  const [c] = await db.insert(workerChangesTable).values({ workerId: w!.id, field: "effectiveLegalStatus", oldValue: null, newValue: "student", effectiveDate: "2026-06-01", adminId: null }).returning();
+  assert.deepEqual(await autoApplyEffectiveChange(c!.id), { applied: 1, skippedLocked: 1 });
+  const rowsA = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.factoryLabel, "TESTOWA"));
+  assert.equal(rowsA[0]!.isStudent, true, "незалочена A застосована одразу");
+  // розлок B без прийняття → відхилено; повторний авто-прохід нічого не робить
+  await request(app).post("/api/svodni/lock").set("Cookie", owner).set(H).send({ month: "2026-06", city: "Люблін", factoryLabel: "DRUGA", applyChangeIds: [] });
+  assert.deepEqual(await autoApplyEffectiveChange(c!.id), { applied: 0, skippedLocked: 0 });
+  let rowsB = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.factoryLabel, "DRUGA"));
+  assert.equal(rowsB[0]!.isStudent, false);
+  // «Повернути» → добирає лише B (A не переписується вдруге)
+  const rs = await request(app).post(`/api/svodni/profile-change/${c!.id}/restore`).set("Cookie", owner).set(H);
+  assert.equal(rs.status, 200); assert.equal(rs.body.applied, 1);
+  rowsB = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.factoryLabel, "DRUGA"));
+  assert.equal(rowsB[0]!.isStudent, true);
+  const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, c!.id));
+  assert.equal((entry!.appliedRows as any[]).length, 2); assert.equal(entry!.skippedLocked, null);
+});

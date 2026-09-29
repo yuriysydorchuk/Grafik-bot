@@ -59,7 +59,19 @@ router.get("/workers/:id/legality", async (req, res) => {
     eq(workerChangesTable.workerId, id), eq(workerChangesTable.field, "effectiveLegalStatus"),
     isNull(workerChangesTable.reviewDismissedAt), isNull(workerChangesTable.appliedRows),
   )).orderBy(desc(workerChangesTable.id)).limit(1);
-  ok(res, row ? { ...row, pendingEffectiveChange: pendingChange ?? null } : null);
+  // остання зміна за документами будь-якого стану — інфо-рядок у профілі: застосовано авто /
+  // чекає розлоку / відхилено (з «Повернути»); adminId NULL = зроблено системою
+  const [recent] = await db.select().from(workerChangesTable).where(and(
+    eq(workerChangesTable.workerId, id), eq(workerChangesTable.field, "effectiveLegalStatus"),
+  )).orderBy(desc(workerChangesTable.id)).limit(1);
+  const recentEffectiveChange = recent ? {
+    id: recent.id, oldValue: recent.oldValue, newValue: recent.newValue, effectiveDate: recent.effectiveDate, createdAt: recent.createdAt,
+    state: recent.reviewDismissedAt != null ? "dismissed" : recent.appliedRows != null ? "applied" : "pending",
+    appliedCount: Array.isArray(recent.appliedRows) ? recent.appliedRows.length : 0,
+    lockedCount: Array.isArray(recent.skippedLocked) ? recent.skippedLocked.length : 0,
+    byAdmin: recent.adminId != null, dismissedAt: recent.reviewDismissedAt,
+  } : null;
+  ok(res, row ? { ...row, pendingEffectiveChange: pendingChange ?? null, recentEffectiveChange } : null);
 });
 router.post("/workers/:id/legality/recompute", LG, async (req, res) => {
   const id = Number(req.params.id);
@@ -68,6 +80,28 @@ router.post("/workers/:id/legality/recompute", LG, async (req, res) => {
   const [row] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, id));
   ok(res, row);
 });
+// ── Ручне підтвердження громадянства (29.09.2026) ──
+// «Поляк/ЄС» із документами іноземця (TRC/віза) — движок не застосовує правило громадянства
+// (причина nationality_doc_conflict), поки офіс не підтвердить, що громадянство справді отримано.
+// Скидається сам при зміні nationality у PATCH /workers/:id. Журнал — worker_changes.nationalityVerified.
+async function setNationalityVerified(req: AuthedRequest, res: any, verified: boolean) {
+  const id = Number(req.params.id);
+  const [w] = await db.select({ id: workersTable.id, nationality: workersTable.nationality, verifiedAt: workersTable.nationalityVerifiedAt })
+    .from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "Не знайдено");
+  if (verified && !w.nationality) return fail(res, 400, "Спершу вкажи громадянство в профілі");
+  const was = !!w.verifiedAt;
+  if (was !== verified) {
+    const adminId = req.admin?.adminId ?? null;
+    await db.update(workersTable).set({ nationalityVerifiedAt: verified ? new Date() : null, nationalityVerifiedBy: verified ? adminId : null }).where(eq(workersTable.id, id));
+    await db.insert(workerChangesTable).values({ workerId: id, field: "nationalityVerified", oldValue: String(was), newValue: String(verified), effectiveDate: warsawToday(), adminId });
+    await workerLegalityChanged(id);
+  }
+  const [row] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, id));
+  ok(res, { verified, legality: row ?? null });
+}
+router.post("/workers/:id/nationality/verify", LG, (req, res) => setNationalityVerified(req as AuthedRequest, res, true));
+router.delete("/workers/:id/nationality/verify", LG, (req, res) => setNationalityVerified(req as AuthedRequest, res, false));
 
 // Глобальні параметри для UI (будь-яка роль): дата кінця UKR (ефективний строк status_ukr у списку документів),
 // дефолтний lead — без розкриття решти правил.

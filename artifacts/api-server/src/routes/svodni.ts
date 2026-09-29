@@ -244,7 +244,8 @@ router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res
         && !(FINANCE_TRACKED.has(c.field) && !fin) && !(SENSITIVE_TRACKED.has(c.field) && !sens))
       .map(({ c }) => c.id);
     if (dismissIds.length) {
-      await db.update(workerChangesTable).set({ reviewDismissedAt: sql`now()` })
+      // хто відхилив — видно в профілі («відхилено при розлоку» + «Повернути»)
+      await db.update(workerChangesTable).set({ reviewDismissedAt: sql`now()`, adminId: req.admin!.adminId })
         .where(inArray(workerChangesTable.id, dismissIds));
     }
     return ok(res, { locked: false, applied });
@@ -439,7 +440,9 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
       // превʼю: «прийняти» = привести рядки області до ПОТОЧНОГО профілю по
       // цьому полю (кілька змін одного поля колапсують в один підсумковий диф)
       const w = wById.get(c.workerId);
-      const ctx = w ? await profileChangeContext(c.workerId, { changes: { [c.field]: (w as any)[c.field] } }, c.effectiveDate, sensitive) : null;
+      // ефективний статус — не поле профілю: значення з кешу/журналу (до 29.09.2026 бралось
+      // w.effectiveLegalStatus=undefined → «нема змін» → превʼю без ефекту → розлок гасив зміну)
+      const ctx = w ? await profileChangeContext(c.workerId, { changes: { [c.field]: await journalFieldValue(w, c) } }, c.effectiveDate, sensitive) : null;
       entry.items = ctx && !("err" in ctx)
         ? serializeImpact(ctx.items.filter(it => it.row.periodMonth === month && isLocked([lock], it.row.city, it.row.factoryLabel)), sensitive)
         : [];
@@ -452,6 +455,14 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
   }
   ok(res, { lockedAt: lock.lockedAt, changes: out, hidden, pendingKara });
 });
+
+// Значення поля для застосування журнальної зміни: з профілю; для ефективного статусу
+// (за документами) — з кешу легальності, якщо він досі «за документами», інакше з журналу
+async function journalFieldValue(w: typeof workersTable.$inferSelect, c: typeof workerChangesTable.$inferSelect): Promise<unknown> {
+  if (c.field !== "effectiveLegalStatus") return (w as any)[c.field];
+  const eff = await effectiveViewOf(w);
+  return eff.legalSource === "documents" ? eff.legalStatus : c.newValue;
+}
 
 // Прийняті при розблокуванні зміни: групуємо по людині (union полів, значення —
 // з ПОТОЧНОГО профілю, from = найраніша дата серед прийнятих), рахуємо тим самим
@@ -482,7 +493,7 @@ async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" |
       // приймається — таку зміну пропускаємо, рядок і так рахує from-hours
       if (c.field === "hourlyRate" && (w as any).hourlyRate == null) continue;
       // ефективний статус (за документами) — поточне значення з кешу легальності, не з профілю
-      changes[c.field] = c.field === "effectiveLegalStatus" ? (await effectiveViewOf(w)).legalStatus : (w as any)[c.field];
+      changes[c.field] = await journalFieldValue(w, c);
     }
     if (!Object.keys(changes).length) continue;
     const from = list.map(c => String(c.effectiveDate)).sort()[0]!;
@@ -1780,7 +1791,11 @@ export async function profileChangeContext(workerId: number, body: Record<string
   const changed = new Set(Object.keys(patch));
   // virtual (ефективний статус за документами) — лише для двигуна рядків, у профіль не пишеться
   const persistPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => !virtual.has(k))) as Partial<typeof workersTable.$inferInsert>;
-  const nextW = { ...w, ...patch, ...(virtual.size ? { legalSource: "documents" } : {}) } as typeof workersTable.$inferSelect;
+  // джерело снапшоту для ефективної зміни: з кешу легальності, якщо він дає саме цей статус
+  // (втрата документів → повернення до ручного поля має писати "manual", а не "documents")
+  let virtualSource: string = "documents";
+  if (virtual.size) { const eff = await effectiveViewOf(w); if ((eff.legalStatus ?? null) === (patch.legalStatus ?? null)) virtualSource = eff.legalSource; }
+  const nextW = { ...w, ...patch, ...(virtual.size ? { legalSource: virtualSource } : {}) } as typeof workersTable.$inferSelect;
   const fromMonth = from.slice(0, 7);
   const rows = (await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf),
@@ -2058,9 +2073,69 @@ router.post("/svodni/profile-change/:id/dismiss", requireCap("svodni"), async (r
   const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, id));
   if (!entry) return fail(res, 404, "запис не знайдено");
   if (entry.field !== "effectiveLegalStatus") return fail(res, 400, "відхиляти можна лише зміни статусу за документами");
+  if (entry.appliedRows != null) return fail(res, 400, "зміну вже застосовано до сводної — відкоти її через «Видалити зміну» в журналі профілю");
   await db.update(workerChangesTable).set({ reviewDismissedAt: new Date(), adminId: req.admin!.adminId }).where(eq(workerChangesTable.id, id));
   ok(res, { ok: true });
 });
+// Повернути відхилену зміну за документами (у профілі або масово при розлоку): запис знову
+// відкритий, незалочені рядки отримують статус одразу, залочені — чекають ревʼю при розлоку.
+router.post("/svodni/profile-change/:id/restore", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return fail(res, 400, "bad id");
+  const [entry] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, id));
+  if (!entry) return fail(res, 404, "запис не знайдено");
+  if (entry.field !== "effectiveLegalStatus" || entry.reviewDismissedAt == null) return fail(res, 400, "повернути можна лише відхилену зміну статусу за документами");
+  // новіший відкритий/застосований запис того ж поля робить старий неактуальним
+  const [newer] = await db.select({ id: workerChangesTable.id }).from(workerChangesTable).where(and(
+    eq(workerChangesTable.workerId, entry.workerId), eq(workerChangesTable.field, "effectiveLegalStatus"),
+    sql`${workerChangesTable.id} > ${id}`, isNull(workerChangesTable.reviewDismissedAt))).limit(1);
+  if (newer) return fail(res, 409, "є новіша зміна статусу за документами — ця вже неактуальна");
+  await db.update(workerChangesTable).set({ reviewDismissedAt: null, adminId: req.admin!.adminId }).where(eq(workerChangesTable.id, id));
+  const r = await autoApplyEffectiveChange(id);
+  ok(res, { ok: true, ...r });
+});
+
+// ── Авто-застосування зміни статусу за документами (рішення власника 29.09.2026) ──
+// Движок (saveLegality → journalEffectiveChange) пише запис у журнал; далі НЕЗАЛОЧЕНІ рядки
+// від місяця дати набуття отримують новий статус одразу (той самий двигун, що й profile-apply),
+// а залочені області лишаються в skippedLocked і спливають у ревʼю при розлоку (типово прийняті).
+// appliedRows=[] = застосовано, рядків не було (майбутній місяць зніме статус при формуванні).
+// adminId лишається NULL = автоматично; відкат — «Видалити зміну» в журналі профілю.
+type ScopeRef = { month: string; city: string; factoryLabel: string };
+const sameScope = (a: ScopeRef, b: ScopeRef) => a.month === b.month && a.city === b.city && a.factoryLabel === b.factoryLabel;
+export async function autoApplyEffectiveChange(entryId: number): Promise<{ applied: number; skippedLocked: number }> {
+  // серіалізація по запису (два одночасні restore/recompute не мають різати рядок двічі — ревʼю codex 29.09):
+  // advisory-лок тримається транзакцією до кінця колбеку; сама робота йде через пул (db), як у profile-apply
+  return db.transaction(async tx => {
+    await tx.execute(sql`select pg_advisory_xact_lock(7291, ${entryId})`);
+    const [c] = await tx.select().from(workerChangesTable).where(eq(workerChangesTable.id, entryId));
+    // відкритий = не відхилений і (ще не застосований АБО має області, що чекали розлоку —
+    // повторний прохід добирає їх, уже застосовані області не чіпає)
+    const stillOpen = !!c && c.reviewDismissedAt == null && (c.appliedRows == null || c.skippedLocked != null);
+    if (!c || c.field !== "effectiveLegalStatus" || !stillOpen) return { applied: 0, skippedLocked: 0 };
+    return autoApplyEffectiveChangeLocked(c);
+  });
+}
+async function autoApplyEffectiveChangeLocked(c: typeof workerChangesTable.$inferSelect): Promise<{ applied: number; skippedLocked: number }> {
+  const entryId = c.id;
+  const prevApplied: ScopeRef[] = Array.isArray(c.appliedRows) ? c.appliedRows as ScopeRef[] : [];
+  const ctx = await profileChangeContext(c.workerId, { changes: { effectiveLegalStatus: c.newValue } }, String(c.effectiveDate), true);
+  if ("err" in ctx) { logger.warn({ entryId, err: ctx.err }, "auto-apply effective change: context failed"); return { applied: 0, skippedLocked: 0 }; }
+  const scopeOf = (it: typeof ctx.items[number]): ScopeRef => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel });
+  const toApply = ctx.items.filter(it => !it.locked && !prevApplied.some(a => sameScope(a, scopeOf(it))));
+  const skipped = ctx.items.filter(it => it.locked).map(scopeOf);
+  for (const it of toApply) {
+    if (it.plan) {
+      await writeSegments(it.row, it.plan);
+    } else {
+      if (it.unsplit) await db.delete(svodniRowsTable).where(eq(svodniRowsTable.segmentOf, it.row.id));
+      await db.update(svodniRowsTable).set({ ...it.set, manual: true, mismatch: null } as any).where(eq(svodniRowsTable.id, it.row.id));
+    }
+  }
+  const appliedRows = [...prevApplied, ...toApply.map(scopeOf)];
+  await db.update(workerChangesTable).set({ appliedRows, skippedLocked: skipped.length ? skipped : null }).where(eq(workerChangesTable.id, entryId));
+  return { applied: toApply.length, skippedLocked: skipped.length };
+}
 
 // «Видалити зміну» з історії профілю: значення повертається до попереднього
 // (з запису журналу), зачеплені сводні від дати набуття перераховуються тим
