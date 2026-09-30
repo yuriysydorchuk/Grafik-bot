@@ -81,6 +81,8 @@ router.get("/passport-scan/:token", async (req, res) => {
   let pesel: string | null = null;
   let birthDate: string | null = null; // клієнт звіряє PESEL з датою народження
   let nameDraft: { firstName: string | null; middleName: string | null; lastName: string | null } | null = null;
+  // anketa-токен мови не несе — сторінка відкривається мовою бота працівника (інакше завжди укр.)
+  let workerLang: string | null = null;
   // office/self — паспорта в системі гарантовано ще нема, скан обов'язковий.
   // anketa — залежить від того, чи в цього працівника вже є "Paszport" на
   // файлі: якщо нема (запрошення на скан+анкету для когось, кого завели без
@@ -90,9 +92,10 @@ router.get("/passport-scan/:token", async (req, res) => {
   if (row.workerId) {
     const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, row.workerId));
     if (q) questionnaire = q;
-    const [w] = await db.select({ pesel: workersTable.pesel, fullName: workersTable.fullName, firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName, birthDate: workersTable.birthDate })
+    const [w] = await db.select({ pesel: workersTable.pesel, fullName: workersTable.fullName, firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName, birthDate: workersTable.birthDate, language: workersTable.language })
       .from(workersTable).where(eq(workersTable.id, row.workerId));
     pesel = w?.pesel ?? null;
+    workerLang = w?.language ?? null;
     birthDate = w?.birthDate ? String(w.birthDate) : null;
     if (w) {
       // Немає структурованих полів (профіль заведений до цієї фічі) —
@@ -125,7 +128,7 @@ router.get("/passport-scan/:token", async (req, res) => {
       : await db.select({ name: companiesTable.name, legalName: companiesTable.legalName }).from(companiesTable).limit(1);
     companyName = c?.legalName || c?.name || null;
   }
-  ok(res, { purpose: row.purpose, factoryName: factory?.name ?? null, companyName, language: row.language ?? "uk", questionnaire, pesel, birthDate, needsPassportScan, nameDraft });
+  ok(res, { purpose: row.purpose, factoryName: factory?.name ?? null, companyName, language: row.language ?? workerLang ?? "uk", questionnaire, pesel, birthDate, needsPassportScan, nameDraft });
 });
 
 // Файл → OCR → чернетка. Файл лягає у тимчасову теку (переноситься у постійну

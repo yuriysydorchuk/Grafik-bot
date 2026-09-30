@@ -409,9 +409,19 @@ function CameraCapture({ s, onCapture, fileInputRef }: {
     let cancelled = false;
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        // Без вимог до роздільності браузер (особливо вебвʼю Telegram) віддає типові
+        // 640×480, а після обрізки рамкою лишалось ~400×300 px — нечитабельний скан
+        // (скарга 30.09.2026). Просимо максимум, що дасть камера; ideal не валить
+        // getUserMedia на слабших пристроях — браузер бере найближче.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 3840 }, height: { ideal: 2160 } },
+          audio: false,
+        });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
+        // Безперервний автофокус (Chrome/Android) — best-effort, інші рушії ігнорують.
+        const track = stream.getVideoTracks()[0];
+        try { await track?.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }); } catch { /* not supported */ }
         if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play().catch(() => {}); }
         setReady(true);
       } catch { if (!cancelled) setUnavailable(true); }
@@ -422,8 +432,9 @@ function CameraCapture({ s, onCapture, fileInputRef }: {
   // Телефонні камери часто дають кадр 3000+px по довшій стороні — для
   // розпізнавання тексту стільки не треба, а от завантаження такого файлу
   // (особливо через cloudflared-тунель на слабшому зв'язку) — це і є
-  // більшість тієї «хвилини очікування». Обрізаємо довшу сторону до 1600px.
-  const MAX_SIDE = 1600;
+  // більшість тієї «хвилини очікування». Обрізаємо довшу сторону до 2000px —
+  // стільки ж лишає сервер при збереженні скану (lib/uploads.ts), більше — зайвий трафік.
+  const MAX_SIDE = 2000;
   function shoot() {
     const video = videoRef.current, container = containerRef.current;
     if (!video || !video.videoWidth || !container) return;
@@ -438,7 +449,7 @@ function CameraCapture({ s, onCapture, fileInputRef }: {
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(sw * scale); canvas.height = Math.round(sh * scale);
     canvas.getContext("2d")!.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob(blob => { if (blob) onCapture(blob, "passport.jpg"); }, "image/jpeg", 0.9);
+    canvas.toBlob(blob => { if (blob) onCapture(blob, "passport.jpg"); }, "image/jpeg", 0.92);
   }
 
   if (unavailable) return <p className="rounded-lg bg-slate-200 px-3 py-2 text-center text-xs text-slate-500">{s("noCamera")}</p>;

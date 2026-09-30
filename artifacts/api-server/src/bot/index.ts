@@ -2396,9 +2396,9 @@ bot.hears(bhears("⚠️ Не прийшли до машини"), async (ctx) =>
   const attOv = await loadDateShiftOverrides(attToday);
   const attNow = nowWarsaw();
   const attCancelled = await cancelledCellKeys(weeks[0]!.id, dayName);
-  const nearAssignments = myAssignments.filter(a =>
-    !attCancelled.has(`${a.factoryId}-${a.shift}`) &&
-    Math.abs(attNow.getTime() - shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift, attOv).getTime()) <= BOARD_WINDOW_MS);
+  const nearAssignments = pickBoardRuns(
+    myAssignments.filter(a => !attCancelled.has(`${a.factoryId}-${a.shift}`)),
+    attNow, a => shiftStartOn(attToday, attFacById.get(a.factoryId), a.shift, attOv));
   if (nearAssignments.length === 0) {
     return ctx.reply(tb(dl, "🕒 Зараз немає рейсу для посадки — до найближчої вашої зміни ще далеко. Відмічайте явку ближче до початку зміни (за ~3 години)."), driverMenu(dl));
   }
@@ -2594,7 +2594,7 @@ type BoardWorker = {
 };
 type BoardData = {
   weekId: number; dayName: DayOfWeek; boardDate?: string; sections: { factoryId: number; shift: string; factoryName: string }[]; workers: BoardWorker[]; chatId: number; messageId: number; addFactoryId?: number; addShift?: string; addTyped?: string; lang?: Lang;
-  // Correction of an already-confirmed boarding (2h window): statuses are applied as a
+  // Correction of an already-confirmed boarding (24h window): statuses are applied as a
   // diff, no trip recording and no all-drivers-confirmed auto-absent pass.
   editMode?: boolean;
   // Key of the just-added person while the "does he replace someone?" question is pending
@@ -2602,11 +2602,26 @@ type BoardData = {
 };
 
 // Boarding is scoped to runs whose shift starts near "now": the board only shows
-// sections within ±3h of the shift start, and confirmation refuses to mark absences
-// for a shift starting >2h from now. Otherwise confirming the morning run would
-// auto-mark the 14:00/22:00 runs as no-shows (real incident: 2026-07-04, 03:03).
+// sections from 3h BEFORE the shift start until 24h AFTER it (водій дописує людей і
+// підтверджує явку протягом зміни — 3 год після старту не вистачало, 30.09.2026),
+// and confirmation refuses to mark absences for a shift starting >2h from now.
+// Otherwise confirming the morning run would auto-mark the 14:00/22:00 runs as
+// no-shows (real incident: 2026-07-04, 03:03).
 const BOARD_WINDOW_MS = 3 * 3600_000;
+const BOARD_AFTER_MS = 24 * 3600_000;
 const BOARD_GUARD_MS = 2 * 3600_000;
+// Near run (±3h) wins: the extended after-start tail applies only when no run is near,
+// so a late morning add at 12:30 never puts the 14:00 run on the same board (its
+// unboarded people would be auto-marked absent on confirm).
+const nearBoardWindow = (now: Date, start: Date) => Math.abs(now.getTime() - start.getTime()) <= BOARD_WINDOW_MS;
+const lateBoardWindow = (now: Date, start: Date) => {
+  const since = now.getTime() - start.getTime();
+  return since > BOARD_WINDOW_MS && since <= BOARD_AFTER_MS;
+};
+function pickBoardRuns<T>(items: T[], now: Date, startOf: (x: T) => Date): T[] {
+  const near = items.filter(x => nearBoardWindow(now, startOf(x)));
+  return near.length ? near : items.filter(x => lateBoardWindow(now, startOf(x)));
+}
 type FactoryLike = { id?: number; shifts: unknown; shift1Start: string | null; shift2Start: string | null; shift3Start: string | null };
 // Warsaw-wall-clock Date of the shift start on the given YYYY-MM-DD day.
 // `ov` — разові зміни дат (factory_shift_overrides): час override має пріоритет.
@@ -2649,9 +2664,9 @@ function boardingMarkup(data: BoardData) {
   return { inline_keyboard: rows };
 }
 
-// «Відкоригувати посадку» під підсумком підтвердження: живе 2 години (хтось дійшов
-// пізніше / водій помилився). Мітка часу зашита в callback — стан уже очищений.
-const BOARD_EDIT_WINDOW_MS = 2 * 3600_000;
+// «Відкоригувати посадку» під підсумком підтвердження: живе 24 години (хтось дійшов
+// пізніше / водій помилився; було 2 год — не вистачало). Мітка часу зашита в callback — стан уже очищений.
+const BOARD_EDIT_WINDOW_MS = 24 * 3600_000;
 function boardEditButtonMarkup(data: BoardData, lang: Lang) {
   const mins = Math.floor(Date.now() / 60000);
   return { inline_keyboard: [[{ text: tb(lang, "✏️ Відкоригувати посадку"), callback_data: `brd:edit:${data.weekId}:${data.dayName}:${data.boardDate ?? warsawDateStr()}:${mins}` }]] };
@@ -2809,10 +2824,12 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
   if (candidates.length === 0) return ctx.reply(tb(dl, "Немає активного графіку."), menu());
   const boardOv = await loadDatesShiftOverrides(candidates.map(c => c.boardDate));
 
-  // Pick the first candidate day that has delivery runs within ±3h of now.
+  // Pick the first candidate day that has delivery runs within the boarding window.
   // Boarding covers delivery runs only — pickups don't mark attendance.
   let hadAnyToday = false;
   let chosen: { c: Candidate; sections: BoardData["sections"] } | null = null;
+  // Two passes: a near run (±3h) on any candidate day beats the after-start tail.
+  const lates: { c: Candidate; sections: BoardData["sections"] }[] = [];
   for (const c of candidates) {
     const myAssignments = await db.select({ shift: driverShiftAssignmentsTable.shift, factoryId: driverShiftAssignmentsTable.factoryId })
       .from(driverShiftAssignmentsTable)
@@ -2821,14 +2838,29 @@ bot.hears(bhears("✅ Посадка / явка"), async (ctx) => {
     const cancelled = await cancelledCellKeys(c.weekId, c.dayName);
     const secKeys = new Set<string>();
     const sections: BoardData["sections"] = [];
+    const lateSections: BoardData["sections"] = [];
     for (const a of myAssignments) {
       const k = `${a.factoryId}-${a.shift}`;
       if (secKeys.has(k) || cancelled.has(k)) continue; secKeys.add(k);
       const start = shiftStartOn(c.boardDate, facById.get(a.factoryId), a.shift, boardOv);
-      if (Math.abs(now.getTime() - start.getTime()) > BOARD_WINDOW_MS) continue;
-      sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) });
+      const sec = { factoryId: a.factoryId, shift: a.shift, factoryName: facName(a.factoryId) };
+      if (nearBoardWindow(now, start)) sections.push(sec);
+      else if (lateBoardWindow(now, start)) lateSections.push(sec);
     }
     if (sections.length > 0) { chosen = { c, sections }; break; }
+    if (lateSections.length > 0) lates.push({ c, sections: lateSections });
+  }
+  // Tail: the first day that still has unmarked people — today's already-confirmed
+  // morning run must not hide yesterday's unconfirmed night run.
+  if (!chosen && lates.length > 0) {
+    for (const l of lates) {
+      const keys = new Set(l.sections.map(s => `${s.factoryId}-${s.shift}`));
+      const pending = await db.select({ factoryId: scheduleEntriesTable.factoryId, shift: scheduleEntriesTable.shift })
+        .from(scheduleEntriesTable)
+        .where(and(eq(scheduleEntriesTable.weekId, l.c.weekId), eq(scheduleEntriesTable.dayOfWeek, l.c.dayName), eq(scheduleEntriesTable.status, "scheduled")));
+      if (pending.some(e => keys.has(`${e.factoryId}-${e.shift}`))) { chosen = l; break; }
+    }
+    chosen ??= lates[0]!;
   }
 
   if (!chosen) {
@@ -3032,12 +3064,12 @@ bot.action("brd:ok", async (ctx) => {
   if (leftForOthers > 0) summary += `\n🟡 ${tb(bl, "Залишено для інших водіїв:")} ${leftForOthers}`;
   if (skippedEarly > 0) summary += `\n⏭ ${tb(bl, "Рейси, що почнуться пізніше, пропущено:")} ${skippedEarly}`;
   summary += `\n\n🚌 ${tb(bl, "Час виїзду зафіксовано.")}`;
-  summary += `\n${tb(bl, "Хтось дійшов пізніше або помилилися? Відкоригувати можна протягом 2 годин.")}`;
+  summary += `\n${tb(bl, "Хтось дійшов пізніше або помилилися? Відкоригувати можна протягом 24 годин.")}`;
   try { await ctx.editMessageText(summary, { parse_mode: "Markdown", reply_markup: boardEditButtonMarkup(data, bl) }); } catch { /* ignore */ }
   await ctx.reply("Готово.", await driverMenuFor(driver, bl === "en" ? "en" : "uk"));
 });
 
-// Re-open an already-confirmed boarding for correction (2h window). The dialog
+// Re-open an already-confirmed boarding for correction (24h window). The dialog
 // state is long gone — rebuild the board from the DB: this driver's delivery
 // sections for that day, entries' current statuses as the starting point.
 bot.action(/^brd:edit:(\d+):(\w+):([\d-]+):(\d+)$/, async (ctx) => {
@@ -3048,7 +3080,7 @@ bot.action(/^brd:edit:(\d+):(\w+):([\d-]+):(\d+)$/, async (ctx) => {
   const [, weekIdS, dayS, dateS, minsS] = ctx.match as RegExpMatchArray;
   if (Date.now() - Number(minsS) * 60000 > BOARD_EDIT_WINDOW_MS) {
     await ctx.answerCbQuery();
-    return ctx.reply(tb(dl, "⏰ Минуло понад 2 години — тепер явку може виправити лише графіковий у веб-панелі."), await driverMenuFor(driver, dl));
+    return ctx.reply(tb(dl, "⏰ Минуло понад 24 години — тепер явку може виправити лише графіковий у веб-панелі."), await driverMenuFor(driver, dl));
   }
   const weekId = Number(weekIdS);
   const dayName = dayS as DayOfWeek;
