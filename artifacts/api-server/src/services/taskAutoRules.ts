@@ -104,6 +104,17 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
         workerId: f.id, factoryId: f.factoryId, autoParams: { workerName: f.fullName, fireDate, docTypeCode: "zus_zwua" }, assign: { factoryId: null } });
     }
+    // задачі по фірмі (zwua:<w>:<company>, виповідзення з однієї фабрики — людина лишається
+    // активною, тож у fired її нема) живуть, поки не внесено ZWUA після задачі; без цього
+    // нічний прогін закривав їх наступного ранку без документа
+    const pushed = new Set(out.map(c => c.sourceKey));
+    const openZ = (await db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_zus"), inArray(tasksTable.status, OPEN_STATUSES))))
+      .filter(t => t.sourceKey && t.workerId && !pushed.has(t.sourceKey) && t.sourceKey.split(":").length === 3);
+    const zDocs = await zwuaDocDates(openZ.map(t => t.workerId!));
+    for (const t of openZ) {
+      if (zwuaSatisfied(t, zDocs)) continue;
+      out.push({ sourceKey: t.sourceKey!, rule: "termination_zus", title: t.title, priority: t.priority as TaskPriority, dueAt: dateStr(t.dueAt), workerId: t.workerId, factoryId: t.factoryId, autoParams: (t.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: null } });
+    }
   }
   // 12. Документ звільнення: задача живе, поки пакет не надіслано/підписано (інакше auto_resolved)
   if (on("termination_doc")) {
@@ -341,6 +352,41 @@ export async function ensurePendingDocTask(documentId: number): Promise<Task | n
   const { defaultChecklist: dc } = await import("./taskResolve");
   return createTask({ kind: "task", title: `Перевірити завантажений документ: ${ty?.name ?? d.title}`, priority: "high", dueAt: addDaysStr(warsawToday(), 2), assigneeAdminId: assignee, workerId: w.id, factoryId: w.factoryId, documentId: d.id,
     source: "auto:pending_doc", sourceKey, autoParams: { workerName: w.fullName, source: d.source }, checklist: dc("pending_doc", null) }, null);
+}
+
+// ZWUA у профілі (не missing): дати внесення по працівниках.
+async function zwuaDocDates(workerIds: number[]): Promise<Map<number, Date[]>> {
+  const out = new Map<number, Date[]>();
+  if (!workerIds.length) return out;
+  const [ty] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua"));
+  if (!ty) return out;
+  const docs = await db.select({ workerId: workerDocumentsTable.workerId, createdAt: workerDocumentsTable.createdAt }).from(workerDocumentsTable)
+    .where(and(inArray(workerDocumentsTable.workerId, [...new Set(workerIds)]), eq(workerDocumentsTable.docTypeId, ty.id), ne(workerDocumentsTable.status, "missing")));
+  for (const d of docs) out.set(d.workerId, [...(out.get(d.workerId) ?? []), d.createdAt]);
+  return out;
+}
+// Задача ZWUA закрита документом? zwua:<w> — будь-який ZWUA у профілі (як нічний кандидат);
+// zwua:<w>:<company> — внесений ПІСЛЯ задачі (у документа нема фірми: старий ZWUA від
+// попередньої фірми нову задачу не закриває).
+function zwuaSatisfied(t: Task, docs: Map<number, Date[]>): boolean {
+  const list = docs.get(t.workerId ?? -1) ?? [];
+  return (t.sourceKey ?? "").split(":").length === 3 ? list.some(d => d > t.createdAt) : list.length > 0;
+}
+
+// Одразу після внесення документа ZWUA (services/documentEvents.ts) — закрити задачі
+// виреєстрування цього працівника, не чекаючи нічного прогону (06:30).
+export async function resolveZwuaTasksNow(workerId: number): Promise<number> {
+  const open = await db.select().from(tasksTable).where(and(eq(tasksTable.source, "auto:termination_zus"), eq(tasksTable.workerId, workerId), inArray(tasksTable.status, OPEN_STATUSES)));
+  if (!open.length) return 0;
+  const docs = await zwuaDocDates([workerId]);
+  let n = 0;
+  for (const t of open) {
+    if (!zwuaSatisfied(t, docs)) continue;
+    await db.update(tasksTable).set({ status: "auto_resolved", completedAt: new Date(), resolutionNote: "документ ZUS ZWUA внесено в профіль", updatedAt: new Date() }).where(eq(tasksTable.id, t.id));
+    await logTaskEvent(t.id, "auto_resolved", null);
+    n++;
+  }
+  return n;
 }
 
 export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats> {

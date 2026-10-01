@@ -1927,6 +1927,18 @@ function EffectiveStatusLine({ workerId, legality }: { workerId: number; legalit
           {legality.effectiveSince && src === "documents" ? ` · ${t("з")} ${fmtDocDate(legality.effectiveSince)}` : ""}
         </span>
       </div>
+      {/* Кілька роботодавців (01.10.2026): сводна бере статус ПО ФАБРИЦІ рядка — показуємо кожну */}
+      {!!legality.payrollByFactory?.length && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+          {legality.payrollByFactory.map(f => (
+            <span key={f.factoryId}>
+              <span className="font-medium text-slate-600">{f.factoryName ?? `#${f.factoryId}`}</span>
+              {f.companyName ? <span className="text-slate-400"> ({f.companyName})</span> : null}: <span className={`rounded px-1 py-0.5 ${f.status && LEGAL_BADGE[f.status as LegalStatus] ? LEGAL_BADGE[f.status as LegalStatus]!.cls : "bg-rose-50 text-rose-700"}`}>{label(f.status)}</span>
+              <span className="text-slate-400"> · {f.source === "documents" ? t("за документами") : f.source === "manual" ? t("вручну") : t("без статусу")}{f.contract !== "legal" && f.contract !== "expiring" ? ` · ${t("умова")}: ${t(axisStatusLabel("contract", { ...legality, contract: f.contract as any, reasons: [] }))}` : ""}</span>
+            </span>
+          ))}
+        </div>
+      )}
       {/* Чому документи «не зараховуються» (кейс Svyrydiuk 16.09.2026: документи є, а умова
           закінчилась → статус з ручного поля/порожній): назвати червоні осі прямо */}
       {src !== "documents" && legality.overall !== "legal" && legality.overall !== "expiring" && (() => {
@@ -2137,7 +2149,7 @@ function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], co
   const real = cands.filter(it => it.doc.status !== "missing");
   if (real.length) {
     const withMeta = real.map(it => {
-      const expiresAt = it.type.code === "status_ukr" ? (it.doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : it.doc.expiresAt;
+      const expiresAt = docExpiry(it.type.code, it.doc, globals);
       const pending = it.doc.status === "pending";
       const expired = !pending && (it.doc.status === "expired" || isExpired(expiresAt));
       const indefinite = !it.type.hasExpiry && !expiresAt;
@@ -2166,10 +2178,18 @@ function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], co
   return { kind: "empty", requestedDoc: requested[0]?.doc ?? null };
 }
 
+// Ефективний строк дії: status_ukr — з globals.ukrStatusEnd; ZWUA строку не має (дата в
+// ранніх записах стояла в expiresAt як «дата виреєстрування» — не рахуємо її простроченням).
+function docExpiry(code: string | null | undefined, doc: WorkerDocument, globals?: LegalizationGlobals | null): string | null {
+  if (code === "status_ukr") return doc.expiresAt ?? globals?.ukrStatusEnd ?? null;
+  if (code === "zus_zwua") return null;
+  return doc.expiresAt;
+}
+
 // Документ поза слотами — рядок уже реально існує, навіть якщо статус missing
 // (напр. відхилений скан з бота лишає reviewNote — важливо не ховати причину).
 function otherDocState(doc: WorkerDocument, type: DocumentType | null, globals?: LegalizationGlobals | null): DocRowState {
-  const expiresAt = type?.code === "status_ukr" ? (doc.expiresAt ?? globals?.ukrStatusEnd ?? null) : doc.expiresAt;
+  const expiresAt = docExpiry(type?.code ?? null, doc, globals);
   const pending = doc.status === "pending";
   const expired = !pending && (doc.status === "expired" || isExpired(expiresAt));
   const indefinite = !!type && !type.hasExpiry && !expiresAt;
@@ -2260,6 +2280,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const dLeft = state.expiresAt ? daysUntil(state.expiresAt) : null;
   const stateText = state.pending ? t("⏳ на перевірці")
     : state.expired ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt!) })
+    : state.indefinite && type?.code === "zus_zwua" ? ((doc.issuedAt ?? doc.expiresAt) ? t("виреєстровано {date}", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
     : state.indefinite ? t("безстроково")
     : state.expiresAt ? (expiryTone(dLeft, leadDaysCache) ? t("до {date} · {n} дн.", { date: fmtDocDate(state.expiresAt), n: dLeft ?? "" }) : t("до {date}", { date: fmtDocDate(state.expiresAt) }))
     : t("дата не вказана");
@@ -2732,13 +2753,15 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const [title, setTitle] = useState(doc?.title ?? "");
   const [status, setStatus] = useState(doc?.status ?? "present");
   const [number, setNumber] = useState(doc?.number ?? "");
-  const [expiresAt, setExpiresAt] = useState(doc?.expiresAt ?? "");
+  // ZWUA: дата виреєстрування живе в issuedAt; ранні записи мали її в expiresAt — переносимо при редагуванні
+  const zwuaDoc = !!doc && types.find(ty => ty.id === doc.docTypeId)?.code === "zus_zwua";
+  const [expiresAt, setExpiresAt] = useState(zwuaDoc ? "" : doc?.expiresAt ?? "");
   const [fileUrl, setFileUrl] = useState(doc?.fileUrl ?? "");
   const [note, setNote] = useState(doc?.note ?? "");
   const [file, setFile] = useState<File | null>(null);
   // Легалізація: строки/справа/роботодавець — окремий PATCH .../legal (cap legalization).
   const [validFrom, setValidFrom] = useState(doc?.validFrom ?? "");
-  const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? "");
+  const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? (zwuaDoc ? doc?.expiresAt ?? "" : ""));
   const [issuer, setIssuer] = useState(doc?.issuer ?? "");
   const [employerCompanyId, setEmployerCompanyId] = useState(doc?.employerCompanyId != null ? String(doc.employerCompanyId) : defaultEmployerCompanyId != null ? String(defaultEmployerCompanyId) : "");
   // caseStatus за замовчуванням "submitted" — лише для stay_case_certificate
@@ -2825,7 +2848,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
       }
     }
   };
-  const fieldDisabled = (f: DocField) => LEGAL_FIELD_KEYS.has(f.key) && !canLegal;
+  const fieldDisabled = (f: DocField) => LEGAL_FIELD_KEYS.has(f.key) && !f.open && !canLegal;
 
   const renderField = (f: DocField) => {
     const req = f.required && <span className="ml-1 text-rose-500">*</span>;
@@ -2901,6 +2924,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
     status: !isCustomType && status === "missing" ? "present" : status,
     ...(hasNumberField ? { number } : {}),
     expiresAt: expiresAt || null, fileUrl, note,
+    ...(fields.some(f => f.key === "issuedAt" && f.open) ? { issuedAt: issuedAt || null } : {}),
   });
   const legalBody = () => ({
     validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: expiresAt || null,
@@ -3752,7 +3776,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
   const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
   const showVal = (field: string, v: string | null): string => {
     if (v == null || v === "") return "—";
-    if (field === "factoryId" || field === "factoryEnded") return factories.find(f => String(f.id) === v)?.name ?? v;
+    if (field === "factoryId" || field === "factoryEnded" || field === "factoryAdded") return factories.find(f => String(f.id) === v)?.name ?? v;
     if (field === "terminationDate") return v.replace(/ @(\d+)$/, (_m, id) => ` · ${factories.find(f => String(f.id) === id)?.name ?? `#${id}`}`);
     if (field === "positionId") return positions.find(p => String(p.id) === v)?.name ?? v;
     return fmtVal(v, t);

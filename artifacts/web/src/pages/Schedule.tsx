@@ -250,8 +250,26 @@ export default function Schedule() {
     onError: (e: any) => toast.error(e.message),
   });
   const addEntry = useMutation({
-    mutationFn: (v: { workerId: number; day: DayCode; shift: ShiftCode }) => post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v }),
+    mutationFn: async (v: { workerId: number; day: DayCode; shift: ShiftCode }) => {
+      try {
+        return await post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v });
+      } catch (e: any) {
+        // чужа фабрика (нема в профілі): сервер просить підтвердити — фабрика стане додатковою, потрібна умова (01.10.2026)
+        if (e?.status !== 409 || e?.data?.code !== "factory_not_in_profile") throw e;
+        const wName = allWorkers.find(w => w.id === v.workerId)?.fullName ?? "";
+        const okAdd = await confirm({
+          title: t("Фабрики {factory} немає в профілі {name}", { factory: e.data.factoryName ?? facName, name: wName }),
+          message: t("Якщо поставити в графік, фабрика додасться до профілю як додаткова{company} і потрібна буде нова умова на неї. Ставити?", { company: e.data.companyName ? ` (${t("роботодавець")}: ${e.data.companyName})` : "" }),
+          confirmText: t("Поставити в графік"),
+        });
+        if (!okAdd) return null;
+        const r = await post("/schedule/entry", { weekStart, factoryId: Number(factoryId), ...v, addFactory: true });
+        toast.info(t("Фабрику {factory} додано до профілю як додаткову — потрібна умова", { factory: e.data.factoryName ?? facName }));
+        return r;
+      }
+    },
     onSuccess: (r: any) => {
+      if (r === null) return;
       reload();
       if (r?.restGapHours != null) toast.warning(t("Замало часу на відпочинок між змінами: {h} год", { h: r.restGapHours }), { description: t("Людина стоїть у двох змінах поспіль — перевірте, чи це свідомо.") });
     },
@@ -261,7 +279,7 @@ export default function Schedule() {
   const removeEntry = useMutation({ mutationFn: (id: number) => del(`/schedule/entry/${id}`), onSuccess: reload });
   const setStatus = useMutation({ mutationFn: (v: { id: number; status: string }) => patch(`/schedule/entry/${v.id}/status`, { status: v.status }), onSuccess: reload, onError: (e: any) => toast.error(e.message) });
   const linkUnplanned = useMutation({ mutationFn: (v: { id: number; workerId: number }) => post(`/unplanned/${v.id}/link`, { workerId: v.workerId }),
-    onSuccess: () => { reload(); toast.success(t("Прив'язано")); }, onError: (e: any) => toast.error(e.message) });
+    onSuccess: (r: any) => { reload(); toast.success(t("Прив'язано")); if (r?.factoryAdded) toast.info(t("Фабрику {factory} додано до профілю як додаткову — потрібна умова", { factory: r.factoryAdded })); }, onError: (e: any) => toast.error(e.message) });
   const cancelShift = useMutation({
     mutationFn: (v: { day: DayCode; shift: ShiftCode; notifyWorkers: boolean; notifyDrivers: boolean }) =>
       post("/schedule/shift-cancel", { weekStart, factoryId: Number(factoryId), ...v }),
@@ -717,13 +735,22 @@ export default function Schedule() {
           .filter(w => !q || w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
           .sort((a, b) => a.fullName.localeCompare(b.fullName, "pl"))
           .slice(0, 50);
+        // чужі (інша основна фабрика) — лише при пошуку від 2 символів, з позначкою фабрики; сервер попросить
+        // підтвердити додавання фабрики в профіль (409 factory_not_in_profile)
+        const others = q.length >= 2 ? allWorkers
+          .filter(w => w.isActive && String(w.factoryId) !== factoryId && !inShiftIds.has(w.id))
+          .filter(w => !terminatedOn(w, factoryId ? Number(factoryId) : null, cellDate))
+          .filter(w => w.fullName.toLowerCase().includes(q) || (w.workerCode ?? "").includes(q))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName, "pl"))
+          .slice(0, 20) : [];
+        const facNameOf = (id: number | null) => allFactories.find(f => f.id === id)?.name ?? "—";
         return (
           <Modal open onClose={() => setAddTo(null)} title={`${t("Додати людину")} — ${DAY_FULL[addTo.day]} · ${SHIFT_UK[addTo.shift]}`}>
             <div className="space-y-3">
               <input autoFocus value={addQuery} onChange={e => setAddQuery(e.target.value)} placeholder={t("Пошук за іменем або кодом")}
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-red-300 focus:outline-none" />
               <div className="max-h-72 space-y-1 overflow-y-auto">
-                {cands.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : cands.map(w => (
+                {cands.length === 0 && others.length === 0 ? <Empty>{q.length < 2 ? t("Нікого не знайдено") : t("Нікого не знайдено — ні на цій фабриці, ні на інших")}</Empty> : cands.map(w => (
                   <button key={w.id} disabled={addEntry.isPending}
                     onClick={() => { addEntry.mutate({ workerId: w.id, day: addTo.day, shift: addTo.shift }); setAddTo(null); }}
                     className="flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-red-300 hover:bg-red-50 disabled:opacity-50">
@@ -731,6 +758,20 @@ export default function Schedule() {
                     {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
                   </button>
                 ))}
+                {others.length > 0 && (
+                  <>
+                    <div className="px-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-amber-700">{t("З інших фабрик — фабрика додасться до профілю")}</div>
+                    {others.map(w => (
+                      <button key={`o${w.id}`} disabled={addEntry.isPending}
+                        onClick={() => { addEntry.mutate({ workerId: w.id, day: addTo.day, shift: addTo.shift }); setAddTo(null); }}
+                        className="flex w-full items-center gap-2 rounded-lg border border-dashed border-amber-200 px-3 py-2 text-left text-sm hover:border-amber-400 hover:bg-amber-50 disabled:opacity-50">
+                        <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{w.fullName}</span>
+                        <span className="shrink-0 text-xs text-amber-700">{facNameOf(w.factoryId)}</span>
+                        {w.workerCode && <span className="shrink-0 font-mono text-xs text-slate-400">{w.workerCode}</span>}
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
               <p className="text-xs text-slate-400">{t("Людину буде додано до зміни; статус «вийшов» позначте в явці.")}</p>
             </div>

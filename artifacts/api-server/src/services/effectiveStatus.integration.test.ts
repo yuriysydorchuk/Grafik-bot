@@ -120,3 +120,57 @@ test("прийняття зміни за документами: превʼю �
   const [rowStill] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row!.id));
   assert.equal(rowStill?.legalStatus, "polak", "відхилення не чіпає сводну");
 });
+
+test("дві фабрики, умова лише на одну: статус для виплат ПО ФАБРИЦІ рядка (01.10.2026) — add-row, profile-apply, профіль по фабриках", opts, async () => {
+  const { workerFactoriesTable } = await import("@workspace/db");
+  const owner = await seedAdmin({ role: "owner" });
+  const [es] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [eso] = await db.insert(companiesTable).values({ name: "ESO" }).returning();
+  const [agram] = await db.insert(factoriesTable).values({ name: "AGRAM", companyId: es!.id, city: "Люблін" }).returning();
+  const [sushi] = await db.insert(factoriesTable).values({ name: "SUSHI", companyId: eso!.id, city: "Люблін" }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Jan Polak", nationality: "poland", companyId: es!.id, factoryId: agram!.id, isActive: true, legalStatus: null, hourlyRate: 31.4, hourlyRateNetto: 25.35 }).returning();
+  await db.insert(workerFactoriesTable).values({ workerId: w!.id, factoryId: sushi!.id });
+  await signedUmowa(w!.id, agram!.id, es!.id, "2026-08-15");
+  await recomputeWorkerLegality(w!.id, "2026-09-06");
+  // загальний статус людини: умови на SUSHI нема → не «за документами»
+  const [lg] = await db.select().from(workerLegalityTable).where(eq(workerLegalityTable.workerId, w!.id));
+  assert.equal(lg?.overall, "illegal"); assert.equal(lg?.effectiveSource, "none");
+
+  // за місяць по фабриці: AGRAM — документи, SUSHI — none; фабрика поза профілем — теж none
+  const { legalityForMonth } = await import("./legalityMonth.ts");
+  const { resolveEffectiveLegal } = await import("./effectiveStatus.ts");
+  const effA = resolveEffectiveLegal(w!, await legalityForMonth(w!.id, "2026-09", undefined, agram!.id));
+  const effS = resolveEffectiveLegal(w!, await legalityForMonth(w!.id, "2026-09", undefined, sushi!.id));
+  assert.deepEqual([effA.source, effA.status], ["documents", "polak"]);
+  assert.deepEqual([effS.source, effS.status], ["none", null]);
+  const [other] = await db.insert(factoriesTable).values({ name: "LST", companyId: es!.id, city: "Люблін" }).returning();
+  const effO = resolveEffectiveLegal(w!, await legalityForMonth(w!.id, "2026-09", undefined, other!.id));
+  assert.equal(effO.source, "none", "фабрика поза профілем: умови на неї нема");
+
+  // ручне додавання рядка — снапшот по фабриці рядка
+  const addA = await request(app).post("/api/svodni/rows").set("Cookie", owner.cookie).set(H).send({ periodMonth: "2026-09", city: "Люблін", factoryLabel: "AGRAM", workerId: w!.id });
+  const addS = await request(app).post("/api/svodni/rows").set("Cookie", owner.cookie).set(H).send({ periodMonth: "2026-09", city: "Люблін", factoryLabel: "SUSHI", workerId: w!.id });
+  assert.equal(addA.status, 200, JSON.stringify(addA.body)); assert.equal(addS.status, 200, JSON.stringify(addS.body));
+  const rows = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, w!.id));
+  const rA = rows.find(r => r.factoryId === agram!.id)!, rS = rows.find(r => r.factoryId === sushi!.id)!;
+  assert.equal(rA.legalSource, "documents"); assert.equal(rA.legalStatus, "polak");
+  assert.equal(rS.legalSource, "none"); assert.equal(rS.legalStatus, null);
+
+  // profile-apply ефективної зміни: рядок AGRAM — polak за документами, SUSHI лишається без статусу
+  await db.update(svodniRowsTable).set({ legalStatus: null, legalSource: "none", konto: 0 }).where(eq(svodniRowsTable.id, rA.id));
+  const apply = await request(app).post("/api/svodni/profile-apply").set("Cookie", owner.cookie).set(H)
+    .send({ workerId: w!.id, changes: { effectiveLegalStatus: "polak" }, from: "2026-09-01", rowIds: [rA.id, rS.id] });
+  assert.equal(apply.status, 200, JSON.stringify(apply.body));
+  const [rA2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, rA.id));
+  const [rS2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, rS.id));
+  assert.equal(rA2?.legalStatus, "polak"); assert.equal(rA2?.legalSource, "documents");
+  assert.equal(rS2?.legalStatus ?? null, null, "SUSHI без умови — не polak"); assert.notEqual(rS2?.legalSource, "documents");
+
+  // профіль: блок по фабриках
+  const g = await request(app).get(`/api/workers/${w!.id}/legality`).set("Cookie", owner.cookie);
+  assert.equal(g.status, 200);
+  const pf = g.body.payrollByFactory as any[];
+  assert.equal(pf.length, 2);
+  assert.deepEqual(pf.find(x => x.factoryId === agram!.id)?.source, "documents");
+  assert.deepEqual(pf.find(x => x.factoryId === sushi!.id)?.source, "none");
+});

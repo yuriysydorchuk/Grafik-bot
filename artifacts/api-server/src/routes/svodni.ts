@@ -15,7 +15,7 @@ import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, factoryBonusPerHour, hasCashBonus, legacyPayoutRule, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type PayoutRule, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
-import { effectiveView, effectiveViewOf, loadLegalityCache } from "../services/effectiveStatus";
+import { effectiveView, effectiveViewOf } from "../services/effectiveStatus";
 import { releaseSourcesForRows, remarkSources, findSourceConflicts, releasedCount, type ReleasedSources, type Executor } from "../services/svodniSourceMarkers";
 import { loadRateRules } from "../services/rateRules";
 import { nameCaps } from "../services/drive";
@@ -1126,7 +1126,7 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     hr.dataUrodzenia = `${d}.${m}.${y}`;
   }
   // ефективний статус (за документами або вручну) — снапшот у рядок на момент додавання
-  const effW = effectiveView(worker!, (await (await import("../services/legalityMonth")).loadLegalityCacheForMonth([worker!.id], periodMonth)).get(worker!.id)); // за місяць рядка
+  const effW = effectiveView(worker!, await (await import("../services/legalityMonth")).legalityForMonth(worker!.id, periodMonth, undefined, factory?.id ?? null)); // за місяць рядка, по фабриці рядка
   const stud26Add = effW.isStudent && !!under26;
   // Ставки — дзеркало from-hours: профіль (override) → правила фабрики (посада →
   // найдешевша посада → базова пара). Після чистки профільних ставок (07.08.2026)
@@ -1796,6 +1796,8 @@ export async function profileChangeContext(workerId: number, body: Record<string
   let virtualSource: string = "documents";
   if (virtual.size) { const eff = await effectiveViewOf(w); if ((eff.legalStatus ?? null) === (patch.legalStatus ?? null)) virtualSource = eff.legalSource; }
   const nextW = { ...w, ...patch, ...(virtual.size ? { legalSource: virtualSource } : {}) } as typeof workersTable.$inferSelect;
+  const lgMonth = await import("../services/legalityMonth");
+  const lgRules = virtual.size ? (await import("../services/legalityRecompute")).loadLegalRules() : undefined;
   const fromMonth = from.slice(0, 7);
   const rows = (await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf),
@@ -1839,9 +1841,15 @@ export async function profileChangeContext(workerId: number, body: Record<string
     unsplit?: boolean; // умови вирівнялись по всьому місяцю — сегменти зшиваються
   }[] = [];
   for (const row of rows) {
+    // ефективний статус (virtual) — ПО ФАБРИЦІ рядка й за його місяць (01.10.2026): умова на фабрику
+    // рядка / обовʼязки її фірми; без документів — ручне поле (однакове для всіх рядків)
+    const rowW = virtual.size ? await (async () => {
+      const eff = effectiveView(w, await lgMonth.legalityForMonth(w.id, row.periodMonth, lgRules, row.factoryId));
+      return { ...nextW, legalStatus: eff.legalStatus, isStudent: eff.isStudent, legalSource: eff.legalSource } as typeof nextW;
+    })() : nextW;
     const locked = isLocked(locksByMonth.get(row.periodMonth) ?? [], row.city, row.factoryLabel);
     const rowPayoutRule = payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth);
-    const { set, diffs, merged } = rowSetFromProfile(row, nextW, changed, sectionOf(row), ruleOf(row.factoryId, nextW.positionId), rowPayoutRule);
+    const { set, diffs, merged } = rowSetFromProfile(row, rowW, changed, sectionOf(row), ruleOf(row.factoryId, rowW.positionId), rowPayoutRule);
     // сегментний шлях: (а) зміна з середини першого місяця → порізка;
     // (б) рядок УЖЕ порізаний → нові умови застосовуються до сегментів
     // від дати (батько ніколи не пишеться повз сегменти)
@@ -1854,19 +1862,19 @@ export async function profileChangeContext(workerId: number, body: Record<string
       // зберігають свої відмінності й не «зшиваються» ранішою зміною
       const r2o = (n: number) => Math.round(n * 100) / 100;
       const isBonusRow = row.factoryId != null && hasCashBonus(rowPayoutRule);
-      const rowRules = ruleOf(row.factoryId, nextW.positionId);
+      const rowRules = ruleOf(row.factoryId, rowW.positionId);
       const legalChanged = changed.has("legalStatus") || changed.has("isStudent");
       const overlay = (base: SegState): SegState => {
         const st: SegState = { ...base };
         if (legalChanged) {
-          st.legal = nextW.legalStatus ?? null;
-          st.isStudent = nextW.legalStatus != null ? nextW.legalStatus === "student" : !!nextW.isStudent;
+          st.legal = rowW.legalStatus ?? null;
+          st.isStudent = rowW.legalStatus != null ? rowW.legalStatus === "student" : !!rowW.isStudent;
         }
-        if (changed.has("birthDate")) st.under26 = nextW.birthDate ? isUnder26(nextW.birthDate) : nextW.under26;
+        if (changed.has("birthDate")) st.under26 = rowW.birthDate ? isUnder26(rowW.birthDate) : rowW.under26;
         if (changed.has("positionId")) { st.section = sectionOf(row) ?? null; st.label = sectionOf(row) ?? null; }
         const stud26w = st.isStudent === true && st.under26 === true;
-        const resolved = resolveBaseRates(nextW, rowRules, stud26w);
-        if (changed.has("hourlyRate") && (nextW.hourlyRate ?? resolved.brutto) != null) st.rateBrutto = nextW.hourlyRate ?? resolved.brutto;
+        const resolved = resolveBaseRates(rowW, rowRules, stud26w);
+        if (changed.has("hourlyRate") && (rowW.hourlyRate ?? resolved.brutto) != null) st.rateBrutto = rowW.hourlyRate ?? resolved.brutto;
         const baseStud26 = base.isStudent === true && base.under26 === true;
         // ставку вікна перераховуємо лише коли її реально зачеплено: явна зміна
         // ставки, бонусні поля (Agram/LST) або зміна студентства САМЕ цього вікна
@@ -1876,15 +1884,15 @@ export async function profileChangeContext(workerId: number, body: Record<string
         if (rateTouched) {
           if (isBonusRow) {
             const b = stud26w ? (resolved.brutto ?? st.rateBrutto ?? null) : (resolved.netto ?? KSIEG_STD_NETTO());
-            const bonusW = stud26w ? 0 : factoryBonusPerHour(nextW, rowPayoutRule, row.periodMonth, row.hours);
+            const bonusW = stud26w ? 0 : factoryBonusPerHour(rowW, rowPayoutRule, row.periodMonth, row.hours);
             if (b != null) {
               st.rateNetto = r2o(b + bonusW);
               st.facBonus = bonusW > 0 ? bonusW : null;
             }
           } else if (stud26w) {
             st.rateNetto = st.rateBrutto ?? resolved.brutto ?? st.rateNetto; // неоподаткований: нетто = брутто
-          } else if ((nextW.hourlyRateNetto ?? resolved.netto) != null) {
-            st.rateNetto = nextW.hourlyRateNetto ?? resolved.netto;
+          } else if ((rowW.hourlyRateNetto ?? resolved.netto) != null) {
+            st.rateNetto = rowW.hourlyRateNetto ?? resolved.netto;
           }
         }
         // вікно без ставок (рядок був «не оформлений»): статусна зміна
@@ -1917,7 +1925,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
           applyLegalDefaults(m3, true, {
             profileLegal: (uniform.legal ?? null) as any, factoryLabel: row.factoryLabel, city: row.city, firm: row.firm,
             factoryId: row.factoryId, rule: rowPayoutRule,
-            payoutPref: nextW.payoutPrefKind ? { kind: nextW.payoutPrefKind as any, value: nextW.payoutPrefValue ?? null } : null,
+            payoutPref: rowW.payoutPrefKind ? { kind: rowW.payoutPrefKind as any, value: rowW.payoutPrefValue ?? null } : null,
           });
         }
         const uSet: Record<string, unknown> = {};
@@ -1941,7 +1949,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
             hours: p.hours, rateNetto: p.rateNetto, rateBrutto: p.rateBrutto,
             isStudent: p.isStudent, under26: p.under26, legal: p.legal, facBonus: p.facBonus,
           })),
-          nextW.payoutPrefKind ? { kind: nextW.payoutPrefKind as any, value: nextW.payoutPrefValue ?? null } : null,
+          rowW.payoutPrefKind ? { kind: rowW.payoutPrefKind as any, value: rowW.payoutPrefValue ?? null } : null,
         );
         const sDiffs: RowDiff[] = [];
         for (const k of ["rateBrutto", "rateNetto", "doWyplaty", "brutto", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
@@ -2535,9 +2543,14 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   // інакше ручне поле) — знімається в рядок на момент формування (06.09.2026)
   const workersRaw = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
   // статус — ЗА МІСЯЦЬ сводної (services/legalityMonth.ts): умова, що перекриває місяць, зелена, документи — на кінець місяця
-  const lgCache = await (await import("../services/legalityMonth")).loadLegalityCacheForMonth(workerIds, month);
-  const workers = workersRaw.map(w => effectiveView(w, lgCache.get(w.id)));
-  const wById = new Map(workers.map(w => [w.id, w]));
+  // …і ПО ФАБРИЦІ пари (01.10.2026): умова на цю фабрику, обовʼязки її фірми — рядок Agram може бути
+  // «за документами», а рядок Sushi тієї ж людини без умови — ручний/«не зголошений»
+  const { loadLegalityCacheForMonthByFactory, pairKey } = await import("../services/legalityMonth");
+  const lgByPair = await loadLegalityCacheForMonthByFactory([...hoursByPair.values()], month);
+  const wRawById = new Map(workersRaw.map(w => [w.id, w]));
+  type WorkerEff = ReturnType<typeof effectiveView<typeof workersRaw[number]>>;
+  const workers: WorkerEff[] = []; // типовий якір для хелперів нижче; реальні обʼєкти — у wById по парі
+  const wById = new Map([...hoursByPair.values()].flatMap(p => { const raw = wRawById.get(p.workerId); return raw ? [[pairKey(p.workerId, p.factoryId), effectiveView(raw, lgByPair.get(pairKey(p.workerId, p.factoryId)))] as const] : []; }));
   // дні з файлу фабрики (factory_hours.days) — теж точні дати активності
   {
     const { factoryHoursTable } = await import("@workspace/db");
@@ -2551,7 +2564,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   // статус рядка (extras.zusStatus) ПІСЛЯ applyLegalDefaults: суто текст у
   // колонці статусу, розклад konto/готівки не зачіпає (legalStatusOf її не знає).
   const localDayStr = (v: Date) => `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
-  const isUnregistered = (w: typeof workers[number], pairHours: number): boolean => {
+  const isUnregistered = (w: WorkerEff, pairHours: number): boolean => {
     if (w.isActive || !w.firedAt || pairHours <= 0) return false;
     const fired = localDayStr(new Date(w.firedAt));
     if (fired < monthStart) return true;
@@ -2568,8 +2581,8 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   // назвами вкладок (findSvodniRowForPair).
   const companiesAll = await db.select().from(companiesTable);
   const coNameById = new Map(companiesAll.map(c => [c.id, c.name]));
-  const firmOf = (w0: typeof workers[number]): string | null => coNameById.get(w0.companyId ?? -1) ?? null;
-  const firmSuffixFor = (fac: typeof facRows[number] | undefined, w0: typeof workers[number]): string => {
+  const firmOf = (w0: WorkerEff): string | null => coNameById.get(w0.companyId ?? -1) ?? null;
+  const firmSuffixFor = (fac: typeof facRows[number] | undefined, w0: WorkerEff): string => {
     if (!fac?.multiFirm) return "";
     const cn = firmOf(w0) ?? "";
     return cn === "ES" ? "EURO SUPORT" : cn.toUpperCase(); // як вкладки таблиці
@@ -2680,7 +2693,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     else delete extrasObj.debtIn;
   };
   for (const pair of hoursByPair.values()) {
-    const w = wById.get(pair.workerId);
+    const w = wById.get(pairKey(pair.workerId, pair.factoryId));
     if (!w) continue;
     const fac = pair.factoryId != null ? facById.get(pair.factoryId) : undefined;
     const factoryLabel = tabLabelFor(fac);

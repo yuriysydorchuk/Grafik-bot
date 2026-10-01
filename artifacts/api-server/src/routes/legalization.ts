@@ -71,7 +71,9 @@ router.get("/workers/:id/legality", async (req, res) => {
     lockedCount: Array.isArray(recent.skippedLocked) ? recent.skippedLocked.length : 0,
     byAdmin: recent.adminId != null, dismissedAt: recent.reviewDismissedAt,
   } : null;
-  ok(res, row ? { ...row, pendingEffectiveChange: pendingChange ?? null, recentEffectiveChange } : null);
+  // статус для виплат по фабриках (>1 роботодавця): рядок Agram може бути «за документами», рядок Sushi — ні
+  const byFactory = await (await import("../services/legalityMonth")).payrollByFactory(id).catch(() => []);
+  ok(res, row ? { ...row, pendingEffectiveChange: pendingChange ?? null, recentEffectiveChange, payrollByFactory: byFactory } : null);
 });
 router.post("/workers/:id/legality/recompute", LG, async (req, res) => {
   const id = Number(req.params.id);

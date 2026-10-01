@@ -340,3 +340,29 @@ test("PATCH /absences/:entryId відхиляє не-пропуск і нева�
   const missing = await request(app).patch(`/api/absences/999999`).set("Cookie", cookie).set(H).send({ justified: true });
   assert.equal(missing.status, 404);
 });
+
+test("POST /schedule/entry на чужу фабрику: 409 factory_not_in_profile → addFactory додає фабрику в профіль (worker_factories + журнал); додаткова в профілі — без питань", opts, async () => {
+  const { workerFactoriesTable, workerChangesTable, companiesTable } = await import("@workspace/db");
+  const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [home] = await db.insert(factoriesTable).values({ name: "HOME", companyId: co!.id, shiftCount: 2 }).returning();
+  const [other] = await db.insert(factoriesTable).values({ name: "OTHER", companyId: co!.id, shiftCount: 2 }).returning();
+  const w = await mkWorker(home!.id, "Nowak Jan");
+  const body = { weekStart: WEEK, workerId: w, factoryId: other!.id, day: "mon", shift: "1" };
+  const r1 = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H).send(body);
+  assert.equal(r1.status, 409, JSON.stringify(r1.body));
+  assert.equal(r1.body.code, "factory_not_in_profile"); assert.equal(r1.body.factoryName, "OTHER"); assert.equal(r1.body.companyName, "ES");
+  assert.equal((await db.select().from(scheduleEntriesTable)).length, 0, "без підтвердження в графік не ставимо");
+  const r2 = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H).send({ ...body, addFactory: true });
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  const wf = await db.select().from(workerFactoriesTable).where(eq(workerFactoriesTable.workerId, w));
+  assert.equal(wf.length, 1); assert.equal(wf[0]!.factoryId, other!.id); assert.equal(String(wf[0]!.validFrom), WEEK);
+  const j = await db.select().from(workerChangesTable).where(and(eq(workerChangesTable.workerId, w), eq(workerChangesTable.field, "factoryAdded")));
+  assert.equal(j.length, 1); assert.equal(j[0]!.newValue, String(other!.id));
+  // тепер фабрика в профілі — наступна зміна ставиться без 409
+  const r3 = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H).send({ ...body, day: "tue" });
+  assert.equal(r3.status, 200, JSON.stringify(r3.body));
+  assert.equal((await db.select().from(workerFactoriesTable).where(eq(workerFactoriesTable.workerId, w))).length, 1, "ідемпотентно");
+  // своя (основна) фабрика — як завжди
+  const r4 = await request(app).post("/api/schedule/entry").set("Cookie", cookie).set(H).send({ ...body, factoryId: home!.id, day: "wed" });
+  assert.equal(r4.status, 200);
+});

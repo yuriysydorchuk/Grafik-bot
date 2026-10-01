@@ -5,7 +5,7 @@ import {
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
-  MessageSquareText,
+  MessageSquareText, Maximize2, Minimize2,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { useNavTracking } from "../lib/nav";
@@ -152,6 +152,11 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem("navCollapsed") === "1"; } catch { return false; }
   });
+  // контент на всю ширину екрана замість max-w-6xl (широкі монітори, відгук 01.10.2026)
+  const [wide, setWide] = useState(() => {
+    try { return localStorage.getItem("wideLayout") === "1"; } catch { return false; }
+  });
+  const toggleWide = () => setWide(w => { const n = !w; try { localStorage.setItem("wideLayout", n ? "1" : "0"); } catch { /* ignore */ } return n; });
   const toggleCollapsed = () => setCollapsed(c => { const n = !c; try { localStorage.setItem("navCollapsed", n ? "1" : "0"); } catch { /* ignore */ } return n; });
   const t = useT();
 
@@ -248,9 +253,14 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
             {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </button>
           <span className="text-sm font-semibold text-slate-700">{t(titleFor(loc))}</span>
-          <div className="ml-auto flex items-center gap-2"><GlobalSearch /><ThemeToggle /><LangToggle /><NotificationBell /></div>
+          <div className="ml-auto flex items-center gap-2"><GlobalSearch />
+            <button onClick={toggleWide} title={wide ? t("Звичайна ширина") : t("На всю ширину екрана")}
+              className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:text-slate-700">
+              {wide ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </button>
+            <ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
-        <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-8">{children}</main>
+        <main className={cn("mx-auto w-full flex-1 p-4 md:p-8", wide ? "md:max-w-none" : "max-w-6xl")}>{children}</main>
       </div>
     </div>
   );

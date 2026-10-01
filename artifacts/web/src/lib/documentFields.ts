@@ -22,6 +22,8 @@ export interface DocField {
   // "ukrEnd" — значення читається з LegalizationGlobals.ukrStatusEnd, поле read-only й НЕ шлеться на сервер;
   // "plus730" — якщо порожнє, підставляється validFrom + 730 днів при зміні validFrom (oświadczenie).
   auto?: "ukrEnd" | "plus730";
+  // поле з LEGAL_FIELD_KEYS, яке тут НЕ legal (йде звичайним збереженням документа, без cap legalization)
+  open?: boolean;
 }
 
 const F = (key: DocFieldKey, label: string, kind: DocField["kind"], o: Partial<DocField> = {}): DocField => ({ key, label, kind, ...o });
@@ -146,6 +148,10 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   ],
   bhp: [
     F("issuedAt", "Дата шкільонного", "date", { required: true }),
+  ],
+  // ZWUA — подія, не строк дії: дата, якою людину виреєстровано з ZUS (відгук 01.10.2026)
+  zus_zwua: [
+    F("issuedAt", "Дата виреєстрування з ZUS", "date", { required: true, open: true }),
   ],
   other: [
     F("expiresAt", "Дійсний до", "date"),

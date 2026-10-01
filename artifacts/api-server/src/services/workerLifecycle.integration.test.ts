@@ -94,7 +94,12 @@ test("fireWorker: журнал, закриття умов датою, нероз
   // кандидат ZWUA живе, доки нема документа; з документом — зникає (auto_resolved у прогоні)
   assert.ok((await collectCandidates(today)).some(c => c.sourceKey === `zwua:${w!.id}`));
   const ty = await ensureDocumentType("zus_zwua");
-  await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: ty.id, title: ty.name, status: "present" });
+  // внесення через API профілю закриває задачу одразу (documentChanged), не чекаючи нічного прогону
+  const add = await request(app).post(`/api/workers/${w!.id}/documents`).set("Cookie", cookie).set("X-Requested-With", "grafik")
+    .send({ docTypeId: ty.id, status: "present", issuedAt: fireDate });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  assert.equal(String(add.body.issuedAt ?? add.body.data?.issuedAt), fireDate, "дата виреєстрування — в issuedAt");
+  assert.equal((await db.select().from(tasksTable).where(eq(tasksTable.sourceKey, `zwua:${w!.id}`)))[0]?.status, "auto_resolved");
   assert.ok(!(await collectCandidates(today)).some(c => c.sourceKey === `zwua:${w!.id}`));
 });
 

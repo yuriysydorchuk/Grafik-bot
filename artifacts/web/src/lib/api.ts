@@ -127,6 +127,8 @@ export interface WorkerLegality {
   payrollHints: { studentByProfile: boolean; studentCertMissingOrExpired: boolean; notifyHoursWithoutBasis: boolean; hoursExceedNotify: boolean | null; workBasisMissing: boolean } | null;
   // резолвер виплат (06.09.2026): що реально йде у сводну і звідки
   effectiveLegalStatus?: string | null; effectiveSource?: "documents" | "manual" | "none" | null; effectiveSince?: string | null;
+  // по фабриках (лише коли роботодавців >1): що потрапить у рядок сводної кожної фабрики
+  payrollByFactory?: { factoryId: number; factoryName: string | null; companyName: string | null; status: string | null; source: "documents" | "manual" | "none"; contract: string }[];
   // відкрита зміна ефективного статусу (за документами) — банер «вплине на сводну» з прийняти/відхилити
   pendingEffectiveChange?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string; createdAt: string } | null;
   // остання зміна за документами будь-якого стану (29.09.2026): applied = авто/прийнято, dismissed → «Повернути»

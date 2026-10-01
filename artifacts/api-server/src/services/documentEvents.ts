@@ -14,6 +14,11 @@ export async function documentChanged(
 ): Promise<void> {
   await logDocumentAudit(doc, action, actor, changes);
   await workerLegalityChanged(doc.workerId);
+  // внесено ZWUA → задача виреєстрування закривається одразу, не нічним прогоном
+  if (action !== "deleted") {
+    try { await (await import("./taskAutoRules")).resolveZwuaTasksNow(doc.workerId); }
+    catch (e) { logger.warn({ err: String(e), workerId: doc.workerId }, "zwua task resolve after doc change failed"); }
+  }
 }
 
 // Поля профілю, від яких залежить результат движка (nationality/company/дати/легасі-статус).

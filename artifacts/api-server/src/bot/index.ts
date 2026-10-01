@@ -2452,6 +2452,43 @@ const candidatePickKb = (cands: PickCandidate[], prefix: string, lang: Lang) => 
   ],
 });
 
+// Свої люди фабрики: основна в профілі або чинна додаткова (worker_factories). Водій
+// додає/матчить СПЕРШУ серед них (рішення 01.10.2026: чужих у графік — лише явним кроком
+// «пошукати на інших фабриках»; тоді фабрика додається в профіль, services/workerFactories.ts).
+async function factoryWorkerPool(factoryId: number, date: string) {
+  const { workerFactoriesTable } = await import("@workspace/db");
+  const all = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
+  const extra = await db.select({ workerId: workerFactoriesTable.workerId, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo })
+    .from(workerFactoriesTable).where(eq(workerFactoriesTable.factoryId, factoryId));
+  const extraIds = new Set(extra.filter(r => (!r.validFrom || String(r.validFrom) <= date) && (!r.validTo || String(r.validTo) > date)).map(r => r.workerId));
+  const mine = all.filter(w => w.factoryId === factoryId || extraIds.has(w.id));
+  return { mine, others: all.filter(w => !(w.factoryId === factoryId || extraIds.has(w.id))) };
+}
+// «На фабриці такого нема»: пошукати на інших / додати як введено / скасувати
+const notFoundKb = (prefix: string, lang: Lang) => ({
+  inline_keyboard: [
+    [{ text: tb(lang, "🔍 Пошукати на інших фабриках"), callback_data: `${prefix}oth` }],
+    [{ text: tb(lang, "✍️ Додати як введено"), callback_data: `${prefix}pk:x` }],
+    [{ text: tb(lang, "❌ Скасувати"), callback_data: `${prefix}cancel` }],
+  ],
+});
+// Кандидати з інших фабрик — з позначкою фабрики, щоб водій бачив, кого бере
+const candidatePickKbF = (cands: (PickCandidate & { factoryName: string | null })[], prefix: string, lang: Lang) => ({
+  inline_keyboard: [
+    ...cands.map(w => [{ text: `👤 ${w.fullName}${w.workerCode ? ` · ${w.workerCode}` : ""} · ${w.factoryName ?? "—"}`, callback_data: `${prefix}pk:${w.id}` }]),
+    [{ text: tb(lang, "✍️ Додати як введено"), callback_data: `${prefix}pk:x` }],
+    [{ text: tb(lang, "❌ Скасувати"), callback_data: `${prefix}cancel` }],
+  ],
+});
+async function othersMatching(typed: string, factoryId: number, date: string) {
+  const { others } = await factoryWorkerPool(factoryId, date);
+  const m = matchWorker(typed, others);
+  const list = m.confident ? [m.confident, ...m.candidates.filter(c => c.id !== m.confident!.id)] : m.candidates;
+  const facs = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
+  const fname = new Map(facs.map(f => [f.id, f.name]));
+  return list.slice(0, 6).map(w => ({ id: w.id, fullName: w.fullName, workerCode: w.workerCode, factoryName: w.factoryId != null ? fname.get(w.factoryId) ?? null : null }));
+}
+
 // `data` is dialog-state payload (weekId/driverId/factoryId/dayOfWeek/shift).
 // `replaces` = the scheduled worker this person substitutes: their entry goes
 // absent with a "заміна" reason (reliability counts that as cancelled, not a no-show).
@@ -2461,6 +2498,8 @@ async function saveUnplannedWorker(
   replaces: { entryId: number; workerId: number | null; name: string } | null = null,
 ) {
   const newName = matched?.fullName ?? typed;
+  // людина з іншої фабрики вийшла тут → фабрика в профіль додатковою (потрібна умова; офісу — в сповіщенні)
+  const fa = matched ? await (await import("../services/workerFactories")).ensureWorkerFactory(matched.id, data.factoryId, { date: warsawDateStr(), source: "driver" }).catch(() => ({ added: false, brief: null })) : { added: false, brief: null };
   await db.insert(unplannedWorkersTable).values({
     weekId: data.weekId, driverId: data.driverId, factoryId: data.factoryId,
     dayOfWeek: data.dayOfWeek as DayOfWeek, shift: data.shift as Shift,
@@ -2480,6 +2519,7 @@ async function saveUnplannedWorker(
     `➕ *Позаплановий працівник*\n\n👷 ${mdSafe(newName)}${matched ? ` (код ${matched.workerCode ?? "—"})` : " (не в базі)"}` +
     (replaces ? `\n🔁 Замість: ${mdSafe(replaces.name)}` : "") +
     (!matched && suggestions.length ? `\n❓ Можливо: ${suggestions.map(mdSafe).join(", ")} — привʼязати можна у веб-графіку` : "") +
+    (fa.added ? `\n🏭 Фабрику *${mdSafe(fa.brief?.factoryName ?? "")}* додано в профіль як додаткову — потрібна умова${fa.brief?.companyName ? ` з ${mdSafe(fa.brief.companyName)}` : ""}` : "") +
     `\n🚗 Водій: ${mdSafe(driverName)}\n📅 ${DAY_UK[data.dayOfWeek as DayOfWeek]} ${SHIFT_SHORT[data.shift as Shift]}`,
     { parse_mode: "Markdown" },
   );
@@ -2562,6 +2602,19 @@ bot.action(/^(unsub:n|unsubp:(\d+|x))$/, async (ctx) => {
   );
 });
 
+bot.action(/^un(oth|cancel)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "unplanned:pick") return ctx.answerCbQuery();
+  const { data } = st;
+  const dl = olang(await getDriver(tid));
+  await ctx.answerCbQuery();
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  if (ctx.match[1] === "cancel") { clearState(tid); return ctx.reply(tb(dl, "Скасовано."), driverMenu(dl)); }
+  const cands = await othersMatching(data.typed, data.factoryId, warsawDateStr());
+  if (!cands.length) return ctx.reply(tb(dl, "Не знайшов і на інших фабриках."), { reply_markup: { inline_keyboard: notFoundKb("un", dl).inline_keyboard.slice(1) } });
+  return ctx.reply(tb(dl, "Знайшов на інших фабриках. Хто це? Фабрику буде додано в профіль."), { reply_markup: candidatePickKbF(cands, "un", dl) });
+});
 bot.action(/^unpk:(\d+|x)$/, async (ctx) => {
   const tid = String(ctx.from.id);
   const st = getState(tid);
@@ -2760,6 +2813,23 @@ bot.action(/^brdsubp:(.+)$/, async (ctx) => {
   try { await ctx.telegram.editMessageReplyMarkup(data.chatId, data.messageId, undefined, boardingMarkup(data)); } catch { /* ignore */ }
 });
 
+bot.action(/^brd(oth|cancel)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const st = getState(tid);
+  if (st?.action !== "boarding:add_pick") return ctx.answerCbQuery();
+  const data = st.data as BoardData;
+  const bl = data.lang ?? "uk";
+  await ctx.answerCbQuery();
+  try { await ctx.editMessageReplyMarkup(undefined); } catch { /* ignore */ }
+  if (ctx.match[1] === "cancel") {
+    delete data.addFactoryId; delete data.addShift; delete data.addTyped;
+    setState(tid, "boarding", data);
+    return ctx.reply(tb(bl, "Скасовано."));
+  }
+  const cands = await othersMatching(data.addTyped ?? "", data.addFactoryId!, data.boardDate ?? warsawDateStr());
+  if (!cands.length) return ctx.reply(tb(bl, "Не знайшов і на інших фабриках."), { reply_markup: { inline_keyboard: notFoundKb("brd", bl).inline_keyboard.slice(1) } });
+  return ctx.reply(tb(bl, "Знайшов на інших фабриках. Хто це? Фабрику буде додано в профіль."), { reply_markup: candidatePickKbF(cands, "brd", bl) });
+});
 bot.action(/^brdpk:(\d+|x)$/, async (ctx) => {
   const tid = String(ctx.from.id);
   const st = getState(tid);
@@ -2943,12 +3013,16 @@ bot.action("brd:ok", async (ctx) => {
 
   // 1) claim boarded workers → present (+ create entries for added people)
   const boarded = data.workers.filter(w => w.boarded);
+  const factoryAdded: string[] = [];
   for (const w of boarded) {
     if (w.entryId) {
       await db.update(scheduleEntriesTable).set({ status: "present", pickedUpBy: driver.id, absenceReason: null }).where(eq(scheduleEntriesTable.id, w.entryId));
     } else if (w.workerId) {
       const [ne] = await db.insert(scheduleEntriesTable).values({ weekId, workerId: w.workerId, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, status: "present", pickedUpBy: driver.id }).returning();
       w.entryId = ne?.id ?? null;
+      // доданий з іншої фабрики → фабрика в профіль додатковою (services/workerFactories.ts)
+      const fa = await (await import("../services/workerFactories")).ensureWorkerFactory(w.workerId, w.factoryId, { date: todayStr, source: "driver" }).catch(() => ({ added: false, brief: null }));
+      if (fa.added) factoryAdded.push(`• ${mdSafe(w.name)} → ${mdSafe(fa.brief?.factoryName ?? "")}${fa.brief?.companyName ? ` (${mdSafe(fa.brief.companyName)})` : ""}`);
       await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, workerId: w.workerId, replacesWorkerId: w.subForWorkerId ?? null });
     } else {
       await db.insert(unplannedWorkersTable).values({ weekId, driverId: driver.id, factoryId: w.factoryId, dayOfWeek: dayName, shift: w.shift as Shift, workerName: w.name, replacesWorkerId: w.subForWorkerId ?? null });
@@ -2967,6 +3041,9 @@ bot.action("brd:ok", async (ctx) => {
     await db.update(scheduleEntriesTable)
       .set({ status: "absent", absenceReason: `заміна: вийшов(-ла) ${w.name}`, pickedUpBy: null })
       .where(eq(scheduleEntriesTable.id, w.subForEntryId!));
+  }
+  if (factoryAdded.length) {
+    await notifyAdmins("substitution", `🏭 *Фабрику додано в профіль з посадки*\n🚗 Водій: ${mdSafe(driver.name)}\n📅 ${DAY_NAMES_UK[dayName]}\n\n${factoryAdded.join("\n")}\n\nПотрібна умова на цю фабрику.`, { parse_mode: "Markdown" });
   }
   if (substitutions.length > 0) {
     const subLines = substitutions.map(w => `• ${mdSafe(w.name)} замість ${mdSafe(w.subForName ?? "—")} — ${facByIdOk.get(w.factoryId)?.name ?? ""} · ${SHIFT_SHORT[w.shift as Shift]}`).join("\n");
@@ -3090,14 +3167,22 @@ bot.action(/^brd:edit:(\d+):(\w+):([\d-]+):(\d+)$/, async (ctx) => {
     .from(driverShiftAssignmentsTable)
     .where(and(eq(driverShiftAssignmentsTable.weekId, weekId), eq(driverShiftAssignmentsTable.dayOfWeek, dayName), eq(driverShiftAssignmentsTable.driverId, driver.id), eq(driverShiftAssignmentsTable.kind, "delivery")));
   const cancelled = await cancelledCellKeys(weekId, dayName);
+  const editOv = await loadDateShiftOverrides(dateS);
+  const editNow = nowWarsaw();
   const secKeys = new Set<string>();
   const sections: BoardData["sections"] = [];
+  let hiddenFuture = 0;
   for (const a of myAssignments) {
     const k = `${a.factoryId}-${a.shift}`;
     if (secKeys.has(k) || cancelled.has(k)) continue; secKeys.add(k);
+    // Той самий гард, що й при підтвердженні: рейс, який стартує більш ніж за 2 год,
+    // на борд корекції не потрапляє — інакше водій, дописуючи людину до денного рейсу,
+    // тисне «Додати» під нічною секцією (інцидент 28.09.2026: LST-2 → запис на ALMIZ-3).
+    const secStart = shiftStartOn(dateS, facById.get(a.factoryId), a.shift, editOv);
+    if (editNow.getTime() < secStart.getTime() - BOARD_GUARD_MS) { hiddenFuture++; continue; }
     sections.push({ factoryId: a.factoryId, shift: a.shift, factoryName: facById.get(a.factoryId)?.name ?? tb(dl, "фабрика") });
   }
-  if (sections.length === 0) return ctx.answerCbQuery();
+  if (sections.length === 0) return ctx.answerCbQuery(hiddenFuture > 0 ? tb(dl, "Рейс ще не почався — коригувати можна ближче до старту зміни.") : undefined);
   const secKeySet = new Set(sections.map(s => `${s.factoryId}-${s.shift}`));
   const myShifts = [...new Set(sections.map(s => s.shift))];
   const entriesRaw = await db
@@ -4451,16 +4536,19 @@ bot.on("text", async (ctx) => {
   // ── Driver boarding: add a person by name/code ────────────────────
   if (state?.action === "boarding:add_name") {
     const data = state.data as BoardData;
-    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
-    const m = matchWorker(text, allWorkers);
-    if (!m.confident && m.candidates.length > 0) {
+    const bl = data.lang ?? "uk";
+    // спершу — лише свої (фабрика секції); чужих — через явний крок «пошукати на інших»
+    const { mine } = await factoryWorkerPool(data.addFactoryId!, data.boardDate ?? warsawDateStr());
+    const m = matchWorker(text, mine);
+    if (m.confident) return boardAddPerson(ctx, tid, data, m.confident, text.trim());
+    data.addTyped = text.trim();
+    setState(tid, "boarding:add_pick", data);
+    if (m.candidates.length > 0) {
       // Ambiguous — let the driver pick from lookalikes before boarding.
-      data.addTyped = text.trim();
-      setState(tid, "boarding:add_pick", data);
-      const bl = data.lang ?? "uk";
       return ctx.reply(tb(bl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "brdpk", bl) });
     }
-    return boardAddPerson(ctx, tid, data, m.confident, text.trim());
+    const facName = data.sections.find(s => s.factoryId === data.addFactoryId)?.factoryName ?? "";
+    return ctx.reply(tb(bl, "На фабриці {factory} такого не знайшов. Що робимо?", { factory: facName }), { reply_markup: notFoundKb("brd", bl) });
   }
 
   // Пояснення помилки в годинах фабрики (після ❌ у запиті підтвердження)
@@ -4946,14 +5034,17 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     const driver = await getDriver(tid);
     const dl = olang(driver);
-    const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
-    const m = matchWorker(text, allWorkers);
-    if (!m.confident && m.candidates.length > 0) {
+    // спершу — лише свої (фабрика призначення); чужих — через явний крок «пошукати на інших»
+    const { mine } = await factoryWorkerPool(data.factoryId, warsawDateStr());
+    const m = matchWorker(text, mine);
+    if (m.confident) return askUnplannedSubstitution(ctx, tid, data, m.confident, text.trim(), dl);
+    setState(tid, "unplanned:pick", { ...data, typed: text.trim() });
+    if (m.candidates.length > 0) {
       // Ambiguous — let the driver pick who they meant (unpk: action).
-      setState(tid, "unplanned:pick", { ...data, typed: text.trim() });
       return ctx.reply(tb(dl, "Знайшов у базі схожих. Хто це?"), { reply_markup: candidatePickKb(m.candidates, "unpk", dl) });
     }
-    return askUnplannedSubstitution(ctx, tid, data, m.confident, text.trim(), dl);
+    const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, data.factoryId));
+    return ctx.reply(tb(dl, "На фабриці {factory} такого не знайшов. Що робимо?", { factory: fac?.name ?? "" }), { reply_markup: notFoundKb("un", dl) });
   }
 
   // ── Driver: report absent workers ─────────────────────────────────

@@ -18,7 +18,7 @@ import {
   type SvodniParsedTab, type GotowkaRow,
 } from "./svodni";
 import { PayoutRules } from "./factoryRules";
-import { effectiveView, loadLegalityCache, type WithEffective } from "./effectiveStatus";
+import { effectiveView, type WithEffective } from "./effectiveStatus";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -146,7 +146,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     notifyHours: workersTable.notifyHours,
   }).from(workersTable));
   // ефективний статус виплат (за документами або вручну) — знімається в рядок при імпорті
-  const lgCache = await (await import("./legalityMonth")).loadLegalityCacheForMonth(allWorkers.map(w => w.id), periodMonth); // за місяць сводної
+  const lgFor = (await import("./legalityMonth")).legalityPairMemo(periodMonth); // за місяць сводної, ПО ФАБРИЦІ вкладки (01.10.2026)
   type WorkerLite = WithEffective<(typeof allWorkers)[number]>;
   const rowWorker = new Map<object, WorkerLite>(); // parsed row → матчнутий працівник
 
@@ -222,7 +222,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
       // форма легалізації, побажання по виплаті.
       if (!OFFICE_TAB_RE.test(t.trim())) {
         const rawW = !row.extras.blockOnly ? matchSvodniName(row.rawName, allWorkers) : null;
-        const w = rawW ? effectiveView(rawW, lgCache.get(rawW.id)) : null;
+        const w = rawW ? effectiveView(rawW, await lgFor(rawW.id, facIdOf(t.trim()))) : null;
         if (w) {
           rowWorker.set(row, w);
           if (row.hoursNotified == null && w.notifyHours != null && w.notifyHours > 0) row.hoursNotified = w.notifyHours;

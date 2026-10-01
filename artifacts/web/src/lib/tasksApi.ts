@@ -31,7 +31,7 @@ export interface TaskAction { code: string; label: string; kind: "api" | "link" 
 export interface TaskContext {
   rule: string | null; why: string; closesWhen: string | null;
   worker?: { id: number; fullName: string; telegram: boolean; nationality: string | null; language: string | null; factoryId: number | null } | null;
-  document?: { id: number; title: string; typeName: string | null; typeCode: string | null; docTypeId: number | null; number: string | null; expiresAt: string | null; status: string; fileUrl: string | null; hasFile: boolean; isImage: boolean; requestedAt: string | null; reviewNote: string | null; updatedAt: string | null } | null;
+  document?: { id: number; title: string; typeName: string | null; typeCode: string | null; docTypeId: number | null; number: string | null; expiresAt: string | null; issuedAt?: string | null; status: string; fileUrl: string | null; hasFile: boolean; isImage: boolean; requestedAt: string | null; reviewNote: string | null; updatedAt: string | null } | null;
   uploads?: UploadInfo[];
   contract?: { id: number | null; status: string | null; dateTo: string | null; factoryId: number | null; factoryName: string | null; code: string | null } | null;
   change?: { id: number; oldValue: string | null; newValue: string | null; effectiveDate: string | null } | null;

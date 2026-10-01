@@ -124,7 +124,7 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
   const prof = (open = "") => worker ? `/workers/${worker.id}${open ? `?open=${open}` : ""}` : "";
   const typeByCode = async (code: string) => (await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, code)))[0] ?? null;
   const docCtx = (d: typeof workerDocumentsTable.$inferSelect, typeName: string | null, typeCode: string | null) => ({
-    id: d.id, title: d.title, typeName, typeCode, docTypeId: d.docTypeId, number: d.number, expiresAt: dateStr(d.expiresAt), status: d.status,
+    id: d.id, title: d.title, typeName, typeCode, docTypeId: d.docTypeId, number: d.number, expiresAt: dateStr(d.expiresAt), issuedAt: dateStr(d.issuedAt), status: d.status,
     fileUrl: d.filePath || d.fileUrl ? `/api/worker-documents/${d.id}/file` : null, hasFile: !!(d.filePath || d.fileUrl), isImage: isImageMime(d.fileMime),
     requestedAt: d.requestedAt ? d.requestedAt.toISOString() : null, reviewNote: d.reviewNote, updatedAt: d.updatedAt ? d.updatedAt.toISOString() : null,
   });
@@ -318,7 +318,9 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
     case "termination_zus": {
       const ty = await typeByCode("zus_zwua");
       if (ty && worker) {
-        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing")?.d;
+        // задача по фірмі (zwua:<w>:<company>) — лише ZWUA, внесений після неї (як taskAutoRules.zwuaSatisfied)
+        const perCompany = (task.sourceKey ?? "").split(":").length === 3;
+        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing" && (!perCompany || x.d.createdAt > task.createdAt))?.d;
         ctx.document = d ? docCtx(d, ty.name, ty.code) : null;
         if (d) satisfied.add("entered");
         actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !d });

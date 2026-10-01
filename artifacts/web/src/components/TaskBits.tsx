@@ -522,7 +522,8 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
           <div className="flex flex-wrap items-center gap-2"><FileText className="h-3.5 w-3.5 text-slate-400" /><span className="font-semibold text-slate-800">{c.document.typeName ?? c.document.title}</span>{c.document.typeName && c.document.title !== c.document.typeName && <span className="text-slate-500">{c.document.title}</span>}<Badge color={DOC_ST[c.document.status] ?? "slate"}>{tr(c.document.status)}</Badge></div>
           <div className="mt-1 flex flex-wrap gap-x-3 text-slate-500">
             {c.document.number && <span>№ {c.document.number}</span>}
-            {c.document.expiresAt && <span>{tr("до")} <b className={c.document.expiresAt < todayStr() ? "text-rose-600" : "text-slate-700"}>{fmtD(c.document.expiresAt)}</b></span>}
+            {c.document.typeCode === "zus_zwua" ? ((c.document.issuedAt ?? c.document.expiresAt) && <span>{tr("виреєстровано")} <b className="text-slate-700">{fmtD((c.document.issuedAt ?? c.document.expiresAt)!)}</b></span>)
+              : c.document.expiresAt && <span>{tr("до")} <b className={c.document.expiresAt < todayStr() ? "text-rose-600" : "text-slate-700"}>{fmtD(c.document.expiresAt)}</b></span>}
             {c.document.requestedAt && <span className="text-amber-700">{tr("запитано")} {fmtD(c.document.requestedAt.slice(0, 10))}</span>}
             {c.document.hasFile && c.document.fileUrl && <a href={c.document.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a>}
             {c.document.reviewNote && <span className="text-rose-600">{tr("відхилено")}: {c.document.reviewNote}</span>}

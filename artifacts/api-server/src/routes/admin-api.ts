@@ -1062,6 +1062,9 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     const d = new Date(weekStart + "T00:00:00"); d.setDate(d.getDate() + (DAY_OFFSET[day] ?? 0));
     return d;
   };
+  // Дата — рядком за локальним календарем: toISOString() від локальної півночі зрізав день
+  // (сервер у Europe/Berlin → понеділок 28.09 показувався як 27.09).
+  const ymdLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const hoursOf = (r: typeof rows[number]) => r.hoursOverride ?? factoryShiftHours(r.factoryId ? facMap.get(r.factoryId) : undefined, r.shift as any);
 
   let allShifts = 0, allHours = 0, allAbsent = 0, monShifts = 0, monHours = 0, monAbsent = 0;
@@ -1070,7 +1073,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     const ym = dt ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}` : "";
     if (r.status === "present") { allShifts++; allHours += hoursOf(r); if (ym === thisMonth) { monShifts++; monHours += hoursOf(r); } }
     if (r.status === "absent") { allAbsent++; if (ym === thisMonth) monAbsent++; }
-    return { date: dt ? dt.toISOString().slice(0, 10) : null, ts: dt ? dt.getTime() : 0, factoryId: r.factoryId ?? null, factoryName: r.factoryName, shift: r.shift, status: r.status, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
+    return { date: dt ? ymdLocal(dt) : null, ts: dt ? dt.getTime() : 0, factoryId: r.factoryId ?? null, factoryName: r.factoryName, shift: r.shift, status: r.status, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
   });
   const recent = enriched.filter(e => e.date).sort((a, b) => b.ts - a.ts).slice(0, 15).map(({ ts, ...e }) => e);
   const rel = allShifts + allAbsent > 0 ? Math.round((allShifts / (allShifts + allAbsent)) * 100) : null;
@@ -1377,6 +1380,8 @@ router.post("/workers/:id/documents", RW, async (req, res) => {
     status: String(req.body?.status ?? "present"),
     number: req.body?.number?.trim() || null,
     expiresAt: req.body?.expiresAt || null,
+    // дата події без строку дії (ZUS ZWUA — дата виреєстрування): не legal-поле, пише будь-хто з RW
+    issuedAt: /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.issuedAt ?? "")) ? req.body.issuedAt : null,
     fileUrl: req.body?.fileUrl?.trim() || null,
     note: req.body?.note?.trim() || null,
   }).returning();
@@ -1390,6 +1395,10 @@ router.patch("/worker-documents/:id", RW, async (req, res) => {
   for (const k of ["title", "status", "number", "fileUrl", "note"]) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
   if (patch.title === null) return fail(res, 400, "Назва не може бути порожньою");
   if (req.body?.expiresAt !== undefined) patch.expiresAt = req.body.expiresAt || null;
+  if (req.body?.issuedAt !== undefined) {
+    if (req.body.issuedAt && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.issuedAt))) return fail(res, 400, "issuedAt: формат YYYY-MM-DD");
+    patch.issuedAt = req.body.issuedAt || null;
+  }
   // зміна типу (напр. «власний» → каталожний): без цього движок легальності не бачив
   // документ як підставу — назва мінялась, doc_type_id лишався NULL (баг 10.09.2026)
   if (req.body?.docTypeId !== undefined) {
@@ -2670,6 +2679,9 @@ router.post("/unplanned/:id/link", RW, async (req, res) => {
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!worker) return fail(res, 404, "Працівника не знайдено");
   await db.update(unplannedWorkersTable).set({ workerId: worker.id, workerName: worker.fullName }).where(eq(unplannedWorkersTable.id, id));
+  // людина реально вийшла на цій фабриці → фабрика в профіль додатковою (без питання), офісу — тост
+  const [wk] = await db.select({ weekStart: scheduleWeeksTable.weekStart }).from(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, row.weekId));
+  const fa = wk ? await (await import("../services/workerFactories")).ensureWorkerFactory(worker.id, row.factoryId, { date: entryDateStr(String(wk.weekStart), row.dayOfWeek), adminId: actingAdminId(req), source: "link" }) : { added: false, brief: null };
   const existing = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
     .where(and(eq(scheduleEntriesTable.weekId, row.weekId), eq(scheduleEntriesTable.workerId, worker.id),
       eq(scheduleEntriesTable.dayOfWeek, row.dayOfWeek), eq(scheduleEntriesTable.shift, row.shift), eq(scheduleEntriesTable.factoryId, row.factoryId)));
@@ -2680,7 +2692,7 @@ router.post("/unplanned/:id/link", RW, async (req, res) => {
     });
   }
   import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(worker.id)).catch(() => {}); // перший робочий день
-  ok(res, { linked: true, workerName: worker.fullName });
+  ok(res, { linked: true, workerName: worker.fullName, factoryAdded: fa.added ? fa.brief?.factoryName ?? null : null });
 });
 
 // Move an existing entry to another shift (drag between shifts)
@@ -2868,6 +2880,20 @@ router.post("/schedule/entry", RW, async (req, res) => {
   if (!wRow) return fail(res, 404, "Працівника не знайдено");
   if (!wRow.isActive) return fail(res, 400, "Працівник звільнений");
   if (terminatedOn(wRow, factoryId, entryDateStr(String(weekStart), String(day)))) return fail(res, 400, `Працівник звільняється з ${String(wRow.terminationDate).slice(0, 10)} — на цю дату ставити не можна`);
+  // Чужа фабрика (нема в профілі ні основною, ні додатковою): без підтвердження — 409, веб питає
+  // «додати фабрику в профіль і поставити?»; з addFactory — фабрика стає додатковою (потрібна умова)
+  // (services/workerFactories.ts, рішення 01.10.2026)
+  {
+    const { factoryInProfile, ensureWorkerFactory, factoryBrief } = await import("../services/workerFactories");
+    const entryDate = entryDateStr(String(weekStart), String(day));
+    if (!(await factoryInProfile(Number(workerId), Number(factoryId), entryDate))) {
+      if (!req.body?.addFactory) {
+        const b = await factoryBrief(Number(factoryId));
+        return res.status(409).json({ error: `Фабрики ${b?.factoryName ?? factoryId} немає в профілі працівника`, code: "factory_not_in_profile", factoryName: b?.factoryName ?? null, companyName: b?.companyName ?? null });
+      }
+      await ensureWorkerFactory(Number(workerId), Number(factoryId), { date: entryDate, adminId: actingAdminId(req), source: "web" });
+    }
+  }
   // Дві зміни в один день на ТІЙ САМІЙ фабриці — дозволено (1+2 тощо), але з
   // попередженням restGapHours, якщо пауза між змінами < MIN_REST_HOURS (веб підсвічує
   // помаранчевим). Дубль тієї ж зміни й зміна на іншій фабриці того дня — блок.

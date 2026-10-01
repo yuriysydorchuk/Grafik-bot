@@ -10,12 +10,13 @@ import {
   hasTestDb, resetDb, closeDb, seedAdmin, db, app,
   workersTable, factoriesTable, companiesTable, contractsTable, documentTemplatesTable, tasksTable, workerChangesTable, scheduleWeeksTable, scheduleEntriesTable,
 } from "../test/harness.ts";
-import { workerFactoriesTable } from "@workspace/db";
+import { workerFactoriesTable, workerDocumentsTable } from "@workspace/db";
 import { ensureUploadDirs } from "../lib/uploads.ts";
 import { closeBrowser } from "./contracts.ts";
 import { collectContractEndCandidates } from "./contractEndDocs.ts";
 import { endWorkerAtFactory, setTerminationDate, fireDueTerminations, liveFactoriesOf } from "./workerFire.ts";
-import { ensureAutoRules } from "./taskAutoRules.ts";
+import { ensureAutoRules, collectCandidates, resolveZwuaTasksNow } from "./taskAutoRules.ts";
+import { ensureDocumentType } from "./workerDocuments.ts";
 import { addDaysStr } from "../lib/dates.ts";
 
 const opts = { skip: hasTestDb ? false : "set TEST_DATABASE_URL to run integration tests" };
@@ -131,4 +132,10 @@ test("ZWUA: умова тієї ж фірми, що почнеться пізн�
   const zwua = (await db.select().from(tasksTable)).filter(t => t.source === "auto:termination_zus");
   assert.equal(zwua.length, 1); assert.equal(zwua[0]!.sourceKey, `zwua:${w.id}:${eso.id}`);
   assert.equal(String((await db.select().from(contractsTable).where(eq(contractsTable.id, cA.id)))[0]?.dateTo), addDaysStr(today, 60), "AGRAM не чіпається");
+  // людина активна → нічний прогін не мав би закривати задачу по фірмі без документа
+  assert.ok((await collectCandidates(today)).some(c => c.sourceKey === `zwua:${w.id}:${eso.id}`), "задача по фірмі живе без ZWUA");
+  const ty = await ensureDocumentType("zus_zwua");
+  await db.insert(workerDocumentsTable).values({ workerId: w.id, docTypeId: ty.id, title: ty.name, status: "present" });
+  assert.equal(await resolveZwuaTasksNow(w.id), 1);
+  assert.ok(!(await collectCandidates(today)).some(c => c.sourceKey === `zwua:${w.id}:${eso.id}`));
 });
