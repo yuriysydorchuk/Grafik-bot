@@ -75,6 +75,8 @@ export function ZoomImage({ src, alt, className }: { src: string; alt?: string; 
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) gesture.current = null;
     if (pointers.current.size === 0) drag.current = null;
+    // після щипка лишився один палець — одразу панорамуємо ним (ревʼю codex 02.10.2026)
+    if (pointers.current.size === 1) { const [r] = [...pointers.current.values()]; drag.current = { x: r!.x, y: r!.y, px: stateRef.current.x, py: stateRef.current.y }; }
   };
   const onDoubleClick = (e: React.MouseEvent) => {
     const r = boxRef.current!.getBoundingClientRect();
@@ -87,9 +89,12 @@ export function ZoomImage({ src, alt, className }: { src: string; alt?: string; 
     <div ref={boxRef} className={`relative select-none overflow-hidden ${className ?? "h-[70vh]"}`}
       style={{ touchAction: "none", cursor: scale > 1 ? "grab" : "zoom-in" }}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={onDoubleClick}>
-      <img src={src} alt={alt ?? ""} draggable={false}
-        className="pointer-events-none absolute inset-0 m-auto max-h-full max-w-full object-contain"
-        style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale})`, transformOrigin: "0 0", transition: drag.current || gesture.current ? "none" : "transform 80ms" }} />
+      {/* transform — на обгортці розміром з контейнер: origin 0 0 збігається з кутом контейнера,
+          в якому рахуються координати курсора/щипка (картинка всередині центрована object-contain) */}
+      <div className="absolute inset-0"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${scale})`, transformOrigin: "0 0", transition: drag.current || gesture.current ? "none" : "transform 80ms" }}>
+        <img src={src} alt={alt ?? ""} draggable={false} className="pointer-events-none h-full w-full object-contain" />
+      </div>
       <div className="absolute right-2 top-2 flex items-center gap-1" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
         <button type="button" className={btn} title={t("Зменшити")} disabled={scale <= MIN} onClick={() => { const { cx, cy } = center(); zoomAt(1 / 1.5, cx, cy); }}><ZoomOut className="h-4 w-4" /></button>
         <span className="rounded-md bg-slate-900/60 px-1.5 py-1 text-xs tabular-nums text-white">{Math.round(scale * 100)}%</span>
