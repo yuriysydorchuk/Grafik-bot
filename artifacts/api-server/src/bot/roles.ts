@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { adminsTable, workersTable, driversTable } from "@workspace/db";
 import type { Worker, Driver } from "@workspace/db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, sql } from "drizzle-orm";
 import type { Context } from "telegraf";
 import { loadRolesCache } from "../lib/auth";
 import { hasCap, CAP_KEYS, OWNER, type Capability, type NotifyType } from "../lib/roles";
@@ -17,7 +17,18 @@ export async function isAdmin(tid: string): Promise<boolean> {
 
 export async function getAdmin(tid: string) {
   const rows = await db.select().from(adminsTable)
-    .where(and(eq(adminsTable.telegramId, tid), ne(adminsTable.role, "driver")));
+    .where(and(eq(adminsTable.telegramId, tid), ne(adminsTable.role, "driver"),
+      // адмін зі скоупом міст/фабрик (офіс-менеджер міста, 01.10.2026) — лише веб-панель:
+      // офісне меню бота скоупу не знає й показало б дані всіх міст
+      sql`${adminsTable.scopeCities} = '[]'::jsonb AND ${adminsTable.scopeFactoryIds} = '[]'::jsonb`));
+  return rows[0];
+}
+
+// Адмін зі скоупом (див. getAdmin) — для /start і завершення веб-логіну в боті.
+export async function getScopedAdmin(tid: string) {
+  const rows = await db.select().from(adminsTable)
+    .where(and(eq(adminsTable.telegramId, tid), ne(adminsTable.role, "driver"),
+      sql`(${adminsTable.scopeCities} <> '[]'::jsonb OR ${adminsTable.scopeFactoryIds} <> '[]'::jsonb)`));
   return rows[0];
 }
 

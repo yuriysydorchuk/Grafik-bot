@@ -49,7 +49,9 @@ export async function upload<T = any>(p: string, form: FormData): Promise<T> {
 export type DayCode = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ShiftCode = "1" | "2" | "3" | "4" | "5" | "6";
 
-export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null; prefs?: Record<string, unknown> }
+export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null; prefs?: Record<string, unknown>;
+  // доступ по містах/фабриках (null = усе) і ролі, на які можна запрошувати (01.10.2026)
+  scope?: { cities: string[]; factoryIds: number[] } | null; canInviteRoles?: string[] }
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; notify: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;
@@ -205,7 +207,7 @@ export interface EmailRecipient { id: number; email: string; name: string | null
 export interface EmailTemplate { id: number; name: string; subject: string; body: string; isDefault: boolean }
 export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null; contractDuties?: string | null }
 export interface Factory {
-  id: number; name: string; address: string | null;
+  id: number; name: string; address: string | null; city?: string | null;
   companyId?: number | null; companyName?: string | null;
   multiFirm?: boolean; // кілька наших фірм на одній фабриці (Sushi): фірма умови/роботодавця обирається
   isOffice?: boolean;  // «Biuro» — фабрика офісних працівників

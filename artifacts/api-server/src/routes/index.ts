@@ -40,6 +40,7 @@ import smsCampaignsRouter from "./smsCampaigns";
 import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
+import workerPayRouter from "./workerPay";
 
 const router: IRouter = Router();
 
@@ -59,6 +60,7 @@ router.use(smsPublicRouter); // /r/:token — публічна сторінка 
 router.use(authRouter);
 router.use(adminApiRouter);
 router.use(searchRouter);
+router.use(workerPayRouter); // /workers/:id/pay — зарплата по фабриках у профілі (svodni|workerPay)
 router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);

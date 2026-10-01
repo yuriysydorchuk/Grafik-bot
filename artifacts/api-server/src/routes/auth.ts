@@ -202,6 +202,9 @@ router.get("/auth/me", authRequired, async (req: AuthedRequest, res) => {
     caps: req.admin!.caps, pages: req.admin!.pages,
     lang: await webLangOf(admin),
     prefs: admin.webPrefs ?? {},
+    // доступ по містах/фабриках (null = усе) і ролі для делегованих запрошень — lib/scope.ts
+    scope: req.admin!.scope ? { cities: req.admin!.scope.cities, factoryIds: req.admin!.scope.factoryIds } : null,
+    canInviteRoles: req.admin!.canInviteRoles,
   });
 });
 

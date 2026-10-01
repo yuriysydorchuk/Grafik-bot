@@ -559,6 +559,7 @@ const BOT_EN: Record<string, string> = {
   // ── greetings / navigation ──
   "✅ Привіт, *{name}*!\n\nВас прив'язано до бота як водія.": "✅ Hi *{name}*!\n\nYou've been linked to the bot as a driver.",
   "👋 Привіт, *{name}*! Ви адміністратор.": "👋 Hi *{name}*! You are an administrator.",
+  "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає лише коди входу.": "👋 Hi {name}! Your access is in the web panel: {url}\n\nHere the bot only sends login codes.",
   "Ви головний водій.": "You are the head driver.",
   "Ваше меню:": "Your menu:",
   "Привіт, *{name}*!": "Hi *{name}*!",

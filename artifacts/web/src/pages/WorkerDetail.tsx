@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { WorkerPayCard } from "../components/WorkerPayCard";
 import { useRoute, Link } from "wouter";
 import { useBack } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -434,6 +435,8 @@ export default function WorkerDetail() {
 
       <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
         <div className="min-w-0 space-y-5">
+          {/* Зарплата по фабриках — першою: офіс відповідає на «чому стільки» (svodni | workerPay) */}
+          {(canSvodni || can(me, "workerPay")) && <WorkerPayCard workerId={w.id} />}
           {/* Employment history per factory (transfers / re-hires keep old factories visible) */}
           {(w.factoryHistory?.length ?? 0) > 0 && (
             <Section icon={FactoryIcon} title={t("Історія по фабриках")} summary={t("{n} фабрик", { n: w.factoryHistory.length })}>
@@ -500,7 +503,7 @@ export default function WorkerDetail() {
           <WorkerAdvances workerId={w.id} />
           <WorkerAbsences workerId={w.id} />
           {/* Хостел: де живе і скільки платить (довідник — сторінка /hostels) */}
-          {canSvodni && <WorkerHostel workerId={w.id} />}
+          {(canSvodni || can(me, "workerPay")) && <WorkerHostel workerId={w.id} />}
           {/* Одяг: видане зі складу магазину, вартість/зняття, повернення */}
           <WorkerClothing workerId={w.id} />
         </div>

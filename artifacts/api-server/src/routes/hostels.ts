@@ -251,7 +251,7 @@ router.delete("/hostels/stays/:id", requireAnyCap("svodni", "hostelOps"), async 
 });
 
 // історія проживань працівника — блок «Хостел» у профілі
-router.get("/hostels/worker/:id", requireAnyCap("svodni", "viewFinance", "hostelOps"), async (req, res) => {
+router.get("/hostels/worker/:id", requireAnyCap("svodni", "viewFinance", "hostelOps", "workerPay"), async (req, res) => {
   const workerId = Number(req.params.id);
   if (!Number.isFinite(workerId)) return fail(res, 400, "bad id");
   const rows = await db.select({ s: hostelStaysTable, hostelName: hostelsTable.name, city: hostelsTable.city, workerRate: hostelsTable.workerRate })

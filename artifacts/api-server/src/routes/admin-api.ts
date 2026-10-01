@@ -33,6 +33,7 @@ import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
+import { scopeGate, workerInScopeSql, factoryInScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
@@ -57,6 +58,9 @@ const router: IRouter = Router();
 
 // Everything here requires a valid session
 router.use(authRequired);
+// Адмін зі скоупом міст/фабрик — лише білий список ендпойнтів (lib/scope.ts). Стоїть тут,
+// бо цей router.use бачать і запити до всіх роутерів, змонтованих нижче в routes/index.ts.
+router.use(scopeGate);
 
 // Read/write capability for owner + scheduler (driver is read-only / live-only)
 const RW = requireCap("editData");
@@ -66,6 +70,9 @@ const WD = requireCap("workerDocs");
 // (read-only cap для ролі «бухгалтерія»: бачить дані, не редагує — самі
 // мутуючі роути (POST/PATCH/DELETE/fire/restore) лишаються лише на RW)
 const WORKERS_RO = requireAnyCap("editData", "viewWorkers");
+// Документи працівника: додавати/правити/завантажувати файл — editData АБО кадрові cap-и
+// (офіс-менеджер: workerDocs/legalization, 01.10.2026). Видалення лишається на RW.
+const DOCS_RW = requireAnyCap("editData", "workerDocs", "legalization");
 
 // КАНОН статусу «студент до 26» (як у сводній): студент = чекбокс АБО
 // legalStatus="student"; вік — з дати народження, прапорець under26 — лише
@@ -76,6 +83,8 @@ const stud26Of = (w: { isStudent: boolean | null; legalStatus?: string | null; b
 });
 // Whether the requester's role may see/edit financial fields (rates, invoices).
 const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "viewFinance");
+// Скоуп міст/фабрик поточного адміна (null = без обмежень) — lib/scope.ts.
+const scopeOf = (req: any) => (req as AuthedRequest).admin?.scope ?? null;
 const canSensitiveReq = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodniSensitive");
 // Ставки фабрик (rateBrutto/rateNetto/nightAddon/invoiceRate + ставки посад) відкриті
 // й вужчим правом factoryRates; привʼязка клієнта до фінблоку (clientNip, pnlLabel)
@@ -387,6 +396,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
     .from(workersTable)
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .leftJoin(workerLegalityTable, eq(workerLegalityTable.workerId, workersTable.id))
+    .where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!) : undefined)
     .orderBy(workersTable.fullName))
     .map(({ birthDate, lgOverall, lgStay, lgWork, lgNextExpiry, lgReview, lgDerived, lgMismatch, lgEffective, lgSource, ...r }) => {
       // «доїжджає сам» — зріз по основній фабриці на сьогодні (worker_self_transport);
@@ -1193,10 +1203,13 @@ router.get("/workers/:id/advances", WORKERS_RO, async (req, res) => {
   const w = (await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, id)))[0];
   const facAll = await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable);
   const facNameById = new Map(facAll.map(f => [f.id, f.name]));
-  const paidTotal = Math.round(rows.filter(r => r.paidAt).reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  // скоуп-адмін бачить лише аванси своїх фабрик (людина може працювати і в іншому місті)
+  const scope = scopeOf(req);
+  const shown = scope ? rows.filter(r => factoryInScope(scope, r.reqFactoryId ?? w?.factoryId ?? null)) : rows;
+  const paidTotal = Math.round(shown.filter(r => r.paidAt).reduce((s, r) => s + r.amount, 0) * 100) / 100;
   ok(res, {
     paidTotal,
-    rows: rows.map(({ reqFactoryId, ...r }) => {
+    rows: shown.map(({ reqFactoryId, ...r }) => {
       const factoryId = reqFactoryId ?? w?.factoryId ?? null;
       return { ...r, factory: factoryId != null ? facNameById.get(factoryId) ?? null : null };
     }),
@@ -1219,7 +1232,7 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const rows = await db
     .select({
-      entryId: scheduleEntriesTable.id, factory: factoriesTable.name,
+      entryId: scheduleEntriesTable.id, factory: factoriesTable.name, factoryId: scheduleEntriesTable.factoryId,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       reason: scheduleEntriesTable.absenceReason, explainedAt: scheduleEntriesTable.absenceExplainedAt,
       excusedFlag: scheduleEntriesTable.absenceExcused, penaltyOverride: scheduleEntriesTable.absencePenalty,
@@ -1230,7 +1243,9 @@ router.get("/workers/:id/absences", WORKERS_RO, async (req, res) => {
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(eq(scheduleEntriesTable.workerId, id), eq(scheduleEntriesTable.status, "absent"), eq(scheduleWeeksTable.status, "approved")));
+  const absScope = scopeOf(req); // скоуп-адмін — лише пропуски на своїх фабриках
   const absences = rows
+    .filter(r => factoryInScope(absScope, r.factoryId))
     .map(r => ({
       entryId: r.entryId, factory: r.factory, date: entryDateStr(String(r.weekStart), r.day), shift: r.shift,
       reason: r.reason, explainedAt: r.explainedAt, excused: !!r.reason, justified: !!r.excusedFlag,
@@ -1256,14 +1271,15 @@ router.get("/workers/:id/svodni", requireCap("svodni"), async (req, res) => {
       firm: svodniRowsTable.firm, factoryLabel: svodniRowsTable.factoryLabel,
       hours: svodniRowsTable.hours, shifts: svodniRowsTable.shifts, rateNetto: svodniRowsTable.rateNetto,
       premia: svodniRowsTable.premia, zaliczka: svodniRowsTable.zaliczka, kara: svodniRowsTable.kara,
-      doWyplaty: svodniRowsTable.doWyplaty,
+      doWyplaty: svodniRowsTable.doWyplaty, factoryId: svodniRowsTable.factoryId,
       gotowka: svodniRowsTable.gotowka, konto: svodniRowsTable.konto,
     })
     .from(svodniRowsTable)
     .where(eq(svodniRowsTable.workerId, id))
     .orderBy(desc(svodniRowsTable.periodMonth), svodniRowsTable.factoryLabel)
     .limit(36);
-  ok(res, rows.map(({ gotowka, konto, ...r }) => sensitive ? { ...r, gotowka, konto } : r));
+  const scope = scopeOf(req); // скоуп-адмін — лише рядки своїх фабрик
+  ok(res, rows.filter(r => factoryInScope(scope, r.factoryId)).map(({ gotowka, konto, factoryId: _f, ...r }) => sensitive ? { ...r, gotowka, konto } : r));
 });
 
 // ─── Work positions (admin-managed roles catalogue) ────────────────────────────
@@ -1299,7 +1315,8 @@ router.delete("/positions/:id", RW, async (req, res) => {
 });
 
 // ─── Document types (admin-managed required-docs catalogue) ─────────────────────
-router.get("/document-types", RW, async (_req, res) => {
+// читання каталогу — усім, хто веде документи профілю (додавання документа бере звідси типи)
+router.get("/document-types", requireAnyCap("editData", "viewWorkers", "workerDocs", "legalization"), async (_req, res) => {
   const rows = await db.select().from(documentTypesTable).orderBy(documentTypesTable.sortOrder, documentTypesTable.id);
   ok(res, rows);
 });
@@ -1369,7 +1386,7 @@ router.get("/workers/:id/documents", WORKERS_RO, async (req, res) => {
   const docs = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, id)).orderBy(desc(workerDocumentsTable.id));
   ok(res, docs);
 });
-router.post("/workers/:id/documents", RW, async (req, res) => {
+router.post("/workers/:id/documents", DOCS_RW, async (req, res) => {
   const workerId = Number(req.params.id);
   const docTypeId = req.body?.docTypeId != null ? Number(req.body.docTypeId) : null;
   let title = String(req.body?.title ?? "").trim();
@@ -1389,7 +1406,7 @@ router.post("/workers/:id/documents", RW, async (req, res) => {
   await documentChanged({ id: d!.id, workerId }, "created", { adminId: actingAdminId(req) });
   ok(res, d);
 });
-router.patch("/worker-documents/:id", RW, async (req, res) => {
+router.patch("/worker-documents/:id", DOCS_RW, async (req, res) => {
   const id = Number(req.params.id);
   const patch: any = { updatedAt: new Date() };
   for (const k of ["title", "status", "number", "fileUrl", "note"]) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
@@ -1465,7 +1482,7 @@ router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
 });
 
 // Upload (or replace) the file attached to an existing document.
-router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (req, res) => {
+router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.single("file"), async (req, res) => {
   const id = Number(req.params.id);
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
   const rawMime = sniffDocMime(req.file.buffer);
@@ -1492,7 +1509,7 @@ router.post("/worker-documents/:id/file", RW, uploadDoc.single("file"), async (r
 });
 
 // Stream an uploaded document file (behind auth — these are personal docs).
-router.get("/worker-documents/:id/file", RW, async (req, res) => {
+router.get("/worker-documents/:id/file", requireAnyCap("editData", "viewWorkers", "workerDocs", "legalization"), async (req, res) => {
   const id = Number(req.params.id);
   const [doc] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc?.filePath) return fail(res, 404, "Файл не прикріплено");
@@ -1543,7 +1560,10 @@ router.post("/workers/:id/docs-invite", WD, async (req, res) => {
 router.post("/workers/scan-invite", WD, async (req, res) => {
   const adminId = actingAdminId(req);
   if (!adminId) return fail(res, 401, "Не авторизовано");
-  const token = await createOfficeScanToken(adminId);
+  // factoryId (опц.; для адміна зі скоупом обовʼязковий — scopeGate) одразу привʼязує
+  // нового працівника до фабрики, щоб офіс-менеджер міста бачив його після скану.
+  const factoryId = req.body?.factoryId ? Number(req.body.factoryId) : undefined;
+  const token = await createOfficeScanToken(adminId, undefined, factoryId);
   ok(res, { link: passportScanLink(token) });
 });
 
@@ -2099,7 +2119,7 @@ router.delete("/companies/:id", RW, async (req, res) => {
 
 // ─── Factories ─────────────────────────────────────────────────────────────────
 router.get("/factories", async (req, res) => {
-  const rows = await db.select().from(factoriesTable).orderBy(factoriesTable.name);
+  const rows = (await db.select().from(factoriesTable).orderBy(factoriesTable.name)).filter(r => factoryInScope(scopeOf(req), r.id));
   const companies = await db.select().from(companiesTable);
   const coMap = new Map(companies.map(c => [c.id, c.name]));
   const fin = canFinance(req);
@@ -2318,7 +2338,7 @@ router.put("/factories/:id/email-recipients", RW, async (req, res) => {
 // (t.me/<bot>?start=fac<id> / facs<id>, independent of WEB_APP_URL/token TTL).
 // `fac` = старий флоу (ім'я в чаті), `facs` = новий (bot/index.ts worker_signup:lang
 // → passport-scan+questionnaire link, createSelfScanToken). Office reviews after.
-router.get("/factories/:id/join-link", RW, async (req, res) => {
+router.get("/factories/:id/join-link", requireAnyCap("editData", "workerDocs"), async (req, res) => {
   const id = Number(req.params.id);
   const f = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, id)))[0];
   if (!f) return fail(res, 404, "Не знайдено");
@@ -5595,12 +5615,24 @@ async function roleExists(key: string): Promise<boolean> {
   return !!r;
 }
 
+// Скоуп міст/фабрик і делеговані ролі для запрошень (01.10.2026) — нормалізація вводу.
+const cleanCities = (v: any): string[] => Array.isArray(v) ? [...new Set(v.map((x: any) => String(x).trim()).filter(Boolean))] : [];
+const cleanIds = (v: any): number[] => Array.isArray(v) ? [...new Set(v.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))] : [];
+async function cleanInviteRoles(v: any): Promise<string[] | null> {
+  const keys = Array.isArray(v) ? [...new Set(v.map(String))] : [];
+  if (keys.includes("owner")) return null; // запрошувати на owner не можна делегувати
+  for (const k of keys) if (!(await roleExists(k))) return null;
+  return keys;
+}
+
 router.get("/admins", requireRole("owner"), async (_req, res) => {
-  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, username: adminsTable.username, telegramId: adminsTable.telegramId, role: adminsTable.role, isMain: adminsTable.isMain, inviteCode: adminsTable.inviteCode }).from(adminsTable).orderBy(adminsTable.id);
+  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, username: adminsTable.username, telegramId: adminsTable.telegramId, role: adminsTable.role, isMain: adminsTable.isMain, inviteCode: adminsTable.inviteCode,
+    scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles, invitedBy: adminsTable.invitedBy }).from(adminsTable).orderBy(adminsTable.id);
   ok(res, admins.map(a => ({
     id: a.id, name: a.name, username: a.username, role: a.role ?? "owner",
     isMain: !!a.isMain, hasWebLogin: !!a.username, hasTelegram: !!a.telegramId,
     pending: !a.telegramId, inviteLink: a.inviteCode && !a.telegramId ? adminInviteLink(a.inviteCode) : null,
+    scopeCities: a.scopeCities ?? [], scopeFactoryIds: a.scopeFactoryIds ?? [], canInviteRoles: a.canInviteRoles ?? [], invitedBy: a.invitedBy,
   })));
 });
 
@@ -5610,8 +5642,12 @@ router.post("/admins", requireMainAdmin, async (req, res) => {
   if (!name?.trim()) return fail(res, 400, "Вкажіть ім'я");
   const r = (String(role) as Role);
   if (!(await roleExists(r))) return fail(res, 400, "Невірна роль");
+  const canInviteRoles = await cleanInviteRoles(req.body?.canInviteRoles);
+  if (!canInviteRoles) return fail(res, 400, "Невірні ролі для запрошень");
   const code = await uniqueAdminCode();
-  const [a] = await db.insert(adminsTable).values({ name: name.trim(), role: r, inviteCode: code }).returning();
+  const [a] = await db.insert(adminsTable).values({ name: name.trim(), role: r, inviteCode: code,
+    scopeCities: r === "owner" ? [] : cleanCities(req.body?.scopeCities), scopeFactoryIds: r === "owner" ? [] : cleanIds(req.body?.scopeFactoryIds),
+    canInviteRoles, invitedBy: actingAdminId(req) ?? null }).returning();
   ok(res, { id: a!.id, name: a!.name, role: a!.role, inviteLink: adminInviteLink(code) });
 });
 
@@ -5628,6 +5664,15 @@ router.patch("/admins/:id", requireMainAdmin, async (req, res) => {
     if (id === mainId && r !== "owner") return fail(res, 400, "Головний власник має лишатися власником");
     patch.role = r;
   }
+  // скоуп на головного/owner не діє (authRequired його ігнорує) — не зберігаємо, щоб не плутати
+  if (req.body?.scopeCities !== undefined) patch.scopeCities = id === mainId ? [] : cleanCities(req.body.scopeCities);
+  if (req.body?.scopeFactoryIds !== undefined) patch.scopeFactoryIds = id === mainId ? [] : cleanIds(req.body.scopeFactoryIds);
+  if (req.body?.canInviteRoles !== undefined) {
+    const roles = await cleanInviteRoles(req.body.canInviteRoles);
+    if (!roles) return fail(res, 400, "Невірні ролі для запрошень");
+    patch.canInviteRoles = roles;
+  }
+  if (!Object.keys(patch).length) return fail(res, 400, "Нічого змінювати");
   const [a] = await db.update(adminsTable).set(patch).where(eq(adminsTable.id, id)).returning();
   ok(res, a);
 });
@@ -5676,6 +5721,82 @@ router.delete("/admins/:id", requireMainAdmin, async (req, res) => {
     await tx.update(advanceRequestsTable).set({ decidedBy: null }).where(eq(advanceRequestsTable.decidedBy, id));
     await tx.delete(adminsTable).where(eq(adminsTable.id, id));
   });
+  ok(res, { ok: true });
+});
+
+// ─── Делеговані запрошення (01.10.2026) ────────────────────────────────────────
+// Головний адмін видає людині admins.can_invite_roles (напр. ["office_manager"]) — вона
+// запрошує на ці ролі, бачить і перевидає лінки лише СВОЇМ запрошеним (invited_by),
+// ролей не редагує. Скоуп нового адміна — не ширший за власний: делегат зі скоупом мусить
+// дати непорожній піднабір своїх міст/фабрик (порожній = «усе» = ескалація).
+function requireInviter(req: any, res: any, next: any) {
+  const a = (req as AuthedRequest).admin;
+  if (!a) return res.status(401).json({ error: "unauthorized" });
+  if (a.isMain || a.canInviteRoles.length) return next();
+  return res.status(403).json({ error: "forbidden" });
+}
+const inviterRoles = async (req: any): Promise<string[]> => {
+  const a = (req as AuthedRequest).admin!;
+  if (a.isMain) return (await db.select({ key: rolesTable.key }).from(rolesTable)).map(r => r.key).filter(k => k !== "owner");
+  return a.canInviteRoles.filter(k => k !== "owner");
+};
+
+router.get("/admin-invites", requireInviter, async (req, res) => {
+  const me = (req as AuthedRequest).admin!;
+  const allowed = await inviterRoles(req);
+  const roles = allowed.length ? await db.select({ key: rolesTable.key, label: rolesTable.label }).from(rolesTable).where(inArray(rolesTable.key, allowed)) : [];
+  const mine = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role, telegramId: adminsTable.telegramId, inviteCode: adminsTable.inviteCode,
+      username: adminsTable.username, scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, createdAt: adminsTable.createdAt })
+    .from(adminsTable).where(eq(adminsTable.invitedBy, me.adminId)).orderBy(desc(adminsTable.id));
+  ok(res, {
+    roles,
+    // власний скоуп — для пікера (null = без обмежень)
+    myScope: me.scope ? { cities: me.scope.cities, factoryIds: me.scope.factoryIds } : null,
+    invites: mine.map(a => ({
+      id: a.id, name: a.name, role: a.role, pending: !a.telegramId, hasWebLogin: !!a.username,
+      inviteLink: a.inviteCode && !a.telegramId ? adminInviteLink(a.inviteCode) : null,
+      scopeCities: a.scopeCities ?? [], scopeFactoryIds: a.scopeFactoryIds ?? [], createdAt: a.createdAt,
+    })),
+  });
+});
+
+router.post("/admin-invites", requireInviter, async (req, res) => {
+  const me = (req as AuthedRequest).admin!;
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return fail(res, 400, "Вкажіть ім'я");
+  const role = String(req.body?.role ?? "");
+  if (!(await inviterRoles(req)).includes(role) || !(await roleExists(role))) return fail(res, 403, "Немає права запрошувати на цю роль");
+  const cities = cleanCities(req.body?.scopeCities);
+  const factoryIds = cleanIds(req.body?.scopeFactoryIds);
+  if (me.scope) {
+    if (!cities.length && !factoryIds.length) return fail(res, 400, "Оберіть місто або фабрики (у межах вашого доступу)");
+    const myCities = new Set(me.scope.cities);
+    if (cities.some(c => !myCities.has(c.toLocaleLowerCase("pl")))) return fail(res, 403, "Місто поза вашим доступом");
+    if (factoryIds.some(id => !me.scope!.factoryIds.includes(id))) return fail(res, 403, "Фабрика поза вашим доступом");
+  }
+  const code = await uniqueAdminCode();
+  const [a] = await db.insert(adminsTable).values({ name, role, inviteCode: code, scopeCities: cities, scopeFactoryIds: factoryIds, invitedBy: me.adminId }).returning();
+  ok(res, { id: a!.id, name: a!.name, role: a!.role, inviteLink: adminInviteLink(code) });
+});
+
+// Лише свої запрошені: перевидати лінк (поки Telegram не привʼязаний) / відкликати неприйняте
+async function myInvitee(req: any, res: any) {
+  const id = Number(req.params.id);
+  const [a] = await db.select().from(adminsTable).where(eq(adminsTable.id, id));
+  if (!a || a.invitedBy !== (req as AuthedRequest).admin!.adminId) { fail(res, 404, "Не знайдено"); return null; }
+  return a;
+}
+router.post("/admin-invites/:id/invite", requireInviter, async (req, res) => {
+  const a = await myInvitee(req, res); if (!a) return;
+  if (a.telegramId) return fail(res, 400, "Користувач вже приєднаний до Telegram");
+  let code = a.inviteCode;
+  if (!code) { code = await uniqueAdminCode(); await db.update(adminsTable).set({ inviteCode: code }).where(eq(adminsTable.id, a.id)); }
+  ok(res, { inviteLink: adminInviteLink(code) });
+});
+router.delete("/admin-invites/:id", requireInviter, async (req, res) => {
+  const a = await myInvitee(req, res); if (!a) return;
+  if (a.telegramId) return fail(res, 400, "Запрошення вже прийняте — видалити акаунт може лише головний адміністратор");
+  await db.delete(adminsTable).where(eq(adminsTable.id, a.id));
   ok(res, { ok: true });
 });
 
@@ -6020,6 +6141,8 @@ router.post("/schedule/driver-assignments/copy-week", requireCap("assignDrivers"
 router.get("/notifications", async (req: AuthedRequest, res) => {
   const role = req.admin!.role;
   const myId = req.admin!.adminId;
+  // дзвіночок — невиходи/скасування по всіх містах; адміну зі скоупом не показуємо (lib/scope.ts)
+  if (req.admin!.scope) return ok(res, []);
   const rows = await db.select().from(notificationsTable).orderBy(desc(notificationsTable.id)).limit(50);
   const seesAll = role === "owner";
   const mine = rows.filter(n => seesAll || n.audience === "both" || n.audience === role);

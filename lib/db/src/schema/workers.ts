@@ -566,6 +566,13 @@ export const adminsTable = pgTable("admins", {
   // Per-account UI preferences of the web panel (tab order for cities/factories, …),
   // key→value; server-side so they follow the user across browsers/devices.
   webPrefs: jsonb("web_prefs").$type<Record<string, unknown>>().notNull().default({}),
+  // Доступ по містах/фабриках (01.10.2026): обидва порожні = усе. Місто — factories.city.
+  // Адмін зі скоупом проходить лише скоуп-свідомі ендпойнти (api-server lib/scope.ts).
+  scopeCities: jsonb("scope_cities").$type<string[]>().notNull().default([]),
+  scopeFactoryIds: jsonb("scope_factory_ids").$type<number[]>().notNull().default([]),
+  // Ролі, на які цей адмін може запрошувати людей (видає лише is_main).
+  canInviteRoles: jsonb("can_invite_roles").$type<string[]>().notNull().default([]),
+  invitedBy: integer("invited_by").references((): AnyPgColumn => adminsTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

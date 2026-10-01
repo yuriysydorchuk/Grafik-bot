@@ -20,6 +20,7 @@ import { sendDocumentRequest } from "../services/docRequests";
 import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
+import { workerInScopeSql } from "../lib/scope";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -267,8 +268,14 @@ async function dashboardRows() {
     };
   });
 }
-router.get("/legalization", LG, async (_req, res) => {
-  const rows = await dashboardRows();
+router.get("/legalization", LG, async (req: AuthedRequest, res) => {
+  let rows = await dashboardRows();
+  // офіс-менеджер міста бачить лише своїх (lib/scope.ts)
+  const scope = req.admin?.scope;
+  if (scope) {
+    const allowed = new Set((await db.select({ id: workersTable.id }).from(workersTable).where(workerInScopeSql(scope))).map(r => r.id));
+    rows = rows.filter(r => allowed.has(r.id));
+  }
   const today = warsawToday();
   const summary = { total: rows.length, legal: 0, pending: 0, expiring: 0, illegal: 0, unknown: 0, notComputed: 0, review: 0, pendingDocs: 0 };
   for (const r of rows) {
