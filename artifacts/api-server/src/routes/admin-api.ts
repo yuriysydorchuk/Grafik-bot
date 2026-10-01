@@ -1119,6 +1119,14 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     const d = await (await import("../services/firstWorkDate")).ensureFirstWorkDate(id).catch(() => null);
     if (d) (w as any).firstWorkDate = d;
   }
+  // Перший день ПО ФАБРИКАХ (02.10.2026, людина на кількох фабриках): той самий хелпер, що
+  // й «Календар працівників» — щоб профіль і календар не розходились
+  const firstByFactory = await (await import("../services/firstWorkDate")).firstWorkDatesByFactory([id]).catch(() => new Map<string, string>());
+  const firstFacIds = [...firstByFactory.keys()].map(k => Number(k.split(":")[1]));
+  const firstFacNames = firstFacIds.length ? await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(inArray(factoriesTable.id, firstFacIds)) : [];
+  const firstWorkDates = [...firstByFactory.entries()]
+    .map(([k, date]) => { const fid = Number(k.split(":")[1]); return { factoryId: fid, factoryName: firstFacNames.find(f => f.id === fid)?.name ?? null, date }; })
+    .sort((a, b) => a.date.localeCompare(b.date));
   // Телефон: у workers колонки немає — читаємо з анкети (worker_questionnaires.phone, у профілі
   // не редагується — рішення власника 20.09.2026); фолбек — картка кандидата, з якої людину створили.
   const [qRow] = await db.select({ phone: workerQuestionnairesTable.phone }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, id));
@@ -1151,7 +1159,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // канонічних — інакше select у профілі показує порожнє
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
     employmentStartDate: w.employmentStartDate,
-    firstWorkDate: w.firstWorkDate, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
+    firstWorkDate: w.firstWorkDate, firstWorkDates, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
     phone: qRow?.phone || candRow?.phone || null, phoneSource: qRow?.phone ? "questionnaire" : candRow?.phone ? "candidate" : null,
     // бонуси — лише для працівників бонусних фабрик (правило konto/готівки
     // фабрики на поточний місяць: стаж → обидві галочки, лише нал → одна)

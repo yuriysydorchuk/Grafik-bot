@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { Modal } from "./ui";
+import { ZoomImage } from "./ZoomImage";
 import { useT } from "../lib/i18n";
 
 export type AbsenceFile = { id: number; fileName: string | null; fileMime: string | null };
@@ -28,10 +29,10 @@ export function AbsenceFiles({ files, compact }: { files?: AbsenceFile[]; compac
       <Modal open={!!open} onClose={() => setOpen(null)} title={t("Підтвердження пропуску")} size="lg">
         {open && (
           <div className="space-y-3">
-            <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-slate-50">
+            <div className="rounded-lg border border-slate-200 bg-slate-50">
               {isPdf
                 ? <iframe src={fileUrl(open.id)} title={open.fileName ?? "PDF"} className="h-[70vh] w-full" />
-                : <img src={fileUrl(open.id)} alt={open.fileName ?? ""} className="mx-auto max-h-[70vh] w-auto max-w-full object-contain" />}
+                : <ZoomImage src={fileUrl(open.id)} alt={open.fileName ?? ""} className="h-[70vh]" />}
             </div>
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span className="truncate">{open.fileName}</span>

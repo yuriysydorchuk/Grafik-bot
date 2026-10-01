@@ -1538,6 +1538,10 @@ const EN: Record<string, string> = {
   "пояснено": "explained",
   "Підтвердження пропуску": "Absence proof",
   "Відкрити в новій вкладці": "Open in a new tab",
+  "Зменшити": "Zoom out",
+  "Перший робочий день на кожній фабриці (як у календарі працівників)": "First working day at each factory (same as the workers calendar)",
+  "Збільшити": "Zoom in",
+  "Скинути масштаб": "Reset zoom",
   "Дата внесення пояснення працівником": "Date the worker submitted the explanation",
 
   // ── Broadcast ──

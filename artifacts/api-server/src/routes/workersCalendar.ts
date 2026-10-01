@@ -13,6 +13,7 @@ import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { addDaysStr } from "../lib/dates";
 import { OPEN_STATUSES, warsawToday } from "../services/taskUtils";
 import { loadLeadDays } from "../services/legalityRecompute";
+import { firstWorkDatesByFactory } from "../services/firstWorkDate";
 
 const router: IRouter = Router();
 router.use("/workers-calendar", authRequired, requirePage("/workers-calendar"));
@@ -141,26 +142,8 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
       out.push({ id: `end:${key}`, kind: "end", date: last, title: `Останній робочий день · ${facs.get(factoryId) ?? ""}`, detail: detail ?? null, ...base(w, factoryId), severity: sev(last) });
     };
     if (want("start")) {
-      // перша фактична зміна по (людина, фабрика): present або розіслана минула scheduled; лише затверджені/розіслані тижні
-      const firstShift = await db.execute(sql`
-        select e.worker_id, e.factory_id, min(k.week_start + (case e.day_of_week when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end))::text as d
-        from schedule_entries e join schedule_weeks k on k.id = e.week_id
-        where e.worker_id in (${sql.join(ids.map(i => sql`${i}`), sql`, `)})
-          and (k.status = 'approved' or e.sent_at is not null)
-          and (e.status = 'present' or (e.status = 'scheduled' and e.sent_at is not null
-               and k.week_start + (case e.day_of_week when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end) < ${today}::date))
-        group by e.worker_id, e.factory_id`);
-      const firstHours = await db.execute(sql`
-        select h.worker_id, h.factory_id, min(d.key) as d
-        from factory_hours h, jsonb_each(coalesce(h.days, '{}'::jsonb)) d
-        where h.worker_id in (${sql.join(ids.map(i => sql`${i}`), sql`, `)}) and d.key ~ '^\\d{4}-\\d{2}-\\d{2}$'
-        group by h.worker_id, h.factory_id`);
-      const first = new Map<string, string>(); // `${workerId}:${factoryId}` → date
-      const take = (wid: number, fid: number | null, d: string | null) => { if (fid == null || !d) return; const k = `${wid}:${fid}`; const cur = first.get(k); if (!cur || d < cur) first.set(k, d); };
-      for (const r of firstShift.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d ? String(r.d).slice(0, 10) : null);
-      for (const r of firstHours.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d);
-      for (const r of wf) if (r.validFrom) take(r.workerId, r.factoryId, String(r.validFrom));
-      for (const w of workers) if (w.factoryId != null && w.firstWorkDate && !first.has(`${w.id}:${w.factoryId}`)) first.set(`${w.id}:${w.factoryId}`, String(w.firstWorkDate).slice(0, 10));
+      // по (людина, фабрика) — спільний хелпер з профілем (services/firstWorkDate.ts)
+      const first = await firstWorkDatesByFactory(ids, today);
       for (const [k, d] of first) { const [wid, fid] = k.split(":").map(Number); const w = wmap.get(wid!); if (w) pushStart(w, fid!, d, k); }
     }
     if (want("end")) {

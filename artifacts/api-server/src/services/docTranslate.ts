@@ -46,3 +46,27 @@ export async function translateHtml(html: string, targetLang: "en" | "es" | "ru"
   logger.info({ targetLang, chars: html.length }, "template body auto-translated");
   return restore(translated, tokens);
 }
+
+// Переклад короткого ЗНАЧЕННЯ плейсхолдера (назва посади, обовʼязки, «kwota i typ»)
+// — format=text: результат іде в data і далі екранується formatValue, html-ентіті
+// з format=html дали б подвійне екранування («&amp;amp;»).
+const textCache = new Map<string, string>();
+export async function translateText(text: string, targetLang: "en" | "es" | "ru" | "uk", sourceLang = "pl"): Promise<string> {
+  const keyFile = process.env.GOOGLE_DOCAI_KEY_FILE;
+  if (!keyFile) throw new Error("Автопереклад не налаштований на цьому сервері (GOOGLE_DOCAI_KEY_FILE)");
+  const cacheKey = `${sourceLang}>${targetLang}:${text}`;
+  const hit = textCache.get(cacheKey);
+  if (hit !== undefined) return hit;
+  const auth = new google.auth.GoogleAuth({ keyFile, scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
+  const client = await auth.getClient();
+  const res: any = await client.request({
+    url: "https://translation.googleapis.com/language/translate/v2",
+    method: "POST",
+    data: { q: text, source: sourceLang, target: TARGET_LANG_CODE[targetLang], format: "text" },
+  });
+  const translated = res.data?.data?.translations?.[0]?.translatedText;
+  if (typeof translated !== "string") throw new Error("Translation API не повернув результат");
+  if (textCache.size > 2000) textCache.clear();
+  textCache.set(cacheKey, translated);
+  return translated;
+}

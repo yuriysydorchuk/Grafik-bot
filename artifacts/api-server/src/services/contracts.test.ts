@@ -43,3 +43,9 @@ test("missingFields: лише ключі, ВІДСУТНІ у словнику (
   delete (data as Record<string, string>)["Wynagrodzenie słownie"];
   assert.deepEqual(missingFields(data, ["Imię", "Nazwisko", "Wynagrodzenie słownie"]), ["Wynagrodzenie słownie"]);
 });
+
+test("substitutePlaceholders: język:xx бере перекладене значення з data за повним плейсхолдером, фолбек — польське", () => {
+  const html = "<p>{%Czynności%} / {%Czynności język:uk%} / {%Stanowisko język:ru%}</p>";
+  const out = substitutePlaceholders(html, { "Czynności": "sortowanie owoców", "Czynności język:uk": "сортування фруктів", "Stanowisko": "Wózkowy" });
+  assert.match(out, /sortowanie owoców \/ сортування фруктів \/ Wózkowy/);
+});

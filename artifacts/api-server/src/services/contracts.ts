@@ -9,10 +9,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PDFDocument } from "pdf-lib";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import puppeteer, { type Browser } from "puppeteer";
 import {
-  db, workersTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, workerQuestionnairesTable,
+  db, workersTable, factoriesTable, companiesTable, positionsTable, factoryPositionsTable, workerQuestionnairesTable, workerFactoriesTable,
   contractsTable, documentTemplatesTable, contractFilesTable, signatureEventsTable, type Contract, type DocumentTemplate,
 } from "@workspace/db";
 import { KSIEG_STD_BRUTTO } from "./svodni";
@@ -109,8 +109,42 @@ export function substitutePlaceholders(
       return opts.companyStampDataUrl
         ? `<img src="${opts.companyStampDataUrl}" style="max-width:100%;max-height:100%;object-fit:contain" />` : "";
     }
+    // {%Ключ język:uk%} — перекладене значення лежить у data під ПОВНИМ плейсхолдером
+    // (кладе addTranslatedValues при генерації; снапшот у contracts.data → перерендери
+    // підпису/дат бачать той самий переклад). Нема перекладу — польське значення.
+    if (modifier?.startsWith("język:")) return formatValue(data[`${key} ${modifier}`] ?? data[key], null);
     return formatValue(data[key], modifier);
   });
+}
+
+// Двомовні шаблони (umowa: польська колонка + мова працівника) просять
+// {%Czynności język:uk%} / {%Wynagrodzenie kwota i typ język:ru%} — до 01.10.2026
+// модифікатор парсився, але ігнорувався, і в українській колонці стояв польський
+// текст посади/обовʼязків (скарга власника). Перекладаємо значення Google
+// Translate (той самий ключ, що й автопереклад шаблонів); сервіс не налаштований /
+// впав — лишаємо польське (документ не блокуємо), пишемо warn.
+export async function addTranslatedValues(data: Record<string, string>, bodies: string[]): Promise<Record<string, string>> {
+  const wanted = new Map<string, { key: string; lang: string }>();
+  for (const body of bodies) {
+    for (const m of body.matchAll(PLACEHOLDER_RE)) {
+      const { key, modifier } = parsePlaceholder(m[1]!);
+      if (!modifier?.startsWith("język:")) continue;
+      const lang = modifier.slice("język:".length);
+      if (lang === "pl" || !["en", "es", "ru", "uk"].includes(lang)) continue;
+      wanted.set(`${key} ${modifier}`, { key, lang });
+    }
+  }
+  if (!wanted.size) return data;
+  const out = { ...data };
+  const { translateText, translateConfigured } = await import("./docTranslate");
+  if (!translateConfigured()) { logger.warn({ keys: [...wanted.keys()] }, "język: placeholders — translation not configured, polish values used"); return out; }
+  for (const [full, { key, lang }] of wanted) {
+    const src = data[key];
+    if (!src || out[full] !== undefined) continue;
+    try { out[full] = await translateText(src, lang as "en" | "es" | "ru" | "uk"); }
+    catch (e) { logger.warn({ err: String(e), key, lang }, "język: placeholder translation failed, polish value used"); }
+  }
+  return out;
 }
 
 // ── Дані для підстановки — словник РЕАЛЬНИХ польських ключів (архів HrAppka) ─
@@ -124,8 +158,27 @@ export function substitutePlaceholders(
 // лишається лише для сталого пакету без фабрики.
 export async function resolveContractCompanyId(workerId: number, factoryId: number | null, explicit?: number | null): Promise<number | null> {
   if (explicit != null) return explicit;
-  const [worker] = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.id, workerId));
-  if (factoryId == null) return worker?.companyId ?? null;
+  const [worker] = await db.select({ companyId: workersTable.companyId, factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (factoryId == null) {
+    // Сталий пакет (ZUS/tax/PPK/BHP/wnioski) без явної фірми (01.10.2026): раніше — лише
+    // фірма ПРОФІЛЮ, яка у багатьох порожня/застаріла (нові профілі з бота, зміна
+    // роботодавця через «роботодавці» в профілі) → wniosek виходив без реквізитів,
+    // а «Miejscowość, data» внизу — без міста. Тепер: роботодавець на основній фабриці
+    // (worker_factories.company_id → фірма фабрики, якщо не мультифірмова) → профіль →
+    // фірма останньої умови на фабрику.
+    if (worker?.factoryId != null) {
+      const [wf] = await db.select({ companyId: workerFactoriesTable.companyId }).from(workerFactoriesTable)
+        .where(and(eq(workerFactoriesTable.workerId, workerId), eq(workerFactoriesTable.factoryId, worker.factoryId), isNull(workerFactoriesTable.validTo)));
+      if (wf?.companyId != null) return wf.companyId;
+      const [f] = await db.select({ companyId: factoriesTable.companyId, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
+      if (f && !f.multiFirm && f.companyId != null) return f.companyId;
+    }
+    if (worker?.companyId != null) return worker.companyId;
+    const [last] = await db.select({ companyId: contractsTable.companyId }).from(contractsTable)
+      .where(and(eq(contractsTable.workerId, workerId), isNotNull(contractsTable.factoryId), isNotNull(contractsTable.companyId)))
+      .orderBy(desc(contractsTable.id)).limit(1);
+    return last?.companyId ?? null;
+  }
   const [factory] = await db.select({ companyId: factoriesTable.companyId, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
   if (factory?.multiFirm) return worker?.companyId ?? factory.companyId ?? null;
   return factory?.companyId ?? worker?.companyId ?? null;
@@ -448,8 +501,12 @@ export async function generateContract(opts: {
   if (!templates.length) throw new Error("Не знайдено жодного шаблону для цього комплекту — прив'яжіть шаблони у бібліотеці");
 
   const companyId = await resolveContractCompanyId(opts.workerId, opts.factoryId, opts.companyId ?? null);
-  const data = { ...(await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null, companyId)), ...(opts.extraData ?? {}) };
   const lang = asLang(worker.language);
+  const bodies = templates.map(tpl => (tpl.body as Record<string, string>)[lang] || (tpl.body as Record<string, string>).pl || "");
+  const data = await addTranslatedValues(
+    { ...(await buildContractData(opts.workerId, opts.factoryId, { dateFrom: opts.dateFrom ?? null, dateTo: opts.dateTo ?? null }, opts.contractRateBrutto ?? null, companyId)), ...(opts.extraData ?? {}) },
+    bodies,
+  );
 
   const missing = new Set<string>();
   for (const tpl of templates) {

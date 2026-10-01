@@ -3,6 +3,7 @@
 // (формат як «Бадання до зняття» в Авансах: чекбокси → вибір місяця →
 // перенести; перенесений рядок — бейдж «сводна YYYY-MM» + відміна).
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Gavel, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -181,7 +182,7 @@ export default function Penalties() {
                           )}
                         </td>
                         <td className="px-4 py-1.5 text-slate-700">
-                          {r.workerName ?? `#${r.workerId}`}
+                          <Link href={`/workers/${r.workerId}`} className="text-red-700 underline-offset-2 hover:underline">{r.workerName ?? `#${r.workerId}`}</Link>
                           {r.note && <span className="ml-2 text-xs text-slate-400">{r.note}</span>}
                           {r.deducted && <Badge color="green">{t("сводна")} {r.deductedMonth ?? ""}</Badge>}
                         </td>

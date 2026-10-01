@@ -3,8 +3,8 @@
 // посадка водієм) і бекфілом у нічному прогоні; лише коли поле порожнє — ручне значення
 // графікової не перезаписується. Від нього рахується powiadomienie UA (7 днів) через
 // employerSinceOf (legalityRecompute.ts) — фолбек employment_start_date.
-import { db, workersTable, scheduleEntriesTable, scheduleWeeksTable, factoryHoursTable } from "@workspace/db";
-import { and, eq, inArray, isNull, isNotNull, or } from "drizzle-orm";
+import { db, workersTable, scheduleEntriesTable, scheduleWeeksTable, factoryHoursTable, workerFactoriesTable } from "@workspace/db";
+import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { entryDateStr } from "../lib/dates";
 import { warsawToday } from "./tasks";
 import { logger } from "../lib/logger";
@@ -60,4 +60,42 @@ export async function backfillFirstWorkDates(): Promise<number> {
   let n = 0;
   for (const w of ws) { try { if (await ensureFirstWorkDate(w.id)) n++; } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "first work date backfill failed"); } }
   return n;
+}
+
+// Перший робочий день ПО ФАБРИКАХ (єдине джерело для календаря працівників і профілю,
+// 02.10.2026): перша фактична зміна на фабриці (present, або розіслана минула scheduled
+// без absent; лише затверджені/розіслані тижні) ∪ перший день з годинами фабрики
+// (factory_hours.days) ∪ worker_factories.valid_from; основна фабрика без жодної явки —
+// workers.first_work_date. Повертає Map "<workerId>:<factoryId>" → YYYY-MM-DD.
+export async function firstWorkDatesByFactory(workerIds: number[], today = warsawToday()): Promise<Map<string, string>> {
+  const first = new Map<string, string>();
+  if (!workerIds.length) return first;
+  const ids = sql.join(workerIds.map(i => sql`${i}`), sql`, `);
+  const dayOff = sql`(case e.day_of_week when 'mon' then 0 when 'tue' then 1 when 'wed' then 2 when 'thu' then 3 when 'fri' then 4 when 'sat' then 5 else 6 end)`;
+  const firstShift = await db.execute(sql`
+    select e.worker_id, e.factory_id, min(k.week_start + ${dayOff})::text as d
+    from schedule_entries e join schedule_weeks k on k.id = e.week_id
+    where e.worker_id in (${ids})
+      and (k.status = 'approved' or e.sent_at is not null)
+      and (e.status = 'present' or (e.status = 'scheduled' and e.sent_at is not null and k.week_start + ${dayOff} < ${today}::date))
+    group by e.worker_id, e.factory_id`);
+  const firstHours = await db.execute(sql`
+    select h.worker_id, h.factory_id, min(d.key) as d
+    from factory_hours h, jsonb_each(coalesce(h.days, '{}'::jsonb)) d
+    where h.worker_id in (${ids}) and d.key ~ '^\\d{4}-\\d{2}-\\d{2}$'
+    group by h.worker_id, h.factory_id`);
+  const take = (wid: number, fid: number | null, d: string | null) => {
+    if (fid == null || !d) return;
+    const v = String(d).slice(0, 10); const k = `${wid}:${fid}`; const cur = first.get(k);
+    if (!cur || v < cur) first.set(k, v);
+  };
+  for (const r of firstShift.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d);
+  for (const r of firstHours.rows as { worker_id: number; factory_id: number | null; d: string | null }[]) take(r.worker_id, r.factory_id, r.d);
+  const wf = await db.select({ workerId: workerFactoriesTable.workerId, factoryId: workerFactoriesTable.factoryId, validFrom: workerFactoriesTable.validFrom })
+    .from(workerFactoriesTable).where(inArray(workerFactoriesTable.workerId, workerIds));
+  for (const r of wf) if (r.validFrom) take(r.workerId, r.factoryId, String(r.validFrom));
+  const ws = await db.select({ id: workersTable.id, factoryId: workersTable.factoryId, firstWorkDate: workersTable.firstWorkDate })
+    .from(workersTable).where(inArray(workersTable.id, workerIds));
+  for (const w of ws) if (w.factoryId != null && w.firstWorkDate && !first.has(`${w.id}:${w.factoryId}`)) first.set(`${w.id}:${w.factoryId}`, String(w.firstWorkDate).slice(0, 10));
+  return first;
 }

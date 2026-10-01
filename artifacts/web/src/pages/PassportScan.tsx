@@ -25,6 +25,7 @@ const STR: Record<string, Record<Lang, string>> = {
   title: { uk: "Скан паспорта", en: "Passport scan", es: "Escaneo de pasaporte", ru: "Скан паспорта", pl: "Skan paszportu" },
   hint: { uk: "Розмісти паспорт (сторінку з фото та рядками внизу) у рамці й зроби фото — або завантаж наявне фото/PDF.", en: "Place the passport (photo page with the lines at the bottom) inside the frame and take a photo — or upload an existing photo/PDF.", es: "Coloca el pasaporte (página con foto y líneas abajo) dentro del marco y toma una foto — o sube una foto/PDF existente.", ru: "Разместите паспорт (страницу с фото и строками внизу) в рамке и сделайте фото — или загрузите готовое фото/PDF.", pl: "Umieść paszport (strona ze zdjęciem i liniami na dole) w ramce i zrób zdjęcie — albo prześlij istniejące zdjęcie/PDF." },
   shutter: { uk: "Зробити фото", en: "Take photo", es: "Tomar foto", ru: "Сделать фото", pl: "Zrób zdjęcie" },
+  nativeCamera: { uk: "Зняти камерою телефону", en: "Take photo with phone camera", es: "Tomar foto con la cámara del teléfono", ru: "Снять камерой телефона", pl: "Zrób zdjęcie aparatem telefonu" },
   upload: { uk: "Завантажити фото/PDF", en: "Upload photo/PDF", es: "Subir foto/PDF", ru: "Загрузить фото/PDF", pl: "Prześlij zdjęcie/PDF" },
   noCamera: { uk: "Камера недоступна — завантаж фото або PDF файлом.", en: "Camera unavailable — upload a photo or PDF file instead.", es: "Cámara no disponible — sube una foto o PDF.", ru: "Камера недоступна — загрузите фото или PDF файлом.", pl: "Aparat niedostępny — prześlij zdjęcie lub plik PDF." },
   analyzing: { uk: "🔎 Розпізнаю паспорт…", en: "🔎 Reading your passport…", es: "🔎 Leyendo tu pasaporte…", ru: "🔎 Распознаю паспорт…", pl: "🔎 Odczytuję paszport…" },
@@ -208,6 +209,7 @@ export default function PassportScan() {
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [birthDate, setBirthDate] = useState<string | null>(null); // з кроку паспорта — для звірки PESEL на кроці анкети
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nativeCamRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -320,10 +322,20 @@ export default function PassportScan() {
             <p className="mb-3 text-sm text-slate-600">{s("hint")}</p>
             {analyzeErr && <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{analyzeErr}</p>}
             <CameraCapture s={s} onCapture={handleCaptured} fileInputRef={fileInputRef} />
+            {/* Нативна камера телефону (capture=environment → системний застосунок камери
+                з автофокусом/HDR, як у звичайному фото на iPhone/Android) — «готове
+                рішення» для тих, кому браузерна камера гальмує. Кадр не обрізається
+                рамкою, тож людина має сама зняти лише паспорт. */}
+            <input ref={nativeCamRef} type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleCaptured(f, f.name || "passport.jpg"); e.target.value = ""; }} />
+            <button type="button" onClick={() => nativeCamRef.current?.click()}
+              className="mt-3 w-full rounded-lg border border-slate-300 bg-white py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              📷 {s("nativeCamera")}
+            </button>
             <input ref={fileInputRef} type="file" accept="image/*,application/pdf" className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) handleCaptured(f, f.name); e.target.value = ""; }} />
             <button type="button" onClick={() => fileInputRef.current?.click()}
-              className="mt-3 w-full rounded-lg border border-slate-300 bg-white py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50">
+              className="mt-2 w-full rounded-lg border border-slate-300 bg-white py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50">
               {s("upload")}
             </button>
           </>
@@ -411,10 +423,13 @@ function CameraCapture({ s, onCapture, fileInputRef }: {
       try {
         // Без вимог до роздільності браузер (особливо вебвʼю Telegram) віддає типові
         // 640×480, а після обрізки рамкою лишалось ~400×300 px — нечитабельний скан
-        // (скарга 30.09.2026). Просимо максимум, що дасть камера; ideal не валить
-        // getUserMedia на слабших пристроях — браузер бере найближче.
+        // (скарга 30.09.2026). Але 4K-превʼю (3840×2160) у вебвʼю гальмувало: кадр
+        // запізнювався на секунди, кнопка «спрацьовувала» з затримкою (скарга
+        // 01.10.2026). Full HD — компроміс: після обрізки рамкою ~1500 px по довшій
+        // стороні (достатньо для OCR; сервер і так стискає до 2000), превʼю плавне.
+        // ideal не валить getUserMedia на слабших пристроях — браузер бере найближче.
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 3840 }, height: { ideal: 2160 } },
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false,
         });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }

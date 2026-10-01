@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { WorkerPayCard } from "../components/WorkerPayCard";
+import { ZoomImage } from "../components/ZoomImage";
 import { useRoute, Link } from "wouter";
 import { useBack } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -64,6 +65,7 @@ interface WorkerProfile {
   doNotHire?: boolean; doNotHireReason?: string | null; doNotHireAt?: string | null; // чорний список
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
+  firstWorkDates?: { factoryId: number; factoryName: string | null; date: string }[]; // по фабриках (той самий хелпер, що календар)
   phone?: string | null; phoneSource?: "questionnaire" | "candidate" | null; // з анкети (канон) або з картки кандидата
   terminationDate?: string | null; // запланована дата звільнення (виповідзення)
   terminationFactoryId?: number | null; // з якої фабрики йде (null = з усіх)
@@ -342,7 +344,7 @@ export default function WorkerDetail() {
             {/* Дата працевлаштування й поріг «нагадати про години» — про роботу
                 й графік, не про гроші; перенесено з «Фінанси» для балансу колонок. */}
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
-            <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} readOnly={!canEdit} />
+            <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} byFactory={w.firstWorkDates ?? []} readOnly={!canEdit} />
             {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canEdit} />}
             <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
@@ -1700,9 +1702,13 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
         });
       }
       if (showStandardSection && checkedStandard.size > 0) {
+        // Фірма сталого пакета = фірма обраного роботодавця (та сама, що в умові); без
+        // вибору сервер бере роботодавця основної фабрики → профіль (01.10.2026: раніше
+        // лише профіль — порожня фірма давала wniosek без реквізитів і дату без міста)
         await post(`/workers/${workerId}/contracts`, {
           factoryId: null, templateIds: [...checkedStandard],
           dateFrom: dateFrom || null, dateTo: dateTo || null,
+          companyId: companyId ? Number(companyId) : null,
         });
       }
     },
@@ -2641,7 +2647,7 @@ function DocPreviewModal({ doc, onClose }: { doc: WorkerDocument; onClose: () =>
   return (
     <Modal open onClose={onClose} title={doc.title} size="xl">
       {isImage ? (
-        <img src={url} alt={doc.title} className="mx-auto max-h-[80vh] w-auto rounded-lg" />
+        <ZoomImage src={url} alt={doc.title} className="h-[80vh]" />
       ) : isPdf ? (
         <iframe src={url} title={doc.title} className="h-[80vh] w-full rounded-lg border border-slate-200" />
       ) : (
@@ -3287,7 +3293,7 @@ function BirthDateRow({ workerId, birthDate, pesel, under26Fallback, onRequest }
 
 // Перший робочий день: система ставить сама з першої явки «присутній» у затвердженому
 // тижні; графікова може вписати/виправити (editData). Від нього — powiadomienie UA (7 днів).
-function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date: string | null; readOnly?: boolean }) {
+function FirstWorkDateRow({ workerId, date, byFactory, readOnly }: { workerId: number; date: string | null; byFactory: { factoryId: number; factoryName: string | null; date: string }[]; readOnly?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -3311,6 +3317,12 @@ function FirstWorkDateRow({ workerId, date, readOnly }: { workerId: number; date
         <button className="font-medium text-slate-700 hover:text-red-600" title={t("Ставиться сам з першої явки «присутній» у затвердженому графіку; можна вписати руками")} onClick={() => { setDraft(date ?? ""); setEditing(true); }}>
           {date ? new Date(date + "T00:00:00").toLocaleDateString("uk-UA") : t("ще не було явки — вказати")}
         </button>
+      )}
+      {/* По фабриках — коли людина на кількох або перший день на поточній фабриці ≠ загальному */}
+      {(byFactory.length > 1 || (byFactory.length === 1 && byFactory[0]!.date !== date)) && (
+        <span className="flex basis-full flex-wrap justify-end gap-x-2 text-[11px] font-normal text-slate-500" title={t("Перший робочий день на кожній фабриці (як у календарі працівників)")}>
+          {byFactory.map(f => <span key={f.factoryId}>{f.factoryName ?? `#${f.factoryId}`}: <span className="tabular-nums text-slate-600">{new Date(f.date + "T00:00:00").toLocaleDateString("uk-UA")}</span></span>)}
+        </span>
       )}
     </InfoRow>
   );

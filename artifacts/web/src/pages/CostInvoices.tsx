@@ -8,6 +8,7 @@ import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Penci
 import { get, post, patch, del, upload } from "../lib/api";
 import { shrinkImageFile } from "../lib/shrinkFile";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
+import { ZoomImage } from "../components/ZoomImage";
 import { PdfPreview } from "../components/PdfPreview";
 import { InvoiceAuditModal, type AuditTarget } from "../components/InvoiceAuditModal";
 import { PageHeader } from "../components/Layout";
@@ -978,7 +979,7 @@ function InvoiceModal({ row, prefill, initialFile, companies, cities, categories
       {preview && (
         <div className="min-h-[420px] overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
           {preview.isImage
-            ? <img src={preview.url} alt="" className="h-full max-h-[560px] w-full object-contain" />
+            ? <ZoomImage src={preview.url} alt="" className="h-[560px]" />
             : <InvoicePdfPreview url={preview.url} />}
         </div>
       )}
