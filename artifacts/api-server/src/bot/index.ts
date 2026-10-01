@@ -2,7 +2,7 @@ import { Markup, type Context } from "telegraf";
 import { db } from "@workspace/db";
 import {
   workersTable, driversTable, factoriesTable, factoryOrdersTable,
-  scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, driverShiftAssignmentsTable, adminsTable,
+  scheduleWeeksTable, scheduleEntriesTable, scheduleApprovalsTable, driverShiftAssignmentsTable, adminsTable, rolesTable,
   absenceRequestsTable, driverTripsTable, driverWorkdaysTable, unplannedWorkersTable, availabilityTable,
   candidatesTable, hoursDisputesTable, advanceRequestsTable, monthlyReportsTable,
   vehiclesTable, shiftCancellationsTable, factoryHoursTable,
@@ -96,7 +96,7 @@ const officeLangKeyboard = () => Markup.inlineKeyboard(
   OFFICE_LANGS.map(l => [Markup.button.callback(LANG_LABEL[l], `olang:${l}`)]),
 );
 import { DAY_UK, SHIFT_SHORT, splitMessage, escapeHtml, mdSafe, mdSafeWithLinks } from "./display";
-import { isAdmin, getAdmin, getWorker, getLeaver, getWorkerOrLeaver, LEAVER_GRACE_DAYS, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
+import { isAdmin, getAdmin, getScopedAdmin, getWorker, getLeaver, getWorkerOrLeaver, LEAVER_GRACE_DAYS, getDriver, adminMenuFor, managementMenuFor, requireAdminCap } from "./roles";
 import {
   sendLongMessage, notifyAdmins, sendScheduleToAllWorkers, sendScheduleToHeadDriver,
   notifyDriverOfAssignment, notifyAbsentWorker, refreshExcelReports, notifyRoles,
@@ -225,10 +225,11 @@ bot.start(async (ctx) => {
         if (dup.length > 0) return ctx.reply("❌ Ваш акаунт вже зареєстрований у панелі.");
         await db.update(adminsTable).set({ telegramId: tid, inviteCode: null }).where(eq(adminsTable.id, a.id));
       }
-      const ROLE_UK: Record<string, string> = { owner: "Власник", scheduler: "Графікова", driver: "Водій" };
+      // назва ролі — з таблиці roles (кастомні ролі, напр. «Офіс-менеджер», інакше показали б ключ)
+      const [roleRow] = await db.select({ label: rolesTable.label }).from(rolesTable).where(eq(rolesTable.key, a.role));
       setState(tid, "web_login:username", {});
       return ctx.reply(
-        `✅ Привіт, *${mdSafe(a.name)}*!\n\nВас додано до панелі (роль: *${ROLE_UK[a.role] ?? a.role}*).\n\nЗадамо веб-доступ. Введіть *логін* (3–32 символи, лат./цифри):`,
+        `✅ Привіт, *${mdSafe(a.name)}*!\n\nВас додано до панелі (роль: *${mdSafe(roleRow?.label ?? a.role)}*).\n\nЗадамо веб-доступ. Введіть *логін* (3–32 символи, лат./цифри):`,
         { parse_mode: "Markdown", ...Markup.removeKeyboard() },
       );
     }
@@ -318,6 +319,13 @@ bot.start(async (ctx) => {
 
   const admin = await getAdmin(tid);
   if (admin) { const al = olang(admin); return ctx.reply(tb(al, "👋 Привіт, *{name}*! Ви адміністратор.", { name }), { parse_mode: "Markdown", ...(await adminMenuFor(admin, al)) }); }
+  // офіс-менеджер міста (скоуп) — офісного меню в боті нема, лише веб-панель
+  const scoped = await getScopedAdmin(tid);
+  if (scoped) {
+    const al = olang(scoped);
+    const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
+    return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає лише коди входу.", { name: scoped.name, url }), Markup.removeKeyboard());
+  }
   const driver = await getDriver(tid);
   if (driver) {
     const dl = olang(driver);
@@ -3724,7 +3732,7 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     try { await ctx.deleteMessage(); } catch { /* can't delete password msg in some chats */ }
     const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
-    const doneMenu = driver ? await driverMenuFor(driver, al) : managementMenu(al);
+    const doneMenu = driver ? await driverMenuFor(driver, al) : admin ? managementMenu(al) : Markup.removeKeyboard(); // без admin = скоуп-адмін (лише веб)
     return ctx.reply(
       tb(al, "✅ Веб-доступ налаштовано!\n\n👤 Логін: <code>{user}</code>\n🔗 Панель: {url}\n\n(пароль збережено, повідомлення з ним видалено)", { user: escapeHtml(data.username), url: escapeHtml(url) }),
       { parse_mode: "HTML", ...doneMenu },

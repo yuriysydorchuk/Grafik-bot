@@ -117,6 +117,7 @@ const NAV: NavGroup[] = [
   {
     items: [
       { href: "/settings", label: "Налаштування", icon: SettingsIcon },
+      { href: "/admins", label: "Користувачі та запрошення", icon: UserPlus },
       { href: "/security", label: "Безпека / Сесії", icon: ShieldCheck },
     ],
   },

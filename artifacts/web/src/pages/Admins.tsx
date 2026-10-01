@@ -9,13 +9,20 @@ import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
+import { ScopePicker, scopeSummary, type ScopeValue } from "../components/ScopePicker";
 
 interface AdminRow {
   id: number; name: string; username: string | null; role: string;
   isMain: boolean; hasWebLogin: boolean; hasTelegram: boolean; pending: boolean; inviteLink: string | null;
+  scopeCities: string[]; scopeFactoryIds: number[]; canInviteRoles: string[]; invitedBy: number | null;
 }
 
+// Головний адмін — користувачі й ролі; делегат запрошень (admins.can_invite_roles) — лише свої запрошення.
 export default function Admins({ me }: { me: Me }) {
+  return me.isMain ? <AdminsMain me={me} /> : <MyInvites me={me} />;
+}
+
+function AdminsMain({ me }: { me: Me }) {
   const t = useT();
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -87,6 +94,10 @@ export default function Admins({ me }: { me: Me }) {
                           {roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
                         </Select>
                       ) : <Badge color="slate">{roleLabel(a.role)}</Badge>}
+                    {!a.isMain && a.role !== "owner" && (a.scopeCities.length > 0 || a.scopeFactoryIds.length > 0) && (
+                      <div className="mt-1 text-xs text-slate-500">{scopeSummary(a.scopeCities, a.scopeFactoryIds, t)}</div>
+                    )}
+                    {a.canInviteRoles.length > 0 && <div className="mt-0.5 text-xs text-slate-400">✉️ {t("запрошує:")} {a.canInviteRoles.map(roleLabel).join(", ")}</div>}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {canManage && (
@@ -237,13 +248,15 @@ function AddUser({ roles, onClose, onCreated }: { roles: RoleDef[]; onClose: () 
   const t = useT();
   const [name, setName] = useState("");
   const [role, setRole] = useState<string>(roles.find(r => r.key !== "owner")?.key ?? "scheduler");
+  const [scope, setScope] = useState<ScopeValue>({ cities: [], factoryIds: [] });
+  const [inviteRoles, setInviteRoles] = useState<string[]>([]);
   const save = useMutation({
-    mutationFn: () => post<{ inviteLink: string }>("/admins", { name, role }),
+    mutationFn: () => post<{ inviteLink: string }>("/admins", { name, role, scopeCities: scope.cities, scopeFactoryIds: scope.factoryIds, canInviteRoles: inviteRoles }),
     onSuccess: (r) => { navigator.clipboard?.writeText(r.inviteLink); onCreated(name, r.inviteLink); },
     onError: (e: any) => toast.error(e.message),
   });
   return (
-    <Modal open onClose={onClose} title={t("Новий користувач")}>
+    <Modal open onClose={onClose} title={t("Новий користувач")} size="lg">
       <div className="space-y-3">
         <div><Label>{t("Імʼя")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
         <div><Label>{t("Роль")}</Label>
@@ -251,6 +264,7 @@ function AddUser({ roles, onClose, onCreated }: { roles: RoleDef[]; onClose: () 
             {roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
           </Select>
         </div>
+        <AccessFields role={role} roles={roles} scope={scope} onScope={setScope} inviteRoles={inviteRoles} onInviteRoles={setInviteRoles} />
         <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500"><Copy className="mr-1 inline h-3 w-3" />{t("Після створення скопіюється посилання-запрошення. Надішліть його людині в Telegram.")}</div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
@@ -265,12 +279,15 @@ function EditUser({ admin, roles, onClose, onSaved }: { admin: AdminRow; roles: 
   const t = useT();
   const [name, setName] = useState(admin.name);
   const [role, setRole] = useState<string>(admin.role);
+  const [scope, setScope] = useState<ScopeValue>({ cities: admin.scopeCities, factoryIds: admin.scopeFactoryIds });
+  const [inviteRoles, setInviteRoles] = useState<string[]>(admin.canInviteRoles);
   const save = useMutation({
-    mutationFn: () => patch(`/admins/${admin.id}`, { name, ...(admin.isMain ? {} : { role }) }),
+    mutationFn: () => patch(`/admins/${admin.id}`, { name, canInviteRoles: inviteRoles,
+      ...(admin.isMain ? {} : { role, scopeCities: role === "owner" ? [] : scope.cities, scopeFactoryIds: role === "owner" ? [] : scope.factoryIds }) }),
     onSuccess: () => { toast.success(t("Збережено")); onSaved(); }, onError: (e: any) => toast.error(e.message),
   });
   return (
-    <Modal open onClose={onClose} title={t("Редагувати користувача")}>
+    <Modal open onClose={onClose} title={t("Редагувати користувача")} size="lg">
       <div className="space-y-3">
         <div><Label>{t("Імʼя")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
         <div><Label>{t("Роль")}</Label>
@@ -279,6 +296,7 @@ function EditUser({ admin, roles, onClose, onSaved }: { admin: AdminRow; roles: 
           </Select>
           {admin.isMain && <p className="mt-1 text-xs text-slate-400">{t("Головний власник — роль незмінна.")}</p>}
         </div>
+        <AccessFields role={admin.isMain ? "owner" : role} roles={roles} scope={scope} onScope={setScope} inviteRoles={inviteRoles} onInviteRoles={setInviteRoles} />
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button loading={save.isPending} onClick={() => name.trim() && save.mutate()}>{t("Зберегти")}</Button>
@@ -299,6 +317,128 @@ function InviteModal({ name, link, onClose }: { name: string; link: string; onCl
           <button onClick={() => { navigator.clipboard?.writeText(link); toast.success(t("Скопійовано")); }} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white hover:text-red-600" title={t("Копіювати")}><Copy className="h-4 w-4" /></button>
         </div>
         <div className="flex justify-end"><Button onClick={onClose}>{t("Готово")}</Button></div>
+      </div>
+    </Modal>
+  );
+}
+
+// Доступ по містах/фабриках + право запрошувати (лише головний адмін заповнює).
+// Для owner скоуп не діє (повний доступ у коді) — пікер ховається.
+function AccessFields({ role, roles, scope, onScope, inviteRoles, onInviteRoles }: {
+  role: string; roles: RoleDef[]; scope: ScopeValue; onScope: (v: ScopeValue) => void; inviteRoles: string[]; onInviteRoles: (v: string[]) => void;
+}) {
+  const t = useT();
+  const invitable = roles.filter(r => r.key !== "owner");
+  return (
+    <>
+      {role !== "owner" && <div><Label>{t("Доступ по містах і фабриках")}</Label><ScopePicker value={scope} onChange={onScope} /></div>}
+      <div>
+        <Label>{t("Може запрошувати людей на ролі")}</Label>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {invitable.map(r => (
+            <label key={r.key} className="flex cursor-pointer items-center gap-1.5 text-sm text-slate-600">
+              <input type="checkbox" checked={inviteRoles.includes(r.key)}
+                onChange={() => onInviteRoles(inviteRoles.includes(r.key) ? inviteRoles.filter(k => k !== r.key) : [...inviteRoles, r.key])} />
+              {r.label}
+            </label>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-slate-400">{t("Запрошених бачить і перевидає лише сам; доступ нового — не ширший за власний.")}</p>
+      </div>
+    </>
+  );
+}
+
+// ─── Делегат: мої запрошення ──────────────────────────────────────────────────
+interface InviteRow { id: number; name: string; role: string; pending: boolean; hasWebLogin: boolean; inviteLink: string | null; scopeCities: string[]; scopeFactoryIds: number[] }
+interface InvitesResp { roles: { key: string; label: string }[]; myScope: ScopeValue | null; invites: InviteRow[] }
+
+function MyInvites({ me }: { me: Me }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const { data, isLoading } = useQuery<InvitesResp>({ queryKey: ["admin-invites"], queryFn: () => get("/admin-invites") });
+  const [adding, setAdding] = useState(false);
+  const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
+  const inv = () => qc.invalidateQueries({ queryKey: ["admin-invites"] });
+  const roleLabel = (k: string) => data?.roles.find(r => r.key === k)?.label ?? k;
+  const regen = useMutation({
+    mutationFn: (a: InviteRow) => post<{ inviteLink: string }>(`/admin-invites/${a.id}/invite`).then(r => ({ r, a })),
+    onSuccess: ({ r, a }) => { navigator.clipboard?.writeText(r.inviteLink); setInvite({ name: a.name, link: r.inviteLink }); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => del(`/admin-invites/${id}`),
+    onSuccess: () => { toast.success(t("Запрошення відкликано")); inv(); }, onError: (e: any) => toast.error(e.message),
+  });
+  if (isLoading || !data) return <Spinner />;
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-slate-500">{t("Ви:")} <span className="font-medium text-slate-700">{me.name}</span> · {me.roleLabel}</p>
+        {data.roles.length > 0 && <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" /> {t("Запросити")}</Button>}
+      </div>
+      <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-600">
+        {t("Ви можете запрошувати людей на ролі:")} <b>{data.roles.map(r => r.label).join(", ") || "—"}</b>.
+        {data.myScope && <> {t("Доступ запрошених — у межах вашого:")} {scopeSummary(data.myScope.cities, data.myScope.factoryIds, t)}.</>}
+      </div>
+      <Card className="overflow-x-auto">
+        {!data.invites.length ? <Empty>{t("Ви ще нікого не запросили")}</Empty> : (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
+              <tr><th className="px-4 py-2.5">{t("Імʼя")}</th><th className="px-4 py-2.5">{t("Роль")}</th><th className="px-4 py-2.5">{t("Доступ")}</th><th className="px-4 py-2.5">{t("Статус")}</th><th className="px-4 py-2.5"></th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {data.invites.map(a => (
+                <tr key={a.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-2.5 font-medium text-slate-700">{a.name}</td>
+                  <td className="px-4 py-2.5"><Badge color="slate">{roleLabel(a.role)}</Badge></td>
+                  <td className="px-4 py-2.5 text-xs text-slate-500">{scopeSummary(a.scopeCities, a.scopeFactoryIds, t)}</td>
+                  <td className="px-4 py-2.5">{a.pending ? <Badge color="amber">{t("очікує приєднання")}</Badge> : a.hasWebLogin ? <Badge color="green">{t("активний")}</Badge> : <Badge color="slate">{t("без веб-логіну")}</Badge>}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    {a.pending && (
+                      <div className="flex justify-end gap-1">
+                        <button onClick={() => regen.mutate(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Посилання-запрошення")}><Link2 className="h-4 w-4" /></button>
+                        <button onClick={async () => { if (await confirm({ title: t("Відкликати запрошення {name}?", { name: a.name }), danger: true, confirmText: t("Відкликати") })) remove.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Відкликати")}><Trash2 className="h-4 w-4" /></button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+      {adding && <InviteNew roles={data.roles} scoped={!!data.myScope} onClose={() => setAdding(false)} onCreated={(name, link) => { inv(); setAdding(false); setInvite({ name, link }); }} />}
+      {invite && <InviteModal name={invite.name} link={invite.link} onClose={() => setInvite(null)} />}
+    </>
+  );
+}
+
+function InviteNew({ roles, scoped, onClose, onCreated }: { roles: { key: string; label: string }[]; scoped: boolean; onClose: () => void; onCreated: (name: string, link: string) => void }) {
+  const t = useT();
+  const [name, setName] = useState("");
+  const [role, setRole] = useState(roles[0]?.key ?? "");
+  const [scope, setScope] = useState<ScopeValue>({ cities: [], factoryIds: [] });
+  const scopeEmpty = !scope.cities.length && !scope.factoryIds.length;
+  const save = useMutation({
+    mutationFn: () => post<{ inviteLink: string }>("/admin-invites", { name, role, scopeCities: scope.cities, scopeFactoryIds: scope.factoryIds }),
+    onSuccess: (r) => { navigator.clipboard?.writeText(r.inviteLink); onCreated(name, r.inviteLink); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Запросити людину")} size="lg">
+      <div className="space-y-3">
+        <div><Label>{t("Імʼя")}</Label><Input value={name} onChange={e => setName(e.target.value)} autoFocus /></div>
+        <div><Label>{t("Роль")}</Label>
+          <Select value={role} onChange={e => setRole(e.target.value)}>{roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}</Select>
+        </div>
+        <div><Label>{t("Доступ по містах і фабриках")}</Label><ScopePicker value={scope} onChange={setScope} allowAll={!scoped} /></div>
+        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500"><Copy className="mr-1 inline h-3 w-3" />{t("Після створення скопіюється посилання-запрошення. Надішліть його людині в Telegram.")}</div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={save.isPending} disabled={!name.trim() || !role || (scoped && scopeEmpty)} onClick={() => save.mutate()}>{t("Створити")}</Button>
+        </div>
       </div>
     </Modal>
   );

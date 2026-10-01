@@ -24,6 +24,10 @@ export default function Workers() {
   const me = useMe();
   const isOwner = me?.role === "owner";
   const canEdit = can(me, "editData"); // viewWorkers-only (бухгалтерія) — лише перегляд, без дій
+  // Новий кандидат через фабрику (скан паспорта / лінк самореєстрації) — офіс-менеджер (workerDocs)
+  // або адмін зі скоупом міст: його нові люди мусять одразу мати фабрику, інакше він їх не побачить.
+  const addViaFactory = (!canEdit && can(me, "workerDocs")) || (canEdit && !!me?.scope);
+  const [addingLinks, setAddingLinks] = useState(false);
   const { data: workers, isLoading } = useQuery<Worker[]>({ queryKey: ["workers"], queryFn: () => get("/workers") });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
@@ -125,7 +129,9 @@ export default function Workers() {
   return (
     <>
       <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${mode === "blacklist" ? t("у чорному списку") : mode === "fired" ? t("звільнених") : t("активних")}`}
-        action={canEdit ? (
+        action={addViaFactory ? (
+          <Button onClick={() => setAddingLinks(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+        ) : canEdit ? (
           <div className="flex items-center gap-3">
             <Button loading={scanInvite.isPending} onClick={() => scanInvite.mutate()}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
             <button onClick={() => setAdding(true)} className="text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline">{t("...або вручну")}</button>
@@ -243,6 +249,7 @@ export default function Workers() {
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport, date) => fire.mutate({ id: firing.id, offerReport, date })} />}
 
       {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}
+      {addingLinks && <NewWorkerLinksModal onClose={() => setAddingLinks(false)} />}
     </>
   );
 }
@@ -328,6 +335,52 @@ function ScanInviteModal({ link, onClose }: { link: string; onClose: () => void 
         <div className="flex justify-end">
           <Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Новий працівник через фабрику (01.10.2026, офіс-менеджер): скан паспорта зараз (office-токен
+// з factoryId) або постійний лінк самореєстрації фабрики в Telegram (fac/facs). Фабрика —
+// лише зі свого доступу (GET /factories сервер обрізає скоупом).
+function NewWorkerLinksModal({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const [factoryId, setFactoryId] = useState<string>("");
+  const [links, setLinks] = useState<{ label: string; link: string }[]>([]);
+  const scan = useMutation({
+    mutationFn: () => post<{ link: string }>("/workers/scan-invite", { factoryId: Number(factoryId) }),
+    onSuccess: (d) => setLinks([{ label: t("Скан паспорта + анкета (дійсний 30 хвилин — відкрий на телефоні кандидата)"), link: d.link }]),
+    onError: (e: any) => toast.error(e.message),
+  });
+  const join = useMutation({
+    mutationFn: () => get<{ link: string; scanLink: string }>(`/factories/${factoryId}/join-link`),
+    onSuccess: (d) => setLinks([{ label: t("Самореєстрація в Telegram (постійний лінк фабрики — можна розсилати)"), link: d.scanLink }]),
+    onError: (e: any) => toast.error(e.message),
+  });
+  return (
+    <Modal open onClose={onClose} title={t("Новий працівник")}>
+      <div className="space-y-3">
+        <label className="block text-sm"><span className="mb-1 block text-xs text-slate-500">{t("Фабрика")}</span>
+          <Select value={factoryId} onChange={e => { setFactoryId(e.target.value); setLinks([]); }}>
+            <option value="">{t("— оберіть фабрику —")}</option>
+            {factories.map(f => <option key={f.id} value={f.id}>{f.name}{f.city ? ` · ${f.city}` : ""}</option>)}
+          </Select>
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={!factoryId} loading={scan.isPending} onClick={() => scan.mutate()}>{t("Скан паспорта зараз")}</Button>
+          <Button variant="secondary" disabled={!factoryId} loading={join.isPending} onClick={() => join.mutate()}>{t("Лінк самореєстрації")}</Button>
+        </div>
+        {links.map(l => (
+          <div key={l.link} className="space-y-1">
+            <p className="text-xs text-slate-500">{l.label}</p>
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <code className="flex-1 overflow-x-auto whitespace-nowrap text-xs text-slate-600">{l.link}</code>
+              <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(l.link); toast.success(t("Скопійовано")); }}>{t("Копіювати")}</Button>
+            </div>
+          </div>
+        ))}
+        <div className="flex justify-end"><Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button></div>
       </div>
     </Modal>
   );

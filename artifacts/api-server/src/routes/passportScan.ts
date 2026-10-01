@@ -425,10 +425,10 @@ router.post("/passport-scan/:token/student-cert", uploadScan.single("file"), asy
 const SCAN_TOKEN_TTL_MS = 30 * 60 * 1000; // 30хв — офісний лінк «зайшов і відсканував» (кандидат поруч)
 const SELF_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // самореєстрація з бота — 7 днів, відкривають коли зручно
 
-export async function createOfficeScanToken(adminId: number, candidateId?: number): Promise<string> {
+export async function createOfficeScanToken(adminId: number, candidateId?: number, factoryId?: number): Promise<string> {
   const token = randomInviteCode(24);
   await db.insert(passportScanTokensTable).values({
-    token, purpose: "office", createdBy: adminId, candidateId: candidateId ?? null, expiresAt: new Date(Date.now() + SCAN_TOKEN_TTL_MS),
+    token, purpose: "office", createdBy: adminId, candidateId: candidateId ?? null, factoryId: factoryId ?? null, expiresAt: new Date(Date.now() + SCAN_TOKEN_TTL_MS),
   });
   return token;
 }

@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -25,6 +25,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   legalization: "Легалізація (документи зі строками й номерами, справи, правила легальності)",
   tasksGroup: "Групові задачі та зустрічі (скликати зустрічі, ставити задачі кільком)",
   tasksManage: "Керувати задачами (перепризначати чужі, автоправила, контроль)",
+  workerPay: "Зарплата працівника в профілі — лише перегляд (години, ставка нетто, премії, потрачення, до виплати; без konto/готівки)",
 };
 
 // Pages a role can be granted access to (nav + route guards).
@@ -67,7 +68,7 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
 };
 
 // The resolved access carried on the current user (from /auth/me).
-export type Access = { role?: string | null; isMain?: boolean; caps?: string[]; pages?: string[] } | null | undefined;
+export type Access = { role?: string | null; isMain?: boolean; caps?: string[]; pages?: string[]; canInviteRoles?: string[] } | null | undefined;
 
 // owner is the immutable superuser → always allowed.
 export function can(me: Access, cap: Capability): boolean {
@@ -77,7 +78,9 @@ export function can(me: Access, cap: Capability): boolean {
 }
 export function canAccessPage(me: Access, path: string): boolean {
   if (!me) return false;
-  if (path === "/admins" || path === "/security") return !!me.isMain; // user/role mgmt + sessions — head admin only
+  // /admins — головний адмін (користувачі/ролі) або делегат запрошень (бачить лише свої запрошення)
+  if (path === "/admins") return !!me.isMain || !!me.canInviteRoles?.length;
+  if (path === "/security") return !!me.isMain; // sessions — head admin only
   if (me.role === OWNER) return true;
   return !!me.pages?.includes(path);
 }

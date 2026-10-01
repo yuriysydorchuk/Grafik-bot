@@ -40,6 +40,7 @@ const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "grafik_session";
 
 import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, type Role, type Capability } from "./roles";
+import { resolveScope, type AdminScope } from "./scope";
 
 type SessionPayload = { adminId: number; name: string; role: Role; exp: number; tv?: number; sid?: string };
 
@@ -92,7 +93,9 @@ export function verifyToken(token: string | undefined): SessionPayload | null {
 // ─── Express middleware ────────────────────────────────────────────────────────
 
 export interface AuthedRequest extends Request {
-  admin?: { adminId: number; name: string; role: Role; isMain: boolean; caps: string[]; pages: string[]; sessionId?: string };
+  admin?: { adminId: number; name: string; role: Role; isMain: boolean; caps: string[]; pages: string[]; sessionId?: string;
+    // null = без обмежень; інакше — дозволені фабрики (lib/scope.ts). canInviteRoles — ролі, на які можна запрошувати.
+    scope: AdminScope | null; canInviteRoles: string[] };
 }
 
 export async function authRequired(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -102,7 +105,8 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
   // Re-check against the DB every request so deletions / role changes take effect
   // immediately (the token's role is NOT trusted for authorization).
   try {
-    const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain, tokenVersion: adminsTable.tokenVersion }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
+    const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain, tokenVersion: adminsTable.tokenVersion,
+      scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
     if (!admin) return res.status(401).json({ error: "unauthorized" }); // account deleted
     // Server-side revocation: a bumped token_version (password change / "log out everywhere")
     // invalidates every token issued before it. Pre-versioning tokens (tv undefined) count as 0.
@@ -120,7 +124,10 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
     }
     const role = (admin.role ?? OWNER) as Role;
     const access = await resolveAccess(role);
-    req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages, sessionId: payload.sid };
+    // Головний адмін і owner скоупу не мають ніколи (захист від самоблокування).
+    const scope = admin.isMain || role === OWNER ? null : await resolveScope(admin.scopeCities, admin.scopeFactoryIds);
+    req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages, sessionId: payload.sid,
+      scope, canInviteRoles: admin.canInviteRoles ?? [] };
     return next();
   } catch {
     return res.status(500).json({ error: "auth error" });

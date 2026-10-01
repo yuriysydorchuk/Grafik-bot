@@ -138,7 +138,7 @@ type LockRow = typeof svodniLocksTable.$inferSelect;
 async function monthLocks(month: string): Promise<LockRow[]> {
   return db.select().from(svodniLocksTable).where(eq(svodniLocksTable.periodMonth, month));
 }
-function isLocked(locks: LockRow[], city: string, factoryLabel: string | null): boolean {
+export function isLocked(locks: LockRow[], city: string, factoryLabel: string | null): boolean {
   // офісні вкладки і «Додаткові студенти» живуть у віртуальному місті «Офіс»
   // (рядки тримають реальне місто) — лок з вкладки «Офіс» має їх матчити
   const effCity = factoryLabel != null && (OFFICE_TAB_RE.test(factoryLabel) || factoryLabel === EXTRA_STUDENTS_LABEL)

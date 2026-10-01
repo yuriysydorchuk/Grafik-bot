@@ -24,6 +24,7 @@ import {
 } from "@workspace/db";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { factoryInScope } from "../lib/scope";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature } from "../services/contracts";
@@ -311,6 +312,8 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   if (!req.file) return fail(res, 400, "Файл не отримано (лише PDF до 15 МБ)");
   if (sniffDocMime(req.file.buffer) !== "application/pdf") return fail(res, 400, "Очікується PDF (тип файлу перевіряється за вмістом)");
   if (!factoryId || !Number.isInteger(factoryId)) return fail(res, 400, "Вкажіть фабрику умови");
+  // multipart: scopeGate тіла ще не бачив — фабрика умови мусить бути в скоупі адміна
+  if (!factoryInScope(req.admin?.scope, factoryId)) return fail(res, 403, "Немає доступу до даних цього міста/фабрики");
   if (!companyId || !Number.isInteger(companyId)) return fail(res, 400, "Вкажіть нашу фірму в умові");
   if (!dateFrom) return fail(res, 400, "Вкажіть дату початку умови (YYYY-MM-DD)");
   if (dateTo && dateTo < dateFrom) return fail(res, 400, "Дата кінця раніше за дату початку");
