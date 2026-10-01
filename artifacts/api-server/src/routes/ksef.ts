@@ -1,6 +1,7 @@
 // «KSeF» (/ksef) — sales invoices mirrored from KSeF: list per revenue month,
 // totals per client, payment status (strict bank match + manual override).
 import { Router, type IRouter } from "express";
+import { parseColor } from "../lib/invoiceColors";
 import { db } from "@workspace/db";
 import { ksefInvoicesTable, companiesTable } from "@workspace/db";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
@@ -97,6 +98,10 @@ router.patch("/ksef/invoices/:id", async (req, res) => {
   } else if (b.paidDate !== undefined) {
     if (b.paidDate !== null && !validDate(b.paidDate)) return fail(res, 400, "bad paidDate");
     patch.manualPaidDate = b.paidDate;
+  }
+  {
+    const c = parseColor(b.color);
+    if (!c.skip) { if (c.err) return fail(res, 400, c.err); patch.color = c.value; }
   }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();

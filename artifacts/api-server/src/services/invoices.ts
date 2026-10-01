@@ -109,11 +109,11 @@ export async function syncInvoices(): Promise<InvoiceSyncResult> {
       // manual_* overrides + hostel link + позначка прибирання are OUR metadata —
       // carry them over by row identity (invoice number + amount), first unused match wins
       const old = await db.select().from(invoicesTable).where(eq(invoicesTable.tabName, `${src.company}:${tab}`));
-      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null; serviceMonth: string | null; cleaning: boolean; cleaningProjectId: number | null }[]>();
+      const overrides = new Map<string, { manualStatus: string | null; manualPaidDate: string | null; manualCategory: string | null; hostelId: number | null; vehicleId: number | null; city: string | null; serviceMonth: string | null; cleaning: boolean; cleaningProjectId: number | null; color: string | null }[]>();
       const rowKey = (e: { number: string | null; amount: number }) => `${(e.number ?? "").trim()}|${e.amount}`;
-      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city || o.serviceMonth || o.cleaning || o.cleaningProjectId) {
+      for (const o of old) if (o.manualStatus || o.manualPaidDate || o.manualCategory || o.hostelId || o.vehicleId || o.city || o.serviceMonth || o.cleaning || o.cleaningProjectId || o.color) {
         const k = rowKey(o);
-        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city, serviceMonth: o.serviceMonth, cleaning: o.cleaning, cleaningProjectId: o.cleaningProjectId });
+        (overrides.get(k) ?? overrides.set(k, []).get(k)!).push({ manualStatus: o.manualStatus, manualPaidDate: o.manualPaidDate, manualCategory: o.manualCategory, hostelId: o.hostelId, vehicleId: o.vehicleId, city: o.city, serviceMonth: o.serviceMonth, cleaning: o.cleaning, cleaningProjectId: o.cleaningProjectId, color: o.color });
       }
       for (const e of entries) {
         const stack = overrides.get(rowKey(e as any));

@@ -1241,6 +1241,7 @@ export const invoicesTable = pgTable("invoices", {
   cleaning: boolean("cleaning").notNull().default(false), // видаток бізнесу прибирання (розділ /cleaning)
   cleaningProjectId: integer("cleaning_project_id").references(() => cleaningProjectsTable.id), // вспульнота (NULL = загальний видаток прибирання)
   note: text("note"),
+  color: text("color"),                         // кольорова позначка кшєнгової на рядку /cost-invoices (ключ палітри lib/invoiceColors; NULL = без кольору)
   filePath: text("file_path"),                 // скан/фото фактури на диску (uploads/invoices/)
   createdBy: integer("created_by").references(() => adminsTable.id), // хто вніс (site/бот)
   paymentMethod: text("payment_method"),       // przelew | gotowka | NULL = авто (реєстр/банк)
@@ -1305,6 +1306,7 @@ export const agreementChargesTable = pgTable("agreement_charges", {
   month: text("month").notNull(),               // YYYY-MM
   amount: real("amount").notNull(),
   note: text("note"),
+  color: text("color"),                         // кольорова позначка кшєнгової на рядку /cost-invoices (ключ палітри lib/invoiceColors; NULL = без кольору)
   source: text("source").notNull().default("auto"),   // auto | manual-edit
   status: text("status").notNull().default("active"), // active | deleted
   // оплата місяця — ручна позначка кшєнгової (як manual_status у фактур; банк-матчингу нема)
@@ -1846,6 +1848,7 @@ export const ksefInvoicesTable = pgTable("ksef_invoices", {
   cashReport: boolean("cash_report").notNull().default(false), // «рапорт готівковий»
   manualCategory: text("manual_category"),      // ручна категорія витрат (expense_categories.key; NULL = авто по правилах/патернах)
   note: text("note"),                           // ручна нотатка кшєнгової (як у invoices.note) — бейдж+тултип на /cost-invoices
+  color: text("color"),                         // кольорова позначка кшєнгової на рядку /cost-invoices (ключ палітри lib/invoiceColors; NULL = без кольору)
   xmlPath: text("xml_path"),                    // локальна копія XML (uploads/ksef-xml/)
   driveFileId: text("drive_file_id"),           // XML на Google Drive (Faktury kosztowe/sprzedażowe)
   drivePdfId: text("drive_pdf_id"),             // PDF-візуалізація поряд з XML (лінк веб-панелі веде сюди)

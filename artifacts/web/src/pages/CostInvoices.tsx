@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud, History, FolderClock, Ban, CalendarPlus } from "lucide-react";
+import { Plus, FileText, CheckCircle2, AlertCircle, Receipt, ExternalLink, Pencil, Trash2, ScanLine, RefreshCw, Banknote, Landmark, Clock, UploadCloud, History, FolderClock, Ban, CalendarPlus, BellRing, Eye } from "lucide-react";
 import { get, post, patch, del, upload } from "../lib/api";
 import { shrinkImageFile } from "../lib/shrinkFile";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
@@ -14,6 +14,9 @@ import { PageHeader } from "../components/Layout";
 import { useT } from "../lib/i18n";
 import { KsefSales } from "./Ksef";
 import { badgeClass } from "../lib/colors";
+import { SortTh, SortBtn, toggleSort, type SortState } from "../components/SortTh";
+import { InvoiceColorPicker } from "../components/InvoiceColorPicker";
+import { INVOICE_COLORS, rowColorClass } from "../lib/invoiceColors";
 
 type PayMethod = "przelew" | "gotowka" | null;
 type AgreementKind = "one_time" | "fixed_term" | "indefinite";
@@ -22,6 +25,7 @@ interface Row {
   source: "ksef" | "manual" | "scan" | "sheet" | "agreement";
   companyId: number | null; firm: string | null;
   issueDate: string | null; number: string | null;
+  receivedDate: string | null; // «дата впливу» (KSeF — прийняття в KSeF; local — внесення; умова — генерація запису)
   seller: string | null; sellerNip: string | null;
   gross: number; dueDate: string | null;
   paid: boolean; paidDate: string | null; paidSource: string | null;
@@ -34,10 +38,20 @@ interface Row {
   category: string; categorySource: "manual" | "auto";
   agreementId: number | null; agreementKind: AgreementKind | null;
   isProforma: boolean;
+  color: string | null; // кольорова позначка кшєнгової
 }
 const AGREEMENT_KIND_LABEL: Record<AgreementKind, string> = {
   one_time: "разова", fixed_term: "на термін", indefinite: "безстрокова",
 };
+// банер «Нові фактури» — усе, що зʼявилось після останнього «переглянуто» цього адміна
+interface NewInvoiceRow {
+  origin: "ksef" | "local"; id: number; firm: string | null;
+  number: string | null; seller: string | null; gross: number;
+  issueDate: string | null; month: string; importedAt: string; addedBy: string | null;
+  pastMonth: boolean; paid: boolean;
+}
+interface NewResp { rows: NewInvoiceRow[]; count: number; pastMonthCount: number; truncated: boolean; since: string; seenAt: string | null; thisMonth: string; latestImportedAt: string | null }
+
 interface Resp {
   month: string; rows: Row[]; cities: string[];
   totals: {
@@ -64,6 +78,50 @@ const TYPE_TABS = [
   ["", "Всі"], ["ksef", "Фактури КСеФ"], ["agreement", "Умови"], ["local", "Фактури без КСеФ"], ["proforma", "Проформи"],
 ] as const;
 
+// сортування списку: клік по заголовку колонки; дати/суми за замовчуванням спадають, текст — зростає
+type SortKey = "issueDate" | "receivedDate" | "number" | "seller" | "gross" | "category" | "paymentMethod" | "paidDate" | "dueDate";
+const SORT_DEFAULT_DIR: Record<SortKey, "asc" | "desc"> = {
+  issueDate: "desc", receivedDate: "desc", number: "asc", seller: "asc", gross: "desc", category: "asc", paymentMethod: "asc", paidDate: "desc", dueDate: "asc",
+};
+const cmpStr = (a: string | null | undefined, b: string | null | undefined) => {
+  // порожнє — завжди в кінці, незалежно від напрямку
+  if (!a && !b) return 0; if (!a) return 1; if (!b) return -1;
+  return a.localeCompare(b, "pl", { sensitivity: "base", numeric: true });
+};
+const cmpNum = (a: number, b: number) => a - b;
+function sortRows(rows: Row[], sort: SortState<SortKey>, catLabel: (k: string) => string): Row[] {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  const cmp = (a: Row, b: Row): number => {
+    switch (sort.key) {
+      case "issueDate": return cmpStr(a.issueDate, b.issueDate);
+      case "receivedDate": return cmpStr(a.receivedDate, b.receivedDate);
+      case "number": return cmpStr(a.number, b.number);
+      case "seller": return cmpStr(a.seller, b.seller);
+      case "gross": return cmpNum(a.gross, b.gross);
+      case "category": return cmpStr(catLabel(a.category), catLabel(b.category));
+      case "paymentMethod": return cmpStr(a.paymentMethod, b.paymentMethod);
+      case "paidDate": return cmpStr(a.paid ? a.paidDate ?? "0000" : null, b.paid ? b.paidDate ?? "0000" : null);
+      case "dueDate": return cmpStr(a.dueDate, b.dueDate);
+    }
+  };
+  return [...rows].sort((a, b) => {
+    const c = cmp(a, b);
+    // «порожнє в кінці» не має перевертатись при desc
+    const aEmpty = c !== 0 && isEmptyFor(a, sort.key), bEmpty = c !== 0 && isEmptyFor(b, sort.key);
+    if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+    return (c || cmpStr(b.issueDate, a.issueDate)) * (c ? sign : 1);
+  });
+}
+function isEmptyFor(r: Row, k: SortKey): boolean {
+  switch (k) {
+    case "issueDate": return !r.issueDate; case "receivedDate": return !r.receivedDate; case "number": return !r.number;
+    case "seller": return !r.seller; case "paymentMethod": return !r.paymentMethod; case "paidDate": return !r.paid; case "dueDate": return !r.dueDate;
+    default: return false;
+  }
+}
+// сума у пошуку: «1234,56», «1234.56», «1 234,56» і ціле «1234»
+const grossHay = (g: number) => { const f = g.toFixed(2); return `${f} ${f.replace(".", ",")} ${Math.round(g)}`; };
+
 export default function CostInvoices() {
   const t = useT();
   const qc = useQueryClient();
@@ -73,7 +131,16 @@ export default function CostInvoices() {
   const thisMonth = new Date().toISOString().slice(0, 7);
   const [month, setMonth] = useState(thisMonth);
   const [companyId, setCompanyId] = useState("");
-  const [status, setStatus] = useState("");   // "" | paid | unpaid
+  const [status, setStatus] = useState("");   // "" | paid | unpaid | overdue
+  const [methodFilter, setMethodFilter] = useState<"" | "przelew" | "gotowka" | "none">("");
+  const [cityFilter, setCityFilter] = useState("");
+  const [driveMissingOnly, setDriveMissingOnly] = useState(false);
+  const [colorFilter, setColorFilter] = useState(""); // "" | ключ палітри | "none"
+  const [colorPickerKey, setColorPickerKey] = useState<string | null>(null); // відкритий пікер кольору
+  const [amountMin, setAmountMin] = useState("");
+  const [amountMax, setAmountMax] = useState("");
+  const [sort, setSort] = useState<SortState<SortKey>>({ key: "issueDate", dir: "desc" });
+  const onSort = (k: SortKey) => setSort(s => toggleSort(s, k, SORT_DEFAULT_DIR[k]));
   // «proforma» — окремий розділ: проформи (local з doc_type=PROFORMA) не змішуються зі звичайними ручними
   const [originFilter, setOriginFilter] = useState<"" | "ksef" | "agreement" | "local" | "proforma">("");
   const [catFilter, setCatFilter] = useState(""); // ключ категорії з розбивки-чіпсів
@@ -111,6 +178,20 @@ export default function CostInvoices() {
 
   const [monthPushing, setMonthPushing] = useState(false);
   const months = useQuery<{ months: string[] }>({ queryKey: ["ci-months"], queryFn: () => get("/cost-invoices/months") });
+  // нові фактури з моменту останнього «переглянуто» — оновлюємо раз на 5 хв і після синку
+  const fresh = useQuery<NewResp>({ queryKey: ["cost-invoices-new"], queryFn: () => get("/cost-invoices/new"), refetchInterval: 5 * 60_000 });
+  const [freshOpen, setFreshOpen] = useState(false); // показати весь список, а не перші 8
+  const [acking, setAcking] = useState(false);
+  const ackFresh = async () => {
+    setAcking(true);
+    try { await post("/cost-invoices/new/ack", { until: fresh.data?.latestImportedAt ?? undefined }); await qc.invalidateQueries({ queryKey: ["cost-invoices-new"] }); }
+    catch (e: any) { toast.error(e?.message || "error"); }
+    finally { setAcking(false); }
+  };
+  // «Відкрити» з банера: місяць фактури + пошук по номеру — рядок стає єдиним у таблиці з усіма діями
+  const openFresh = (r: NewInvoiceRow) => {
+    setSection("purchase"); resetFilters(); setCompanyId(""); setMonth(r.month); setQ(r.number ?? r.seller ?? "");
+  };
   const data = useQuery<Resp>({
     queryKey: ["cost-invoices", month, companyId],
     queryFn: () => get(`/cost-invoices?month=${month}${companyId ? `&companyId=${companyId}` : ""}`),
@@ -125,19 +206,42 @@ export default function CostInvoices() {
   const catIcon = (k: string) => catMeta.get(k)?.icon ?? (k === "other" ? "🗂️" : "");
   const catColor = (k: string) => catMeta.get(k)?.color ?? "slate";
 
+  const parseAmount = (v: string) => { const n = Number(v.replace(/\s/g, "").replace(",", ".")); return v.trim() && Number.isFinite(n) ? n : null; };
   const rows = useMemo(() => {
     let r = d?.rows ?? [];
-    if (status) r = r.filter(x => (status === "paid") === x.paid);
+    if (status === "overdue") r = r.filter(x => x.overdue);
+    else if (status) r = r.filter(x => (status === "paid") === x.paid);
     if (originFilter === "proforma") r = r.filter(x => x.isProforma);
     else if (originFilter === "local") r = r.filter(x => x.origin === "local" && !x.isProforma);
     else if (originFilter) r = r.filter(x => x.origin === originFilter);
     if (catFilter) r = r.filter(x => x.category === catFilter);
+    if (methodFilter === "none") r = r.filter(x => !x.paymentMethod);
+    else if (methodFilter) r = r.filter(x => x.paymentMethod === methodFilter);
+    if (cityFilter) r = r.filter(x => (x.city ?? "") === cityFilter);
+    if (driveMissingOnly) r = r.filter(x => !x.driveFileId);
+    if (colorFilter === "none") r = r.filter(x => !x.color);
+    else if (colorFilter) r = r.filter(x => x.color === colorFilter);
+    const min = parseAmount(amountMin), max = parseAmount(amountMax);
+    if (min != null) r = r.filter(x => x.gross >= min);
+    if (max != null) r = r.filter(x => x.gross <= max);
     if (q.trim().length >= 2) {
-      const needle = q.trim().toLowerCase();
-      r = r.filter(x => `${x.number} ${x.seller} ${x.sellerNip} ${x.note}`.toLowerCase().includes(needle));
+      // сума може бути набрана з пробілами-тисячами («1 234,56») — для числового запиту пробіли прибираємо
+      const raw = q.trim().toLowerCase();
+      const compact = /^[\d\s.,]+$/.test(raw) ? raw.replace(/\s/g, "") : null; // «1 234,56» → «1234,56», але номер «123 456» теж знайдеться як набрано
+      // шукаємо по всьому, що видно в рядку: номер, постачальник, NIP, нотатка, фірма, місто, категорія, сума, дати (ISO і дд.мм), хто вніс
+      r = r.filter(x => {
+        const hay = [
+          x.number, x.seller, x.sellerNip, x.note, x.firm, x.city, catLabel(x.category), grossHay(x.gross),
+          x.issueDate, dm(x.issueDate), x.receivedDate, dm(x.receivedDate), x.dueDate, dm(x.dueDate), x.paidDate, dm(x.paidDate), x.addedBy,
+        ].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(raw) || (compact != null && hay.includes(compact));
+      });
     }
-    return r;
-  }, [d, status, originFilter, catFilter, q]);
+    return sortRows(r, sort, catLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, status, originFilter, catFilter, methodFilter, cityFilter, driveMissingOnly, colorFilter, amountMin, amountMax, q, sort, catMeta]);
+  const filtersActive = !!(status || originFilter || catFilter || methodFilter || cityFilter || driveMissingOnly || colorFilter || amountMin || amountMax || q);
+  const resetFilters = () => { setStatus(""); setOriginFilter(""); setCatFilter(""); setMethodFilter(""); setCityFilter(""); setDriveMissingOnly(false); setColorFilter(""); setAmountMin(""); setAmountMax(""); setQ(""); };
 
   // розбивка місяця по категоріях (без KSeF-дублів) — чіпси-фільтри над таблицею
   const catBreakdown = useMemo(() => {
@@ -215,6 +319,7 @@ export default function CostInvoices() {
     setSyncing(true);
     try {
       const r = await post("/cost-invoices/sync", {});
+      void qc.invalidateQueries({ queryKey: ["cost-invoices-new"] });
       const errs = r?.sync?.errors?.length ?? 0;
       if (errs) toast.warning(t("Синк KSeF: {n} нових, помилок: {e}", { n: r.sync.inserted, e: errs }));
       else toast.success(t("Синк KSeF: {n} нових. Архів на Drive оновлюється у фоні.", { n: r?.sync?.inserted ?? 0 }));
@@ -237,6 +342,58 @@ export default function CostInvoices() {
       </div>
 
       {section === "sales" ? <KsefSales /> : (<>
+
+      {fresh.data && fresh.data.count > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm shadow-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <BellRing className="h-4 w-4 text-amber-600" />
+            <span className="font-semibold text-amber-800">{t("Нові фактури: {n}", { n: fresh.data.count })}{fresh.data.truncated ? "+" : ""}</span>
+            {fresh.data.pastMonthCount > 0 && (
+              <span className="rounded bg-rose-100 px-1.5 py-0.5 text-xs font-semibold text-rose-700" title={t("прийшли вже після закінчення свого місяця — у вкладці поточного місяця їх не видно")}>
+                {t("за минулі місяці: {n}", { n: fresh.data.pastMonthCount })}
+              </span>
+            )}
+            <span className="text-xs text-amber-700/80">
+              {fresh.data.seenAt
+                ? t("з моменту останнього перегляду {d}", { d: new Date(fresh.data.seenAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) })
+                : t("за останні 14 днів")}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              {fresh.data.count > 8 && (
+                <button type="button" onClick={() => setFreshOpen(o => !o)} className="text-xs text-amber-800 underline hover:text-amber-900">
+                  {freshOpen ? t("згорнути") : t("показати всі ({n})", { n: fresh.data.count })}
+                </button>
+              )}
+              <Button variant="secondary" disabled={acking} onClick={ackFresh} title={t("сховати банер до появи наступних нових фактур (мітка лише для вас)")}>
+                <Eye className="mr-1 h-4 w-4" />{t("Переглянуто")}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 divide-y divide-amber-200/70">
+            {(freshOpen ? fresh.data.rows : fresh.data.rows.slice(0, 8)).map(r => (
+              <div key={`${r.origin}${r.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs">
+                <span className="w-24 whitespace-nowrap text-slate-500" title={t("коли зʼявилась у системі")}>
+                  {new Date(r.importedAt).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <span className={`rounded px-1.5 py-0.5 font-semibold ${r.pastMonth ? "bg-rose-100 text-rose-700" : "bg-slate-100 text-slate-600"}`} title={t("місяць фактури")}>
+                  {r.month}
+                </span>
+                <span className="font-medium text-slate-800">{r.number ?? "—"}</span>
+                <span className="max-w-[260px] truncate text-slate-600" title={r.seller ?? ""}>{r.seller ?? "—"}</span>
+                <span className="tabular-nums font-medium text-slate-800">{zl(r.gross)}</span>
+                <span className="text-slate-400">{r.firm ?? ""}</span>
+                <span className={`rounded px-1 py-0.5 text-[10px] font-semibold ${SOURCE_BADGE[r.origin === "ksef" ? "ksef" : "manual"]!.cls}`}>
+                  {r.origin === "ksef" ? "KSeF" : r.addedBy ? `${t("додав(-ла)")} ${r.addedBy}` : t("вручну")}
+                </span>
+                {r.paid && <span className="text-emerald-600">✓ {t("оплачена")}</span>}
+                <button type="button" onClick={() => openFresh(r)} className="ml-auto rounded bg-white px-2 py-0.5 font-medium text-amber-800 shadow-sm ring-1 ring-amber-300 hover:bg-amber-100">
+                  {t("Відкрити")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {d && (
         <div className="-mt-2 mb-3 flex flex-wrap items-center gap-2 text-xs">
@@ -277,8 +434,47 @@ export default function CostInvoices() {
             <option value="">{t("Всі")}</option>
             <option value="unpaid">{t("не оплачені")}</option>
             <option value="paid">{t("оплачені")}</option>
+            <option value="overdue">{t("протерміновані")}</option>
           </Select>
         </div>
+        <div>
+          <div className="mb-1 text-xs text-slate-500">{t("Спосіб")}</div>
+          <Select value={methodFilter} onChange={e => setMethodFilter(e.target.value as typeof methodFilter)} className="w-28">
+            <option value="">{t("Всі")}</option>
+            <option value="przelew">🏦 {t("переказ")}</option>
+            <option value="gotowka">💵 {t("готівка")}</option>
+            <option value="none">— {t("не вказано")}</option>
+          </Select>
+        </div>
+        {(d?.cities?.length ?? 0) > 0 && (
+          <div>
+            <div className="mb-1 text-xs text-slate-500">{t("Місто")}</div>
+            <Select value={cityFilter} onChange={e => setCityFilter(e.target.value)} className="w-32">
+              <option value="">{t("Всі")}</option>
+              {(d?.cities ?? []).map(c => <option key={c} value={c}>{c}</option>)}
+            </Select>
+          </div>
+        )}
+        <div>
+          <div className="mb-1 text-xs text-slate-500">{t("Колір")}</div>
+          <Select value={colorFilter} onChange={e => setColorFilter(e.target.value)} className="w-32">
+            <option value="">{t("Всі")}</option>
+            {INVOICE_COLORS.map(c => <option key={c.key} value={c.key}>{t(c.label)}</option>)}
+            <option value="none">{t("без кольору")}</option>
+          </Select>
+        </div>
+        <div>
+          <div className="mb-1 text-xs text-slate-500">{t("Сума від / до")}</div>
+          <div className="flex items-center gap-1">
+            <Input value={amountMin} onChange={e => setAmountMin(e.target.value)} placeholder="0" className="w-20 text-right" inputMode="decimal" />
+            <span className="text-slate-400">–</span>
+            <Input value={amountMax} onChange={e => setAmountMax(e.target.value)} placeholder="∞" className="w-20 text-right" inputMode="decimal" />
+          </div>
+        </div>
+        <label className="flex cursor-pointer items-center gap-1 pb-2 text-xs text-slate-600" title={t("лише рядки, яких ще немає в архіві на Google Drive")}>
+          <input type="checkbox" className="h-3.5 w-3.5 rounded border-slate-300" checked={driveMissingOnly} onChange={e => setDriveMissingOnly(e.target.checked)} />
+          {t("нема на Drive")}
+        </label>
         <div>
           <div className="mb-1 text-xs text-slate-500">{t("Тип")}</div>
           <div className="flex gap-1 rounded-lg bg-slate-100 p-1">
@@ -292,7 +488,10 @@ export default function CostInvoices() {
         </div>
         <div className="grow">
           <div className="mb-1 text-xs text-slate-500">{t("Пошук")}</div>
-          <Input value={q} onChange={e => setQ(e.target.value)} placeholder={t("номер, постачальник, NIP…")} className="w-64" />
+          <div className="flex items-center gap-2">
+            <Input value={q} onChange={e => setQ(e.target.value)} placeholder={t("номер, постачальник, NIP, сума, нотатка, дата…")} className="w-72" />
+            {filtersActive && <button type="button" onClick={resetFilters} className="whitespace-nowrap text-xs text-slate-400 underline hover:text-slate-600">{t("скинути фільтри")}</button>}
+          </div>
         </div>
         <input ref={fileInput} type="file" accept=".pdf,image/*" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) void scanPick(f); }} />
@@ -344,23 +543,36 @@ export default function CostInvoices() {
             {!rows.length ? <Empty>{t("Нічого не знайдено")}</Empty> : (
               <table className="w-full text-sm">
                 <thead><tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
-                  <th className="px-3 py-2.5">{t("Дата")}</th>
-                  <th className="px-2 py-2.5">{t("Номер")}</th>
-                  <th className="px-2 py-2.5">{t("Постачальник")}</th>
-                  <th className="px-2 py-2.5 text-right">{t("Брутто")}</th>
-                  <th className="px-2 py-2.5">{t("Категорія")}</th>
-                  <th className="px-2 py-2.5">{t("Спосіб")}</th>
-                  <th className="px-2 py-2.5">{t("Оплата")}</th>
+                  <th className="w-6 pl-2" title={t("колір рядка")} />
+                  <SortTh label={t("Дата")} k="issueDate" sort={sort} onSort={onSort} className="px-3 py-2.5" title={t("дата виставлення")} />
+                  <SortTh label={t("Вплив")} k="receivedDate" sort={sort} onSort={onSort} className="px-2 py-2.5" title={t("дата впливу: KSeF — прийняття в KSeF, внесені вручну/скан — день внесення")} />
+                  <SortTh label={t("Номер")} k="number" sort={sort} onSort={onSort} className="px-2 py-2.5" />
+                  <SortTh label={t("Постачальник")} k="seller" sort={sort} onSort={onSort} className="px-2 py-2.5" />
+                  <SortTh label={t("Брутто")} k="gross" sort={sort} onSort={onSort} align="right" className="px-2 py-2.5" />
+                  <SortTh label={t("Категорія")} k="category" sort={sort} onSort={onSort} className="px-2 py-2.5" />
+                  <SortTh label={t("Спосіб")} k="paymentMethod" sort={sort} onSort={onSort} className="px-2 py-2.5" />
+                  <th className="px-2 py-2.5">
+                    <SortBtn label={t("Оплата")} k="paidDate" sort={sort} onSort={onSort} title={t("за датою оплати")} />
+                    <span className="mx-1 text-slate-300">/</span>
+                    <SortBtn label={t("термін")} k="dueDate" sort={sort} onSort={onSort} title={t("за терміном оплати")} />
+                  </th>
                   <th className="px-2 py-2.5" />
                 </tr></thead>
                 <tbody>
                   {rows.map(r => {
                     const isAgreement = r.origin === "agreement";
                     return (
-                    <tr key={r.key} className={`border-b border-slate-100 hover:bg-slate-50/60 ${r.dupOfKsefId ? "opacity-50" : ""} ${!r.driveFileId ? "bg-rose-50/60" : r.overdue ? "bg-orange-50/60" : ""}`}>
+                    <tr key={r.key} className={`border-b border-slate-100 hover:brightness-95 ${r.dupOfKsefId ? "opacity-50" : ""} ${r.color ? rowColorClass(r.color) : !r.driveFileId ? "bg-rose-50/60" : r.overdue ? "bg-orange-50/60" : ""}`}>
+                      <td className="pl-2 pr-0 py-1.5 align-middle">
+                        <InvoiceColorPicker value={r.color} open={colorPickerKey === r.key} onOpen={o => setColorPickerKey(o ? r.key : null)}
+                          onPick={c => void patchRow(r, { color: c })} />
+                      </td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-xs text-slate-500" title={r.issueDate ?? ""}>
                         {dm(r.issueDate)}
                         {!companyId && <div className="text-[10px] text-slate-400">{r.firm ?? ""}</div>}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 text-xs text-slate-400" title={r.receivedDate ? `${t("дата впливу")}: ${r.receivedDate}` : ""}>
+                        {dm(r.receivedDate)}
                       </td>
                       <td className="px-2 py-1.5">
                         {isAgreement ? (

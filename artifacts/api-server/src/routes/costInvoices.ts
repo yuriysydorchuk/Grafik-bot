@@ -9,8 +9,8 @@ import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import { db , vehiclesTable } from "@workspace/db";
-import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable, cleaningProjectsTable, counterpartyRulesTable, agreementConditionsTable, agreementChargesTable } from "@workspace/db";
-import { and, eq, desc, sql } from "drizzle-orm";
+import { invoicesTable, ksefInvoicesTable, companiesTable, hostelsTable, adminsTable, cleaningProjectsTable, counterpartyRulesTable, agreementConditionsTable, agreementChargesTable, settingsTable } from "@workspace/db";
+import { and, eq, gt, ne, desc, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { UPLOADS_ROOT, INVOICES_DIR, sniffDocMime, makeStoredName, deleteStoredFile, shrinkDocBuffer, SCAN_UPLOAD_LIMIT } from "../lib/uploads";
@@ -19,6 +19,8 @@ import { archiveInvoicesToDrive, archiveLocalInvoiceLater, retireDriveFile, upgr
 import { logInvoiceAudit, auditDiff, invoiceAuditRows } from "../services/invoiceAudit";
 import { getExpenseCats, patternCondition, type ExpenseCat } from "../services/bankClassify";
 import { canonCity } from "../services/svodniSync";
+import { dateStr } from "../services/taskUtils";
+import { parseColor } from "../lib/invoiceColors";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -85,6 +87,7 @@ export type CostInvoiceRow = {
   source: "ksef" | "manual" | "scan" | "sheet" | "agreement";
   companyId: number | null; firm: string | null;
   issueDate: string | null; number: string | null;
+  receivedDate: string | null; // «дата впливу»: KSeF — дата прийняття в KSeF (invoicing_date), local — день внесення, умова — день генерації запису
   seller: string | null; sellerNip: string | null;
   gross: number; dueDate: string | null;
   paid: boolean; paidDate: string | null; paidSource: string | null;
@@ -110,6 +113,7 @@ export type CostInvoiceRow = {
   agreementId: number | null; // умова, з якої згенеровано запис (лише origin='agreement')
   agreementKind: "one_time" | "fixed_term" | "indefinite" | null;
   isProforma: boolean;        // проформа (лише local: manual|scan — чекбокс на сайті)
+  color: string | null;       // кольорова позначка кшєнгової (ключ палітри lib/invoiceColors)
 };
 
 router.get("/cost-invoices", async (req, res) => {
@@ -152,6 +156,7 @@ router.get("/cost-invoices", async (req, res) => {
       key: `k${k.id}`, origin: "ksef", id: k.id, source: "ksef",
       companyId: k.companyId, firm: companies.get(k.companyId) ?? null,
       issueDate: k.issueDate, number: k.invoiceNumber,
+      receivedDate: k.invoicingDate ?? k.issueDate,
       seller: k.sellerName, sellerNip: k.sellerNip,
       gross: k.gross, dueDate: k.dueDate,
       paid,
@@ -165,7 +170,7 @@ router.get("/cost-invoices", async (req, res) => {
       driveFileId: k.drivePdfId, drivePdfId: k.drivePdfId, driveError: k.driveError, addedBy: null, addedAt: null,
       category: kCats.get(k.id)?.cat ?? "other",
       categorySource: kCats.get(k.id)?.manual ? "manual" : "auto",
-      agreementId: null, agreementKind: null, isProforma: false,
+      agreementId: null, agreementKind: null, isProforma: false, color: k.color,
     });
   }
   for (const l of localRows) {
@@ -178,6 +183,7 @@ router.get("/cost-invoices", async (req, res) => {
       source: (l.source === "manual" || l.source === "scan" ? l.source : "sheet"),
       companyId: l.companyId, firm: l.companyId ? companies.get(l.companyId) ?? null : null,
       issueDate: l.issueDate, number: l.number,
+      receivedDate: dateStr(l.importedAt),
       seller: l.counterparty, sellerNip: l.sellerNip,
       gross: l.amount, dueDate: l.dueDate,
       paid,
@@ -192,7 +198,7 @@ router.get("/cost-invoices", async (req, res) => {
       addedAt: l.importedAt ? l.importedAt.toISOString() : null,
       category: lCats.get(l.id)?.cat ?? "other",
       categorySource: lCats.get(l.id)?.manual ? "manual" : "auto",
-      agreementId: null, agreementKind: null, isProforma: l.docType === "PROFORMA",
+      agreementId: null, agreementKind: null, isProforma: l.docType === "PROFORMA", color: l.color,
     });
   }
 
@@ -210,6 +216,7 @@ router.get("/cost-invoices", async (req, res) => {
       key: `a${a.id}`, origin: "agreement", id: a.id, source: "agreement",
       companyId: c.companyId, firm: companies.get(c.companyId) ?? null,
       issueDate: `${a.month}-01`, number: null,
+      receivedDate: dateStr(a.createdAt),
       seller: c.counterparty, sellerNip: null,
       gross: a.amount, dueDate: null,
       // оплата — лише ручна позначка кшєнгової на записі місяця (банк-матчингу для умов нема)
@@ -224,7 +231,7 @@ router.get("/cost-invoices", async (req, res) => {
       addedAt: a.createdAt ? a.createdAt.toISOString() : null,
       category: c.category,
       categorySource: "manual",
-      agreementId: c.id, agreementKind: c.kind as "one_time" | "fixed_term" | "indefinite", isProforma: false,
+      agreementId: c.id, agreementKind: c.kind as "one_time" | "fixed_term" | "indefinite", isProforma: false, color: a.color,
     });
   }
   rows.sort((a, b) => String(b.issueDate ?? "").localeCompare(String(a.issueDate ?? "")));
@@ -323,6 +330,78 @@ router.get("/cost-invoices/months", async (_req, res) => {
       UNION SELECT period_month FROM invoices
     ) x ORDER BY m DESC`);
   ok(res, { months: ((r?.rows ?? r) as any[]).map(x => String(x.m)) });
+});
+
+// ── «Нові фактури» — банер зверху /cost-invoices ────────────────────────────────
+// Фактура, виставлена сьогодні за минулий місяць, лягає у вкладку ТОГО місяця й
+// губиться (01.10.2026). Банер показує все, що зʼявилось у базі (KSeF-синк, сайт,
+// бот-скан) після того, як ЦЕЙ адмін востаннє натиснув «переглянуто» — мітка
+// per-admin у settings, без зміни схеми. Sheet-рядки реєстру не входять: їх
+// веде сама кшєнгова, а ресинк таблиці перестворює рядки (importedAt оновлюється).
+const seenKey = (adminId: number) => `cost_invoices_seen_at_${adminId}`;
+const NEW_DEFAULT_DAYS = 14; // без мітки — показуємо останні два тижні
+const NEW_LIMIT = 500;
+export type NewInvoiceRow = {
+  origin: "ksef" | "local"; id: number; firm: string | null;
+  number: string | null; seller: string | null; gross: number;
+  issueDate: string | null; month: string; importedAt: string; addedBy: string | null;
+  pastMonth: boolean; // фактура зʼявилась у пізнішому місяці, ніж її власний (виставили у жовтні за серпень) — саме ці губляться
+  paid: boolean;
+};
+router.get("/cost-invoices/new", async (req, res) => {
+  const adminId = (req as AuthedRequest).admin?.adminId;
+  if (!adminId) return fail(res, 401, "unauthorized");
+  const [seenRow] = await db.select().from(settingsTable).where(eq(settingsTable.key, seenKey(adminId)));
+  const seenAt = seenRow?.value && !Number.isNaN(Date.parse(seenRow.value)) ? new Date(seenRow.value) : null;
+  const since = seenAt ?? new Date(Date.now() - NEW_DEFAULT_DAYS * 86400e3);
+  const thisMonth = todayStr().slice(0, 7);
+  const companies = new Map((await db.select().from(companiesTable)).map(c => [c.id, c.name]));
+  const admins = new Map((await db.select({ id: adminsTable.id, name: adminsTable.name }).from(adminsTable)).map(a => [a.id, a.name]));
+  const kRows = await db.select().from(ksefInvoicesTable)
+    .where(and(eq(ksefInvoicesTable.kind, "purchase"), gt(ksefInvoicesTable.importedAt, since)))
+    .orderBy(desc(ksefInvoicesTable.importedAt)).limit(NEW_LIMIT);
+  const lRows = await db.select().from(invoicesTable)
+    .where(and(ne(invoicesTable.source, "sheet"), gt(invoicesTable.importedAt, since)))
+    .orderBy(desc(invoicesTable.importedAt)).limit(NEW_LIMIT);
+  const rows: NewInvoiceRow[] = [
+    ...kRows.map((k): NewInvoiceRow => ({
+      origin: "ksef", id: k.id, firm: companies.get(k.companyId) ?? null,
+      number: k.invoiceNumber, seller: k.sellerName, gross: k.gross,
+      issueDate: k.issueDate, month: k.revenueMonth, importedAt: k.importedAt.toISOString(), addedBy: null,
+      pastMonth: k.revenueMonth < dateStr(k.importedAt)!.slice(0, 7),
+      paid: k.manualStatus ? k.manualStatus === "paid" : k.paidDate != null,
+    })),
+    ...lRows.map((l): NewInvoiceRow => ({
+      origin: "local", id: l.id, firm: l.companyId ? companies.get(l.companyId) ?? null : null,
+      number: l.number, seller: l.counterparty, gross: l.amount,
+      issueDate: l.issueDate, month: l.periodMonth, importedAt: l.importedAt.toISOString(),
+      addedBy: l.createdBy ? admins.get(l.createdBy) ?? null : null,
+      pastMonth: l.periodMonth < dateStr(l.importedAt)!.slice(0, 7),
+      paid: l.manualStatus ? l.manualStatus === "paid" : !l.unpaid,
+    })),
+  ].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+  const truncated = rows.length > NEW_LIMIT;
+  const shown = rows.slice(0, NEW_LIMIT);
+  ok(res, {
+    rows: shown, count: shown.length, pastMonthCount: shown.filter(r => r.pastMonth).length, truncated,
+    since: since.toISOString(), seenAt: seenAt?.toISOString() ?? null, thisMonth,
+    // найновіша показана фактура — клієнт повертає її в ack, щоб те, що прийшло ПІСЛЯ завантаження списку, лишилось «новим»
+    latestImportedAt: shown[0]?.importedAt ?? null,
+  });
+});
+// «Переглянуто» — зсунути мітку цього адміна на момент найновішої фактури, яку він БАЧИВ
+// (`until` з відповіді GET; без нього — зараз). Не в майбутнє і не назад за наявну мітку.
+router.post("/cost-invoices/new/ack", async (req, res) => {
+  const adminId = (req as AuthedRequest).admin?.adminId;
+  if (!adminId) return fail(res, 401, "unauthorized");
+  const untilRaw = req.body?.until;
+  const until = typeof untilRaw === "string" && !Number.isNaN(Date.parse(untilRaw)) ? new Date(untilRaw) : null;
+  const value = (until && until.getTime() < Date.now() ? until : new Date()).toISOString();
+  // ISO-рядки порівнюються лексикографічно — GREATEST не дає старій вкладці відкотити мітку назад
+  const [row] = await db.insert(settingsTable).values({ key: seenKey(adminId), value })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value: sql`GREATEST(${settingsTable.value}, EXCLUDED.value)`, updatedAt: new Date() } })
+    .returning({ value: settingsTable.value });
+  ok(res, { seenAt: row?.value ?? value });
 });
 
 // ── Створення/редагування локальних рядків ─────────────────────────────────────
@@ -443,6 +522,10 @@ router.patch("/cost-invoices/:id", async (req, res) => {
     }
   } else if (b.note !== undefined) patch.note = String(b.note ?? "").trim() || null;
   {
+    const c = parseColor(b.color);
+    if (!c.skip) { if (c.err) return fail(res, 400, c.err); patch.color = c.value; }
+  }
+  {
     const hostelErr = await applyHostelId(b, patch);
   const vehicleErr = await applyVehicleId(b, patch);
   if (vehicleErr) return fail(res, 400, vehicleErr);
@@ -536,6 +619,10 @@ router.patch("/cost-invoices/ksef/:id", async (req, res) => {
     patch.dueDate = b.dueDate;
   }
   if (b.note !== undefined) patch.note = b.note ? String(b.note).trim() : null;
+  {
+    const c = parseColor(b.color);
+    if (!c.skip) { if (c.err) return fail(res, 400, c.err); patch.color = c.value; }
+  }
   if (!Object.keys(patch).length) return fail(res, 400, "nothing to update");
   const [updated] = await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id)).returning();
   {

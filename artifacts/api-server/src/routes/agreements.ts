@@ -3,6 +3,7 @@
 // генерують запис-витрату (agreement_charges), видимий на /cost-invoices поруч
 // із фактурами. Доступ — той самий, що й у cost-invoices (роль «бухгалтерія»).
 import { Router, type IRouter } from "express";
+import { parseColor } from "../lib/invoiceColors";
 import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
@@ -273,6 +274,10 @@ router.patch("/agreements/charges/:id", async (req, res) => {
     patch.paymentMethod = b.paymentMethod; // null = назад на дефолт умови
   }
   if (b.cashReport !== undefined) patch.cashReport = !!b.cashReport;
+  {
+    const c = parseColor(b.color);
+    if (!c.skip) { if (c.err) return fail(res, 400, c.err); patch.color = c.value; }
+  }
   const [updated] = await db.update(agreementChargesTable).set(patch).where(eq(agreementChargesTable.id, id)).returning();
   const adm = (req as AuthedRequest).admin;
   const diff = agreementAuditDiff(row as any, patch);

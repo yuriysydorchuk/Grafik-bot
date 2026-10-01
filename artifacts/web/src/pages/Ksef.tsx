@@ -1,7 +1,7 @@
 // «KSeF» (/ksef) — sales invoices per revenue month: totals per client,
 // payment status (bank-matched by invoice number in the transfer title, with a
 // manual override). Feeds P&L revenue (netto per client).
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { RefreshCw, TrendingUp, FileText, CheckCircle2, AlertCircle, UploadCloud, History } from "lucide-react";
@@ -9,6 +9,9 @@ import { get, post, patch } from "../lib/api";
 import { Card, Spinner, Select, Empty, Button, Input, Modal } from "../components/ui";
 import { InvoiceAuditModal, type AuditTarget } from "../components/InvoiceAuditModal";
 import { useT } from "../lib/i18n";
+import { SortTh, toggleSort, type SortState } from "../components/SortTh";
+import { InvoiceColorPicker } from "../components/InvoiceColorPicker";
+import { rowColorClass } from "../lib/invoiceColors";
 
 interface Inv {
   id: number; firm: string; invoiceNumber: string; issueDate: string; buyerName: string | null; clientLabel: string | null;
@@ -16,6 +19,7 @@ interface Inv {
   net: number; vat: number; gross: number; currency: string; revenueMonth: string;
   paid: boolean; effPaidDate: string | null; paidSource: "bank" | "manual" | "register" | "korekta" | null;
   driveFileId: string | null; drivePdfId: string | null; driveError: string | null;
+  color: string | null; // кольорова позначка кшєнгової
 }
 
 // номер → файл в архіві на Google Drive (стандартний XML з KSeF)
@@ -56,6 +60,14 @@ interface Data {
   firms: string[];
 }
 
+type SalesSortKey = "invoiceNumber" | "issueDate" | "firm" | "party" | "net" | "gross" | "paid";
+const SALES_SORT_DEFAULT: Record<SalesSortKey, "asc" | "desc"> = { invoiceNumber: "asc", issueDate: "desc", firm: "asc", party: "asc", net: "desc", gross: "desc", paid: "desc" };
+const cmpStr = (a: string | null | undefined, b: string | null | undefined) => {
+  if (!a && !b) return 0; if (!a) return 1; if (!b) return -1;
+  return a.localeCompare(b, "pl", { sensitivity: "base", numeric: true });
+};
+const amountHay = (n: number) => { const f = n.toFixed(2); return `${f} ${f.replace(".", ",")} ${Math.round(n)}`; };
+
 const zl = (n: number | null | undefined) => n == null ? "—" : `${n.toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} zł`;
 const MONTHS_UK = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const monthLabel = (m: string) => { const [y, mm] = m.split("-"); return `${MONTHS_UK[Number(mm) - 1]} ${y}`; };
@@ -71,6 +83,12 @@ export function KsefSales() {
   const [month, setMonth] = useState("");
   const [firm, setFirm] = useState("");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState<SalesSortKey>>({ key: "issueDate", dir: "desc" });
+  const [colorPickerId, setColorPickerId] = useState<number | null>(null);
+  const setColor = async (inv: Inv, color: string | null) => {
+    try { await patch(`/ksef/invoices/${inv.id}`, { color }); invalidate(); } catch (e: any) { toast.error(e?.message || "error"); }
+  };
+  const onSort = (k: SalesSortKey) => setSort(s => toggleSort(s, k, SALES_SORT_DEFAULT[k]));
   const [party, setParty] = useState(""); // counterparty picked in the by-client/by-supplier table
   const [busy, setBusy] = useState(false);
   const [monthPushing, setMonthPushing] = useState(false);
@@ -114,9 +132,29 @@ export function KsefSales() {
   };
 
   const s = search.trim().toUpperCase();
-  const shown = (d?.invoices ?? []).filter(i =>
-    (!firm || i.firm === firm) &&
-    (!s || i.invoiceNumber.toUpperCase().includes(s) || (i.buyerName ?? "").toUpperCase().includes(s) || (i.clientLabel ?? "").toUpperCase().includes(s) || (i.sellerName ?? "").toUpperCase().includes(s)));
+  const sCompact = /^[\d\s.,]+$/.test(s) ? s.replace(/\s/g, "") : null; // сума з пробілами-тисячами; номер з пробілом теж знайдеться як набрано
+  const shown = useMemo(() => {
+    const list = (d?.invoices ?? []).filter(i =>
+      (!firm || i.firm === firm) &&
+      (!s || (() => {
+        const hay = [i.invoiceNumber, i.buyerName, i.clientLabel, i.sellerName, i.issueDate, i.effPaidDate, amountHay(i.net), amountHay(i.gross)].filter(Boolean).join(" ").toUpperCase();
+        return hay.includes(s) || (sCompact != null && hay.includes(sCompact));
+      })()));
+    const sign = sort.dir === "asc" ? 1 : -1;
+    const partyName = (i: Inv) => isPurchase ? i.sellerName : i.clientLabel ?? i.buyerName;
+    const cmp = (a: Inv, b: Inv): number => {
+      switch (sort.key) {
+        case "invoiceNumber": return cmpStr(a.invoiceNumber, b.invoiceNumber);
+        case "issueDate": return cmpStr(a.issueDate, b.issueDate);
+        case "firm": return cmpStr(a.firm, b.firm);
+        case "party": return cmpStr(partyName(a), partyName(b));
+        case "net": return a.net - b.net;
+        case "gross": return a.gross - b.gross;
+        case "paid": return cmpStr(a.paid ? a.effPaidDate ?? "0000" : null, b.paid ? b.effPaidDate ?? "0000" : null);
+      }
+    };
+    return [...list].sort((a, b) => { const c = cmp(a, b); return c ? c * sign : cmpStr(b.issueDate, a.issueDate); });
+  }, [d, firm, s, sCompact, sort, isPurchase]);
   const partyInvoices = party ? shown.filter(i => partyOf(i) === party) : [];
   const sum = (f: (i: Inv) => number) => Math.round(shown.reduce((a, i) => a + f(i), 0) * 100) / 100;
   // metrics and the by-client table follow the firm/search filter, so they are
@@ -149,7 +187,7 @@ export function KsefSales() {
             </Select>
           </div>
         )}
-        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={isPurchase ? t("Пошук: номер, постачальник…") : t("Пошук: номер, покупець…")} className="h-9 w-56" />
+        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={isPurchase ? t("Пошук: номер, постачальник…") : t("Пошук: номер, покупець, сума…")} className="h-9 w-56" />
         <div className="ml-auto flex items-end gap-2">
           {(d?.invoices.length ?? 0) > 0 && missingOnDrive === 0 && (
             <span className="pb-2 text-xs font-medium text-emerald-600">☁️ {t("Всі фактури збережено на Google Диск")} ({d!.invoices.length})</span>
@@ -231,20 +269,24 @@ export function KsefSales() {
             <div className="max-h-[560px] overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-white"><tr className="border-b border-slate-200 text-xs uppercase text-slate-400">
-                  <th className="px-4 py-2 text-left">№</th>
-                  <th className="px-3 py-2 text-left">{t("Дата")}</th>
-                  <th className="px-3 py-2 text-left">{t("Фірма")}</th>
-                  <th className="px-3 py-2 text-left">{isPurchase ? t("Постачальник") : t("Покупець")}</th>
-                  <th className="px-3 py-2 text-right">Netto</th>
+                  <th className="w-6 pl-3" />
+                  <SortTh label="№" k="invoiceNumber" sort={sort} onSort={onSort} className="px-3 py-2" />
+                  <SortTh label={t("Дата")} k="issueDate" sort={sort} onSort={onSort} className="px-3 py-2" />
+                  <SortTh label={t("Фірма")} k="firm" sort={sort} onSort={onSort} className="px-3 py-2" />
+                  <SortTh label={isPurchase ? t("Постачальник") : t("Покупець")} k="party" sort={sort} onSort={onSort} className="px-3 py-2" />
+                  <SortTh label="Netto" k="net" sort={sort} onSort={onSort} align="right" className="px-3 py-2" />
                   <th className="px-3 py-2 text-right">VAT</th>
-                  <th className="px-3 py-2 text-right">Brutto</th>
+                  <SortTh label="Brutto" k="gross" sort={sort} onSort={onSort} align="right" className="px-3 py-2" />
                   <th className="px-3 py-2 text-left">Drive</th>
-                  <th className="px-4 py-2 text-left">{t("Оплата")}</th>
+                  <SortTh label={t("Оплата")} k="paid" sort={sort} onSort={onSort} className="px-4 py-2" title={t("за датою оплати")} />
                 </tr></thead>
                 <tbody>
                   {shown.map(inv => (
-                    <tr key={inv.id} className="border-b border-slate-100 last:border-0">
-                      <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700"><InvNumber inv={inv} /></td>
+                    <tr key={inv.id} className={`border-b border-slate-100 last:border-0 ${rowColorClass(inv.color)}`}>
+                      <td className="pl-3 pr-0 py-1.5 align-middle">
+                        <InvoiceColorPicker value={inv.color} open={colorPickerId === inv.id} onOpen={o => setColorPickerId(o ? inv.id : null)} onPick={c => void setColor(inv, c)} />
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-700"><InvNumber inv={inv} /></td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">{inv.issueDate}</td>
                       <td className="px-3 py-1.5 text-slate-600">{inv.firm}</td>
                       <td className="px-3 py-1.5 text-slate-600" title={(isPurchase ? inv.sellerName : inv.buyerName) ?? undefined}>
@@ -275,7 +317,7 @@ export function KsefSales() {
                   ))}
                 </tbody>
                 <tfoot className="bg-slate-50"><tr className="border-t border-slate-300 font-semibold text-slate-800">
-                  <td className="px-4 py-2">{t("Разом")} ({shown.length})</td>
+                  <td className="px-3 py-2" /><td className="px-3 py-2">{t("Разом")} ({shown.length})</td>
                   <td className="px-3 py-2" /><td className="px-3 py-2" /><td className="px-3 py-2" />
                   <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.net))}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{zl(sum(i => i.vat))}</td>
