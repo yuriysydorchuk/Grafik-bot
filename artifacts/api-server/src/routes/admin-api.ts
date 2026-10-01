@@ -2900,20 +2900,6 @@ router.post("/schedule/entry", RW, async (req, res) => {
   if (!wRow) return fail(res, 404, "Працівника не знайдено");
   if (!wRow.isActive) return fail(res, 400, "Працівник звільнений");
   if (terminatedOn(wRow, factoryId, entryDateStr(String(weekStart), String(day)))) return fail(res, 400, `Працівник звільняється з ${String(wRow.terminationDate).slice(0, 10)} — на цю дату ставити не можна`);
-  // Чужа фабрика (нема в профілі ні основною, ні додатковою): без підтвердження — 409, веб питає
-  // «додати фабрику в профіль і поставити?»; з addFactory — фабрика стає додатковою (потрібна умова)
-  // (services/workerFactories.ts, рішення 01.10.2026)
-  {
-    const { factoryInProfile, ensureWorkerFactory, factoryBrief } = await import("../services/workerFactories");
-    const entryDate = entryDateStr(String(weekStart), String(day));
-    if (!(await factoryInProfile(Number(workerId), Number(factoryId), entryDate))) {
-      if (!req.body?.addFactory) {
-        const b = await factoryBrief(Number(factoryId));
-        return res.status(409).json({ error: `Фабрики ${b?.factoryName ?? factoryId} немає в профілі працівника`, code: "factory_not_in_profile", factoryName: b?.factoryName ?? null, companyName: b?.companyName ?? null });
-      }
-      await ensureWorkerFactory(Number(workerId), Number(factoryId), { date: entryDate, adminId: actingAdminId(req), source: "web" });
-    }
-  }
   // Дві зміни в один день на ТІЙ САМІЙ фабриці — дозволено (1+2 тощо), але з
   // попередженням restGapHours, якщо пауза між змінами < MIN_REST_HOURS (веб підсвічує
   // помаранчевим). Дубль тієї ж зміни й зміна на іншій фабриці того дня — блок.
@@ -2948,6 +2934,20 @@ router.post("/schedule/entry", RW, async (req, res) => {
     eq(factoryShiftOverridesTable.date, entryDateStr(String(weekStart), String(day))),
     eq(factoryShiftOverridesTable.shift, shift),
   ));
+  // Чужа фабрика (нема в профілі ні основною, ні додатковою): без підтвердження — 409, веб питає
+  // «додати фабрику в профіль і поставити?»; з addFactory — фабрика стає додатковою (потрібна умова)
+  // (services/workerFactories.ts, рішення 01.10.2026)
+  {
+    const { factoryInProfile, ensureWorkerFactory, factoryBrief } = await import("../services/workerFactories");
+    const entryDate = entryDateStr(String(weekStart), String(day));
+    if (!(await factoryInProfile(Number(workerId), Number(factoryId), entryDate))) {
+      if (!req.body?.addFactory) {
+        const b = await factoryBrief(Number(factoryId));
+        return res.status(409).json({ error: `Фабрики ${b?.factoryName ?? factoryId} немає в профілі працівника`, code: "factory_not_in_profile", factoryName: b?.factoryName ?? null, companyName: b?.companyName ?? null });
+      }
+      await ensureWorkerFactory(Number(workerId), Number(factoryId), { date: entryDate, adminId: actingAdminId(req), source: "web" });
+    }
+  }
   const [e] = await db.insert(scheduleEntriesTable).values({
     weekId: week.id, workerId, factoryId, dayOfWeek: day, shift, status: "scheduled",
     hoursOverride: cellOv ? shiftDurationHours(cellOv.start, cellOv.end) : null,

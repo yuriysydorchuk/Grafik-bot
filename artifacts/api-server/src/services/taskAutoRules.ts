@@ -355,22 +355,27 @@ export async function ensurePendingDocTask(documentId: number): Promise<Task | n
 }
 
 // ZWUA у профілі (не missing): дати внесення по працівниках.
-async function zwuaDocDates(workerIds: number[]): Promise<Map<number, Date[]>> {
-  const out = new Map<number, Date[]>();
+type ZwuaDoc = { at: Date; companyId: number | null };
+async function zwuaDocDates(workerIds: number[]): Promise<Map<number, ZwuaDoc[]>> {
+  const out = new Map<number, ZwuaDoc[]>();
   if (!workerIds.length) return out;
   const [ty] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zwua"));
   if (!ty) return out;
-  const docs = await db.select({ workerId: workerDocumentsTable.workerId, createdAt: workerDocumentsTable.createdAt }).from(workerDocumentsTable)
+  const docs = await db.select({ workerId: workerDocumentsTable.workerId, createdAt: workerDocumentsTable.createdAt, updatedAt: workerDocumentsTable.updatedAt, companyId: workerDocumentsTable.employerCompanyId }).from(workerDocumentsTable)
     .where(and(inArray(workerDocumentsTable.workerId, [...new Set(workerIds)]), eq(workerDocumentsTable.docTypeId, ty.id), ne(workerDocumentsTable.status, "missing")));
-  for (const d of docs) out.set(d.workerId, [...(out.get(d.workerId) ?? []), d.createdAt]);
+  // «внесено» = пізніша з дат створення/зміни: запрошений раніше рядок (missing), заповнений після задачі, теж рахується
+  for (const d of docs) out.set(d.workerId, [...(out.get(d.workerId) ?? []), { at: d.updatedAt && d.updatedAt > d.createdAt ? d.updatedAt : d.createdAt, companyId: d.companyId ?? null }]);
   return out;
 }
 // Задача ZWUA закрита документом? zwua:<w> — будь-який ZWUA у профілі (як нічний кандидат);
-// zwua:<w>:<company> — внесений ПІСЛЯ задачі (у документа нема фірми: старий ZWUA від
-// попередньої фірми нову задачу не закриває).
-function zwuaSatisfied(t: Task, docs: Map<number, Date[]>): boolean {
+// zwua:<w>:<company> — внесений ПІСЛЯ задачі і (якщо на документі вказано роботодавця) саме цієї
+// фірми: старий ZWUA попередньої фірми й ZWUA іншої фірми нову задачу не закривають.
+function zwuaSatisfied(t: Task, docs: Map<number, ZwuaDoc[]>): boolean {
   const list = docs.get(t.workerId ?? -1) ?? [];
-  return (t.sourceKey ?? "").split(":").length === 3 ? list.some(d => d > t.createdAt) : list.length > 0;
+  const parts = (t.sourceKey ?? "").split(":");
+  if (parts.length !== 3) return list.length > 0;
+  const companyId = Number(parts[2]);
+  return list.some(d => d.at > t.createdAt && (d.companyId == null || d.companyId === companyId));
 }
 
 // Одразу після внесення документа ZWUA (services/documentEvents.ts) — закрити задачі

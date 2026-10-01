@@ -152,6 +152,7 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   // ZWUA — подія, не строк дії: дата, якою людину виреєстровано з ZUS (відгук 01.10.2026)
   zus_zwua: [
     F("issuedAt", "Дата виреєстрування з ZUS", "date", { required: true, open: true }),
+    F("employerCompanyId", "Роботодавець (фірма, з якої виреєстровано)", "company", { hint: "потрібно лише коли людина була на умовах у двох наших фірмах" }),
   ],
   other: [
     F("expiresAt", "Дійсний до", "date"),

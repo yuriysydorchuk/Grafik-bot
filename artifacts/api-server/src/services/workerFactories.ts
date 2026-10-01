@@ -44,12 +44,16 @@ export async function ensureWorkerFactory(
   if (!brief) return { added: false, brief: null };
   if (await factoryInProfile(workerId, factoryId, opts.date)) return { added: false, brief };
   const [existing] = await db.select().from(workerFactoriesTable).where(and(eq(workerFactoriesTable.workerId, workerId), eq(workerFactoriesTable.factoryId, factoryId)));
+  const note = opts.source === "web" ? "з графіку" : "з посадки водія";
   if (existing) {
-    const from = dateStr(existing.validFrom);
-    await db.update(workerFactoriesTable).set({ validTo: null, validFrom: from && from > opts.date ? opts.date : existing.validFrom })
+    // закритий період (valid_to у минулому) або ще не почався → НОВИЙ період з дати зміни, без «дірки»
+    // в минулих місяцях (легальність за місяць дивиться на межі рядка); старий період лишається в журналі
+    await db.update(workerFactoriesTable).set({ validFrom: opts.date, validTo: null, note: existing.note ? `${existing.note} · ${note} ${opts.date}` : note })
       .where(eq(workerFactoriesTable.id, existing.id));
   } else {
-    await db.insert(workerFactoriesTable).values({ workerId, factoryId, validFrom: opts.date, note: opts.source === "web" ? "з графіку" : "з посадки водія" });
+    // паралельний запит (подвійний клік) — UNIQUE(worker_id, factory_id): другий не падає
+    await db.insert(workerFactoriesTable).values({ workerId, factoryId, validFrom: opts.date, note })
+      .onConflictDoUpdate({ target: [workerFactoriesTable.workerId, workerFactoriesTable.factoryId], set: { validFrom: opts.date, validTo: null } });
   }
   await db.insert(workerChangesTable).values({ workerId, field: "factoryAdded", oldValue: null, newValue: String(factoryId), effectiveDate: opts.date, adminId: opts.adminId ?? null })
     .catch(err => logger.error({ err }, "worker change journal (factoryAdded) failed"));

@@ -1841,11 +1841,16 @@ export async function profileChangeContext(workerId: number, body: Record<string
     unsplit?: boolean; // умови вирівнялись по всьому місяцю — сегменти зшиваються
   }[] = [];
   for (const row of rows) {
-    // ефективний статус (virtual) — ПО ФАБРИЦІ рядка й за його місяць (01.10.2026): умова на фабрику
-    // рядка / обовʼязки її фірми; без документів — ручне поле (однакове для всіх рядків)
-    const rowW = virtual.size ? await (async () => {
-      const eff = effectiveView(w, await lgMonth.legalityForMonth(w.id, row.periodMonth, lgRules, row.factoryId));
-      return { ...nextW, legalStatus: eff.legalStatus, isStudent: eff.isStudent, legalSource: eff.legalSource } as typeof nextW;
+    // ефективний статус (virtual) — ПО ФАБРИЦІ рядка й за його місяць (01.10.2026): розрахунок по фабриці
+    // рядка дає «за документами» (умова на цю фабрику, обовʼязки її фірми) — беремо його; умови на цю
+    // фабрику НЕМА (вісь «умова» червона) — передумова журнальної зміни тут не виконується → ручний/порожній
+    // статус рядка; решта (умова чекає підпису тощо) — значення журналу, як і раніше (journalFieldValue).
+    // Рядок без фабрики (factoryId null) = звичайний профільний розрахунок.
+    const rowW = virtual.size && row.factoryId != null ? await (async () => {
+      const lg = await lgMonth.legalityForMonth(w.id, row.periodMonth, lgRules, row.factoryId);
+      const eff = effectiveView(w, lg);
+      if (eff.legalSource === "documents" || lg?.contract === "illegal") return { ...nextW, legalStatus: eff.legalStatus, isStudent: eff.isStudent, legalSource: eff.legalSource } as typeof nextW;
+      return nextW;
     })() : nextW;
     const locked = isLocked(locksByMonth.get(row.periodMonth) ?? [], row.city, row.factoryLabel);
     const rowPayoutRule = payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth);

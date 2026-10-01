@@ -45,23 +45,26 @@ test("поляк без умови → ручне поле; з підписан�
   const journal = await db.select().from(workerChangesTable).where(eq(workerChangesTable.workerId, w!.id));
   assert.equal(journal.length, 1);
   assert.equal(journal[0]?.field, "effectiveLegalStatus"); assert.equal(journal[0]?.oldValue, null); assert.equal(journal[0]?.newValue, "polak");
-  assert.equal(String(journal[0]?.effectiveDate), "2026-08-15"); assert.equal(journal[0]?.appliedRows, null);
+  assert.equal(String(journal[0]?.effectiveDate), "2026-08-15");
+  assert.deepEqual(journal[0]?.appliedRows, [], "з 29.09 зміна застосовується одразу (рядків сводної нема → 0)"); assert.equal(journal[0]?.adminId, null);
   // повторний перерахунок не дублює відкритий запис
   await recomputeWorkerLegality(w!.id, "2026-09-07");
   assert.equal((await db.select().from(workerChangesTable)).length, 1);
   const [wAfter] = await db.select({ legalStatus: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(wAfter?.legalStatus, null, "движок не пише workers.legal_status");
 
-  // GET /workers/:id/legality віддає відкриту зміну для банера в профілі
+  // GET /workers/:id/legality: відкритої зміни нема (застосована авто), інфо-рядок — «застосовано»
   const owner = await seedAdmin({ role: "owner" });
   const g = await request(app).get(`/api/workers/${w!.id}/legality`).set("Cookie", owner.cookie);
   assert.equal(g.status, 200);
   assert.equal(g.body.effectiveLegalStatus, "polak"); assert.equal(g.body.effectiveSource, "documents");
-  assert.equal(g.body.pendingEffectiveChange?.newValue, "polak"); assert.equal(g.body.pendingEffectiveChange?.effectiveDate, "2026-08-15");
+  assert.equal(g.body.pendingEffectiveChange, null);
+  assert.equal(g.body.recentEffectiveChange?.state, "applied"); assert.equal(g.body.recentEffectiveChange?.newValue, "polak"); assert.equal(g.body.recentEffectiveChange?.byAdmin, false);
 });
 
-test("прийняття зміни за документами: превʼю → apply переписує снапшот і розклад рядка сводної, журнал закривається; відхилення — dismiss", opts, async () => {
+test("прийняття зміни за документами (під локом — інакше з 29.09 застосовується авто): превʼю → apply переписує снапшот і розклад рядка, журнал закривається; відхилення — dismiss", opts, async () => {
   const owner = await seedAdmin({ role: "owner" });
+  const { svodniLocksTable } = await import("@workspace/db");
   const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
   const [fa] = await db.insert(factoriesTable).values({ name: "AGRAM", companyId: co!.id, city: "Люблін" }).returning();
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Polak", nationality: "poland", companyId: co!.id, factoryId: fa!.id, isActive: true, legalStatus: null, hourlyRate: 31.4, hourlyRateNetto: 25.35 }).returning();
@@ -73,11 +76,16 @@ test("прийняття зміни за документами: превʼю �
     hoursDeclared: 0, ksiegBrutto: 0, ksiegNetto: 0, konto: 0, gotowka: 2535, legalStatus: null, legalSource: "none",
     isStudent: false, under26: false, extras: {}, hr: {}, sheetValues: {},
   }).returning();
+  // вкладка залочена → авто-застосування пропускає рядок (skippedLocked), зміна чекає ревʼю/ручного apply
+  await db.insert(svodniLocksTable).values({ periodMonth: "2026-09", city: "Люблін", factoryLabel: "AGRAM" } as any);
 
   await signedUmowa(w!.id, fa!.id, co!.id, "2026-08-15");
   await recomputeWorkerLegality(w!.id, "2026-09-06");
   const [pending] = await db.select().from(workerChangesTable).where(and(eq(workerChangesTable.workerId, w!.id), eq(workerChangesTable.field, "effectiveLegalStatus")));
-  assert.ok(pending);
+  assert.ok(pending); assert.deepEqual(pending!.appliedRows, [], "під локом — застосовано 0"); assert.equal((pending!.skippedLocked as any[])?.length, 1, "рядок чекає ревʼю при розлоку");
+  const [rowLocked] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row!.id));
+  assert.equal(rowLocked?.legalStatus, null, "залочений рядок не чіпаємо");
+  await db.delete(svodniLocksTable).where(eq(svodniLocksTable.factoryLabel, "AGRAM")); // розлок без ревʼю — далі ручний шлях
 
   const impact = await request(app).post("/api/svodni/profile-impact").set("Cookie", owner.cookie).set(H)
     .send({ workerId: w!.id, changes: { effectiveLegalStatus: "polak" }, from: "2026-08-15" });
@@ -106,17 +114,20 @@ test("прийняття зміни за документами: превʼю �
   const ser = (list.body.rows ?? list.body).find?.((r: any) => r.id === row!.id) ?? null;
   if (ser) { assert.equal(ser.legalStatus, "polak"); assert.equal(ser.legalSource, "documents"); }
 
-  // відхилення: новий запис (умову скасували → назад none) → dismiss
+  // відхилення: новий запис (умову скасували → назад none) під локом → при розлоку офіс не приймає (applyChangeIds: [])
+  await db.insert(svodniLocksTable).values({ periodMonth: "2026-09", city: "Люблін", factoryLabel: "AGRAM" } as any);
   await db.update(contractsTable).set({ status: "cancelled" }).where(eq(contractsTable.workerId, w!.id));
   await recomputeWorkerLegality(w!.id, "2026-09-06");
-  const [pending2] = await db.select().from(workerChangesTable).where(and(eq(workerChangesTable.workerId, w!.id), eq(workerChangesTable.field, "effectiveLegalStatus"), eq(workerChangesTable.newValue, "")));
-  const open = (await db.select().from(workerChangesTable).where(eq(workerChangesTable.workerId, w!.id))).filter(c => c.appliedRows == null && c.reviewDismissedAt == null);
+  const open = (await db.select().from(workerChangesTable).where(eq(workerChangesTable.workerId, w!.id))).filter(c => (c.skippedLocked as any[] | null)?.length && c.reviewDismissedAt == null && c.newValue == null);
   assert.equal(open.length, 1); assert.equal(open[0]?.oldValue, "polak"); assert.equal(open[0]?.newValue, null);
-  void pending2;
-  const d = await request(app).post(`/api/svodni/profile-change/${open[0]!.id}/dismiss`).set("Cookie", owner.cookie).set(H);
-  assert.equal(d.status, 200);
+  // явний dismiss для зміни, що вже «пройшла» авто-прогін (appliedRows = []), — 400; шлях відхилення — ревʼю при розлоку
+  assert.equal((await request(app).post(`/api/svodni/profile-change/${open[0]!.id}/dismiss`).set("Cookie", owner.cookie).set(H)).status, 400);
+  const lp = await request(app).post("/api/svodni/lock-pending").set("Cookie", owner.cookie).set(H).send({ month: "2026-09", city: "Люблін", factoryLabel: "AGRAM" });
+  assert.equal(lp.status, 200); assert.ok(lp.body.changes.some((c: any) => c.id === open[0]!.id), "зміна в ревʼю розлоку");
+  const unlock = await request(app).post("/api/svodni/lock").set("Cookie", owner.cookie).set(H).send({ month: "2026-09", city: "Люблін", factoryLabel: "AGRAM", applyChangeIds: [] });
+  assert.equal(unlock.status, 200, unlock.text);
   const [dismissed] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.id, open[0]!.id));
-  assert.ok(dismissed?.reviewDismissedAt);
+  assert.ok(dismissed?.reviewDismissedAt); assert.equal(dismissed?.adminId, owner.adminId);
   const [rowStill] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, row!.id));
   assert.equal(rowStill?.legalStatus, "polak", "відхилення не чіпає сводну");
 });
@@ -156,7 +167,8 @@ test("дві фабрики, умова лише на одну: статус д�
   assert.equal(rA.legalSource, "documents"); assert.equal(rA.legalStatus, "polak");
   assert.equal(rS.legalSource, "none"); assert.equal(rS.legalStatus, null);
 
-  // profile-apply ефективної зміни: рядок AGRAM — polak за документами, SUSHI лишається без статусу
+  // profile-apply ефективної зміни на ОБИДВА рядки: AGRAM — polak за документами (по фабриці рядка),
+  // SUSHI без умови — журнальне polak НЕ застосовується (вісь «умова» червона → ручний/порожній статус)
   await db.update(svodniRowsTable).set({ legalStatus: null, legalSource: "none", konto: 0 }).where(eq(svodniRowsTable.id, rA.id));
   const apply = await request(app).post("/api/svodni/profile-apply").set("Cookie", owner.cookie).set(H)
     .send({ workerId: w!.id, changes: { effectiveLegalStatus: "polak" }, from: "2026-09-01", rowIds: [rA.id, rS.id] });
@@ -164,7 +176,7 @@ test("дві фабрики, умова лише на одну: статус д�
   const [rA2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, rA.id));
   const [rS2] = await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.id, rS.id));
   assert.equal(rA2?.legalStatus, "polak"); assert.equal(rA2?.legalSource, "documents");
-  assert.equal(rS2?.legalStatus ?? null, null, "SUSHI без умови — не polak"); assert.notEqual(rS2?.legalSource, "documents");
+  assert.equal(rS2?.legalStatus ?? null, null, "SUSHI без умови лишається без статусу"); assert.equal(rS2?.legalSource, "none");
 
   // профіль: блок по фабриках
   const g = await request(app).get(`/api/workers/${w!.id}/legality`).set("Cookie", owner.cookie);
