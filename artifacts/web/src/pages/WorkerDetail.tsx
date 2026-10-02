@@ -163,6 +163,7 @@ export default function WorkerDetail() {
   });
   // чорний список (21.09.2026): лише cap deleteWorkers (власник); причина — в модалці нижче
   const canDeleteWorkers = can(me, "deleteWorkers");
+  const canBlacklist = canDeleteWorkers || can(me, "blacklist"); // внести і зняти (cap blacklist або deleteWorkers)
   const [blacklisting, setBlacklisting] = useState(false);
   const [blReason, setBlReason] = useState("");
   const blacklistOn = useMutation({
@@ -287,7 +288,7 @@ export default function WorkerDetail() {
                   <UserCheck className="h-3.5 w-3.5" /> {t("Відновити")}
                 </button>
               )}
-              {canDeleteWorkers && (w.doNotHire
+              {canBlacklist && (w.doNotHire
                 ? <button type="button" onClick={() => blacklistOff.mutate()} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" disabled={blacklistOff.isPending}>{t("Прибрати з чорного списку")}</button>
                 : <button type="button" onClick={() => setBlacklisting(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"><Ban className="h-3.5 w-3.5" /> {t("У чорний список")}</button>)}
             </h1>
@@ -515,7 +516,7 @@ export default function WorkerDetail() {
       {blacklisting && (
         <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
           <div className="space-y-3">
-            <p className="text-sm text-slate-600">{t("Людина лишиться в базі з історією, але зʼявиться лише у вкладці «Чорний список». Повернути зможе лише той, хто може видаляти працівників.")}</p>
+            <p className="text-sm text-slate-600">{t("Людина лишиться в базі з історією, але зʼявиться лише у вкладці «Чорний список». Прибрати з нього можна тут же, у профілі.")}</p>
             <div><Label>{t("Причина")}</Label><Textarea value={blReason} onChange={e => setBlReason(e.target.value)} rows={3} placeholder={t("напр. не вийшов на зміну без попередження, крадіжка, конфлікт")} /></div>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setBlacklisting(false)}>{t("Скасувати")}</Button>

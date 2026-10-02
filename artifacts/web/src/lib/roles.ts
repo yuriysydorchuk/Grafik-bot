@@ -5,7 +5,7 @@ export type Role = string;
 export const OWNER = "owner";
 
 // Action capabilities a role can be granted.
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -26,6 +26,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   tasksGroup: "Групові задачі та зустрічі (скликати зустрічі, ставити задачі кільком)",
   tasksManage: "Керувати задачами (перепризначати чужі, автоправила, контроль)",
   workerPay: "Зарплата працівника в профілі — лише перегляд (години, ставка нетто, премії, потрачення, до виплати; без konto/готівки)",
+  blacklist: "Чорний список — вносити людей з причиною і прибирати з нього",
 };
 
 // Pages a role can be granted access to (nav + route guards).

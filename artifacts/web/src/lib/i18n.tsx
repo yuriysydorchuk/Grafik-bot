@@ -181,7 +181,7 @@ const EN: Record<string, string> = {
   "Прапорець буде знято, профіль знову стане активним.": "The flag will be cleared and the profile becomes active again.",
   "без причини": "no reason given",
   "напр. не вийшов на зміну без попередження, крадіжка, конфлікт": "e.g. no-show without notice, theft, conflict",
-  "Людина лишиться в базі з історією, але зʼявиться лише у вкладці «Чорний список». Повернути зможе лише той, хто може видаляти працівників.": "The person stays in the database with full history but appears only under the Blacklist tab. Only someone who can delete workers may restore them.",
+  "Людина лишиться в базі з історією, але зʼявиться лише у вкладці «Чорний список». Прибрати з нього можна тут же, у профілі.": "The person stays in the database with full history but appears only under the Blacklist tab. Removing them from the blacklist is done right here in the profile.",
   "Людина в чорному списку": "This person is blacklisted",
   "Все одно створити кандидата?": "Create the candidate anyway?",
   "Скопіювати всі посилання": "Copy all links",

@@ -816,7 +816,9 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
 // ─── Чорний список (рішення власника 21.09.2026): «не наймати» з причиною ────────────────
 // Прапорець не звільняє і нічого не ховає; звільнений з прапорцем показується лише у вкладці
 // «Чорний список», повернення — лише force з підтвердженням, кандидат-тезка — 409 на створенні.
-router.post("/workers/:id/do-not-hire", requireCap("deleteWorkers"), async (req, res) => {
+// Внести і зняти — cap `blacklist` (02.10.2026: графікова теж; міграція 2026-10-02-blacklist-cap)
+// або deleteWorkers (рішення власника: хто вносить, той і прибирає).
+router.post("/workers/:id/do-not-hire", requireAnyCap("blacklist", "deleteWorkers"), async (req, res) => {
   const id = Number(req.params.id);
   const reason = String(req.body?.reason ?? "").trim() || null;
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
@@ -826,7 +828,7 @@ router.post("/workers/:id/do-not-hire", requireCap("deleteWorkers"), async (req,
   await db.insert(workerChangesTable).values({ workerId: id, field: "doNotHire", oldValue: w.doNotHire ? "1" : "0", newValue: reason ? `1: ${reason}` : "1", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId });
   ok(res, stripWorkerEcho(row, req));
 });
-router.delete("/workers/:id/do-not-hire", requireCap("deleteWorkers"), async (req, res) => {
+router.delete("/workers/:id/do-not-hire", requireAnyCap("blacklist", "deleteWorkers"), async (req, res) => {
   const id = Number(req.params.id);
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
   if (!w) return fail(res, 404, "Не знайдено");
