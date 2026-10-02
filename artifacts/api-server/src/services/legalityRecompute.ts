@@ -54,7 +54,10 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     // TRC за статтею з привʼязкою до роботодавця (114/126/127/139a) — праця лише у фірми з decyzji:
     // документ має нести employer_company_id, інакше движок дасть «роботодавець невідомий»
     requiresEmployerMatch: (t?.requiresEmployerMatch ?? false) || (t?.code === "trc" && !!stayArticleOf((d.attrs as Record<string, unknown> | null)?.article)?.employerBound),
-    validFrom: dateStr(d.validFrom), issuedAt: dateStr(d.issuedAt), expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
+    // диплом: data ukończenia studiów (issued_at) = початок чинності — нормалізуємо ТУТ, щоб і
+    // движок, і effectiveSinceOf (дата зміни статусу для сводної) бачили ту саму дату (ревʼю codex 02.10.2026)
+    validFrom: dateStr(d.validFrom) ?? (t?.code === "diploma" ? dateStr(d.issuedAt) : null), issuedAt: dateStr(d.issuedAt),
+    expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
     appliesToNationalities: t?.appliesToNationalities ?? null,
     employerCompanyId: d.employerCompanyId, caseStatus: d.caseStatus, submittedAt: dateStr(d.submittedAt),
     verifiedAt: d.verifiedAt ? d.verifiedAt.toISOString() : null, replacesDocumentId: d.replacesDocumentId,
@@ -160,6 +163,11 @@ function effectiveSinceOf(input: LegalityInput, r: LegalityResult, eff: Effectiv
   }
   const c = r.contract.basisDocId != null ? (input.contracts ?? []).find(x => x.id === r.contract.basisDocId) : undefined;
   if (c?.dateFrom) dates.push(c.dateFrom);
+  // диплом з датою обрізає студента з цієї дати (02.10.2026): навіть коли підставою осі work
+  // обрано інший документ (TRC тощо), статус student→C діє з дати диплома, не з дня перерахунку
+  if (r.legacy?.derivedLegalStatus !== "student") {
+    for (const d of input.documents) if (d.typeCode === "diploma" && d.status === "present" && d.validFrom && d.validFrom <= input.today) dates.push(d.validFrom);
+  }
   const max = dates.sort().at(-1);
   return max && max < input.today ? max : input.today;
 }
