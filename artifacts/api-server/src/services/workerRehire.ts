@@ -69,8 +69,10 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
   // заявника (opts.telegramId), і в tg профілю; інші діалогові стани не чіпаємо.
   let clearedRehire = false;
   try {
-    const { getState, clearState } = await import("../bot/state");
-    for (const tid of new Set([restored.telegramId, opts.telegramId?.trim() || null].filter((x): x is string => !!x))) {
+    const { getState, clearState, findStateIds } = await import("../bot/state");
+    // + заявки на ЦЕЙ профіль з будь-якого Telegram (заявник міг писати з нового акаунта — ревʼю codex 02.10.2026)
+    const byWorker = findStateIds(st => st.action.startsWith("rehire:") && Number(st.data?.workerId) === w.id);
+    for (const tid of new Set([restored.telegramId, opts.telegramId?.trim() || null, ...byWorker].filter((x): x is string => !!x))) {
       if (getState(tid)?.action?.startsWith("rehire:")) { clearState(tid); clearedRehire = true; }
     }
   } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "rehire state clear failed"); }

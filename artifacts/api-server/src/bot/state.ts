@@ -32,6 +32,13 @@ export const setState = (id: string, action: string, data: Record<string, any> =
 };
 
 export const getState = (id: string) => pending.get(id);
+// Ідентифікатори чатів, чий стан задовольняє предикат (напр. усі заявки на повернення
+// конкретного працівника — бо заявник міг писати з іншого Telegram, ніж у профілі).
+export const findStateIds = (pred: (s: PendingState, id: string) => boolean): string[] => {
+  const out: string[] = [];
+  for (const [id, s] of pending) if (pred(s, id)) out.push(id);
+  return out;
+};
 
 export const clearState = (id: string) => {
   pending.delete(id);
