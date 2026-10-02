@@ -54,7 +54,7 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     // TRC за статтею з привʼязкою до роботодавця (114/126/127/139a) — праця лише у фірми з decyzji:
     // документ має нести employer_company_id, інакше движок дасть «роботодавець невідомий»
     requiresEmployerMatch: (t?.requiresEmployerMatch ?? false) || (t?.code === "trc" && !!stayArticleOf((d.attrs as Record<string, unknown> | null)?.article)?.employerBound),
-    validFrom: dateStr(d.validFrom), expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
+    validFrom: dateStr(d.validFrom), issuedAt: dateStr(d.issuedAt), expiresAt: dateStr(d.expiresAt), renewalLeadDays: t?.renewalLeadDays ?? null,
     appliesToNationalities: t?.appliesToNationalities ?? null,
     employerCompanyId: d.employerCompanyId, caseStatus: d.caseStatus, submittedAt: dateStr(d.submittedAt),
     verifiedAt: d.verifiedAt ? d.verifiedAt.toISOString() : null, replacesDocumentId: d.replacesDocumentId,

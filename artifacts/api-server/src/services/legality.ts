@@ -56,6 +56,9 @@ export interface LegalityDocument {
   grantsWork: boolean;
   requiresEmployerMatch: boolean;
   validFrom: string | null;
+  // дата події (worker_documents.issued_at): для диплома — data ukończenia studiów; движок бере її як
+  // validFrom, коли validFrom порожній (02.10.2026). Опційне — інші конструктори документа не чіпаємо.
+  issuedAt?: string | null;
   expiresAt: string | null;
   renewalLeadDays: number | null;
   appliesToNationalities: string[] | null;
@@ -257,7 +260,10 @@ const CASE_WORK_TYPES = new Set(["zezwolenie_jednolite", "zezwolenie_a", "oswiad
 
 // ─── Основний розрахунок ──────────────────────────────────────────────────────
 export function computeLegality(input: LegalityInput): LegalityResult {
-  const { today, worker, documents } = input;
+  const { today, worker } = input;
+  // Диплом (рішення власника 02.10.2026): право на працю і кінець студентства — З ДАТИ закінчення
+  // студій (issued_at), не з моменту внесення; без дати — безстроково як раніше, але з review.
+  const documents = input.documents.map(d => d.typeCode === "diploma" && !d.validFrom && d.issuedAt ? { ...d, validFrom: d.issuedAt } : d);
   const rules = activeRules(input.rules, today);
   const g = readGlobals(rules);
   const reasons: Reason[] = [];
@@ -368,6 +374,7 @@ export function computeLegality(input: LegalityInput): LegalityResult {
       if (d.status === "pending") { needsReview = true; push({ code: "evidence_unverified", severity: "warn", params: { docId: d.id } }, true); }
       if (emp === "unknown" && !employerFlagged.has(d.id)) { employerFlagged.add(d.id); needsReview = true; push({ code: "employer_unknown", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true); }
       if (!exp && d.hasExpiry) { needsReview = true; push({ code: "expiry_missing", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true); }
+      if (d.typeCode === "diploma" && !d.validFrom) { needsReview = true; push({ code: "diploma_date_missing", severity: "warn", params: { docId: d.id } }, true); }
       if (d.typeCode === "status_ukr" && !g.ukrRuleVerified) { needsReview = true; push({ code: "rule_unverified", severity: "warn", params: { rule: "global.ukr_status_end" } }, true); }
       if (!nationalityDoubtful && d.appliesToNationalities && nationalityMatches(d.appliesToNationalities, worker.nationality) === false) {
         push({ code: "doc_nationality_mismatch", severity: "warn", params: { docId: d.id, typeCode: d.typeCode } }, true);
@@ -657,12 +664,17 @@ export function deriveLegacy(
   // Тип документа → статус/група — з мапи services/legalStatusMap.ts (спільний
   // словник з вкладкою Налаштувань). Справа (stay_case_certificate) — не кандидат,
   // а фолбек через axes.work нижче; status_ukr — лише побут.
+  // Диплом з датою закінчення студій (validFrom ← issued_at) ≤ сьогодні: з цієї дати людина
+  // вже не студент — довідка студента на виплати не рахується (рішення власника 02.10.2026:
+  // «студент лише за довідкою», а диплом обрізає її датою). Диплом без дати студента не обрізає.
+  const graduated = documents.some(d => d.typeCode === "diploma" && d.status === "present" && !!d.validFrom && d.validFrom <= today);
   for (const d of documents) {
     if (!valid(d) || !d.typeCode) continue;
     const ev = { kind: "document" as const, id: d.id, code: d.typeCode };
     if (d.typeCode === "status_ukr") { ukrOnly = true; continue; }
     if (d.typeCode === "stay_case_certificate") continue;
     if (d.typeCode === "student_cert") {
+      if (graduated) continue;
       // студент для виплат: довідка будь-якої форми + вік до studentMaxAge (26) за датою
       // народження; без дати — пропозиція з review; старший — довідка на групу не впливає
       if (manualOnly("student")) continue;

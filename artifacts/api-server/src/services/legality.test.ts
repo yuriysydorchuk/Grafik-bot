@@ -441,3 +441,24 @@ test("nationality невідома → причина + вимоги засто�
   const withDoc = run({ nationality: null }, [doc("trc", { expiresAt: "2027-06-01" })]);
   assert.equal(withDoc.reviewRequired, true, "є документ → невідоме громадянство вже треба перевірити");
 });
+
+test("L40 диплом: дата закінчення студій обрізає студента й дає працю з цієї дати; без дати — review", () => {
+  const base = { nationality: "georgia", legalStatus: "zus", birthDate: "2005-03-03" } as const;
+  const stud = () => doc("student_cert", { validFrom: "2025-10-01", expiresAt: "2027-02-28", verifiedAt: "2026-08-01T00:00:00Z" });
+  // диплом у минулому → з його дати не студент: група C «dyplom», довідка не рахується
+  const past = run(base, [stud(), doc("diploma", { issuedAt: "2026-07-15" })]);
+  assert.equal(past.legacy.derivedLegalStatus, "dyplom"); assert.equal(past.legacy.derivedPayrollClass, "C_registered");
+  // з TRC — сильніша C-підстава (precedence karta_pobytu > dyplom), але головне: не студент
+  const withTrc = run(base, [doc("trc", { expiresAt: "2027-06-01" }), stud(), doc("diploma", { issuedAt: "2026-07-15" })]);
+  assert.equal(withTrc.legacy.derivedPayrollClass, "C_registered"); assert.notEqual(withTrc.legacy.derivedLegalStatus, "student");
+  assert.equal(past.work.status, "legal"); assert.ok(!has(past.work, "diploma_date_missing"));
+  // диплом у майбутньому → ще студент; диплом ще не чинний (not_yet_valid), праця тримається на довідці
+  const future = run(base, [stud(), doc("diploma", { issuedAt: "2026-10-15" })]);
+  assert.equal(future.legacy.derivedLegalStatus, "student"); assert.ok(has(future.work, "not_yet_valid"));
+  // диплом без дати → безстроково як раніше, але review; студента не обрізає
+  const nodate = run(base, [stud(), doc("diploma")]);
+  assert.equal(nodate.legacy.derivedLegalStatus, "student"); assert.ok(has(nodate.work, "diploma_date_missing")); assert.equal(nodate.reviewRequired, true);
+  // диплом з датою, довідки немає → dyplom, без review
+  const only = run(base, [doc("diploma", { issuedAt: "2026-07-15" })]);
+  assert.equal(only.legacy.derivedLegalStatus, "dyplom"); assert.equal(only.work.status, "legal"); assert.equal(only.reviewRequired, false);
+});

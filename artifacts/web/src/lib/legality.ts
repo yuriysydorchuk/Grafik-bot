@@ -99,6 +99,7 @@ export const REASON_LABEL: Record<string, string> = {
   employer_ambiguous: "Документи на різні фірми одночасно — незрозуміло, яка umowa діє",
   not_yet_valid: "Документ ще не набув чинності (з {validFrom})",
   expiry_missing: "У документа зі строком не вказано дату закінчення",
+  diploma_date_missing: "У диплома не вказано дату закінчення студій — право на працю рахується безстроково, студентство не обрізається",
   doc_nationality_mismatch: "Тип документа не відповідає громадянству",
   basis_expiring: "Документ, що дає це право, спливає {expiresAt} (за {daysLeft} дн.)",
   basis_expired: "Документ, що давав це право, прострочений ({expiresAt}), іншого чинного немає",

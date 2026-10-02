@@ -138,6 +138,8 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   ],
   diploma: [
     F("issuer", "Навчальний заклад", "text", { required: true }),
+    // data ukończenia studiów: з неї право на працю і кінець студентства (довідка студента далі не рахується)
+    F("issuedAt", "Дата закінчення студій", "date", { required: true, open: true, hint: "З цієї дати людина вже не студент для виплат; право на працю за дипломом — теж від неї" }),
   ],
   medical_exam: [
     F("issuedAt", "Дата badań", "date", { required: true }),

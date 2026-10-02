@@ -56,7 +56,7 @@ export const DOC_TYPE_STATUS_MAP: DocTypeStatusInfo[] = [
   { typeCode: "rezydent_ue", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "у старому блоці відповідника немає" },
   { typeCode: "trc", status: "karta_pobytu", group: "C_registered", review: false, requiresEmployerMatch: false, condition: "право на працю лише з «dostęp do rynku pracy»" },
   { typeCode: "zezwolenie_jednolite", status: "karta_pobytu", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
-  { typeCode: "diploma", status: "dyplom", group: "C_registered", review: false, requiresEmployerMatch: false, condition: null },
+  { typeCode: "diploma", status: "dyplom", group: "C_registered", review: false, requiresEmployerMatch: false, condition: "з дати ukończenia studiów (issued_at); з неї довідка студента на виплати не рахується" },
   { typeCode: "powiadomienie_ua", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: "лише громадяни UA" },
   { typeCode: "oswiadczenie", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
   { typeCode: "zezwolenie_a", status: "zus", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
