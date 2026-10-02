@@ -183,7 +183,11 @@ bot.start(async (ctx) => {
   const name = ctx.from.first_name;
   // Запит на повернення вже в офісі — /start не має його стирати (bot/handlers/rehire.ts).
   const pendingRehire = getState(tid);
-  if (pendingRehire?.action === REHIRE_PENDING) return ctx.reply(t(asLang(pendingRehire.data.lang), "rehire.alreadyPending"));
+  if (pendingRehire?.action === REHIRE_PENDING) {
+    // профіль уже активний (відновили з веб-панелі до фіксу в restoreWorker) — стан застарілий,
+    // інакше людина назавжди без меню (02.10.2026)
+    if (!(await getWorker(tid))) return ctx.reply(t(asLang(pendingRehire.data.lang), "rehire.alreadyPending"));
+  }
   clearState(tid);
 
   const payload = (ctx as any).startPayload as string | undefined;

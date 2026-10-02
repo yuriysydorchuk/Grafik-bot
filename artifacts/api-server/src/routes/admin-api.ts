@@ -810,6 +810,15 @@ router.post("/workers/:id/restore", RW, async (req, res) => {
   const force = b.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers");
   const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force });
   if (!r.ok) return fail(res, 400, r.error);
+  // Людина чекала відповіді на заявку з бота (клавіатуру тоді прибрали) — кажемо, що відновлено,
+  // і просимо /start, який віддасть меню (02.10.2026). Best-effort, без бота відповідь та сама.
+  if (r.clearedRehire && r.worker.telegramId) {
+    try {
+      const [{ bot }, { t, asLang }, { Markup }] = await Promise.all([import("../bot/instance"), import("../bot/i18n"), import("telegraf")]);
+      const [fac] = r.worker.factoryId != null ? await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, r.worker.factoryId)) : [undefined];
+      await bot.telegram.sendMessage(r.worker.telegramId, t(asLang(r.worker.language), "rehire.restoredWeb", { factory: (fac?.name ?? "—").replace(/[*_`\[]/g, "") }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+    } catch (e) { logger.warn({ err: String(e), workerId: id }, "restore notify failed"); }
+  }
   ok(res, stripWorkerEcho(r.worker, req));
 });
 

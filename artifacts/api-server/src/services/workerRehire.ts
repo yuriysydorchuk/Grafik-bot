@@ -19,7 +19,7 @@ export type RestoreOpts = {
   adminId: number | null;      // хто відновив (журнал)
   force?: boolean;             // зняти «чорний список» (лише cap deleteWorkers у веб-панелі; бот не передає)
 };
-export type RestoreResult = { ok: true; worker: Worker } | { ok: false; error: string };
+export type RestoreResult = { ok: true; worker: Worker; clearedRehire: boolean } | { ok: false; error: string };
 
 export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, opts.workerId));
@@ -63,6 +63,17 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
     await tx.insert(workerChangesTable).values(journal);
     return row!;
   });
-  logger.info({ workerId: w.id, factoryChanged, positionChanged, tgChanged, adminId: opts.adminId }, "worker restored");
-  return { ok: true, worker: restored };
+  // Заявка на повернення через бот тримає стан «rehire:pending» у user_states; відновлення
+  // з ВЕБ-ПАНЕЛІ його не знімало → /start назавжди відповідав «запит уже в офісі» без меню
+  // (інцидент 02.10.2026, 3 застряглих на проді). Знімаємо будь-який rehire:* стан і в
+  // заявника (opts.telegramId), і в tg профілю; інші діалогові стани не чіпаємо.
+  let clearedRehire = false;
+  try {
+    const { getState, clearState } = await import("../bot/state");
+    for (const tid of new Set([restored.telegramId, opts.telegramId?.trim() || null].filter((x): x is string => !!x))) {
+      if (getState(tid)?.action?.startsWith("rehire:")) { clearState(tid); clearedRehire = true; }
+    }
+  } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "rehire state clear failed"); }
+  logger.info({ workerId: w.id, factoryChanged, positionChanged, tgChanged, clearedRehire, adminId: opts.adminId }, "worker restored");
+  return { ok: true, worker: restored, clearedRehire };
 }
