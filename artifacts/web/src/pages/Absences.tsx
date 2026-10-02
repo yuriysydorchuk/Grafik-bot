@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, X, ArrowUp, ArrowDown, BellRing } from "lucide-react";
 import { toast } from "sonner";
@@ -46,7 +47,7 @@ const fmtDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString(
 const zl = (n: number) => `${Math.round(n * 100) / 100} zł`;
 
 type WorkerSum = {
-  key: string; name: string; code: string | null; factories: string[];
+  key: string; workerId: number | null; name: string; code: string | null; factories: string[];
   total: number; excused: number; noShow: number; justified: number; penalty: number; items: Absence[];
 };
 type SortKey = "name" | "factory" | "total" | "excused" | "noShow" | "justified" | "penalty";
@@ -205,7 +206,7 @@ export default function Absences() {
     for (const a of rows) {
       const key = String(a.workerId ?? a.code ?? a.name);
       let w = map.get(key);
-      if (!w) { w = { key, name: a.name, code: a.code, factories: [], total: 0, excused: 0, noShow: 0, justified: 0, penalty: 0, items: [] }; map.set(key, w); }
+      if (!w) { w = { key, workerId: a.workerId ?? null, name: a.name, code: a.code, factories: [], total: 0, excused: 0, noShow: 0, justified: 0, penalty: 0, items: [] }; map.set(key, w); }
       if (a.factory && !w.factories.includes(a.factory)) w.factories.push(a.factory);
       if (a.justified) w.justified++;
       else { w.total++; a.excused ? w.excused++ : w.noShow++; w.penalty += a.penalty; }
@@ -408,7 +409,7 @@ export default function Absences() {
                 <tr key={a.entryId} className={`hover:bg-slate-50 ${a.justified ? "opacity-60" : ""}`}>
                   <td className="px-4 py-2.5 font-medium text-slate-700">{fmtDate(a.date)}</td>
                   <td className="px-4 py-2.5 text-slate-500">{DAY_UK[a.day]}</td>
-                  <td className="px-4 py-2.5 text-slate-700">{a.name}</td>
+                  <td className="px-4 py-2.5 text-slate-700">{a.workerId != null ? <Link href={`/workers/${a.workerId}`} className="text-red-700 underline-offset-2 hover:underline">{a.name}</Link> : a.name}</td>
                   <td className="px-4 py-2.5 text-slate-500">{a.factory ?? "—"}</td>
                   <td className="px-4 py-2.5 text-center text-slate-500">{SHIFT_UK[a.shift]}</td>
                   <td className="px-4 py-2.5">
@@ -486,7 +487,9 @@ function WorkerRows({ w, open, canEdit, defaultPenalty, canSvodni, selectable, s
         )}
         <td className="px-4 py-2.5 font-medium text-slate-700">
           <span className={`mr-1.5 inline-block text-[10px] text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
-          {w.name}
+          {w.workerId != null
+            ? <Link href={`/workers/${w.workerId}`} onClick={e => e.stopPropagation()} className="text-red-700 underline-offset-2 hover:underline">{w.name}</Link>
+            : w.name}
         </td>
         <td className="px-4 py-2.5 font-mono text-xs text-slate-400">{w.code ?? "—"}</td>
         <td className="px-4 py-2.5 text-slate-500">{w.factories.join(", ") || "—"}</td>
