@@ -41,21 +41,13 @@ import {
   showHdSlots, showFullWeekSchedule, showFactoryWeekSchedule, showDriverShift, showDriverWeek,
   type OrderMap,
 } from "./views";
-import { adminMenu, workerMenu, leaverMenu, headDriverMenu, driverMenu, managementMenu } from "./menus";
+import { adminMenu, workerMenu, workerMenuFor, cancelKb, leaverMenu, headDriverMenu, driverMenu, managementMenu } from "./menus";
 import { t, trAll, tb, bhears, LANGS, LANG_LABEL, OFFICE_LANGS, asLang, oLang, dayShort, stageLabel, DATE_LOCALE, type Lang } from "./i18n";
 
 // Worker's chosen UI language (defaults to Ukrainian)
 const wlang = (w?: { language?: string | null } | null): Lang => asLang(w?.language);
 // Worker reply keyboard trimmed by the worker's factory settings (availability/hours
 // buttons). Falls back to the full menu when the worker has no factory yet.
-const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang: Lang = "uk") => {
-  if (!worker?.factoryId) return workerMenu(lang);
-  const [f] = await db
-    .select({ availability: factoriesTable.usesAvailability, hours: factoriesTable.showWorkerHours, scheduling: factoriesTable.usesScheduling })
-    .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
-  // фабрика без планування (зарплатна, Лодзь/Познань): доступність не збираємо
-  return workerMenu(lang, f ? { availability: f.availability && f.scheduling, hours: f.hours } : {});
-};
 // Office/admin & driver chosen UI language (uk default; only uk/en offered)
 const olang = (r?: { language?: string | null } | null): Lang => oLang(r?.language);
 
@@ -234,7 +226,7 @@ bot.start(async (ctx) => {
       setState(tid, "web_login:username", {});
       return ctx.reply(
         `✅ Привіт, *${mdSafe(a.name)}*!\n\nВас додано до панелі (роль: *${mdSafe(roleRow?.label ?? a.role)}*).\n\nЗадамо веб-доступ. Введіть *логін* (3–32 символи, лат./цифри):`,
-        { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+        { parse_mode: "Markdown", ...cancelKb(olang(a)) },
       );
     }
 
@@ -404,7 +396,6 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
 
 // One-button reply keyboard shown while a worker dialog awaits typed input,
 // so there is always a visible way out of the flow.
-const cancelKb = (lang: Lang) => Markup.keyboard([[t(lang, "hr.cancel")]]).resize();
 
 // The driver's latest open working day (started, not finished yet) — governs
 // which workday button the menu shows (Почати зміну / Закінчити зміну).
@@ -640,7 +631,7 @@ bot.hears(bhears("🔗 Прив'язати Telegram"), async (ctx) => {
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
   if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "link:enter_name", { type: "worker" });
-  return ctx.reply(tb(al, "Введіть ім'я працівника для прив'язки:"), Markup.removeKeyboard());
+  return ctx.reply(tb(al, "Введіть ім'я працівника для прив'язки:"), cancelKb(al));
 });
 
 // ─── Management: Drivers ──────────────────────────────────────────────────────
@@ -693,7 +684,7 @@ bot.hears(bhears("🔗 Прив'язати вручну (ID)"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
   setState(tid, "link:enter_name", { type: "driver" });
-  return ctx.reply(tb(al, "Введіть ім'я водія для прив'язки:"), Markup.removeKeyboard());
+  return ctx.reply(tb(al, "Введіть ім'я водія для прив'язки:"), cancelKb(al));
 });
 
 bot.hears(bhears("📨 Запросити водія"), async (ctx) => {
@@ -756,7 +747,7 @@ bot.hears(bhears("➕ Додати фабрику"), async (ctx) => {
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
   if (!(await requireAdminCap(ctx, admin, "editData", al))) return;
   setState(tid, "add_factory", {});
-  return ctx.reply(tb(al, "Введіть назву фабрики:"), Markup.removeKeyboard());
+  return ctx.reply(tb(al, "Введіть назву фабрики:"), cancelKb(al));
 });
 
 bot.hears(bhears("📋 Список фабрик"), async (ctx) => {
@@ -814,7 +805,7 @@ bot.hears(bhears("🔐 Мій веб-доступ"), async (ctx) => {
   setState(tid, "web_login:username", {});
   return ctx.reply(
     tb(al, "🔐 *Веб-панель*\n\nВведіть бажаний *логін* (латиниця/цифри, без пробілів):"),
-    { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    { parse_mode: "Markdown", ...cancelKb(al) },
   );
 });
 
@@ -825,7 +816,7 @@ bot.hears(bhears("➕ Додати адміна"), async (ctx) => {
   setState(tid, "add_admin", {});
   return ctx.reply(
     tb(al, "Введіть Telegram ID нового адміна.\n\nПопросіть людину надіслати /getid боту і передати вам число."),
-    Markup.removeKeyboard(),
+    cancelKb(al),
   );
 });
 
@@ -1121,7 +1112,7 @@ bot.action(/^adv_(approve|reject|paid)_(\d+)$/, async (ctx) => {
   if (action === "reject") {
     await ctx.answerCbQuery();
     setState(tid, "advance:reject_reason", { requestId: id });
-    await ctx.reply("✍️ Введіть причину відхилення (або /skip):", Markup.removeKeyboard());
+    await ctx.reply("✍️ Введіть причину відхилення (або /skip):", cancelKb("uk"));
     return;
   }
   const target = action === "approve" ? "approved" : "paid";
@@ -1949,7 +1940,7 @@ bot.action(/^ord_day_([a-z]+)$/, async (ctx) => {
   setState(tid, "order:await_day", { ...state.data, editDay: day });
   return ctx.reply(
     `✏️ *${DAY_NAMES_UK[day as DayOfWeek]}*\nПоточні: \`${cur[0]} ${cur[1]} ${cur[2]}\`\n\nВведіть 3 числа (1зм 2зм 3зм), напр. \`8 12 5\`\nАбо \`0 0 0\` — вихідний:`,
-    { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    { parse_mode: "Markdown", ...cancelKb("uk") },
   );
 });
 
@@ -1961,7 +1952,7 @@ bot.action("ord_all", async (ctx) => {
   setState(tid, "order:await_all", { ...state.data });
   return ctx.reply(
     "🔁 Введіть 3 числа (1зм 2зм 3зм) — застосуються до *всіх 7 днів*, напр. `8 12 5`:",
-    { parse_mode: "Markdown", ...Markup.removeKeyboard() },
+    { parse_mode: "Markdown", ...cancelKb("uk") },
   );
 });
 
@@ -2458,7 +2449,7 @@ bot.hears(bhears("➕ Позаплановий працівник"), async (ctx)
   if (liveAssignments.length === 0) return ctx.reply(tb(dl, "📭 На сьогодні у вас немає призначень."), driverMenu(dl));
   const a = liveAssignments[0]!;
   setState(tid, "unplanned:enter_name", { weekId: weeks[0]!.id, driverId: driver.id, factoryId: a.factoryId, dayOfWeek: dayName, shift: a.shift });
-  return ctx.reply(tb(dl, "Введіть ім'я або код позапланового працівника:"), Markup.removeKeyboard());
+  return ctx.reply(tb(dl, "Введіть ім'я або код позапланового працівника:"), cancelKb(dl));
 });
 
 // Inline pick list when the typed name fuzzy-matches several workers.
@@ -3987,7 +3978,7 @@ bot.on("text", async (ctx) => {
     const al = olang(await getAdmin(tid));
     if (!data.name) {
       data.name = text; setState(tid, "add_factory", data);
-      return ctx.reply(tb(al, "Введіть адресу (або /skip):"), Markup.removeKeyboard());
+      return ctx.reply(tb(al, "Введіть адресу (або /skip):"), cancelKb(al));
     }
     const address = text === "/skip" ? undefined : text;
     await db.insert(factoriesTable).values({ name: data.name, address });
@@ -4071,7 +4062,7 @@ bot.on("text", async (ctx) => {
     const weekStart = dateMatch[1]!;
     const orders = await loadOrderMap(data.factoryId, weekStart);
     setState(tid, "order:board", { factoryId: data.factoryId, factoryName: data.factoryName, weekStart, orders });
-    await ctx.reply(tb(al, "Завантажую дошку замовлення..."), Markup.removeKeyboard());
+    await ctx.reply(tb(al, "Завантажую дошку замовлення..."), cancelKb(al));
     return renderOrderBoard(ctx, { factoryId: data.factoryId, factoryName: data.factoryName, weekStart, orders });
   }
 
@@ -4361,7 +4352,7 @@ bot.on("text", async (ctx) => {
     }
     if (text === "✏️ Додати вручну") {
       setState(tid, "sched_edit:manual", data);
-      return ctx.reply("Введіть ПІБ нового працівника (можна кілька, кожен з нового рядка):", Markup.removeKeyboard());
+      return ctx.reply("Введіть ПІБ нового працівника (можна кілька, кожен з нового рядка):", cancelKb("uk"));
     }
     if (text === "🗑 Прибрати працівника") {
       const assigned = await getAssignedEntries(data.weekId, data.factoryId, data.day, data.shift);
@@ -5305,5 +5296,5 @@ bot.action(/^absence_reject_(\d+)$/, async (ctx) => {
   if (!req[0]) return ctx.editMessageText("❌ Запит не знайдено.");
   const msg = ctx.callbackQuery.message;
   setState(String(ctx.from.id), "absence:reject_reason", { requestId, chatId: msg?.chat.id, messageId: msg?.message_id });
-  return ctx.reply("✍️ Введіть причину відхилення (або /skip):", Markup.removeKeyboard());
+  return ctx.reply("✍️ Введіть причину відхилення (або /skip):", cancelKb("uk"));
 });

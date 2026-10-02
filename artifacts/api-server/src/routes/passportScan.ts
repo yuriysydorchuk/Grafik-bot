@@ -318,6 +318,17 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       }
     } catch (e) { logger.warn({ err: e }, "passport-scan confirm notify failed"); }
 
+    // Самореєстрація з бота: лінк на скан прибрав клавіатуру (signup.factory) — даємо меню
+    // одразу, не чекаючи /start (02.10.2026: нові люди лишались без меню). Повернення
+    // (rehireTarget) — ні: профіль активує рішення офісу, меню прийде з ним.
+    if (!isExistingWorker && !rehireTarget && row.telegramId) {
+      try {
+        const [{ t, asLang }, { workerMenuFor }] = await Promise.all([import("../bot/i18n"), import("../bot/menus")]);
+        const lang = asLang(worker.language ?? row.language);
+        await bot.telegram.sendMessage(row.telegramId, t(lang, "start.greet", { name: worker.fullName }), await workerMenuFor(worker, lang));
+      } catch (e) { logger.warn({ err: e, workerId: worker.id }, "passport-scan welcome failed"); }
+    }
+
     ok(res, { worker: { id: worker.id, fullName: worker.fullName, workerCode: worker.workerCode } });
   } catch (e: any) {
     fail(res, 400, e?.message ?? "Не вдалося створити профіль");

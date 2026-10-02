@@ -1,4 +1,6 @@
 import { Markup } from "telegraf";
+import { db, factoriesTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { t, tb, type Lang } from "./i18n";
 
 // Пункти меню фільтруються за capability адміна (opts.* — див. adminMenuFor у
@@ -117,3 +119,19 @@ export const managementMenu = (lang: Lang = "uk", opts: ManagementMenuOpts = {})
   rows.push(row5);
   return Markup.keyboard(rows).resize();
 };
+
+// Меню працівника, обрізане під налаштування фабрики (перенесено з bot/index.ts 02.10.2026,
+// щоб веб-роут passportScan міг дати меню одразу після самореєстрації).
+export const workerMenuFor = async (worker?: { factoryId?: number | null } | null, lang: Lang = "uk") => {
+  if (!worker?.factoryId) return workerMenu(lang);
+  const [f] = await db
+    .select({ availability: factoriesTable.usesAvailability, hours: factoriesTable.showWorkerHours, scheduling: factoriesTable.usesScheduling })
+    .from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
+  // фабрика без планування (зарплатна, Лодзь/Познань): доступність не збираємо
+  return workerMenu(lang, f ? { availability: f.availability && f.scheduling, hours: f.hours } : {});
+};
+
+// Клавіатура стану вводу: лише «✖️ Скасувати» (глобальний hears повертає в меню).
+// Стани вводу НЕ прибирають клавіатуру (removeKeyboard) — інакше покинутий діалог
+// лишає людину без меню до /start (правило CLAUDE.md; аудит 02.10.2026).
+export const cancelKb = (lang: Lang) => Markup.keyboard([[t(lang, "hr.cancel")]]).resize();
