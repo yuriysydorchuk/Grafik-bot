@@ -2296,9 +2296,12 @@ function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], co
 
 // Ефективний строк дії: status_ukr — з globals.ukrStatusEnd; ZWUA строку не має (дата в
 // ранніх записах стояла в expiresAt як «дата виреєстрування» — не рахуємо її простроченням).
+// Zaświadczenie o złożeniu wniosku (справа) строку теж не має: перебування законне до рішення, а
+// дата в записі лишається від попереднього типу (karta pobytu → справа, кейс 02.10.2026).
+// Дзеркало — NO_EXPIRY_DOC_CODES у services/taskAutoRules.ts.
 function docExpiry(code: string | null | undefined, doc: WorkerDocument, globals?: LegalizationGlobals | null): string | null {
   if (code === "status_ukr") return doc.expiresAt ?? globals?.ukrStatusEnd ?? null;
-  if (code === "zus_zwua") return null;
+  if (code === "zus_zwua" || code === "stay_case_certificate") return null;
   return doc.expiresAt;
 }
 
@@ -2395,8 +2398,11 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const toneCls = DOC_TONE_CLS[tone];
   const dLeft = state.expiresAt ? daysUntil(state.expiresAt) : null;
   const stateText = state.pending ? t("⏳ на перевірці")
-    : state.expired ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt!) })
+    : state.expired ? (state.expiresAt ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt) }) : t("прострочено")) // статус expired без дати (справа/ZWUA) — без null.slice
     : state.indefinite && type?.code === "zus_zwua" ? ((doc.issuedAt ?? doc.expiresAt) ? t("виреєстровано {date}", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
+    : type?.code === "stay_case_certificate" ? (doc.caseStatus === "submitted" || doc.caseStatus === "in_progress" || !doc.caseStatus
+        ? (doc.submittedAt ? t("подано {date}", { date: fmtDocDate(doc.submittedAt) }) : t("справа в toku"))
+        : t(CASE_STATUS_LABEL[doc.caseStatus]))
     : state.indefinite ? t("безстроково")
     : state.expiresAt ? (expiryTone(dLeft, leadDaysCache) ? t("до {date} · {n} дн.", { date: fmtDocDate(state.expiresAt), n: dLeft ?? "" }) : t("до {date}", { date: fmtDocDate(state.expiresAt) }))
     : t("дата не вказана");

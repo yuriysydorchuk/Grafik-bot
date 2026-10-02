@@ -128,16 +128,40 @@ test("L9 student_cert прострочене, інших підстав нема
 });
 
 // ── L10–L12: справи ──
-test("L10 TRC чинна + справа на продовження → stay legal до дати TRC, потім pending", () => {
+test("L10 TRC чинна + справа на продовження → stay legal до дати TRC, потім legal за справою (подано вчасно, рішення власника 02.10.2026)", () => {
   const docs = [doc("trc", { expiresAt: "2026-12-31" }), doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2026-08-15" })];
   const before = run({ nationality: "georgia" }, docs);
   assert.equal(before.stay.status, "legal"); assert.equal(before.stay.basisDocId, docs[0]!.id);
   const after = computeLegality({ today: "2027-01-15", worker: worker({ nationality: "georgia" }), documents: docs, rules: rules() });
-  assert.equal(after.stay.status, "pending"); assert.equal(after.stay.basisDocId, docs[1]!.id);
+  assert.equal(after.stay.status, "legal"); assert.equal(after.stay.basisDocId, docs[1]!.id);
+  assert.ok(has(after.stay, "case_in_progress")); assert.equal(after.stay.expiresAt, null);
 });
-test("L11 справа submitted, до подання не було work-підстави → work unknown + review work_during_case_uncertain", () => {
+test("L10b справа подана ПІСЛЯ закінчення TRC → stay pending + review case_filed_late", () => {
+  const docs = [doc("trc", { expiresAt: "2026-06-30" }), doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2026-08-15" })];
+  const r = run({ nationality: "georgia" }, docs);
+  assert.equal(r.stay.status, "pending"); assert.equal(r.stay.basisDocId, docs[1]!.id);
+  assert.ok(has(r.stay, "case_filed_late")); assert.equal(r.reviewRequired, true);
+});
+test("L10c попередня TRC записана зі статусом expired → теж рахується: подано після її кінця → pending + case_filed_late", () => {
+  const docs = [doc("trc", { status: "expired", expiresAt: "2026-06-30" }), doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2026-08-15" })];
+  const r = run({ nationality: "georgia" }, docs);
+  assert.equal(r.stay.status, "pending"); assert.ok(has(r.stay, "case_filed_late"));
+});
+test("L10d пізніша коротка підстава не «амністує» несвоєчасне подання: чинність рахується на дату подання", () => {
+  // усі дати в минулому: віза вже теж прострочена, тож крок 2 не бере її як чинну підставу сьогодні
+  const docs = [doc("trc", { expiresAt: "2025-06-30" }), doc("visa_c", { validFrom: "2025-08-01", expiresAt: "2025-09-30" }), doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2025-07-15" })];
+  const r = run({ nationality: "georgia" }, docs);
+  assert.equal(r.stay.status, "pending"); assert.ok(has(r.stay, "case_filed_late"));
+});
+test("L10e справа без дати подання при наявній попередній підставі → legal + review case_submitted_unknown; без попередніх документів — legal без review", () => {
+  const withPrior = run({ nationality: "georgia" }, [doc("trc", { expiresAt: "2026-06-30" }), doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: null })]);
+  assert.equal(withPrior.stay.status, "legal"); assert.ok(has(withPrior.stay, "case_submitted_unknown")); assert.equal(withPrior.reviewRequired, true);
+  const alone = run({ nationality: "georgia" }, [doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: null })]);
+  assert.equal(alone.stay.status, "legal"); assert.ok(!has(alone.stay, "case_submitted_unknown"));
+});
+test("L11 справа submitted, до подання не було work-підстави → stay legal, work unknown + review work_during_case_uncertain", () => {
   const r = run({ nationality: "georgia" }, [doc("stay_case_certificate", { caseStatus: "submitted", submittedAt: "2026-08-15" })]);
-  assert.equal(r.stay.status, "pending");
+  assert.equal(r.stay.status, "legal");
   assert.equal(r.work.status, "unknown"); assert.ok(has(r.work, "work_during_case_uncertain")); assert.equal(r.reviewRequired, true);
 });
 test("L11b справа submitted + oświadczenie, чинне на дату подання, нині прострочене → work pending", () => {

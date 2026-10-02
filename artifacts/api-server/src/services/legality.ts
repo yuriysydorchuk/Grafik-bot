@@ -400,7 +400,27 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     if (caseDocs.length) {
       const c = caseDocs[0]!;
       if (axis === "stay") {
-        out.status = "pending"; out.basisDocId = c.id;
+        // Рішення власника 02.10.2026: відкрита справа = ЗАКОННЕ перебування (зелена вісь, не «pending»):
+        // після подання wniosku перебування легальне до рішення. Умова — подати до кінця попередньої
+        // підстави: якщо дата подання пізніша за строк останнього простроченого stay-документа,
+        // перебування під питанням → лишаємо «справа в toku» + review (case_filed_late). Без
+        // попереднього документа в системі своєчасність не перевіряємо — зелена.
+        // Чинність рахуємо НА ДАТУ ПОДАННЯ по всіх stay-документах (у т.ч. зі статусом expired —
+        // їх крок 2 пропускає), а не по максимальному строку (ревʼю codex/agy 02.10.2026: пізніший
+        // документ або записаний як expired ховав несвоєчасне подання).
+        const priorStay = documents.filter(d => d.id !== c.id && d.grantsStay && d.status !== "missing" && !isCaseOpen(d));
+        const validAt = (d: LegalityDocument, at: string) => (!d.validFrom || d.validFrom <= at) && (() => { const e = effExpiry(d); return !e || e >= at; })();
+        const late = priorStay.length > 0 && !!c.submittedAt && !priorStay.some(d => validAt(d, c.submittedAt!));
+        out.basisDocId = c.id;
+        if (late) {
+          const prevExpiry = priorStay.map(effExpiry).filter((x): x is string => !!x).sort().at(-1) ?? null;
+          out.status = "pending";
+          push({ code: "case_filed_late", severity: "warn", params: { docId: c.id, submittedAt: c.submittedAt, prevExpiresAt: prevExpiry } }, true);
+        } else {
+          out.status = "legal";
+          // є попередні підстави, але дати подання немає — своєчасність не перевірити, зелена з review
+          if (priorStay.length > 0 && !c.submittedAt) push({ code: "case_submitted_unknown", severity: "warn", params: { docId: c.id } }, true);
+        }
         push({ code: "case_in_progress", severity: "info", params: { docId: c.id, caseStatus: c.caseStatus, submittedAt: c.submittedAt } });
         return out;
       }

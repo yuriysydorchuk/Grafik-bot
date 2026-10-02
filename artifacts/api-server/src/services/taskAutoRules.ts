@@ -22,6 +22,9 @@ import { loadLegacyWorkerIds } from "./taskLegacy";
 import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
+// типи, чия дата в expires_at — не строк дії (див. фільтр doc_expiring/doc_expired)
+const NO_EXPIRY_DOC_CODES = new Set(["stay_case_certificate", "zus_zwua"]);
+
 export interface AutoRuleDef { code: string; label: string; description: string; leadDays: number | null; enabledByDefault: boolean; scheduler?: boolean }
 export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "doc_expiring", label: "Документ спливає", description: "Строк документа у жовтій зоні (правило легальності «Строки та нагадування», або власний строк типу, або це поле)", leadDays: null, enabledByDefault: true },
@@ -156,7 +159,12 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
 
   // 1–2. Документи: спливають / прострочені (present з датою)
   if (on("doc_expiring") || on("doc_expired")) {
-    const docs = await db.select().from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, ids), eq(workerDocumentsTable.status, "present")));
+    const allDocs = await db.select().from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, ids), eq(workerDocumentsTable.status, "present")));
+    // zaświadczenie o złożeniu wniosku (справа — перебування законне до рішення, дата в записі
+    // лишилась від попереднього типу: кейс 02.10.2026 karta pobytu → справа, задача «прострочений
+    // з 04.09») і ZWUA (дата = виреєстрування) строку дії не мають — у задачі не йдуть.
+    // Дзеркало — docExpiry у web WorkerDetail.tsx.
+    const docs = allDocs.filter(d => { const ty = d.docTypeId != null ? types.get(d.docTypeId) : undefined; return !ty?.code || !NO_EXPIRY_DOC_CODES.has(ty.code); });
     // заміна того ж типу з пізнішим строком гасить стару
     const latestByWorkerType = new Map<string, string>();
     for (const d of docs) { const e = dateStr(d.expiresAt); if (!e) continue; const k = `${d.workerId}:${d.docTypeId}`; if (!latestByWorkerType.has(k) || latestByWorkerType.get(k)! < e) latestByWorkerType.set(k, e); }
