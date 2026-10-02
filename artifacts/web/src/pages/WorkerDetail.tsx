@@ -1006,6 +1006,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   })();
   const [newFor, setNewFor] = useState<{ factoryId: number | null; companyId: number | null } | null>(null);
   const [importOpen, setImportOpen] = useState(false); // скан уже підписаної умови (бекфіл, 10.09.2026)
+  const [importStdOpen, setImportStdOpen] = useState(false); // скани підписаного сталого пакета (весь або подокументно, 02.10.2026)
   const [annexFor, setAnnexFor] = useState<number | null>(null); // аннекс на продовження (з задачі «кінець умови»: ?open=annex:<contractId>)
   const [archiveOpen, setArchiveOpen] = useState(false);
   // deep-link з задачі («Як вирішити» → Згенерувати умову): /workers/:id?open=generate:<factoryId>
@@ -1057,7 +1058,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
         {isLoading ? <div className="px-5 py-3"><Spinner /></div> : (
           <div className="divide-y divide-slate-100">
             {/* Сталий пакет — один рядок «підписаний / ні», деталі за розгортанням (підписується раз, спільний) */}
-            <StandardPackageRow workerId={workerId} list={standard} onSaved={inv} onGenerate={() => openNew(null, null)} />
+            <StandardPackageRow workerId={workerId} list={standard} onSaved={inv} onGenerate={() => openNew(null, null)} onImport={() => setImportStdOpen(true)} />
             {[...factoryIdsShown].map(fid => {
               const list = byFactory.get(fid) ?? [];
               const emp = employerOf(fid);
@@ -1093,6 +1094,9 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
         )}
       </Section>
       {annexFor != null && <AnnexModal contractId={annexFor} current={contracts.find(c => c.id === annexFor) ?? null} onClose={() => setAnnexFor(null)} onSaved={() => { inv(); setAnnexFor(null); }} />}
+      {importStdOpen && (
+        <ImportStandardPackageModal workerId={workerId} onClose={() => setImportStdOpen(false)} onSaved={() => { inv(); setImportStdOpen(false); }} />
+      )}
       {importOpen && (
         <ImportSignedContractModal workerId={workerId} factories={factories} companies={companies} employers={employers}
           defaultFactoryId={suggestedFactoryId ?? factoryId} onClose={() => setImportOpen(false)} onSaved={() => { inv(); setImportOpen(false); }} />
@@ -1110,7 +1114,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
 // Стандартний пакет (ZUS/PIT/PPK/BHP/wniosek) підписується за раз — тому один
 // рядок: підписаний чи ні, коли, скільки документів; повні рядки з чипами і
 // файлами — лише за розгортанням (зауваження власника 05.09.2026).
-function StandardPackageRow({ workerId, list, onSaved, onGenerate }: { workerId: number; list: ContractSummary[]; onSaved: () => void; onGenerate: () => void }) {
+function StandardPackageRow({ workerId, list, onSaved, onGenerate, onImport }: { workerId: number; list: ContractSummary[]; onSaved: () => void; onGenerate: () => void; onImport: () => void }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const main = list.find(c => c.status === "signed") ?? list.find(c => c.status === "worker_signed") ?? [...list].sort((a, b) => b.id - a.id)[0] ?? null;
@@ -1131,12 +1135,17 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate }: { workerId:
         <span className="text-xs text-slate-400">ZUS · PIT · PPK · BHP · wniosek</span>
         {st && main && <Badge color={st.color}>{t(st.label)}</Badge>}
         {summary && <span className="text-xs text-slate-500">{summary}</span>}
-        {!main && (
-          <span className="ml-auto flex items-center gap-2 text-xs text-slate-400">
+        <span className="ml-auto flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          {!main && <>
             {t("ще не підписаний — додається до першої умови")}
             <button type="button" onClick={onGenerate} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200">{t("Згенерувати")}</button>
-          </span>
-        )}
+          </>}
+          {/* скани підписаного поза системою пакета — весь або подокументно (02.10.2026) */}
+          <button type="button" onClick={onImport} title={t("Скани вже підписаного сталого пакета: весь пакет одним файлом або кожен документ окремо")}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+            <Upload className="h-3 w-3" /> {t("Завантажити підписаний")}
+          </button>
+        </span>
       </div>
       {open && main && (
         <div className="mt-2 space-y-2">
@@ -1213,6 +1222,103 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Скани ВЖЕ підписаного сталого пакета → POST /workers/:id/standard-package/import
+// (запит власника 02.10.2026). Два режими: весь пакет одним файлом (або кількома без
+// типів) чи окремі документи — кожен файл тегається шаблоном з бібліотеки (ZUS, PIT,
+// PPK, BHP, wniosek…), щоб у рядку пакета було видно, що саме є. Файли лягають у
+// чинний підписаний сталий пакет; нема — створюється новий одразу signed.
+function ImportStandardPackageModal({ workerId, onClose, onSaved }: { workerId: number; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const [mode, setMode] = useState<"whole" | "separate">("whole");
+  const [signedAt, setSignedAt] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [note, setNote] = useState("");
+  const [rows, setRows] = useState<{ uid: number; file: File; templateId: string }[]>([]);
+  const seq = useRef(0); // стабільний key рядка — індекс зсувається при «Прибрати» і перемонтовує селекти (ревʼю agy)
+  const { data: allTemplates = [] } = useQuery<{ id: number; kind: string; title: string; isActive: boolean }[]>({
+    queryKey: ["document-templates-all"], queryFn: () => get("/document-templates"),
+  });
+  const { data: autoSet = [] } = useQuery<DocSetItem[]>({
+    queryKey: ["document-set", workerId, "standard"], queryFn: () => get(`/workers/${workerId}/document-set`),
+  });
+  // умова й подієві документи — не частина пакета (бекенд їх і так відхилить)
+  const notPackage = new Set(["umowa", "regulamin", "andros_extra", "sprzatanie_umowa", "swiadectwo", "zaswiadczenie", "wypowiedzenie", "aneks", "zcna"]);
+  const autoIds = new Set(autoSet.map(x => x.id));
+  const candidates = allTemplates.filter(tp => tp.isActive && !notPackage.has(tp.kind))
+    .sort((a, b) => (autoIds.has(b.id) ? 1 : 0) - (autoIds.has(a.id) ? 1 : 0) || a.title.localeCompare(b.title, "pl"));
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    // FileList «живий» — читаємо одразу, бо input.value="" нижче спорожнить його до запуску updater-а
+    const picked = Array.from(list).map(file => ({ uid: ++seq.current, file, templateId: "" }));
+    setRows(r => [...r, ...picked]);
+  };
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!rows.length) throw new Error(t("Оберіть PDF-файли"));
+      if (mode === "separate" && rows.some(r => !r.templateId)) throw new Error(t("Вкажіть тип для кожного документа"));
+      const fd = new FormData();
+      for (const r of rows) fd.append("files", r.file);
+      const items = rows.map(r => mode === "separate"
+        ? (r.templateId === "other" ? { templateId: null, title: r.file.name.replace(/\.pdf$/i, "") } : { templateId: Number(r.templateId) })
+        : { templateId: null, title: rows.length === 1 ? "Pakiet standardowy (skan podpisany)" : `Pakiet standardowy — ${r.file.name.replace(/\.pdf$/i, "")}` });
+      fd.append("items", JSON.stringify(items));
+      if (signedAt) fd.append("signedAt", signedAt); if (dateTo) fd.append("dateTo", dateTo); if (note.trim()) fd.append("note", note.trim());
+      return upload<{ created: boolean; added: number; replaced: number }>(`/workers/${workerId}/standard-package/import`, fd);
+    },
+    onSuccess: r => {
+      toast.success((r.created ? t("Сталий пакет додано як підписаний") : t("Файли додано до сталого пакета")) + (r.replaced ? ` · ${t("замінено")} ${r.replaced}` : ""));
+      onSaved();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // сегментований перемикач без hex/темних заливок — у дарку шкала slate перемаплюється сама
+  const modeBtn = (m: "whole" | "separate", label: string) => (
+    <button type="button" onClick={() => setMode(m)}
+      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${mode === m ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200" : "text-slate-500 hover:text-slate-800"}`}>{label}</button>
+  );
+  return (
+    <Modal open onClose={onClose} title={t("Підписаний сталий пакет (скан)")}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">{t("Для пакетів, підписаних поза системою. Файли одразу стають частиною чинного сталого пакета; якщо його ще нема — створюється підписаний.")}</p>
+        <div className="inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5">{modeBtn("whole", t("Весь пакет одним файлом"))}{modeBtn("separate", t("Окремі документи"))}</div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label>{t("Дата підпису")} <span className="font-normal text-slate-400">({t("порожньо = сьогодні")})</span></Label><Input type="date" value={signedAt} onChange={e => setSignedAt(e.target.value)} /></div>
+          <div><Label>{t("Дійсний до")} <span className="font-normal text-slate-400">({t("порожньо = безстроково")})</span></Label><Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></div>
+        </div>
+        <div>
+          <Label>{t("Файли PDF")}</Label>
+          <input type="file" accept="application/pdf,.pdf" multiple onChange={e => { addFiles(e.target.files); e.target.value = ""; }} className="block w-full text-xs text-slate-600" />
+          {rows.length === 0 && <div className="mt-1 text-xs text-slate-400">{t("Файлів ще немає")}</div>}
+          {rows.length > 0 && (
+            <div className="mt-2 divide-y divide-slate-100 rounded-lg border border-slate-200">
+              {rows.map((r, i) => (
+                <div key={r.uid} className="flex flex-wrap items-center gap-2 px-2.5 py-1.5 text-sm">
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <span className="min-w-0 flex-1 truncate text-xs text-slate-700" title={r.file.name}>{r.file.name}</span>
+                  {mode === "separate" && (
+                    <Select value={r.templateId} onChange={e => setRows(rs => rs.map((x, j) => j === i ? { ...x, templateId: e.target.value } : x))} className="w-56 text-xs">
+                      <option value="">— {t("Тип документа")} —</option>
+                      {candidates.map(tp => <option key={tp.id} value={tp.id}>{tp.title}{autoIds.has(tp.id) ? ` · ${t("автокомплект")}` : ""}</option>)}
+                      <option value="other">{t("інший документ (назва з файлу)")}</option>
+                    </Select>
+                  )}
+                  <button type="button" onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} title={t("Прибрати")} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><XCircle className="h-4 w-4" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          {mode === "separate" && <p className="mt-1 text-[11px] text-slate-400">{t("Повторний скан документа того самого типу замінить попередній (лише в імпортованому пакеті).")}</p>}
+        </div>
+        <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} placeholder={t("напр. звідки скан")} /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending || rows.length === 0}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
         </div>
       </div>
     </Modal>

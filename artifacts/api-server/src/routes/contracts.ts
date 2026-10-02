@@ -20,14 +20,14 @@ import crypto from "node:crypto";
 import {
   db, workerQuestionnairesTable, workerDocumentsTable, documentTypesTable,
   contractsTable, contractFilesTable, signatureTokensTable, signatureEventsTable,
-  workersTable, factoriesTable, companiesTable,
+  workersTable, factoriesTable, companiesTable, documentTemplatesTable,
 } from "@workspace/db";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { factoryInScope } from "../lib/scope";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
-import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature } from "../services/contracts";
+import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature, EVENT_KINDS } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { randomInviteCode } from "../lib/invite";
 import { sendSignLink } from "../bot/notify";
@@ -304,7 +304,8 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   const isoDate = (v: unknown): string | null | false => {
     if (v == null || v === "") return null;
     if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
-    return new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v ? v : false;
+    const d = new Date(`${v}T00:00:00Z`); // 2026-13-01 проходить regex, але Date невалідний — toISOString кинув би RangeError (500)
+    return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : false;
   };
   const dateFrom = isoDate(b.dateFrom), dateTo = isoDate(b.dateTo), signedAtIn = isoDate(b.signedAt);
   if (dateFrom === false || dateTo === false || signedAtIn === false) return fail(res, 400, "Дата: очікується YYYY-MM-DD");
@@ -356,6 +357,147 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   await workerLegalityChanged(workerId);
   logger.info({ contractId: contract.id, workerId, factoryId, companyId, dateFrom, dateTo, adminId }, "signed contract imported");
   ok(res, { ...contract, factoryName: factory.name, companyName: company.name });
+});
+
+// Імпорт сканів ВЖЕ підписаного сталого пакета (ZUS/PIT/PPK/BHP/wniosek) — запит
+// власника 02.10.2026: весь пакет одним файлом АБО кожен документ окремо (кілька
+// файлів за раз чи поодинці, у кілька заходів). Файли лягають у чинний підписаний
+// сталий пакет працівника (contracts.factory_id IS NULL, status=signed); якщо його
+// нема — створюється новий одразу signed з data.importedPackage=true. Це НЕ
+// data.imported (та позначка = «умова без шаблону» для осі «умова» движка, див.
+// legalityRecompute.loadWorkerContracts) — сталий пакет умовою не є. З тієї ж
+// причини файл не можна тегнути шаблоном виду umowa/sprzatanie_umowa (join по
+// template_id зробив би пакет «умовою») чи подієвим шаблоном. У ІМПОРТОВАНОМУ пакеті
+// повторний скан того самого шаблону замінює попередній файл (переслали кращий
+// скан); у підписаний у системі пакет файли лише додаються.
+const uploadPackage = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 20 } });
+const PACKAGE_FORBIDDEN_KINDS = new Set(["umowa", "sprzatanie_umowa", ...EVENT_KINDS]);
+const PACKAGE_LOCK_NS = 7231002; // простір pg_advisory_xact_lock(ns, workerId) для імпорту сталого пакета
+router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("files", 20), async (req: AuthedRequest, res) => {
+  const workerId = Number(req.params.id);
+  const b = req.body ?? {};
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  if (!files.length) return fail(res, 400, "Файли не отримано (PDF до 15 МБ, до 20 файлів)");
+  for (const f of files) if (sniffDocMime(f.buffer) !== "application/pdf") return fail(res, 400, `«${Buffer.from(f.originalname ?? "", "latin1").toString("utf8")}»: очікується PDF (тип файлу перевіряється за вмістом)`);
+  const isoDate = (v: unknown): string | null | false => {
+    if (v == null || v === "") return null;
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const d = new Date(`${v}T00:00:00Z`); // 2026-13-01 проходить regex, але Date невалідний — toISOString кинув би RangeError (500)
+    return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v ? v : false;
+  };
+  const signedAtIn = isoDate(b.signedAt), dateTo = isoDate(b.dateTo);
+  if (signedAtIn === false || dateTo === false) return fail(res, 400, "Дата: очікується YYYY-MM-DD");
+  const signedOn = signedAtIn ?? new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  if (dateTo && dateTo < signedOn) return fail(res, 400, "Дата кінця раніше за дату підпису");
+  // items — JSON-масив паралельно файлам: { templateId?: number|null, title?: string }
+  if (b.items !== undefined && typeof b.items !== "string") return fail(res, 400, "items: очікується один JSON-рядок");
+  let items: { templateId: number | null; title: string }[] = [];
+  try {
+    const raw = typeof b.items === "string" && b.items ? JSON.parse(b.items) : [];
+    if (!Array.isArray(raw)) throw new Error("items");
+    items = raw.map((it: any) => ({
+      templateId: it && it.templateId != null && it.templateId !== "" ? Number(it.templateId) : null,
+      title: it && typeof it.title === "string" ? it.title.trim().slice(0, 200) : "",
+    }));
+  } catch { return fail(res, 400, "items: очікується JSON-масив"); }
+  if (items.length && items.length !== files.length) return fail(res, 400, "items: кількість не збігається з файлами");
+  for (const it of items) if (it.templateId != null && !Number.isInteger(it.templateId)) return fail(res, 400, "items: templateId має бути числом");
+
+  const [worker] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId));
+  if (!worker) return fail(res, 404, "Працівника не знайдено");
+  const templateIds = [...new Set(items.map(i => i.templateId).filter((x): x is number => x != null))];
+  const templates = templateIds.length
+    ? await db.select({ id: documentTemplatesTable.id, kind: documentTemplatesTable.kind, title: documentTemplatesTable.title }).from(documentTemplatesTable).where(inArray(documentTemplatesTable.id, templateIds))
+    : [];
+  const tplById = new Map(templates.map(t => [t.id, t]));
+  for (const id of templateIds) {
+    const tpl = tplById.get(id);
+    if (!tpl) return fail(res, 404, `Шаблон #${id} не знайдено`);
+    if (PACKAGE_FORBIDDEN_KINDS.has(tpl.kind)) return fail(res, 400, `«${tpl.title}»: умова імпортується окремо («Завантажити підписану»), подієві документи — не частина пакета`);
+  }
+
+  const adminId = req.admin?.adminId ?? null;
+  const note = typeof b.note === "string" ? b.note.trim().slice(0, 500) : "";
+  const signedAt = new Date(`${signedOn}T12:00:00Z`);
+  const now = new Date().toISOString();
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  await fs.promises.mkdir(path.join(UPLOADS_ROOT, "contracts"), { recursive: true });
+  const prepared = files.map((f, i) => {
+    const rawName = Buffer.from(f.originalname ?? "dokument.pdf", "latin1").toString("utf8");
+    const it = items[i];
+    const tpl = it?.templateId != null ? tplById.get(it.templateId) ?? null : null;
+    const title = it?.title || (tpl ? `${tpl.title} (skan podpisany)` : files.length === 1 && !items.length ? "Pakiet standardowy (skan podpisany)" : rawName.replace(/\.pdf$/i, ""));
+    const storedName = makeStoredName(rawName.toLowerCase().endsWith(".pdf") ? rawName : `${rawName}.pdf`);
+    return { buffer: f.buffer, rawName, title, templateId: tpl?.id ?? null, relPath: path.join("contracts", storedName), sha256: crypto.createHash("sha256").update(f.buffer).digest("hex") };
+  });
+
+  const written: string[] = [];
+  const oldPaths: string[] = [];
+  const replaced: string[] = [];
+  let created = false;
+  let addedCount = 0;
+  let contractId: number;
+  try {
+    contractId = await db.transaction(async tx => {
+      // імпорти однієї людини — послідовно (ревʼю codex/agy 02.10.2026): без локу два паралельні
+      // запити не бачили пакета один одного й створювали два, а заміна скану губила файл
+      await tx.execute(sql`select pg_advisory_xact_lock(${PACKAGE_LOCK_NS}, ${workerId})`);
+      // чинний підписаний сталий пакет (без фабрики) — файли додаються в нього
+      const existingRows = await tx.select().from(contractsTable)
+        .where(and(eq(contractsTable.workerId, workerId), isNull(contractsTable.factoryId), eq(contractsTable.status, "signed")))
+        .orderBy(desc(contractsTable.id));
+      const target = existingRows.find(c => !c.dateTo || String(c.dateTo) >= today) ?? null;
+      const targetImported = !!target && (target.data as Record<string, unknown> | null)?.importedPackage === true;
+      // дублі одного шаблону в одному запиті — лишаємо останній ЛИШЕ там, де діє заміна (імпортований
+      // пакет): інакше заміна «сама себе» дала б два файли; у підписаний у системі пакет додаються всі
+      const lastByTpl = new Map<number, number>();
+      prepared.forEach((p, i) => { if (p.templateId != null) lastByTpl.set(p.templateId, i); });
+      const toWrite = targetImported ? prepared.filter((p, i) => p.templateId == null || lastByTpl.get(p.templateId) === i) : prepared;
+      for (const p of toWrite) { written.push(p.relPath); await fs.promises.writeFile(path.join(UPLOADS_ROOT, p.relPath), p.buffer); } // шлях у список ДО запису — частково записаний файл теж прибирається
+
+      let cid = target?.id ?? null;
+      if (cid == null) {
+        const [c] = await tx.insert(contractsTable).values({
+          workerId, factoryId: null, companyId: null, status: "signed", dateFrom: signedOn, dateTo,
+          signedAt, companySignedAt: signedAt, companySignedBy: adminId, generatedAt: null,
+          data: { importedPackage: true, importedBy: adminId, importedAt: now, ...(note ? { note } : {}) },
+        }).returning();
+        cid = c!.id; created = true;
+      } else if (targetImported && (note || dateTo)) {
+        // довантаження в імпортований пакет: нотатка дописується, «дійсний до» оновлюється, якщо вказано
+        const d = (target!.data as Record<string, unknown>) ?? {};
+        await tx.update(contractsTable).set({
+          ...(note ? { data: { ...d, note: d.note ? `${d.note}\n${note}` : note } } : {}),
+          ...(dateTo ? { dateTo } : {}),
+        }).where(eq(contractsTable.id, cid));
+      }
+      const existingFiles = await tx.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, cid)).orderBy(contractFilesTable.sortOrder);
+      let sortOrder = existingFiles.reduce((m, f) => Math.max(m, f.sortOrder), -1) + 1;
+      for (const p of toWrite) {
+        const same = targetImported && p.templateId != null ? existingFiles.find(f => f.templateId === p.templateId) : undefined;
+        if (same) {
+          if (same.signedPath) oldPaths.push(same.signedPath);
+          if (same.unsignedPath) oldPaths.push(same.unsignedPath);
+          await tx.update(contractFilesTable).set({ title: p.title, signedPath: p.relPath, signedSha256: p.sha256, unsignedPath: null, unsignedSha256: null, pageCount: null }).where(eq(contractFilesTable.id, same.id));
+          replaced.push(p.title);
+        } else {
+          await tx.insert(contractFilesTable).values({ contractId: cid, templateId: p.templateId, sortOrder: sortOrder++, title: p.title, signedPath: p.relPath, signedSha256: p.sha256 });
+        }
+      }
+      addedCount = toWrite.length - replaced.length;
+      return cid;
+    });
+    for (const op of oldPaths) await fs.promises.unlink(path.join(UPLOADS_ROOT, op)).catch(() => {});
+  } catch (e) {
+    for (const rp of written) await fs.promises.unlink(path.join(UPLOADS_ROOT, rp)).catch(() => {});
+    throw e;
+  }
+  const { workerLegalityChanged } = await import("../services/documentEvents");
+  await workerLegalityChanged(workerId);
+  logger.info({ contractId, workerId, added: addedCount, created, replaced: replaced.length, adminId }, "signed standard package imported");
+  const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
+  const outFiles = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, contractId)).orderBy(contractFilesTable.sortOrder);
+  ok(res, { ...contract, files: outFiles, created, added: addedCount, replaced: replaced.length });
 });
 
 // Аннекс на продовження умови (рішення власника 10.09.2026): {dateTo} → документ kind=aneks одразу
