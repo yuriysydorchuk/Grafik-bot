@@ -392,6 +392,9 @@ bot.hears([...new Set([...bhears("⬅️ Назад"), ...trAll("menu.back")])],
   if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
   const wl = wlang(worker);
+  // незареєстрований акаунт (02.10.2026: людина писала з іншого Telegram, ніж у профілі) —
+  // раніше тут показувалось повне меню працівника, і здавалось, що бот «знає» людину
+  if (!worker) return ctx.reply(t(wl, "start.notReg", { name: ctx.from.first_name }), Markup.removeKeyboard());
   return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
 });
 
@@ -440,6 +443,9 @@ bot.hears(trAll("hr.cancel"), async (ctx) => {
   if (driver) { const dl = olang(driver); return ctx.reply(tb(dl, "Головне меню:"), await driverMenuFor(driver, dl)); }
   const worker = await getWorker(tid);
   const wl = wlang(worker);
+  // незареєстрований акаунт (02.10.2026: людина писала з іншого Telegram, ніж у профілі) —
+  // раніше тут показувалось повне меню працівника, і здавалось, що бот «знає» людину
+  if (!worker) return ctx.reply(t(wl, "start.notReg", { name: ctx.from.first_name }), Markup.removeKeyboard());
   return ctx.reply(t(wl, "menu.title"), await workerMenuFor(worker, wl));
 });
 
