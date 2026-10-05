@@ -4546,6 +4546,7 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
 
 // Zestawienie godzin клієнту: Excel з однією обраною колонкою годин (графік /
 // рапорт / фабрика) у вкладенні; тіло листа генерує веб (як лист про розбіжності).
+// attachExcel=false — лише лист без вкладення (список годин уже в тексті).
 router.post("/hours/statement-email", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
@@ -4559,18 +4560,19 @@ router.post("/hours/statement-email", RW, async (req, res) => {
   const toList = parseEmailList(req.body?.to);
   if (!toList) return fail(res, 400, "Некоректний email отримувача");
   const withCode = req.body?.withCode !== false;
+  const attachExcel = req.body?.attachExcel !== false;
   const cols: import("../services/drive").HoursXlsxColKey[] = withCode ? ["code", "name", source] : ["name", source];
   const { buffer, facName, rowCount, total } = await buildReportHoursExcel(month, factoryId, { cols, statement: source });
   if (!rowCount) return fail(res, 400, "У вибраній колонці немає годин за цей місяць");
   const filename = `Zestawienie godzin ${facName ? `${facName} ` : ""}${month}.xlsx`;
   try {
     const { sendEmailWithAttachments } = await import("../services/email");
-    await sendEmailWithAttachments(toList.join(", "), subject, body, [{ filename, content: buffer }]);
+    await sendEmailWithAttachments(toList.join(", "), subject, body, attachExcel ? [{ filename, content: buffer }] : []);
   } catch (e: any) {
     logger.error({ err: e }, "statement email failed");
     return fail(res, 500, e?.message ?? "Помилка надсилання email");
   }
-  ok(res, { sent: true, to: toList.join(", "), rows: rowCount, total });
+  ok(res, { sent: true, to: toList.join(", "), rows: rowCount, total, attached: attachExcel });
 });
 
 // Download an Excel of monthly hours. Optional query params:

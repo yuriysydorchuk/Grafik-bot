@@ -1917,8 +1917,8 @@ function RecipientsPicker({ factoryId, value, onChange }: { factoryId: number; v
 }
 
 // Zestawienie godzin клієнту: одна обрана колонка годин (графік / рапорт / фабрика),
-// список у тексті листа + Excel у вкладенні (POST /hours/statement-email). Текст
-// живо перераховується після правок годин, поки не відредагований вручну.
+// список у тексті листа + Excel у вкладенні або лише лист (POST /hours/statement-email).
+// Текст живо перераховується після правок годин, поки не відредагований вручну.
 type StatementSource = "hours" | "report" | "factoryHours";
 function StatementEmailModal({ group, month, onClose }: { group: Group; month: string; onClose: () => void }) {
   const t = useT();
@@ -1930,6 +1930,7 @@ function StatementEmailModal({ group, month, onClose }: { group: Group; month: s
   ];
   const [source, setSource] = useState<StatementSource>("report");
   const [withCode, setWithCode] = useState(true);
+  const [attachExcel, setAttachExcel] = useState(true);
   // графік: 0 год = не працював → пропускаємо (дзеркало sourceValue у drive.ts)
   const valueOf = (w: HourRow): number | null => source === "hours" ? (w.hours > 0 ? w.hours : null) : source === "report" ? (w.reportHours ?? null) : (w.factoryHours ?? null);
   const rows = useMemo(() => group.rows.map(w => ({ w, v: valueOf(w) })).filter(x => x.v != null).sort((a, b) => a.w.name.localeCompare(b.w.name, "pl")), [group, source]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1940,7 +1941,7 @@ function StatementEmailModal({ group, month, onClose }: { group: Group; month: s
     body: [
       "Dzień dobry,",
       "",
-      `w załączeniu przesyłamy zestawienie godzin za ${monthPl} (${group.name}):`,
+      `${attachExcel ? "w załączeniu przesyłamy" : "przesyłamy"} zestawienie godzin za ${monthPl} (${group.name}):`,
       "",
       ...rows.map(x => `• ${x.w.name}: ${x.v} godz.`),
       "",
@@ -1951,19 +1952,26 @@ function StatementEmailModal({ group, month, onClose }: { group: Group; month: s
       "Pozdrawiamy,",
       "Euro Support",
     ].join("\n"),
-  }), [rows, total, group.name, monthPl]);
+  }), [rows, total, group.name, monthPl, attachExcel]);
   const [customSubject, setCustomSubject] = useState<string | null>(null);
   const [customBody, setCustomBody] = useState<string | null>(null);
   const [to, setTo] = useState<string[]>([]);
   const subject = customSubject ?? generated.subject;
   const body = customBody ?? generated.body;
+  // ручний текст не перегенеровується — фразу про вкладення міняємо і в ньому
+  const switchAttach = (v: boolean) => {
+    setAttachExcel(v);
+    setCustomBody(b => b == null ? b : v
+      ? b.replace(/^przesyłamy zestawienie/m, "w załączeniu przesyłamy zestawienie")
+      : b.replace(/w załączeniu przesyłamy zestawienie/, "przesyłamy zestawienie"));
+  };
   const excelUrl = () => {
     const p = new URLSearchParams({ month, factoryId: String(group.factoryId), statement: source, cols: (withCode ? ["code", "name", source] : ["name", source]).join(",") });
     return `/api/hours/report-excel?${p.toString()}`;
   };
   const send = useMutation({
     mutationFn: () => post<{ sent: boolean; rows: number; total: number }>("/hours/statement-email", {
-      month, factoryId: group.factoryId, to, subject, body, source, withCode,
+      month, factoryId: group.factoryId, to, subject, body, source, withCode, attachExcel,
     }),
     onSuccess: (r) => { toast.success(t("Зеставєння надіслано на {to} ({n} людей, {h} год)", { to: to.join(", "), n: r.rows, h: r.total })); onClose(); },
     onError: (e: any) => toast.error(e.message),
@@ -1985,7 +1993,7 @@ function StatementEmailModal({ group, month, onClose }: { group: Group; month: s
         <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
           <Badge color="green">{t("{n} людей · {h} год", { n: rows.length, h: total })}</Badge>
           {skipped > 0 && <span className="text-xs text-amber-700">{t("без значення в цій колонці (не потраплять): {n}", { n: skipped })}</span>}
-          <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={withCode} onChange={e => setWithCode(e.target.checked)} /> {t("колонка «Код»")}</label>
+          {attachExcel && <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={withCode} onChange={e => setWithCode(e.target.checked)} /> {t("колонка «Код»")}</label>}
           {(customSubject != null || customBody != null) ? (
             <button onClick={() => { setCustomSubject(null); setCustomBody(null); }} className="inline-flex items-center gap-1 text-xs text-slate-500 underline-offset-2 hover:underline">
               <RotateCcw className="h-3 w-3" /> {t("Скинути до згенерованого")}
@@ -2004,8 +2012,24 @@ function StatementEmailModal({ group, month, onClose }: { group: Group; month: s
           <textarea value={body} onChange={e => setCustomBody(e.target.value)} rows={12}
             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:border-red-300" />
         </div>
+        <div>
+          <Label>{t("Що надсилати")}</Label>
+          <div className="mt-1 grid gap-1.5 sm:grid-cols-2">
+            {([
+              { v: true, label: t("Лист + Excel"), hint: t("список у тексті й Excel у вкладенні") },
+              { v: false, label: t("Лише лист"), hint: t("список годин лише в тексті, без вкладення") },
+            ]).map(o => (
+              <label key={String(o.v)} className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-1.5 text-sm ${attachExcel === o.v ? "border-red-300 bg-red-50/60" : "border-slate-200"}`}>
+                <input type="radio" name="stmt-attach" className="mt-0.5 accent-red-600" checked={attachExcel === o.v} onChange={() => switchAttach(o.v)} />
+                <span><span className="font-medium text-slate-700">{o.label}</span><span className="block text-xs text-slate-500">{o.hint}</span></span>
+              </label>
+            ))}
+          </div>
+        </div>
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-          {t("Вкладення: Excel «Zestawienie godzin» з колонкою «{col}» (польською).", { col: SOURCES.find(s => s.key === source)!.label })}
+          {attachExcel
+            ? t("Вкладення: Excel «Zestawienie godzin» з колонкою «{col}» (польською).", { col: SOURCES.find(s => s.key === source)!.label })
+            : t("Без вкладення: години лише в тексті листа.")}
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
