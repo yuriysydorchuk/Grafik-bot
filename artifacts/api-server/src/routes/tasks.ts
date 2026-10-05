@@ -84,6 +84,12 @@ const mineCond = (adminId: number) => or(
 const watchCond = (adminId: number) => sql`exists (select 1 from task_assignees a where a.task_id = ${tasksTable.id} and a.admin_id = ${adminId} and a.status = 'watcher')`;
 
 router.get("/tasks", TP, async (req: AuthedRequest, res) => { ok(res, await listTasks(req)); });
+// Кількість задач по фірмах для селекта «Фірма» — ті самі фільтри, що й GET /tasks, окрім фірми. companyId null = без фірми.
+router.get("/tasks/company-counts", TP, async (req: AuthedRequest, res) => {
+  const conds = taskConds(req, false);
+  ok(res, await db.select({ companyId: sql<number | null>`${taskCompanySql()}`, n: sql<number>`count(*)::int` }).from(tasksTable)
+    .where(conds.length ? and(...conds) : undefined).groupBy(sql`1`));
+});
 
 // Excel-експорт списку (ті самі фільтри, що й GET /tasks) — польська шапка не потрібна: внутрішній документ офісу
 // Приватний iCal-лінк адміна (підписка в Google/Apple Calendar) — routes/taskIcal.ts
@@ -110,7 +116,19 @@ router.get("/tasks/export.xlsx", TP, async (req: AuthedRequest, res) => {
   res.send(Buffer.from(await wb.xlsx.writeBuffer()));
 });
 
-async function listTasks(req: AuthedRequest) {
+// Фірма задачі (фільтр «Фірма»): з автопараметрів (powiadomienie/умова по фірмі) → фірма умови →
+// роботодавець пари людина×фабрика (як loadWorkerEmployers: worker_factories → фірма фабрики) → фірма людини.
+// NULL — «без фірми» (ручні/групові задачі без працівника й фабрики).
+const taskCompanySql = () => sql`coalesce(
+  case when ${tasksTable.autoParams}->>'companyId' ~ '^[0-9]+$' then (${tasksTable.autoParams}->>'companyId')::int end,
+  (select c.company_id from contracts c where c.id = ${tasksTable.contractId}),
+  (select wf.company_id from worker_factories wf where wf.worker_id = ${tasksTable.workerId} and wf.factory_id = ${tasksTable.factoryId} and wf.company_id is not null order by wf.valid_from desc nulls last limit 1),
+  (select f.company_id from factories f where f.id = ${tasksTable.factoryId}),
+  (select w.company_id from workers w where w.id = ${tasksTable.workerId})
+)`;
+
+// Умови списку з query (GET /tasks, експорт, лічильники по фірмах). withCompany=false — без фільтра фірми.
+function taskConds(req: AuthedRequest, withCompany = true) {
   const q = req.query as Record<string, string | undefined>;
   const conds: any[] = [];
   const scope = q.scope ?? "mine";
@@ -124,6 +142,8 @@ async function listTasks(req: AuthedRequest) {
   if (q.assignee) conds.push(eq(tasksTable.assigneeAdminId, Number(q.assignee)));
   if (q.factoryId) conds.push(eq(tasksTable.factoryId, Number(q.factoryId)));
   if (q.city) conds.push(sql`exists (select 1 from factories f where f.id = ${tasksTable.factoryId} and f.city = ${String(q.city)})`);
+  if (withCompany && q.companyId === "none") conds.push(sql`${taskCompanySql()} is null`);
+  else if (withCompany && Number(q.companyId) > 0) conds.push(sql`${taskCompanySql()} = ${Number(q.companyId)}`);
   if (q.workerId) conds.push(eq(tasksTable.workerId, Number(q.workerId)));
   if (q.relatedTo) conds.push(sql`(${tasksTable.autoParams}->>'fromTaskId')::int = ${Number(q.relatedTo)}`); // задачі, створені з пунктів зустрічі
   if (q.kind && TASK_KINDS.includes(q.kind as TaskKind)) conds.push(eq(tasksTable.kind, q.kind));
@@ -136,6 +156,11 @@ async function listTasks(req: AuthedRequest) {
   if (q.overdue === "1") conds.push(and(sql`${tasksTable.dueAt} < ${warsawToday()}`, inArray(tasksTable.status, OPEN_STATUSES)));
   if (q.q) conds.push(sql`(${tasksTable.title} ilike ${"%" + q.q + "%"} or exists (select 1 from workers w where w.id = ${tasksTable.workerId} and w.full_name ilike ${"%" + q.q + "%"}))`);
   if (q.hideSnoozed !== "0") conds.push(or(isNull(tasksTable.snoozedUntil), lte(tasksTable.snoozedUntil, warsawToday())));
+  return conds;
+}
+
+async function listTasks(req: AuthedRequest) {
+  const conds = taskConds(req);
   const rows = await db.select().from(tasksTable).where(conds.length ? and(...conds) : undefined)
     .orderBy(sql`case ${tasksTable.priority} when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end`, asc(tasksTable.dueAt), desc(tasksTable.id)).limit(500);
   return decorate(rows);

@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Plus, ChevronLeft, ChevronRight, Sun, Columns3, List, CalendarDays, Gauge, CheckCircle2, Clock, Focus, Wand2, Users, Download } from "lucide-react";
-import { get, post, patch, type Factory } from "../lib/api";
+import { get, post, patch, type Factory, type Company } from "../lib/api";
 import {
   type TaskRow, type MyDay, type TaskAdmin, type TaskControlRow, type TaskStatus,
   STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, SOURCE_LABEL, fmtD, fmtDShort, todayStr, addDays, weekdayIdx, DAY_SHORT, MONTHS_NOM, MONTHS_GEN,
@@ -74,6 +74,7 @@ function useFilters() {
   const [assignee, setAssignee] = usePersisted<string>("tasks.f.assignee", "");
   const [factoryId, setFactoryId] = useState("");
   const [city, setCity] = usePersisted<string>("tasks.f.city", "");
+  const [companyId, setCompanyId] = usePersisted<string>("tasks.f.company", "");
   const [source, setSource] = useState("");
   const [priority, setPriority] = useState("");
   const [q, setQ] = useState("");
@@ -82,16 +83,22 @@ function useFilters() {
   const [groupBy, setGroupBy] = usePersisted<GroupBy>("tasks.f.group", "due");
   const qs = (extra: Record<string, string> = {}) => {
     const p = new URLSearchParams({ scope, status: hideDone ? "open" : "all", ...extra });
-    if (assignee) p.set("assignee", assignee); if (factoryId) p.set("factoryId", factoryId); if (city) p.set("city", city); if (source) p.set("source", source); if (priority) p.set("priority", priority); if (q) p.set("q", q); if (overdueOnly) p.set("overdue", "1");
+    if (assignee) p.set("assignee", assignee); if (factoryId) p.set("factoryId", factoryId); if (city) p.set("city", city); if (companyId) p.set("companyId", companyId); if (source) p.set("source", source); if (priority) p.set("priority", priority); if (q) p.set("q", q); if (overdueOnly) p.set("overdue", "1");
     return p.toString();
   };
-  return { scope, setScope, assignee, setAssignee, factoryId, setFactoryId, city, setCity, source, setSource, priority, setPriority, q, setQ, hideDone, setHideDone, overdueOnly, setOverdueOnly, groupBy, setGroupBy, qs };
+  return { scope, setScope, assignee, setAssignee, factoryId, setFactoryId, city, setCity, companyId, setCompanyId, source, setSource, priority, setPriority, q, setQ, hideDone, setHideDone, overdueOnly, setOverdueOnly, groupBy, setGroupBy, qs };
 }
 function FilterBar({ f, withGroup = false }: { f: ReturnType<typeof useFilters>; withGroup?: boolean }) {
   const t = useT();
   const { data: admins = [] } = useQuery<TaskAdmin[]>({ queryKey: ["task-admins"], queryFn: () => get("/tasks/admins") });
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const cities = useMemo(() => [...new Set(factories.map(x => (x as any).city).filter(Boolean))].sort() as string[], [factories]);
+  const { data: companies = [] } = useQuery<Company[]>({ queryKey: ["companies"], queryFn: () => get("/companies") });
+  // кількість задач по фірмах — ті самі фільтри, що й у списку, окрім самої фірми
+  const countsQs = (() => { const p = new URLSearchParams(f.qs()); p.delete("companyId"); return p.toString(); })();
+  const { data: companyCounts = [] } = useQuery<{ companyId: number | null; n: number }[]>({ queryKey: ["tasks", "company-counts", countsQs], queryFn: () => get(`/tasks/company-counts?${countsQs}`) });
+  const countOf = (id: number | null) => companyCounts.find(c => c.companyId === id)?.n ?? 0;
+  const employers = companies.filter(c => c.employsWorkers !== false || countOf(c.id) > 0 || String(c.id) === f.companyId); // обрану не ховаємо — інакше фільтр не зняти
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
       <div className="flex gap-1">
@@ -100,6 +107,7 @@ function FilterBar({ f, withGroup = false }: { f: ReturnType<typeof useFilters>;
       <Input value={f.q} onChange={e => f.setQ(e.target.value)} placeholder={t("пошук: назва, працівник")} className="h-8 w-48 py-1 text-xs" />
       <Select value={f.assignee} onChange={e => f.setAssignee(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Виконавець: усі")}</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select>
       <Select value={f.factoryId} onChange={e => f.setFactoryId(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Фабрика: усі")}</option>{factories.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>
+      {companies.length > 0 && <Select value={f.companyId} onChange={e => f.setCompanyId(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Фірма: усі")} ({companyCounts.reduce((a, c) => a + c.n, 0)})</option>{employers.map(c => <option key={c.id} value={c.id}>{c.name} ({countOf(c.id)})</option>)}<option value="none">{t("Без фірми")} ({countOf(null)})</option></Select>}
       <Select value={f.source} onChange={e => f.setSource(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Джерело: усі")}</option><option value="manual">{t("ручні")}</option><option value="auto">{t("автозадачі")}</option>{Object.entries(SOURCE_LABEL).filter(([k]) => k.startsWith("auto:")).map(([k, l]) => <option key={k} value={k.slice(5)}>{t(l)}</option>)}</Select>
       <Select value={f.priority} onChange={e => f.setPriority(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Пріоритет: усі")}</option>{(["urgent", "high", "normal", "low"] as const).map(p => <option key={p} value={p}>{t(PRIORITY_LABEL[p])}</option>)}</Select>
       {cities.length > 0 && <Select value={f.city} onChange={e => f.setCity(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Місто: усі")}</option>{cities.map(c => <option key={c} value={c}>{c}</option>)}</Select>}
