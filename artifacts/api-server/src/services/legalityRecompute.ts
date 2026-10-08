@@ -65,17 +65,28 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
   }));
 }
 
+// Дата останнього повернення на роботу (restoreWorker → журнал `restored`), null — не повертався.
+export async function rehiredAtOf(workerId: number): Promise<string | null> {
+  const [r] = await db.select({ effectiveDate: workerChangesTable.effectiveDate })
+    .from(workerChangesTable)
+    .where(and(eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "restored")))
+    .orderBy(desc(workerChangesTable.effectiveDate), desc(workerChangesTable.id)).limit(1);
+  return dateStr(r?.effectiveDate);
+}
+
 // employerSince = max(перший робочий день ?? employment_start_date, дата останнього переходу
-// фірми в журналі). Перший робочий день (first_work_date, з першої явки) — точка відліку
-// обовʼязків роботодавця (powiadomienie UA ≤ 7 днів від podjęcia pracy).
+// фірми в журналі, дата останнього повернення на роботу). Перший робочий день (first_work_date,
+// з першої явки) — точка відліку обовʼязків роботодавця (powiadomienie UA ≤ 7 днів від podjęcia
+// pracy). Повернений після звільнення — новий найм: строк не раніше дати повернення, навіть
+// поки first_work_date ще не перерахована (08.10.2026).
 export async function employerSinceOf(worker: { id: number; employmentStartDate: string | null; firstWorkDate?: string | null }): Promise<string | null> {
   const [last] = await db.select({ effectiveDate: workerChangesTable.effectiveDate })
     .from(workerChangesTable)
     .where(and(eq(workerChangesTable.workerId, worker.id), eq(workerChangesTable.field, "companyId")))
     .orderBy(desc(workerChangesTable.effectiveDate), desc(workerChangesTable.id)).limit(1);
-  const a = dateStr(worker.firstWorkDate) ?? dateStr(worker.employmentStartDate), b = dateStr(last?.effectiveDate);
-  if (a && b) return a > b ? a : b;
-  return a ?? b ?? null;
+  const a = dateStr(worker.firstWorkDate) ?? dateStr(worker.employmentStartDate), b = dateStr(last?.effectiveDate), c = await rehiredAtOf(worker.id);
+  const all = [a, b, c].filter((x): x is string => !!x);
+  return all.length ? all.sort().at(-1)! : null;
 }
 
 // Умови працівника для осі «умова»: hasUmowa — у пакеті є файл із шаблону виду umowa
@@ -142,6 +153,7 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
     isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
     factoryId: w.factoryId,
     nationalityVerified: !!w.nationalityVerifiedAt,
+    rehiredAt: await rehiredAtOf(w.id),
   };
   const [contracts, employers, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerEmployers({ id: w.id, factoryId: w.factoryId }, today), scheduleFactoriesOf(workerId, today)]);
   return {

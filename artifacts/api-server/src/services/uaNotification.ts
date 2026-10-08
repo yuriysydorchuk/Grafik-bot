@@ -18,7 +18,7 @@ import {
   positionsTable, workerQuestionnairesTable, contractsTable, taskAutoRulesTable,
   type Task,
 } from "@workspace/db";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { createTask, logTaskEvent, resolveAssignee, priorityForDays, warsawToday, diffDays, dateStr, fmtDate, mdEsc, mainAdminId, adminName, taskPanelUrl, loadTaskSettings, OPEN_STATUSES, type TaskPriority } from "./tasks";
 import { loadLegacyWorkerIds } from "./taskLegacy";
 import { normalizeChecklist } from "./taskUtils";
@@ -114,9 +114,22 @@ async function stage2Assignee(rule: Awaited<ReturnType<typeof loadUaRule>>): Pro
 }
 
 // Створити/доповнити задачу ступеня для виконавця. Повертає задачу.
+// Відкрита задача ступеня для виконавця — за ПРЕФІКСОМ ключа `ua<ступінь>:<виконавець>`. Ключ нової
+// задачі отримує часовий суфікс: source_key має глобальний unique-індекс (tasks_source_key_uq), і
+// після закриття задачі (done «усіх вислано» / cancelled) повторна вставка з тим самим ключем
+// падала duplicate key → весь синк мовчав з 18.09.2026, нові люди в задачу не потрапляли.
+const stageKeyPrefix = (stage: 1 | 2, assigneeId: number | null) => `ua${stage}:${assigneeId ?? 0}`;
+async function openStageTask(stage: 1 | 2, assigneeId: number | null): Promise<Task | undefined> {
+  const key = stageKeyPrefix(stage, assigneeId);
+  const [ex] = await db.select().from(tasksTable)
+    .where(and(eq(tasksTable.source, UA_SOURCE), inArray(tasksTable.status, OPEN_STATUSES), or(eq(tasksTable.sourceKey, key), like(tasksTable.sourceKey, `${key}:%`))))
+    .orderBy(desc(tasksTable.id)).limit(1);
+  return ex;
+}
+
 async function upsertStageTask(stage: 1 | 2, assigneeId: number | null, add: UaWorker[], today: string, ld: { urgent: number; warn: number }, actorAdminId: number | null): Promise<Task> {
-  const key = `ua${stage}:${assigneeId ?? 0}`;
-  const [ex] = await db.select().from(tasksTable).where(and(eq(tasksTable.sourceKey, key), inArray(tasksTable.status, OPEN_STATUSES)));
+  const key = `${stageKeyPrefix(stage, assigneeId)}:${Date.now().toString(36)}`;
+  const ex = await openStageTask(stage, assigneeId);
   if (ex) {
     const cur = paramsOf(ex).workers;
     const merged = [...cur.filter(w => !add.some(a => uaKey(a) === uaKey(w))), ...add];
@@ -165,8 +178,13 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
     const changed = keep.length !== cur.length || keep.some((w, i) => w.dueAt !== cur[i]?.dueAt || (w.companyId ?? null) !== (cur[i]?.companyId ?? null));
     if (changed) { await writeTask(t, keep, today, ld); keep.length ? stats.updated++ : stats.resolved++; }
   }
-  // 2) нові: stage1Days-й день роботи настав → у ступінь 1 виконавцю фабрики (рядок = людина×фірма)
-  const fresh = [...pending.values()].filter(p => !listed.has(uaKey({ id: p.workerId, companyId: p.companyId })));
+  // 2) нові: stage1Days-й день роботи настав → у ступінь 1 виконавцю фабрики (рядок = людина×фірма).
+  //    Строк минув ще до запуску модуля (settings.legacyBefore) — не ретроактивно: перший список (46 людей,
+  //    09.09.2026) власник закрив вручну, повертати їх у «нові чекають» — шум; прострочення лишається видимим
+  //    у профілі (notification_overdue). Гейт лише на НОВИХ кандидатів — чистку відкритих списків (ступінь 2)
+  //    він не чіпає (ревʼю codex 08.10.2026). Повернений після звільнення має новий строк.
+  const { legacyBefore } = await loadTaskSettings();
+  const fresh = [...pending.values()].filter(p => !listed.has(uaKey({ id: p.workerId, companyId: p.companyId })) && !(legacyBefore && p.dueAt < legacyBefore));
   if (!fresh.length) return stats;
   const ids = [...new Set(fresh.map(p => p.workerId))];
   const ws = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, facName: factoriesTable.name })
@@ -183,7 +201,7 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
     byAssignee.set(assignee, l);
   }
   for (const [assignee, list] of byAssignee) {
-    const before = (await db.select({ id: tasksTable.id }).from(tasksTable).where(and(eq(tasksTable.sourceKey, `ua1:${assignee ?? 0}`), inArray(tasksTable.status, OPEN_STATUSES)))).length;
+    const before = (await openStageTask(1, assignee)) ? 1 : 0;
     const t = await upsertStageTask(1, assignee, list, today, ld, null);
     if (before) stats.updated++; else {
       stats.created++;
@@ -273,10 +291,17 @@ export async function uaContext(task: Task): Promise<{ stage: 1 | 2; rows: UaCon
   const ty = (await db.select().from(documentTypesTable).where(eq(documentTypesTable.code, DOC_CODE)))[0];
   const docs = ty ? await db.select().from(workerDocumentsTable).where(and(inArray(workerDocumentsTable.workerId, ids), eq(workerDocumentsTable.docTypeId, ty.id))).orderBy(desc(workerDocumentsTable.id)) : [];
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, ids));
+  // повернений після звільнення: powiadomienie з датою до повернення — з попереднього найму, не рахуємо
+  // (дзеркало движка legality.ts fromThisHire; інакше картка показувала б «внесено» без кнопки завантаження)
+  const restored = await (await import("./firstWorkDate")).restoredSince(ids);
+  const fromThisHire = (d: { workerId: number; submittedAt: unknown; validFrom: unknown; issuedAt: unknown }) => {
+    const r = restored.get(d.workerId); const at = dateStr(d.submittedAt) ?? dateStr(d.validFrom) ?? dateStr(d.issuedAt);
+    return !r || !at || at >= r;
+  };
   for (const w of p.workers) {
     // документ рахується для рядка лише коли виданий саме на його фірму (як у движку employerOk==="ok";
     // документ без фірми = «роботодавець невідомий», обовʼязок не закриває); старий рядок без фірми — будь-який
-    const doc = docs.find(d => d.workerId === w.id && d.status !== "missing" && (w.companyId == null || d.employerCompanyId === w.companyId));
+    const doc = docs.find(d => d.workerId === w.id && d.status !== "missing" && (w.companyId == null || d.employerCompanyId === w.companyId) && fromThisHire(d));
     const missing = p.stage === 2 ? (await uaCard(w.id, w.companyId ?? null)).missing : [];
     rows.push({ ...w, daysLeft: diffDays(w.dueAt, today), missing, docId: doc?.id ?? null, docFileUrl: doc?.filePath ? `/api/worker-documents/${doc.id}/file` : null, nationality: ws.find(x => x.id === w.id)?.nationality ?? null,
       steps: { data: !missing.length, submitted: !!w.submittedAt || !!doc, entered: !!doc } });

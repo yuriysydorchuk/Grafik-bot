@@ -28,6 +28,8 @@ export interface LegalityWorker {
   factoryId?: number | null;          // основна фабрика (workers.factory_id)
   /** офіс підтвердив громадянство вручну (workers.nationality_verified_at) — документи іноземця не ставлять його під сумнів */
   nationalityVerified?: boolean;
+  /** дата останнього повернення на роботу після звільнення (журнал `restored`); документи-обовʼязки з датою до неї — з попереднього найму */
+  rehiredAt?: string | null;
 }
 
 // Умова з модуля підпису (contracts): для осі «умова». hasUmowa — у пакеті є
@@ -493,8 +495,12 @@ export function computeLegality(input: LegalityInput): LegalityResult {
     // має два powiadomienia — окремий обовʼязок на фірму, документ рахується лише для фірми,
     // на яку виданий (employerOk === "ok"). Один роботодавець → як раніше.
     const oblCompanies = [...new Set(employerCompanies.length ? employerCompanies : [primaryCompany])];
+    // повернений після звільнення — новий найм: powiadomienie, подане ДО дати повернення, належить
+    // попередньому найму й обовʼязок не закриває (без дати на документі — не судимо, рахуємо)
+    const rehiredAt = worker.rehiredAt ?? null;
+    const fromThisHire = (d: LegalityDocument) => { const at = d.submittedAt ?? d.validFrom ?? d.issuedAt; return !rehiredAt || !at || at >= rehiredAt; };
     for (const cid of oblCompanies) {
-      const doc = documents.find(d => d.typeCode === docCode && d.status !== "missing" && employerOk(d, cid) === "ok");
+      const doc = documents.find(d => d.typeCode === docCode && d.status !== "missing" && employerOk(d, cid) === "ok" && fromThisHire(d));
       // ручний прапорець «подано» (facts) — без фірми, тож закриває обовʼязок лише основної фірми
       const manualSubmitted = cid === primaryCompany ? (input.facts?.notificationSubmittedAt ?? null) : null;
       const submittedAt = doc?.submittedAt ?? doc?.validFrom ?? manualSubmitted;

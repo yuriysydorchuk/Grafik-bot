@@ -349,6 +349,14 @@ test("L18 те саме, hard:true → work illegal (block)", () => {
   });
   assert.equal(r.work.status, "illegal"); assert.equal(r.reasons.find(x => x.code === "notification_overdue")?.severity, "block");
 });
+test("L17c повернений після звільнення: powiadomienie з датою до повернення обовʼязок не закриває; без дати — закриває", () => {
+  const old = run({ employerSince: "2026-10-02", rehiredAt: "2026-10-02" }, [doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 1, submittedAt: "2026-07-03", validFrom: "2026-07-03" })]);
+  assert.equal(old.obligations[0]?.satisfied, false); assert.equal(old.obligations[0]?.dueAt, "2026-10-09");
+  const fresh = run({ employerSince: "2026-10-02", rehiredAt: "2026-10-02" }, [doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 1, submittedAt: "2026-10-05", validFrom: "2026-10-05" })]);
+  assert.equal(fresh.obligations[0]?.satisfied, true);
+  const undated = run({ employerSince: "2026-10-02", rehiredAt: "2026-10-02" }, [doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 1 })]);
+  assert.equal(undated.obligations[0]?.satisfied, true);
+});
 test("L17b працює на іншій підставі (dyplom) → прострочене powiadomienie лише інформаційне", () => {
   const r = run({ employmentStartDate: "2026-08-20" }, [doc("status_ukr"), doc("diploma")]);
   assert.equal(r.work.status, "legal");

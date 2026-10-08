@@ -20,3 +20,8 @@ test("legacy: без дати в налаштуваннях гейт вимкн�
   assert.equal(isLegacyWorker({ createdAt: before, hasDocs: false, hasContract: false }, null), false);
   assert.equal(isLegacyWorker({ createdAt: null, hasDocs: false, hasContract: false }, "2026-09-08"), false);
 });
+test("legacy: повернений на роботу в день запуску або пізніше — не старий, навіть без документів", () => {
+  assert.equal(isLegacyWorker({ createdAt: before, hasDocs: false, hasContract: false, restoredAt: "2026-08-12" }, "2026-09-08"), true);
+  assert.equal(isLegacyWorker({ createdAt: before, hasDocs: false, hasContract: false, restoredAt: "2026-09-08" }, "2026-09-08"), false);
+  assert.equal(isLegacyWorker({ createdAt: before, hasDocs: false, hasContract: false, restoredAt: new Date("2026-10-02T08:00:00Z") }, "2026-09-08"), false);
+});

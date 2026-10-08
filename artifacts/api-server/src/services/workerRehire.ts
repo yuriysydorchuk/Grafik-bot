@@ -47,7 +47,9 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
       await tx.update(workersTable).set({ telegramId: null }).where(eq(workersTable.id, tgOwner.id));
       await tx.insert(workerChangesTable).values({ workerId: tgOwner.id, field: "telegramId", oldValue: tg, newValue: null, effectiveDate: today, adminId: opts.adminId });
     }
-    const patch: Partial<typeof workersTable.$inferInsert> = { isActive: true, status: "active", firedAt: null };
+    // перший робочий день — від нового найму: обнуляємо, бекфіл/явка поставлять дату після повернення
+    // (services/firstWorkDate.ts рахує лише дати після журналу `restored`)
+    const patch: Partial<typeof workersTable.$inferInsert> = { isActive: true, status: "active", firedAt: null, firstWorkDate: null };
     if (factoryChanged) patch.factoryId = opts.factoryId ?? null;
     if (positionChanged) patch.positionId = opts.positionId ?? null;
     if (tgChanged) patch.telegramId = tg;
@@ -76,6 +78,8 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
       if (getState(tid)?.action?.startsWith("rehire:")) { clearState(tid); clearedRehire = true; }
     }
   } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "rehire state clear failed"); }
+  // легальність: employerSince/обовʼязок powiadomienie тепер від дати повернення (legalityRecompute.employerSinceOf)
+  import("./documentEvents").then(m => m.workerLegalityChanged(w.id)).catch(() => {});
   logger.info({ workerId: w.id, factoryChanged, positionChanged, tgChanged, clearedRehire, adminId: opts.adminId }, "worker restored");
   return { ok: true, worker: restored, clearedRehire };
 }
