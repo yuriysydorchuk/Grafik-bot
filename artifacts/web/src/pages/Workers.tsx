@@ -24,6 +24,7 @@ export default function Workers() {
   const me = useMe();
   const isOwner = me?.role === "owner";
   const canEdit = can(me, "editData"); // viewWorkers-only (бухгалтерія) — лише перегляд, без дій
+  const canLifecycle = canEdit || can(me, "workerLifecycle"); // запросити в бот / звільнити / відновити (офіс-менеджер)
   // Новий кандидат через фабрику (скан паспорта / лінк самореєстрації) — офіс-менеджер (workerDocs)
   // або адмін зі скоупом міст: його нові люди мусять одразу мати фабрику, інакше він їх не побачить.
   const addViaFactory = (!canEdit && can(me, "workerDocs")) || (canEdit && !!me?.scope);
@@ -193,7 +194,7 @@ export default function Workers() {
               className={`px-3 py-1.5 ${mode === k ? (k === "blacklist" ? "bg-slate-800 text-white" : "bg-red-600 text-white") : "bg-white text-slate-600 hover:bg-slate-50"}`}>{label}</button>
           ))}
         </div>
-        {(() => { const targets = filtered.filter(w => w.isActive && !w.telegramId); return targets.length > 0 ? (
+        {(() => { const targets = canLifecycle ? filtered.filter(w => w.isActive && !w.telegramId) : []; return targets.length > 0 ? (
           <Button variant="secondary" loading={inviteAll.isPending} onClick={() => inviteAll.mutate(targets)}>
             <Link2 className="h-4 w-4" /> {t("Скопіювати всі посилання")} ({targets.length})
           </Button>
@@ -228,8 +229,8 @@ export default function Workers() {
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex justify-end gap-1">
                       {canEdit && <button onClick={() => setEdit(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>}
-                      {canEdit && w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
-                      {canEdit && (w.isActive
+                      {canLifecycle && w.isActive && !w.telegramId && <button onClick={() => invite.mutate(w.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Скопіювати посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
+                      {canLifecycle && (w.isActive
                         ? <button onClick={() => setFiring(w)} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Звільнити")}><UserX className="h-4 w-4" /></button>
                         : w.doNotHire
                           ? <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-white" title={w.doNotHireReason ?? ""}>{t("не наймати")}</span>

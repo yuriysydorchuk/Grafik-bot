@@ -186,6 +186,7 @@ export default function WorkerDetail() {
   const canSvodni = can(me, "svodni");
   // viewWorkers-only (напр. бухгалтерія): бачить картку, інлайн-поля — нередаговані
   const canEdit = can(me, "editData");
+  const canLifecycle = canEdit || can(me, "workerLifecycle"); // звільнити / виповідзення / відновити (офіс-менеджер)
   const [pendingChange, setPendingChange] = useState<{ changes: Record<string, unknown>; title: string; from?: string } | null>(null);
   const requestChange = canSvodni ? (changes: Record<string, unknown>, title: string, from?: string) => setPendingChange({ changes, title, from }) : undefined;
 
@@ -274,12 +275,12 @@ export default function WorkerDetail() {
               {!w.isActive && <Badge color="rose">{t("звільнений")}</Badge>}
               {w.doNotHire && <span className="inline-flex items-center gap-1 rounded bg-slate-800 px-1.5 py-0.5 text-xs font-semibold text-white" title={w.doNotHireReason ?? ""}><Ban className="h-3 w-3" /> {t("Чорний список")}{w.doNotHireReason ? `: ${w.doNotHireReason}` : ""}</span>}
               {w.isActive && w.terminationDate && <Badge color="amber">{w.terminationFactoryId != null ? `${t("йде з")} ${factories.find(f => f.id === w.terminationFactoryId)?.name ?? `#${w.terminationFactoryId}`} ` : `${t("звільнення з")} `}{fmtDocDate(w.terminationDate)}</Badge>}
-              {w.isActive && canEdit && (
+              {w.isActive && canLifecycle && (
                 <button type="button" onClick={() => setFiring(true)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 hover:bg-rose-100">
                   <UserX className="h-3.5 w-3.5" /> {t("Звільнити")}
                 </button>
               )}
-              {!w.isActive && (!w.doNotHire || canDeleteWorkers) && (
+              {!w.isActive && canLifecycle && (!w.doNotHire || canDeleteWorkers) && (
                 <button type="button" onClick={async () => {
                   if (w.doNotHire) {
                     if (await confirmDlg({ title: t("Людина в чорному списку. Повернути?"), message: `${w.doNotHireReason ?? t("без причини")}. ${t("Прапорець буде знято, профіль знову стане активним.")}`, danger: true, confirmText: t("Повернути") })) restore.mutate(true);
@@ -346,7 +347,7 @@ export default function WorkerDetail() {
                 й графік, не про гроші; перенесено з «Фінанси» для балансу колонок. */}
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
             <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} byFactory={w.firstWorkDates ?? []} readOnly={!canEdit} />
-            {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canEdit} />}
+            {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canLifecycle} />}
             <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>

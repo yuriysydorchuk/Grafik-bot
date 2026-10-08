@@ -10,6 +10,7 @@ import {
   workerChangesTable,
 } from "@workspace/db";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
+import { factoryInScope } from "../lib/scope";
 import { addDaysStr } from "../lib/dates";
 import { OPEN_STATUSES, warsawToday } from "../services/taskUtils";
 import { loadLeadDays } from "../services/legalityRecompute";
@@ -36,7 +37,8 @@ const OBLIGATION_LABEL: Record<string, string> = {
 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export async function collectWorkerEvents(opts: { from: string; to: string; factoryId?: number | null; workerId?: number | null; city?: string | null; companyId?: number | null; kinds?: Set<CalKind> | null }): Promise<CalEvent[]> {
+// factoryIds — скоуп адміна (lib/scope.ts): лише люди цих фабрик (основна або worker_factories)
+export async function collectWorkerEvents(opts: { from: string; to: string; factoryId?: number | null; workerId?: number | null; city?: string | null; companyId?: number | null; kinds?: Set<CalKind> | null; factoryIds?: number[] | null }): Promise<CalEvent[]> {
   const { from, to } = opts;
   const today = warsawToday();
   const want = (k: CalKind) => (opts.kinds ? opts.kinds.has(k) : DEFAULT_KINDS.includes(k));
@@ -45,6 +47,10 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
   if (opts.companyId) wWhere.push(eq(workersTable.companyId, opts.companyId));
   if (opts.city) wWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
   if (opts.factoryId) wWhere.push(sql`(${workersTable.factoryId} = ${opts.factoryId} or exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${opts.factoryId}))`);
+  const scopeSql = (ids: number[]) => ids.length
+    ? sql`(${inArray(workersTable.factoryId, ids)} or exists (select 1 from worker_factories swf where swf.worker_id = ${workersTable.id} and ${inArray(sql`swf.factory_id`, ids)}))`
+    : sql`false`;
+  if (opts.factoryIds) wWhere.push(scopeSql(opts.factoryIds));
   const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, birthDate: workersTable.birthDate, terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId, firstWorkDate: workersTable.firstWorkDate })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...wWhere));
   // фактично звільнені в діапазоні (fired_at) — вид termination; окремий запит, бо основний бере лише активних
@@ -54,6 +60,7 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
     if (opts.companyId) firedWhere.push(eq(workersTable.companyId, opts.companyId));
     if (opts.city) firedWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
     if (opts.factoryId) firedWhere.push(eq(workersTable.factoryId, opts.factoryId));
+    if (opts.factoryIds) firedWhere.push(scopeSql(opts.factoryIds));
     const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, firedAt: workersTable.firedAt })
       .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...firedWhere));
     return fired.map(w => ({ id: `fired:${w.id}`, kind: "termination" as CalKind, date: new Date(w.firedAt!).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), title: "Звільнено", workerId: w.id, workerName: w.fullName, factoryId: w.factoryId, factoryName: w.factoryName ?? null, severity: "info" as const }));
@@ -161,6 +168,7 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
       if (opts.workerId) firedWhere.push(eq(workersTable.id, opts.workerId));
       if (opts.companyId) firedWhere.push(eq(workersTable.companyId, opts.companyId));
       if (opts.city) firedWhere.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
+      if (opts.factoryIds) firedWhere.push(scopeSql(opts.factoryIds));
       const fired = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, firedAt: workersTable.firedAt })
         .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...firedWhere));
       if (fired.length) {
@@ -226,8 +234,12 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
       if (hit) e.taskId = hit.id;
     }
   }
-  out.sort((a, b) => a.date.localeCompare(b.date) || a.workerName.localeCompare(b.workerName, "pl"));
-  return out;
+  // скоуп: події, привʼязані до фабрики (умова/перший-останній день/зміна/задача), чужої фабрики людини
+  // з двох міст — не показувати; особисті (документи, ДН, пропуски) лишаються
+  const FACTORY_BOUND = new Set<CalKind>(["contract", "start", "end", "shift", "task"]);
+  const scoped = opts.factoryIds ? out.filter(e => !FACTORY_BOUND.has(e.kind) || e.factoryId == null || opts.factoryIds!.includes(e.factoryId)) : out;
+  scoped.sort((a, b) => a.date.localeCompare(b.date) || a.workerName.localeCompare(b.workerName, "pl"));
+  return scoped;
 }
 
 function parseOpts(q: Record<string, unknown>) {
@@ -235,11 +247,21 @@ function parseOpts(q: Record<string, unknown>) {
   if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) return null;
   const kindsRaw = String(q.kinds ?? "").split(",").map(s => s.trim()).filter(Boolean) as CalKind[];
   return { from, to, factoryId: q.factoryId ? Number(q.factoryId) : null, workerId: q.workerId ? Number(q.workerId) : null,
-    city: q.city ? String(q.city) : null, companyId: q.companyId ? Number(q.companyId) : null, kinds: kindsRaw.length ? new Set(kindsRaw) : null };
+    city: q.city ? String(q.city) : null, companyId: q.companyId ? Number(q.companyId) : null, kinds: kindsRaw.length ? new Set(kindsRaw) : null,
+    factoryIds: null as number[] | null };
+}
+// Скоуп адміна: фабрика з фільтра мусить бути в скоупі, решта подій — лише люди його фабрик
+function applyScope(req: AuthedRequest, res: any, o: NonNullable<ReturnType<typeof parseOpts>>): boolean {
+  const scope = req.admin?.scope;
+  if (!scope) return true;
+  if (o.factoryId && !factoryInScope(scope, o.factoryId)) { res.status(403).json({ error: "Немає доступу до даних цього міста/фабрики", code: "scope" }); return false; }
+  o.factoryIds = scope.factoryIds;
+  return true;
 }
 router.get("/workers-calendar", async (req: AuthedRequest, res) => {
   const o = parseOpts(req.query as Record<string, unknown>);
   if (!o) return res.status(400).json({ error: "from/to (YYYY-MM-DD) обовʼязкові" });
+  if (!applyScope(req, res, o)) return;
   const events = await collectWorkerEvents(o);
   return res.json({ from: o.from, to: o.to, events });
 });
@@ -247,6 +269,7 @@ router.get("/workers-calendar", async (req: AuthedRequest, res) => {
 router.get("/workers-calendar/export.xlsx", async (req: AuthedRequest, res) => {
   const o = parseOpts(req.query as Record<string, unknown>);
   if (!o) return res.status(400).json({ error: "from/to (YYYY-MM-DD) обовʼязкові" });
+  if (!applyScope(req, res, o)) return;
   const events = await collectWorkerEvents(o);
   const { nameCaps } = await import("../services/drive");
   const ExcelJS = (await import("exceljs")).default;

@@ -184,11 +184,13 @@ export default function Advances() {
   const [gratOpen, setGratOpen] = useState(false);
   const me = useMe();
   const canGrat = can(me, "svodniSensitive");
+  // вкладки «Бадання» і «У сводну» ходять в RW-ендпойнти (editData); cap advances сам по собі — лише залічки
+  const tabs = ([["adv", t("Залічки")], ...(can(me, "editData") ? [["badania", t("Бадання до зняття")], ["svodni", t("У сводну")]] : [])] as [typeof tab, string][]);
   return (
     <>
       <PageHeader title={t("Аванси")} subtitle={t("Залічки: подача, групи виплат 15-го/30-го, виплата переказом чи готівкою")} />
       <div className="mb-4 flex w-fit gap-1 rounded-xl bg-slate-100 p-1 text-sm font-medium">
-        {([["adv", t("Залічки")], ["badania", t("Бадання до зняття")], ["svodni", t("У сводну")]] as const).map(([k, label]) => (
+        {tabs.map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`rounded-lg px-3 py-1.5 ${tab === k ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
             {label}

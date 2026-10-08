@@ -33,7 +33,7 @@ import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
-import { scopeGate, workerInScopeSql, factoryInScope } from "../lib/scope";
+import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
@@ -70,6 +70,10 @@ const WD = requireCap("workerDocs");
 // (read-only cap для ролі «бухгалтерія»: бачить дані, не редагує — самі
 // мутуючі роути (POST/PATCH/DELETE/fire/restore) лишаються лише на RW)
 const WORKERS_RO = requireAnyCap("editData", "viewWorkers");
+// Життєвий цикл працівника без решти редагування (08.10.2026, офіс-менеджер): лінк-запрошення в бот,
+// звільнення, виповідзення, повернення. Залічки — окремий cap (без сводних/бадань).
+const LIFECYCLE = requireAnyCap("editData", "workerLifecycle");
+const ADV = requireAnyCap("editData", "advances");
 // Документи працівника: додавати/правити/завантажувати файл — editData АБО кадрові cap-и
 // (офіс-менеджер: workerDocs/legalization, 01.10.2026). Видалення лишається на RW.
 const DOCS_RW = requireAnyCap("editData", "workerDocs", "legalization");
@@ -679,13 +683,17 @@ router.patch("/workers/:id", RW, async (req, res) => {
   ok(res, { ...stripWorkerEcho(w, req), supersedeContractId });
 });
 
-router.post("/workers/:id/fire", RW, async (req, res) => {
+router.post("/workers/:id/fire", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const offerReport = !!(req.body ?? {}).offerReport;
   // Опційна дата звільнення «від коли» (YYYY-MM-DD, дозволено минулим числом; множинне
   // звільнення зі списку обліку годин, модалка профілю); без неї — сьогодні. Уся логіка
   // (журнал, умови, нерозісланий графік, тригери, ланцюжок звільнення) — services/workerFire.ts.
   const rawDate = typeof (req.body ?? {}).date === "string" ? String(req.body.date) : "";
+  // скоуп-адмін звільняє «з усіх» лише людину без чинної фабрики поза своїм доступом —
+  // інакше виповідзення по фабриці (POST /workers/:id/termination {factoryId})
+  const outside = await factoriesOutsideScope((req as AuthedRequest).admin?.scope, id);
+  if (outside.length) return fail(res, 403, "Людина працює ще на фабриці поза вашим доступом — використайте виповідзення по фабриці");
   const { fireWorker } = await import("../services/workerFire");
   const r = await fireWorker({ workerId: id, date: rawDate || null, adminId: (req as AuthedRequest).admin?.adminId ?? null, source: "web" });
   if (!r.ok) return fail(res, 400, r.error);
@@ -705,12 +713,22 @@ router.post("/workers/:id/fire", RW, async (req, res) => {
 // Виповідзення: запланована дата звільнення (null = скасувати). Дата ≤ сьогодні звільняє
 // одразу; майбутня — крон 00:10 (services/workerFire.ts fireDueTerminations). factoryId —
 // лише з цієї фабрики (людина лишається на решті), без нього — з усіх.
-router.post("/workers/:id/termination", RW, async (req, res) => {
+router.post("/workers/:id/termination", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const raw = (req.body ?? {}).date;
   const date = raw == null || raw === "" ? null : String(raw);
   const rawF = (req.body ?? {}).factoryId;
   const factoryId = rawF == null || rawF === "" ? null : Number(rawF);
+  const termScope = (req as AuthedRequest).admin?.scope;
+  if (termScope) {
+    const outside = await factoriesOutsideScope(termScope, id);
+    // поставити «з усіх» — лише людині без чинної фабрики поза скоупом
+    if (date && factoryId == null && outside.length) return fail(res, 403, "Людина працює ще на фабриці поза вашим доступом — вкажіть фабрику, з якої йде");
+    // чуже виповідзення (по фабриці поза скоупом або «з усіх» у людини з чужою фабрикою) не скасувати
+    // й не перезаписати своїм — у профілі одна дата/фабрика
+    const [cur] = await db.select({ td: workersTable.terminationDate, tf: workersTable.terminationFactoryId }).from(workersTable).where(eq(workersTable.id, id));
+    if (cur?.td && (cur.tf != null ? !factoryInScope(termScope, cur.tf) : outside.length > 0)) return fail(res, 403, "Чинне виповідзення стосується фабрики поза вашим доступом");
+  }
   if (factoryId != null && !Number.isInteger(factoryId)) return fail(res, 400, "factoryId");
   const { setTerminationDate } = await import("../services/workerFire");
   const r = await setTerminationDate(id, date, (req as AuthedRequest).admin?.adminId ?? null, factoryId);
@@ -738,7 +756,7 @@ router.put("/termination-email-template", RW, async (req, res) => {
 // Чернетка листа для працівника: фабрики, де людина працює (з адресами), і текст
 // під обрану (?factoryId=, типово termination_factory_id → основна). Без дати
 // виповідзення можна передати ?date= (превʼю до збереження).
-router.get("/workers/:id/termination-email", RW, async (req, res) => {
+router.get("/workers/:id/termination-email", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, id));
   if (!w) return fail(res, 404, "Працівника не знайдено");
@@ -774,7 +792,7 @@ router.get("/workers/:id/termination-email", RW, async (req, res) => {
   ok(res, { date, factoryId: pick?.id ?? null, factories, ...draft });
 });
 
-router.post("/workers/:id/termination-email", RW, async (req, res) => {
+router.post("/workers/:id/termination-email", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const [w] = await db.select({ id: workersTable.id, fullName: workersTable.fullName }).from(workersTable).where(eq(workersTable.id, id));
   if (!w) return fail(res, 404, "Працівника не знайдено");
@@ -801,7 +819,7 @@ router.post("/workers/:id/termination-email", RW, async (req, res) => {
 // Відновлення звільненого — services/workerRehire.ts (спільно з «✅ Відновити»
 // офіса в боті). Опційні factoryId/positionId — «Відновити його» з модалки дубля
 // одразу ставить нову фабрику/посаду; кожна зміна — у журнал worker_changes.
-router.post("/workers/:id/restore", RW, async (req, res) => {
+router.post("/workers/:id/restore", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body ?? {};
   const optId = (v: unknown): number | null | undefined => v === undefined ? undefined : (Number.isInteger(v) ? Number(v) : null);
@@ -1548,7 +1566,7 @@ router.get("/worker-documents/:id/file", requireAnyCap("editData", "viewWorkers"
 // Personal invite link for a worker — they tap it and the bot links their Telegram.
 // Binds via an unguessable invite_code (?start=emp<code>), regenerated here if missing/burned;
 // worker_code stays a public display id only, never the binding secret.
-router.get("/workers/:id/invite", RW, async (req, res) => {
+router.get("/workers/:id/invite", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
@@ -5127,7 +5145,9 @@ router.post("/absence-requests/:id/substitute", RW, async (req, res) => {
 // ─── Salary advances ──────────────────────────────────────────────────────────
 // (Відновлено 11.08.2026 після b94e5fe: коміт затер офісну подачу, групи виплат
 // 15/30, IBAN-збагачення і primary-рахунки старою копією файлу.)
-router.get("/advances", RW, async (_req, res) => {
+router.get("/advances", ADV, async (req, res) => {
+  // адмін зі скоупом міст/фабрик бачить лише залічки людей своїх фабрик (lib/scope.ts)
+  const scope = (req as AuthedRequest).admin?.scope;
   const rows = await db
     .select({
       id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId,
@@ -5150,6 +5170,8 @@ router.get("/advances", RW, async (_req, res) => {
     .leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id))
     .leftJoin(companiesTable, eq(workersTable.companyId, companiesTable.id))
     .leftJoin(adminsTable, eq(advanceRequestsTable.decidedBy, adminsTable.id))
+    // людина зі скоупу І фабрика залічки (запиту або профілю) зі скоупу — людина з двох міст не світить чужу
+    .where(scope ? and(workerInScopeSql(scope, advanceRequestsTable.workerId), factoryInScopeSql(scope, sql`coalesce(${advanceRequestsTable.factoryId}, ${workersTable.factoryId})`)) : undefined)
     .orderBy(desc(advanceRequestsTable.id));
   // місто фабрики — історія сводних + регіони «Зарплат» (той самий словник, що у from-hours)
   const cityByFactory = await factoryCityMap();
@@ -5274,7 +5296,7 @@ router.get("/advances/gratyfikant", requireCap("svodniSensitive"), async (req, r
 // Фінансова довідка до запиту авансу: години/нараховано за конвенцією сводної,
 // незняті залічки, kary, badania, борг M−1 (services/workerBalance.ts). Гейт —
 // той самий, що й на розділ «Аванси» (RW): рішення про аванс ухвалює саме ця роль.
-router.get("/advances/:id/balance", RW, async (req, res) => {
+router.get("/advances/:id/balance", ADV, async (req, res) => {
   const id = Number(req.params.id);
   const [r] = await db.select({ id: advanceRequestsTable.id, workerId: advanceRequestsTable.workerId, factoryId: advanceRequestsTable.factoryId })
     .from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id));
@@ -5327,7 +5349,7 @@ router.get("/advances/svodni-applied", RW, async (_req, res) => {
 
 // Офісна подача залічки: одразу «передано до виплати» від імені того, хто подав
 // (decided_by = подавач), група виплати — за сьогоднішньою датою (Warsaw).
-router.post("/advances", RW, async (req, res) => {
+router.post("/advances", ADV, async (req, res) => {
   const workerId = Number(req.body?.workerId);
   const amount = Math.round(Number(req.body?.amount) * 100) / 100;
   if (!workerId || !isFinite(amount) || amount <= 0) return fail(res, 400, "Вкажіть працівника і суму");
@@ -5337,6 +5359,9 @@ router.post("/advances", RW, async (req, res) => {
   // фабрика запиту: явна з форми, інакше поточна фабрика профілю
   const factoryId = req.body?.factoryId != null && Number.isFinite(Number(req.body.factoryId))
     ? Number(req.body.factoryId) : w.factoryId;
+  // скоуп-адмін: фабрика залічки (і підставлена з профілю) мусить бути в його доступі
+  const advScope = (req as AuthedRequest).admin?.scope;
+  if (advScope && !factoryInScope(advScope, factoryId)) return fail(res, 403, "Фабрика залічки поза вашим доступом — вкажіть фабрику зі свого міста");
   const [row] = await db.insert(advanceRequestsTable).values({
     workerId, factoryId, amount, comment, status: "approved",
     decidedBy: (req as AuthedRequest).admin?.adminId ?? null, decidedAt: new Date(),
@@ -5348,7 +5373,7 @@ router.post("/advances", RW, async (req, res) => {
 
 // Перенесення авансу в іншу групу виплат і/або зміна фабрики запиту
 // (лише поки не виплачений).
-router.patch("/advances/:id", RW, async (req, res) => {
+router.patch("/advances/:id", ADV, async (req, res) => {
   const id = Number(req.params.id);
   const r = (await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id)))[0];
   if (!r) return fail(res, 404, "Не знайдено");
@@ -5394,9 +5419,9 @@ async function decideAdvance(req: any, res: any, target: "approved" | "rejected"
   import("../bot/notify").then(m => m.notifyWorkerAdvance(r.workerId, target, r.amount, patch.adminNote ?? null)).catch(err => logger.error({ err }, "notifyWorkerAdvance failed"));
   ok(res, { ok: true });
 }
-router.post("/advances/:id/approve", RW, (req, res) => decideAdvance(req, res, "approved"));
-router.post("/advances/:id/reject", RW, (req, res) => decideAdvance(req, res, "rejected"));
-router.post("/advances/:id/paid", RW, (req, res) => decideAdvance(req, res, "paid"));
+router.post("/advances/:id/approve", ADV, (req, res) => decideAdvance(req, res, "approved"));
+router.post("/advances/:id/reject", ADV, (req, res) => decideAdvance(req, res, "rejected"));
+router.post("/advances/:id/paid", ADV, (req, res) => decideAdvance(req, res, "paid"));
 
 // month range helper for drill-downs. monthEnd = first day of next month (tz-safe string).
 function monthRange(month: string) {

@@ -9,6 +9,7 @@ import {
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
+import { scopeTaskSql } from "../lib/scope";
 import {
   createTask, loadTask, loadAssignees, isParticipant, setTaskStatus, respondAssignee, snoozeTask, planTask, addComment, myCounters, controlStats,
   normalizeChecklist, warsawToday, dateStr, OPEN_STATUSES, TASK_KINDS, TASK_PRIORITIES, TASK_STATUSES, loadTaskSettings, DEFAULT_TASK_SETTINGS,
@@ -135,6 +136,8 @@ function taskConds(req: AuthedRequest, withCompany = true) {
   if (scope === "mine") conds.push(mineCond(me(req)));
   else if (scope === "created") conds.push(eq(tasksTable.creatorAdminId, me(req)));
   else if (scope === "watching") conds.push(or(eq(tasksTable.creatorAdminId, me(req)), watchCond(me(req))));
+  // адмін зі скоупом міст/фабрик: лише свої задачі або задачі про людей/фабрики свого скоупу (lib/scope.ts)
+  if (req.admin!.scope) conds.push(scopeTaskSql(req.admin!.scope, me(req)));
   const status = q.status ?? "open";
   if (status === "open") conds.push(inArray(tasksTable.status, OPEN_STATUSES));
   else if (status === "closed") conds.push(inArray(tasksTable.status, ["done", "cancelled", "auto_resolved"]));
@@ -197,6 +200,7 @@ router.get("/tasks/calendar", TP, async (req: AuthedRequest, res) => {
   if (!q.from || !q.to || !DATE_RE.test(q.from) || !DATE_RE.test(q.to)) return fail(res, 400, "from/to = YYYY-MM-DD");
   const conds: any[] = [gte(tasksTable.dueAt, q.from), lte(tasksTable.dueAt, q.to)];
   if (q.scope !== "team") conds.push(mineCond(me(req)));
+  if (req.admin!.scope) conds.push(scopeTaskSql(req.admin!.scope, me(req)));
   if (q.status !== "all") conds.push(inArray(tasksTable.status, [...OPEN_STATUSES, "done"]));
   const rows = await db.select().from(tasksTable).where(and(...conds)).orderBy(asc(tasksTable.dueAt), asc(tasksTable.dueTime));
   ok(res, await decorate(rows));

@@ -12,8 +12,9 @@
 // повертає список. Сap-гейти діють як і раніше — скоуп їх лише звужує.
 import type { Response, NextFunction } from "express";
 import { db, factoriesTable, workersTable, workerFactoriesTable, svodniRowsTable,
-  workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable } from "@workspace/db";
-import { eq, sql, type SQL } from "drizzle-orm";
+  workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable,
+  advanceRequestsTable, tasksTable, taskAssigneesTable } from "@workspace/db";
+import { and, eq, isNull, or, sql, type SQL, type AnyColumn } from "drizzle-orm";
 import type { AuthedRequest } from "./auth";
 
 export type AdminScope = { factoryIds: number[]; cities: string[] };
@@ -43,7 +44,7 @@ const idList = (ids: number[]) => sql.join(ids.map(i => sql`${i}`), sql`, `);
 // Умова на workers.id: працівник належить дозволеним фабрикам — основна фабрика, будь-яка
 // привʼязка worker_factories (і минула — офіс відповідає на питання по старих виплатах)
 // або рядок сводної на цю фабрику. Порожній скоуп → false.
-export function workerInScopeSql(scope: AdminScope, workerIdCol: SQL | typeof workersTable.id = workersTable.id): SQL {
+export function workerInScopeSql(scope: AdminScope, workerIdCol: SQL | AnyColumn = workersTable.id): SQL {
   if (!scope.factoryIds.length) return sql`false`;
   const ids = idList(scope.factoryIds);
   return sql`(
@@ -53,6 +54,11 @@ export function workerInScopeSql(scope: AdminScope, workerIdCol: SQL | typeof wo
   )`;
 }
 
+// SQL-умова «фабрика (колонка/вираз) у скоупі»; порожній скоуп → false
+export function factoryInScopeSql(scope: AdminScope, factoryCol: SQL | AnyColumn): SQL {
+  return scope.factoryIds.length ? sql`${factoryCol} IN (${idList(scope.factoryIds)})` : sql`false`;
+}
+
 export async function workerInScope(scope: AdminScope | null | undefined, workerId: number | null | undefined): Promise<boolean> {
   if (!scope) return true;
   if (!workerId || !Number.isInteger(workerId)) return false;
@@ -60,13 +66,28 @@ export async function workerInScope(scope: AdminScope | null | undefined, worker
   return !!(r?.rows ?? r)?.[0]?.ok;
 }
 
+// Чинні фабрики працівника поза скоупом (основна ∪ worker_factories без valid_to або з valid_to у
+// майбутньому): якщо є — скоуп-адмін не може звільнити людину «з усіх», лише виповідзення по фабриці.
+export async function factoriesOutsideScope(scope: AdminScope | null | undefined, workerId: number): Promise<number[]> {
+  if (!scope) return [];
+  const [w] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
+  const wf = await db.select({ factoryId: workerFactoriesTable.factoryId }).from(workerFactoriesTable)
+    .where(and(eq(workerFactoriesTable.workerId, workerId), or(isNull(workerFactoriesTable.validTo), sql`${workerFactoriesTable.validTo} > current_date`)));
+  const ids = new Set<number>();
+  if (w?.factoryId != null) ids.add(w.factoryId);
+  for (const r of wf) ids.add(r.factoryId);
+  return [...ids].filter(id => !factoryInScope(scope, id));
+}
+
 // ─── Гейт ──────────────────────────────────────────────────────────────────────
 type Check =
   | { kind: "free" }                                  // довідник або список, що фільтрує сам
   | { kind: "worker" }                                // m[1] = id працівника
-  | { kind: "lookup"; table: "doc" | "badania" | "bank" | "wf" | "contract" } // m[1] = id рядка → його worker_id
+  | { kind: "lookup"; table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" } // m[1] = id рядка → його worker_id
   | { kind: "factory" }                               // m[1] = id фабрики
-  | { kind: "queryWorker" };                          // ?workerId= обовʼязковий і в скоупі
+  | { kind: "queryWorker" }                           // ?workerId= обовʼязковий і в скоупі
+  | { kind: "task" }                                  // m[1] = id задачі: учасник/автор або працівник/фабрика задачі в скоупі
+  | { kind: "taskBulk" };                             // body.ids — кожна задача за правилом task
 
 type Rule = { methods: string[]; re: RegExp; check: Check };
 const R = (methods: string, re: RegExp, check: Check): Rule => ({ methods: methods.split(","), re, check });
@@ -94,17 +115,59 @@ const SCOPE_RULES: Rule[] = [
   R(ANY, /^\/admin-invites(?:\/\d+(?:\/invite)?)?$/, { kind: "free" }),
   // Лінк самореєстрації фабрики
   R("GET", /^\/factories\/(\d+)\/join-link$/, { kind: "factory" }),
+  // Залічки (08.10.2026, cap advances): список фільтрує хендлер, нова — workerId у тілі (гейт тіла), рядок — його працівник
+  R("GET,POST", /^\/advances$/, { kind: "free" }),
+  R(ANY, /^\/advances\/(\d+)(?:\/(?:balance|approve|reject|paid))?$/, { kind: "lookup", table: "advance" }),
+  // Задачі (routes/tasks.ts): списки/календар/«мій день» фільтрує хендлер (scopeTaskCond), нова — workerId/factoryId
+  // у тілі (гейт тіла), картка й дії — учасник або задача про людину/фабрику зі скоупу; шаблони — лише читати
+  R("GET", /^\/tasks(?:\/(?:company-counts|ical-link|export\.xlsx|my-day|counters|calendar|admins))?$/, { kind: "free" }),
+  R("POST", /^\/tasks$/, { kind: "free" }),
+  R("POST", /^\/tasks\/bulk$/, { kind: "taskBulk" }),
+  R(ANY, /^\/tasks\/(\d+)(?:\/.*)?$/, { kind: "task" }),
+  R("GET", /^\/task-templates$/, { kind: "free" }),
+  // Календар працівників (routes/workersCalendar.ts) — фільтрує хендлер по фабриках скоупу
+  R("GET", /^\/workers-calendar(?:\/export\.xlsx)?$/, { kind: "free" }),
 ];
+
+// Задача доступна скоуп-адміну, якщо він її учасник/автор/спостерігач (її йому дали свідомо)
+// або вона про працівника чи фабрику з його скоупу. Задачі «ні про кого» чужих людей — ні.
+export async function taskAllowed(scope: AdminScope, adminId: number, taskId: number): Promise<boolean> {
+  if (!Number.isInteger(taskId)) return false;
+  const [t] = await db.select({ id: tasksTable.id, assignee: tasksTable.assigneeAdminId, creator: tasksTable.creatorAdminId, workerId: tasksTable.workerId, factoryId: tasksTable.factoryId })
+    .from(tasksTable).where(eq(tasksTable.id, taskId));
+  if (!t) return false;
+  if (t.assignee === adminId || t.creator === adminId) return true;
+  const [part] = await db.select({ id: taskAssigneesTable.id }).from(taskAssigneesTable).where(and(eq(taskAssigneesTable.taskId, taskId), eq(taskAssigneesTable.adminId, adminId)));
+  if (part) return true;
+  if (t.factoryId != null && factoryInScope(scope, t.factoryId)) return true;
+  return workerInScope(scope, t.workerId);
+}
+
+// SQL-умова для списків задач скоуп-адміна (той самий зміст, що taskAllowed)
+export function scopeTaskSql(scope: AdminScope, adminId: number): SQL {
+  const fac = factoryInScopeSql(scope, tasksTable.factoryId);
+  return sql`(${tasksTable.assigneeAdminId} = ${adminId} OR ${tasksTable.creatorAdminId} = ${adminId}
+    OR EXISTS (SELECT 1 FROM ${taskAssigneesTable} sta WHERE sta.task_id = ${tasksTable.id} AND sta.admin_id = ${adminId})
+    OR ${fac} OR (${tasksTable.workerId} IS NOT NULL AND ${workerInScopeSql(scope, tasksTable.workerId)}))`;
+}
 
 // Рядок → його працівник; для привʼязки до фабрики й умови — ще й фабрика рядка: працівник
 // може бути у двох містах, а рядок чужої фабрики правити/читати не можна.
-async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank" | "wf" | "contract", id: number): Promise<boolean> {
+async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance", id: number): Promise<boolean> {
   if (table === "wf" || table === "contract") {
     const t = table === "wf" ? workerFactoriesTable : contractsTable;
     const [r] = await db.select({ workerId: t.workerId, factoryId: t.factoryId }).from(t).where(eq(t.id, id));
     if (!r) return false;
     // умова без фабрики (сталий пакет документів) — достатньо працівника в скоупі
     if (r.factoryId != null && !factoryInScope(scope, r.factoryId)) return false;
+    return workerInScope(scope, r.workerId);
+  }
+  if (table === "advance") {
+    // залічка — ще й по фабриці запиту (без неї — поточна фабрика профілю, як у списку /advances):
+    // людина з двох міст — її залічку чужої фабрики не читати й не правити
+    const [r] = await db.select({ workerId: advanceRequestsTable.workerId, factoryId: advanceRequestsTable.factoryId, profileFactoryId: workersTable.factoryId })
+      .from(advanceRequestsTable).leftJoin(workersTable, eq(advanceRequestsTable.workerId, workersTable.id)).where(eq(advanceRequestsTable.id, id));
+    if (!r || !factoryInScope(scope, r.factoryId ?? r.profileFactoryId)) return false;
     return workerInScope(scope, r.workerId);
   }
   const t = { doc: workerDocumentsTable, badania: workerBadaniaTable, bank: workerBankAccountsTable }[table];
@@ -124,6 +187,9 @@ export async function scopeGate(req: AuthedRequest, res: Response, next: NextFun
     // для лінка скану нового кандидата він обовʼязковий — інакше людина «нічия».
     const bodyFactory = req.body && typeof req.body === "object" ? (req.body as any).factoryId : undefined;
     if (bodyFactory != null && bodyFactory !== "" && !factoryInScope(scope, Number(bodyFactory))) return deny(res);
+    // Так само workerId у тілі (нова залічка, нова задача про людину) — лише людина зі скоупу
+    const bodyWorker = req.body && typeof req.body === "object" ? (req.body as any).workerId : undefined;
+    if (bodyWorker != null && bodyWorker !== "" && !(await workerInScope(scope, Number(bodyWorker)))) return deny(res);
     if (req.method === "POST" && req.path === "/workers/scan-invite" && bodyFactory == null) return deny(res);
 
     const rule = SCOPE_RULES.find(r => r.methods.includes(req.method) && r.re.test(req.path));
@@ -136,6 +202,12 @@ export async function scopeGate(req: AuthedRequest, res: Response, next: NextFun
       case "lookup": return (await lookupAllowed(scope, rule.check.table, id)) ? next() : deny(res);
       case "factory": return factoryInScope(scope, id) ? next() : deny(res);
       case "queryWorker": return (await workerInScope(scope, Number(req.query.workerId))) ? next() : deny(res);
+      case "task": return (await taskAllowed(scope, req.admin!.adminId, id)) ? next() : deny(res);
+      case "taskBulk": {
+        const ids = Array.isArray((req.body as any)?.ids) ? ((req.body as any).ids as unknown[]).map(Number) : [];
+        for (const tid of ids) if (!(await taskAllowed(scope, req.admin!.adminId, tid))) return deny(res);
+        return next();
+      }
     }
   } catch {
     return res.status(500).json({ error: "scope error" });

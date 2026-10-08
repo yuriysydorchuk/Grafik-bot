@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist", "workerLifecycle", "advances"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -28,6 +28,8 @@ export const CAP_LABEL: Record<Capability, string> = {
   tasksManage: "Керувати задачами (перепризначати чужі, автоправила, контроль)",
   workerPay: "Зарплата працівника в профілі — лише перегляд (години, ставка нетто, премії, потрачення, до виплати; без konto/готівки)",
   blacklist: "Чорний список — вносити людей з причиною і прибирати з нього",
+  workerLifecycle: "Запрошувати й звільняти працівників (лінк у бот, звільнення, виповідзення, повернення) — без решти редагування",
+  advances: "Залічки (вносити, переносити між групами виплат, передавати до виплати) — без сводних і бадань",
 };
 
 // Режим ролі «лише перегляд» (08.10.2026, роль для власника-спостерігача фінансів).

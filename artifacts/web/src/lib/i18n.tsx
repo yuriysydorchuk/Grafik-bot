@@ -3901,6 +3901,8 @@ const EN: Record<string, string> = {
   "Запрошення відкликано": "Invitation revoked",
   "Зарплата по фабриках": "Pay by factory",
   "Зарплата працівника в профілі — лише перегляд (години, ставка нетто, премії, потрачення, до виплати; без konto/готівки)": "Worker pay in profile — view only (hours, net rate, bonuses, deductions, payout; no konto/cash split)",
+  "Запрошувати й звільняти працівників (лінк у бот, звільнення, виповідзення, повернення) — без решти редагування": "Invite and dismiss workers (bot link, dismissal, notice, rehire) — no other editing",
+  "Залічки (вносити, переносити між групами виплат, передавати до виплати) — без сводних і бадань": "Advances (enter, move between payout groups, mark paid) — no svodni or medical tabs",
   "Кауція": "Deposit",
   "Користувачі та запрошення": "Users & invitations",
   "Лінк самореєстрації": "Self-registration link",
