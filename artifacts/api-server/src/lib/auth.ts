@@ -39,7 +39,7 @@ const SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "grafik_session";
 
-import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, type Role, type Capability } from "./roles";
+import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, isReadOnly, READ_ONLY_ALLOWED_PATHS, type Role, type Capability } from "./roles";
 import { resolveScope, type AdminScope } from "./scope";
 
 type SessionPayload = { adminId: number; name: string; role: Role; exp: number; tv?: number; sid?: string };
@@ -128,6 +128,14 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
     const scope = admin.isMain || role === OWNER ? null : await resolveScope(admin.scopeCities, admin.scopeFactoryIds);
     req.admin = { adminId: admin.id, name: payload.name, role, isMain: !!admin.isMain, caps: access.caps, pages: access.pages, sessionId: payload.sid,
       scope, canInviteRoles: admin.canInviteRoles ?? [] };
+    // Роль «лише перегляд» — гард тут, а не в роутерах: authRequired проходить КОЖЕН
+    // авторизований запит, тож жоден новий ендпойнт не обійде заборону мутацій.
+    if (!admin.isMain && isReadOnly(role, access.caps) && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+      const path = req.originalUrl.split("?")[0]!.replace(/^\/api(?=\/)/, "");
+      if (!(READ_ONLY_ALLOWED_PATHS as readonly string[]).includes(path)) {
+        return res.status(403).json({ error: "Режим перегляду: ця роль не може вносити змін", code: "readOnly" });
+      }
+    }
     return next();
   } catch {
     return res.status(500).json({ error: "auth error" });

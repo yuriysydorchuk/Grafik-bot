@@ -29,6 +29,11 @@ export const CAP_LABEL: Record<Capability, string> = {
   blacklist: "Чорний список — вносити людей з причиною і прибирати з нього",
 };
 
+// Режим ролі «лише перегляд» — прапорець у roles.caps, НЕ capability (дзеркало бекенду):
+// owner його не має, can() його не бачить. Мутації блокує сервер (authRequired).
+export const READ_ONLY = "readOnly";
+export const READ_ONLY_LABEL = "🔒 Лише перегляд — жодних змін (обрані сторінки й дії — тільки для читання; у боті без офісного меню)";
+
 // Pages a role can be granted access to (nav + route guards).
 export const PAGE_LABEL: Record<string, string> = {
   "/": "Огляд", "/schedule": "Графік", "/driver-shifts": "Зміни водіїв",
@@ -76,6 +81,9 @@ export function can(me: Access, cap: Capability): boolean {
   if (!me) return false;
   if (me.role === OWNER) return true;
   return !!me.caps?.includes(cap);
+}
+export function isReadOnly(me: Access): boolean {
+  return !!me && me.role !== OWNER && !me.isMain && !!me.caps?.includes(READ_ONLY);
 }
 export function canAccessPage(me: Access, path: string): boolean {
   if (!me) return false;

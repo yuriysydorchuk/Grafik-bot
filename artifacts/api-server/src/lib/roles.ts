@@ -30,6 +30,21 @@ export const CAP_LABEL: Record<Capability, string> = {
   blacklist: "Чорний список — вносити людей з причиною і прибирати з нього",
 };
 
+// Режим ролі «лише перегляд» (08.10.2026, роль для власника-спостерігача фінансів).
+// Живе в roles.caps як прапорець, але НЕ capability: у CAP_KEYS його нема, тож owner
+// (отримує всі CAP_KEYS) ніколи не стає read-only, а hasCap/can() його не бачать.
+// Гард — authRequired (lib/auth.ts): будь-яка мутація такої ролі → 403, крім білого списку.
+export const READ_ONLY = "readOnly";
+export const READ_ONLY_LABEL = "🔒 Лише перегляд — жодних змін (обрані сторінки й дії — тільки для читання; у боті без офісного меню)";
+export function isReadOnly(role: Role | null | undefined, caps: string[] | null | undefined): boolean {
+  return role !== OWNER && !!caps?.includes(READ_ONLY);
+}
+// Мутації, дозволені read-only ролі: особисті налаштування/позначки «прочитано» і
+// «читальні» POST (АІ-аналіз CFO лише формує висновок, даних не змінює).
+export const READ_ONLY_ALLOWED_PATHS = [
+  "/auth/web-lang", "/auth/web-prefs", "/notifications/read", "/cost-invoices/new/ack", "/cfo/analyze",
+] as const;
+
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
 export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",

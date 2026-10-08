@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Me, type RoleDef } from "../lib/api";
-import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, type Capability, type NotifyType } from "../lib/roles";
+import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, READ_ONLY, READ_ONLY_LABEL, type Capability, type NotifyType } from "../lib/roles";
 import { Card, Spinner, Badge, Empty, Select, Button, Modal, Input, Label } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 import { useT } from "../lib/i18n";
@@ -154,10 +154,11 @@ function RolesManager({ roles, confirm }: { roles: RoleDef[]; confirm: ReturnTyp
                 <span className="font-medium text-slate-700">{r.label}</span>
                 {r.isSystem && <Badge color="slate">{t("системна")}</Badge>}
                 {r.key === "owner" && <Badge color="red">👑</Badge>}
+                {r.caps.includes(READ_ONLY) && <Badge color="amber">🔒 {t("лише перегляд")}</Badge>}
                 {r.inUse > 0 && <span className="text-xs text-slate-400">· {r.inUse} {t("корист.")}</span>}
               </div>
               <div className="mt-0.5 truncate text-xs text-slate-400">
-                {r.key === "owner" ? t("Повний доступ (незмінна)") : `${r.pages.length} ${t("стор.")} · ${r.caps.length} ${t("дій")}`}
+                {r.key === "owner" ? t("Повний доступ (незмінна)") : `${r.pages.length} ${t("стор.")} · ${r.caps.filter(c => c !== READ_ONLY).length} ${t("дій")}`}
               </div>
             </div>
             <div className="flex shrink-0 gap-1">
@@ -211,6 +212,10 @@ function RoleEditor({ role, onClose, onSaved }: { role: RoleDef | null; onClose:
                 ))}
               </div>
             </div>
+            <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <input type="checkbox" className="mt-0.5" checked={caps.has(READ_ONLY)} onChange={() => toggle(caps, setCaps, READ_ONLY)} />
+              {t(READ_ONLY_LABEL)}
+            </label>
             <div>
               <Label>{t("Дозволені дії")}</Label>
               <div className="space-y-1.5">

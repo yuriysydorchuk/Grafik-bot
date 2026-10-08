@@ -10,7 +10,7 @@ import {
 import { cn, Logo } from "./ui";
 import { useNavTracking } from "../lib/nav";
 import { post, type Me } from "../lib/api";
-import { canAccessPage } from "../lib/roles";
+import { canAccessPage, isReadOnly } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
 import { GlobalSearch } from "./GlobalSearch";
 import { useT, useLang } from "../lib/i18n";
@@ -261,6 +261,11 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
             </button>
             <ThemeToggle /><LangToggle /><NotificationBell /></div>
         </header>
+        {isReadOnly(me) && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-center text-xs font-medium text-amber-800 md:px-8">
+            🔒 {t("Режим перегляду: ви бачите дані, але не можете вносити змін")}
+          </div>
+        )}
         <main className={cn("mx-auto w-full flex-1 p-4 md:p-8", wide ? "md:max-w-none" : "max-w-6xl")}>{children}</main>
       </div>
     </div>

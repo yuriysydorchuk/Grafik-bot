@@ -1,3 +1,13 @@
+// Роль «лише перегляд» (сервер, authRequired → 403 code=readOnly) — повідомлення мовою панелі.
+function errorMessage(data: any, status: number): string {
+  if (data?.code === "readOnly") {
+    let en = false;
+    try { en = localStorage.getItem("lang") === "en"; } catch { /* ignore */ }
+    return en ? "View-only mode: this role cannot make changes" : "Режим перегляду: ця роль не може вносити змін";
+  }
+  return data?.error || `Помилка ${status}`;
+}
+
 // Thin fetch wrapper — same-origin, cookie session.
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -16,7 +26,7 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (!res.ok) {
     // статус і тіло відповіді доступні обробникам (напр. 409 «схожий працівник»)
-    const err: any = new Error(data?.error || `Помилка ${res.status}`);
+    const err: any = new Error(errorMessage(data, res.status));
     err.status = res.status;
     err.data = data;
     throw err;
@@ -41,7 +51,7 @@ export async function upload<T = any>(p: string, form: FormData): Promise<T> {
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-  if (!res.ok) throw new Error(data?.error || `Помилка ${res.status}`);
+  if (!res.ok) throw new Error(errorMessage(data, res.status));
   return data as T;
 }
 

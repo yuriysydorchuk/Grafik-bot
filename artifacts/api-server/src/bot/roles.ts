@@ -1,10 +1,10 @@
 import { db } from "@workspace/db";
 import { adminsTable, workersTable, driversTable } from "@workspace/db";
 import type { Worker, Driver } from "@workspace/db";
-import { eq, and, ne, sql } from "drizzle-orm";
+import { eq, and, ne, sql, inArray, notInArray, or } from "drizzle-orm";
 import type { Context } from "telegraf";
 import { loadRolesCache } from "../lib/auth";
-import { hasCap, CAP_KEYS, OWNER, type Capability, type NotifyType } from "../lib/roles";
+import { hasCap, CAP_KEYS, OWNER, isReadOnly, type Capability, type NotifyType } from "../lib/roles";
 import { adminMenu, managementMenu } from "./menus";
 import { tb, type Lang } from "./i18n";
 
@@ -15,20 +15,32 @@ export async function isAdmin(tid: string): Promise<boolean> {
   return (await getAdmin(tid)) !== undefined;
 }
 
+// Ключі ролей «лише перегляд» (lib/roles.ts READ_ONLY) — з того ж кешу ролей, що й веб.
+async function readOnlyRoleKeys(): Promise<string[]> {
+  const cache = await loadRolesCache();
+  return [...cache].filter(([key, r]) => isReadOnly(key, r.caps)).map(([key]) => key);
+}
+
 export async function getAdmin(tid: string) {
+  const ro = await readOnlyRoleKeys();
   const rows = await db.select().from(adminsTable)
     .where(and(eq(adminsTable.telegramId, tid), ne(adminsTable.role, "driver"),
       // адмін зі скоупом міст/фабрик (офіс-менеджер міста, 01.10.2026) — лише веб-панель:
       // офісне меню бота скоупу не знає й показало б дані всіх міст
-      sql`${adminsTable.scopeCities} = '[]'::jsonb AND ${adminsTable.scopeFactoryIds} = '[]'::jsonb`));
+      sql`${adminsTable.scopeCities} = '[]'::jsonb AND ${adminsTable.scopeFactoryIds} = '[]'::jsonb`,
+      // роль «лише перегляд» (08.10.2026) — теж лише веб: офісне меню бота дає мутації
+      ro.length ? notInArray(adminsTable.role, ro) : undefined));
   return rows[0];
 }
 
-// Адмін зі скоупом (див. getAdmin) — для /start і завершення веб-логіну в боті.
+// Адмін лише для веб-панелі (скоуп або роль «лише перегляд», див. getAdmin) — для /start
+// і завершення веб-логіну в боті.
 export async function getScopedAdmin(tid: string) {
+  const ro = await readOnlyRoleKeys();
   const rows = await db.select().from(adminsTable)
     .where(and(eq(adminsTable.telegramId, tid), ne(adminsTable.role, "driver"),
-      sql`(${adminsTable.scopeCities} <> '[]'::jsonb OR ${adminsTable.scopeFactoryIds} <> '[]'::jsonb)`));
+      or(sql`(${adminsTable.scopeCities} <> '[]'::jsonb OR ${adminsTable.scopeFactoryIds} <> '[]'::jsonb)`,
+        ro.length ? inArray(adminsTable.role, ro) : undefined)));
   return rows[0];
 }
 

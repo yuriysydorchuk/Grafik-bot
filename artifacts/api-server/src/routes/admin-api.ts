@@ -21,7 +21,7 @@ import { eq, and, or, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } 
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
-import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, NOTIFY_KEYS, type Role } from "../lib/roles";
+import { hasCap, OWNER, CAP_KEYS, PAGE_KEYS, NOTIFY_KEYS, READ_ONLY, type Role } from "../lib/roles";
 import { logger } from "../lib/logger";
 import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
@@ -5825,6 +5825,8 @@ router.delete("/admin-invites/:id", requireInviter, async (req, res) => {
 const slugify = (s: string) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 const cleanKeys = (input: any, allowed: readonly string[]): string[] =>
   Array.isArray(input) ? [...new Set(input.map(String).filter(x => allowed.includes(x)))] : [];
+// roles.caps = capability + прапорець режиму «лише перегляд» (не capability, див. lib/roles.ts)
+const ROLE_CAP_KEYS: readonly string[] = [...CAP_KEYS, READ_ONLY];
 
 router.get("/roles", requireMainAdmin, async (_req, res) => {
   const rows = await db.select().from(rolesTable).orderBy(rolesTable.sortOrder, rolesTable.id);
@@ -5846,7 +5848,7 @@ router.post("/roles", requireMainAdmin, async (req, res) => {
   const max = (await db.select({ s: rolesTable.sortOrder }).from(rolesTable)).reduce((a, r) => Math.max(a, r.s ?? 0), 0);
   const [r] = await db.insert(rolesTable).values({
     key: k, label: String(label).trim(), isSystem: false,
-    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, CAP_KEYS), notify: cleanKeys(notify, NOTIFY_KEYS), sortOrder: max + 1,
+    pages: cleanKeys(pages, PAGE_KEYS), caps: cleanKeys(caps, ROLE_CAP_KEYS), notify: cleanKeys(notify, NOTIFY_KEYS), sortOrder: max + 1,
   }).returning();
   invalidateRolesCache();
   ok(res, r);
@@ -5865,7 +5867,7 @@ router.patch("/roles/:id", requireMainAdmin, async (req, res) => {
   const patch: any = {};
   if (label !== undefined) { if (!String(label).trim()) return fail(res, 400, "Назва не може бути порожньою"); patch.label = String(label).trim(); }
   if (pages !== undefined) patch.pages = cleanKeys(pages, PAGE_KEYS);
-  if (caps !== undefined) patch.caps = cleanKeys(caps, CAP_KEYS);
+  if (caps !== undefined) patch.caps = cleanKeys(caps, ROLE_CAP_KEYS);
   if (notify !== undefined) patch.notify = cleanKeys(notify, NOTIFY_KEYS);
   const [r] = await db.update(rolesTable).set(patch).where(eq(rolesTable.id, id)).returning();
   invalidateRolesCache();
