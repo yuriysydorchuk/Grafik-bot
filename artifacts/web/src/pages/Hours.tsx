@@ -10,7 +10,7 @@ import { WorkerDaysModal } from "../components/DetailModals";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
-import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
+import { useOrderPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
@@ -251,10 +251,10 @@ export default function Hours() {
   const hiddenCols = useMemo(() => new Set(hiddenColsArr), [hiddenColsArr]);
   const toggleCol = (k: string) => saveHiddenCols(hiddenCols.has(k) ? hiddenColsArr.filter(x => x !== k) : [...hiddenColsArr, k]);
   const [showCols, setShowCols] = useState(false); // панель чипсів «Колонки»
-  const colKeys = useMemo(
-    () => orderBy(HOURS_COL_KEYS.filter(k => isOwner || !OWNER_COL_KEYS.has(k)), k => k, colOrder).filter(k => !hiddenCols.has(k)),
-    [colOrder, isOwner, hiddenCols]);
-  const colDrag = useDragOrder(colKeys, saveColOrder);
+  const allColKeys = useMemo(() => orderBy(HOURS_COL_KEYS.filter(k => isOwner || !OWNER_COL_KEYS.has(k)), k => k, colOrder), [colOrder, isOwner]);
+  const colKeys = useMemo(() => allColKeys.filter(k => !hiddenCols.has(k)), [allColKeys, hiddenCols]);
+  // зберігаємо повний порядок (зі схованими) — інакше показана згодом колонка стрибає в кінець
+  const colDrag = useDragOrder(colKeys, next => saveColOrder(mergeVisibleOrder(allColKeys, next)));
   // місто → його фабрики (для заголовків і кнопки «місто → до сводної»)
   const cityGroups = useMemo(() => {
     const map = new Map<string, Group[]>();

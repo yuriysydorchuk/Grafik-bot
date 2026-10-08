@@ -7,6 +7,16 @@ import { useMe } from "./hooks";
 // сервері, тож їде за користувачем між браузерами/пристроями. Запис
 // оптимістичний: спершу кеш ["me"], потім POST (помилку ковтаємо — порядок
 // не критичний, наступний drag перепише).
+// POST-и одного ключа — послідовно: при швидких кліках старіший запит міг би
+// прийти на сервер останнім і затерти новіший стан. Помилку лише логуємо.
+const prefQueues = new Map<string, Promise<unknown>>();
+function postPref(key: string, value: unknown) {
+  const next = (prefQueues.get(key) ?? Promise.resolve())
+    .then(() => post("/auth/web-prefs", { key, value }))
+    .catch(e => console.warn("web-prefs save failed", key, e));
+  prefQueues.set(key, next);
+}
+
 export function useOrderPref(key: string): [string[], (next: string[]) => void] {
   const qc = useQueryClient();
   const me = useMe();
@@ -14,9 +24,23 @@ export function useOrderPref(key: string): [string[], (next: string[]) => void] 
   const order = Array.isArray(raw) ? (raw as string[]) : [];
   const save = useCallback((next: string[]) => {
     qc.setQueryData<Me>(["me"], m => m ? { ...m, prefs: { ...(m.prefs ?? {}), [key]: next } } : m);
-    post("/auth/web-prefs", { key, value: next }).catch(() => { /* best-effort */ });
+    postPref(key, next);
   }, [key, qc]);
   return [order, save];
+}
+
+// Довільне JSON-значення в admins.web_prefs (той самий механізм, що й порядок):
+// fallback — коли ключа ще немає. Запис оптимістичний, помилку ковтаємо.
+export function useJsonPref<T>(key: string, fallback: T): [T, (next: T) => void] {
+  const qc = useQueryClient();
+  const me = useMe();
+  const raw = me?.prefs?.[key];
+  const value = raw === undefined || raw === null ? fallback : (raw as T);
+  const save = useCallback((next: T) => {
+    qc.setQueryData<Me>(["me"], m => m ? { ...m, prefs: { ...(m.prefs ?? {}), [key]: next } } : m);
+    postPref(key, next);
+  }, [key, qc]);
+  return [value, save];
 }
 
 // Відсортувати за збереженим порядком: відомі ключі — за своїм індексом,
@@ -30,14 +54,29 @@ export function orderBy<T>(items: T[], keyOf: (x: T) => string, order: string[])
     .map(([x]) => x);
 }
 
+// Drag переставляє лише ВИДИМІ колонки, а зберігати треба повний порядок:
+// інакше сховані (порожні в цій фабриці / тумблером) випадають зі списку і
+// там, де вони видимі, стрибають у кінець. Видимі слоти повного списку
+// заповнюємо новим порядком, сховані лишаються на своїх місцях.
+export function mergeVisibleOrder(full: string[], visibleNext: string[]): string[] {
+  const vis = new Set(visibleNext);
+  let i = 0;
+  const out = full.map(k => vis.has(k) ? visibleNext[i++] : k);
+  return [...out, ...visibleNext.slice(i)];
+}
+
 // Нативний HTML5 drag-and-drop по кнопках-вкладках: перетягнув одну на іншу —
 // зберігся ПОВНИЙ видимий порядок (матеріалізує і ще не збережені ключі).
 export function useDragOrder(displayed: string[], save: (next: string[]) => void) {
   const dragKey = useRef<string | null>(null);
   return (key: string) => ({
     draggable: true,
-    onDragStart: () => { dragKey.current = key; },
-    onDragOver: (e: React.DragEvent) => e.preventDefault(),
+    // Firefox не починає drag без setData; Chrome/Safari — байдуже
+    onDragStart: (e: React.DragEvent) => {
+      dragKey.current = key;
+      try { e.dataTransfer.setData("text/plain", key); e.dataTransfer.effectAllowed = "move"; } catch { /* ignore */ }
+    },
+    onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault();
       const from = dragKey.current;

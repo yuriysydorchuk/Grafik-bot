@@ -21,7 +21,7 @@ import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT } from "../lib/i18n";
 import { LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
-import { useOrderPref, orderBy, useDragOrder } from "../lib/prefs";
+import { useOrderPref, useJsonPref, orderBy, useDragOrder, mergeVisibleOrder } from "../lib/prefs";
 import { FIRM_TAB } from "../lib/colors";
 import { NatFlag } from "../lib/nationality";
 import { CHANGE_FIELD_LABEL, DIFF_KEY_LABEL, fmtVal, type ImpactItem } from "../components/ProfileChangeModal";
@@ -318,9 +318,9 @@ export default function Svodni() {
   const [hideKsieg, setHideKsieg] = useState(() => localStorage.getItem("svodni.hideKsieg") === "1");
   const toggleEmptyCols = () => setHideEmptyCols(v => { localStorage.setItem("svodni.hideEmptyCols", v ? "0" : "1"); return !v; });
   const toggleKsieg = () => setHideKsieg(v => { localStorage.setItem("svodni.hideKsieg", v ? "0" : "1"); return !v; });
-  // видимість колонок: свій набір на кожну (місяць, місто, фабрика) і лише в
-  // цьому браузері (localStorage) — інші користувачі мають власні налаштування
-  const [colsVer, setColsVer] = useState(0); // інкремент після кожного запису — useMemo перечитує
+  // видимість колонок: свій набір на кожну пару (місто, фабрика), БЕЗ місяця —
+  // налаштована один раз, діє з місяця в місяць; живе в admins.web_prefs
+  // (їде за користувачем між браузерами), інші користувачі мають власні
 
   const { data: monthsData } = useQuery<{ months: string[] }>({ queryKey: ["svodni-months"], queryFn: () => get("/svodni/months") });
   const months = monthsData?.months ?? [];
@@ -375,26 +375,24 @@ export default function Svodni() {
   useEffect(() => {
     try { localStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
   }, [effMonth, effCity, effFactory]);
-  // ключі наборів колонок: конкретна фабрика конкретного місяця.
   // hiddenCols — сховані вручну; shownCols — показані ТОЧКОВО всупереч
   // тумблерам («Без порожніх колонок» / «Księgowe: сховано»): клік по чіпу
-  // схованої тумблером колонки показує лише її, не вимикаючи тумблер
-  const colsScopeKey = `svodni.hiddenCols.${effMonth}.${effCity}.${effFactory}`;
-  const shownScopeKey = `svodni.shownCols.${effMonth}.${effCity}.${effFactory}`;
-  // синхронно з localStorage: useEffect-варіант давав кадр зі списком
-  // прихованих колонок ПОПЕРЕДНЬОЇ фабрики після перемикання вкладки
-  const readSet = (key: string): Set<string> => {
-    try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); }
+  // схованої тумблером колонки показує лише її, не вимикаючи тумблер.
+  // Ключ prefs — місто+фабрика: одне значення на всі фабрики міста впиралось би
+  // в ліміт 8 000 символів web-prefs (у Любліні 20+ вкладок)
+  type ColSets = { hidden: string[]; shown: string[] } | null;
+  const [facColSets, saveFacColSets] = useJsonPref<ColSets>(`svodni.cols.${effCity}.${effFactory}`, null);
+  // легасі: до 10.2026 набори жили в localStorage з місяцем у ключі — поки
+  // користувач не змінив нічого на сервері, беремо звідти (поточний місяць)
+  const readLegacy = (kind: "hiddenCols" | "shownCols"): Set<string> => {
+    try { return new Set(JSON.parse(localStorage.getItem(`svodni.${kind}.${effMonth}.${effCity}.${effFactory}`) ?? "[]")); }
     catch { return new Set(); }
   };
-  const hiddenCols = useMemo<Set<string>>(() => { void colsVer; return readSet(colsScopeKey); }, [colsScopeKey, colsVer]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shownCols = useMemo<Set<string>>(() => { void colsVer; return readSet(shownScopeKey); }, [shownScopeKey, colsVer]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hiddenCols = useMemo<Set<string>>(() => facColSets ? new Set(facColSets.hidden) : readLegacy("hiddenCols"), [facColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownCols = useMemo<Set<string>>(() => facColSets ? new Set(facColSets.shown) : readLegacy("shownCols"), [facColSets, effMonth, effCity, effFactory]); // eslint-disable-line react-hooks/exhaustive-deps
   const writeSets = (hidden: Set<string>, shown: Set<string>) => {
-    try {
-      localStorage.setItem(colsScopeKey, JSON.stringify([...hidden]));
-      localStorage.setItem(shownScopeKey, JSON.stringify([...shown]));
-    } catch { /* ignore */ }
-    setColsVer(v => v + 1);
+    if (!effCity || !effFactory) return;
+    saveFacColSets({ hidden: [...hidden], shown: [...shown] });
   };
   // пошук по імені + фільтр форми легалізації (застосовуються до рядків міста)
   const matchesFilters = useMemo(() => {
@@ -1080,10 +1078,15 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   const [adding, setAdding] = useState(false);
   // сортування кліком по заголовку: none → desc → asc; дефолт — секції+алфавіт
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(null);
-  // Персональний порядок колонок (drag за заголовок; per-місто, бо словник колонок
-  // і дефолтний порядок з Google-вкладки різняться між містами). Суто відображення.
-  const [colOrder, saveColOrder] = useOrderPref(`order.svodni.cols.${city}`);
-  const [sensOrder, saveSensOrder] = useOrderPref(`order.svodni.colsSens.${city}`);
+  // Персональний порядок колонок (drag за заголовок) — окремий на КОЖНУ фабрику
+  // (рішення 08.10.2026); поки для фабрики нічого не збережено, діє старий
+  // міський порядок (ключ без фабрики), щоб уже налаштоване не зникло. Суто відображення.
+  const [cityColOrder] = useOrderPref(`order.svodni.cols.${city}`);
+  const [facColOrder, saveColOrder] = useOrderPref(`order.svodni.cols.${city}.${label}`);
+  const colOrder = facColOrder.length ? facColOrder : cityColOrder;
+  const [citySensOrder] = useOrderPref(`order.svodni.colsSens.${city}`);
+  const [facSensOrder, saveSensOrder] = useOrderPref(`order.svodni.colsSens.${city}.${label}`);
+  const sensOrder = facSensOrder.length ? facSensOrder : citySensOrder;
   const cycleSort = (key: string) => setSort(s => s?.key !== key ? { key, dir: "desc" } : s.dir === "desc" ? { key, dir: "asc" } : null);
   // скрол-позиція: зберігається при переході в профіль, відновлюється «назад»
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1188,8 +1191,9 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
   }, [cityExtraKeys, cityHrCols, meta, colOrder]);
   const shownCols = cols.filter(d => show(d.key));
   const sensCols = orderBy(sensitive ? SENS_COLS.filter(([k]) => show(k)) : [], ([k]) => k, sensOrder);
-  const colDrag = useDragOrder(shownCols.map(d => d.key), saveColOrder);
-  const sensDrag = useDragOrder(sensCols.map(([k]) => k), saveSensOrder);
+  // зберігаємо повний порядок (зі схованими), не лише видимий у цій фабриці
+  const colDrag = useDragOrder(shownCols.map(d => d.key), next => saveColOrder(mergeVisibleOrder(cols.map(d => d.key), next)));
+  const sensDrag = useDragOrder(sensCols.map(([k]) => k), next => saveSensOrder(mergeVisibleOrder(orderBy(SENS_COLS.map(([k]) => k as string), k => k, sensOrder), next)));
   const colCount = 2 + shownCols.length + sensCols.length; // +імʼя +замітки
   // випадаючі списки кадрових колонок: унікальні значення колонки по місту (як в екселі)
   const hrOptions = useMemo(() => {
