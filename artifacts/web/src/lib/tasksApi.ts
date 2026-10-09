@@ -66,13 +66,13 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "ручна", "auto:doc_expiring": "авто · документ", "auto:doc_expired": "авто · прострочений документ", "auto:contract": "авто · умова",
   "auto:obligation": "авто · обов'язок", "auto:required_missing": "авто · бракує підстави", "auto:pending_doc": "авто · перевірка файлу",
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
-  "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS ZWUA", "auto:termination_doc": "авто · документ звільнення",
+  "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS ZWUA", "auto:hire_zus": "авто · ZUS ZUA (новий)", "auto:termination_doc": "авто · документ звільнення",
 };
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
 export const RULE_LABEL: Record<string, string> = {
   doc_expiring: "документ спливає", doc_expired: "документ прострочений", contract: "умова", obligation: "обовʼязок", required_missing: "бракує підстави",
   pending_doc: "перевірка файлу", payroll_change: "зміна виплат", review_required: "перевірка движка", absence_unexplained: "пропуск без пояснення", candidate_stale: "кандидат без руху",
-  doc_no_response: "не надіслав документ", ua_notification: "powiadomienie UA", termination_zus: "ZUS ZWUA після звільнення", termination_doc: "документ звільнення",
+  doc_no_response: "не надіслав документ", ua_notification: "powiadomienie UA", termination_zus: "ZUS ZWUA після звільнення", hire_zus: "зголошення нового працівника", termination_doc: "документ звільнення",
 };
 
 // ── «Календар працівників» (GET /workers-calendar) ──

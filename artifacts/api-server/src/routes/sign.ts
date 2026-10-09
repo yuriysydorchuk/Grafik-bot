@@ -156,6 +156,9 @@ router.post("/sign/:token", async (req, res) => {
       });
     }
     await db.update(signatureTokensTable).set({ usedAt: new Date() }).where(eq(signatureTokensTable.id, token.id));
+    // працівник підписав умову → задача виконавцю ZUS «зголосити» (services/hireRegistration.ts); best-effort
+    import("../services/hireRegistration").then(m => m.startHireRegistrationFlow(bundle, null))
+      .catch(err => logger.warn({ err: String(err), bundle }, "hire registration flow failed"));
 
     ok(res, { ok: true, signedFiles });
   } catch (e: any) {

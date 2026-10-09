@@ -48,6 +48,8 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "contract_end", label: "Умова закінчилась — звільнити чи продовжити", description: "Підписана умова на фабрику дійшла до дати кінця, працівник активний, нової умови/аннексу нема → графікова або звільняє (тоді zaświadczenie), або робить аннекс на продовження (документ на підпис)", leadDays: null, enabledByDefault: true, scheduler: true },
   // документи звільнення (services/contractEndDocs.ts): zaświadczenie o zatrudnieniu (з печаткою) і wypowiedzenie від працівника — на підпис через лінк
   { code: "termination_doc", label: "Документ звільнення — надіслати на підпис", description: "Після звільнення: zaświadczenie o zatrudnieniu на кожну умову (печатка фірми вже стоїть) і wypowiedzenie від працівника, якщо звільнення раніше кінця умови → графікова надсилає лінк на підпис", leadDays: null, enabledByDefault: true, scheduler: true },
+  // зголошення нового працівника (services/hireRegistration.ts): після підпису умови працівником
+  { code: "hire_zus", label: "Зголосити нового працівника (ZUS ZUA / Gratyfikant)", description: "Одразу після підпису умови працівником — виконавцю ZUS: перевірити умову й документи, зголосити до ZUS (ZUA) по фірмі умови й додати в Gratyfikant; студент до 26 — лише Gratyfikant, без ZUS. Закривається, коли ZUA внесено в профіль (студент — вручну)", leadDays: 7, enabledByDefault: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
   // SMS-кампанії (services/sms/automation.ts): групова задача на кампанію — подзвонити тим, хто відкрив сторінку, але в бот не зайшов
   { code: "sms_no_bot", label: "SMS: відкрили сторінку, не зайшли в бот", description: "Отримувачі SMS-кампанії відкрили персональну сторінку N+ днів тому і не зайшли в бот — список на обдзвон рекрутеру кампанії (вікно 7 днів)", leadDays: 2, enabledByDefault: true },
@@ -291,6 +293,14 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     const { openZcnaTasksStillPending } = await import("./zcna");
     for (const { sourceKey, task } of await openZcnaTasksStillPending()) {
       out.push({ sourceKey, rule: "zcna_file", title: task.title, priority: task.priority as TaskPriority, dueAt: dateStr(task.dueAt), workerId: task.workerId, factoryId: task.factoryId, contractId: task.contractId, autoParams: (task.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: null } });
+    }
+  }
+  // 8b. Зголошення нового працівника (services/hireRegistration.ts): задача живе, поки нема ZUA цієї фірми
+  //     після задачі (студент до 26 / «ZUA вже була» — лише вручну); умова відкликана → auto_resolved
+  if (on("hire_zus")) {
+    const { openHireTasksStillPending } = await import("./hireRegistration");
+    for (const { sourceKey, task } of await openHireTasksStillPending()) {
+      out.push({ sourceKey, rule: "hire_zus", title: task.title, description: task.description, priority: diffDays(dateStr(task.dueAt) ?? today, today) < 0 ? "urgent" : (task.priority as TaskPriority), dueAt: dateStr(task.dueAt), workerId: task.workerId, factoryId: task.factoryId, contractId: task.contractId, autoParams: (task.autoParams ?? {}) as Record<string, unknown>, assign: { factoryId: null } });
     }
   }
 

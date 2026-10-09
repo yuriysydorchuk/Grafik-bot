@@ -355,6 +355,9 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   }
   const { workerLegalityChanged } = await import("../services/documentEvents");
   await workerLegalityChanged(workerId);
+  // імпортований скан = працівник уже підписав → задача «зголосити» (services/hireRegistration.ts); best-effort
+  import("../services/hireRegistration").then(m => m.startHireRegistrationFlow([contract.id], adminId))
+    .catch(err => logger.warn({ err: String(err), contractId: contract.id }, "hire registration flow failed"));
   logger.info({ contractId: contract.id, workerId, factoryId, companyId, dateFrom, dateTo, adminId }, "signed contract imported");
   ok(res, { ...contract, factoryName: factory.name, companyName: company.name });
 });

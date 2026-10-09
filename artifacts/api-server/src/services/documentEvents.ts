@@ -18,6 +18,9 @@ export async function documentChanged(
   if (action !== "deleted") {
     try { await (await import("./taskAutoRules")).resolveZwuaTasksNow(doc.workerId); }
     catch (e) { logger.warn({ err: String(e), workerId: doc.workerId }, "zwua task resolve after doc change failed"); }
+    // внесено ZUA → задача зголошення нового працівника закривається одразу
+    try { await (await import("./hireRegistration")).resolveHireTasksNow(doc.workerId); }
+    catch (e) { logger.warn({ err: String(e), workerId: doc.workerId }, "hire task resolve after doc change failed"); }
   }
 }
 

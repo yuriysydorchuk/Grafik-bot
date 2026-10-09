@@ -328,6 +328,25 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       }
       break;
     }
+    case "hire_zus": {
+      // зголошення нового працівника (services/hireRegistration.ts): будь-яка не-missing ZUA цієї фірми
+      // (на момент задачі її не було — критерій hireSatisfied, без часових міток);
+      // студент до 26 / «ZUA вже була» — docTypeCode порожній, документ не вимагається (закриття вручну)
+      const p = (task.autoParams ?? {}) as { companyId?: number | null; docTypeCode?: string; contractId?: number };
+      const ty = await typeByCode("zus_zua");
+      if (ty && worker && p.docTypeCode === "zus_zua") {
+        const d = workerDocs.find(x => x.d.docTypeId === ty.id && x.d.status !== "missing" && (x.d.employerCompanyId == null || p.companyId == null || x.d.employerCompanyId === p.companyId))?.d;
+        ctx.document = d ? docCtx(d, ty.name, ty.code) : null;
+        if (d) satisfied.add("entered");
+        actions.push({ code: "add_doc", label: `Внести ${ty.name}`, kind: "link", href: prof(`add-doc:${ty.id}`), primary: !d });
+      }
+      if (worker) {
+        actions.push({ code: "contracts", label: "Умови в профілі", kind: "link", href: prof("contracts") });
+        actions.push({ code: "documents", label: "Документи в профілі", kind: "link", href: prof("docs") });
+        actions.push({ code: "questionnaire", label: "Анкета", kind: "link", href: prof("anketa") });
+      }
+      break;
+    }
     case "contract_end": {
       const c = task.contractId ? (await db.select().from(contractsTable).where(eq(contractsTable.id, task.contractId)))[0] : undefined;
       const fac = task.factoryId ? (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, task.factoryId)))[0] : null;
