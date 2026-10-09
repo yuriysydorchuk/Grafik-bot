@@ -5,7 +5,7 @@
 // прострочення. Джерела вмикаються/вимикаються в task_auto_rules.
 import {
   db, tasksTable, workersTable, workerLegalityTable, workerDocumentsTable, documentTypesTable, factoriesTable,
-  workerChangesTable, scheduleEntriesTable, scheduleWeeksTable, candidatesTable, taskAutoRulesTable, adminsTable,
+  workerChangesTable, scheduleEntriesTable, scheduleWeeksTable, candidatesTable, taskAutoRulesTable, adminsTable, workerQuestionnairesTable,
   type Task,
 } from "@workspace/db";
 import { and, eq, gte, inArray, isNull, like, lt, lte, ne, sql } from "drizzle-orm";
@@ -39,6 +39,8 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   { code: "candidate_stale", label: "Кандидат без руху", description: "Дата наступної дії в рекрутингу минула", leadDays: 1, enabledByDefault: false },
   { code: "doc_no_response", label: "Працівник не надіслав документ", description: "Автозапит і нагадування в бот минули, файлу немає — звʼязатись самостійно", leadDays: null, enabledByDefault: true },
   // ланцюжок powiadomienie UA (services/uaNotification.ts): ступінь 1 графіковій на N-й день роботи → ступінь 2 виконавцю з params.stage2AdminId
+  // громадянство порожнє → жодне правило легальності (зокрема powiadomienie UA) не спрацює; задача графіковій вказати його в профілі
+  { code: "nationality_missing", label: "Вказати громадянство", description: "Активний працівник без громадянства в профілі (і без паспорта в анкеті) — правила легалізації, зокрема powiadomienie для UA, не працюють, поки поле порожнє", leadDays: null, enabledByDefault: true, scheduler: true },
   { code: "ua_notification", label: "Powiadomienie для UA (2 ступені)", description: "На N-й робочий день графіковій список нових людей → «Вислати» → задача подачі на praca.gov.pl виконавцю ступеня 2 (картка PSZ-PPWPU, завантаження підтвердження)", leadDays: null, enabledByDefault: true, scheduler: true },
   // ZUS ZCNA (services/zcna.ts): подати зголошення родини в Płatnik; закривається, коли внесено документ zus_zcna
   { code: "zcna_file", label: "ZUS ZCNA — подати зголошення родини", description: "Після генерації документа ZCNA (на прохання працівника) — виконавець ZUS подає в Płatnik і вносить підтвердження (тип ZUS ZCNA); задача закривається, коли документ у профілі", leadDays: null, enabledByDefault: true },
@@ -52,7 +54,7 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
 ];
 
 // Ідемпотентний сід правил (нові коди додаються, наявні не чіпаються).
-const RELATIVE_DUE_RULES = new Set(["required_missing", "review_required", "pending_doc", "payroll_change", "doc_no_response", "absence_unexplained", "sms_no_bot"]);
+const RELATIVE_DUE_RULES = new Set(["required_missing", "review_required", "pending_doc", "payroll_change", "doc_no_response", "absence_unexplained", "sms_no_bot", "nationality_missing"]);
 
 export async function ensureAutoRules(): Promise<void> {
   const have = new Set((await db.select({ code: taskAutoRulesTable.code }).from(taskAutoRulesTable)).map(r => r.code));
@@ -193,6 +195,21 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
     }
   }
 
+  // 2b. Громадянство порожнє (рішення власника 08.10.2026): без nationality движок не ставить
+  //     жодного обовʼязку (powiadomienie UA мовчало для 17 нових на проді). Фолбек як у движку —
+  //     громадянство з паспорта в анкеті (MRZ → каталог); є воно — задачі нема. Legacy-гейт той самий.
+  if (on("nationality_missing")) {
+    const { mrzNationalityToCatalog } = await import("./docai");
+    const qs = await db.select({ workerId: workerQuestionnairesTable.workerId, citizenship: workerQuestionnairesTable.citizenship })
+      .from(workerQuestionnairesTable).where(inArray(workerQuestionnairesTable.workerId, ids));
+    const fromPassport = new Map(qs.map(q => [q.workerId, mrzNationalityToCatalog(q.citizenship)]));
+    for (const w of workers) {
+      if (w.nationality || fromPassport.get(w.id) || legacy.has(w.id)) continue;
+      out.push({ sourceKey: `nat:${w.id}`, rule: "nationality_missing", title: `Вказати громадянство: ${w.fullName}`, priority: "high", dueAt: addDaysStr(today, 3),
+        workerId: w.id, factoryId: w.factoryId, autoParams: { workerName: w.fullName }, assign: { factoryId: w.factoryId, useScheduler: true } });
+    }
+  }
+
   // 3–5, 8. З кешу легальності: умова, обов'язки, бракує підстави, review
   const lg = await db.select().from(workerLegalityTable).where(inArray(workerLegalityTable.workerId, ids));
   for (const l of lg) {
@@ -314,7 +331,7 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
   // випадків мало (їх реально робити по одному).
   const groupAbove = Number((rules.get("settings")?.params as any)?.groupAbove ?? 5);
   const grouped: Candidate[] = [];
-  for (const rule of ["contract", "required_missing"] as const) {
+  for (const rule of ["contract", "required_missing", "nationality_missing"] as const) {
     const mine = out.filter(c => c.rule === rule);
     const byFac = new Map<number | null, Candidate[]>();
     for (const c of mine) { const l = byFac.get(c.factoryId ?? null) ?? []; l.push(c); byFac.set(c.factoryId ?? null, l); }
@@ -324,12 +341,12 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       const workerIds = [...new Set(list.map(c => c.workerId).filter((x): x is number => x != null))];
       grouped.push({
         sourceKey: `${rule}:factory:${fid ?? 0}`, rule, priority: "high", dueAt: addDaysStr(today, 14), factoryId: fid, workerId: null,
-        title: rule === "contract" ? `Умови на ${facName(fid)}: ${workerIds.length} працівників без чинної умови` : `Бракує підстав у ${workerIds.length} працівників на ${facName(fid)}`,
-        autoParams: { grouped: true, count: workerIds.length, workerIds, workerNames: names.slice(0, 15) }, assign: { factoryId: fid },
+        title: rule === "contract" ? `Умови на ${facName(fid)}: ${workerIds.length} працівників без чинної умови` : rule === "nationality_missing" ? `Вказати громадянство у ${workerIds.length} працівників на ${facName(fid)}` : `Бракує підстав у ${workerIds.length} працівників на ${facName(fid)}`,
+        autoParams: { grouped: true, count: workerIds.length, workerIds, workerNames: names.slice(0, 15) }, assign: { factoryId: fid, useScheduler: rule === "nationality_missing" },
       });
     }
   }
-  const restRules = out.filter(c => c.rule !== "contract" && c.rule !== "required_missing");
+  const restRules = out.filter(c => c.rule !== "contract" && c.rule !== "required_missing" && c.rule !== "nationality_missing");
   out.length = 0; out.push(...restRules, ...grouped);
 
   // 10. Кандидати без руху
@@ -439,7 +456,11 @@ export async function runAutoTasks(today = warsawToday()): Promise<AutoRunStats>
     // задача ніколи не ставала простроченою — тримаємо перший призначений строк
     const dueAt = RELATIVE_DUE_RULES.has(c.rule) && ex.dueAt ? dateStr(ex.dueAt) : c.dueAt;
     const descChanged = c.description !== undefined && (ex.description ?? null) !== (c.description ?? null);
-    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== dueAt || ex.priority !== c.priority || descChanged;
+    // групова задача: склад людей міг змінитись при тій самій кількості (один вибув, інший додався) —
+    // заголовок однаковий, але workerIds/workerNames треба перезаписати (ревʼю codex 09.10.2026)
+    const idsOf = (p: unknown) => [...((p as { workerIds?: number[] } | null)?.workerIds ?? [])].sort((a, b) => a - b).join(",");
+    const groupChanged = !!c.autoParams.grouped && idsOf(ex.autoParams) !== idsOf(c.autoParams);
+    const changed = ex.title !== c.title || dateStr(ex.dueAt) !== dueAt || ex.priority !== c.priority || descChanged || groupChanged;
     // бекфіл дефолтного чекліста для задач, створених до появи чеклістів (лише якщо порожній)
     // (і заміна старого чекліста без auto-ключів, поки в ньому нічого не відмічено)
     const exList = (ex.checklist ?? []) as { done: boolean; auto?: string }[];

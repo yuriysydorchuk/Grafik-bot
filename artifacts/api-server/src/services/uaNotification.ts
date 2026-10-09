@@ -33,7 +33,8 @@ const DOC_CODE = "powiadomienie_ua";
 const OBL_CODE = "obligation.ua_notification";
 
 export interface UaRuleParams { stage1Days: number; stage2AdminId: number | null }
-export const UA_PARAMS_DEFAULT: UaRuleParams = { stage1Days: 3, stage2AdminId: null };
+// stage1Days = 1: людина в списку з ПЕРШОГО робочого дня (рішення власника 08.10.2026; до того 3)
+export const UA_PARAMS_DEFAULT: UaRuleParams = { stage1Days: 1, stage2AdminId: null };
 
 export interface UaWorker {
   id: number; name: string; factoryId: number | null; factoryName: string | null;
@@ -51,7 +52,7 @@ export interface UaParams { grouped: true; stage: 1 | 2; workers: UaWorker[]; co
 export async function loadUaRule(): Promise<{ enabled: boolean; params: UaRuleParams; fallbackAdminId: number | null }> {
   const [r] = await db.select().from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, UA_RULE));
   const p = (r?.params ?? {}) as Partial<UaRuleParams>;
-  return { enabled: r?.enabled ?? true, fallbackAdminId: r?.fallbackAdminId ?? null, params: { stage1Days: Math.max(1, Number(p.stage1Days ?? UA_PARAMS_DEFAULT.stage1Days) || 3), stage2AdminId: p.stage2AdminId ?? null } };
+  return { enabled: r?.enabled ?? true, fallbackAdminId: r?.fallbackAdminId ?? null, params: { stage1Days: Math.max(1, Number(p.stage1Days ?? UA_PARAMS_DEFAULT.stage1Days) || UA_PARAMS_DEFAULT.stage1Days), stage2AdminId: p.stage2AdminId ?? null } };
 }
 
 const isUa = (t: Task) => t.source === UA_SOURCE;

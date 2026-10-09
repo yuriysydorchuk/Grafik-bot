@@ -81,6 +81,7 @@ export function defaultChecklist(rule: string, params: Record<string, unknown> |
     case "payroll_change": steps = [{ text: "Переглянути вплив на сводну" }, { text: "Прийняти або відхилити зміну", auto: "decided" }]; break;
     case "obligation": steps = [{ text: "Подати документ в urząd / на портал" }, { text: "Внести дату подачі й підтвердження в профіль", auto: "entered" }]; break;
     case "absence_unexplained": steps = [{ text: "Звʼязатись із працівником", auto: "contacted" }, { text: "Внести пояснення у відсутностях" }]; break;
+    case "nationality_missing": steps = [{ text: "Відкрити профіль і вибрати громадянство (прапорець біля імені)" }, { text: "Якщо є паспорт — запросити скан+анкету, громадянство підтягнеться саме" }]; break;
     case "review_required": steps = [{ text: "Переглянути причини в легалізації" }, { text: "Виправити дані або документ" }, { text: "Перерахувати", auto: "recomputed" }]; break;
     case "candidate_stale": steps = [{ text: "Звʼязатись із кандидатом" }, { text: "Оновити етап або дату наступної дії" }]; break;
     case "termination_zus": steps = [{ text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)" }, { text: "Внести підтвердження ZWUA в профіль", auto: "entered" }]; break;

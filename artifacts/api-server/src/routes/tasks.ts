@@ -551,7 +551,7 @@ router.patch("/task-auto-rules/:code", TP, async (req: AuthedRequest, res) => {
   if (b.params && typeof b.params === "object") {
     const [cur] = await db.select({ params: taskAutoRulesTable.params }).from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, code));
     const next: Record<string, unknown> = { ...((cur?.params ?? {}) as object) };
-    if (b.params.stage1Days !== undefined) next.stage1Days = Math.max(1, Number(b.params.stage1Days) || 3);
+    if (b.params.stage1Days !== undefined) next.stage1Days = Math.max(1, Number(b.params.stage1Days) || 1);
     if (b.params.stage2AdminId !== undefined) next.stage2AdminId = n(b.params.stage2AdminId);
     patch.params = next;
   }
