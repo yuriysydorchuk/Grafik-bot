@@ -3,6 +3,9 @@
 // suffix, so retry failed relative resolutions with ".ts" / "/index.ts".
 import { registerHooks } from "node:module";
 
+// Пояс процесу = пояс БД (як у src/index.ts): CI крутиться в UTC, тести мають бачити Warsaw.
+process.env.TZ = "Europe/Warsaw";
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
     try {

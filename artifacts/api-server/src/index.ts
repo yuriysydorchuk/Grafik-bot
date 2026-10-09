@@ -1,3 +1,6 @@
+// Пояс процесу = пояс БД (Europe/Warsaw): сирі Date-параметри в sql`` серіалізуються pg з локальним
+// офсетом, а `timestamp` їх ігнорує — тож локальний час процесу має бути варшавським (lib/db/warsawTime.ts).
+process.env.TZ = "Europe/Warsaw"; // безумовно: TZ=UTC з оточення зламав би сирі Date-параметри
 import app from "./app";
 import { logger } from "./lib/logger";
 import { bot } from "./bot";

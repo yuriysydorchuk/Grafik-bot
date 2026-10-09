@@ -31,7 +31,7 @@ export function inSendWindow(schedule: SmsSchedule, now = new Date()): boolean {
 async function sentToday(campaignId: number, now = new Date()): Promise<number> {
   const { date } = warsawNow(now);
   const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(smsRecipientsTable)
-    .where(and(eq(smsRecipientsTable.campaignId, campaignId), isNotNull(smsRecipientsTable.sentAt), sql`(${smsRecipientsTable.sentAt} at time zone 'UTC' at time zone ${TZ})::date = ${date}::date`));
+    .where(and(eq(smsRecipientsTable.campaignId, campaignId), isNotNull(smsRecipientsTable.sentAt), sql`${smsRecipientsTable.sentAt}::date = ${date}::date`));
   return r?.n ?? 0;
 }
 
