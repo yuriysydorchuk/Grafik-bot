@@ -866,7 +866,7 @@ router.delete("/workers/:id/do-not-hire", requireAnyCap("blacklist", "deleteWork
 });
 
 // ─── Залічки за бадання: список записів у профілі (додати/позначити/видалити) ─
-router.post("/workers/:id/badania", RW, async (req, res) => {
+router.post("/workers/:id/badania", ADV, async (req, res) => {
   const workerId = Number(req.params.id);
   const amount = Number(req.body?.amount);
   if (!Number.isFinite(amount) || amount <= 0) return fail(res, 400, "Сума залічки > 0");
@@ -880,7 +880,7 @@ router.post("/workers/:id/badania", RW, async (req, res) => {
   ok(res, created);
 });
 
-router.patch("/worker-badania/:id", RW, async (req, res) => {
+router.patch("/worker-badania/:id", ADV, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   const [cur] = await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.id, id));
@@ -907,7 +907,7 @@ router.patch("/worker-badania/:id", RW, async (req, res) => {
   ok(res, u);
 });
 
-router.delete("/worker-badania/:id", RW, async (req, res) => {
+router.delete("/worker-badania/:id", ADV, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return fail(res, 400, "bad id");
   await db.delete(workerBadaniaTable).where(eq(workerBadaniaTable.id, id));
@@ -916,11 +916,12 @@ router.delete("/worker-badania/:id", RW, async (req, res) => {
 
 // Всі незняті залічки за бадання (вкладка «Бадання» на /advances): список для
 // вибіркового перенесення у сводну (POST /svodni/apply-badania-deductions)
-router.get("/badania/pending", RW, async (_req, res) => {
+router.get("/badania/pending", ADV, async (req, res) => {
+  const scope = (req as AuthedRequest).admin?.scope; // скоуп-адмін — лише люди своїх фабрик
   const rows = await db.select({ b: workerBadaniaTable, workerName: workersTable.fullName, nationality: workersTable.nationality })
     .from(workerBadaniaTable)
     .innerJoin(workersTable, eq(workerBadaniaTable.workerId, workersTable.id))
-    .where(eq(workerBadaniaTable.deducted, false))
+    .where(and(eq(workerBadaniaTable.deducted, false), scope ? workerInScopeSql(scope, workerBadaniaTable.workerId) : undefined))
     .orderBy(workersTable.fullName, desc(workerBadaniaTable.enteredAt));
   ok(res, {
     rows: rows.map(({ b, workerName, nationality }) => ({
@@ -933,11 +934,12 @@ router.get("/badania/pending", RW, async (_req, res) => {
 
 // Зняті залічки за бадання — історія перенесень (з місяцем сводної) і ручних
 // позначок; відміна перенесеного — POST /svodni/undo-badania-deduction
-router.get("/badania/deducted", RW, async (_req, res) => {
+router.get("/badania/deducted", ADV, async (req, res) => {
+  const scope = (req as AuthedRequest).admin?.scope;
   const rows = await db.select({ b: workerBadaniaTable, workerName: workersTable.fullName, nationality: workersTable.nationality })
     .from(workerBadaniaTable)
     .innerJoin(workersTable, eq(workerBadaniaTable.workerId, workersTable.id))
-    .where(eq(workerBadaniaTable.deducted, true))
+    .where(and(eq(workerBadaniaTable.deducted, true), scope ? workerInScopeSql(scope, workerBadaniaTable.workerId) : undefined))
     .orderBy(desc(workerBadaniaTable.deductedAt), desc(workerBadaniaTable.id))
     .limit(300);
   ok(res, {

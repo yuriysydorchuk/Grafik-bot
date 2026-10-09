@@ -13,7 +13,7 @@
 import type { Response, NextFunction } from "express";
 import { db, factoriesTable, workersTable, workerFactoriesTable, svodniRowsTable,
   workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable,
-  advanceRequestsTable, tasksTable, taskAssigneesTable } from "@workspace/db";
+  advanceRequestsTable, tasksTable, taskAssigneesTable, clothingItemsTable } from "@workspace/db";
 import { and, eq, isNull, or, sql, type SQL, type AnyColumn } from "drizzle-orm";
 import type { AuthedRequest } from "./auth";
 
@@ -83,7 +83,7 @@ export async function factoriesOutsideScope(scope: AdminScope | null | undefined
 type Check =
   | { kind: "free" }                                  // довідник або список, що фільтрує сам
   | { kind: "worker" }                                // m[1] = id працівника
-  | { kind: "lookup"; table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" } // m[1] = id рядка → його worker_id
+  | { kind: "lookup"; table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" } // m[1] = id рядка → його worker_id
   | { kind: "factory" }                               // m[1] = id фабрики
   | { kind: "queryWorker" }                           // ?workerId= обовʼязковий і в скоупі
   | { kind: "task" }                                  // m[1] = id задачі: учасник/автор або працівник/фабрика задачі в скоупі
@@ -111,6 +111,12 @@ const SCOPE_RULES: Rule[] = [
   R(ANY, /^\/worker-factories\/(\d+)$/, { kind: "lookup", table: "wf" }),
   R(ANY, /^\/contracts\/(\d+)(?:\/.*)?$/, { kind: "lookup", table: "contract" }),
   R("GET", /^\/clothing$/, { kind: "queryWorker" }),
+  // Бадання й одяг (08.10.2026, cap advances): списки «до зняття» фільтрує хендлер; видача/ручний запис —
+  // workerId у тілі (гейт тіла); повернення/правка — через працівника запису
+  R("GET", /^\/badania\/(?:pending|deducted)$/, { kind: "free" }),
+  R("GET", /^\/clothing\/pending$/, { kind: "free" }),
+  R("POST", /^\/clothing(?:\/issue)?$/, { kind: "free" }),
+  R(ANY, /^\/clothing\/(\d+)(?:\/return)?$/, { kind: "lookup", table: "clothing" }),
   // Делеговані запрошення (свої запрошені; права перевіряє хендлер)
   R(ANY, /^\/admin-invites(?:\/\d+(?:\/invite)?)?$/, { kind: "free" }),
   // Лінк самореєстрації фабрики
@@ -153,7 +159,7 @@ export function scopeTaskSql(scope: AdminScope, adminId: number): SQL {
 
 // Рядок → його працівник; для привʼязки до фабрики й умови — ще й фабрика рядка: працівник
 // може бути у двох містах, а рядок чужої фабрики правити/читати не можна.
-async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance", id: number): Promise<boolean> {
+async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing", id: number): Promise<boolean> {
   if (table === "wf" || table === "contract") {
     const t = table === "wf" ? workerFactoriesTable : contractsTable;
     const [r] = await db.select({ workerId: t.workerId, factoryId: t.factoryId }).from(t).where(eq(t.id, id));
@@ -170,7 +176,7 @@ async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank
     if (!r || !factoryInScope(scope, r.factoryId ?? r.profileFactoryId)) return false;
     return workerInScope(scope, r.workerId);
   }
-  const t = { doc: workerDocumentsTable, badania: workerBadaniaTable, bank: workerBankAccountsTable }[table];
+  const t = { doc: workerDocumentsTable, badania: workerBadaniaTable, bank: workerBankAccountsTable, clothing: clothingItemsTable }[table];
   const [r] = await db.select({ workerId: t.workerId }).from(t).where(eq(t.id, id));
   return workerInScope(scope, r?.workerId ?? null);
 }

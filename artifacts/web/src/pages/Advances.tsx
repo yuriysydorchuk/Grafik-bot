@@ -184,8 +184,8 @@ export default function Advances() {
   const [gratOpen, setGratOpen] = useState(false);
   const me = useMe();
   const canGrat = can(me, "svodniSensitive");
-  // вкладки «Бадання» і «У сводну» ходять в RW-ендпойнти (editData); cap advances сам по собі — лише залічки
-  const tabs = ([["adv", t("Залічки")], ...(can(me, "editData") ? [["badania", t("Бадання до зняття")], ["svodni", t("У сводну")]] : [])] as [typeof tab, string][]);
+  // «Бадання» — для advances/editData (перенесення у сводну всередині гейтить canSvodni); «У сводну» — лише editData
+  const tabs = ([["adv", t("Залічки")], ...(can(me, "editData") || can(me, "advances") ? [["badania", t("Бадання до зняття")]] : []), ...(can(me, "editData") ? [["svodni", t("У сводну")]] : [])] as [typeof tab, string][]);
   return (
     <>
       <PageHeader title={t("Аванси")} subtitle={t("Залічки: подача, групи виплат 15-го/30-го, виплата переказом чи готівкою")} />

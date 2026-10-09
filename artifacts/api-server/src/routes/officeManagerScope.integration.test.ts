@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, adminsTable, factoriesTable, workersTable, svodniRowsTable, advanceRequestsTable, contractsTable, rolesTable } from "../test/harness.ts";
-import { workerFactoriesTable, tasksTable } from "@workspace/db";
+import { workerFactoriesTable, tasksTable, workerBadaniaTable, clothingStockTable, clothingItemsTable } from "@workspace/db";
 import { invalidateRolesCache } from "../lib/auth";
 import { eq } from "drizzle-orm";
 
@@ -179,8 +179,8 @@ test("залічки: список лише свого міста, нова — 
   assert.equal(created.body.status, "approved");
   assert.equal((await request(app).post(`/api/advances/${aLodz!.id}/paid`).set("Cookie", om.cookie).set(H).send({ method: "cash" })).status, 403);
   assert.equal((await request(app).post(`/api/advances/${aPoz!.id}/paid`).set("Cookie", om.cookie).set(H).send({ method: "cash" })).status, 200);
-  // вкладки для editData — поза скоупом
-  assert.equal((await request(app).get("/api/badania/pending").set("Cookie", om.cookie)).status, 403);
+  // вкладка «У сводну» — лише editData
+  assert.equal((await request(app).get("/api/advances/svodni-pending").set("Cookie", om.cookie)).status, 403);
 });
 
 test("задачі: бачу свої й про людей/фабрики скоупу; чужа — 403; нова про чужу людину — 403", opts, async () => {
@@ -244,6 +244,33 @@ test("ревʼю codex 08.10: людина з двох міст — залічк
   assert.ok(!cal.body.events.some((e: any) => e.workerId === wLodz.id), "звільнений чужого міста витік");
   const both = cal.body.events.filter((e: any) => e.workerId === wBoth!.id && e.kind === "contract");
   assert.ok(both.length >= 1 && both.every((e: any) => e.factoryId === poz.id), "умова чужої фабрики витекла");
+});
+
+test("бадання й одяг: внести своїй людині — ок, чужій — 403; списки «до зняття» лише свого міста", opts, async () => {
+  const { om, wPoz, wLodz } = await world2();
+  assert.equal((await request(app).post(`/api/workers/${wPoz.id}/badania`).set("Cookie", om.cookie).set(H).send({ amount: 120 })).status, 200);
+  assert.equal((await request(app).post(`/api/workers/${wLodz.id}/badania`).set("Cookie", om.cookie).set(H).send({ amount: 120 })).status, 403);
+  const [bLodz] = await db.insert(workerBadaniaTable).values({ workerId: wLodz.id, amount: 90, enteredAt: "2026-10-01" } as any).returning();
+  const pend = await request(app).get("/api/badania/pending").set("Cookie", om.cookie);
+  assert.equal(pend.status, 200);
+  assert.deepEqual(pend.body.rows.map((r: any) => r.workerId), [wPoz.id]);
+  assert.equal((await request(app).delete(`/api/worker-badania/${bLodz!.id}`).set("Cookie", om.cookie).set(H)).status, 403);
+  // одяг: видача зі складу
+  const [stock] = await db.insert(clothingStockTable).values({ itemType: "boots", size: "42", condition: "new", price: 80, qty: 3 }).returning();
+  assert.equal((await request(app).post("/api/clothing/issue").set("Cookie", om.cookie).set(H).send({ stockId: stock!.id, workerId: wLodz.id })).status, 403);
+  const issued = await request(app).post("/api/clothing/issue").set("Cookie", om.cookie).set(H).send({ stockId: stock!.id, workerId: wPoz.id });
+  assert.equal(issued.status, 200);
+  const [foreign] = await db.insert(clothingItemsTable).values({ workerId: wLodz.id, itemType: "boots", price: 50, ownership: "sold" }).returning();
+  const [raw] = await db.insert(clothingItemsTable).values({ workerName: "Nobody Raw", itemType: "hat", price: 10, ownership: "sold" }).returning();
+  const cp = await request(app).get("/api/clothing/pending").set("Cookie", om.cookie);
+  assert.equal(cp.status, 200);
+  assert.deepEqual(cp.body.groups.map((g: any) => g.workerId), [wPoz.id]);
+  assert.equal((await request(app).post(`/api/clothing/${foreign!.id}/return`).set("Cookie", om.cookie).set(H).send({})).status, 403);
+  assert.equal((await request(app).patch(`/api/clothing/${raw!.id}`).set("Cookie", om.cookie).set(H).send({ price: 1 })).status, 403);
+  assert.equal((await request(app).post("/api/clothing").set("Cookie", om.cookie).set(H).send({ itemType: "boots", workerName: "X Y", price: 5 })).status, 403);
+  assert.equal((await request(app).post(`/api/clothing/${issued.body.id}/return`).set("Cookie", om.cookie).set(H).send({})).status, 200);
+  const list = await request(app).get(`/api/clothing?workerId=${wPoz.id}`).set("Cookie", om.cookie);
+  assert.equal(list.status, 200);
 });
 
 test("календар працівників: лише люди свого міста; фабрика поза скоупом у фільтрі — 403", opts, async () => {

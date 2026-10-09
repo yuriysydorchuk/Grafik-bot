@@ -5,14 +5,16 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { clothingItemsTable, clothingStockTable, clothingTypesTable, workersTable } from "@workspace/db";
 import { and, asc, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
-import { authRequired, requireAnyCap } from "../lib/auth";
+import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
+import { workerInScopeSql } from "../lib/scope";
 
 const router: IRouter = Router();
 router.use(authRequired);
 
 const ok = (res: any, data: any) => res.json(data);
 const fail = (res: any, c: number, m: string) => res.status(c).json({ error: m });
-const RW = requireAnyCap("editData", "assignDrivers");
+// advances (08.10.2026, офіс-менеджер): видати/повернути одяг працівнику зі свого скоупу (правила — lib/scope.ts)
+const RW = requireAnyCap("editData", "assignDrivers", "advances");
 // базові типи (сідяться міграцією в clothing_types); валідація йде по довіднику,
 // цей список — лише фолбек на випадок, коли рядок довідника видалили
 const TYPES = ["boots", "coverall", "jacket", "hat", "tshirt", "set", "other"];
@@ -219,11 +221,13 @@ router.post("/clothing/:id/return", RW, async (req, res) => {
 });
 
 // ─── До зняття: підсумки по людях (для вкладки і перенесення до сводної) ─────
-router.get("/clothing/pending", async (_req, res) => {
+router.get("/clothing/pending", async (req, res) => {
+  const scope = (req as AuthedRequest).admin?.scope; // скоуп-адмін — лише люди своїх фабрик (незаматчені рядки не видно)
   const rows = await db.select({ c: clothingItemsTable, workerName: workersTable.fullName })
     .from(clothingItemsTable)
     .leftJoin(workersTable, eq(clothingItemsTable.workerId, workersTable.id))
     .where(and(
+      scope ? workerInScopeSql(scope, clothingItemsTable.workerId) : undefined,
       eq(clothingItemsTable.deducted, false), eq(clothingItemsTable.writtenOff, false),
       isNull(clothingItemsTable.returnedAt), sql`${clothingItemsTable.price} is not null and ${clothingItemsTable.price} > 0`,
     ))
@@ -271,6 +275,8 @@ router.post("/clothing", RW, async (req, res) => {
   if (!(await isValidType(itemType))) return fail(res, 400, "невідомий тип одягу (довідник «Типи»)");
   const workerId = Number.isFinite(Number(b.workerId)) && b.workerId ? Number(b.workerId) : null;
   if (!workerId && !String(b.workerName ?? "").trim()) return fail(res, 400, "workerId або workerName");
+  // скоуп-адмін: лише привʼязаний працівник (сирий рядок без workerId йому не бачити й не створювати)
+  if (!workerId && (req as AuthedRequest).admin?.scope) return fail(res, 403, "Вкажіть працівника зі свого доступу");
   const ownership = OWNERSHIP.includes(String(b.ownership)) ? String(b.ownership) : null;
   const [created] = await db.insert(clothingItemsTable).values({
     workerId, workerName: workerId ? null : String(b.workerName).trim(),
