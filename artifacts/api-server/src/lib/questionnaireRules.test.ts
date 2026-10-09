@@ -39,12 +39,19 @@ test("NIP: контрольна сума", () => {
   assert.equal(nipOk("123"), false);
 });
 
-test("NRB: 26 цифр або PL+26, mod-97, пробіли; іноземний IBAN — ні", () => {
+test("рахунок: польський NRB → 26 цифр; іноземний IBAN → з кодом країни; довжина + mod-97", () => {
   assert.equal(normalizeNrb("PL61109010140000071219812874"), "61109010140000071219812874");
   assert.equal(normalizeNrb("61 1090 1014 0000 0712 1981 2874"), "61109010140000071219812874");
   assert.equal(normalizeNrb("pl61 1090 1014 0000 0712 1981 2874"), "61109010140000071219812874");
   assert.equal(normalizeNrb("61109010140000071219812875"), null, "зіпсована контрольна");
-  assert.equal(normalizeNrb("DE89370400440532013000"), null, "не польський");
+  assert.equal(normalizeNrb("DE89 3704 0044 0532 0130 00"), "DE89370400440532013000", "німецький IBAN");
+  assert.equal(normalizeNrb("lt12 1000 0111 0100 1000"), "LT121000011101001000", "Revolut LT, малі літери");
+  assert.equal(normalizeNrb("GB29 NWBK 6016 1331 9268 19"), "GB29NWBK60161331926819", "літери в BBAN");
+  assert.equal(normalizeNrb("UA21 3223 1300 0002 6007 2335 6600 1"), "UA213223130000026007233566001");
+  assert.equal(normalizeNrb("DE89370400440532013001"), null, "іноземний — зіпсована контрольна");
+  assert.equal(normalizeNrb("DE8937040044053201300"), null, "іноземний — не та довжина");
+  assert.equal(normalizeNrb("XX89370400440532013000"), null, "невідома країна");
+  assert.equal(normalizeNrb("PL61109010140000071219812874"), "61109010140000071219812874");
   assert.equal(normalizeNrb("6110901014"), null);
   assert.equal(formatNrb("61109010140000071219812874"), "61 1090 1014 0000 0712 1981 2874");
 });
@@ -128,7 +135,7 @@ test("validateQuestionnaire: повна анкета — без помилок, 
 
 test("validateQuestionnaire: пропуски/формати/кирилиця/згоди/умовні поля", () => {
   const r = validateQuestionnaire({
-    ...fullAnketa(), pesel: "44051401359", motherName: "Марія", bankIban: "DE89370400440532013000", phone: "12",
+    ...fullAnketa(), pesel: "44051401359", motherName: "Марія", bankIban: "DE89370400440532013001", phone: "12",
     email: "nope", taxOffice: "щось", regKodPocztowy: "2", zamSame: false, zamUlica: "Nowa",
     isStudent: true, hasOtherEmployment: true, nip: "1234567890", consents: { rodo_info: true },
   }, { birthDate: "1990-01-01" });

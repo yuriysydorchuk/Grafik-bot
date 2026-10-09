@@ -70,7 +70,7 @@ const STR: Record<string, Record<Lang, string>> = {
   motherName: { uk: "Імʼя мами", en: "Mother's first name", es: "Nombre de la madre", ru: "Имя мамы", pl: "Imię matki" },
   fatherName: { uk: "Імʼя тата", en: "Father's first name", es: "Nombre del padre", ru: "Имя папы", pl: "Imię ojca" },
   bankName: { uk: "Назва банку", en: "Bank name", es: "Nombre del banco", ru: "Название банка", pl: "Nazwa banku" },
-  bankIban: { uk: "Номер банківського рахунку (польський)", en: "Bank account number (Polish)", es: "Número de cuenta bancaria (polaca)", ru: "Номер банковского счёта (польский)", pl: "Numer konta bankowego (polskie)" },
+  bankIban: { uk: "Номер банківського рахунку (IBAN)", en: "Bank account number (IBAN)", es: "Número de cuenta bancaria (IBAN)", ru: "Номер банковского счёта (IBAN)", pl: "Numer konta bankowego (IBAN)" },
   phone: { uk: "Номер телефону", en: "Phone number", es: "Número de teléfono", ru: "Номер телефона", pl: "Numer telefonu" },
   email: { uk: "Email", en: "Email", es: "Email", ru: "Email", pl: "E-mail" },
   taxOffice: { uk: "Urząd skarbowy (податкова)", en: "Tax office (urząd skarbowy)", es: "Oficina de impuestos (urząd skarbowy)", ru: "Налоговая (urząd skarbowy)", pl: "Urząd skarbowy" },
@@ -125,7 +125,7 @@ const STR: Record<string, Record<Lang, string>> = {
   hintPesel: { uk: "11 цифр, напр. 95050512346", en: "11 digits, e.g. 95050512346", es: "11 dígitos, p. ej. 95050512346", ru: "11 цифр, напр. 95050512346", pl: "11 cyfr, np. 95050512346" },
   hintParent: { uk: "лише ім'я латиницею, напр. Maria", en: "first name only, Latin letters, e.g. Maria", es: "solo el nombre, letras latinas, p. ej. Maria", ru: "только имя латиницей, напр. Maria", pl: "tylko imię, np. Maria" },
   hintBank: { uk: "напр. PKO BP", en: "e.g. PKO BP", es: "p. ej. PKO BP", ru: "напр. PKO BP", pl: "np. PKO BP" },
-  hintNrb: { uk: "польський рахунок, 26 цифр: PL 61 1090 1014 0000 0712 1981 2874", en: "Polish account, 26 digits: PL 61 1090 1014 0000 0712 1981 2874", es: "cuenta polaca, 26 dígitos: PL 61 1090 1014 0000 0712 1981 2874", ru: "польский счёт, 26 цифр: PL 61 1090 1014 0000 0712 1981 2874", pl: "polskie konto, 26 cyfr: PL 61 1090 1014 0000 0712 1981 2874" },
+  hintNrb: { uk: "польський: 61 1090 1014 0000 0712 1981 2874 (26 цифр); іноземний IBAN з кодом країни, напр. LT12 1000 0111 0100 1000", en: "Polish: 61 1090 1014 0000 0712 1981 2874 (26 digits); foreign IBAN with country code, e.g. LT12 1000 0111 0100 1000", es: "polaca: 61 1090 1014 0000 0712 1981 2874 (26 dígitos); IBAN extranjero con código de país, p. ej. LT12 1000 0111 0100 1000", ru: "польский: 61 1090 1014 0000 0712 1981 2874 (26 цифр); иностранный IBAN с кодом страны, напр. LT12 1000 0111 0100 1000", pl: "polskie: 61 1090 1014 0000 0712 1981 2874 (26 cyfr); zagraniczny IBAN z kodem kraju, np. LT12 1000 0111 0100 1000" },
   hintPhone: { uk: "напр. +48 600 000 000", en: "e.g. +48 600 000 000", es: "p. ej. +48 600 000 000", ru: "напр. +48 600 000 000", pl: "np. +48 600 000 000" },
   hintEmail: { uk: "напр. jan.kowalski@gmail.com", en: "e.g. jan.kowalski@gmail.com", es: "p. ej. jan.kowalski@gmail.com", ru: "напр. jan.kowalski@gmail.com", pl: "np. jan.kowalski@gmail.com" },
   hintTaxOffice: { uk: "почни вводити місто й обери зі списку, напр. Lublin", en: "start typing the city and pick from the list, e.g. Lublin", es: "empieza a escribir la ciudad y elige de la lista, p. ej. Lublin", ru: "начни вводить город и выбери из списка, напр. Lublin", pl: "zacznij wpisywać miasto i wybierz z listy, np. Lublin" },
@@ -761,7 +761,7 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
         <Field label={s("motherName")} required hint={s("hintParent")} error={er("motherName")}>{txt("motherName", setMotherName)}</Field>
         <Field label={s("fatherName")} required hint={s("hintParent")} error={er("fatherName")}>{txt("fatherName", setFatherName)}</Field>
         <Field label={s("bankName")} required hint={s("hintBank")} error={er("bankName")}>{txt("bankName", setBankName)}</Field>
-        <Field label={s("bankIban")} required hint={s("hintNrb")} error={er("bankIban")}>{txt("bankIban", setBankIban, { inputMode: "numeric", autoComplete: "off" })}</Field>
+        <Field label={s("bankIban")} required hint={s("hintNrb")} error={er("bankIban")}>{txt("bankIban", setBankIban, { autoCapitalize: "characters", autoComplete: "off", spellCheck: false })}</Field>
         <Field label={s("phone")} required hint={s("hintPhone")} error={er("phone")}>{txt("phone", setPhone, { type: "tel", inputMode: "tel" })}</Field>
         <Field label={s("email")} required hint={s("hintEmail")} error={er("email")}>{txt("email", setEmail, { type: "email", inputMode: "email", autoCapitalize: "none" })}</Field>
         <Field label={s("taxOffice")} required hint={s("hintTaxOffice")} error={er("taxOffice")}>
