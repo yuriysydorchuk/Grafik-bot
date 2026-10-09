@@ -30,9 +30,15 @@ router.get("/search", authRequired, async (req: AuthedRequest, res) => {
     for (const w of ws) hits.push({ kind: "worker", id: w.id, title: w.fullName, subtitle: [w.code, w.factory].filter(Boolean).join(" · ") || null, href: `/workers/${w.id}`, inactive: !w.isActive });
   }
   if (can("/recruitment")) {
-    const cs = await db.select({ id: candidatesTable.id, fullName: candidatesTable.fullName, phone: candidatesTable.phone, stage: candidatesTable.stage })
+    const cs = await db.select({ id: candidatesTable.id, fullName: candidatesTable.fullName, phone: candidatesTable.phone, stage: candidatesTable.stage, workerId: candidatesTable.workerId })
       .from(candidatesTable).where(or(ilike(candidatesTable.fullName, like), ...(digits.length >= 4 ? [ilike(candidatesTable.phone, `%${digits}%`)] : []))).limit(LIMIT);
-    for (const c of cs) hits.push({ kind: "candidate", id: c.id, title: c.fullName, subtitle: [c.stage, c.phone].filter(Boolean).join(" · ") || null, href: `/recruitment` });
+    // переведений у працівники кандидат веде одразу в профіль (якщо роль бачить /workers), не в CRM;
+    // якщо той самий профіль уже знайдено як працівника — другий рядок на те саме місце не показуємо
+    for (const c of cs) {
+      const toProfile = !!c.workerId && can("/workers");
+      if (toProfile && hits.some(h => h.kind === "worker" && h.id === c.workerId)) continue;
+      hits.push({ kind: "candidate", id: c.id, title: c.fullName, subtitle: [c.stage, c.phone].filter(Boolean).join(" · ") || null, href: toProfile ? `/workers/${c.workerId}` : `/recruitment` });
+    }
   }
   if (can("/drivers")) {
     const ds = await db.select({ id: driversTable.id, name: driversTable.name, phone: driversTable.phone, isActive: driversTable.isActive })

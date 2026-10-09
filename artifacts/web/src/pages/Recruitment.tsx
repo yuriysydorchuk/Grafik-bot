@@ -152,7 +152,7 @@ export default function Recruitment() {
       )}
       {adding && active && <CandidateModal funnel={active} factories={factories} workers={workers} staff={staff} onClose={() => setAdding(false)} onSaved={() => { inv(); qc.invalidateQueries({ queryKey: ["funnels"] }); setAdding(false); }} />}
       {editing && active && <CandidateModal candidate={editing} funnel={active} factories={factories} workers={workers} staff={staff} onClose={() => setEditing(null)} onSaved={() => { inv(); qc.invalidateQueries({ queryKey: ["candidate"] }); setEditing(null); }} />}
-      {converting && <ConvertModal candidate={converting} factories={factories} onClose={() => setConverting(null)} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["workers"] }); setConverting(null); }} />}
+      {converting && <ConvertModal candidate={converting} factories={factories} isReferral={!!isReferral} onClose={() => setConverting(null)} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["workers"] }); setConverting(null); }} />}
       {bonusFor && <BonusModal candidate={bonusFor} onClose={() => setBonusFor(null)} onDone={() => { inv(); setBonusFor(null); }} />}
     </>
   );
@@ -276,12 +276,13 @@ function CandidateDetail({ id, funnel, factories, workers, staff, meId, onClose,
               </div>
             </div>
 
-            {/* Referral actions */}
-            {isReferral && (
+            {/* Перевести у працівники — для БУДЬ-ЯКОЇ воронки (раніше лише реферальна: кандидата
+                з «Працюють» не було як запросити в бот — запит офісу 09.10.2026); бонус — лише реферальна */}
+            {(!c.workerId || isReferral) && (
               <div className="flex gap-2">
                 {!c.workerId
                   ? <Button variant="success" className="flex-1" onClick={() => onConvert(c)}><UserCheck className="h-4 w-4" /> {t("У працівники")}</Button>
-                  : c.referrerName && !c.bonusPaid
+                  : isReferral && c.referrerName && !c.bonusPaid
                     ? <Button className="flex-1" onClick={() => onBonus(c)}><Gift className="h-4 w-4" /> {t("Виписати бонус")}</Button>
                     : null}
               </div>
@@ -420,7 +421,7 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
   );
 }
 
-function ConvertModal({ candidate, factories, onClose, onDone }: { candidate: Candidate; factories: Factory[]; onClose: () => void; onDone: () => void }) {
+function ConvertModal({ candidate, factories, isReferral, onClose, onDone }: { candidate: Candidate; factories: Factory[]; isReferral: boolean; onClose: () => void; onDone: () => void }) {
   const t = useT();
   const [factoryId, setFactoryId] = useState(candidate.factoryId ? String(candidate.factoryId) : "");
   // Живий онбординг: якщо цей Telegram кандидата ще не належить активному
@@ -446,7 +447,7 @@ function ConvertModal({ candidate, factories, onClose, onDone }: { candidate: Ca
   return (
     <Modal open onClose={onClose} title={t("Перевести в працівники")}>
       <div className="space-y-3">
-        <p className="text-sm text-slate-600">{t("Надіслати")} <b>{candidate.fullName}</b> {t("лінк на скан паспорта й анкету")}{candidate.telegramId ? t(" (у його Telegram)") : t(" (лінк для ручної передачі — Telegram кандидата невідомий)")}. {t("Далі можна буде виписати бонус тому, хто запросив.")}</p>
+        <p className="text-sm text-slate-600">{t("Надіслати")} <b>{candidate.fullName}</b> {t("лінк на скан паспорта й анкету")}{candidate.telegramId ? t(" (у його Telegram)") : t(" (лінк для ручної передачі — Telegram кандидата невідомий)")}. {t("Профіль працівника створиться після сканування паспорта й анкети.")}{isReferral && candidate.referrerName ? ` ${t("Далі можна буде виписати бонус тому, хто запросив.")}` : ""}</p>
         <div><Label>{t("Фабрика")}</Label>
           <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
             <option value="">{t("— без фабрики —")}</option>

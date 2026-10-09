@@ -1087,6 +1087,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
 
   const rows = await db
     .select({
+      id: scheduleEntriesTable.id,
       day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, status: scheduleEntriesTable.status,
       hoursOverride: scheduleEntriesTable.hoursOverride, weekStart: scheduleWeeksTable.weekStart,
       factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name,
@@ -1114,7 +1115,10 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     const ym = dt ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}` : "";
     if (r.status === "present") { allShifts++; allHours += hoursOf(r); if (ym === thisMonth) { monShifts++; monHours += hoursOf(r); } }
     if (r.status === "absent") { allAbsent++; if (ym === thisMonth) monAbsent++; }
-    return { date: dt ? ymdLocal(dt) : null, ts: dt ? dt.getTime() : 0, factoryId: r.factoryId ?? null, factoryName: r.factoryName, shift: r.shift, status: r.status, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
+    // id/hoursOverride/computedHours — щоб «Останні зміни» у профілі можна було правити на місці
+    // (години, фабрика, статус через PATCH /worker-days/entry/:id — запит графікової 09.10.2026)
+    const computed = Math.round(factoryShiftHours(r.factoryId ? facMap.get(r.factoryId) : undefined, r.shift as any) * 100) / 100;
+    return { id: r.id, date: dt ? ymdLocal(dt) : null, ts: dt ? dt.getTime() : 0, factoryId: r.factoryId ?? null, factoryName: r.factoryName, shift: r.shift, status: r.status, hoursOverride: r.hoursOverride ?? null, computedHours: computed, hours: r.status === "present" ? Math.round(hoursOf(r) * 100) / 100 : 0 };
   });
   const recent = enriched.filter(e => e.date).sort((a, b) => b.ts - a.ts).slice(0, 15).map(({ ts, ...e }) => e);
   const rel = allShifts + allAbsent > 0 ? Math.round((allShifts / (allShifts + allAbsent)) * 100) : null;
@@ -5495,11 +5499,35 @@ async function weekForDate(date: string) {
 const DOW: DayOfWeek[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const dayOfDate = (date: string): DayOfWeek => DOW[new Date(date + "T00:00:00").getDay()]!;
 
-// Admin edits a single schedule entry's hours (override) or status (e.g. remove a shift).
+// Admin edits a single schedule entry's hours (override), status (e.g. remove a shift)
+// or factory (shift logged at the wrong factory — fixed from the worker profile / hours modal).
 router.patch("/worker-days/entry/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const { hoursOverride, status } = req.body ?? {};
+  const { hoursOverride, status, factoryId } = req.body ?? {};
   const patch: any = {};
+  if (factoryId !== undefined) {
+    const fid = Number(factoryId);
+    if (!Number.isInteger(fid)) return fail(res, 400, "Невірна фабрика");
+    const fac = (await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, fid)))[0];
+    if (!fac) return fail(res, 404, "Фабрику не знайдено");
+    const cur = (await db.select({ weekId: scheduleEntriesTable.weekId, workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, weekStart: scheduleWeeksTable.weekStart, factoryId: scheduleEntriesTable.factoryId, deductedMonth: scheduleEntriesTable.absenceDeductedMonth })
+      .from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id)).where(eq(scheduleEntriesTable.id, id)))[0];
+    if (!cur) return fail(res, 404, "Не знайдено");
+    // штраф за цей пропуск уже в Kara сводної старої фабрики, а undo бере поточну фабрику запису →
+    // перенос розʼїхав би суми; спершу «Скасувати перенесення» на /absences (знахідка codex 09.10.2026)
+    if (cur.deductedMonth && cur.factoryId !== fid) return fail(res, 409, `Штраф за цей пропуск уже перенесений у сводну ${cur.deductedMonth} — спершу скасуйте перенесення на сторінці пропусків`);
+    // unique-індексу на записах немає: та сама людина/день/зміна на цільовій фабриці вже є → дубль
+    // подвоїв би години в обліку, тож відмовляємо
+    const dup = (await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable).where(and(
+      eq(scheduleEntriesTable.weekId, cur.weekId), eq(scheduleEntriesTable.workerId, cur.workerId), eq(scheduleEntriesTable.dayOfWeek, cur.day),
+      eq(scheduleEntriesTable.shift, cur.shift), eq(scheduleEntriesTable.factoryId, fid), ne(scheduleEntriesTable.id, id),
+    )))[0];
+    if (dup) return fail(res, 409, "На цій фабриці в цей день і зміну запис уже є");
+    // виповідзення по фабриці: не переносити зміну на фабрику, з якої людина вже пішла
+    const wRow = (await db.select({ terminationDate: workersTable.terminationDate, terminationFactoryId: workersTable.terminationFactoryId }).from(workersTable).where(eq(workersTable.id, cur.workerId)))[0];
+    if (wRow && terminatedOn(wRow, fid, entryDateStr(String(cur.weekStart), String(cur.day)))) return fail(res, 400, `Працівник звільнений з цієї фабрики з ${String(wRow.terminationDate).slice(0, 10)}`);
+    patch.factoryId = fid;
+  }
   if (hoursOverride !== undefined) {
     patch.hoursOverride = (hoursOverride === null || hoursOverride === "") ? null : Number(hoursOverride);
     if (patch.hoursOverride != null && !Number.isFinite(patch.hoursOverride)) return fail(res, 400, "Невірні години");
@@ -5509,8 +5537,11 @@ router.patch("/worker-days/entry/:id", RW, async (req, res) => {
     patch.status = status;
     if (status !== "present") patch.pickedUpBy = null;
   }
+  if (!Object.keys(patch).length) return fail(res, 400, "Нічого змінювати");
   const [e] = await db.update(scheduleEntriesTable).set(patch).where(eq(scheduleEntriesTable.id, id)).returning();
+  if (!e) return fail(res, 404, "Не знайдено");
   import("../bot/notify").then(m => m.refreshExcelReports()).catch(() => {});
+  if (patch.status === "present") import("../services/firstWorkDate").then(m => m.ensureFirstWorkDate(e.workerId)).catch(() => {}); // перший робочий день
   ok(res, e);
 });
 

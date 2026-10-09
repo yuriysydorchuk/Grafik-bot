@@ -42,7 +42,7 @@ export function WorkerDaysModal({ workerId, name, month, monthLabel, onClose }: 
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-days", workerId, month] }); qc.invalidateQueries({ queryKey: ["hours", month] }); qc.invalidateQueries({ queryKey: ["hours-reports"] }); };
 
   const editEntry = useMutation({
-    mutationFn: (v: { id: number; hoursOverride?: number | null; status?: string }) => patch(`/worker-days/entry/${v.id}`, v),
+    mutationFn: (v: { id: number; hoursOverride?: number | null; status?: string; factoryId?: number }) => patch(`/worker-days/entry/${v.id}`, v),
     onSuccess: () => inv(), onError: (e: any) => toast.error(e.message),
   });
   const addShift = useMutation({
@@ -120,7 +120,7 @@ export function WorkerDaysModal({ workerId, name, month, monthLabel, onClose }: 
                     <tr key={d.entryId} className="hover:bg-slate-50">
                       <td className="px-3 py-2 font-medium text-slate-700">{fmtDate(d.date)}</td>
                       <td className="px-3 py-2 text-slate-500">{DAY_UK[d.day]}</td>
-                      <td className="px-3 py-2 text-slate-500">{d.factory ?? "—"}</td>
+                      <td className="px-3 py-2 text-slate-500"><EntryFactorySelect value={d.factoryId} factories={factories} onChange={fid => editEntry.mutate({ id: d.entryId, factoryId: fid })} /></td>
                       <td className="px-3 py-2 text-slate-500">{SHIFT_UK[d.shift]}</td>
                       <td className="px-3 py-2">{statusChip(d, t)}{d.reason && <div className="text-xs text-slate-400">{d.reason}</div>}</td>
                       <td className="px-2 py-2 text-right">
@@ -148,7 +148,21 @@ export function WorkerDaysModal({ workerId, name, month, monthLabel, onClose }: 
   );
 }
 
-function HoursCell({ value, overridden, onSave }: { value: number; overridden: boolean; onSave: (h: number | null) => void }) {
+// Фабрика запису графіку — select на місці (зміна, записана не на ту фабрику, виправляється
+// з профілю/модалки годин без перестворення запису; запит графікової 09.10.2026)
+export function EntryFactorySelect({ value, factories, onChange }: { value: number | null; factories: Factory[]; onChange: (factoryId: number) => void }) {
+  const t = useT();
+  const known = value != null && factories.some(f => f.id === value);
+  return (
+    <select value={value ?? ""} onChange={e => { if (e.target.value) onChange(Number(e.target.value)); }} title={t("Змінити фабрику цієї зміни")}
+      className="w-[7rem] truncate rounded-md border border-transparent bg-transparent px-0.5 py-0.5 text-sm text-slate-600 hover:border-slate-200 focus:border-slate-300 focus:outline-none">
+      {!known && <option value="">—</option>}
+      {factories.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+    </select>
+  );
+}
+
+export function HoursCell({ value, overridden, onSave }: { value: number; overridden: boolean; onSave: (h: number | null) => void }) {
   const [v, setV] = useState(String(round(value)));
   const dirty = v !== String(round(value));
   return (

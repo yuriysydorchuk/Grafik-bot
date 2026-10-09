@@ -16,6 +16,7 @@ import { PdfPreview } from "../components/PdfPreview";
 import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { DocumentAuditModal } from "../components/DocumentAuditModal";
+import { HoursCell, EntryFactorySelect } from "../components/DetailModals";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
 import {
@@ -75,7 +76,7 @@ interface WorkerProfile {
   note?: string | null; payoutPrefKind?: string | null; payoutPrefValue?: number | null;
   stats: { month: string; monthShifts: number; monthHours: number; monthAbsent: number; totalShifts: number; totalHours: number; totalAbsent: number; reliability: number | null; referralCount: number };
   factoryHistory: { factoryId: number | null; factoryName: string | null; shifts: number; hours: number; absent: number; firstDate: string; lastDate: string }[];
-  recent: { date: string | null; factoryName: string | null; shift: string; status: string; hours: number }[];
+  recent: { id: number; date: string | null; factoryId: number | null; factoryName: string | null; shift: string; status: string; hoursOverride: number | null; computedHours: number; hours: number }[];
 }
 
 // Компактний стат-тайл: сітка з gap-px на слейт-фоні дає волосяні розділювачі
@@ -156,6 +157,12 @@ export default function WorkerDetail() {
   // повернення звільненого прямо з профілю (той самий POST, що й у списку)
   const confirmDlg = useConfirm();
   const [firing, setFiring] = useState(false);
+  // «Останні зміни» правляться на місці: години / фабрика / статус (той самий PATCH, що й модалка /hours)
+  const editEntry = useMutation({
+    mutationFn: (v: { id: number; hoursOverride?: number | null; status?: string; factoryId?: number }) => patch(`/worker-days/entry/${v.id}`, v),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-days"] }); qc.invalidateQueries({ queryKey: ["hours"] }); toast.success(t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const fire = useMutation({
     mutationFn: (v: { offerReport: boolean; date: string }) => post<{ reportOffered?: boolean }>(`/workers/${id}/fire`, v),
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setFiring(false); toast.success(t("Працівника звільнено"), { description: r?.reportOffered ? t("Пропозицію здати рапорт надіслано в бот") : undefined }); },
@@ -475,20 +482,35 @@ export default function WorkerDetail() {
               <div className="max-h-96 overflow-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase text-slate-400">
-                    <tr><th className="px-4 py-2">{t("Дата")}</th><th className="px-4 py-2">{t("Фабрика")}</th><th className="px-4 py-2">{t("Зміна")}</th><th className="px-4 py-2">{t("Статус")}</th><th className="px-4 py-2 text-right">{t("Години")}</th></tr>
+                    <tr><th className="px-2.5 py-2">{t("Дата")}</th><th className="px-2.5 py-2">{t("Фабрика")}</th><th className="px-2.5 py-2">{t("Зміна")}</th><th className="px-2.5 py-2">{t("Статус")}</th><th className="px-2.5 py-2 text-right">{t("Години")}</th>{canEdit && <th className="px-1.5 py-2"></th>}</tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {w.recent.map((r, i) => (
-                      <tr key={i} className="hover:bg-slate-50">
-                        <td className="whitespace-nowrap px-4 py-1.5 font-medium text-slate-700">{r.date}</td>
-                        <td className="px-4 py-1.5 text-slate-500">{r.factoryName ?? "—"}</td>
-                        <td className="px-4 py-1.5 text-slate-500">{r.shift} {t("зм")}</td>
-                        <td className="px-4 py-1.5">{statusBadge(r.status)}</td>
-                        <td className="px-4 py-1.5 text-right text-slate-600">{r.hours || "—"}</td>
+                      <tr key={r.id ?? i} className="hover:bg-slate-50">
+                        <td className="whitespace-nowrap px-2.5 py-1.5 font-medium text-slate-700">{r.date}</td>
+                        <td className="px-2.5 py-1.5 text-slate-500">
+                          {canEdit ? <EntryFactorySelect value={r.factoryId} factories={factories} onChange={fid => editEntry.mutate({ id: r.id, factoryId: fid })} /> : (r.factoryName ?? "—")}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-slate-500">{r.shift} {t("зм")}</td>
+                        <td className="px-2.5 py-1.5">{statusBadge(r.status)}</td>
+                        <td className="px-2.5 py-1.5 text-right text-slate-600">
+                          {canEdit && r.status === "present"
+                            ? <HoursCell key={`${r.id}-${r.hoursOverride ?? r.computedHours}`} value={r.hoursOverride ?? r.computedHours} overridden={r.hoursOverride != null}
+                                onSave={(h) => editEntry.mutate({ id: r.id, hoursOverride: h })} />
+                            : (r.hours || "—")}
+                        </td>
+                        {canEdit && (
+                          <td className="px-1.5 py-1.5 text-right">
+                            {r.status === "present"
+                              ? <button onClick={() => editEntry.mutate({ id: r.id, status: "scheduled" })} title={t("Прибрати зміну (не зараховувати)")} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button>
+                              : <button onClick={() => editEntry.mutate({ id: r.id, status: "present" })} title={t("Зарахувати як відпрацьовану")} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"><UserCheck className="h-4 w-4" /></button>}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {canEdit && <p className="px-2.5 py-1.5 text-xs text-slate-400">{t("Фабрику й години можна змінити на місці (години — натисніть на число, з'явиться ✓). Повний місяць — у «Облік годин».")}</p>}
               </div>
             )}
           </Section>
