@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  isLatin, isLatinName, peselChecksumOk, peselBirthDate, peselSex, nipOk, normalizeNrb, formatNrb, normalizePhone,
+  isLatin, isLatinName, peselChecksumOk, peselBirthDate, peselSex, nipOk, normalizeNrb, formatNrb, normalizePhone, normalizePostal, POSTAL_RE,
   validatePassport, validateQuestionnaire, CONSENT_KEYS,
 } from "./questionnaireRules";
 
@@ -55,6 +55,26 @@ test("телефон: нормалізація", () => {
   assert.equal(normalizePhone("12345"), null, "замало цифр");
   assert.equal(normalizePhone("600000000"), "600000000");
   assert.equal(normalizePhone("abc"), null);
+  assert.equal(normalizePhone("+7 (701) 234-56-78"), "+77012345678", "Казахстан");
+  assert.equal(normalizePhone("00380 67 300 02 14"), "+380673000214", "00 → +");
+  assert.equal(normalizePhone("\u2068+380\u00a067 300 02 14\u2069"), "+380673000214", "невидимі символи iOS");
+  assert.equal(normalizePhone("+48+600000000"), null, "плюс не на початку");
+  assert.equal(normalizePhone("+48abc123456789"), null, "літери — не зрізаємо мовчки");
+});
+
+test("індекс: польський, закордонний, авто-дефіс для воєводства", () => {
+  for (const ok of ["20-076", "20142", "050000", "SW1A 1AA", "1000", "L-1234"]) assert.ok(POSTAL_RE.test(ok), ok);
+  for (const bad of ["1", "20--076", "20-076-1-2", "12345678901", "20 07 6"]) assert.ok(!POSTAL_RE.test(bad), bad);
+  assert.equal(normalizePostal("20076", "lubelskie"), "20-076");
+  assert.equal(normalizePostal("20076", "Woj. Łódzkie"), "20-076", "діакритики/префікс");
+  assert.equal(normalizePostal("20142", "Lwowska"), "20142", "не польське воєводство — як є");
+  assert.equal(normalizePostal("050000", "mazowieckie"), "050000", "6 цифр — не чіпаємо");
+  assert.equal(normalizePostal(" 20-076 ", "lubelskie"), "20-076");
+  assert.equal(normalizePostal("20076", " Mazowieckie "), "20-076", "крайові пробіли у воєводстві");
+  const pl = validateQuestionnaire({ ...fullAnketa(), regWojewodztwo: "mazowieckie", regKodPocztowy: "ABC" }, { birthDate: "1944-05-14" });
+  assert.equal(pl.errors.regKodPocztowy, "format", "польське воєводство → лише XX-XXX");
+  const pl6 = validateQuestionnaire({ ...fullAnketa(), regWojewodztwo: "mazowieckie", regKodPocztowy: "050000" }, { birthDate: "1944-05-14" });
+  assert.equal(pl6.errors.regKodPocztowy, "format");
 });
 
 test("validatePassport: обов'язкові поля, вік, термін дії, формат номера", () => {
@@ -96,12 +116,20 @@ test("validateQuestionnaire: повна анкета — без помилок, 
   assert.equal(r.values.postalCode, "20-076");
   assert.equal(r.values.city, "Lublin");
   assert.equal(r.values.zam.Ulica, "Długa");
+  const ua = validateQuestionnaire({ ...fullAnketa(), regWojewodztwo: "Lwowska", regKodPocztowy: "79000", zamSame: false,
+    zamWojewodztwo: "lubelskie", zamPowiat: "Lublin", zamGmina: "Lublin", zamMiejscowosc: "Lublin", zamUlica: "Nowa", zamNumerDomu: "1", zamKodPocztowy: "20076",
+  }, { birthDate: "1944-05-14" });
+  assert.deepEqual(ua.errors, {});
+  assert.equal(ua.values.reg.KodPocztowy, "79000", "закордонний індекс — як є");
+  assert.equal(ua.values.zam.KodPocztowy, "20-076", "польське воєводство + 5 цифр → дефіс");
+  assert.equal(ua.values.postalCode, "20-076");
+  assert.equal(ua.values.addressPl, "Nowa 1, 20-076 Lublin");
 });
 
 test("validateQuestionnaire: пропуски/формати/кирилиця/згоди/умовні поля", () => {
   const r = validateQuestionnaire({
     ...fullAnketa(), pesel: "44051401359", motherName: "Марія", bankIban: "DE89370400440532013000", phone: "12",
-    email: "nope", taxOffice: "щось", regKodPocztowy: "20076", zamSame: false, zamUlica: "Nowa",
+    email: "nope", taxOffice: "щось", regKodPocztowy: "2", zamSame: false, zamUlica: "Nowa",
     isStudent: true, hasOtherEmployment: true, nip: "1234567890", consents: { rodo_info: true },
   }, { birthDate: "1990-01-01" });
   assert.equal(r.errors.pesel, "date", "PESEL не збігається з датою народження");

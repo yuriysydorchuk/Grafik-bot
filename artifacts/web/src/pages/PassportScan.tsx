@@ -140,7 +140,7 @@ const STR: Record<string, Record<Lang, string>> = {
   hintMiejscowosc: { uk: "напр. Lublin", en: "e.g. Lublin", es: "p. ej. Lublin", ru: "напр. Lublin", pl: "np. Lublin" },
   hintUlica: { uk: "напр. Długa", en: "e.g. Długa", es: "p. ej. Długa", ru: "напр. Długa", pl: "np. Długa" },
   hintNrDomu: { uk: "будинок/квартира, напр. 5/12", en: "house/flat, e.g. 5/12", es: "casa/piso, p. ej. 5/12", ru: "дом/квартира, напр. 5/12", pl: "dom/mieszkanie, np. 5/12" },
-  hintKod: { uk: "формат 00-000, напр. 20-076", en: "format 00-000, e.g. 20-076", es: "formato 00-000, p. ej. 20-076", ru: "формат 00-000, напр. 20-076", pl: "format 00-000, np. 20-076" },
+  hintKod: { uk: "Польща: 20-076 (можна 20076); інші країни — як у країні, напр. 20142, 050000", en: "Poland: 20-076 (or 20076); other countries — local format, e.g. 20142, 050000", es: "Polonia: 20-076 (o 20076); otros países — formato local, p. ej. 20142, 050000", ru: "Польша: 20-076 (можно 20076); другие страны — как в стране, напр. 20142, 050000", pl: "Polska: 20-076 (lub 20076); inne kraje — format lokalny, np. 20142, 050000" },
   consentsTitle: { uk: "Згоди", en: "Consents", es: "Consentimientos", ru: "Согласия", pl: "Zgody" },
   consentsHint: { uk: "Відміть усі, щоб завершити.", en: "Tick all to finish.", es: "Marca todas para terminar.", ru: "Отметь все, чтобы завершить.", pl: "Zaznacz wszystkie, aby zakończyć." },
   cRodoInfo: { uk: "Ознайомився(-лась) з інформацією про обробку персональних даних; адміністратор даних — {company}.", en: "I have read the information on personal data processing; the data controller is {company}.", es: "He leído la información sobre el tratamiento de datos personales; el responsable es {company}.", ru: "Ознакомился(-ась) с информацией об обработке персональных данных; администратор данных — {company}.", pl: "Zapoznałem(-am) się z informacją o przetwarzaniu danych osobowych; administratorem danych jest {company}." },
@@ -637,7 +637,7 @@ function AddrFields({ s, prefix, value, onChange, errs, touch }: {
       {f("miejscowosc", "fieldMiejscowosc", "hintMiejscowosc")}
       {f("ulica", "fieldUlica", "hintUlica")}
       {f("numerDomu", "fieldNumerDomu", "hintNrDomu")}
-      {f("kodPocztowy", "fieldKodPocztowy", "hintKod", { placeholder: "00-000", inputMode: "numeric" })}
+      {f("kodPocztowy", "fieldKodPocztowy", "hintKod", { placeholder: "20-076 / 20142", autoCapitalize: "characters", autoComplete: "postal-code" })}
     </>
   );
 }
