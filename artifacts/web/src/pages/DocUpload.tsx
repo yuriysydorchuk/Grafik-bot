@@ -68,7 +68,8 @@ export default function DocUpload() {
   const [vals, setVals] = useState<Record<number, Record<string, string>>>({});
   const [touched, setTouched] = useState<Record<number, boolean>>({});
   const [srvErrs, setSrvErrs] = useState<Record<number, Partial<Record<FieldKey, FieldErr>>>>({});
-  const today = new Date().toLocaleDateString("sv-SE");
+  // «сьогодні» — за Варшавою, як на сервері (validateWorkerFields/warsawToday): телефон у Києві о 23:30 не має блокувати чинну дату
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
   const lang: Lang = info?.language ?? "uk";
   const s = (k: string, p?: Record<string, string>) => { let v = STR[k]?.[lang] ?? STR[k]?.uk ?? k; for (const [a, b] of Object.entries(p ?? {})) v = v.replace(`{${a}}`, b); return v; };
   const load = async () => {

@@ -455,7 +455,7 @@ function DocTypeRow({ d, onSave, onDelete }: { d: DocumentType; onSave: (p: any)
           const on = (d.workerFields ?? []).includes(k);
           return (
             <label key={k} className="flex items-center gap-1 text-slate-600">
-              <input type="checkbox" checked={on} onChange={e => { const next = WORKER_FIELD_KEYS.filter(x => (x === k ? e.target.checked : (d.workerFields ?? []).includes(x))); onSave({ workerFields: next.length ? next : null }); }} />
+              <input type="checkbox" checked={on} onChange={e => { const next = WORKER_FIELD_KEYS.filter(x => (x === k ? e.target.checked : (d.workerFields ?? []).includes(x))); onSave({ workerFields: next }); }} />
               {t(WORKER_FIELD_LABEL[k])}
             </label>
           );
