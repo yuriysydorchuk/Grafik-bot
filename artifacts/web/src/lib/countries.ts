@@ -40,17 +40,26 @@ export const COUNTRIES: Record<string, [string, Region]> = {
   ETH: ["Etiopia", "africa"], UGA: ["Uganda", "africa"], TZA: ["Tanzania", "africa"], SEN: ["Senegal", "africa"], CIV: ["Wybrzeże Kości Słoniowej", "africa"],
   COD: ["Demokratyczna Republika Konga", "africa"], COG: ["Kongo", "africa"], AGO: ["Angola", "africa"], MOZ: ["Mozambik", "africa"], ZMB: ["Zambia", "africa"],
   RWA: ["Rwanda", "africa"], BDI: ["Burundi", "africa"], SDN: ["Sudan", "africa"], GIN: ["Gwinea", "africa"], MLI: ["Mali", "africa"], GMB: ["Gambia", "africa"],
+  MWI: ["Malawi", "africa"], SSD: ["Sudan Południowy", "africa"], SOM: ["Somalia", "africa"], ERI: ["Erytrea", "africa"], DJI: ["Dżibuti", "africa"],
+  LBY: ["Libia", "africa"], NAM: ["Namibia", "africa"], BWA: ["Botswana", "africa"], LSO: ["Lesotho", "africa"], SWZ: ["Eswatini", "africa"],
+  NER: ["Niger", "africa"], TCD: ["Czad", "africa"], BFA: ["Burkina Faso", "africa"], TGO: ["Togo", "africa"], BEN: ["Benin", "africa"],
+  SLE: ["Sierra Leone", "africa"], LBR: ["Liberia", "africa"], MDG: ["Madagaskar", "africa"], MUS: ["Mauritius", "africa"], GAB: ["Gabon", "africa"],
+  GNQ: ["Gwinea Równikowa", "africa"], CAF: ["Republika Środkowoafrykańska", "africa"], MRT: ["Mauretania", "africa"], CPV: ["Republika Zielonego Przylądka", "africa"],
   // Латинська Америка
   COL: ["Kolumbia", "latin_america"], VEN: ["Wenezuela", "latin_america"], PER: ["Peru", "latin_america"], ARG: ["Argentyna", "latin_america"],
   BRA: ["Brazylia", "latin_america"], MEX: ["Meksyk", "latin_america"], CUB: ["Kuba", "latin_america"], ECU: ["Ekwador", "latin_america"],
   BOL: ["Boliwia", "latin_america"], CHL: ["Chile", "latin_america"], PRY: ["Paragwaj", "latin_america"], URY: ["Urugwaj", "latin_america"],
   DOM: ["Dominikana", "latin_america"], GTM: ["Gwatemala", "latin_america"], HND: ["Honduras", "latin_america"], SLV: ["Salwador", "latin_america"],
   NIC: ["Nikaragua", "latin_america"], CRI: ["Kostaryka", "latin_america"], PAN: ["Panama", "latin_america"],
+  HTI: ["Haiti", "latin_america"], JAM: ["Jamajka", "latin_america"], TTO: ["Trynidad i Tobago", "latin_america"], GUY: ["Gujana", "latin_america"], SUR: ["Surinam", "latin_america"],
   // Решта світу
   PHL: ["Filipiny", "other"], VNM: ["Wietnam", "other"], IDN: ["Indonezja", "other"], THA: ["Tajlandia", "other"], MMR: ["Mjanma", "other"],
   MYS: ["Malezja", "other"], CHN: ["Chiny", "other"], MNG: ["Mongolia", "other"], KOR: ["Korea Południowa", "other"], JPN: ["Japonia", "other"], IRN: ["Iran", "other"],
   IRQ: ["Irak", "other"], SYR: ["Syria", "other"], AFG: ["Afganistan", "other"], ISR: ["Izrael", "other"], JOR: ["Jordania", "other"],
-  LBN: ["Liban", "other"], USA: ["Stany Zjednoczone", "other"], CAN: ["Kanada", "other"], AUS: ["Australia", "other"],
+  LBN: ["Liban", "other"], USA: ["Stany Zjednoczone", "other"], CAN: ["Kanada", "other"], AUS: ["Australia", "other"], NZL: ["Nowa Zelandia", "other"],
+  KHM: ["Kambodża", "other"], LAO: ["Laos", "other"], SGP: ["Singapur", "other"], TWN: ["Tajwan", "other"], HKG: ["Hongkong", "other"],
+  SAU: ["Arabia Saudyjska", "other"], ARE: ["Zjednoczone Emiraty Arabskie", "other"], KWT: ["Kuwejt", "other"], QAT: ["Katar", "other"],
+  YEM: ["Jemen", "other"], PSE: ["Palestyna", "other"], AND: ["Andora", "eu_other"], MCO: ["Monako", "other"], SMR: ["San Marino", "other"], VAT: ["Watykan", "other"],
 };
 
 const NAME_TO_CODE = new Map<string, string>(Object.entries(COUNTRIES).map(([code, [name]]) => [name.toLowerCase(), code]));
