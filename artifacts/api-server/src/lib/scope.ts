@@ -135,6 +135,11 @@ const SCOPE_RULES: Rule[] = [
   R(ANY, /^\/admin-invites(?:\/\d+(?:\/invite)?)?$/, { kind: "free" }),
   // Лінк самореєстрації фабрики
   R("GET", /^\/factories\/(\d+)\/join-link$/, { kind: "factory" }),
+  // Персональні лінки реєстрації (routes/signupLinks.ts, 11.10.2026): свої — хендлер віддає лише власні,
+  // новий — фабрика у тілі (гейт тіла), рядок — власність перевіряє хендлер (чужий → 404)
+  R("GET", /^\/signup-links$/, { kind: "free" }),
+  R("POST", /^\/signup-links$/, { kind: "bodyFactory" }),
+  R(ANY, /^\/signup-links\/(\d+)\/(?:rotate|workers|qr\.png)$/, { kind: "free" }),
   // Залічки (08.10.2026, cap advances): список фільтрує хендлер, нова — workerId у тілі (гейт тіла), рядок — його працівник
   R("GET,POST", /^\/advances$/, { kind: "free" }),
   R(ANY, /^\/advances\/(\d+)(?:\/(?:balance|approve|reject|paid))?$/, { kind: "lookup", table: "advance" }),

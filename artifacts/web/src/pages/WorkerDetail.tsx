@@ -51,6 +51,7 @@ type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: b
 
 interface WorkerProfile {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
+  signupLink?: { linkId: number; adminId: number; adminName: string; factoryId: number; factoryName: string } | null; // «хто привів» — персональний лінк рекрутера
   factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
@@ -312,6 +313,7 @@ export default function WorkerDetail() {
                 onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
                 options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
               <WorkerFactoriesChips workerId={w.id} factories={factories} companies={companies} primaryFactoryId={w.factoryId} />
+              {w.signupLink && <span className="text-xs text-slate-500" title={t("Зареєструвався за персональним лінком реєстрації")}>{t("Привів(ла)")}: <b>{w.signupLink.adminName}</b> · {w.signupLink.factoryName}</span>}
             </div>
             {/* лічильники — текстовим рядком замість окремої стрічки тайлів */}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">

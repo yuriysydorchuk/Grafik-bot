@@ -2,6 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { hasTestDb, resetDb, closeDb, db, sendStart, sendText, pressButton, resetSent, sentText } from "../test/botHarness.ts";
 import { workersTable, driversTable, adminsTable, factoriesTable } from "../test/harness.ts";
+import { signupLinksTable, passportScanTokensTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 // Telegram deep-link binding flows, driven through the real bot handlers.
@@ -91,4 +92,26 @@ test("fac (старий лінк): мова → ім'я в чаті → проф
   const [w] = await db.select().from(workersTable).where(eq(workersTable.telegramId, "500800"));
   assert.equal(w?.fullName, "Jan Nowak"); assert.equal(w?.factoryId, f!.id); assert.equal(w?.language, "uk");
   assert.ok(w?.workerCode, "публічний код виданий");
+});
+
+// Персональний лінк рекрутера ?start=rec<токен> (signup_links, 11.10.2026): той самий скан-флоу,
+// що й facs, але токен сканування несе signup_link_id → профіль у confirm() отримає «хто привів».
+test("rec: лінк рекрутера → мова → лінк на скан; токен сканування несе signup_link_id і фабрику лінка", opts, async () => {
+  const [f] = await db.insert(factoriesTable).values({ name: "Fabryka R" }).returning({ id: factoriesTable.id });
+  const [a] = await db.insert(adminsTable).values({ name: "Rekruter", role: "scheduler" }).returning({ id: adminsTable.id });
+  const [link] = await db.insert(signupLinksTable).values({ adminId: a!.id, factoryId: f!.id, token: "RECTOKEN0001" }).returning({ id: signupLinksTable.id });
+  await sendStart("500950", "recrectoken0001"); // регістр payload не має значення
+  resetSent();
+  await pressButton("500950", "setlang:uk");
+  assert.match(sentText(), /passport-scan/);
+  const [tok] = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.telegramId, "500950"));
+  assert.equal(tok?.signupLinkId, link!.id);
+  assert.equal(tok?.factoryId, f!.id);
+  assert.equal((await db.select().from(workersTable).where(eq(workersTable.telegramId, "500950"))).length, 0, "профіль створює лише confirm()");
+});
+
+test("rec: невідомий токен відхиляється без стану", opts, async () => {
+  await sendStart("500960", "recNOPENOPENOPE");
+  assert.match(sentText(), /недійсне|застаріле/i);
+  assert.equal((await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.telegramId, "500960"))).length, 0);
 });

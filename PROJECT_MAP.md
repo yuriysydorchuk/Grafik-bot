@@ -52,6 +52,7 @@ Grafik-bot/
 |-------|-----|--------------|
 | Auth / сесії | `routes/auth.ts` | login, 2FA, telegram-webapp (Mini App), web-lang/web-prefs, logout, me |
 | Працівники / документи | `routes/admin-api.ts` | workers CRUD + fire/restore, invite, документи + файли, document-types |
+| Лінки реєстрації | `routes/signupLinks.ts`, `services/signupLinks.ts` | персональні лінки/QR рекрутерів на фабрику (`?start=rec<токен>`), лічильники й список «хто привів», сторінка `/signup-links`, cap `signupLinks` |
 | Довідники | `routes/admin-api.ts` | companies, positions, factories (+join-link) |
 | Водії / авто | `routes/admin-api.ts` | drivers, driver-board, driver-days, mileage, vehicles |
 | Замовлення / доступність | `routes/admin-api.ts` | orders, availability (+missing/remind) |
@@ -84,7 +85,7 @@ Grafik-bot/
 
 Telegraf, **long-polling**, один інстанс. Деталі — [`artifacts/api-server/src/bot/README.md`](artifacts/api-server/src/bot/README.md).
 
-- **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал (`ref<ES-XXXXX>` по `workers.referral_code`, легасі `ref<id>` теж; звільнені запрошують), `fac`=самореєстрація на фабрику старим способом (ім'я в чаті), `facs`=новим (скан паспорта + анкета на вебі; перехідний період з 06.09.2026); вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
+- **Вхід:** `bot.start` обробляє deep-links `?start=...` (префікси: `emp`=привʼязка працівника, `drv`=водія, `adm`=адміна, `ref`=реферал (`ref<ES-XXXXX>` по `workers.referral_code`, легасі `ref<id>` теж; звільнені запрошують), `fac`=самореєстрація на фабрику старим способом (ім'я в чаті), `facs`=новим (скан паспорта + анкета на вебі; перехідний період з 06.09.2026), `rec`=персональний лінк рекрутера/офіс-менеджера (`signup_links`, той самий скан-флоу; профіль отримує `signup_link_id` — «хто привів»; кнопка «🔗 Лінк реєстрації», cap `signupLinks`, `bot/handlers/signupLinks.ts`); вибір мови). Усі invite-коди — **криптовипадкові** (`lib/invite.ts` `randomInviteCode`, base32), не послідовні й не `Math.random`; токен працівника одноразовий (обнуляється при привʼязці). Команди: `/adminsetup`, `/getid`, `/invite`.
 - **Навігація:** reply-keyboard меню за роллю (`menus.ts`); `bot.hears` (~53, двомовний матч через `bhears`). Головний водій має web_app-кнопку «🖥 Панель призначень» (Telegram Mini App: відкриває `/driver-shifts` панелі з авто-логіном через `POST /auth/telegram-webapp`; зʼявляється лише коли задано `WEB_APP_URL`).
 - **Дії:** inline-кнопки `bot.action` (~32) — підтвердження відсутностей, мова, редагування графіку.
 - **Введення:** `bot.on("text"|"photo"|"document")` у межах активного кроку діалогу.

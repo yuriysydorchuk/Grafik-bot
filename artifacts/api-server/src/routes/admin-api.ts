@@ -42,6 +42,7 @@ import { terminatedOn } from "../lib/termination";
 import { workerQuestionnairesTable } from "@workspace/db";
 import { DEFAULT_ABSENCE_PENALTY, absencePenaltyOf } from "../lib/absences";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
+import { workerSignupInfo } from "../services/signupLinks";
 import { createAnketaToken, createOfficeScanToken, createSelfScanToken, passportScanLink } from "./passportScan";
 import { documentChanged, workerLegalityChanged, LEGALITY_PROFILE_FIELDS } from "../services/documentEvents";
 import { documentAuditDiff } from "../services/documentAudit";
@@ -1178,6 +1179,7 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     list.map(i => ({ id: i.id, factoryId, factoryName: facMap.get(factoryId)?.name ?? null, since: i.since, until: i.until })));
   ok(res, {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
+    signupLink: await workerSignupInfo(w.signupLinkId), // «хто привів» (персональний лінк рекрутера) — null, якщо реєстрація не за ним
     factoryCodes: facCodes.map(c => ({ factoryId: c.factoryId, factoryName: facMap.get(c.factoryId)?.name ?? null, code: c.code })),
     factoryId: w.factoryId, factoryName: w.factoryId ? (facMap.get(w.factoryId)?.name ?? null) : null,
     companyId: w.companyId, companyName: coName,

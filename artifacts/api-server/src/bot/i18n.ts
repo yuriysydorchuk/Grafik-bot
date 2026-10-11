@@ -413,6 +413,12 @@ export const oLang = (v: any): Lang => (v === "en" ? "en" : v === "ru" ? "ru" : 
 
 // uk → en. Add pairs here as strings get wrapped with tb(). Proofread later.
 const BOT_EN: Record<string, string> = {
+  // Лінк реєстрації рекрутера (bot/handlers/signupLinks.ts)
+  "🔗 Лінк реєстрації": "🔗 Signup link",
+  "Немає фабрик, на які можна дати лінк реєстрації.": "There are no factories you can issue a signup link for.",
+  "На яку фабрику потрібен лінк реєстрації?": "Which factory do you need a signup link for?",
+  "🔗 <b>Лінк реєстрації — {factory}</b>\n\nНатисніть, щоб скопіювати:\n<code>{url}</code>\n\nХто зареєструється за цим лінком або QR-кодом — буде записаний як приведений вами.": "🔗 <b>Signup link — {factory}</b>\n\nTap to copy:\n<code>{url}</code>\n\nAnyone who registers via this link or QR code will be recorded as referred by you.",
+  "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає коди входу і ваш лінк реєстрації працівників (кнопка нижче).": "👋 Hi {name}! Your access is in the web panel: {url}\n\nHere the bot sends login codes and your worker signup link (button below).",
   // Повернення звільненого (bot/handlers/rehire.ts) — запит офісу
   "🔄 <b>{name}</b> (№{code}, звільнений {date}, був на {oldFactory}) просить повернутись на <b>{factory}</b>.": "🔄 <b>{name}</b> (No. {code}, left {date}, last at {oldFactory}) asks to return to <b>{factory}</b>.",
   "⚠️ Новий Telegram-акаунт (старий: {old})": "⚠️ New Telegram account (old: {old})",

@@ -150,7 +150,7 @@ export async function adminMenuFor(admin: { role: string } | undefined, lang: La
     orders: caps.has("editData"),
     orderView: caps.has("editData") || caps.has("viewWorkers"),
     broadcast: caps.has("editData"),
-    management: caps.has("editData") || caps.has("viewWorkers") || caps.has("assignDrivers") || caps.has("deleteWorkers"),
+    management: caps.has("editData") || caps.has("viewWorkers") || caps.has("assignDrivers") || caps.has("deleteWorkers") || caps.has("signupLinks"),
   });
 }
 
@@ -162,5 +162,6 @@ export async function managementMenuFor(admin: { role: string } | undefined, lan
     viewWorkers: caps.has("editData") || caps.has("viewWorkers"),
     assignDrivers: caps.has("editData") || caps.has("assignDrivers"),
     deleteWorkers: caps.has("deleteWorkers"),
+    signupLinks: caps.has("signupLinks"),
   });
 }

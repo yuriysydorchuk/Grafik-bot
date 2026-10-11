@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist", "workerLifecycle", "advances"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist", "workerLifecycle", "advances", "signupLinks"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -30,6 +30,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   blacklist: "Чорний список — вносити людей з причиною і прибирати з нього",
   workerLifecycle: "Запрошувати й звільняти працівників (лінк у бот, звільнення, виповідзення, повернення) — без решти редагування",
   advances: "Залічки й потрачення — залічки, бадання, одяг (вносити, редагувати, передавати до виплати); без сводних",
+  signupLinks: "Лінки реєстрації працівників — персональний лінк/QR на фабрику (веб і бот), «хто привів» у профілі",
 };
 
 // Режим ролі «лише перегляд» (08.10.2026, роль для власника-спостерігача фінансів).
@@ -52,7 +53,7 @@ export const PAGE_KEYS = [
   "/", "/schedule", "/driver-shifts", "/orders", "/availability", "/reliability",
   "/hours", "/absences", "/advances", "/trips", "/mileage", "/reports", "/finance", "/bank", "/cash", "/cashflow", "/cfo", "/analytics", "/balance", "/obligations", "/cost-invoices", "/pnl", "/payroll", "/svodni", "/hostels", "/penalties", "/fuel", "/cleaning", "/settings",
   "/workers", "/recruitment", "/broadcast", "/sms-campaigns", "/drivers", "/fleet", "/transport", "/clothing", "/factories", "/admins",
-  "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks", "/workers-calendar",
+  "/sushi", "/andros", "/contracts", "/document-templates", "/legalization", "/tasks", "/workers-calendar", "/signup-links",
 ] as const;
 
 // owner is always allowed; otherwise check the resolved capability set.

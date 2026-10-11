@@ -41,6 +41,7 @@ import tasksRouter from "./tasks";
 import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
 import workerPayRouter from "./workerPay";
+import signupLinksRouter from "./signupLinks";
 
 const router: IRouter = Router();
 
@@ -61,6 +62,7 @@ router.use(authRouter);
 router.use(adminApiRouter);
 router.use(searchRouter);
 router.use(workerPayRouter); // /workers/:id/pay — зарплата по фабриках у профілі (svodni|workerPay)
+router.use(signupLinksRouter); // /signup-links — персональні лінки реєстрації рекрутерів (cap signupLinks)
 router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);

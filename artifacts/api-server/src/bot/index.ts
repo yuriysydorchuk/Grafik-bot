@@ -28,6 +28,8 @@ import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
+import { resolveSignupLink } from "../services/signupLinks";
+import { registerSignupLinks, signupLinkAdmin, signupLinkKeyboard } from "./handlers/signupLinks";
 import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../lib/referral";
 import { loadCampaignParams, campaignVars, campaignKeyboard, renderCampaign, friendCopyHtml } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
@@ -134,6 +136,7 @@ registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
 registerRehire(bot as any, workerMenuFor);
+registerSignupLinks(bot as any);
 registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кнопки sms:*
 // «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
 registerTaskActions(bot as any);
@@ -250,6 +253,21 @@ bot.start(async (ctx) => {
       return ctx.reply(LANG_PROMPT, langPickKeyboard());
     }
 
+    // Персональний лінк рекрутера/офіс-менеджера ?start=rec<токен> (signup_links, 11.10.2026):
+    // той самий скан-флоу, що й facs, але профіль отримає signup_link_id («хто привів»).
+    if (code.toLowerCase().startsWith("rec") && code.length > 3) {
+      const found = await resolveSignupLink(code.slice(3));
+      if (!found) return ctx.reply("❌ Посилання недійсне або застаріле. Зверніться до того, хто його надіслав.\n❌ Invalid or expired link — please contact the person who sent it.");
+      const existing = (await db.select().from(workersTable).where(eq(workersTable.telegramId, tid)))[0];
+      if (existing) {
+        if (!existing.isActive) return offerRehire(ctx, existing, found.factory);
+        const wl = wlang(existing);
+        return ctx.reply(t(wl, "signup.already", { name: mdSafe(existing.fullName) }), { parse_mode: "Markdown", ...(await workerMenuFor(existing, wl)) });
+      }
+      setState(tid, "worker_signup:lang", { factoryId: found.factory.id, factoryName: found.factory.name, mode: "scan", signupLinkId: found.link.id });
+      return ctx.reply(LANG_PROMPT, langPickKeyboard());
+    }
+
     // Factory self-signup links (перехідний період, рішення власника 06.09.2026 — два лінки):
     //   ?start=facs<factoryId> — НОВИЙ: скан паспорта + анкета на вебі (routes/passportScan.ts),
     //   ?start=fac<factoryId>  — СТАРИЙ: ім'я в чаті (лишається, бо роздані лінки/QR мають працювати).
@@ -320,6 +338,10 @@ bot.start(async (ctx) => {
   if (scoped) {
     const al = olang(scoped);
     const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
+    // cap signupLinks (офіс-менеджер міста): єдина кнопка бота — свій лінк реєстрації на фабрику скоупу
+    if (await signupLinkAdmin(tid)) {
+      return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає коди входу і ваш лінк реєстрації працівників (кнопка нижче).", { name: scoped.name, url }), signupLinkKeyboard(al));
+    }
     return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає лише коди входу.", { name: scoped.name, url }), Markup.removeKeyboard());
   }
   const driver = await getDriver(tid);
@@ -366,15 +388,6 @@ bot.command("adminsetup", async (ctx) => {
 
 bot.command("getid", async (ctx) => {
   await ctx.reply(`Ваш Telegram ID: \`${ctx.from.id}\`\n\nПередайте його адміністратору для прив'язки.`, { parse_mode: "Markdown" });
-});
-
-bot.command("invite", async (ctx) => {
-  if (!await isAdmin(String(ctx.from.id))) return;
-  const link = `https://t.me/${ctx.botInfo.username}?start=join`;
-  return ctx.reply(
-    `🔗 <b>Запрошення до бота</b>\n\nНатисніть на посилання щоб скопіювати:\n<code>${escapeHtml(link)}</code>`,
-    { parse_mode: "HTML" },
-  );
 });
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
@@ -515,7 +528,7 @@ bot.hears(bhears("✅ Перегляд графіків"), async (ctx) => {
 
 bot.hears(bhears("👥 Управління"), async (ctx) => {
   const admin = await getAdmin(String(ctx.from.id)); if (!admin) return; const al = olang(admin);
-  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers", "assignDrivers", "deleteWorkers"], al))) return;
+  if (!(await requireAdminCap(ctx, admin, ["editData", "viewWorkers", "assignDrivers", "deleteWorkers", "signupLinks"], al))) return;
   return ctx.reply(tb(al, "Управління:"), await managementMenuFor(admin, al));
 });
 
@@ -888,7 +901,7 @@ bot.action(/^setlang:(uk|en|es|ru|pl)$/, async (ctx) => {
       return ctx.reply(t(lang, "signup.factoryName", { factory: mdSafe(st.data.factoryName) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
     }
     clearState(tid);
-    const token = await createSelfScanToken({ factoryId: st.data.factoryId, telegramId: tid, language: lang });
+    const token = await createSelfScanToken({ factoryId: st.data.factoryId, telegramId: tid, language: lang, signupLinkId: st.data.signupLinkId ?? undefined });
     return ctx.reply(t(lang, "signup.factory", { factory: mdSafe(st.data.factoryName), link: passportScanLink(token) }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
   }
   // Referral signup: same — language first, then the application questions.

@@ -117,6 +117,9 @@ export const workersTable = pgTable("workers", {
   selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler
   selfTransportSince: date("self_transport_since"), // «діє з»: від якої дати чинне ПОТОЧНЕ значення selfTransport (генерація знять за довіз вирішує режим помісячно)
   createdSource: text("created_source"), // походження профілю: null = звичайне створення, "hours_import" = створений з імпорту годин фабрики (/hours) — таких можна швидко видалити зі списку обліку
+  // Хто привів (11.10.2026): персональний лінк рекрутера/офіс-менеджера (?start=rec<токен>, signup_links),
+  // за яким людина зареєструвалась. Ставиться раз при створенні профілю, не переноситься при зміні фабрики.
+  signupLinkId: integer("signup_link_id").references((): AnyPgColumn => signupLinksTable.id, { onDelete: "set null" }),
   language: text("language"), // bot UI language: uk | en | es | ru | pl (null = not chosen yet)
   // Payroll (umowa zlecenie) — used by the finance module
   birthDate: date("birth_date"), // з дати народження виводиться «до 26» (податкова пільга)
@@ -2363,6 +2366,20 @@ export const signatureEventsTable = pgTable("signature_events", {
 // (?start=fac<factoryId>, purpose=self, telegramId/language вже відомі — це
 // його чат). analyze() кладе файл у tempFilePath і чернетку в draftJson —
 // confirm() (після можливої корекції на сторінці) створює працівника.
+// Персональні лінки реєстрації (11.10.2026): рекрутер/офіс-менеджер × фабрика → один
+// сталий криптотокен (?start=rec<токен>). Той самий скан-флоу, що й лінк фабрики
+// (facs), але профіль отримує workers.signup_link_id — «хто привів» для бонусів
+// рекрутерам. Токен можна перевипустити («Оновити лінк»): рядок лишається, атрибуція
+// старих реєстрацій не губиться; старий токен перестає працювати.
+export const signupLinksTable = pgTable("signup_links", {
+  id: serial("id").primaryKey(),
+  token: text("token").notNull().unique(), // randomInviteCode (base32), не послідовний
+  adminId: integer("admin_id").notNull().references(() => adminsTable.id),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  rotatedAt: timestamp("rotated_at"), // останнє перевипускання токена
+}, (t) => [uniqueIndex("signup_links_admin_factory_uq").on(t.adminId, t.factoryId)]);
+
 export const passportScanTokensTable = pgTable("passport_scan_tokens", {
   id: serial("id").primaryKey(),
   token: text("token").notNull().unique(),
@@ -2372,6 +2389,7 @@ export const passportScanTokensTable = pgTable("passport_scan_tokens", {
   language: text("language"),
   createdBy: integer("created_by").references(() => adminsTable.id), // офісний адмін для purpose=office
   candidateId: integer("candidate_id").references(() => candidatesTable.id), // рекрутинг: конвертація кандидата — worker/stage прив'язується лише в confirm()
+  signupLinkId: integer("signup_link_id").references(() => signupLinksTable.id, { onDelete: "set null" }), // персональний лінк рекрутера (?start=rec…) → workers.signup_link_id у confirm()
   expiresAt: timestamp("expires_at").notNull(),
   usedAt: timestamp("used_at"),
   tempFilePath: text("temp_file_path"),
@@ -2466,6 +2484,7 @@ export type ContractFile = typeof contractFilesTable.$inferSelect;
 export type SignatureToken = typeof signatureTokensTable.$inferSelect;
 export type SignatureEvent = typeof signatureEventsTable.$inferSelect;
 export type PassportScanToken = typeof passportScanTokensTable.$inferSelect;
+export type SignupLink = typeof signupLinksTable.$inferSelect;
 
 // ─── Задачі офісу + автозадачі + зустрічі (модуль «Задачі», 06.09.2026) ─────────
 // Лише для офісу (адміни). Три види: task (один виконавець), group (кілька, кожен

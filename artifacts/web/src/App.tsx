@@ -14,6 +14,7 @@ import WorkersCalendar from "./pages/WorkersCalendar";
 import Workers from "./pages/Workers";
 import WorkerDetail from "./pages/WorkerDetail";
 import Recruitment from "./pages/Recruitment";
+import SignupLinks from "./pages/SignupLinks";
 import Broadcast from "./pages/Broadcast";
 import Drivers from "./pages/Drivers";
 import Factories from "./pages/Factories";
@@ -189,6 +190,7 @@ export default function App() {
         <Route path="/workers/:id">{() => guard("/workers", <WorkerDetail />)}</Route>
         <Route path="/workers">{() => guard("/workers", <Workers />)}</Route>
         <Route path="/recruitment">{() => guard("/recruitment", <Recruitment />)}</Route>
+        <Route path="/signup-links">{() => guard("/signup-links", <SignupLinks />)}</Route>
         <Route path="/broadcast">{() => guard("/broadcast", <Broadcast />)}</Route>
         <Route path="/sms-campaigns">{() => guard("/sms-campaigns", <SmsCampaigns />)}</Route>
         <Route path="/sms-campaigns/:id">{() => guard("/sms-campaigns", <SmsCampaignCard />)}</Route>

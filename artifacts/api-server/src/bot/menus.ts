@@ -94,9 +94,9 @@ export const driverMenu = (lang: Lang = "uk", onShift = false) => Markup.keyboar
 
 // Кнопки підменю фільтруються за capability (opts.* рахує managementMenuFor у
 // ./roles). Дефолт кожного opts — true, з тих самих причин, що й у adminMenu.
-export type ManagementMenuOpts = { editData?: boolean; viewWorkers?: boolean; assignDrivers?: boolean; deleteWorkers?: boolean };
+export type ManagementMenuOpts = { editData?: boolean; viewWorkers?: boolean; assignDrivers?: boolean; deleteWorkers?: boolean; signupLinks?: boolean };
 export const managementMenu = (lang: Lang = "uk", opts: ManagementMenuOpts = {}) => {
-  const { editData = true, viewWorkers = true, assignDrivers = true, deleteWorkers = true } = opts;
+  const { editData = true, viewWorkers = true, assignDrivers = true, deleteWorkers = true, signupLinks = true } = opts;
   const rows: any[][] = [];
   const row1: string[] = [];
   if (editData) row1.push(tb(lang, "➕ Додати працівника"));
@@ -105,6 +105,7 @@ export const managementMenu = (lang: Lang = "uk", opts: ManagementMenuOpts = {})
   const row2: string[] = [];
   if (editData) row2.push(tb(lang, "📥 Імпорт працівників"), tb(lang, "🔗 Прив'язати Telegram"));
   if (row2.length) rows.push(row2);
+  if (signupLinks) rows.push([tb(lang, "🔗 Лінк реєстрації")]); // cap signupLinks — bot/handlers/signupLinks.ts
   const row3: string[] = [];
   if (assignDrivers) row3.push(tb(lang, "🚗 Водії"));
   if (editData) row3.push(tb(lang, "🏭 Фабрики"));

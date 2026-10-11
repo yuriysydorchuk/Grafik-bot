@@ -24,6 +24,7 @@ import { eq, and } from "drizzle-orm";
 import { UPLOADS_ROOT, WORKER_DOCS_DIR, PASSPORT_SCAN_TMP_DIR, makeStoredName, sniffDocMime, deleteStoredFile, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, mrzDiagnostics, type PassportDraft } from "../services/docai";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
+import { workerSignupInfo } from "../services/signupLinks";
 import { nextWorkerCode } from "../lib/workerCode";
 import { findLikelyDuplicate } from "../bot/workerMatch";
 import { bot } from "../bot/instance";
@@ -248,6 +249,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       const [created] = await db.insert(workersTable).values({
         fullName, firstName, middleName: middleNameIn, lastName,
         workerCode, factoryId: row.factoryId, telegramId: row.telegramId, language: row.language,
+        signupLinkId: row.signupLinkId ?? null, // «хто привів» — персональний лінк рекрутера (?start=rec…)
         birthDate, gender: sex === "M" ? "male" : sex === "F" ? "female" : null,
         nationality: mrzNationalityToCatalog(citizenship),
       }).returning();
@@ -310,10 +312,20 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
             `✅ Профіль створено зі сканування: ${worker.fullName} (№${worker.workerCode}).${dupNote}\n\nПосилання для кандидата (прив'язати Telegram і дозаповнити анкету):\n${workerInviteLink(invite)}`);
         }
       } else if (row.purpose === "self") {
+        // за персональним лінком — рекрутеру окремо (він може бути скоуп-адміном без ролі owner/scheduler)
+        const via = row.signupLinkId ? await workerSignupInfo(row.signupLinkId) : null;
+        const viaNote = via ? `\n🔗 За лінком: ${via.adminName}` : "";
         const staff = await db.select().from(adminsTable);
         for (const a of staff) {
           if (!a.telegramId || (a.role !== "owner" && a.role !== "scheduler")) continue;
-          await bot.telegram.sendMessage(a.telegramId, `🆕 Новий працівник зареєструвався сам (паспорт):\n👤 ${worker.fullName}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`).catch(() => {});
+          await bot.telegram.sendMessage(a.telegramId, `🆕 Новий працівник зареєструвався сам (паспорт):\n👤 ${worker.fullName}${viaNote}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`).catch(() => {});
+        }
+        if (via) {
+          // деактивований між видачею скан-лінка і confirm() — персональні дані йому вже не шлемо
+          const [rec] = await db.select({ telegramId: adminsTable.telegramId, role: adminsTable.role, deactivatedAt: adminsTable.deactivatedAt }).from(adminsTable).where(eq(adminsTable.id, via.adminId));
+          if (rec?.telegramId && !rec.deactivatedAt && rec.role !== "owner" && rec.role !== "scheduler") {
+            await bot.telegram.sendMessage(rec.telegramId, `🆕 За вашим лінком зареєструвався працівник:\n👤 ${worker.fullName} (№${worker.workerCode}) — ${via.factoryName}${dupNote}`).catch(() => {});
+          }
         }
       }
     } catch (e) { logger.warn({ err: e }, "passport-scan confirm notify failed"); }
@@ -444,13 +456,13 @@ export async function createOfficeScanToken(adminId: number, candidateId?: numbe
   return token;
 }
 
-export async function createSelfScanToken(opts: { factoryId: number; telegramId: string; language: string; candidateId?: number }): Promise<string> {
+export async function createSelfScanToken(opts: { factoryId: number; telegramId: string; language: string; candidateId?: number; signupLinkId?: number }): Promise<string> {
   const token = randomInviteCode(24);
   await db.insert(passportScanTokensTable).values({
     token, purpose: "self", factoryId: opts.factoryId, telegramId: opts.telegramId, language: opts.language,
     // самореєстрація з бота: лінк відкривають не «зайшов і відсканував», а коли зручно — 7 днів
     // (30 хв убивали лінк, поки людина доходила до телефону; прод 21.09.2026)
-    candidateId: opts.candidateId ?? null, expiresAt: new Date(Date.now() + SELF_TOKEN_TTL_MS),
+    candidateId: opts.candidateId ?? null, signupLinkId: opts.signupLinkId ?? null, expiresAt: new Date(Date.now() + SELF_TOKEN_TTL_MS),
   });
   return token;
 }
