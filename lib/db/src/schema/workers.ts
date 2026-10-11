@@ -572,6 +572,9 @@ export const adminsTable = pgTable("admins", {
   scopeFactoryIds: jsonb("scope_factory_ids").$type<number[]>().notNull().default([]),
   // Ролі, на які цей адмін може запрошувати людей (видає лише is_main).
   canInviteRoles: jsonb("can_invite_roles").$type<string[]>().notNull().default([]),
+  // 11.10.2026: деактивований адмін (замість hard-delete, бо на нього посилається історія: worker_changes, задачі, документи):
+  // вхід/бот заблоковані, зі списків і пікерів прибраний, імʼя в журналах лишається. Повернення — POST /admins/:id/reactivate.
+  deactivatedAt: timestamp("deactivated_at"),
   invitedBy: integer("invited_by").references((): AnyPgColumn => adminsTable.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

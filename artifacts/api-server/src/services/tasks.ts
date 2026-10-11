@@ -323,7 +323,7 @@ export async function addComment(task: Task, adminId: number, body: string, ment
 // Контроль: показники по адмінах за N тижнів (сторінка «Контроль» і понеділковий звіт).
 export async function controlStats(weeks = 1, today = warsawToday()) {
   const from = addDaysStr(today, -7 * Math.max(1, weeks));
-  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role }).from(adminsTable).where(sql`${adminsTable.role} <> 'driver'`).orderBy(adminsTable.name);
+  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role }).from(adminsTable).where(sql`${adminsTable.role} <> 'driver' AND ${adminsTable.deactivatedAt} IS NULL`).orderBy(adminsTable.name);
   const out: { adminId: number; name: string; role: string; open: number; overdue: number; done: number; avgDays: number | null; auto: number; manual: number }[] = [];
   for (const a of admins) {
     const mine = await db.select().from(tasksTable).where(sql`(${tasksTable.assigneeAdminId} = ${a.id} or exists (select 1 from task_assignees x where x.task_id = ${tasksTable.id} and x.admin_id = ${a.id}))`);

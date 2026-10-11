@@ -564,6 +564,6 @@ export async function sendReminders(today = warsawToday()): Promise<{ reminded: 
 // Список адмінів для пікерів (без web-only водіїв) — той самий фільтр, що бот
 export async function officeAdmins() {
   return db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role, isMain: adminsTable.isMain, hasTelegram: sql<boolean>`${adminsTable.telegramId} is not null` })
-    .from(adminsTable).where(ne(adminsTable.role, "driver")).orderBy(adminsTable.name);
+    .from(adminsTable).where(and(ne(adminsTable.role, "driver"), isNull(adminsTable.deactivatedAt))).orderBy(adminsTable.name);
 }
 export { lte };

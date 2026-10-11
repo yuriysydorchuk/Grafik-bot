@@ -81,7 +81,7 @@ router.post("/auth/login", authLimiter, async (req, res) => {
   if (!username || !password) return res.status(400).json({ error: "Введіть логін і пароль" });
   const uname = String(username).trim().toLowerCase();
   const admin = (await db.select().from(adminsTable).where(eq(adminsTable.username, uname)))[0];
-  if (!admin || !verifyPassword(String(password), admin.passwordHash)) {
+  if (!admin || admin.deactivatedAt || !verifyPassword(String(password), admin.passwordHash)) { // деактивований — та сама відповідь, без підказки
     await logEvent(req, "bad_password", { adminId: admin?.id ?? null, usernameTried: uname });
     return res.status(401).json({ error: "Невірний логін або пароль" });
   }

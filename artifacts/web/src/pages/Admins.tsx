@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield } from "lucide-react";
+import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield, UserX, UserCheck } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Me, type RoleDef } from "../lib/api";
 import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, READ_ONLY, READ_ONLY_LABEL, type Capability, type NotifyType } from "../lib/roles";
@@ -15,6 +15,8 @@ interface AdminRow {
   id: number; name: string; username: string | null; role: string;
   isMain: boolean; hasWebLogin: boolean; hasTelegram: boolean; pending: boolean; inviteLink: string | null;
   scopeCities: string[]; scopeFactoryIds: number[]; canInviteRoles: string[]; invitedBy: number | null;
+  deactivatedAt: string | null; // деактивований (11.10.2026): без входу/бота, поза пікерами; імʼя в журналах лишається
+  hasHistory: boolean; // уже заходив (сесії/події входу) → лише деактивація, не видалення
 }
 
 // Головний адмін — користувачі й ролі; делегат запрошень (admins.can_invite_roles) — лише свої запрошення.
@@ -35,7 +37,9 @@ function AdminsMain({ me }: { me: Me }) {
   const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["admins"] });
   const [q, setQ] = useSessionState("admins.q", ""); // пошук по імені/логіну/ролі
-  const shown = (data ?? []).filter(a => matchesQuery(q, a.name, a.username, roleLabel(a.role)));
+  const active = (data ?? []).filter(a => !a.deactivatedAt);
+  const inactive = (data ?? []).filter(a => !!a.deactivatedAt);
+  const shown = active.filter(a => matchesQuery(q, a.name, a.username, roleLabel(a.role)));
 
   const setRole = useMutation({
     mutationFn: (v: { id: number; role: string }) => patch(`/admins/${v.id}`, { role: v.role }),
@@ -54,6 +58,16 @@ function AdminsMain({ me }: { me: Me }) {
     mutationFn: (id: number) => del(`/admins/${id}`),
     onSuccess: () => { toast.success(t("Видалено")); inv(); }, onError: (e: any) => toast.error(e.message),
   });
+  // деактивація замість видалення для людини з історією (журнали/задачі/документи посилаються на неї)
+  const deactivate = useMutation({
+    mutationFn: (id: number) => post(`/admins/${id}/deactivate`),
+    onSuccess: () => { toast.success(t("Деактивовано — доступ до панелі й бота закрито")); inv(); }, onError: (e: any) => toast.error(e.message),
+  });
+  const reactivate = useMutation({
+    mutationFn: (a: AdminRow) => post<{ inviteLink: string }>(`/admins/${a.id}/reactivate`).then(r => ({ r, a })),
+    onSuccess: ({ r, a }) => { inv(); setInvite({ name: a.name, link: r.inviteLink }); }, onError: (e: any) => toast.error(e.message),
+  });
+  const [showInactive, setShowInactive] = useState(false);
 
   if (isLoading) return <Spinner />;
 
@@ -105,7 +119,8 @@ function AdminsMain({ me }: { me: Me }) {
                         <button onClick={() => setEditing(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
                         {a.pending && <button onClick={() => regenInvite.mutate(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
                         {a.hasWebLogin && !a.isMain && <button onClick={async () => { if (await confirm({ title: t("Скинути веб-доступ {name}?", { name: a.name }), message: t("Логін і пароль буде стерто; користувач задасть нові у боті."), confirmText: t("Скинути") })) resetWeb.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600" title={t("Скинути веб-доступ")}><KeyRound className="h-4 w-4" /></button>}
-                        {!a.isMain && <button onClick={async () => { if (await confirm({ title: t("Видалити {name}?", { name: a.name }), danger: true, confirmText: t("Видалити") })) remove.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>}
+                        {!a.isMain && <button onClick={async () => { if (await confirm({ title: t("Деактивувати {name}?", { name: a.name }), message: t("Доступ до панелі й бота буде закрито, людина зникне зі списків і пікерів; її імʼя в журналах лишиться. Повернути можна згодом."), danger: true, confirmText: t("Деактивувати") })) deactivate.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600" title={t("Деактивувати")}><UserX className="h-4 w-4" /></button>}
+                        {!a.isMain && a.pending && !a.hasHistory && <button onClick={async () => { if (await confirm({ title: t("Видалити {name}?", { name: a.name }), danger: true, confirmText: t("Видалити") })) remove.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити (лише запрошення, яким ще не скористались)")}><Trash2 className="h-4 w-4" /></button>}
                       </div>
                     )}
                   </td>
@@ -115,6 +130,32 @@ function AdminsMain({ me }: { me: Me }) {
           </table>
         )}
       </Card>
+
+      {inactive.length > 0 && (
+        <div className="mt-3">
+          <button type="button" onClick={() => setShowInactive(v => !v)} className="text-xs text-slate-500 hover:text-slate-700">
+            {showInactive ? "▾" : "▸"} {t("Деактивовані")} ({inactive.length})
+          </button>
+          {showInactive && (
+            <Card className="mt-2 overflow-x-auto">
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-slate-100">
+                  {inactive.map(a => (
+                    <tr key={a.id} className="text-slate-500">
+                      <td className="px-4 py-2">{a.name}</td>
+                      <td className="px-4 py-2 text-xs">{roleLabel(a.role)}</td>
+                      <td className="px-4 py-2 text-xs">{t("деактивовано")} {a.deactivatedAt ? new Date(a.deactivatedAt).toLocaleDateString("uk-UA") : ""}</td>
+                      <td className="px-4 py-2 text-right">
+                        {canManage && <button onClick={async () => { if (await confirm({ title: t("Повернути {name}?", { name: a.name }), message: t("Акаунт знову активний; Telegram і логін треба приєднати заново за новим запрошенням."), confirmText: t("Повернути") })) reactivate.mutate(a); }} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50"><UserCheck className="h-3.5 w-3.5" /> {t("Повернути")}</button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          )}
+        </div>
+      )}
 
       {canManage && <RolesManager roles={roles} confirm={confirm} />}
 

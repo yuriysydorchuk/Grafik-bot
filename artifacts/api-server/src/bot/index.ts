@@ -783,7 +783,7 @@ async function isMainAdmin(tid: string): Promise<boolean> {
 bot.hears(bhears("👑 Адміни"), async (ctx) => {
   const tid = String(ctx.from.id);
   const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
-  const admins = await db.select().from(adminsTable).orderBy(adminsTable.id);
+  const admins = await db.select().from(adminsTable).where(isNull(adminsTable.deactivatedAt)).orderBy(adminsTable.id);
   const isMain = await isMainAdmin(tid);
   const list = admins.map((a, i) =>
     `${i + 1}. *${a.name}* \`${a.telegramId}\`${i === 0 ? " 👑" : ""}`
@@ -824,7 +824,7 @@ bot.hears(bhears("🗑 Видалити адміна"), async (ctx) => {
   const tid = String(ctx.from.id);
   if (!await isMainAdmin(tid)) return;
   const al = olang(await getAdmin(tid));
-  const admins = await db.select().from(adminsTable).orderBy(adminsTable.id);
+  const admins = await db.select().from(adminsTable).where(isNull(adminsTable.deactivatedAt)).orderBy(adminsTable.id);
   const others = admins.slice(1); // Cannot remove main admin
   if (others.length === 0) return ctx.reply(tb(al, "Немає інших адмінів для видалення."), managementMenu(al));
   setState(tid, "remove_admin:select", { admins: others.map(a => ({ id: a.id, name: a.name, tid: a.telegramId })) });

@@ -106,8 +106,8 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
   // immediately (the token's role is NOT trusted for authorization).
   try {
     const [admin] = await db.select({ id: adminsTable.id, role: adminsTable.role, isMain: adminsTable.isMain, tokenVersion: adminsTable.tokenVersion,
-      scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
-    if (!admin) return res.status(401).json({ error: "unauthorized" }); // account deleted
+      scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles, deactivatedAt: adminsTable.deactivatedAt }).from(adminsTable).where(eq(adminsTable.id, payload.adminId));
+    if (!admin || admin.deactivatedAt) return res.status(401).json({ error: "unauthorized" }); // account deleted / deactivated
     // Server-side revocation: a bumped token_version (password change / "log out everywhere")
     // invalidates every token issued before it. Pre-versioning tokens (tv undefined) count as 0.
     if ((payload.tv ?? 0) !== (admin.tokenVersion ?? 0)) return res.status(401).json({ error: "unauthorized" });

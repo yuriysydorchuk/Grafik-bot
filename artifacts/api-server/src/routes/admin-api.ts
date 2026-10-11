@@ -49,6 +49,7 @@ import { LEGAL_STATUSES, normalizeProfileLegal } from "../services/svodni";
 import { effectiveView, loadLegalityCache } from "../services/effectiveStatus";
 import { PayoutRules } from "../services/factoryRules";
 import { findLikelyDuplicate, matchWorker } from "../bot/workerMatch";
+import { clearState } from "../bot/state";
 import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
 import { zaliczkaRecords, groupPayDate, listaXlsxBuffer, type ZaliczkaSourceRow } from "../services/gratyfikantExport";
@@ -1802,7 +1803,7 @@ router.get("/candidates", RW, async (req, res) => {
 
 // Lightweight staff list for assignee pickers (owner+scheduler) — names only.
 router.get("/staff", RW, async (_req, res) => {
-  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role }).from(adminsTable).orderBy(adminsTable.id);
+  const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role }).from(adminsTable).where(isNull(adminsTable.deactivatedAt)).orderBy(adminsTable.id);
   ok(res, admins);
 });
 
@@ -5752,12 +5753,17 @@ async function cleanInviteRoles(v: any): Promise<string[] | null> {
   return keys;
 }
 
+// «Є історія» = людина колись заходила (сесії/події входу): такий акаунт не видаляють, а деактивують.
+// Без цього після reactivate (Telegram ще не приєднано → pending) кнопка видалення поверталась (ревʼю codex 11.10.2026).
+const adminHasHistorySql = sql<boolean>`(exists(select 1 from admin_sessions s where s.admin_id = admins.id) or exists(select 1 from login_events e where e.admin_id = admins.id))`; // admins.id явно: у select-списку ${adminsTable.id} рендериться голим "id" і ловить колонку підзапиту
 router.get("/admins", requireRole("owner"), async (_req, res) => {
   const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, username: adminsTable.username, telegramId: adminsTable.telegramId, role: adminsTable.role, isMain: adminsTable.isMain, inviteCode: adminsTable.inviteCode,
-    scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles, invitedBy: adminsTable.invitedBy }).from(adminsTable).orderBy(adminsTable.id);
+    scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles, invitedBy: adminsTable.invitedBy, deactivatedAt: adminsTable.deactivatedAt,
+    hasHistory: adminHasHistorySql }).from(adminsTable).orderBy(adminsTable.id);
   ok(res, admins.map(a => ({
     id: a.id, name: a.name, username: a.username, role: a.role ?? "owner",
-    isMain: !!a.isMain, hasWebLogin: !!a.username, hasTelegram: !!a.telegramId,
+    isMain: !!a.isMain, hasWebLogin: !!a.username, hasTelegram: !!a.telegramId, deactivatedAt: a.deactivatedAt,
+    hasHistory: !!a.hasHistory, // уже заходив / мав сесії → видаляти не можна (лише деактивувати), навіть після reactivate без Telegram
     pending: !a.telegramId, inviteLink: a.inviteCode && !a.telegramId ? adminInviteLink(a.inviteCode) : null,
     scopeCities: a.scopeCities ?? [], scopeFactoryIds: a.scopeFactoryIds ?? [], canInviteRoles: a.canInviteRoles ?? [], invitedBy: a.invitedBy,
   })));
@@ -5833,21 +5839,59 @@ router.post("/admins/:id/reset-web", requireMainAdmin, async (req, res) => {
   ok(res, { ok: true });
 });
 
+// Деактивація (11.10.2026) — замість hard-delete для людини з історією: усі сесії відкликано,
+// token_version піднято, Telegram/логін/пароль/invite стерто, deactivated_at = now. Імʼя в журналах
+// лишається, зі списків/пікерів/бота людина зникає. Повернення — reactivate (Telegram і логін
+// треба приєднати заново через нове запрошення).
+router.post("/admins/:id/deactivate", requireMainAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (id === (await mainAdminId())) return fail(res, 400, "Не можна деактивувати головного власника");
+  if (id === (req as AuthedRequest).admin?.adminId) return fail(res, 400, "Не можна деактивувати власний акаунт");
+  const [a] = await db.select({ id: adminsTable.id, deactivatedAt: adminsTable.deactivatedAt }).from(adminsTable).where(eq(adminsTable.id, id));
+  if (!a) return fail(res, 404, "Не знайдено");
+  if (a.deactivatedAt) return fail(res, 400, "Уже деактивований");
+  const [full] = await db.select({ telegramId: adminsTable.telegramId }).from(adminsTable).where(eq(adminsTable.id, id));
+  if (full?.telegramId) clearState(full.telegramId); // незавершений діалог бота не має дописати в БД після деактивації
+  await db.transaction(async (tx) => {
+    await tx.update(adminSessionsTable).set({ revokedAt: new Date() }).where(and(eq(adminSessionsTable.adminId, id), isNull(adminSessionsTable.revokedAt)));
+    await tx.update(adminsTable).set({ deactivatedAt: new Date(), telegramId: null, username: null, passwordHash: null, inviteCode: null, tokenVersion: sql`${adminsTable.tokenVersion} + 1` }).where(eq(adminsTable.id, id));
+  });
+  ok(res, { ok: true });
+});
+router.post("/admins/:id/reactivate", requireMainAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const [a] = await db.select({ id: adminsTable.id, deactivatedAt: adminsTable.deactivatedAt }).from(adminsTable).where(eq(adminsTable.id, id));
+  if (!a) return fail(res, 404, "Не знайдено");
+  if (!a.deactivatedAt) return fail(res, 400, "Акаунт активний");
+  const code = await uniqueAdminCode(); // новий invite — Telegram приєднується заново
+  await db.update(adminsTable).set({ deactivatedAt: null, inviteCode: code }).where(eq(adminsTable.id, id));
+  ok(res, { ok: true, inviteLink: adminInviteLink(code) });
+});
+
 router.delete("/admins/:id", requireMainAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (id === (await mainAdminId())) return fail(res, 400, "Не можна видалити головного власника");
   if (id === (req as AuthedRequest).admin?.adminId) return fail(res, 400, "Не можна видалити власний акаунт");
+  const [hist] = await db.select({ h: adminHasHistorySql }).from(adminsTable).where(eq(adminsTable.id, id));
+  if (hist?.h) return fail(res, 400, "Користувач уже заходив у панель — видалити не можна, натомість деактивуйте");
   // Clean up FK references first, or the delete fails (500) for anyone who ever logged in
   // or touched recruitment. Audit rows (login_events, candidate_activity) are kept but
-  // unlinked; ephemeral sessions are dropped.
-  await db.transaction(async (tx) => {
-    await tx.delete(adminSessionsTable).where(eq(adminSessionsTable.adminId, id));
-    await tx.update(loginEventsTable).set({ adminId: null }).where(eq(loginEventsTable.adminId, id));
-    await tx.update(candidateActivityTable).set({ adminId: null }).where(eq(candidateActivityTable.adminId, id));
-    await tx.update(candidatesTable).set({ assignedAdminId: null }).where(eq(candidatesTable.assignedAdminId, id));
-    await tx.update(advanceRequestsTable).set({ decidedBy: null }).where(eq(advanceRequestsTable.decidedBy, id));
-    await tx.delete(adminsTable).where(eq(adminsTable.id, id));
-  });
+  // unlinked; ephemeral sessions are dropped. Решта історії (worker_changes, задачі, документи,
+  // умови — FK без каскаду) НЕ чиститься: такого адміна деактивуємо (вище), не видаляємо.
+  try {
+    await db.transaction(async (tx) => {
+      await tx.delete(adminSessionsTable).where(eq(adminSessionsTable.adminId, id));
+      await tx.update(loginEventsTable).set({ adminId: null }).where(eq(loginEventsTable.adminId, id));
+      await tx.update(candidateActivityTable).set({ adminId: null }).where(eq(candidateActivityTable.adminId, id));
+      await tx.update(candidatesTable).set({ assignedAdminId: null }).where(eq(candidatesTable.assignedAdminId, id));
+      await tx.update(advanceRequestsTable).set({ decidedBy: null }).where(eq(advanceRequestsTable.decidedBy, id));
+      await tx.delete(adminsTable).where(eq(adminsTable.id, id));
+    });
+  } catch (e: any) {
+    const code = e?.cause?.code ?? e?.code;
+    if (code === "23503") return fail(res, 400, "На цього користувача посилається історія (зміни працівників, задачі, документи) — видалити не можна, натомість деактивуйте");
+    throw e;
+  }
   ok(res, { ok: true });
 });
 
@@ -5874,7 +5918,7 @@ router.get("/admin-invites", requireInviter, async (req, res) => {
   const roles = allowed.length ? await db.select({ key: rolesTable.key, label: rolesTable.label }).from(rolesTable).where(inArray(rolesTable.key, allowed)) : [];
   const mine = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role, telegramId: adminsTable.telegramId, inviteCode: adminsTable.inviteCode,
       username: adminsTable.username, scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, createdAt: adminsTable.createdAt })
-    .from(adminsTable).where(eq(adminsTable.invitedBy, me.adminId)).orderBy(desc(adminsTable.id));
+    .from(adminsTable).where(and(eq(adminsTable.invitedBy, me.adminId), isNull(adminsTable.deactivatedAt))).orderBy(desc(adminsTable.id));
   ok(res, {
     roles,
     // власний скоуп — для пікера (null = без обмежень)
@@ -5910,7 +5954,7 @@ router.post("/admin-invites", requireInviter, async (req, res) => {
 async function myInvitee(req: any, res: any) {
   const id = Number(req.params.id);
   const [a] = await db.select().from(adminsTable).where(eq(adminsTable.id, id));
-  if (!a || a.invitedBy !== (req as AuthedRequest).admin!.adminId) { fail(res, 404, "Не знайдено"); return null; }
+  if (!a || a.invitedBy !== (req as AuthedRequest).admin!.adminId || a.deactivatedAt) { fail(res, 404, "Не знайдено"); return null; } // деактивований — не «запрошення» делегата
   return a;
 }
 router.post("/admin-invites/:id/invite", requireInviter, async (req, res) => {
@@ -5923,6 +5967,8 @@ router.post("/admin-invites/:id/invite", requireInviter, async (req, res) => {
 router.delete("/admin-invites/:id", requireInviter, async (req, res) => {
   const a = await myInvitee(req, res); if (!a) return;
   if (a.telegramId) return fail(res, 400, "Запрошення вже прийняте — видалити акаунт може лише головний адміністратор");
+  const [hist] = await db.select({ h: adminHasHistorySql }).from(adminsTable).where(eq(adminsTable.id, a.id));
+  if (hist?.h) return fail(res, 400, "Користувач уже заходив у панель — видалити може лише головний адміністратор");
   await db.delete(adminsTable).where(eq(adminsTable.id, a.id));
   ok(res, { ok: true });
 });

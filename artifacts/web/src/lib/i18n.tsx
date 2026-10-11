@@ -3637,6 +3637,12 @@ const EN: Record<string, string> = {
   "⏳ на перевірці": "⏳ under review",
   "з бота": "from bot",
   "Попросити подати": "Request submission",
+  // 11.10.2026: деактивація адміна замість видалення
+  "Деактивувати {name}?": "Deactivate {name}?", "Деактивувати": "Deactivate", "Деактивовані": "Deactivated", "деактивовано": "deactivated",
+  "Доступ до панелі й бота буде закрито, людина зникне зі списків і пікерів; її імʼя в журналах лишиться. Повернути можна згодом.": "Panel and bot access will be closed, the person disappears from lists and pickers; their name stays in the logs. Can be restored later.",
+  "Деактивовано — доступ до панелі й бота закрито": "Deactivated — panel and bot access closed",
+  "Видалити (лише запрошення, яким ще не скористались)": "Delete (only an invitation that was never used)",
+  "Повернути {name}?": "Restore {name}?", "Акаунт знову активний; Telegram і логін треба приєднати заново за новим запрошенням.": "The account is active again; Telegram and the login must be linked again via a new invitation.",
   // 11.10.2026: запит будь-якого типу документа, повторне надсилання умови, поля працівника при завантаженні
   "попросити інший документ": "request another document", "Попросити у працівника документ, якого ще нема в профілі": "Ask the worker for a document that is not in the profile yet",
   "— тип документа —": "— document type —", "Надіслати ще раз": "Send again",
