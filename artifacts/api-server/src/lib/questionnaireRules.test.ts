@@ -86,10 +86,11 @@ test("індекс: польський, закордонний, авто-деф�
 
 test("validatePassport: обов'язкові поля, вік, термін дії, формат номера", () => {
   const today = "2026-09-08";
-  const ok = validatePassport({
+  const okIn = {
     firstName: "Jan", lastName: "Kowalski", birthDate: "1995-05-05", passportNumber: "fc 1234567",
     passportCountry: "Ukraina", passportExpiresAt: "2030-01-01", citizenship: "UKR", sex: "M",
-  }, today);
+  };
+  const ok = validatePassport(okIn, today);
   assert.deepEqual(ok.errors, {});
   assert.equal(ok.values.passportNumber, "FC1234567", "великі літери без пробілів");
 
@@ -101,6 +102,13 @@ test("validatePassport: обов'язкові поля, вік, термін д�
   assert.equal(bad.errors.passportCountry, "required");
   assert.equal(bad.errors.passportExpiresAt, "expired");
   assert.equal(bad.errors.citizenship, "latin");
+  assert.equal(ok.values.citizenship, "Ukraina", "код MRZ UKR → назва зі списку");
+  assert.equal(ok.values.passportCountry, "Ukraina");
+  const unknown = validatePassport({ ...okIn, citizenship: "CHU", passportCountry: "P0L" }, "2026-01-01");
+  assert.equal(unknown.errors.citizenship, "list", "OCR-сміття → вибрати вручну");
+  assert.equal(unknown.errors.passportCountry, undefined, "P0L → Polska");
+  assert.equal(unknown.values.passportCountry, "Polska");
+  assert.equal(validatePassport({ ...okIn, citizenship: "gruzja" }, "2026-01-01").errors.citizenship, undefined, "назва без регістру");
   assert.equal(bad.errors.sex, "required");
 });
 
@@ -167,4 +175,7 @@ test("guard: web/src/lib/questionnaireRules.ts — побайтова копія
   const webPath = path.resolve(here, "../../../web/src/lib/questionnaireRules.ts");
   assert.ok(fs.existsSync(webPath), `нема копії у вебі: ${webPath}`);
   assert.equal(fs.readFileSync(webPath, "utf8"), server, "правила розійшлися — скопіюй серверний файл у web/src/lib");
+  // те саме для довідника країн, який правила імпортують
+  const countries = fs.readFileSync(path.join(here, "countries.ts"), "utf8");
+  assert.equal(fs.readFileSync(path.join(webPath, "..", "countries.ts"), "utf8"), countries, "довідник країн розійшовся — скопіюй countries.ts у web/src/lib");
 });

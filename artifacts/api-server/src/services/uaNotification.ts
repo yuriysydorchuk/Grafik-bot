@@ -13,6 +13,7 @@
 // Людина зникає зі списків, щойно обовʼязок виконано (документ у профілі) або профіль
 // неактивний; порожній список → задача auto_resolved. Нічний syncUaNotificationTasks
 // + миттєвий виклик після дій (send/upload).
+import { countryNamePl } from "../lib/countries";
 import {
   db, tasksTable, workersTable, workerLegalityTable, workerDocumentsTable, documentTypesTable, factoriesTable, companiesTable,
   positionsTable, workerQuestionnairesTable, contractsTable, taskAutoRulesTable,
@@ -355,7 +356,7 @@ export async function uaCard(workerId: number, companyId: number | null = null):
       { key: "last", label: "Nazwisko", value: w.lastName ?? w.fullName.split(" ")[0] ?? "", required: true, source: "профіль" },
       { key: "sex", label: "Płeć", value: sex, required: true, source: "профіль → стать" },
       { key: "birth", label: "Data urodzenia", value: dateStr(w.birthDate) ?? "", required: true, source: "профіль" },
-      { key: "citizen", label: "Obywatelstwo", value: q?.citizenship || (w.nationality === "ukraine" ? "UKR" : w.nationality ?? ""), required: true, source: "анкета / профіль" },
+      { key: "citizen", label: "Obywatelstwo", value: countryNamePl(q?.citizenship) || (w.nationality === "ukraine" ? "Ukraina" : w.nationality ?? ""), required: true, source: "анкета / профіль" },
       { key: "pesel", label: "PESEL", value: w.pesel ?? "", source: "профіль" },
       { key: "passport", label: "Dokument podróży (paszport) — seria i numer", value: q?.passportNumber ?? "", required: true, source: "анкета" },
       { key: "passportExp", label: "Paszport ważny do", value: dateStr(q?.passportExpiresAt) ?? "", source: "анкета" },

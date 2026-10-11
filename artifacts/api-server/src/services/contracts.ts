@@ -21,6 +21,7 @@ import { logger } from "../lib/logger";
 import { warsawDateStr } from "../bot/time";
 import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
 import { fmtIban } from "../lib/iban";
+import { countryNamePl } from "../lib/countries";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
 const LANGS: Lang[] = ["pl", "en", "es", "ru", "uk"];
@@ -254,7 +255,8 @@ export async function buildContractData(
     "Paszport data ważności": questionnaire?.passportExpiresAt ?? "",
     "Seria i numer dowodu": questionnaire?.seriaINumerDowodu ?? "",
     "Miejsce urodzenia": questionnaire?.birthPlace ?? "",
-    "Obywatelstwo": questionnaire?.citizenship ?? "",
+    // сирий MRZ-код зі старих сканів («UKR») → «Ukraina»; назва лишається як є
+    "Obywatelstwo": countryNamePl(questionnaire?.citizenship),
     "Narodowość": worker.nationality ?? "",
     "Imię ojca": questionnaire?.fatherName ?? "",
     "Imię matki": questionnaire?.motherName ?? "",

@@ -210,7 +210,7 @@ test("POST .../questionnaire: невалідні поля — 400 з мапою 
   const token = await mkAnalyzedToken({ purpose: "self" });
   const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
   const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({
-    ...ANKETA_OK, pesel: "123", motherName: "Марія", bankIban: "DE89370400440532013000", regKodPocztowy: "00001", consents: { rodo_info: true },
+    ...ANKETA_OK, pesel: "123", motherName: "Марія", bankIban: "DE89370400440532013001", regKodPocztowy: "1", consents: { rodo_info: true },
   });
   assert.equal(res.status, 400, JSON.stringify(res.body));
   assert.equal(res.body.fields.pesel, "format");

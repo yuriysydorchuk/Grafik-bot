@@ -161,7 +161,8 @@ test("mrzNationalityToCatalog: OCR-плутанина цифр («P0L», «5RB»
 });
 
 test("mrzNationalityToCatalog: невідомий код або null → null (офіс доставить вручну)", () => {
-  assert.equal(mrzNationalityToCatalog("USA"), null);
+  assert.equal(mrzNationalityToCatalog("USA"), "other", "11.10.2026: довідник lib/countries.ts покриває решту світу");
+  assert.equal(mrzNationalityToCatalog("XXX"), null);
   assert.equal(mrzNationalityToCatalog(null), null);
 });
 

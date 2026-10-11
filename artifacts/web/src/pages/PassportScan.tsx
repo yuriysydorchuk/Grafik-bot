@@ -11,6 +11,7 @@ import { useRoute } from "wouter";
 import { Card, Button, Spinner, SearchableSelect } from "../components/ui";
 import { TAX_OFFICES } from "../lib/taxOffices";
 import { validatePassport, validateQuestionnaire, CONSENT_KEYS, type ConsentKey } from "../lib/questionnaireRules";
+import { COUNTRY_NAMES, COUNTRY_NAMES_TOP, canonicalCountry } from "../lib/countries";
 import { NFZ_BRANCHES } from "../lib/nfzBranches";
 
 type Lang = "uk" | "en" | "es" | "ru" | "pl";
@@ -119,7 +120,10 @@ const STR: Record<string, Record<Lang, string>> = {
   hintLastName: { uk: "напр. Kowalski", en: "e.g. Kowalski", es: "p. ej. Kowalski", ru: "напр. Kowalski", pl: "np. Kowalski" },
   hintBirthDate: { uk: "від 16 до 80 років", en: "age 16 to 80", es: "de 16 a 80 años", ru: "от 16 до 80 лет", pl: "od 16 do 80 lat" },
   hintPassportNo: { uk: "великі літери й цифри, напр. FC1234567", en: "capital letters and digits, e.g. FC1234567", es: "mayúsculas y dígitos, p. ej. FC1234567", ru: "заглавные буквы и цифры, напр. FC1234567", pl: "wielkie litery i cyfry, np. FC1234567" },
-  hintCountry: { uk: "напр. Ukraina", en: "e.g. Ukraina", es: "p. ej. Ukraina", ru: "напр. Ukraina", pl: "np. Ukraina" },
+  hintCountry: { uk: "вибери зі списку (назви польською)", en: "choose from the list (names in Polish)", es: "elige de la lista (nombres en polaco)", ru: "выбери из списка (названия по-польски)", pl: "wybierz z listy" },
+  errCountryList: { uk: "Не розпізнано зі скану — вибери країну зі списку", en: "Not recognised from the scan — choose the country from the list", es: "No se reconoció en el escaneo — elige el país de la lista", ru: "Не распознано со скана — выбери страну из списка", pl: "Nie rozpoznano ze skanu — wybierz kraj z listy" },
+  countryPick: { uk: "— вибери країну —", en: "— choose a country —", es: "— elige un país —", ru: "— выбери страну —", pl: "— wybierz kraj —" },
+  countryOther: { uk: "Інші країни", en: "Other countries", es: "Otros países", ru: "Другие страны", pl: "Inne kraje" },
   hintExpires: { uk: "дата з паспорта, має бути в майбутньому", en: "from the passport, must be in the future", es: "del pasaporte, debe ser futura", ru: "дата из паспорта, должна быть в будущем", pl: "z paszportu, musi być w przyszłości" },
   hintBirthPlace: { uk: "місто латиницею, напр. Lwów", en: "city in Latin letters, e.g. Lwów", es: "ciudad en letras latinas, p. ej. Lwów", ru: "город латиницей, напр. Lwów", pl: "miasto, np. Lwów" },
   hintPesel: { uk: "11 цифр, напр. 95050512346", en: "11 digits, e.g. 95050512346", es: "11 dígitos, p. ej. 95050512346", ru: "11 цифр, напр. 95050512346", pl: "11 cyfr, np. 95050512346" },
@@ -510,6 +514,22 @@ const inputCls = "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm";
 const inputErrCls = "w-full rounded-lg border border-rose-400 bg-rose-50/40 px-3 py-2 text-sm";
 
 // Код помилки (lib/questionnaireRules, той самий на сервері) → текст мовою працівника
+// Країна видачі / громадянство — лише зі списку lib/countries (назви польською, як
+// у документах); найчастіші згори, решта за алфавітом. Нативний select = зручний
+// пікер на телефоні.
+function CountrySelect({ s, value, onChange, className }: { s: S; value: string; onChange: (v: string) => void; className: string }) {
+  const rest = COUNTRY_NAMES.filter(n => !COUNTRY_NAMES_TOP.includes(n));
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} className={className}>
+      <option value="">{s("countryPick")}</option>
+      {COUNTRY_NAMES_TOP.map(n => <option key={n} value={n}>{n}</option>)}
+      <optgroup label={s("countryOther")}>
+        {rest.map(n => <option key={n} value={n}>{n}</option>)}
+      </optgroup>
+    </select>
+  );
+}
+
 function errText(s: S, code: string | undefined): string | null {
   switch (code) {
     case "required": return s("errRequired");
@@ -552,9 +572,11 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
   const [lastName, setLastName] = useState(draft.lastName ?? "");
   const [birthDate, setBirthDate] = useState(draft.birthDate ?? "");
   const [passportNumber, setPassportNumber] = useState(draft.passportNumber ?? "");
-  const [passportCountry, setPassportCountry] = useState(draft.passportCountry ?? "");
+  // Країна/громадянство — лише зі списку; зі скану підставляємо, якщо розпізнано, інакше вибір вручну
+  // (старі чернетки/анкети можуть містити код «UKR» або назву в іншому регістрі — canonicalCountry зводить до option-а)
+  const [passportCountry, setPassportCountry] = useState(canonicalCountry(draft.passportCountry));
   const [passportExpiresAt, setPassportExpiresAt] = useState(draft.passportExpiresAt ?? "");
-  const [citizenship, setCitizenship] = useState(draft.citizenship ?? "");
+  const [citizenship, setCitizenship] = useState(canonicalCountry(draft.citizenship));
   const [sex, setSex] = useState(draft.sex ?? "");
   const [tried, setTried] = useState(false);
   const [touched, setTouched] = useState<Record<string, true>>({});
@@ -564,6 +586,7 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
   const errs: Errs = { ...local };
   for (const [k, v] of Object.entries(serverErrors)) if (!touched[k]) errs[k] = v;
   const er = (k: string) => errText(s, errs[k]);
+  const erCountry = (k: string) => (errs[k] === "list" ? s("errCountryList") : errText(s, errs[k]));
   const cls = (k: string) => (errs[k] ? inputErrCls : inputCls);
   const touch = (k: string) => setTouched(t => (t[k] ? t : { ...t, [k]: true }));
 
@@ -592,9 +615,9 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
         <Field label={s("lastName")} required hint={s("hintLastName")} error={er("lastName")}><input value={lastName} onChange={e => { setLastName(e.target.value); touch("lastName"); }} className={cls("lastName")} /></Field>
         <Field label={s("birthDate")} required hint={s("hintBirthDate")} error={er("birthDate")}><input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); touch("birthDate"); }} className={cls("birthDate")} /></Field>
         <Field label={s("passportNumber")} required hint={s("hintPassportNo")} error={er("passportNumber")}><input value={passportNumber} onChange={e => { setPassportNumber(e.target.value.toUpperCase()); touch("passportNumber"); }} autoCapitalize="characters" className={cls("passportNumber")} /></Field>
-        <Field label={s("passportCountry")} required hint={s("hintCountry")} error={er("passportCountry")}><input value={passportCountry} onChange={e => { setPassportCountry(e.target.value); touch("passportCountry"); }} className={cls("passportCountry")} /></Field>
+        <Field label={s("passportCountry")} required hint={s("hintCountry")} error={erCountry("passportCountry")}><CountrySelect s={s} value={passportCountry} onChange={v => { setPassportCountry(v); touch("passportCountry"); }} className={cls("passportCountry")} /></Field>
         <Field label={s("passportExpiresAt")} required hint={s("hintExpires")} error={er("passportExpiresAt")}><input type="date" value={passportExpiresAt} onChange={e => { setPassportExpiresAt(e.target.value); touch("passportExpiresAt"); }} className={cls("passportExpiresAt")} /></Field>
-        <Field label={s("citizenship")} required hint={s("hintCountry")} error={er("citizenship")}><input value={citizenship} onChange={e => { setCitizenship(e.target.value); touch("citizenship"); }} className={cls("citizenship")} /></Field>
+        <Field label={s("citizenship")} required hint={s("hintCountry")} error={erCountry("citizenship")}><CountrySelect s={s} value={citizenship} onChange={v => { setCitizenship(v); touch("citizenship"); }} className={cls("citizenship")} /></Field>
         <Field label={s("sex")} required error={er("sex")}>
           <div className="flex gap-2">
             {(["M", "F"] as const).map(v => (

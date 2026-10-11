@@ -7,6 +7,7 @@
 //    (див. коментар біля processPassport).
 // Чисті хелпери мапінгу (entitiesToDraft, sanitizeAmount, parsePassportMrz, …) —
 // під тестами docai.test.ts.
+import { countryNamePl, countryToCatalog } from "../lib/countries";
 import fs from "node:fs";
 import { google } from "googleapis";
 import heicConvert from "heic-convert";
@@ -168,10 +169,10 @@ export function mrzToPassportDraft(mrz: MrzResult | null): PassportDraft {
   const lastName = mrz.surname || null;
   return {
     passportNumber: mrz.documentNumber || null,
-    passportCountry: mrz.issuingCountry || null,
+    passportCountry: countryNamePl(mrz.issuingCountry) || null,
     passportIssuedAt: null,
     passportExpiresAt: mrz.expiryDate,
-    citizenship: mrz.nationality || null,
+    citizenship: countryNamePl(mrz.nationality) || null,
     sex: mrz.sex,
     birthDate: mrz.birthDate,
     fullName: [mrz.givenNames, mrz.surname].filter(Boolean).join(" ") || null,
@@ -370,25 +371,10 @@ export async function normalizeForOcr(buffer: Buffer): Promise<Buffer> {
   }
 }
 
-// ICAO3 (MRZ nationality/issuing country) → каталог NATIONALITIES (routes/admin-api.ts,
-// дзеркало web/src/lib/nationality.tsx). Мапимо лише країни, звідки реально
-// приймаємо працівників — регіональні каталожні значення (africa/latin_america/…)
-// з одного 3-літерного коду не вгадати надійно, лишаємо null (офіс доставить
-// вручну в профілі за потреби). Використовується при створенні нового
-// працівника з паспорта (routes/contracts.ts: createWorkerFromPassportScan).
-const MRZ_NATIONALITY_TO_CATALOG: Record<string, string> = {
-  UKR: "ukraine", BLR: "belarus", POL: "poland", MDA: "moldova",
-  ROU: "romania", ROM: "romania", GEO: "georgia", AZE: "azerbaijan", TUR: "turkey",
-};
-// OCR плутає цифри з літерами в MRZ-коді країни («P0L» замість «POL», «5RB», «8GR»)
-// — нормалізуємо перед мапою (реальний кейс 02.09.2026: власний паспорт зчитався як P0L).
-const MRZ_OCR_FIX: Record<string, string> = { "0": "O", "1": "I", "5": "S", "8": "B", "2": "Z" };
-export const normalizeMrzCountry = (code: string | null): string | null =>
-  code ? code.toUpperCase().replace(/[01582]/g, ch => MRZ_OCR_FIX[ch] ?? ch) : null;
-export const mrzNationalityToCatalog = (code: string | null): string | null => {
-  const norm = normalizeMrzCountry(code);
-  return norm ? (MRZ_NATIONALITY_TO_CATALOG[norm] ?? null) : null;
-};
+// ICAO3-код з MRZ → каталог NATIONALITIES / польська назва — довідник lib/countries.ts
+// (11.10.2026: раніше тут була мапа лише на 8 країн, а сирий код «UKR» ішов у документи).
+export { normalizeMrzCountry } from "../lib/countries";
+export const mrzNationalityToCatalog = (code: string | null): string | null => countryToCatalog(code);
 
 // mimeType лишається в сигнатурі для узгодженості виклику з боту/роуту —
 // формат реально визначається з байтів (toVisionCompatible/sniffDocMime).
