@@ -2,7 +2,7 @@
 // каталогу легалізації (document_types.code, services/legalizationCatalog.ts)
 // має власний набір полів модалки замість одного спільного блоку «Легалізація»
 // (відгук власника 03.09.2026: «у кожного документа свої специфічні дані»).
-import type { DocumentType } from "./api";
+import type { DocumentType, WorkerFieldKey } from "./api";
 import { STAY_ARTICLE_OPTIONS } from "./stayArticles";
 
 export type DocFieldKey =
@@ -166,6 +166,14 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
 const DEFAULT_FIELDS: DocField[] = [
   F("expiresAt", "Дійсний до", "date"),
 ];
+
+// Дані, які працівник вписує САМ при завантаженні на /docs/:token (11.10.2026) — дзеркало
+// WORKER_FIELD_KEYS у api-server/services/workerDocuments.ts; склад на тип — document_types.worker_fields
+// (Налаштування → Документи). Підписи — укр-ключі i18n; сторінка працівника має свої 5 мов.
+export const WORKER_FIELD_KEYS: WorkerFieldKey[] = ["number", "validFrom", "issuedAt", "expiresAt", "issuer"];
+export const WORKER_FIELD_LABEL: Record<WorkerFieldKey, string> = {
+  number: "номер", validFrom: "дійсний з", issuedAt: "дата видачі", expiresAt: "дійсний до", issuer: "ким виданий",
+};
 
 export function fieldsFor(type: DocumentType | null): DocField[] {
   if (!type?.code) return DEFAULT_FIELDS;

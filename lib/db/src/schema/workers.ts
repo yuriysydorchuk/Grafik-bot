@@ -769,6 +769,9 @@ export const documentTypesTable = pgTable("document_types", {
   defaultValidityDays: integer("default_validity_days"), // підказка строку при внесенні (oświadczenie 24 міс → 730)
   renewalLeadDays: integer("renewal_lead_days"),         // за скільки днів статус стає expiring; NULL → глобальний дефолт з legal_rules
   selfService: boolean("self_service").notNull().default(false), // працівник може надіслати сам (автозапит у бот перед кінцем строку); false = оформляє офіс
+  // 11.10.2026: які дані працівник ВПИСУЄ САМ при завантаженні на /docs/:token (ключі WORKER_FIELD_KEYS у services/workerDocuments.ts:
+  // number | validFrom | issuedAt | expiresAt | issuer; усі — обовʼязкові). NULL/[] = лише файл. Офіс далі перевіряє й може виправити.
+  workerFields: jsonb("worker_fields").$type<string[]>(),
   appliesToNationalities: jsonb("applies_to_nationalities").$type<string[]>(), // null = усі; групи "ua" | "eu" | "non_eu" або коди каталогу
   isActive: boolean("is_active").notNull().default(true),
   isSystem: boolean("is_system").notNull().default(false), // сід-рядок: не видаляти, лише деактивувати

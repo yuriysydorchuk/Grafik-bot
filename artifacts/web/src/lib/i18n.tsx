@@ -3637,6 +3637,13 @@ const EN: Record<string, string> = {
   "⏳ на перевірці": "⏳ under review",
   "з бота": "from bot",
   "Попросити подати": "Request submission",
+  // 11.10.2026: запит будь-якого типу документа, повторне надсилання умови, поля працівника при завантаженні
+  "попросити інший документ": "request another document", "Попросити у працівника документ, якого ще нема в профілі": "Ask the worker for a document that is not in the profile yet",
+  "— тип документа —": "— document type —", "Надіслати ще раз": "Send again",
+  "Надіслати той самий пакет ще раз: новий лінк у Telegram, попередній перестає діяти": "Send the same package again: a new link in Telegram, the previous one stops working",
+  "працівник вписує при завантаженні:": "worker enters on upload:", "лише файл": "file only",
+  "Поля, які працівник заповнює на сторінці завантаження разом із файлом; офіс потім перевіряє й може виправити": "Fields the worker fills in on the upload page along with the file; the office then checks and may correct them",
+  "номер": "number", "дійсний з": "valid from", "дата видачі": "date of issue", "дійсний до": "valid until", "ким виданий": "issued by",
   "Запит на подання надіслано": "Submission request sent",
   "Підтверджено": "Confirmed",
   "Відхилити документ": "Reject document",

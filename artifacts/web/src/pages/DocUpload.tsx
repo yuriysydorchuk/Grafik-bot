@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 import { useRoute } from "wouter";
 import { Card, Button, Spinner } from "../components/ui";
-import { upload } from "../lib/api";
 
 type Lang = "uk" | "en" | "es" | "ru" | "pl";
 const STR: Record<string, Record<Lang, string>> = {
@@ -23,8 +22,37 @@ const STR: Record<string, Record<Lang, string>> = {
   more: { uk: "Ще один файл цього ж документа", en: "One more file for the same document", es: "Otro archivo del mismo documento", ru: "Ещё один файл этого же документа", pl: "Jeszcze jeden plik tego dokumentu" },
   hint: { uk: "Чітке фото при доброму освітленні, весь документ у кадрі. Дві сторони — двома фото.", en: "A clear photo in good light with the whole document in the frame. Two sides — two photos.", es: "Foto nítida con buena luz y todo el documento en el encuadre. Dos caras — dos fotos.", ru: "Чёткое фото при хорошем освещении, весь документ в кадре. Две стороны — два фото.", pl: "Wyraźne zdjęcie w dobrym świetle, cały dokument w kadrze. Dwie strony — dwa zdjęcia." },
   failed: { uk: "Не вдалося надіслати. Спробуйте інший файл або пізніше.", en: "Upload failed. Try another file or later.", es: "No se pudo enviar. Prueba con otro archivo o más tarde.", ru: "Не удалось отправить. Попробуйте другой файл или позже.", pl: "Nie udało się wysłać. Spróbuj inny plik lub później." },
+  // дані документа, які вписує сам працівник (document_types.worker_fields) — усі обовʼязкові
+  fieldsTitle: { uk: "Впишіть дані з документа:", en: "Enter the details from the document:", es: "Introduce los datos del documento:", ru: "Впишите данные из документа:", pl: "Wpisz dane z dokumentu:" },
+  "f.number": { uk: "Номер документа", en: "Document number", es: "Número del documento", ru: "Номер документа", pl: "Numer dokumentu" },
+  "f.validFrom": { uk: "Дійсний з", en: "Valid from", es: "Válido desde", ru: "Действителен с", pl: "Ważny od" },
+  "f.issuedAt": { uk: "Дата видачі", en: "Date of issue", es: "Fecha de expedición", ru: "Дата выдачи", pl: "Data wydania" },
+  "f.expiresAt": { uk: "Дійсний до", en: "Valid until", es: "Válido hasta", ru: "Действителен до", pl: "Ważny do" },
+  "f.issuer": { uk: "Ким виданий / заклад", en: "Issued by / institution", es: "Expedido por / institución", ru: "Кем выдан / учреждение", pl: "Wydany przez / instytucja" },
+  "e.required": { uk: "Заповніть це поле", en: "This field is required", es: "Este campo es obligatorio", ru: "Заполните это поле", pl: "To pole jest wymagane" },
+  "e.format": { uk: "Невірна дата", en: "Invalid date", es: "Fecha no válida", ru: "Неверная дата", pl: "Nieprawidłowa data" },
+  "e.past": { uk: "Дата вже минула — документ прострочений", en: "The date has passed — the document has expired", es: "La fecha ya pasó — el documento ha caducado", ru: "Дата уже прошла — документ просрочен", pl: "Data już minęła — dokument jest przeterminowany" },
+  "e.order": { uk: "«Дійсний до» має бути пізніше за дату початку", en: "“Valid until” must be after the start date", es: "«Válido hasta» debe ser posterior a la fecha de inicio", ru: "«Действителен до» должно быть позже даты начала", pl: "„Ważny do” musi być późniejsze niż data początkowa" },
+  fillFirst: { uk: "Спершу заповніть дані вище", en: "Fill in the details above first", es: "Primero rellena los datos de arriba", ru: "Сначала заполните данные выше", pl: "Najpierw wypełnij dane powyżej" },
 };
-type Item = { docTypeId: number; name: string; expiresAt: string | null; status: string; requestedAt: string | null; uploadedAt: string | null; reviewNote: string | null };
+type FieldKey = "number" | "validFrom" | "issuedAt" | "expiresAt" | "issuer";
+type FieldErr = "required" | "format" | "past" | "order";
+const DATE_FIELDS = new Set<FieldKey>(["validFrom", "issuedAt", "expiresAt"]);
+// та сама перевірка, що на сервері (validateWorkerFields) — щоб підсвітити поле до відправки файла
+function checkFields(keys: FieldKey[], vals: Record<string, string>, today: string): Partial<Record<FieldKey, FieldErr>> {
+  const errs: Partial<Record<FieldKey, FieldErr>> = {};
+  for (const k of keys) {
+    const v = (vals[k] ?? "").trim();
+    if (!v) { errs[k] = "required"; continue; }
+    if (!DATE_FIELDS.has(k)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { errs[k] = "format"; continue; }
+    if (k === "expiresAt" && v < today) errs[k] = "past";
+  }
+  const from = vals.validFrom || vals.issuedAt;
+  if (!errs.expiresAt && from && vals.expiresAt && from > vals.expiresAt) errs.expiresAt = "order";
+  return errs;
+}
+type Item = { docTypeId: number; name: string; expiresAt: string | null; status: string; requestedAt: string | null; uploadedAt: string | null; reviewNote: string | null; fields: FieldKey[]; values: Record<string, string> | null };
 type Info = { workerName: string; language: Lang; focusTypeId: number | null; items: Item[] };
 const fmt = (d: string | null) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "");
 
@@ -36,18 +64,38 @@ export default function DocUpload() {
   const [busy, setBusy] = useState<number | null>(null);
   const [doneFor, setDoneFor] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // введені дані по типу документа; серверні помилки по полю (коди → локалізовані рядки)
+  const [vals, setVals] = useState<Record<number, Record<string, string>>>({});
+  const [touched, setTouched] = useState<Record<number, boolean>>({});
+  const [srvErrs, setSrvErrs] = useState<Record<number, Partial<Record<FieldKey, FieldErr>>>>({});
+  const today = new Date().toLocaleDateString("sv-SE");
   const lang: Lang = info?.language ?? "uk";
   const s = (k: string, p?: Record<string, string>) => { let v = STR[k]?.[lang] ?? STR[k]?.uk ?? k; for (const [a, b] of Object.entries(p ?? {})) v = v.replace(`{${a}}`, b); return v; };
   const load = async () => {
-    try { const r = await fetch(`/api/docs/${token}`); if (!r.ok) throw new Error(); setInfo(await r.json()); setState("ok"); }
-    catch { setState("invalid"); }
+    try {
+      const r = await fetch(`/api/docs/${token}`); if (!r.ok) throw new Error();
+      const data: Info = await r.json(); setInfo(data); setState("ok");
+      // передзаповнення щойно надісланого (pending) — лише там, де людина ще нічого не вводила
+      setVals(prev => { const n = { ...prev }; for (const it of data.items) if (it.values && !n[it.docTypeId]) n[it.docTypeId] = { ...it.values }; return n; });
+    } catch { setState("invalid"); }
   };
   useEffect(() => { void load(); }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
-  const send = async (docTypeId: number, file: File) => {
-    setBusy(docTypeId); setError(null);
+  const send = async (it: Item, file: File) => {
+    const docTypeId = it.docTypeId;
+    setTouched(p => ({ ...p, [docTypeId]: true }));
+    if (Object.keys(checkFields(it.fields, vals[docTypeId] ?? {}, today)).length) return; // підсвітка полів, файл не шлемо
+    setBusy(docTypeId); setError(null); setSrvErrs(p => ({ ...p, [docTypeId]: {} }));
     try {
       const fd = new FormData(); fd.append("docTypeId", String(docTypeId)); fd.append("file", file);
-      await upload(`/docs/${token}/upload`, fd);
+      const picked: Record<string, string> = {}; for (const k of it.fields) picked[k] = (vals[docTypeId]?.[k] ?? "").trim();
+      if (it.fields.length) fd.append("fields", JSON.stringify(picked));
+      // прямий fetch (не upload()): 400 з {fields:{ключ:код}} треба показати по полях, а обгортка лишає лише текст
+      const r = await fetch(`/api/docs/${token}/upload`, { method: "POST", headers: { "X-Requested-With": "grafik" }, body: fd });
+      if (!r.ok) {
+        let data: any = null; try { data = await r.json(); } catch { data = null; }
+        if (data?.fields && typeof data.fields === "object") { setSrvErrs(p => ({ ...p, [docTypeId]: data.fields })); return; }
+        throw new Error(data?.error ?? String(r.status));
+      }
       setDoneFor(prev => new Set(prev).add(docTypeId));
       await load();
     } catch { setError(s("failed")); }
@@ -63,7 +111,11 @@ export default function DocUpload() {
       </div>
       {info.items.map(it => {
         const uploaded = it.status === "pending" || doneFor.has(it.docTypeId);
-        const expired = !!it.expiresAt && it.expiresAt < new Date().toLocaleDateString("sv-SE");
+        const expired = !!it.expiresAt && it.expiresAt < today;
+        const v = vals[it.docTypeId] ?? {};
+        const errs: Partial<Record<FieldKey, FieldErr>> = { ...(touched[it.docTypeId] ? checkFields(it.fields, v, today) : {}), ...(srvErrs[it.docTypeId] ?? {}) };
+        const incomplete = it.fields.some(k => !(v[k] ?? "").trim());
+        const setV = (k: FieldKey, val: string) => { setVals(p => ({ ...p, [it.docTypeId]: { ...(p[it.docTypeId] ?? {}), [k]: val } })); setSrvErrs(p => { const n = { ...(p[it.docTypeId] ?? {}) }; delete n[k]; return { ...p, [it.docTypeId]: n }; }); };
         return (
           <Card key={it.docTypeId} className={`space-y-2 p-4 ${it.docTypeId === info.focusTypeId ? "border-red-300" : ""}`}>
             <div className="text-base font-semibold text-slate-800">{it.name}</div>
@@ -72,14 +124,28 @@ export default function DocUpload() {
             {uploaded ? (
               <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{doneFor.has(it.docTypeId) ? s("done") : s("pending")}</div>
             ) : <p className="text-xs text-slate-500">{s("hint")}</p>}
+            {it.fields.length > 0 && (
+              <div className="space-y-1.5 rounded-lg bg-slate-50 p-3">
+                <div className="text-xs font-medium text-slate-600">{s("fieldsTitle")}</div>
+                {it.fields.map(k => (
+                  <label key={k} className="block">
+                    <span className="text-xs text-slate-500">{s(`f.${k}`)}</span>
+                    <input type={DATE_FIELDS.has(k) ? "date" : "text"} value={v[k] ?? ""} onChange={e => setV(k, e.target.value)} onBlur={() => setTouched(p => ({ ...p, [it.docTypeId]: true }))}
+                      autoComplete="off" maxLength={120} disabled={busy != null}
+                      className={`mt-0.5 block w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-900 ${errs[k] ? "border-rose-400" : "border-slate-300"}`} />
+                    {errs[k] && <span className="text-xs text-rose-600">{s(`e.${errs[k]}`)}</span>}
+                  </label>
+                ))}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
-              <label className="flex-1">
-                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it.docTypeId, f); e.target.value = ""; }} />
-                <span className={`block w-full cursor-pointer rounded-lg bg-red-600 px-3 py-2.5 text-center text-sm font-semibold text-white ${busy != null ? "opacity-60" : "hover:bg-red-700"}`}>{busy === it.docTypeId ? s("uploading") : uploaded ? s("more") : s("takePhoto")}</span>
+              <label className="flex-1" title={incomplete ? s("fillFirst") : undefined}>
+                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it, f); e.target.value = ""; }} />
+                <span className={`block w-full cursor-pointer rounded-lg bg-red-600 px-3 py-2.5 text-center text-sm font-semibold text-white ${busy != null || incomplete ? "opacity-60" : "hover:bg-red-700"}`}>{busy === it.docTypeId ? s("uploading") : uploaded ? s("more") : s("takePhoto")}</span>
               </label>
-              <label>
-                <input type="file" accept="image/*,application/pdf" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it.docTypeId, f); e.target.value = ""; }} />
-                <span className="block cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-center text-sm text-slate-700 hover:bg-slate-50">{s("chooseFile")}</span>
+              <label title={incomplete ? s("fillFirst") : undefined}>
+                <input type="file" accept="image/*,application/pdf" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it, f); e.target.value = ""; }} />
+                <span className={`block cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-center text-sm text-slate-700 ${incomplete ? "opacity-60" : "hover:bg-slate-50"}`}>{s("chooseFile")}</span>
               </label>
             </div>
           </Card>

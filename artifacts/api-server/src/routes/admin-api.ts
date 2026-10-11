@@ -28,6 +28,7 @@ import {
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
+import { WORKER_FIELD_KEYS } from "../services/workerDocuments";
 import { findWorkerByReferralCode } from "../lib/referral";
 import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
@@ -1393,6 +1394,12 @@ function docTypeLegalPatch(b: any): Record<string, unknown> | string {
     if (b?.[f] === undefined) continue;
     if (b[f] === null || b[f] === "") { p[f] = null; continue; }
     const n = Number(b[f]); if (!Number.isInteger(n) || n < 0) return `${f}: ціле число днів ≥ 0`; p[f] = n;
+  }
+  // що працівник вписує сам при завантаженні (11.10.2026): підмножина WORKER_FIELD_KEYS; [] / null = лише файл
+  if (b?.workerFields !== undefined) {
+    if (b.workerFields === null || (Array.isArray(b.workerFields) && b.workerFields.length === 0)) p.workerFields = null;
+    else if (!Array.isArray(b.workerFields) || !b.workerFields.every((x: unknown) => (WORKER_FIELD_KEYS as readonly string[]).includes(String(x)))) return `Поля працівника: лише ${WORKER_FIELD_KEYS.join("|")}`;
+    else p.workerFields = (WORKER_FIELD_KEYS as readonly string[]).filter(k => b.workerFields.map(String).includes(k)); // канонічний порядок
   }
   if (b?.appliesToNationalities !== undefined) {
     if (b.appliesToNationalities === null || (Array.isArray(b.appliesToNationalities) && b.appliesToNationalities.length === 0)) p.appliesToNationalities = null;

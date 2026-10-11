@@ -722,11 +722,14 @@ export async function stampDraftWithCompany(contractId: number, adminId: number 
 // одним токеном. Винесено з routes/contracts.ts, бо те саме робить дія задачі (taskResolve).
 // bundle=false (дія задачі для подієвого документа) — лише цей пакет, без «причепу» інших
 // чернеток працівника, які офіс ще може редагувати.
+// `sent` теж sendable (11.10.2026): повторне надсилання вже відправленого пакета (лінк жив 72 год,
+// людина загубила повідомлення) — без перегенерації: старий токен ревокується, новий лінк — у бот.
+export const CONTRACT_SENDABLE = ["draft", "pending_approval", "approved", "sent"] as const;
 export async function sendContractForSignature(contractId: number, adminId: number | null, opts: { bundle?: boolean } = {}): Promise<{ token: string; link: string | null; notified: boolean; bundledCount: number }> {
-  const SENDABLE = ["draft", "pending_approval", "approved"];
+  const SENDABLE: readonly string[] = CONTRACT_SENDABLE;
   const [contract] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
   if (!contract) throw new Error("Умову не знайдено");
-  if (!SENDABLE.includes(contract.status)) throw new Error(`Надіслати на підпис можна лише з draft/pending_approval/approved (поточний: ${contract.status})`);
+  if (!SENDABLE.includes(contract.status)) throw new Error(`Надіслати на підпис можна лише з draft/pending_approval/approved/sent (поточний: ${contract.status})`);
   const { signatureTokensTable, signatureEventsTable } = await import("@workspace/db");
   const { ne } = await import("drizzle-orm");
   const siblings = opts.bundle === false ? [] : await db.select({ id: contractsTable.id }).from(contractsTable)

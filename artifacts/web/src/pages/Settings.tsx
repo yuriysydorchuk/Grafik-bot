@@ -10,6 +10,7 @@ import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
 import { STAGE_COLORS, dotClass, badgeClass } from "../lib/colors";
 import { DOC_TYPE_ICONS, DOC_TYPE_ICON_KEYS, docTypeIcon } from "../lib/docTypeIcons";
+import { WORKER_FIELD_KEYS, WORKER_FIELD_LABEL } from "../lib/documentFields";
 import { DOC_CATEGORY_LABEL, NAT_GROUP_LABEL } from "../lib/legality";
 import { NATIONALITIES } from "../lib/nationality";
 import { can } from "../lib/roles";
@@ -446,6 +447,20 @@ function DocTypeRow({ d, onSave, onDelete }: { d: DocumentType; onSave: (p: any)
         <label className="ml-auto flex items-center gap-1.5 text-xs font-medium text-slate-600">
           <input type="checkbox" checked={d.isActive} onChange={e => onSave({ isActive: e.target.checked })} /> {t("активний")}
         </label>
+      </div>
+      {/* 11.10.2026: що працівник вписує сам при завантаженні на /docs/:token (усі відмічені — обовʼязкові) */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2 text-xs text-slate-500">
+        <span title={t("Поля, які працівник заповнює на сторінці завантаження разом із файлом; офіс потім перевіряє й може виправити")}>{t("працівник вписує при завантаженні:")}</span>
+        {WORKER_FIELD_KEYS.map(k => {
+          const on = (d.workerFields ?? []).includes(k);
+          return (
+            <label key={k} className="flex items-center gap-1 text-slate-600">
+              <input type="checkbox" checked={on} onChange={e => { const next = WORKER_FIELD_KEYS.filter(x => (x === k ? e.target.checked : (d.workerFields ?? []).includes(x))); onSave({ workerFields: next.length ? next : null }); }} />
+              {t(WORKER_FIELD_LABEL[k])}
+            </label>
+          );
+        })}
+        {!(d.workerFields?.length) && <span className="text-slate-400">— {t("лише файл")}</span>}
       </div>
     </div>
   );

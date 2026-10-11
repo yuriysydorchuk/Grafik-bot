@@ -1455,6 +1455,10 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
             <button onClick={() => { if (!c.dateFrom && !window.confirm(t("Дата початку умови не вказана — надіслати на підпис без дати? Дописати її можна буде пізніше."))) return; send.mutate(c.id); }} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
           )}
+          {/* 11.10.2026: уже надіслано, але ще не підписано — новий лінк тим самим пакетом (без перегенерації; старий лінк гасне) */}
+          {!archived && c.status === "sent" && (
+            <button onClick={() => send.mutate(c.id)} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100" title={t("Надіслати той самий пакет ще раз: новий лінк у Telegram, попередній перестає діяти")}>{t("Надіслати ще раз")}</button>
+          )}
           {!archived && c.status === "worker_signed" && (
             <button onClick={() => finalize.mutate(c.id)} disabled={finalize.isPending} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100">{t("Підписати від компанії")}</button>
           )}
@@ -2584,13 +2588,38 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
         return (
           <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={otherDocState(doc, type, globals)}
             canLegal={canLegal} companies={companies}
-            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
+            requestCandidates={type && type.isActive !== false ? [type] : undefined} requestTitle={requestTitle}
+            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onRequest={type ? onRequest : undefined} />
         );
       })}
-      <button type="button" onClick={() => onOpenEmpty(null)} className="w-full px-4 py-1.5 text-left text-xs text-slate-400 hover:text-slate-600">
-        {t("+ інший документ")}
-      </button>
+      <div className="flex items-center">
+        <button type="button" onClick={() => onOpenEmpty(null)} className="flex-1 px-4 py-1.5 text-left text-xs text-slate-400 hover:text-slate-600">
+          {t("+ інший документ")}
+        </button>
+        {/* 11.10.2026: попросити у працівника БУДЬ-ЯКИЙ активний тип каталогу (вкл. нові з Налаштувань), не лише слоти */}
+        {canLegal && <RequestAnyDocButton types={types.filter(ty => ty.isActive !== false && !(ty.code && SLOT_CODES.has(ty.code)) && !docs.some(d => d.docTypeId === ty.id))} onPick={onRequest} />}
+      </div>
     </div>
+  );
+}
+
+// «Попросити інший документ»: вибір типу з каталогу (активні, без слотів і без уже наявних рядків) →
+// той самий запит у бот, що й у слотах (POST /workers/:id/documents/request → /docs/:token).
+function RequestAnyDocButton({ types, onPick }: { types: DocumentType[]; onPick: (docTypeId: number) => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [pick, setPick] = useState<number | "">("");
+  if (!types.length) return null;
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className="inline-flex items-center gap-1 px-4 py-1.5 text-xs text-slate-400 hover:text-blue-600" title={t("Попросити у працівника документ, якого ще нема в профілі")}><Send className="h-3 w-3" /> {t("попросити інший документ")}</button>;
+  return (
+    <span className="inline-flex items-center gap-1 px-2">
+      <Select value={pick} onChange={e => setPick(e.target.value ? Number(e.target.value) : "")} className="w-auto max-w-56 rounded px-1.5 py-0.5 text-xs">
+        <option value="">{t("— тип документа —")}</option>
+        {[...types].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id).map(ty => <option key={ty.id} value={ty.id}>{ty.name}</option>)}
+      </Select>
+      <button type="button" disabled={pick === ""} onClick={() => { if (pick !== "") { onPick(pick); setOpen(false); setPick(""); } }} className="rounded p-1 text-blue-600 hover:bg-blue-50 disabled:opacity-40" title={t("Попросити подати")}><Send className="h-3.5 w-3.5" /></button>
+      <button type="button" onClick={() => { setOpen(false); setPick(""); }} className="rounded p-1 text-slate-400 hover:bg-slate-100" title={t("Скасувати")}><XCircle className="h-3.5 w-3.5" /></button>
+    </span>
   );
 }
 

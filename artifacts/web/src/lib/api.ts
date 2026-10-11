@@ -98,8 +98,10 @@ export interface DocumentType {
   code: string | null; category: DocCategory; grantsStay: boolean; grantsWork: boolean; requiresEmployerMatch: boolean;
   defaultValidityDays: number | null; renewalLeadDays: number | null; appliesToNationalities: string[] | null;
   selfService: boolean; // працівник надсилає сам — автозапит у бот перед кінцем строку
+  workerFields: WorkerFieldKey[] | null; // що працівник вписує сам при завантаженні на /docs/:token (lib/documentFields.ts WORKER_FIELD_KEYS); null = лише файл
   isActive: boolean; isSystem: boolean;
 }
+export type WorkerFieldKey = "number" | "validFrom" | "issuedAt" | "expiresAt" | "issuer";
 export type CaseStatus = "to_submit" | "submitted" | "in_progress" | "decision_positive" | "decision_negative" | "withdrawn";
 export interface WorkerDocument {
   id: number; workerId: number; docTypeId: number | null; title: string;
