@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, adminsTable, factoriesTable, workersTable, svodniRowsTable, advanceRequestsTable, contractsTable, rolesTable } from "../test/harness.ts";
-import { workerFactoriesTable, tasksTable, workerBadaniaTable, clothingStockTable, clothingItemsTable } from "@workspace/db";
+import { workerFactoriesTable, tasksTable, workerBadaniaTable, clothingStockTable, clothingItemsTable, scheduleWeeksTable, scheduleEntriesTable, hoursDisputesTable, absenceRequestsTable } from "@workspace/db";
 import { invalidateRolesCache } from "../lib/auth";
 import { eq } from "drizzle-orm";
 
@@ -303,4 +303,103 @@ test("запросити/звільнити: лінк і звільнення д
   await db.update(rolesTable).set({ caps: OM_CAPS }).where(eq(rolesTable.key, "office_manager"));
   invalidateRolesCache();
   assert.equal((await request(app).get(`/api/workers/${wPoz.id}/invite`).set("Cookie", om.cookie)).status, 403);
+});
+
+// ── 11.10.2026: скоуп-адмін з editData веде графік/замовлення/доступність/години своїх фабрик ──
+const GRAFIK_PAGES = ["/", "/schedule", "/orders", "/availability", "/reliability", "/absences", "/hours", "/broadcast", "/workers", "/tasks"];
+const WEEK = "2030-03-04"; // понеділок у майбутньому: жодних тригерів «минулі дні»
+
+async function world3() {
+  const main = await seedAdmin({ role: "owner", isMain: true, name: "Main" });
+  await seedRole("inpost-grafikowy", ["editData"], GRAFIK_PAGES);
+  const [poz] = await db.insert(factoriesTable).values({ name: "POZ FAB", city: "Познань" }).returning();
+  const [lodz] = await db.insert(factoriesTable).values({ name: "LDZ FAB", city: "Лодзь" }).returning();
+  const [wPoz] = await db.insert(workersTable).values({ fullName: "Anna Poz", factoryId: poz!.id }).returning();
+  const [wLodz] = await db.insert(workersTable).values({ fullName: "Olek Lodz", factoryId: lodz!.id }).returning();
+  const [wk] = await db.insert(scheduleWeeksTable).values({ weekStart: WEEK, status: "draft" }).returning();
+  const [ePoz] = await db.insert(scheduleEntriesTable).values({ weekId: wk!.id, workerId: wPoz!.id, factoryId: poz!.id, dayOfWeek: "mon", shift: "1", status: "scheduled" }).returning();
+  const [eLodz] = await db.insert(scheduleEntriesTable).values({ weekId: wk!.id, workerId: wLodz!.id, factoryId: lodz!.id, dayOfWeek: "mon", shift: "1", status: "scheduled" }).returning();
+  const g = await seedAdmin({ role: "inpost-grafikowy", name: "Grafik POZ" });
+  await db.update(adminsTable).set({ scopeFactoryIds: [poz!.id] }).where(eq(adminsTable.id, g.adminId));
+  return { main, g, poz: poz!, lodz: lodz!, wPoz: wPoz!, wLodz: wLodz!, wk: wk!, ePoz: ePoz!, eLodz: eLodz! };
+}
+
+test("графік зі скоупом: фабрика обовʼязкова; своя — 200, чужа/без — 403; записи — по фабриці запису", opts, async () => {
+  const { g, poz, lodz, wPoz, wLodz, ePoz, eLodz } = await world3();
+  assert.equal((await request(app).get(`/api/schedule?weekStart=${WEEK}`).set("Cookie", g.cookie)).status, 403);
+  assert.equal((await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${lodz.id}`).set("Cookie", g.cookie)).status, 403);
+  const sch = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${poz.id}`).set("Cookie", g.cookie);
+  assert.equal(sch.status, 200);
+  assert.equal((await request(app).post("/api/schedule/generate").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK })).status, 403);
+  assert.equal((await request(app).post("/api/schedule/approve").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK })).status, 403);
+  assert.equal((await request(app).post("/api/schedule/generate").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK, factoryId: lodz.id })).status, 403);
+  // новий запис: своя людина на свою фабрику — ок; чужа людина — 403; чужа фабрика — 403
+  const add = await request(app).post("/api/schedule/entry").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK, workerId: wPoz.id, factoryId: poz.id, day: "tue", shift: "1" });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  assert.equal((await request(app).post("/api/schedule/entry").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK, workerId: wLodz.id, factoryId: poz.id, day: "tue", shift: "1" })).status, 403);
+  assert.equal((await request(app).post("/api/schedule/entry").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK, workerId: wPoz.id, factoryId: lodz.id, day: "wed", shift: "1" })).status, 403);
+  assert.equal((await request(app).patch(`/api/schedule/entry/${eLodz.id}/status`).set("Cookie", g.cookie).set(H).send({ status: "present" })).status, 403);
+  assert.equal((await request(app).delete(`/api/schedule/entry/${eLodz.id}`).set("Cookie", g.cookie).set(H)).status, 403);
+  assert.equal((await request(app).delete(`/api/schedule/entry/${ePoz.id}`).set("Cookie", g.cookie).set(H)).status, 200);
+  // замовлення/Excel — лише своя фабрика
+  assert.equal((await request(app).get(`/api/orders?weekStart=${WEEK}&factoryId=${lodz.id}`).set("Cookie", g.cookie)).status, 403);
+  assert.equal((await request(app).get(`/api/orders?weekStart=${WEEK}&factoryId=${poz.id}`).set("Cookie", g.cookie)).status, 200);
+  assert.equal((await request(app).put("/api/orders").set("Cookie", g.cookie).set(H).send({ weekStart: WEEK, factoryId: lodz.id, orders: [] })).status, 403);
+  // шаблони листів — лише читати
+  assert.equal((await request(app).get("/api/email-templates").set("Cookie", g.cookie)).status, 200);
+  assert.equal((await request(app).post("/api/email-templates").set("Cookie", g.cookie).set(H).send({ name: "x", subject: "s", body: "b" })).status, 403);
+});
+
+test("списки зі скоупом: огляд, доступність, години, рапорти, відпрошування, пропуски — лише свої фабрики", opts, async () => {
+  const { g, poz, lodz, wPoz, wLodz, wk } = await world3();
+  await db.update(scheduleWeeksTable).set({ status: "approved" }).where(eq(scheduleWeeksTable.id, wk.id));
+  await db.update(scheduleEntriesTable).set({ status: "absent" }).where(eq(scheduleEntriesTable.weekId, wk.id));
+  await db.insert(hoursDisputesTable).values([{ workerId: wPoz.id, month: "2030-03", message: "a", status: "new" }, { workerId: wLodz.id, month: "2030-03", message: "b", status: "new" }] as any);
+  await db.insert(absenceRequestsTable).values([{ workerId: wPoz.id, weekStart: WEEK, dayOfWeek: "mon", status: "pending" }, { workerId: wLodz.id, weekStart: WEEK, dayOfWeek: "mon", status: "pending" }] as any);
+  const dash = await request(app).get("/api/dashboard").set("Cookie", g.cookie);
+  assert.equal(dash.status, 200);
+  assert.equal(dash.body.counts.factories, 1);
+  assert.equal(dash.body.counts.workers, 1);
+  const attn = await request(app).get("/api/attention").set("Cookie", g.cookie);
+  assert.equal(attn.status, 200);
+  assert.equal(attn.body.pendingAbsences, 1);
+  assert.equal(attn.body.hoursDisputes, 1);
+  const miss = await request(app).get(`/api/availability/missing?weekStart=${WEEK}`).set("Cookie", g.cookie);
+  assert.deepEqual(miss.body.map((w: any) => w.id), [wPoz.id]);
+  const av = await request(app).get(`/api/availability?weekStart=${WEEK}`).set("Cookie", g.cookie);
+  assert.equal(av.status, 200);
+  assert.ok(!av.body.some((r: any) => r.workerId === wLodz.id));
+  const hrs = await request(app).get("/api/hours?month=2030-03").set("Cookie", g.cookie);
+  assert.equal(hrs.status, 200);
+  assert.ok(!hrs.body.workers.some((w: any) => w.workerId === wLodz.id), "людина чужої фабрики в обліку годин");
+  const reps = await request(app).get("/api/hours-reports").set("Cookie", g.cookie);
+  assert.deepEqual(reps.body.map((r: any) => r.workerId), [wPoz.id]);
+  const lodzRep = (await db.select().from(hoursDisputesTable).where(eq(hoursDisputesTable.workerId, wLodz.id)))[0]!;
+  assert.equal((await request(app).post(`/api/hours-reports/${lodzRep.id}/resolve`).set("Cookie", g.cookie).set(H).send({})).status, 403);
+  const ar = await request(app).get("/api/absence-requests").set("Cookie", g.cookie);
+  assert.deepEqual(ar.body.map((r: any) => r.workerId), [wPoz.id]);
+  const abs = await request(app).get("/api/absences?month=2030-03").set("Cookie", g.cookie);
+  assert.equal(abs.status, 200);
+  assert.ok(!abs.body.absences.some((a: any) => a.workerId === wLodz.id), "пропуск чужої фабрики");
+  const rel = await request(app).get("/api/reliability?month=2030-03").set("Cookie", g.cookie);
+  assert.equal(rel.status, 200);
+  assert.ok(!JSON.stringify(rel.body).includes("Olek Lodz"), "надійність показує чужу людину");
+  // ревʼю codex: відпрошування чужої людини не в /schedule, людина без фабрики не в запасі; approve не торкає чужу зміну; /weeks — обсяг лише своїх
+  const schedAbs = await request(app).get(`/api/schedule?weekStart=${WEEK}&factoryId=${poz.id}`).set("Cookie", g.cookie);
+  assert.ok(!Object.keys(schedAbs.body.absenceByWorker).some(k => k.startsWith(`${wLodz.id}-`)), "чуже відпрошування у графіку");
+  const lodzReq = (await db.select().from(absenceRequestsTable).where(eq(absenceRequestsTable.workerId, wLodz.id)))[0]!;
+  assert.equal((await request(app).post(`/api/absence-requests/${lodzReq.id}/approve`).set("Cookie", g.cookie).set(H).send({})).status, 403);
+  const weeks = await request(app).get("/api/weeks").set("Cookie", g.cookie);
+  assert.equal(weeks.body.find((w: any) => w.id === wk.id)?.entries, 1);
+  assert.equal(dash.body.attendance?.total ?? 1, 1);
+  // масиви id у тілі: чужа людина у виключеннях/розсилці — 403; «всім» — 403; свій працівник без фабрики — 403
+  assert.equal((await request(app).post("/api/hours/exclusions").set("Cookie", g.cookie).set(H).send({ month: "2030-03", items: [{ workerId: wLodz.id, reason: "vacation" }] })).status, 403);
+  assert.equal((await request(app).post("/api/broadcast").set("Cookie", g.cookie).set(H).send({ text: "hi", target: "all" })).status, 403);
+  assert.equal((await request(app).post("/api/broadcast").set("Cookie", g.cookie).set(H).send({ text: "hi", target: "factory", factoryId: lodz.id })).status, 403);
+  assert.equal((await request(app).post("/api/workers").set("Cookie", g.cookie).set(H).send({ fullName: "Nowy Czlowiek" })).status, 403);
+  assert.equal((await request(app).post("/api/workers").set("Cookie", g.cookie).set(H).send({ fullName: "Nowy Czlowiek", factoryId: poz.id })).status, 200);
+  // без скоупу (головний) усе як раніше
+  const { main } = { main: await seedAdmin({ role: "owner", isMain: true, name: "Main2" }) };
+  const all = await request(app).get("/api/hours-reports").set("Cookie", main.cookie);
+  assert.equal(all.body.length, 2);
 });

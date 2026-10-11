@@ -3907,6 +3907,7 @@ const EN: Record<string, string> = {
   "Зарплата працівника в профілі — лише перегляд (години, ставка нетто, премії, потрачення, до виплати; без konto/готівки)": "Worker pay in profile — view only (hours, net rate, bonuses, deductions, payout; no konto/cash split)",
   "Запрошувати й звільняти працівників (лінк у бот, звільнення, виповідзення, повернення) — без решти редагування": "Invite and dismiss workers (bot link, dismissal, notice, rehire) — no other editing",
   "Залічки й потрачення — залічки, бадання, одяг (вносити, редагувати, передавати до виплати); без сводних": "Advances and deductions — advances, medical exams, clothing (enter, edit, mark paid); no svodni",
+  "Затверджуйте графік по фабриці на сторінці «Графіки»": "Approve the schedule per factory on the Schedule page",
   "Кауція": "Deposit",
   "Користувачі та запрошення": "Users & invitations",
   "Лінк самореєстрації": "Self-registration link",

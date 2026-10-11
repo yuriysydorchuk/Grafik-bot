@@ -13,7 +13,8 @@
 import type { Response, NextFunction } from "express";
 import { db, factoriesTable, workersTable, workerFactoriesTable, svodniRowsTable,
   workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable,
-  advanceRequestsTable, tasksTable, taskAssigneesTable, clothingItemsTable } from "@workspace/db";
+  advanceRequestsTable, tasksTable, taskAssigneesTable, clothingItemsTable,
+  scheduleEntriesTable, unplannedWorkersTable, workerFactoryCodesTable, hoursDisputesTable, absenceRequestsTable } from "@workspace/db";
 import { and, eq, isNull, or, sql, type SQL, type AnyColumn } from "drizzle-orm";
 import type { AuthedRequest } from "./auth";
 
@@ -59,6 +60,16 @@ export function factoryInScopeSql(scope: AdminScope, factoryCol: SQL | AnyColumn
   return scope.factoryIds.length ? sql`${factoryCol} IN (${idList(scope.factoryIds)})` : sql`false`;
 }
 
+// Усі id у скоупі (одним запитом); порожній список → true
+export async function workersInScope(scope: AdminScope | null | undefined, ids: number[]): Promise<boolean> {
+  if (!scope) return true;
+  const clean = [...new Set(ids.filter(n => Number.isInteger(n) && n > 0))];
+  if (!clean.length) return true;
+  if (!scope.factoryIds.length) return false;
+  const r: any = await db.execute(sql`SELECT count(*)::int AS n FROM ${workersTable} WHERE ${workersTable.id} IN (${idList(clean)}) AND ${workerInScopeSql(scope)}`);
+  return Number((r?.rows ?? r)?.[0]?.n ?? 0) === clean.length;
+}
+
 export async function workerInScope(scope: AdminScope | null | undefined, workerId: number | null | undefined): Promise<boolean> {
   if (!scope) return true;
   if (!workerId || !Number.isInteger(workerId)) return false;
@@ -83,12 +94,15 @@ export async function factoriesOutsideScope(scope: AdminScope | null | undefined
 type Check =
   | { kind: "free" }                                  // довідник або список, що фільтрує сам
   | { kind: "worker" }                                // m[1] = id працівника
-  | { kind: "lookup"; table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" } // m[1] = id рядка → його worker_id
+  | { kind: "lookup"; table: LookupTable }            // m[1] = id рядка → його worker_id / factory_id
   | { kind: "factory" }                               // m[1] = id фабрики
   | { kind: "queryWorker" }                           // ?workerId= обовʼязковий і в скоупі
   | { kind: "task" }                                  // m[1] = id задачі: учасник/автор або працівник/фабрика задачі в скоупі
-  | { kind: "taskBulk" };                             // body.ids — кожна задача за правилом task
+  | { kind: "taskBulk" }                              // body.ids — кожна задача за правилом task
+  | { kind: "queryFactory" }                          // ?factoryId= обовʼязковий (значення звіряє загальний гейт query)
+  | { kind: "bodyFactory" };                          // body.factoryId обовʼязковий (значення звіряє гейт тіла)
 
+type LookupTable = "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" | "entry" | "unplanned" | "factoryCode" | "dispute" | "absenceReq";
 type Rule = { methods: string[]; re: RegExp; check: Check };
 const R = (methods: string, re: RegExp, check: Check): Rule => ({ methods: methods.split(","), re, check });
 const ANY = "GET,POST,PUT,PATCH,DELETE";
@@ -133,6 +147,25 @@ const SCOPE_RULES: Rule[] = [
   R("GET", /^\/task-templates$/, { kind: "free" }),
   // Календар працівників (routes/workersCalendar.ts) — фільтрує хендлер по фабриках скоупу
   R("GET", /^\/workers-calendar(?:\/export\.xlsx)?$/, { kind: "free" }),
+  // ── Графік / замовлення / доступність / години (11.10.2026, скоуп-адмін з editData веде свої фабрики) ──
+  // Списки без фабрики — фільтрує хендлер; довідники тижнів/шаблонів листів — лише читання
+  R("GET", /^\/(?:dashboard|attention|weeks|email-templates|reliability|absences|absence-requests|hours|hours-reports|availability|availability\/missing)$/, { kind: "free" }),
+  // Без factoryId ці дії йдуть по ВСІХ фабриках — для скоуп-адміна фабрика обовʼязкова
+  R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel)$/, { kind: "queryFactory" }),
+  R("DELETE", /^\/schedule\/shift-override$/, { kind: "queryFactory" }),
+  R("POST", /^\/schedule\/(?:generate|approve|entry|shift-cancel|shift-restore|copy-day|clear|shift-override|email|notify)$/, { kind: "bodyFactory" }),
+  R("PUT", /^\/orders$/, { kind: "bodyFactory" }),
+  R("POST", /^\/hours\/(?:factory|factory-clear|factory-notify|factory-confirm|factory-apply|factory-codes-parse|factory-codes-apply|discrepancy-email|statement-email)$/, { kind: "bodyFactory" }),
+  R("POST", /^\/workers$/, { kind: "bodyFactory" }),
+  // workerId/масиви id звіряє гейт тіла; фабрику-фолбек, multipart і «всім» — хендлери
+  R("POST", /^\/hours\/(?:report|note|factory-parse|exclusions|exclusions-remove|last-activity|report-remind)$/, { kind: "free" }),
+  R("POST", /^\/(?:availability\/remind|absences\/remind|broadcast)$/, { kind: "free" }),
+  R("PATCH,DELETE", /^\/schedule\/entry\/(\d+)(?:\/status)?$/, { kind: "lookup", table: "entry" }),
+  R("POST", /^\/unplanned\/(\d+)\/link$/, { kind: "lookup", table: "unplanned" }),
+  R("DELETE", /^\/hours\/factory-codes\/(\d+)$/, { kind: "lookup", table: "factoryCode" }),
+  R(ANY, /^\/hours-reports\/(\d+)(?:\/(?:resolve|photo|apply))?$/, { kind: "lookup", table: "dispute" }),
+  R("POST,PATCH", /^\/absences\/(\d+)(?:\/message)?$/, { kind: "lookup", table: "entry" }),
+  R("POST", /^\/absence-requests\/(\d+)\/(?:approve|reject|substitute)$/, { kind: "lookup", table: "absenceReq" }),
 ];
 
 // Задача доступна скоуп-адміну, якщо він її учасник/автор/спостерігач (її йому дали свідомо)
@@ -159,7 +192,18 @@ export function scopeTaskSql(scope: AdminScope, adminId: number): SQL {
 
 // Рядок → його працівник; для привʼязки до фабрики й умови — ще й фабрика рядка: працівник
 // може бути у двох містах, а рядок чужої фабрики правити/читати не можна.
-async function lookupAllowed(scope: AdminScope, table: "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing", id: number): Promise<boolean> {
+async function lookupAllowed(scope: AdminScope, table: LookupTable, id: number): Promise<boolean> {
+  if (table === "entry" || table === "unplanned" || table === "factoryCode") {
+    // рядок, привʼязаний до фабрики — лише фабрика рядка
+    const t = { entry: scheduleEntriesTable, unplanned: unplannedWorkersTable, factoryCode: workerFactoryCodesTable }[table];
+    const [r] = await db.select({ factoryId: t.factoryId }).from(t).where(eq(t.id, id));
+    return !!r && factoryInScope(scope, r.factoryId);
+  }
+  if (table === "dispute" || table === "absenceReq") {
+    const t = table === "dispute" ? hoursDisputesTable : absenceRequestsTable;
+    const [r] = await db.select({ workerId: t.workerId }).from(t).where(eq(t.id, id));
+    return workerInScope(scope, r?.workerId ?? null);
+  }
   if (table === "wf" || table === "contract") {
     const t = table === "wf" ? workerFactoriesTable : contractsTable;
     const [r] = await db.select({ workerId: t.workerId, factoryId: t.factoryId }).from(t).where(eq(t.id, id));
@@ -193,9 +237,17 @@ export async function scopeGate(req: AuthedRequest, res: Response, next: NextFun
     // для лінка скану нового кандидата він обовʼязковий — інакше людина «нічия».
     const bodyFactory = req.body && typeof req.body === "object" ? (req.body as any).factoryId : undefined;
     if (bodyFactory != null && bodyFactory !== "" && !factoryInScope(scope, Number(bodyFactory))) return deny(res);
-    // Так само workerId у тілі (нова залічка, нова задача про людину) — лише людина зі скоупу
-    const bodyWorker = req.body && typeof req.body === "object" ? (req.body as any).workerId : undefined;
-    if (bodyWorker != null && bodyWorker !== "" && !(await workerInScope(scope, Number(bodyWorker)))) return deny(res);
+    // Так само працівники в тілі: workerId, масиви workerIds/attachWorkerIds і rows[]/items[].workerId — лише люди зі скоупу
+    const b: any = req.body && typeof req.body === "object" ? req.body : {};
+    const bodyWorkers: number[] = [];
+    if (b.workerId != null && b.workerId !== "") bodyWorkers.push(Number(b.workerId));
+    for (const k of ["workerIds", "attachWorkerIds"]) if (Array.isArray(b[k])) bodyWorkers.push(...b[k].map(Number));
+    for (const k of ["rows", "items"]) if (Array.isArray(b[k])) for (const it of b[k]) if (it && typeof it === "object" && it.workerId != null && it.workerId !== "") bodyWorkers.push(Number(it.workerId));
+    if (bodyWorkers.some(n => !Number.isInteger(n) || n <= 0)) return deny(res);
+    if (bodyWorkers.length && !(await workersInScope(scope, bodyWorkers))) return deny(res);
+    // ?factoryId= у query (графік, Excel, замовлення, коди фабрики) — так само лише фабрика зі скоупу
+    const qf = req.query?.factoryId;
+    if (qf != null && qf !== "" && !factoryInScope(scope, Number(qf))) return deny(res);
     if (req.method === "POST" && req.path === "/workers/scan-invite" && bodyFactory == null) return deny(res);
 
     const rule = SCOPE_RULES.find(r => r.methods.includes(req.method) && r.re.test(req.path));
@@ -209,6 +261,8 @@ export async function scopeGate(req: AuthedRequest, res: Response, next: NextFun
       case "factory": return factoryInScope(scope, id) ? next() : deny(res);
       case "queryWorker": return (await workerInScope(scope, Number(req.query.workerId))) ? next() : deny(res);
       case "task": return (await taskAllowed(scope, req.admin!.adminId, id)) ? next() : deny(res);
+      case "queryFactory": return req.query?.factoryId != null && req.query.factoryId !== "" ? next() : deny(res);
+      case "bodyFactory": return bodyFactory != null && bodyFactory !== "" ? next() : deny(res);
       case "taskBulk": {
         const ids = Array.isArray((req.body as any)?.ids) ? ((req.body as any).ids as unknown[]).map(Number) : [];
         for (const tid of ids) if (!(await taskAllowed(scope, req.admin!.adminId, tid))) return deny(res);

@@ -33,7 +33,7 @@ import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
 import { hashPassword } from "../lib/auth";
-import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope } from "../lib/scope";
+import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope, type AdminScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
@@ -137,16 +137,19 @@ const uploadDoc = multer({
 });
 
 // ─── Dashboard (rich analytics) ────────────────────────────────────────────────
-router.get("/dashboard", async (_req, res) => {
+router.get("/dashboard", async (req, res) => {
   const currentWeek = getCurrentMonday();
   const nextWeek = getNextMonday();
+  const scope = scopeOf(req); // скоуп-адмін: лише свої фабрики і їхні люди
 
-  const [workers, drivers, factories, allWeeks] = await Promise.all([
+  const [workersAll, drivers, factoriesAll, allWeeks] = await Promise.all([
     db.select().from(workersTable).where(eq(workersTable.isActive, true)),
     db.select().from(driversTable).where(eq(driversTable.isActive, true)),
     db.select().from(factoriesTable).orderBy(factoriesTable.name),
     db.select().from(scheduleWeeksTable).orderBy(desc(scheduleWeeksTable.id)),
   ]);
+  const factories = factoriesAll.filter(f => factoryInScope(scope, f.id));
+  const workers = scope ? workersAll.filter(w => factoryInScope(scope, w.factoryId)) : workersAll;
 
   // Resolve the "primary" week row per weekStart: approved preferred, else latest id
   const weekByStart = new Map<string, typeof allWeeks[number]>();
@@ -158,17 +161,17 @@ router.get("/dashboard", async (_req, res) => {
   {
     const rows = await db
       .select({ weekId: scheduleEntriesTable.weekId, count: sql<number>`count(*)::int` })
-      .from(scheduleEntriesTable).groupBy(scheduleEntriesTable.weekId);
+      .from(scheduleEntriesTable).where(scope ? factoryInScopeSql(scope, scheduleEntriesTable.factoryId) : undefined).groupBy(scheduleEntriesTable.weekId);
     for (const r of rows) entryCounts.set(r.weekId, r.count);
   }
 
   // ── Planning summary for the focus week (next week) ──
   const focusWeek = nextWeek;
   const focusWk = weekByStart.get(focusWeek);
-  const orders = await db.select().from(factoryOrdersTable).where(eq(factoryOrdersTable.weekStart, focusWeek));
+  const orders = await db.select().from(factoryOrdersTable).where(and(eq(factoryOrdersTable.weekStart, focusWeek), scope ? factoryInScopeSql(scope, factoryOrdersTable.factoryId) : undefined));
   const focusEntries = focusWk
     ? await db.select({ factoryId: scheduleEntriesTable.factoryId, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift })
-        .from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, focusWk.id))
+        .from(scheduleEntriesTable).where(and(eq(scheduleEntriesTable.weekId, focusWk.id), scope ? factoryInScopeSql(scope, scheduleEntriesTable.factoryId) : undefined))
     : [];
   const avail = await db.select({ workerId: availabilityTable.workerId, wFactory: workersTable.factoryId })
     .from(availabilityTable).leftJoin(workersTable, eq(availabilityTable.workerId, workersTable.id))
@@ -223,7 +226,7 @@ router.get("/dashboard", async (_req, res) => {
   const approved = allWeeks.find(w => w.status === "approved");
   let attendance: any = null;
   if (approved) {
-    const rows = await db.select({ status: scheduleEntriesTable.status }).from(scheduleEntriesTable).where(eq(scheduleEntriesTable.weekId, approved.id));
+    const rows = await db.select({ status: scheduleEntriesTable.status }).from(scheduleEntriesTable).where(and(eq(scheduleEntriesTable.weekId, approved.id), scope ? factoryInScopeSql(scope, scheduleEntriesTable.factoryId) : undefined));
     const c = { present: 0, absent: 0, scheduled: 0 };
     for (const r of rows) { if (r.status === "present") c.present++; else if (r.status === "absent") c.absent++; else c.scheduled++; }
     attendance = { weekStart: approved.weekStart, label: formatWeekStart(approved.weekStart), ...c, total: rows.length };
@@ -248,17 +251,20 @@ router.get("/dashboard", async (_req, res) => {
 });
 
 // ─── Attention panel: open items waiting for office action ───────────────────
-router.get("/attention", async (_req, res) => {
+router.get("/attention", async (req, res) => {
   const today = warsawDateStr();
   const currentWeek = getCurrentMonday();
   const nextWeek = getNextMonday();
+  const scope = scopeOf(req); // скоуп-адмін: лічильники лише по своїх фабриках/людях
+  const wScope = (col: any) => (scope ? workerInScopeSql(scope, col) : undefined);
+  const fScope = (col: any) => (scope ? factoryInScopeSql(scope, col) : undefined);
 
   const count = (p: Promise<{ n: number }[]>) => p.then(r => r[0]?.n ?? 0);
   const [pendingAbsences, hoursDisputes, pendingAdvances, unlinkedUnplanned] = await Promise.all([
-    count(db.select({ n: sql<number>`count(*)::int` }).from(absenceRequestsTable).where(eq(absenceRequestsTable.status, "pending"))),
-    count(db.select({ n: sql<number>`count(*)::int` }).from(hoursDisputesTable).where(eq(hoursDisputesTable.status, "new"))),
-    count(db.select({ n: sql<number>`count(*)::int` }).from(advanceRequestsTable).where(eq(advanceRequestsTable.status, "pending"))),
-    count(db.select({ n: sql<number>`count(*)::int` }).from(unplannedWorkersTable).where(isNull(unplannedWorkersTable.workerId))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(absenceRequestsTable).where(and(eq(absenceRequestsTable.status, "pending"), wScope(absenceRequestsTable.workerId)))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(hoursDisputesTable).where(and(eq(hoursDisputesTable.status, "new"), wScope(hoursDisputesTable.workerId)))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(advanceRequestsTable).where(and(eq(advanceRequestsTable.status, "pending"), wScope(advanceRequestsTable.workerId)))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(unplannedWorkersTable).where(and(isNull(unplannedWorkersTable.workerId), fScope(unplannedWorkersTable.factoryId)))),
   ]);
 
   // Unmarked attendance: approved weeks that can still contain past days (last 3 Mondays),
@@ -270,7 +276,7 @@ router.get("/attention", async (_req, res) => {
     if (weeks.length) {
       const rows = await db.select({ weekId: scheduleEntriesTable.weekId, day: scheduleEntriesTable.dayOfWeek })
         .from(scheduleEntriesTable)
-        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), eq(scheduleEntriesTable.status, "scheduled")));
+        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), eq(scheduleEntriesTable.status, "scheduled"), fScope(scheduleEntriesTable.factoryId)));
       const startOf = new Map(weeks.map(w => [w.id, w.weekStart]));
       unmarkedAttendance = rows.filter(r => entryDateStr(startOf.get(r.weekId)!, r.day) < today).length;
     }
@@ -298,7 +304,7 @@ router.get("/attention", async (_req, res) => {
           day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
         })
         .from(scheduleEntriesTable)
-        .where(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)));
+        .where(and(inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)), fScope(scheduleEntriesTable.factoryId)));
       const deliveries = await db.select({
           weekId: driverShiftAssignmentsTable.weekId, factoryId: driverShiftAssignmentsTable.factoryId,
           day: driverShiftAssignmentsTable.dayOfWeek, shift: driverShiftAssignmentsTable.shift,
@@ -321,20 +327,20 @@ router.get("/attention", async (_req, res) => {
     }
   }
 
-  const availabilityMissing = (await missingAvailabilityWorkers(nextWeek)).length;
+  const availabilityMissing = (await missingAvailabilityWorkers(nextWeek, scope)).length;
 
-  // розсинхрон полів-двійників (вік/студент/місто фабрики) — канон описаний у services/dataDrift.ts
+  // розсинхрон полів-двійників (вік/студент/місто фабрики) — канон описаний у services/dataDrift.ts; глобальна гігієна — не для скоупу
   const { findDataDrift, driftTotal } = await import("../services/dataDrift");
-  const dataDrift = driftTotal(await findDataDrift());
+  const dataDrift = scope ? 0 : driftTotal(await findDataDrift());
 
   // легалізація (кеш worker_legality, лише активні): без підстави/даних, строки в червоній зоні (defaults.lead_days.urgentDays), аплоуди з бота на перевірці
   const leadDays = await (await import("../services/legalityRecompute")).loadLeadDays();
   const [legalityIllegal, legalityExpiring, pendingDocUploads] = await Promise.all([
-    count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable).where(inArray(workerLegalityTable.overall, ["illegal", "unknown"]))),
+    count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable).where(and(inArray(workerLegalityTable.overall, ["illegal", "unknown"]), wScope(workerLegalityTable.workerId)))),
     count(db.select({ n: sql<number>`count(*)::int` }).from(workerLegalityTable)
-      .where(and(gte(workerLegalityTable.nextExpiryAt, today), lte(workerLegalityTable.nextExpiryAt, addDaysStr(today, leadDays.urgent))))),
+      .where(and(gte(workerLegalityTable.nextExpiryAt, today), lte(workerLegalityTable.nextExpiryAt, addDaysStr(today, leadDays.urgent)), wScope(workerLegalityTable.workerId)))),
     count(db.select({ n: sql<number>`count(*)::int` }).from(workerDocumentsTable).innerJoin(workersTable, eq(workerDocumentsTable.workerId, workersTable.id))
-      .where(and(eq(workerDocumentsTable.status, "pending"), eq(workersTable.isActive, true)))),
+      .where(and(eq(workerDocumentsTable.status, "pending"), eq(workersTable.isActive, true), wScope(workerDocumentsTable.workerId)))),
   ]);
 
   ok(res, {
@@ -1615,6 +1621,8 @@ router.post("/workers/scan-invite", WD, async (req, res) => {
 router.post("/broadcast", RW, async (req, res) => {
   const { text, target, factoryId, workerIds } = req.body ?? {};
   if (!text?.trim()) return fail(res, 400, "Введіть текст повідомлення");
+  // скоуп-адмін: лише по фабриці або вибраним людям зі скоупу (значення звірив гейт), «всім» — ні
+  if (scopeOf(req) && target !== "factory" && target !== "selected") return fail(res, 403, "Оберіть фабрику або людей зі свого доступу");
   const workers = await db.select({ id: workersTable.id, tid: workersTable.telegramId, factoryId: workersTable.factoryId })
     .from(workersTable).where(eq(workersTable.isActive, true));
   let targets = workers;
@@ -2531,13 +2539,16 @@ router.get("/availability", RW, async (req, res) => {
     // pending wins over an accepted marker (needs the scheduler's attention)
     if (r.status === "pending" || !w.dayOff[r.day]) w.dayOff[r.day] = r.status;
   }
-  ok(res, [...byWorker.values()].sort((a, b) => a.name.localeCompare(b.name, "uk")));
+  // скоуп-адмін: лише люди своїх фабрик (непривʼязані рядки без фабрики — ні)
+  const avScope = scopeOf(req);
+  ok(res, [...byWorker.values()].filter(r => !avScope || factoryInScope(avScope, r.factoryId)).sort((a, b) => a.name.localeCompare(b.name, "uk")));
 });
 
 // ─── Schedule ─────────────────────────────────────────────────────────────────
-router.get("/weeks", async (_req, res) => {
+router.get("/weeks", async (req, res) => {
   const weeks = await db.select().from(scheduleWeeksTable).orderBy(desc(scheduleWeeksTable.weekStart));
-  const counts = await db.select({ weekId: scheduleEntriesTable.weekId, id: scheduleEntriesTable.id }).from(scheduleEntriesTable);
+  const counts = await db.select({ weekId: scheduleEntriesTable.weekId, id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+    .where(scopeOf(req) ? factoryInScopeSql(scopeOf(req)!, scheduleEntriesTable.factoryId) : undefined); // скоуп: обсяги лише своїх фабрик
   const byWeek = new Map<number, number>();
   for (const c of counts) byWeek.set(c.weekId, (byWeek.get(c.weekId) ?? 0) + 1);
   ok(res, weeks.map(w => ({ id: w.id, weekStart: w.weekStart, status: w.status, label: formatWeekStart(w.weekStart), entries: byWeek.get(w.id) ?? 0 })));
@@ -2596,6 +2607,7 @@ router.get("/schedule", async (req, res) => {
     for (const a of av) {
       if (a.workerId == null) continue;
       if (a.wFactory && a.wFactory !== factoryId) continue; // other factory's worker
+      if (!a.wFactory && scopeOf(req)) continue; // скоуп: людина без фабрики — не в запасі чужого міста
       const key = `${a.day}-${a.shift}`;
       // Запас — по зміні, не по дню: людина на 1-й зміні лишається в запасі 2-ї (друга
       // зміна того ж дня дозволена; веб підсвітить замалий відпочинок помаранчевим)
@@ -2706,7 +2718,8 @@ router.get("/schedule", async (req, res) => {
     const reqs = await db.select({
       workerId: absenceRequestsTable.workerId, day: absenceRequestsTable.dayOfWeek, shift: absenceRequestsTable.shift,
       status: absenceRequestsTable.status, reason: absenceRequestsTable.reason, substituteWorkerId: absenceRequestsTable.substituteWorkerId,
-    }).from(absenceRequestsTable).where(eq(absenceRequestsTable.weekStart, weekStart));
+    }).from(absenceRequestsTable).where(and(eq(absenceRequestsTable.weekStart, weekStart),
+      scopeOf(req) ? workerInScopeSql(scopeOf(req)!, absenceRequestsTable.workerId) : undefined)); // скоуп: відпрошування лише своїх людей
     if (reqs.length) {
       const ids = [...new Set(reqs.flatMap(r => [r.workerId, r.substituteWorkerId].filter((x): x is number => x != null)))];
       const names = await db.select({ id: workersTable.id, name: workersTable.fullName }).from(workersTable).where(inArray(workersTable.id, ids));
@@ -3422,7 +3435,8 @@ router.get("/reliability", RW, async (req, res) => {
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd)));
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
+      scopeOf(req) ? factoryInScopeSql(scopeOf(req)!, scheduleEntriesTable.factoryId) : undefined)); // скоуп: зміни лише своїх фабрик
   const byWorker = new Map<number, any>();
   for (const r of rows) {
     if (!r.workerId) continue;
@@ -3657,7 +3671,7 @@ router.patch("/driver-workdays/:id", DRIVER_RW, async (req, res) => {
 
 // ─── Hours worked per worker for a month (payroll view, from approved schedule) ──
 // ─── Hours disputes (worker-reported corrections) ──────────────────────────────
-router.get("/hours-reports", RW, async (_req, res) => {
+router.get("/hours-reports", RW, async (req, res) => {
   const rows = await db
     .select({
       id: hoursDisputesTable.id, workerId: hoursDisputesTable.workerId, message: hoursDisputesTable.message,
@@ -3669,6 +3683,7 @@ router.get("/hours-reports", RW, async (_req, res) => {
     .from(hoursDisputesTable)
     .leftJoin(workersTable, eq(hoursDisputesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+    .where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!, hoursDisputesTable.workerId) : undefined) // скоуп: лише свої люди
     .orderBy(desc(hoursDisputesTable.id));
   ok(res, rows.map(r => ({ ...r, hasPhoto: !!r.hasPhoto, items: r.items ?? [] })));
 });
@@ -3744,10 +3759,13 @@ router.get("/hours", RW, async (req, res) => {
   // збирач з Excel-експортом (services/hoursRows.ts), щоб файл ніколи не
   // розходився зі сторінкою.
   const { buildHoursMergedRows } = await import("../services/hoursRows");
-  const { rows: mergedRaw, facById, excluded } = await buildHoursMergedRows(month);
+  const { rows: mergedRaw, facById, excluded: excludedAll } = await buildHoursMergedRows(month);
+  // скоуп-адмін: рядки й виключення лише по своїх фабриках (підсумки нижче рахуються з відфільтрованого)
+  const hScope = scopeOf(req);
+  const excluded = hScope ? (excludedAll as any[]).filter(e => factoryInScope(hScope, e.factoryId)) : excludedAll;
   // статус виплат — ефективний (за документами / вручну), як у сводній (resolver 06.09.2026)
   const lgCache = await loadLegalityCache(mergedRaw.map(r => r.workerId));
-  const merged = mergedRaw.map(r => effectiveView(r, lgCache.get(r.workerId)));
+  const merged = mergedRaw.filter(r => factoryInScope(hScope, r.factoryId)).map(r => effectiveView(r, lgCache.get(r.workerId)));
   // місто фабрики — історія сводних + регіони «Зарплат» (для групування і кнопок «→ до сводної»)
   const cityByFactory = await factoryCityMap();
   // фабрики, чиї рядки цього місяця вже є у сводній (from-hours пише factory_id) —
@@ -3756,7 +3774,7 @@ router.get("/hours", RW, async (req, res) => {
   if (canSvodni) {
     const done = await db.selectDistinct({ factoryId: svodniRowsTable.factoryId }).from(svodniRowsTable)
       .where(and(eq(svodniRowsTable.periodMonth, month), sql`${svodniRowsTable.factoryId} IS NOT NULL`));
-    svodniDone = done.map(r => r.factoryId).filter((n): n is number => n != null);
+    svodniDone = done.map(r => r.factoryId).filter((n): n is number => n != null && factoryInScope(hScope, n));
   }
   const workers = merged
     .map(w => {
@@ -3812,7 +3830,8 @@ router.get("/hours", RW, async (req, res) => {
 // місяці на 2-3 фабриках (переведення/разова підміна), здає окремий рапорт на
 // кожну — один рапорт не означає «здав усе». Хто не має жодної явки місяця —
 // нагадування не отримує.
-router.post("/hours/report-remind", RW, async (_req, res) => {
+router.post("/hours/report-remind", RW, async (req, res) => {
+  const rrScope = scopeOf(req); // скоуп — лише пари (людина, фабрика) своїх фабрик
   // The report month follows the collection window (first 7 days of a month → previous
   // month), not the calendar month or the page selector — otherwise on the 1st we'd nag
   // people for a month that hasn't ended. Server-authoritative so it can't drift.
@@ -3831,7 +3850,7 @@ router.post("/hours/report-remind", RW, async (_req, res) => {
     ));
   const pairs = new Map<number, Set<number>>(); // workerId → фабрики з явками місяця
   for (const r of att) {
-    if (!r.workerId || r.factoryId == null) continue;
+    if (!r.workerId || r.factoryId == null || !factoryInScope(rrScope, r.factoryId)) continue;
     const date = entryDateStr(String(r.weekStart), r.day);
     if (date < monthStart || date >= monthEnd) continue;
     (pairs.get(r.workerId) ?? pairs.set(r.workerId, new Set<number>()).get(r.workerId)!).add(r.factoryId);
@@ -3893,6 +3912,7 @@ router.post("/hours/report", RW, async (req, res) => {
     const [w] = await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, workerId));
     factoryId = w?.factoryId ?? null;
   }
+  if (scopeOf(req) && !factoryInScope(scopeOf(req), factoryId)) return fail(res, 403, "Фабрика рапорту поза вашим доступом — вкажіть фабрику");
   const facCond = factoryId != null ? eq(monthlyReportsTable.factoryId, factoryId) : isNull(monthlyReportsTable.factoryId);
   const raw = req.body?.hours;
   if (raw === null || raw === undefined || raw === "") {
@@ -4113,6 +4133,9 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   const month = String(req.body?.month || "");
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month=YYYY-MM обовʼязковий");
   const parseFactoryId = req.body?.factoryId != null && Number(req.body.factoryId) > 0 ? Number(req.body.factoryId) : null;
+  // multipart — гейт тіла фабрику не бачив: для скоуп-адміна вона обовʼязкова і зі скоупу
+  const fpScope = scopeOf(req);
+  if (fpScope && (parseFactoryId == null || !factoryInScope(fpScope, parseFactoryId))) return res.status(403).json({ error: "Немає доступу до даних цього міста/фабрики", code: "scope" });
   const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
   let parsed: import("../services/factoryHours").ParsedHoursRow[] = [];
   let monthDetected: string | null = null;
@@ -4131,7 +4154,7 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   // Матчинг по всій базі (звільнений теж міг відпрацювати місяць); активні
   // виграють при рівних кандидатах — matchWorker сам ранжує за схожістю.
   const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
-    .from(workersTable);
+    .from(workersTable).where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!) : undefined); // скоуп: матчити лише своїх
   // Профілі-дублі (однакове ім'я двічі в базі): перевага тому, хто ВЖЕ в
   // обліку годин цього місяця на цій фабриці (явки/рапорт/години фабрики) —
   // саме його рядок звіряється з файлом.
@@ -4340,7 +4363,7 @@ router.post("/hours/factory-codes-parse", RW, async (req, res) => {
   const parsed = parseFactoryCodesText(text);
   if (!parsed.length) return fail(res, 400, "Не знайдено жодного рядка «ключ — ім'я»");
   const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
-    .from(workersTable);
+    .from(workersTable).where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!) : undefined); // скоуп: матчити лише своїх
   const byId = new Map(all.map(w => [w.id, w]));
   const existing = await db.select().from(workerFactoryCodesTable).where(eq(workerFactoryCodesTable.factoryId, factoryId));
   const codeToWorker = new Map(existing.map(c => [normFactoryKey(c.code), c.workerId]));
@@ -4892,7 +4915,8 @@ router.get("/absences", RW, async (req, res) => {
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent")));
+    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd), eq(scheduleEntriesTable.status, "absent"),
+      scopeOf(req) ? factoryInScopeSql(scopeOf(req)!, scheduleEntriesTable.factoryId) : undefined)); // скоуп: пропуски лише своїх фабрик
   const absences = rows
     .map(r => ({
       entryId: r.entryId, workerId: r.workerId, name: r.name, code: r.code, factory: r.factory, city: r.city,
@@ -4941,7 +4965,10 @@ router.post("/absences/:entryId/message", RW, async (req, res) => {
 router.post("/absences/remind", RW, async (req, res) => {
   const month = String(req.body?.month ?? "");
   if (!/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "month = YYYY-MM");
-  const workerIds = Array.isArray(req.body?.workerIds) ? (req.body.workerIds as unknown[]).map(Number).filter(Number.isInteger) : undefined;
+  let workerIds = Array.isArray(req.body?.workerIds) ? (req.body.workerIds as unknown[]).map(Number).filter(Number.isInteger) : undefined;
+  // скоуп-адмін без явного списку — лише свої люди (гейт тіла звірив явний список)
+  const arScope = scopeOf(req);
+  if (arScope && !workerIds) workerIds = (await db.select({ id: workersTable.id }).from(workersTable).where(workerInScopeSql(arScope))).map(w => w.id);
   try {
     const { remindUnexcusedAbsences } = await import("../services/absenceMessages");
     ok(res, await remindUnexcusedAbsences(month, (req as AuthedRequest).admin?.adminId ?? null, { workerIds }));
@@ -5023,7 +5050,7 @@ async function substitutesFor(weekStart: string, day: DayOfWeek, shift: Shift, f
     .map(c => ({ id: c.id, name: c.name })).slice(0, 8);
 }
 
-router.get("/absence-requests", RW, async (_req, res) => {
+router.get("/absence-requests", RW, async (req, res) => {
   const rows = await db
     .select({
       id: absenceRequestsTable.id, workerId: absenceRequestsTable.workerId, name: workersTable.fullName,
@@ -5034,6 +5061,8 @@ router.get("/absence-requests", RW, async (_req, res) => {
     .from(absenceRequestsTable)
     .leftJoin(workersTable, eq(absenceRequestsTable.workerId, workersTable.id))
     .leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+    // скоуп: лише свої люди, і їхня основна фабрика (звідти беруться кандидати на заміну) — зі скоупу
+    .where(scopeOf(req) ? and(workerInScopeSql(scopeOf(req)!, absenceRequestsTable.workerId), factoryInScopeSql(scopeOf(req)!, workersTable.factoryId)) : undefined)
     .orderBy(desc(absenceRequestsTable.id));
   const out = [];
   for (const r of rows) {
@@ -5083,10 +5112,12 @@ router.post("/absence-requests/:id/approve", RW, async (req, res) => {
   if (week) {
     if (r.shift == null) {
       await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null })
-        .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled")));
+        .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.status, "scheduled"),
+          scopeOf(req) ? factoryInScopeSql(scopeOf(req)!, scheduleEntriesTable.factoryId) : undefined)); // скоуп: чужу зміну не чіпати
     } else {
-      const [e] = await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+      const [e] = await db.select({ id: scheduleEntriesTable.id, factoryId: scheduleEntriesTable.factoryId }).from(scheduleEntriesTable)
         .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
+      if (e && scopeOf(req) && !factoryInScope(scopeOf(req), e.factoryId)) return fail(res, 403, "Зміна на фабриці поза вашим доступом");
       if (e) await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null }).where(eq(scheduleEntriesTable.id, e.id));
     }
   }
@@ -5123,6 +5154,7 @@ router.post("/absence-requests/:id/substitute", RW, async (req, res) => {
       .where(and(eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, r.workerId), eq(scheduleEntriesTable.dayOfWeek, r.dayOfWeek), eq(scheduleEntriesTable.shift, r.shift)));
     if (e) {
       factoryId = e.factoryId;
+      if (scopeOf(req) && !factoryInScope(scopeOf(req), e.factoryId)) return fail(res, 403, "Зміна на фабриці поза вашим доступом");
       await db.update(scheduleEntriesTable).set({ status: "absent", absenceReason: r.reason ?? undefined, pickedUpBy: null }).where(eq(scheduleEntriesTable.id, e.id));
     }
     // add the substitute on the same slot (skip if already there)
@@ -5580,6 +5612,12 @@ router.post("/hours-reports/:id/apply", RW, async (req, res) => {
   const items = [...((d.items ?? []) as any[])];
   const it = items[index];
   if (!it) return fail(res, 400, "Немає такого пункту");
+  // скоуп-адмін: запис графіку / фабрика доданої зміни — лише зі свого скоупу
+  const apScope = scopeOf(req);
+  if (apScope && it.entryId) {
+    const [en] = await db.select({ factoryId: scheduleEntriesTable.factoryId }).from(scheduleEntriesTable).where(eq(scheduleEntriesTable.id, Number(it.entryId)));
+    if (!en || !factoryInScope(apScope, en.factoryId)) return fail(res, 403, "Зміна на фабриці поза вашим доступом");
+  }
   try {
     if (it.kind === "wrong" && it.entryId && it.hours != null) {
       // worker proposed corrected hours → set the override
@@ -5593,6 +5631,7 @@ router.post("/hours-reports/:id/apply", RW, async (req, res) => {
       const wRow = (await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, d.workerId)))[0];
       const facId = it.factoryId ?? wRow?.factoryId;
       if (!facId) return fail(res, 400, "Невідома фабрика для доданої зміни");
+      if (apScope && !factoryInScope(apScope, Number(facId))) return fail(res, 403, "Фабрика доданої зміни поза вашим доступом");
       const dup = (await db.select().from(scheduleEntriesTable).where(and(
         eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, d.workerId),
         eq(scheduleEntriesTable.dayOfWeek, day), eq(scheduleEntriesTable.shift, String(it.shift) as Shift),
@@ -5637,7 +5676,7 @@ router.get("/driver-days/:id", async (req, res) => {
 
 // ─── Workers who haven't filled availability for a week ─────────────────────────
 // Active workers who haven't filled availability for `weekStart` (manual-factory workers excluded — they don't fill)
-async function missingAvailabilityWorkers(weekStart: string) {
+async function missingAvailabilityWorkers(weekStart: string, scope: AdminScope | null = null) {
   const filled = await db.select({ workerId: availabilityTable.workerId }).from(availabilityTable).where(eq(availabilityTable.weekStart, weekStart));
   const ids = new Set(filled.map(f => f.workerId).filter(Boolean));
   const manualFactoryIds = new Set(
@@ -5646,18 +5685,18 @@ async function missingAvailabilityWorkers(weekStart: string) {
   const workers = await db.select({ id: workersTable.id, fullName: workersTable.fullName, telegramId: workersTable.telegramId, language: workersTable.language, factoryId: workersTable.factoryId, factoryName: factoriesTable.name })
     .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
     .where(eq(workersTable.isActive, true)).orderBy(workersTable.fullName);
-  return workers.filter(w => !ids.has(w.id) && !(w.factoryId && manualFactoryIds.has(w.factoryId)));
+  return workers.filter(w => !ids.has(w.id) && !(w.factoryId && manualFactoryIds.has(w.factoryId)) && factoryInScope(scope, w.factoryId));
 }
 
 router.get("/availability/missing", async (req, res) => {
-  ok(res, await missingAvailabilityWorkers(String(req.query.weekStart)));
+  ok(res, await missingAvailabilityWorkers(String(req.query.weekStart), scopeOf(req)));
 });
 
 // Send a Telegram availability reminder to everyone in the "missing" list (owner+scheduler)
 router.post("/availability/remind", RW, async (req, res) => {
   const weekStart = String((req.body ?? {}).weekStart || "");
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
-  const missing = await missingAvailabilityWorkers(weekStart);
+  const missing = await missingAvailabilityWorkers(weekStart, scopeOf(req)); // скоуп — нагадати лише своїм
   const withTg = missing.filter(w => w.telegramId);
   if (withTg.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length });
   try {

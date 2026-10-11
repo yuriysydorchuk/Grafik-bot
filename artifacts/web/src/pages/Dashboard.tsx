@@ -109,7 +109,11 @@ export default function Dashboard() {
         weekStatus={data.planning[0]?.status ?? "none"} planning={data.planning}
         generatingId={generate.isPending ? (generate.variables as number) : null} onGenerate={(id) => generate.mutate(id)}
         approving={approve.isPending}
-        onApprove={async () => { if (await confirm({ title: t("Затвердити графік?"), message: t("Графік збережеться на Google Drive і піде на email клієнта."), confirmText: t("Затвердити") })) approve.mutate(); }}
+        onApprove={async () => {
+          // адмін зі скоупом фабрик затверджує лише по одній фабриці — на сторінці графіку
+          if (me?.scope) { toast.info(t("Затверджуйте графік по фабриці на сторінці «Графіки»")); return; }
+          if (await confirm({ title: t("Затвердити графік?"), message: t("Графік збережеться на Google Drive і піде на email клієнта."), confirmText: t("Затвердити") })) approve.mutate();
+        }}
       />
 
       {/* KPI + readiness */}
