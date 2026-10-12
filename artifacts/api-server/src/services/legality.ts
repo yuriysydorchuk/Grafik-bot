@@ -702,10 +702,17 @@ export function deriveLegacy(
     if (d.typeCode === "student_cert") {
       if (graduated) continue;
       // студент для виплат: довідка будь-якої форми + вік до studentMaxAge (26) за датою
-      // народження; без дати — пропозиція з review; старший — довідка на групу не впливає
-      if (manualOnly("student")) continue;
+      // народження; без дати — пропозиція з review. Старший за межу (рішення власника
+      // 12.10.2026, кейс Folaranmi 32 р.): отримує ЗП так само легально, але з повним ZUS —
+      // статус «zus» групи C, як karta pobytu/віза; раніше довідка просто ігнорувалась і
+      // движок лишав «потребує рішення» → порожній статус у сводній.
       const young = isUnderAgeAt(worker.birthDate, today, map.studentMaxAge);
-      if (young === false) continue;
+      if (young === false) {
+        if (manualOnly("zus")) continue;
+        cands.push({ status: "zus", cls: legacyStatusInfo("zus", map).group, review: false, evidence: ev });
+        continue;
+      }
+      if (manualOnly("student")) continue;
       cands.push({ status: "student", cls: legacyStatusInfo("student", map).group, review: young === null, evidence: ev });
       continue;
     }

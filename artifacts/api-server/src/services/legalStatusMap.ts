@@ -7,7 +7,7 @@
 // legalStatusOf / normalizeProfileLegal), не юридична інтерпретація.
 //
 // Групи виплат (з applyLegalDefaults/computeSegmented): A_cash — усе готівкою
-// (oczekuje); B_student — податковий клас студента (student); C_registered —
+// (oczekuje); B_student — податковий клас студента до 26 (student; після 26 — zus у C); C_registered —
 // «оформлений», 6 статусів у грошах невідмінні; N_none — статусу немає.
 import type { LegacyStatus, PayrollClass } from "./legality";
 
@@ -33,7 +33,7 @@ export const LEGACY_STATUS_MAP: LegacyStatusInfo[] = [
   { status: "polak", group: "C_registered", precedence: 1, manualOnly: false, note: "громадянство PL з профілю (правило stay.pl_citizen), документ не потрібен" },
   { status: "staly_pobyt", group: "C_registered", precedence: 2, manualOnly: false, note: "karta stałego pobytu" },
   { status: "karta_pobytu", group: "C_registered", precedence: 3, manualOnly: false, note: "TRC (з dostępem do rynku pracy) або zezwolenie jednolite на нашу фірму" },
-  { status: "zus", group: "C_registered", precedence: 4, manualOnly: false, note: "zezwolenie na pracę typ A на нашу фірму" },
+  { status: "zus", group: "C_registered", precedence: 4, manualOnly: false, note: "zezwolenie na pracę typ A на нашу фірму; довідка студента після 26 (повний ZUS)" },
   { status: "dyplom", group: "C_registered", precedence: 5, manualOnly: false, note: "dyplom studiów stacjonarnych w PL" },
   { status: "powiadomienie", group: "C_registered", precedence: 6, manualOnly: false, note: "powiadomienie UA або oświadczenie на нашу фірму" },
   // Студент — сильніший за всі C-підстави (уточнення власника 04.09.2026: довідка студента
@@ -60,7 +60,7 @@ export const DOC_TYPE_STATUS_MAP: DocTypeStatusInfo[] = [
   { typeCode: "powiadomienie_ua", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: "лише громадяни UA" },
   { typeCode: "oswiadczenie", status: "powiadomienie", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
   { typeCode: "zezwolenie_a", status: "zus", group: "C_registered", review: false, requiresEmployerMatch: true, condition: null },
-  { typeCode: "student_cert", status: "student", group: "B_student", review: false, requiresEmployerMatch: false, condition: "будь-яка форма навчання + вік до 26; після 26 довідка на виплати не впливає" },
+  { typeCode: "student_cert", status: "student", group: "B_student", review: false, requiresEmployerMatch: false, condition: "будь-яка форма навчання + вік до 26; після 26 → статус zus (повний ZUS, група C)" },
   { typeCode: "karta_polaka", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "право на працю є, статусу-відповідника немає" },
   { typeCode: "humanitarian_visa", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "гуманітарні підстави — відповідника немає" },
   { typeCode: "refugee_status", status: null, group: "C_registered", review: true, requiresEmployerMatch: false, condition: "гуманітарні підстави — відповідника немає" },

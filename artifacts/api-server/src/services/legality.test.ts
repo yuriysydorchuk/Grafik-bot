@@ -240,17 +240,34 @@ test("L16c правило payroll.status_map перекриває мапу: stud
     conditions: { studentMaxAge: 30, statuses: [{ status: "zus", manualOnly: true }], docTypes: [{ typeCode: "diploma", status: "zus" }] },
   };
   const rs = [...rules(), mapRule];
-  // 28 років: за дефолтом (26) довідка не впливає, з межею 30 — студент
+  // 28 років: за дефолтом (26) довідка → zus (повний ZUS), з межею 30 — студент
   const r = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia", birthDate: "1998-01-01", legalStatus: "zus" }), documents: [doc("student_cert", { expiresAt: "2027-02-28" })], rules: rs });
   assert.equal(r.legacy.derivedLegalStatus, "student");
   const def = run({ nationality: "georgia", birthDate: "1998-01-01", legalStatus: "zus" }, [doc("student_cert", { expiresAt: "2027-02-28" })]);
-  assert.equal(def.legacy.derivedLegalStatus, null);
+  assert.equal(def.legacy.derivedLegalStatus, "zus"); assert.equal(def.legacy.legacyMismatchKind, "none");
+  // zus лише вручну (manualOnly) → студент після 26 без пропозиції
+  const over = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia", birthDate: "1990-01-01" }), documents: [doc("student_cert", { expiresAt: "2027-02-28" })], rules: rs });
+  assert.equal(over.legacy.derivedLegalStatus, null);
   // zus — лише вручну: zezwolenie_a більше не пропонує zus; diploma перемаплена на zus → теж пропускається
   const z = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia" }), documents: [doc("zezwolenie_a", { employerCompanyId: 1, expiresAt: "2027-06-01" }), doc("diploma")], rules: rs });
   assert.equal(z.legacy.derivedLegalStatus, null);
   // зіпсований JSON у правилі → дефолти, без падіння
   const broken = computeLegality({ today: TODAY, worker: worker({ nationality: "georgia", birthDate: "2005-01-01" }), documents: [doc("student_cert", { expiresAt: "2027-02-28" })], rules: [...rules(), { ...mapRule, conditions: { studentMaxAge: "x", statuses: "no", docTypes: [null] } as any }] });
   assert.equal(broken.legacy.derivedLegalStatus, "student");
+});
+test("L16e студент після 26 = повний ZUS (рішення власника 12.10.2026, кейс Folaranmi): zus групи C без review; до 26 — student; без дати — student+review", () => {
+  const cert = doc("student_cert", { validFrom: "2026-05-01", expiresAt: "2028-09-30" });
+  const older = run({ nationality: "georgia", birthDate: "1994-05-12", legalStatus: null }, [doc("passport", { expiresAt: "2027-12-10" }), cert]);
+  assert.equal(older.legacy.derivedLegalStatus, "zus"); assert.equal(older.legacy.derivedPayrollClass, "C_registered");
+  assert.equal(older.legacy.legacyMappingRequiresReview, false); assert.equal(older.legacy.legacyMismatchKind, "cross_class");
+  assert.equal(older.legacy.evidence?.kind, "document"); assert.equal((older.legacy.evidence as any)?.code, "student_cert");
+  const young = run({ nationality: "georgia", birthDate: "2003-03-21" }, [cert]);
+  assert.equal(young.legacy.derivedLegalStatus, "student"); assert.equal(young.legacy.derivedPayrollClass, "B_student");
+  const noBirth = run({ nationality: "georgia", birthDate: null }, [cert]);
+  assert.equal(noBirth.legacy.derivedLegalStatus, "student"); assert.equal(noBirth.legacy.legacyMappingRequiresReview, true);
+  // сильніша C-підстава (TRC) бере гору за пріоритетом мапи, гроші ті самі
+  const withTrc = run({ nationality: "georgia", birthDate: "1994-05-12" }, [cert, doc("trc", { expiresAt: "2027-06-01" })]);
+  assert.equal(withTrc.legacy.derivedLegalStatus, "karta_pobytu");
 });
 // ── вісь «умова» (рішення власника 04.09.2026) ──
 // Роботодавці (05.09.2026): фірма 1 = ES, 2 = ESO. AGRAM(5) → ES, SUSHI(7) → мультифірмова, LST(9) → ESO.
