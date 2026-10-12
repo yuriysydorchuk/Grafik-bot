@@ -29,7 +29,7 @@ import { setState, getState, clearState } from "./state";
 import { matchWorker, findLikelyDuplicate } from "./workerMatch";
 import { randomInviteCode } from "../lib/invite";
 import { resolveSignupLink } from "../services/signupLinks";
-import { registerSignupLinks, signupLinkAdmin, signupLinkKeyboard } from "./handlers/signupLinks";
+import { registerSignupLinks, signupLinkAdmin, signupLinkKeyboard, webAccessKeyboard, scopedAdminKeyboard } from "./handlers/signupLinks";
 import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../lib/referral";
 import { loadCampaignParams, campaignVars, campaignKeyboard, renderCampaign, friendCopyHtml } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
@@ -342,7 +342,7 @@ bot.start(async (ctx) => {
     if (await signupLinkAdmin(tid)) {
       return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає коди входу і ваш лінк реєстрації працівників (кнопка нижче).", { name: scoped.name, url }), signupLinkKeyboard(al));
     }
-    return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає лише коди входу.", { name: scoped.name, url }), Markup.removeKeyboard());
+    return ctx.reply(tb(al, "👋 Привіт, {name}! Ваш доступ — у веб-панелі: {url}\n\nТут бот надсилає лише коди входу.", { name: scoped.name, url }), webAccessKeyboard(al));
   }
   const driver = await getDriver(tid);
   if (driver) {
@@ -814,7 +814,8 @@ bot.hears(bhears("👑 Адміни"), async (ctx) => {
 // Set / reset this admin's web-panel login
 bot.hears(bhears("🔐 Мій веб-доступ"), async (ctx) => {
   const tid = String(ctx.from.id);
-  const admin = await getAdmin(tid); if (!admin) return; const al = olang(admin);
+  // скоуп-адмін (рекрутер/офіс-менеджер) офісного меню не має, але веб-доступ задає тут же
+  const admin = (await getAdmin(tid)) ?? (await getScopedAdmin(tid)); if (!admin) return; const al = olang(admin);
   setState(tid, "web_login:username", {});
   return ctx.reply(
     tb(al, "🔐 *Веб-панель*\n\nВведіть бажаний *логін* (латиниця/цифри, без пробілів):"),
@@ -3803,7 +3804,7 @@ bot.on("text", async (ctx) => {
 
   // ── Web login: set username ───────────────────────────────────────
   if (state?.action === "web_login:username") {
-    const al = olang(await getAdmin(tid) ?? await getDriver(tid));
+    const al = olang(await getAdmin(tid) ?? await getScopedAdmin(tid) ?? await getDriver(tid));
     const username = text.trim().toLowerCase();
     if (!/^[a-z0-9_.-]{3,32}$/.test(username)) {
       return ctx.reply(tb(al, "❌ Логін: 3–32 символи, лише латиниця/цифри/_.- — введіть ще раз:"));
@@ -3820,8 +3821,9 @@ bot.on("text", async (ctx) => {
     // A web-role-"driver" user goes through this flow too (adm-invite deep link),
     // but getAdmin() won't see them — fall back to their driver row for language/menu.
     const admin = await getAdmin(tid);
-    const driver = admin ? undefined : await getDriver(tid);
-    const al = olang(admin ?? driver);
+    const scoped = admin ? undefined : await getScopedAdmin(tid);
+    const driver = admin || scoped ? undefined : await getDriver(tid);
+    const al = olang(admin ?? scoped ?? driver);
     if (text.length < 8) return ctx.reply(tb(al, "❌ Пароль закороткий (мінімум 8 символів). Введіть ще раз:"));
     const { hashPassword } = await import("../lib/auth");
     // Bump token_version → invalidate any older session tokens after a (re)set password.
@@ -3831,7 +3833,7 @@ bot.on("text", async (ctx) => {
     clearState(tid);
     try { await ctx.deleteMessage(); } catch { /* can't delete password msg in some chats */ }
     const url = process.env.WEB_PUBLIC_URL || tb(al, "(адреса панелі)");
-    const doneMenu = driver ? await driverMenuFor(driver, al) : admin ? managementMenu(al) : Markup.removeKeyboard(); // без admin = скоуп-адмін (лише веб)
+    const doneMenu = driver ? await driverMenuFor(driver, al) : admin ? managementMenu(al) : scoped ? await scopedAdminKeyboard(tid, al) : Markup.removeKeyboard();
     return ctx.reply(
       tb(al, "✅ Веб-доступ налаштовано!\n\n👤 Логін: <code>{user}</code>\n🔗 Панель: {url}\n\n(пароль збережено, повідомлення з ним видалено)", { user: escapeHtml(data.username), url: escapeHtml(url) }),
       { parse_mode: "HTML", ...doneMenu },

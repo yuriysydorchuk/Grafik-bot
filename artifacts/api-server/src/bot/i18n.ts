@@ -712,6 +712,7 @@ const BOT_EN: Record<string, string> = {
   "👑 = Головний адмін": "👑 = Head admin",
   "Управління адмінами:": "Admin management:",
   "Веб-панель — задайте собі логін/пароль:": "Web panel — set your login/password:",
+  "🔐 *Веб-панель*\n\nЗадамо веб-доступ до панелі. Введіть бажаний *логін* (3–32 символи, лат./цифри):": "🔐 *Web panel*\n\nLet's set up your web access. Enter your desired *login* (3–32 chars, latin/digits):",
   "🔐 *Веб-панель*\n\nВведіть бажаний *логін* (латиниця/цифри, без пробілів):": "🔐 *Web panel*\n\nEnter your desired *login* (latin letters/digits, no spaces):",
   "Введіть Telegram ID нового адміна.\n\nПопросіть людину надіслати /getid боту і передати вам число.": "Enter the new admin's Telegram ID.\n\nAsk the person to send /getid to the bot and give you the number.",
   "Немає інших адмінів для видалення.": "No other admins to remove.",

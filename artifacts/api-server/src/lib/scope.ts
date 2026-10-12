@@ -132,7 +132,7 @@ const SCOPE_RULES: Rule[] = [
   R("POST", /^\/clothing(?:\/issue)?$/, { kind: "free" }),
   R(ANY, /^\/clothing\/(\d+)(?:\/return)?$/, { kind: "lookup", table: "clothing" }),
   // Делеговані запрошення (свої запрошені; права перевіряє хендлер)
-  R(ANY, /^\/admin-invites(?:\/\d+(?:\/invite)?)?$/, { kind: "free" }),
+  R(ANY, /^\/admin-invites(?:\/\d+(?:\/invite|\/web-access-prompt)?)?$/, { kind: "free" }),
   // Лінк самореєстрації фабрики
   R("GET", /^\/factories\/(\d+)\/join-link$/, { kind: "factory" }),
   // Персональні лінки реєстрації (routes/signupLinks.ts, 11.10.2026): свої — хендлер віддає лише власні,

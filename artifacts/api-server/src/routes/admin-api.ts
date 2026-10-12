@@ -5758,6 +5758,26 @@ async function cleanInviteRoles(v: any): Promise<string[] | null> {
 // «Є історія» = людина колись заходила (сесії/події входу): такий акаунт не видаляють, а деактивують.
 // Без цього після reactivate (Telegram ще не приєднано → pending) кнопка видалення поверталась (ревʼю codex 11.10.2026).
 const adminHasHistorySql = sql<boolean>`(exists(select 1 from admin_sessions s where s.admin_id = admins.id) or exists(select 1 from login_events e where e.admin_id = admins.id))`; // admins.id явно: у select-списку ${adminsTable.id} рендериться голим "id" і ловить колонку підзапиту
+// Повторне запрошення задати логін/пароль веб-панелі (12.10.2026): запрошений приєднав Telegram, але крок
+// «задайте логін» у боті пропустив — скоуп-адмін/рекрутер офісного меню в боті не має, тож сам до нього не дійде.
+// Ставимо той самий стан web_login:username, що й deep-link adm, і шлемо підказку в бот.
+async function promptWebLogin(a: { telegramId: string | null; username: string | null; name: string; language: string | null }): Promise<string | null> {
+  if (!a.telegramId) return "Користувач ще не приєднав Telegram — надішліть посилання-запрошення";
+  if (a.username) return "Веб-логін уже задано — скинути його може лише головний адміністратор («Скинути веб-доступ»)";
+  const [{ bot }, { tb, oLang }, { setState, getState }, { cancelKb }] = await Promise.all([import("../bot/instance"), import("../bot/i18n"), import("../bot/state"), import("../bot/menus")]);
+  // не скидати діалог посередині: на кроці пароля повторний запит повернув би людину на «логін», і введений
+  // пароль пішов би як логін відкритим текстом (ревʼю codex 12.10.2026)
+  if (getState(a.telegramId)?.action?.startsWith("web_login:")) return "Користувач уже задає веб-доступ у боті — зачекайте, поки завершить";
+  const al = oLang(a.language);
+  try {
+    await bot.telegram.sendMessage(a.telegramId,
+      tb(al, "🔐 *Веб-панель*\n\nЗадамо веб-доступ до панелі. Введіть бажаний *логін* (3–32 символи, лат./цифри):"),
+      { parse_mode: "Markdown", ...cancelKb(al) });
+  } catch { return "Не вдалося надіслати повідомлення в бот (користувач заблокував бота?)"; }
+  setState(a.telegramId, "web_login:username", {});
+  return null;
+}
+
 router.get("/admins", requireRole("owner"), async (_req, res) => {
   const admins = await db.select({ id: adminsTable.id, name: adminsTable.name, username: adminsTable.username, telegramId: adminsTable.telegramId, role: adminsTable.role, isMain: adminsTable.isMain, inviteCode: adminsTable.inviteCode,
     scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, canInviteRoles: adminsTable.canInviteRoles, invitedBy: adminsTable.invitedBy, deactivatedAt: adminsTable.deactivatedAt,
@@ -5769,6 +5789,14 @@ router.get("/admins", requireRole("owner"), async (_req, res) => {
     pending: !a.telegramId, inviteLink: a.inviteCode && !a.telegramId ? adminInviteLink(a.inviteCode) : null,
     scopeCities: a.scopeCities ?? [], scopeFactoryIds: a.scopeFactoryIds ?? [], canInviteRoles: a.canInviteRoles ?? [], invitedBy: a.invitedBy,
   })));
+});
+
+router.post("/admins/:id/web-access-prompt", requireMainAdmin, async (req, res) => {
+  const [a] = await db.select({ telegramId: adminsTable.telegramId, username: adminsTable.username, name: adminsTable.name, language: adminsTable.language, deactivatedAt: adminsTable.deactivatedAt }).from(adminsTable).where(eq(adminsTable.id, Number(req.params.id)));
+  if (!a || a.deactivatedAt) return fail(res, 404, "Не знайдено");
+  const err = await promptWebLogin(a);
+  if (err) return fail(res, 400, err);
+  ok(res, { ok: true });
 });
 
 // Create a new user (invite-only): name + role; returns invite link to share
@@ -5926,7 +5954,7 @@ router.get("/admin-invites", requireInviter, async (req, res) => {
     // власний скоуп — для пікера (null = без обмежень)
     myScope: me.scope ? { cities: me.scope.cities, factoryIds: me.scope.factoryIds } : null,
     invites: mine.map(a => ({
-      id: a.id, name: a.name, role: a.role, pending: !a.telegramId, hasWebLogin: !!a.username,
+      id: a.id, name: a.name, role: a.role, pending: !a.telegramId, hasWebLogin: !!a.username, hasTelegram: !!a.telegramId,
       inviteLink: a.inviteCode && !a.telegramId ? adminInviteLink(a.inviteCode) : null,
       scopeCities: a.scopeCities ?? [], scopeFactoryIds: a.scopeFactoryIds ?? [], createdAt: a.createdAt,
     })),
@@ -5965,6 +5993,12 @@ router.post("/admin-invites/:id/invite", requireInviter, async (req, res) => {
   let code = a.inviteCode;
   if (!code) { code = await uniqueAdminCode(); await db.update(adminsTable).set({ inviteCode: code }).where(eq(adminsTable.id, a.id)); }
   ok(res, { inviteLink: adminInviteLink(code) });
+});
+router.post("/admin-invites/:id/web-access-prompt", requireInviter, async (req, res) => {
+  const a = await myInvitee(req, res); if (!a) return;
+  const err = await promptWebLogin(a);
+  if (err) return fail(res, 400, err);
+  ok(res, { ok: true });
 });
 router.delete("/admin-invites/:id", requireInviter, async (req, res) => {
   const a = await myInvitee(req, res); if (!a) return;

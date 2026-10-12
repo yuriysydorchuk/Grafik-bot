@@ -1721,6 +1721,8 @@ const EN: Record<string, string> = {
   "очікує приєднання": "awaiting join",
   "активний": "active",
   "без веб-логіну": "no web login",
+  "Запросити задати веб-доступ (у боті)": "Ask to set web access (in the bot)",
+  "Запит надіслано в бот — користувач задасть логін і пароль": "Request sent to the bot — the user will set a login and password",
   "Посилання-запрошення": "Invite link",
   "Скинути веб-доступ {name}?": "Reset web access for {name}?",
   "Логін і пароль буде стерто; користувач задасть нові у боті.": "Login and password will be erased; the user sets new ones in the bot.",

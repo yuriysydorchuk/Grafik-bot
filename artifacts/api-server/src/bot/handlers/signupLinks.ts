@@ -23,7 +23,15 @@ export async function signupLinkAdmin(tid: string): Promise<Admin | undefined> {
   return a;
 }
 
-export const signupLinkKeyboard = (lang: Lang) => Markup.keyboard([[tb(lang, BTN_SIGNUP_LINK)]]).resize();
+// Клавіатура скоуп-адміна (рекрутер/офіс-менеджер міста): лінк реєстрації + веб-доступ (12.10.2026 — інакше
+// пропущений крок «задайте логін» після deep-link adm лишав людину без шляху до панелі: офісного меню в неї нема).
+export const BTN_WEB_ACCESS = "🔐 Мій веб-доступ";
+export const signupLinkKeyboard = (lang: Lang) => Markup.keyboard([[tb(lang, BTN_SIGNUP_LINK)], [tb(lang, BTN_WEB_ACCESS)]]).resize();
+export const webAccessKeyboard = (lang: Lang) => Markup.keyboard([[tb(lang, BTN_WEB_ACCESS)]]).resize();
+// клавіатура скоуп-адміна за його капами (для повернення після діалогів)
+export async function scopedAdminKeyboard(tid: string, lang: Lang) {
+  return (await signupLinkAdmin(tid)) ? signupLinkKeyboard(lang) : webAccessKeyboard(lang);
+}
 
 async function scopeOf(admin: Admin) {
   return resolveScope(admin.scopeCities as string[] | null, admin.scopeFactoryIds as number[] | null);

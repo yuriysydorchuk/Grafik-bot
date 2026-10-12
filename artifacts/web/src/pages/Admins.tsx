@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield, UserX, UserCheck } from "lucide-react";
+import { Plus, Pencil, Trash2, Link2, KeyRound, Copy, Shield, UserX, UserCheck, Send } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, patch, del, type Me, type RoleDef } from "../lib/api";
 import { CAP_KEYS, CAP_LABEL, PAGE_KEYS, PAGE_LABEL, NOTIFY_KEYS, NOTIFY_LABEL, READ_ONLY, READ_ONLY_LABEL, type Capability, type NotifyType } from "../lib/roles";
@@ -67,6 +67,11 @@ function AdminsMain({ me }: { me: Me }) {
     mutationFn: (a: AdminRow) => post<{ inviteLink: string }>(`/admins/${a.id}/reactivate`).then(r => ({ r, a })),
     onSuccess: ({ r, a }) => { inv(); setInvite({ name: a.name, link: r.inviteLink }); }, onError: (e: any) => toast.error(e.message),
   });
+  // Telegram є, веб-логіну нема (крок у боті пропущено) → бот ще раз просить задати логін/пароль
+  const promptWeb = useMutation({
+    mutationFn: (id: number) => post(`/admins/${id}/web-access-prompt`),
+    onSuccess: () => toast.success(t("Запит надіслано в бот — користувач задасть логін і пароль")), onError: (e: any) => toast.error(e.message),
+  });
   const [showInactive, setShowInactive] = useState(false);
 
   if (isLoading) return <Spinner />;
@@ -118,6 +123,7 @@ function AdminsMain({ me }: { me: Me }) {
                       <div className="flex justify-end gap-1">
                         <button onClick={() => setEditing(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Редагувати")}><Pencil className="h-4 w-4" /></button>
                         {a.pending && <button onClick={() => regenInvite.mutate(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Посилання-запрошення")}><Link2 className="h-4 w-4" /></button>}
+                        {a.hasTelegram && !a.hasWebLogin && !a.deactivatedAt && <button onClick={() => promptWeb.mutate(a.id)} disabled={promptWeb.isPending} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Запросити задати веб-доступ (у боті)")}><Send className="h-4 w-4" /></button>}
                         {a.hasWebLogin && !a.isMain && <button onClick={async () => { if (await confirm({ title: t("Скинути веб-доступ {name}?", { name: a.name }), message: t("Логін і пароль буде стерто; користувач задасть нові у боті."), confirmText: t("Скинути") })) resetWeb.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600" title={t("Скинути веб-доступ")}><KeyRound className="h-4 w-4" /></button>}
                         {!a.isMain && <button onClick={async () => { if (await confirm({ title: t("Деактивувати {name}?", { name: a.name }), message: t("Доступ до панелі й бота буде закрито, людина зникне зі списків і пікерів; її імʼя в журналах лишиться. Повернути можна згодом."), danger: true, confirmText: t("Деактивувати") })) deactivate.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600" title={t("Деактивувати")}><UserX className="h-4 w-4" /></button>}
                         {!a.isMain && a.pending && !a.hasHistory && <button onClick={async () => { if (await confirm({ title: t("Видалити {name}?", { name: a.name }), danger: true, confirmText: t("Видалити") })) remove.mutate(a.id); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити (лише запрошення, яким ще не скористались)")}><Trash2 className="h-4 w-4" /></button>}
@@ -396,7 +402,7 @@ function AccessFields({ role, roles, scope, onScope, inviteRoles, onInviteRoles 
 }
 
 // ─── Делегат: мої запрошення ──────────────────────────────────────────────────
-interface InviteRow { id: number; name: string; role: string; pending: boolean; hasWebLogin: boolean; inviteLink: string | null; scopeCities: string[]; scopeFactoryIds: number[] }
+interface InviteRow { id: number; name: string; role: string; pending: boolean; hasWebLogin: boolean; hasTelegram: boolean; inviteLink: string | null; scopeCities: string[]; scopeFactoryIds: number[] }
 interface InvitesResp { roles: { key: string; label: string }[]; myScope: ScopeValue | null; invites: InviteRow[] }
 
 function MyInvites({ me }: { me: Me }) {
@@ -412,6 +418,10 @@ function MyInvites({ me }: { me: Me }) {
     mutationFn: (a: InviteRow) => post<{ inviteLink: string }>(`/admin-invites/${a.id}/invite`).then(r => ({ r, a })),
     onSuccess: ({ r, a }) => { navigator.clipboard?.writeText(r.inviteLink); setInvite({ name: a.name, link: r.inviteLink }); },
     onError: (e: any) => toast.error(e.message),
+  });
+  const promptWeb = useMutation({
+    mutationFn: (id: number) => post(`/admin-invites/${id}/web-access-prompt`),
+    onSuccess: () => toast.success(t("Запит надіслано в бот — користувач задасть логін і пароль")), onError: (e: any) => toast.error(e.message),
   });
   const remove = useMutation({
     mutationFn: (id: number) => del(`/admin-invites/${id}`),
@@ -442,6 +452,9 @@ function MyInvites({ me }: { me: Me }) {
                   <td className="px-4 py-2.5 text-xs text-slate-500">{scopeSummary(a.scopeCities, a.scopeFactoryIds, t)}</td>
                   <td className="px-4 py-2.5">{a.pending ? <Badge color="amber">{t("очікує приєднання")}</Badge> : a.hasWebLogin ? <Badge color="green">{t("активний")}</Badge> : <Badge color="slate">{t("без веб-логіну")}</Badge>}</td>
                   <td className="px-4 py-2.5 text-right">
+                    {a.hasTelegram && !a.hasWebLogin && (
+                      <button onClick={() => promptWeb.mutate(a.id)} disabled={promptWeb.isPending} className="rounded-lg p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600" title={t("Запросити задати веб-доступ (у боті)")}><Send className="h-4 w-4" /></button>
+                    )}
                     {a.pending && (
                       <div className="flex justify-end gap-1">
                         <button onClick={() => regen.mutate(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title={t("Посилання-запрошення")}><Link2 className="h-4 w-4" /></button>
