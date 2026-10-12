@@ -630,7 +630,7 @@ function SelfTransportRows({ workerId, mainFactoryId, rows, historyFactoryIds, f
   const t = useT();
   const qc = useQueryClient();
   const [extra, setExtra] = useState<number[]>([]);
-  const inv = () => { qc.invalidateQueries({ queryKey: ["worker", workerId] }); qc.invalidateQueries({ queryKey: ["workers"] }); };
+  const inv = () => { qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); qc.invalidateQueries({ queryKey: ["workers"] }); };
   const toggle = useMutation({
     mutationFn: (v: { factoryId: number; self: boolean }) => put(`/workers/${workerId}/self-transport`, v),
     onSuccess: inv, onError: (e: any) => toast.error(e.message),
@@ -771,7 +771,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   // Ім'я/по-батькові/прізвище — поля workersTable (той самий поділ, що в
   // routes/passportScan.ts), не анкети; той самий "worker" кеш, що на сторінці
   // профілю ["worker", id] — React Query дедублює запит.
-  const { data: worker } = useQuery<{ firstName?: string | null; middleName?: string | null; lastName?: string | null; pesel?: string | null }>({ queryKey: ["worker", workerId], queryFn: () => get(`/workers/${workerId}`) });
+  const { data: worker } = useQuery<{ firstName?: string | null; middleName?: string | null; lastName?: string | null; pesel?: string | null }>({ queryKey: ["worker", String(workerId)], queryFn: () => get(`/workers/${workerId}`) });
   const [form, setForm] = useState<Record<string, any>>({});
   const [name, setName] = useState({ firstName: "", middleName: "", lastName: "" });
   useEffect(() => { setForm(q ?? {}); }, [q]);
@@ -779,7 +779,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-questionnaire", workerId] });
   const save = useMutation({
     mutationFn: () => put(`/workers/${workerId}/questionnaire`, { ...form, ...name }),
-    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker", workerId] }); toast.success(t("Анкету збережено")); },
+    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); toast.success(t("Анкету збережено")); },
     onError: (e: any) => toast.error(e.message),
   });
   const verify = useMutation({
