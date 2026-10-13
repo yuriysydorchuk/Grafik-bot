@@ -9,6 +9,7 @@ import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksT
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { hasCap } from "../lib/roles";
+import { svodniCityAllowed, svodniRowAllowed, svodniRowInScopeSql, svodniClearAllowed, workersInScope, workerInScopeSql, type AdminScope } from "../lib/scope";
 import { logger } from "../lib/logger";
 import { matchWorker, findLikelyDuplicate } from "../bot/workerMatch";
 import { cleanName } from "../services/payrollSummaries";
@@ -23,6 +24,20 @@ import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
 import { listaRecords, listaXlsxBuffer } from "../services/gratyfikantExport";
 import { defaultPayDate, umowaStatusFor } from "../services/gratyfikantImport";
+
+// Скоуп міст/фабрик (13.10.2026, «Dyrektor» регіону): читання віддає лише рядки своїх міст, движок знять
+// не торкається рядків чужого міста (навіть як фолбек «основної фабрики»), джерела — лише люди зі скоупу.
+// Гейти на області/рядки — у lib/scope.ts (SCOPE_RULES); тут — фільтри списків і предикати для движка.
+type SvodniRowRef = { city: string | null; factoryId: number | null };
+type RowOk = (r: SvodniRowRef) => boolean;
+const adminScope = (req: any): AdminScope | null => (req as AuthedRequest).admin?.scope ?? null;
+const rowOkFor = (req: any): RowOk => { const sc = adminScope(req); return sc ? (r) => svodniRowAllowed(sc, r) : () => true; };
+const sourcesAllowed = async (req: any, workerIds: (number | null)[]): Promise<boolean> => {
+  const sc = adminScope(req); if (!sc) return true;
+  const ids = workerIds.filter((n): n is number => n != null);
+  return ids.length ? workersInScope(sc, ids) : true;
+};
+const scopeFail = (res: any) => res.status(403).json({ error: "Немає доступу до даних цього міста/фабрики", code: "scope" });
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -838,15 +853,19 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const city = String(req.query.city ?? "").trim() || null;
   const sensitive = canSensitive(req);
+  const scope = adminScope(req);
+  if (scope && city && !svodniCityAllowed(scope, city)) return scopeFail(res);
 
-  const where = city
-    ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city))
-    : eq(svodniRowsTable.periodMonth, month);
+  const where = and(
+    city ? and(eq(svodniRowsTable.periodMonth, month), eq(svodniRowsTable.city, city)) : eq(svodniRowsTable.periodMonth, month),
+    scope ? svodniRowInScopeSql(scope) : undefined);
   const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus, prefKind: workersTable.payoutPrefKind, prefValue: workersTable.payoutPrefValue, workerNationality: workersTable.nationality, workerCash: workersTable.agramCashBonus })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))
     .where(where)
     .orderBy(asc(svodniRowsTable.factoryLabel), asc(svodniRowsTable.sortIdx));
+  // місто/вкладка видимі скоуп-адміну: місто зі скоупу або місто його (вже відфільтрованих) рядків
+  const areaOk = (c: string) => !scope || svodniCityAllowed(scope, c) || raw.some(x => x.r.city === c);
 
   // офісні вкладки і «Додаткові студенти» — лише із закритим доступом
   const tabAllowed = (label: string) => sensitive || (!OFFICE_TAB_RE.test(label) && label !== EXTRA_STUDENTS_LABEL);
@@ -885,7 +904,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     city
       ? and(eq(svodniTabChecksTable.periodMonth, month), eq(svodniTabChecksTable.city, city))
       : eq(svodniTabChecksTable.periodMonth, month)))
-    .filter(c => tabAllowed(c.factoryLabel));
+    .filter(c => tabAllowed(c.factoryLabel) && areaOk(c.city));
 
   // міста: з рядків місяця ∪ з реєстру джерел (payroll_sources) — щоб місто
   // без згенерованої сводної теж мало вкладку з кнопками синку/генерації
@@ -900,6 +919,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
   }
   const cities = [...citySet]
     .filter(c => sensitive || c !== "Офіс") // віртуальне «місто» вкладки офісу
+    .filter(areaOk)
     .sort();
 
   // метадані вкладок: порядок колонок як у таблиці + інфо-блоки (STAWKA EUROCASH)
@@ -907,7 +927,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     city
       ? and(eq(svodniTabMetaTable.periodMonth, month), eq(svodniTabMetaTable.city, city))
       : eq(svodniTabMetaTable.periodMonth, month)))
-    .filter(m => tabAllowed(m.factoryLabel))
+    .filter(m => tabAllowed(m.factoryLabel) && areaOk(m.city))
     .map(m => ({ city: m.city, factoryLabel: m.factoryLabel, colOrder: m.colOrder, info: m.info as Record<string, unknown> }));
 
   // Інфо-блок STAWKA EUROCASH: вкладка місяця без свого блоку (типово Eurocash —
@@ -938,7 +958,7 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
     }
   }
 
-  const lockRows = await monthLocks(month);
+  const lockRows = (await monthLocks(month)).filter(l => areaOk(l.city));
   const locks = lockRows.map(l => ({ city: l.city, factoryLabel: l.factoryLabel }));
   // «є зміни після затвердження»: у журналі профілів зʼявились зміни, що діють
   // у цьому місяці, для людей із залоченої області — лок варто переглянути
@@ -985,13 +1005,15 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
 });
 
 // незматчені люди: місто · фабрика · місяці + кандидати для привʼязки
-router.get("/svodni/unmatched", requireCap("svodni"), async (_req, res) => {
-  const rows = await db.select({
-    rawName: svodniRowsTable.rawName, city: svodniRowsTable.city,
+router.get("/svodni/unmatched", requireCap("svodni"), async (req: AuthedRequest, res) => {
+  const rowOk = rowOkFor(req);
+  const rows = (await db.select({
+    rawName: svodniRowsTable.rawName, city: svodniRowsTable.city, factoryId: svodniRowsTable.factoryId,
     factoryLabel: svodniRowsTable.factoryLabel, periodMonth: svodniRowsTable.periodMonth,
-  }).from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "unmatched"));
+  }).from(svodniRowsTable).where(eq(svodniRowsTable.linkStatus, "unmatched"))).filter(rowOk);
+  const uScope = adminScope(req);
   const workers = dedupeWorkers(await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
-    .from(workersTable));
+    .from(workersTable).where(uScope ? workerInScopeSql(uScope) : undefined)); // кандидати привʼязки — лише люди зі скоупу
   const grouped = new Map<string, { rawName: string; city: string; factories: Set<string>; months: Set<string> }>();
   for (const r of rows) {
     const k = `${r.city}::${cleanName(r.rawName).toUpperCase()}`;
@@ -1293,7 +1315,11 @@ router.get("/svodni/clears", requireCap("svodni"), async (req, res) => {
     .where(and(eq(svodniClearsTable.periodMonth, month),
       ...(qCity ? [eq(svodniClearsTable.city, qCity)] : []), ...(qLabel ? [eq(svodniClearsTable.factoryLabel, qLabel)] : [])))
     .orderBy(desc(svodniClearsTable.clearedAt));
-  ok(res, list.map(c => ({ ...c, preview: c.names.slice(0, 6), names: undefined, sources: undefined, released: releasedCount((c.sources || {}) as ReleasedSources) })));
+  const scope = adminScope(req);
+  const visible = scope // той самий предикат, що й для restore (по знімку, не по поточних рядках — після clear їх нема)
+    ? (await Promise.all(list.map(async c => (await svodniClearAllowed(scope, c.id)) ? c : null))).filter((c): c is typeof list[number] => c != null)
+    : list;
+  ok(res, visible.map(c => ({ ...c, preview: c.names.slice(0, 6), names: undefined, sources: undefined, released: releasedCount((c.sources || {}) as ReleasedSources) })));
 });
 
 // відновити знімок: поточні рядки області (якщо є) — у журнал як restore_replace,
@@ -2019,7 +2045,8 @@ router.post("/svodni/profile-impact", requireCap("svodni"), async (req: AuthedRe
   if (gate) return fail(res, 403, gate);
   const ctx = await profileChangeContext(workerId, req.body ?? {}, from, canSensitive(req));
   if ("err" in ctx) return fail(res, 400, ctx.err!);
-  ok(res, { items: serializeImpact(ctx.items, canSensitive(req)), checkedRows: ctx.checkedRows, workerMonths: ctx.workerMonths });
+  const rowOk = rowOkFor(req); // скоуп: рядки людини в чужому місті у превʼю не показуємо
+  ok(res, { items: serializeImpact(ctx.items.filter(it => rowOk(it.row)), canSensitive(req)), checkedRows: ctx.checkedRows, workerMonths: ctx.workerMonths });
 });
 
 // застосування: профіль + журнал + вибрані рядки (залочені — ніколи)
@@ -3048,6 +3075,7 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const onlyFactoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : null;
+  const rowOk = rowOkFor(req);
   const { transportDeductionsTable } = await import("@workspace/db");
   const deds = (await db.select().from(transportDeductionsTable)
     .where(eq(transportDeductionsTable.periodMonth, month)))
@@ -3065,8 +3093,8 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
     cur.amount = r2(cur.amount + d.amount);
   }
 
-  const rows = await db.select().from(svodniRowsTable)
-    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const rows = (await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)))).filter(rowOk); // скоуп: чужі міста невидимі й для фолбеку
   const locks = await monthLocks(month);
   const workerIds = [...new Set([...byPair.values()].map(p => p.workerId))];
   const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
@@ -3205,6 +3233,7 @@ router.post("/svodni/apply-transport-deductions", requireCap("svodni"), async (r
 router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (req: AuthedRequest, res) => {
   const month = validMonth(req.body?.month) ? String(req.body.month) : null;
   if (!month) return fail(res, 400, "month=YYYY-MM required");
+  const rowOk = rowOkFor(req);
   const { clothingItemsTable } = await import("@workspace/db");
   const items = await db.select().from(clothingItemsTable).where(and(
     eq(clothingItemsTable.deducted, false), eq(clothingItemsTable.writtenOff, false),
@@ -3221,8 +3250,8 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
     cur.itemIds.push(it.id);
   }
 
-  const rows = await db.select().from(svodniRowsTable)
-    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const rows = (await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)))).filter(rowOk); // скоуп: чужі міста невидимі й для фолбеку
   const locks = await monthLocks(month);
   const workerIds = [...byWorker.keys()];
   const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
@@ -3305,10 +3334,12 @@ router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const onlyIds: number[] | null = Array.isArray(req.body?.ids)
     ? req.body.ids.map(Number).filter(Number.isFinite) : null;
+  const rowOk = rowOkFor(req);
   const { workerBadaniaTable } = await import("@workspace/db");
   const items = (await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.deducted, false)))
     .filter(b => onlyIds == null || onlyIds.includes(b.id));
   if (!items.length) return fail(res, 400, "немає залічок за бадання до зняття");
+  if (!(await sourcesAllowed(req, items.map(b => b.workerId)))) return scopeFail(res);
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const byWorker = new Map<number, { amount: number; itemIds: number[] }>();
   for (const it of items) {
@@ -3317,8 +3348,8 @@ router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req
     cur.itemIds.push(it.id);
   }
 
-  const rows = await db.select().from(svodniRowsTable)
-    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const rows = (await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)))).filter(rowOk); // скоуп: чужі міста невидимі й для фолбеку
   const locks = await monthLocks(month);
   const workerIds = [...byWorker.keys()];
   const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
@@ -3405,6 +3436,8 @@ router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: 
   if (!b) return fail(res, 404, "Не знайдено");
   if (!b.deducted) return fail(res, 400, "Запис і так не знятий");
   if (!b.deductedMonth) return fail(res, 400, "Знято вручну (без перенесення) — зніми позначку в профілі");
+  if (!(await sourcesAllowed(req, [b.workerId]))) return scopeFail(res);
+  const rowOk = rowOkFor(req);
   const month = b.deductedMonth;
   const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -3413,7 +3446,9 @@ router.post("/svodni/undo-badania-deduction", requireCap("svodni"), async (req: 
     eq(svodniRowsTable.workerId, b.workerId),
   ));
   // куди переносили: рядок з найбільшими годинами серед тих, де є Zaliczka BD
-  const row = rows.filter(r => (r.zaliczkaBd ?? 0) > 0).sort((a, x) => (x.hours ?? 0) - (a.hours ?? 0))[0];
+  const withBd = rows.filter(r => (r.zaliczkaBd ?? 0) > 0);
+  if (withBd.some(r => !rowOk(r))) return fail(res, 409, "Сума сидить у рядку міста поза вашим доступом — відмінити може адміністратор того міста"); // як у subtractDeduction
+  const row = withBd.sort((a, x) => (x.hours ?? 0) - (a.hours ?? 0))[0];
   let subtracted: { factoryLabel: string; newValue: number | null } | null = null;
   if (row) {
     const locks = await monthLocks(month);
@@ -3506,7 +3541,7 @@ async function writeDeductionCell(
 // (дві групи людини можуть влучити в той самий рядок — додаємо на свіже
 // значення), локи пропускаються, наприкінці — самозвірка перечитуванням.
 type DeductionGroup = { workerId: number; factoryId: number | null; amount: number; refs: { id: number; amount: number }[] };
-async function applyDeductionGroups(month: string, col: DeductionCol, groups: DeductionGroup[]): Promise<{
+async function applyDeductionGroups(month: string, col: DeductionCol, groups: DeductionGroup[], rowOk: RowOk = () => true): Promise<{
   updated: number; skippedLocked: number;
   unmatched: { workerName: string | null; amount: number }[];
   landedRefs: { id: number; amount: number }[];
@@ -3514,8 +3549,8 @@ async function applyDeductionGroups(month: string, col: DeductionCol, groups: De
   verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[];
 }> {
   const r2 = (n: number) => Math.round(n * 100) / 100;
-  const rows = await db.select().from(svodniRowsTable)
-    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)));
+  const rows = (await db.select().from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)))).filter(rowOk); // скоуп: чужі міста невидимі й для фолбеку
   const locks = await monthLocks(month);
   const workerIds = [...new Set(groups.map(g => g.workerId))];
   const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
@@ -3559,7 +3594,7 @@ async function applyDeductionGroups(month: string, col: DeductionCol, groups: De
 // Відміна одного перенесення: віднімає суму з колонки рядка місяця перенесення
 // (рядок пари, фолбек — з найбільшими годинами серед тих, де є значення).
 // Залочена вкладка — 409; рядка вже нема — чесний warning.
-async function subtractDeduction(month: string, col: DeductionCol, workerId: number, factoryId: number | null, amount: number): Promise<
+async function subtractDeduction(month: string, col: DeductionCol, workerId: number, factoryId: number | null, amount: number, rowOk: RowOk = () => true): Promise<
   { error: string } | { subtracted: { factoryLabel: string; newValue: number | null } | null }
 > {
   const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -3568,9 +3603,13 @@ async function subtractDeduction(month: string, col: DeductionCol, workerId: num
     eq(svodniRowsTable.workerId, workerId),
   ));
   const byHours = (a: typeof rows[number], b: typeof rows[number]) => (b.hours ?? 0) - (a.hours ?? 0);
-  const withVal = rows.filter(r => (r[col] ?? 0) > 0);
-  const row = (factoryId != null ? withVal.filter(r => r.factoryId === factoryId).sort(byHours)[0] : undefined)
-    ?? withVal.sort(byHours)[0];
+  const withValAll = rows.filter(r => (r[col] ?? 0) > 0);
+  // та сама черга, що й раніше: рядок пари, інакше — усі з сумою; скоуп: якщо серед кандидатів є рядок
+  // чужого міста — не вгадуємо (інакше віднялось би зі свого рядка, а реальне зняття лишилось би в чужому)
+  const pairAll = factoryId != null ? withValAll.filter(r => r.factoryId === factoryId) : [];
+  const pool = pairAll.length ? pairAll : withValAll;
+  if (pool.some(r => !rowOk(r))) return { error: "Сума сидить у рядку міста поза вашим доступом — відмінити може адміністратор того міста" };
+  const row = pool.sort(byHours)[0];
   if (!row) return { subtracted: null };
   const locks = await monthLocks(month);
   if (isLocked(locks, row.city, row.factoryLabel)) {
@@ -3593,6 +3632,7 @@ router.post("/svodni/apply-penalty-deductions", requireCap("svodni"), async (req
   const items = (await db.select().from(penaltiesTable).where(eq(penaltiesTable.deducted, false)))
     .filter(p => onlyIds == null || onlyIds.includes(p.id));
   if (!items.length) return fail(res, 400, "немає штрафів до зняття");
+  if (!(await sourcesAllowed(req, items.map(p => p.workerId)))) return scopeFail(res);
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
   const byPair = new Map<string, DeductionGroup>();
@@ -3602,7 +3642,7 @@ router.post("/svodni/apply-penalty-deductions", requireCap("svodni"), async (req
     g.amount = r2(g.amount + p.amount);
     g.refs.push({ id: p.id, amount: p.amount });
   }
-  const result = await applyDeductionGroups(month, "kara", [...byPair.values()]);
+  const result = await applyDeductionGroups(month, "kara", [...byPair.values()], rowOkFor(req));
   if (result.landedRefs.length) {
     await db.update(penaltiesTable)
       .set({ deducted: true, deductedAt: sql`CURRENT_DATE`, deductedMonth: month })
@@ -3622,7 +3662,8 @@ router.post("/svodni/undo-penalty-deduction", requireCap("svodni"), async (req: 
   const [p] = await db.select().from(penaltiesTable).where(eq(penaltiesTable.id, id));
   if (!p) return fail(res, 404, "Не знайдено");
   if (!p.deducted || !p.deductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
-  const r = await subtractDeduction(p.deductedMonth, "kara", p.workerId, p.factoryId, p.amount);
+  if (!(await sourcesAllowed(req, [p.workerId]))) return scopeFail(res);
+  const r = await subtractDeduction(p.deductedMonth, "kara", p.workerId, p.factoryId, p.amount, rowOkFor(req));
   if ("error" in r) return fail(res, 409, r.error);
   await db.update(penaltiesTable)
     .set({ deducted: false, deductedAt: null, deductedMonth: null })
@@ -3648,6 +3689,7 @@ router.post("/svodni/apply-absence-deductions", requireCap("svodni"), async (req
     .map(e => ({ ...e, penalty: absencePenaltyOf(e) }))
     .filter(e => e.penalty > 0);
   if (!entries.length) return fail(res, 400, "немає штрафів за пропуски до зняття");
+  if (!(await sourcesAllowed(req, entries.map(e => e.workerId)))) return scopeFail(res);
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;
   const byPair = new Map<string, DeductionGroup>();
@@ -3657,7 +3699,7 @@ router.post("/svodni/apply-absence-deductions", requireCap("svodni"), async (req
     g.amount = r2(g.amount + e.penalty);
     g.refs.push({ id: e.id, amount: e.penalty });
   }
-  const result = await applyDeductionGroups(month, "kara", [...byPair.values()]);
+  const result = await applyDeductionGroups(month, "kara", [...byPair.values()], rowOkFor(req));
   for (const ref of result.landedRefs) {
     await db.update(scheduleEntriesTable)
       .set({ absenceDeductedMonth: month, absenceDeductedAt: sql`CURRENT_DATE`, absenceDeductedAmount: ref.amount })
@@ -3678,7 +3720,8 @@ router.post("/svodni/undo-absence-deduction", requireCap("svodni"), async (req: 
   if (!e) return fail(res, 404, "Не знайдено");
   if (!e.absenceDeductedMonth) return fail(res, 400, "Штраф не перенесений у сводну");
   const amount = e.absenceDeductedAmount ?? absencePenaltyOf(e);
-  const r = await subtractDeduction(e.absenceDeductedMonth, "kara", e.workerId, e.factoryId, amount);
+  if (!(await sourcesAllowed(req, [e.workerId]))) return scopeFail(res);
+  const r = await subtractDeduction(e.absenceDeductedMonth, "kara", e.workerId, e.factoryId, amount, rowOkFor(req));
   if ("error" in r) return fail(res, 409, r.error);
   await db.update(scheduleEntriesTable)
     .set({ absenceDeductedMonth: null, absenceDeductedAt: null, absenceDeductedAmount: null })
@@ -3705,12 +3748,13 @@ router.post("/svodni/apply-zaliczki", requireCap("svodni"), async (req: AuthedRe
     .where(and(eq(advanceRequestsTable.status, "paid"), isNull(advanceRequestsTable.svodniMonth))))
     .filter(a => onlyIds == null || onlyIds.includes(a.id));
   if (!items.length) return fail(res, 400, "немає виплачених залічок до перенесення");
+  if (!(await sourcesAllowed(req, items.map(a => a.workerId)))) return scopeFail(res);
   const r2 = (n: number) => Math.round(n * 100) / 100;
   // група на аванс: applyDeductionGroups сам агрегує послідовно у свіжі рядки
   const groups: DeductionGroup[] = items.map(a => ({
     workerId: a.workerId, factoryId: a.factoryId, amount: r2(a.amount), refs: [{ id: a.id, amount: a.amount }],
   }));
-  const result = await applyDeductionGroups(month, "zaliczka", groups);
+  const result = await applyDeductionGroups(month, "zaliczka", groups, rowOkFor(req));
   const markedIds = result.landedRefs.map(r => r.id);
   if (markedIds.length) {
     await db.update(advanceRequestsTable)
@@ -3732,7 +3776,8 @@ router.post("/svodni/undo-zaliczka", requireCap("svodni"), async (req: AuthedReq
   const [a] = await db.select().from(advanceRequestsTable).where(eq(advanceRequestsTable.id, id));
   if (!a) return fail(res, 404, "Не знайдено");
   if (!a.svodniMonth) return fail(res, 400, "Аванс не перенесений у сводну");
-  const r = await subtractDeduction(a.svodniMonth, "zaliczka", a.workerId, a.factoryId, a.amount);
+  if (!(await sourcesAllowed(req, [a.workerId]))) return scopeFail(res);
+  const r = await subtractDeduction(a.svodniMonth, "zaliczka", a.workerId, a.factoryId, a.amount, rowOkFor(req));
   if ("error" in r) return fail(res, 409, r.error);
   await db.update(advanceRequestsTable)
     .set({ svodniMonth: null, svodniAppliedAt: null })
@@ -3807,6 +3852,8 @@ router.get("/svodni/excel", requireCap("svodni"), async (req: AuthedRequest, res
 
   const where = [eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf)];
   if (city) where.push(eq(svodniRowsTable.city, city));
+  const xScope = adminScope(req);
+  if (xScope) where.push(svodniRowInScopeSql(xScope));
   const raw = await db.select({ r: svodniRowsTable, workerName: workersTable.fullName, workerLegal: workersTable.legalStatus })
     .from(svodniRowsTable)
     .leftJoin(workersTable, eq(svodniRowsTable.workerId, workersTable.id))

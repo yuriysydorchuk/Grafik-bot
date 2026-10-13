@@ -638,15 +638,17 @@ export default function Svodni() {
                 <History className="h-4 w-4" /> {t("Історія очищень")}{(() => { const n = clears.data!.filter(c => !c.restoredAt).length; return n ? ` (${n})` : ""; })()}
               </Button>
             )}
-            {data?.sensitive && (
+            {data?.sensitive && !me?.scope && (
               <Button variant="secondary" onClick={() => setGratyfikantOpen(true)} title={t("Файл для імпорту naliczeń у Gratyfikant nexo")}>
                 <Download className="h-4 w-4" /> Gratyfikant
               </Button>
             )}
             <Button variant="secondary" onClick={() => setShowLinks(v => !v)}><Users className="h-4 w-4" /> {t("Привʼязки")}</Button>
-            <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()} title={t("Пробує підвʼязати нерозпізнаних людей до працівників")}><Link2 className="h-4 w-4" /></Button>
-            <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate(undefined)} title={t("Синк із Google (всі міста)")}><RefreshCw className="h-4 w-4" /></Button>
-            {can(me, "viewFinance") && (
+            {/* дії «по всіх містах» (rematch, синк усіх, ставки → профілі, Gratyfikant) — не для адміна зі скоупом міст:
+                йому лишається «Підтягнути з таблиць: {місто}» і решта дій у своїх вкладках (гейт — lib/scope.ts) */}
+            {!me?.scope && <Button variant="secondary" loading={rematch.isPending} onClick={() => rematch.mutate()} title={t("Пробує підвʼязати нерозпізнаних людей до працівників")}><Link2 className="h-4 w-4" /></Button>}
+            {!me?.scope && <Button variant="secondary" loading={sync.isPending} onClick={() => sync.mutate(undefined)} title={t("Синк із Google (всі міста)")}><RefreshCw className="h-4 w-4" /></Button>}
+            {can(me, "viewFinance") && !me?.scope && (
               <Button variant="secondary" loading={applyRates.isPending} onClick={() => applyRates.mutate()}>{t("Ставки → профілі")}</Button>
             )}
           </div>

@@ -14,11 +14,15 @@ import type { Response, NextFunction } from "express";
 import { db, factoriesTable, workersTable, workerFactoriesTable, svodniRowsTable,
   workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable,
   advanceRequestsTable, tasksTable, taskAssigneesTable, clothingItemsTable,
-  scheduleEntriesTable, unplannedWorkersTable, workerFactoryCodesTable, hoursDisputesTable, absenceRequestsTable } from "@workspace/db";
+  scheduleEntriesTable, unplannedWorkersTable, workerFactoryCodesTable, hoursDisputesTable, absenceRequestsTable,
+  svodniClearsTable, workerChangesTable, factoryPayoutRulesTable } from "@workspace/db";
 import { and, eq, isNull, or, sql, type SQL, type AnyColumn } from "drizzle-orm";
 import type { AuthedRequest } from "./auth";
 
-export type AdminScope = { factoryIds: number[]; cities: string[] };
+// cities — нормалізовані (lower pl) для порівнянь у JS; cityNames — «як написано» (скоуп адміна ∪
+// factories.city, що збіглися) для точних SQL-порівнянь зі снапшотами міста у сводній (без lower() у
+// Postgres — поведінка на кирилиці залежить від колації).
+export type AdminScope = { factoryIds: number[]; cities: string[]; cityNames: string[] };
 
 const normCity = (s: string) => s.trim().toLocaleLowerCase("pl");
 
@@ -28,11 +32,12 @@ export async function resolveScope(cities: string[] | null | undefined, factoryI
   const cs = (cities ?? []).map(normCity).filter(Boolean);
   const ids = new Set((factoryIds ?? []).map(Number).filter(n => Number.isInteger(n) && n > 0));
   if (!cs.length && !ids.size) return null;
+  const names = new Set((cities ?? []).map(c => String(c).trim()).filter(Boolean));
   if (cs.length) {
     const rows = await db.select({ id: factoriesTable.id, city: factoriesTable.city }).from(factoriesTable);
-    for (const r of rows) if (r.city && cs.includes(normCity(r.city))) ids.add(r.id);
+    for (const r of rows) if (r.city && cs.includes(normCity(r.city))) { ids.add(r.id); names.add(r.city.trim()); }
   }
-  return { factoryIds: [...ids], cities: cs };
+  return { factoryIds: [...ids], cities: cs, cityNames: [...names] };
 }
 
 export function factoryInScope(scope: AdminScope | null | undefined, factoryId: number | null | undefined): boolean {
@@ -90,6 +95,71 @@ export async function factoriesOutsideScope(scope: AdminScope | null | undefined
   return [...ids].filter(id => !factoryInScope(scope, id));
 }
 
+// ─── Сводна (13.10.2026, роль «Dyrektor» регіону) ──────────────────────────────
+// Сводна організована по містах: рядок/лок/очищення живуть у координатах місяць × місто × вкладка-фабрика.
+// Область у скоупі = місто рядка серед міст адміна, або фабрика рядка серед його фабрик (скоуп лише по id).
+export function svodniCityAllowed(scope: AdminScope, city: string | null | undefined): boolean {
+  return !!city && scope.cities.includes(normCity(city));
+}
+// Скоуп по містах — ЛИШЕ місто рядка (factory_id рядка — матч по назві вкладки й може влучити у фабрику
+// іншого міста, ревʼю codex 13.10.2026); скоуп лише по фабриках — factory_id рядка.
+export function svodniRowAllowed(scope: AdminScope, row: { city: string | null; factoryId: number | null }): boolean {
+  if (scope.cities.length) return svodniCityAllowed(scope, row.city);
+  return row.factoryId != null && factoryInScope(scope, row.factoryId);
+}
+// SQL-умова на svodni_rows (місто — точним рядком зі скоупу, без lower() на кирилиці)
+export function svodniRowInScopeSql(scope: AdminScope): SQL {
+  if (scope.cities.length) {
+    return scope.cityNames.length ? sql`${svodniRowsTable.city} IN (${sql.join(scope.cityNames.map(c => sql`${c}`), sql`, `)})` : sql`false`;
+  }
+  return scope.factoryIds.length ? sql`${svodniRowsTable.factoryId} IN (${idList(scope.factoryIds)})` : sql`false`;
+}
+export async function svodniRowIdAllowed(scope: AdminScope, rowId: number): Promise<boolean> {
+  if (!Number.isInteger(rowId)) return false;
+  const [r] = await db.select({ city: svodniRowsTable.city, factoryId: svodniRowsTable.factoryId }).from(svodniRowsTable).where(eq(svodniRowsTable.id, rowId));
+  return !!r && svodniRowAllowed(scope, r);
+}
+// Область (лок/очищення/новий рядок): скоуп по містах — місто в скоупі; скоуп лише по фабриках — вкладка,
+// ВСІ рядки якої в місяці мають factory_id зі скоупу (один збіг не авторизує очищення цілої вкладки;
+// лок цілого міста "" такому адміну недоступний).
+export async function svodniAreaAllowed(scope: AdminScope, month: string, city: string, factoryLabel: string): Promise<boolean> {
+  if (scope.cities.length) return svodniCityAllowed(scope, city);
+  if (!factoryLabel || !scope.factoryIds.length) return false;
+  const a = await areaRowsMine(scope, month, city, factoryLabel);
+  return a.total > 0 && a.total === a.mine;
+}
+// рядки області (місяць × місто × вкладка): скільки всього і скільки з factory_id зі скоупу (factory_id NULL = не мій)
+async function areaRowsMine(scope: AdminScope, month: string, city: string, factoryLabel: string): Promise<{ total: number; mine: number }> {
+  const r: any = await db.execute(sql`SELECT count(*)::int AS total,
+      count(*) FILTER (WHERE ${svodniRowsTable.factoryId} IN (${idList(scope.factoryIds)}))::int AS mine
+    FROM ${svodniRowsTable} WHERE ${svodniRowsTable.periodMonth} = ${month} AND ${svodniRowsTable.city} = ${city} AND ${svodniRowsTable.factoryLabel} = ${factoryLabel}`);
+  const row = (r?.rows ?? r)?.[0];
+  return { total: Number(row?.total ?? 0), mine: Number(row?.mine ?? 0) };
+}
+// Знімок очищення (перегляд у журналі / відновлення): по місту — місто знімка; скоуп лише по фабриках —
+// усі рядки ЗНІМКА з factory_id зі скоупу (NULL = не мій; поточних рядків після очищення вже нема) І поточні
+// рядки області, якщо є, теж мої (restore витісняє їх у журнал — ревʼю codex 13.10.2026).
+export async function svodniClearAllowed(scope: AdminScope, clearId: number): Promise<boolean> {
+  if (!Number.isInteger(clearId)) return false;
+  const [c] = await db.select({ month: svodniClearsTable.periodMonth, city: svodniClearsTable.city, factoryLabel: svodniClearsTable.factoryLabel })
+    .from(svodniClearsTable).where(eq(svodniClearsTable.id, clearId));
+  if (!c) return false;
+  if (scope.cities.length) return svodniCityAllowed(scope, c.city);
+  if (!scope.factoryIds.length) return false;
+  const r: any = await db.execute(sql`SELECT coalesce(bool_and(coalesce((x->>'factoryId') ~ '^[0-9]+$' AND (x->>'factoryId')::int IN (${idList(scope.factoryIds)}), false)), false) AS ok
+    FROM ${svodniClearsTable} c, jsonb_array_elements(c.rows) x WHERE c.id = ${clearId}`);
+  if (!(r?.rows ?? r)?.[0]?.ok) return false;
+  const a = await areaRowsMine(scope, c.month, c.city, c.factoryLabel);
+  return a.total === 0 || a.total === a.mine;
+}
+// Усі рядки сводної людини — у скоупі (журнальні зміни профілю перераховують усі її незалочені рядки,
+// тож людині з двох міст їх з-під скоупу не застосовують/не відкочують — ревʼю codex 13.10.2026)
+export async function svodniRowsAllInScope(scope: AdminScope, workerId: number): Promise<boolean> {
+  const [r] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
+    .where(and(eq(svodniRowsTable.workerId, workerId), sql`(${svodniRowInScopeSql(scope)}) IS NOT TRUE`)).limit(1); // NULL factory_id = не мій
+  return !r;
+}
+
 // ─── Гейт ──────────────────────────────────────────────────────────────────────
 type Check =
   | { kind: "free" }                                  // довідник або список, що фільтрує сам
@@ -100,9 +170,16 @@ type Check =
   | { kind: "task" }                                  // m[1] = id задачі: учасник/автор або працівник/фабрика задачі в скоупі
   | { kind: "taskBulk" }                              // body.ids — кожна задача за правилом task
   | { kind: "queryFactory" }                          // ?factoryId= обовʼязковий (значення звіряє загальний гейт query)
-  | { kind: "bodyFactory" };                          // body.factoryId обовʼязковий (значення звіряє гейт тіла)
+  | { kind: "bodyFactory" }                           // body.factoryId обовʼязковий (значення звіряє гейт тіла)
+  // сводна (13.10.2026): область/рядок/знімок/місто в тілі — див. svodni*Allowed
+  | { kind: "svodniArea" }                            // body.month|periodMonth + city + factoryLabel ("" = місто)
+  | { kind: "svodniRow" }                             // m[1] = id рядка сводної
+  | { kind: "svodniClear" }                           // m[1] = id знімка очищення
+  | { kind: "svodniCity" }                            // body.city обовʼязковий і в скоупі
+  | { kind: "svodniRowIds" }                          // body.rowIds — кожен рядок у скоупі
+  | { kind: "requireIds"; field: string };            // body[field] — непорожній масив (вибіркова дія; людей звіряє хендлер)
 
-type LookupTable = "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" | "entry" | "unplanned" | "factoryCode" | "dispute" | "absenceReq";
+type LookupTable = "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" | "entry" | "unplanned" | "factoryCode" | "dispute" | "absenceReq" | "change" | "payoutRule";
 type Rule = { methods: string[]; re: RegExp; check: Check };
 const R = (methods: string, re: RegExp, check: Check): Rule => ({ methods: methods.split(","), re, check });
 const ANY = "GET,POST,PUT,PATCH,DELETE";
@@ -173,6 +250,23 @@ const SCOPE_RULES: Rule[] = [
   R(ANY, /^\/hours-reports\/(\d+)(?:\/(?:resolve|photo|apply))?$/, { kind: "lookup", table: "dispute" }),
   R("POST,PATCH", /^\/absences\/(\d+)(?:\/message)?$/, { kind: "lookup", table: "entry" }),
   R("POST", /^\/absence-requests\/(\d+)\/(?:approve|reject|substitute)$/, { kind: "lookup", table: "absenceReq" }),
+  // Сводна (13.10.2026, роль «Dyrektor» регіону зі скоупом міст): читання фільтрують хендлери по
+  // svodniRowAllowed; мутації — лише у своїй області. Поза списком свідомо: rematch, apply-rates,
+  // PUT settings, gratyfikant-лісти, apply-clothing (дії «по всіх містах»/бухгалтерські) — лишаються власнику.
+  R("GET", /^\/svodni(?:\/(?:months|unmatched|excel|clears|settings|factory-rules))?$/, { kind: "free" }),
+  R("POST", /^\/svodni\/(?:lock|lock-pending|clear|rows)$/, { kind: "svodniArea" }),
+  R("POST", /^\/svodni\/(?:link|sync)$/, { kind: "svodniCity" }),
+  R("PATCH,DELETE", /^\/svodni\/rows\/(\d+)$/, { kind: "svodniRow" }),
+  R("POST", /^\/svodni\/rows\/(\d+)\/unsplit$/, { kind: "svodniRow" }),
+  R("POST", /^\/svodni\/clears\/(\d+)\/restore$/, { kind: "svodniClear" }),
+  R("POST", /^\/svodni\/profile-impact$/, { kind: "free" }), // workerId у тілі звіряє загальний гейт
+  R("POST", /^\/svodni\/profile-apply$/, { kind: "svodniRowIds" }),
+  R("POST,DELETE", /^\/svodni\/profile-change\/(\d+)(?:\/(?:dismiss|restore))?$/, { kind: "lookup", table: "change" }),
+  R("POST", /^\/svodni\/(?:from-hours|apply-transport-deductions|factory-rules|factory-rules\/impact|factory-rules\/recompute)$/, { kind: "bodyFactory" }),
+  R("PATCH,DELETE", /^\/svodni\/factory-rules\/(\d+)$/, { kind: "lookup", table: "payoutRule" }),
+  R("POST", /^\/svodni\/(?:apply-penalty-deductions|apply-badania-deductions|apply-zaliczki)$/, { kind: "requireIds", field: "ids" }),
+  R("POST", /^\/svodni\/apply-absence-deductions$/, { kind: "requireIds", field: "entryIds" }),
+  R("POST", /^\/svodni\/undo-(?:penalty-deduction|badania-deduction|absence-deduction|zaliczka)$/, { kind: "free" }), // джерело/рядок звіряє хендлер
 ];
 
 // Задача доступна скоуп-адміну, якщо він її учасник/автор/спостерігач (її йому дали свідомо)
@@ -218,6 +312,15 @@ async function lookupAllowed(scope: AdminScope, table: LookupTable, id: number):
     // умова без фабрики (сталий пакет документів) — достатньо працівника в скоупі
     if (r.factoryId != null && !factoryInScope(scope, r.factoryId)) return false;
     return workerInScope(scope, r.workerId);
+  }
+  if (table === "change") {
+    const [r] = await db.select({ workerId: workerChangesTable.workerId }).from(workerChangesTable).where(eq(workerChangesTable.id, id));
+    if (!r || !(await workerInScope(scope, r.workerId))) return false;
+    return svodniRowsAllInScope(scope, r.workerId);
+  }
+  if (table === "payoutRule") {
+    const [r] = await db.select({ factoryId: factoryPayoutRulesTable.factoryId }).from(factoryPayoutRulesTable).where(eq(factoryPayoutRulesTable.id, id));
+    return !!r && factoryInScope(scope, r.factoryId);
   }
   if (table === "advance") {
     // залічка — ще й по фабриці запиту (без неї — поточна фабрика профілю, як у списку /advances):
@@ -274,6 +377,24 @@ export async function scopeGate(req: AuthedRequest, res: Response, next: NextFun
         const ids = Array.isArray((req.body as any)?.ids) ? ((req.body as any).ids as unknown[]).map(Number) : [];
         for (const tid of ids) if (!(await taskAllowed(scope, req.admin!.adminId, tid))) return deny(res);
         return next();
+      }
+      case "svodniArea": {
+        const month = String(b.month ?? b.periodMonth ?? "");
+        const city = String(b.city ?? "").trim();
+        if (!city) return deny(res);
+        return (await svodniAreaAllowed(scope, month, city, String(b.factoryLabel ?? "").trim())) ? next() : deny(res);
+      }
+      case "svodniRow": return (await svodniRowIdAllowed(scope, id)) ? next() : deny(res);
+      case "svodniClear": return (await svodniClearAllowed(scope, id)) ? next() : deny(res);
+      case "svodniCity": return svodniCityAllowed(scope, String(b.city ?? "").trim()) ? next() : deny(res);
+      case "svodniRowIds": {
+        const ids = Array.isArray(b.rowIds) ? (b.rowIds as unknown[]).map(Number) : [];
+        for (const rid of ids) if (!(await svodniRowIdAllowed(scope, rid))) return deny(res);
+        return next();
+      }
+      case "requireIds": {
+        const arr = b[rule.check.field];
+        return Array.isArray(arr) && arr.length > 0 ? next() : deny(res);
       }
     }
   } catch {

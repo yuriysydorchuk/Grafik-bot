@@ -2,7 +2,7 @@ import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db, adminsTable, factoriesTable, workersTable, svodniRowsTable, advanceRequestsTable, contractsTable, rolesTable } from "../test/harness.ts";
-import { workerFactoriesTable, tasksTable, workerBadaniaTable, clothingStockTable, clothingItemsTable, scheduleWeeksTable, scheduleEntriesTable, hoursDisputesTable, absenceRequestsTable } from "@workspace/db";
+import { workerFactoriesTable, tasksTable, workerBadaniaTable, clothingStockTable, clothingItemsTable, scheduleWeeksTable, scheduleEntriesTable, hoursDisputesTable, absenceRequestsTable, penaltiesTable, svodniLocksTable, workerChangesTable } from "@workspace/db";
 import { invalidateRolesCache } from "../lib/auth";
 import { eq } from "drizzle-orm";
 
@@ -417,4 +417,74 @@ test("списки зі скоупом: огляд, доступність, го
   const { main } = { main: await seedAdmin({ role: "owner", isMain: true, name: "Main2" }) };
   const all = await request(app).get("/api/hours-reports").set("Cookie", main.cookie);
   assert.equal(all.body.length, 2);
+});
+
+// 13.10.2026: роль «Dyrektor» регіону — сводна зі скоупом міст: читання лише своїх міст, мутації лише у своїй
+// області, движок знять не чіпає рядки чужого міста, дії «по всіх містах» закриті.
+test("сводна зі скоупом: рядки/вкладки/локи лише свого міста; чужа область — 403; зняття лише у свої рядки", opts, async () => {
+  const { main, poz, lodz, wPoz, wLodz } = await world();
+  await seedRole("dyrektor-test", ["viewWorkers", "editData", "svodni", "svodniSensitive"], ["/svodni", "/workers"]);
+  const dyr = await seedAdmin({ role: "dyrektor-test", name: "Dyr Poznan" });
+  await db.update(adminsTable).set({ scopeCities: ["Познань"] }).where(eq(adminsTable.id, dyr.adminId));
+  const M = "2026-08";
+  const [rPoz] = await db.insert(svodniRowsTable).values({ periodMonth: M, city: "Познань", factoryLabel: "POZ FAB", factoryId: poz.id, rawName: "Anna Poz", workerId: wPoz.id, linkStatus: "confirmed", hours: 100, rateNetto: 25, doWyplaty: 2500, extras: {} }).returning();
+  const [rLodz] = await db.insert(svodniRowsTable).values({ periodMonth: M, city: "Лодзь", factoryLabel: "LDZ FAB", factoryId: lodz.id, rawName: "Olek Lodz", workerId: wLodz.id, linkStatus: "confirmed", hours: 50, rateNetto: 25, doWyplaty: 1250, extras: {} }).returning();
+  await db.insert(svodniLocksTable).values({ periodMonth: M, city: "Лодзь", factoryLabel: "", lockedBy: main.adminId });
+
+  // читання: лише своє місто
+  const r = await request(app).get(`/api/svodni?month=${M}`).set("Cookie", dyr.cookie);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.cities, ["Познань"]);
+  assert.deepEqual(r.body.rows.map((x: any) => x.id), [rPoz!.id]);
+  assert.equal(r.body.locks.length, 0, "чужий лок видно");
+  assert.equal((await request(app).get(`/api/svodni?month=${M}&city=${encodeURIComponent("Лодзь")}`).set("Cookie", dyr.cookie)).status, 403);
+  const xl = await request(app).get(`/api/svodni/excel?month=${M}`).set("Cookie", dyr.cookie);
+  assert.equal(xl.status, 200); // лише свої рядки (чужих у файлі нема — 404 було б, якби свої відфільтрувались)
+
+  // мутації: своя область — ок, чужа — 403
+  assert.equal((await request(app).post("/api/svodni/lock").set("Cookie", dyr.cookie).set(H).send({ month: M, city: "Познань" })).status, 200);
+  assert.equal((await request(app).post("/api/svodni/lock").set("Cookie", dyr.cookie).set(H).send({ month: M, city: "Познань" })).status, 200); // розлок
+  assert.equal((await request(app).post("/api/svodni/lock").set("Cookie", dyr.cookie).set(H).send({ month: M, city: "Лодзь" })).status, 403);
+  assert.equal((await request(app).patch(`/api/svodni/rows/${rLodz!.id}`).set("Cookie", dyr.cookie).set(H).send({ field: "kara", value: 5 })).status, 403);
+  assert.equal((await request(app).patch(`/api/svodni/rows/${rPoz!.id}`).set("Cookie", dyr.cookie).set(H).send({ field: "kara", value: 5 })).status, 200);
+  assert.equal((await request(app).post("/api/svodni/clear").set("Cookie", dyr.cookie).set(H).send({ month: M, city: "Лодзь", factoryLabel: "LDZ FAB" })).status, 403);
+  assert.equal((await request(app).post("/api/svodni/rows").set("Cookie", dyr.cookie).set(H).send({ periodMonth: M, city: "Лодзь", factoryLabel: "LDZ FAB", workerId: wPoz.id })).status, 403);
+  // «по всіх містах» — закрито; синк свого міста — пропускає гейт (далі падає на Google, не на 403)
+  assert.equal((await request(app).post("/api/svodni/rematch").set("Cookie", dyr.cookie).set(H).send({})).status, 403);
+  assert.equal((await request(app).post("/api/svodni/apply-rates").set("Cookie", dyr.cookie).set(H).send({ month: M })).status, 403);
+  assert.equal((await request(app).post("/api/svodni/sync").set("Cookie", dyr.cookie).set(H).send({ months: [M], city: "Лодзь" })).status, 403);
+  assert.notEqual((await request(app).post("/api/svodni/sync").set("Cookie", dyr.cookie).set(H).send({ months: [M], city: "Познань" })).status, 403);
+
+  // зняття: без ids — 403; чужа людина — 403; своя — лягає у свій рядок
+  const [pLodz] = await db.insert(penaltiesTable).values({ periodMonth: M, workerId: wLodz.id, factoryId: lodz.id, amount: 30 }).returning();
+  const [pPoz] = await db.insert(penaltiesTable).values({ periodMonth: M, workerId: wPoz.id, factoryId: poz.id, amount: 20 }).returning();
+  assert.equal((await request(app).post("/api/svodni/apply-penalty-deductions").set("Cookie", dyr.cookie).set(H).send({ month: M })).status, 403);
+  assert.equal((await request(app).post("/api/svodni/apply-penalty-deductions").set("Cookie", dyr.cookie).set(H).send({ month: M, ids: [pLodz!.id] })).status, 403);
+  const ap = await request(app).post("/api/svodni/apply-penalty-deductions").set("Cookie", dyr.cookie).set(H).send({ month: M, ids: [pPoz!.id] });
+  assert.equal(ap.status, 200);
+  assert.equal(ap.body.updated, 1);
+  const [after] = await db.select({ kara: svodniRowsTable.kara }).from(svodniRowsTable).where(eq(svodniRowsTable.id, rPoz!.id));
+  assert.equal(after!.kara, 25); // 5 (PATCH) + 20 (штраф)
+  const [untouched] = await db.select({ kara: svodniRowsTable.kara }).from(svodniRowsTable).where(eq(svodniRowsTable.id, rLodz!.id));
+  assert.equal(untouched!.kara ?? 0, 0);
+  assert.equal((await request(app).post("/api/svodni/undo-penalty-deduction").set("Cookie", dyr.cookie).set(H).send({ id: pPoz!.id })).status, 200);
+
+  // людина з двох міст: реальне зняття сидить у рядку чужого міста, а у своєму є інша сума тієї ж колонки —
+  // undo НЕ вгадує й не віднімає зі свого рядка (ревʼю codex 13.10); журнальну зміну такої людини не відкотити
+  const [rPozLodz] = await db.insert(svodniRowsTable).values({ periodMonth: M, city: "Лодзь", factoryLabel: "LDZ FAB", factoryId: lodz.id, rawName: "Anna Poz", workerId: wPoz.id, linkStatus: "confirmed", hours: 10, rateNetto: 25, doWyplaty: 250, kara: 30, extras: {} }).returning();
+  const [pForeign] = await db.insert(penaltiesTable).values({ periodMonth: M, workerId: wPoz.id, factoryId: lodz.id, amount: 30, deducted: true, deductedAt: "2026-09-01", deductedMonth: M }).returning();
+  await request(app).patch(`/api/svodni/rows/${rPoz!.id}`).set("Cookie", dyr.cookie).set(H).send({ field: "kara", value: 7 });
+  assert.equal((await request(app).post("/api/svodni/undo-penalty-deduction").set("Cookie", dyr.cookie).set(H).send({ id: pForeign!.id })).status, 409); // помилка движка → 409, джерело лишається знятим
+  const [stillOwn] = await db.select({ kara: svodniRowsTable.kara }).from(svodniRowsTable).where(eq(svodniRowsTable.id, rPoz!.id));
+  assert.equal(stillOwn!.kara, 7);
+  const [stillForeign] = await db.select({ kara: svodniRowsTable.kara }).from(svodniRowsTable).where(eq(svodniRowsTable.id, rPozLodz!.id));
+  assert.equal(stillForeign!.kara, 30);
+  const [chg] = await db.insert(workerChangesTable).values({ workerId: wPoz.id, field: "legalStatus", oldValue: "zus", newValue: "student", effectiveDate: `${M}-01` }).returning();
+  assert.equal((await request(app).delete(`/api/svodni/profile-change/${chg!.id}`).set("Cookie", dyr.cookie).set(H)).status, 403);
+  await db.delete(svodniRowsTable).where(eq(svodniRowsTable.id, rPozLodz!.id));
+
+  // головний адмін бачить обидва міста як і раніше
+  const all = await request(app).get(`/api/svodni?month=${M}`).set("Cookie", main.cookie);
+  assert.deepEqual(all.body.cities, ["Лодзь", "Познань"]);
+  assert.equal(all.body.rows.length, 2);
 });
