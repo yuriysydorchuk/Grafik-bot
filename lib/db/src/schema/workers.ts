@@ -188,6 +188,12 @@ export const workerBadaniaTable = pgTable("worker_badania", {
   deductedAt: date("deducted_at"),
   deductedMonth: text("deducted_month"), // YYYY-MM сводної, з якої знято (перенесення в Zaliczka BD)
   note: text("note"),
+  // Частинами (13.10.2026): кожна частина — свій рядок; due_month — з якого місяця
+  // сводної її брати (NULL = зразу, як було); part_group = id першої частини
+  dueMonth: text("due_month"),
+  partNo: integer("part_no"),
+  partsTotal: integer("parts_total"),
+  partGroup: integer("part_group"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("worker_badania_worker_idx").on(t.workerId)]);
 
@@ -1673,8 +1679,15 @@ export const clothingItemsTable = pgTable("clothing_items", {
   returnedAt: date("returned_at"),       // коли повернуто (повернене до зняття не входить; новий → на склад як БУ)
   deductedAmount: real("deducted_amount"), // скільки ФАКТИЧНО зняли (може відрізнятись від price)
   deductedMonth: text("deducted_month"), // YYYY-MM сводної, з якої зняли
+  // Частинами (13.10.2026): ціна речі розбита на N рядків — part 1 = сам запис
+  // видачі (зі складом), частини 2..N — рядки з part_of = його id (без stock_id);
+  // due_month — з якого місяця сводної брати частину (NULL = зразу)
+  dueMonth: text("due_month"),
+  partNo: integer("part_no"),
+  partsTotal: integer("parts_total"),
+  partOf: integer("part_of").references((): AnyPgColumn => clothingItemsTable.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [index("clothing_items_worker_idx").on(t.workerId)]);
+}, (t) => [index("clothing_items_worker_idx").on(t.workerId), index("clothing_items_part_of_idx").on(t.partOf)]);
 
 // Платежі мешканців по місяцях: готівка/картка «платит сам» + payroll-історія
 // з таблиць водія. Готівкові рухи дублюються записами каси (box hostel).

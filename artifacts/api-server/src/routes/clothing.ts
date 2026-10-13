@@ -7,6 +7,7 @@ import { clothingItemsTable, clothingStockTable, clothingTypesTable, workersTabl
 import { and, asc, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import { authRequired, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { workerInScopeSql } from "../lib/scope";
+import { parseInstallments, installmentRows, isMonth } from "../lib/installments";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -30,6 +31,28 @@ const isValidType = async (k: string): Promise<boolean> => {
   const [row] = await db.select({ id: clothingTypesTable.id }).from(clothingTypesTable).where(eq(clothingTypesTable.key, k));
   return !!row;
 };
+
+// Частинами (13.10.2026): ціна речі ділиться на N рядків — сам запис видачі стає
+// частиною 1 (своя сума + due_month), частини 2..N — окремі рядки з part_of
+// (без stock_id — склад мінусується один раз). Повертає всі рядки групи.
+// Викликається всередині транзакції створення запису (exec = tx): до коміту
+// повна ціна батька нікому не видима, тож паралельне перенесення у сводну не
+// зніме її цілком, а збій вставки дітей відкотить і видачу.
+type Exec = Parameters<Parameters<typeof db.transaction>[0]>[0];
+async function splitIntoParts(exec: Exec, parent: typeof clothingItemsTable.$inferSelect, total: number, plan: { parts: number; firstMonth: string }) {
+  const rows = installmentRows(total, plan);
+  if (rows.length <= 1) return [parent];
+  const [first, ...rest] = rows;
+  const [p] = await exec.update(clothingItemsTable)
+    .set({ price: first!.amount, dueMonth: first!.dueMonth, partNo: first!.partNo, partsTotal: first!.partsTotal })
+    .where(eq(clothingItemsTable.id, parent.id)).returning();
+  const children = await exec.insert(clothingItemsTable).values(rest.map(r => ({
+    workerId: parent.workerId, workerName: parent.workerName, itemType: parent.itemType, ownership: parent.ownership,
+    size: parent.size, condition: parent.condition, issuedAt: parent.issuedAt, periodMonth: parent.periodMonth, note: parent.note,
+    price: r.amount, dueMonth: r.dueMonth, partNo: r.partNo, partsTotal: r.partsTotal, partOf: parent.id,
+  }))).returning();
+  return [p!, ...children];
+}
 
 // ─── Довідник типів одягу ────────────────────────────────────────────────────
 
@@ -164,15 +187,24 @@ router.post("/clothing/issue", RW, async (req, res) => {
   const price = b.price !== undefined && b.price !== null && b.price !== ""
     ? (Number(b.price) >= 0 ? r2(Number(b.price)) : null)
     : s.price;
-  await db.update(clothingStockTable).set({ qty: s.qty - 1 }).where(eq(clothingStockTable.id, stockId));
-  const [created] = await db.insert(clothingItemsTable).values({
-    workerId, itemType: s.itemType, stockId, size: s.size, condition: s.condition,
-    ownership: price != null && price > 0 ? "sold" : "ours",
-    price: price != null && price > 0 ? price : null,
-    issuedAt, periodMonth: issuedAt.slice(0, 7),
-    note: String(b.note ?? "").trim() || null,
-  }).returning();
-  ok(res, created);
+  const plan = parseInstallments(b); // частинами: parts (1 = зразу) + firstMonth
+  if (typeof plan === "string") return fail(res, 400, plan);
+  const result = await db.transaction(async (tx) => {
+    await tx.update(clothingStockTable).set({ qty: s.qty - 1 }).where(eq(clothingStockTable.id, stockId));
+    const [created] = await tx.insert(clothingItemsTable).values({
+      workerId, itemType: s.itemType, stockId, size: s.size, condition: s.condition,
+      ownership: price != null && price > 0 ? "sold" : "ours",
+      price: price != null && price > 0 ? price : null,
+      issuedAt, periodMonth: issuedAt.slice(0, 7),
+      note: String(b.note ?? "").trim() || null,
+    }).returning();
+    if (price != null && price > 0 && plan.parts > 1) {
+      const parts = await splitIntoParts(tx, created!, price, plan);
+      return { ...parts[0], parts };
+    }
+    return created;
+  });
+  ok(res, result);
 });
 
 // Повернення: запис отримує дату повернення (незняте перестає бути «до зняття»),
@@ -185,9 +217,15 @@ router.post("/clothing/:id/return", RW, async (req, res) => {
   const [item] = await db.select().from(clothingItemsTable).where(eq(clothingItemsTable.id, id));
   if (!item) return fail(res, 404, "Не знайдено");
   if (item.returnedAt) return fail(res, 400, "Уже повернуто");
+  if (item.partOf != null) return fail(res, 400, "Це частина зняття — повертай основний запис видачі");
   const returnedAt = dateOrToday(req.body?.date);
   const backCondition = req.body?.condition === "new" ? "new" : "used";
   const [u] = await db.update(clothingItemsTable).set({ returnedAt }).where(eq(clothingItemsTable.id, id)).returning();
+  // частини 2..N отримують ту ж дату повернення — і незняті (перестають бути
+  // «до зняття»), і вже зняті (факт повернення переживе очищення сводної, яке
+  // скидає deducted; без дати вони повернулись би в «до зняття»)
+  await db.update(clothingItemsTable).set({ returnedAt })
+    .where(and(eq(clothingItemsTable.partOf, id), isNull(clothingItemsTable.returnedAt)));
   // атрибути цільової позиції: з позиції видачі (stockId) або з самого запису
   const [srcStock] = item.stockId != null
     ? await db.select().from(clothingStockTable).where(eq(clothingStockTable.id, item.stockId))
@@ -237,7 +275,8 @@ router.get("/clothing/pending", async (req, res) => {
     const key = c.workerId != null ? `w${c.workerId}` : `n${(workerName ?? c.workerName ?? "").toLowerCase()}`;
     const g = byWorker.get(key) ?? byWorker.set(key, { workerId: c.workerId, workerName: workerName ?? c.workerName, total: 0, items: [] }).get(key)!;
     g.total = r2(g.total + (c.price ?? 0));
-    g.items.push({ id: c.id, itemType: c.itemType, size: c.size, condition: c.condition, price: c.price, issuedAt: c.issuedAt, note: c.note });
+    g.items.push({ id: c.id, itemType: c.itemType, size: c.size, condition: c.condition, price: c.price, issuedAt: c.issuedAt, note: c.note,
+      dueMonth: c.dueMonth, partNo: c.partNo, partsTotal: c.partsTotal }); // частинами: місяць частини
   }
   ok(res, {
     groups: [...byWorker.values()].sort((a, b) => (a.workerName ?? "").localeCompare(b.workerName ?? "", "pl")),
@@ -278,15 +317,24 @@ router.post("/clothing", RW, async (req, res) => {
   // скоуп-адмін: лише привʼязаний працівник (сирий рядок без workerId йому не бачити й не створювати)
   if (!workerId && (req as AuthedRequest).admin?.scope) return fail(res, 403, "Вкажіть працівника зі свого доступу");
   const ownership = OWNERSHIP.includes(String(b.ownership)) ? String(b.ownership) : null;
-  const [created] = await db.insert(clothingItemsTable).values({
-    workerId, workerName: workerId ? null : String(b.workerName).trim(),
-    itemType, ownership,
-    price: Number(b.price) > 0 ? r2(Number(b.price)) : null,
-    deducted: Boolean(b.deducted),
-    periodMonth: typeof b.month === "string" && /^\d{4}-\d{2}$/.test(b.month) ? b.month : null,
-    note: String(b.note ?? "").trim() || null,
-  }).returning();
-  ok(res, created);
+  const plan = parseInstallments(b); // частинами (лише незняте з ціною)
+  if (typeof plan === "string") return fail(res, 400, plan);
+  const price = Number(b.price) > 0 ? r2(Number(b.price)) : null;
+  const result = await db.transaction(async (tx) => {
+    const [created] = await tx.insert(clothingItemsTable).values({
+      workerId, workerName: workerId ? null : String(b.workerName).trim(),
+      itemType, ownership, price,
+      deducted: Boolean(b.deducted),
+      periodMonth: typeof b.month === "string" && /^\d{4}-\d{2}$/.test(b.month) ? b.month : null,
+      note: String(b.note ?? "").trim() || null,
+    }).returning();
+    if (price != null && !created!.deducted && plan.parts > 1) {
+      const parts = await splitIntoParts(tx, created!, price, plan);
+      return { ...parts[0], parts };
+    }
+    return created;
+  });
+  ok(res, result);
 });
 
 router.patch("/clothing/:id", RW, async (req, res) => {
@@ -305,9 +353,20 @@ router.patch("/clothing/:id", RW, async (req, res) => {
   if (b.condition !== undefined) patch.condition = CONDITIONS.includes(String(b.condition)) ? String(b.condition) : null;
   if (b.issuedAt !== undefined) patch.issuedAt = typeof b.issuedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.issuedAt) ? b.issuedAt : null;
   if (b.returnedAt !== undefined) patch.returnedAt = typeof b.returnedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.returnedAt) ? b.returnedAt : null;
+  if (b.dueMonth !== undefined) patch.dueMonth = isMonth(b.dueMonth) ? b.dueMonth : null; // частинами: місяць частини (NULL = зразу)
   if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
   const [u] = await db.update(clothingItemsTable).set(patch).where(eq(clothingItemsTable.id, id)).returning();
   if (!u) return fail(res, 404, "Не знайдено");
+  // частинами: списання батьківського запису списує його незняті частини; дата
+  // повернення, поставлена вручну, йде на всі частини (як у POST /clothing/:id/return)
+  if (patch.writtenOff === true) {
+    await db.update(clothingItemsTable).set({ writtenOff: true })
+      .where(and(eq(clothingItemsTable.partOf, id), eq(clothingItemsTable.deducted, false)));
+  }
+  if (typeof patch.returnedAt === "string") {
+    await db.update(clothingItemsTable).set({ returnedAt: patch.returnedAt })
+      .where(and(eq(clothingItemsTable.partOf, id), isNull(clothingItemsTable.returnedAt)));
+  }
   ok(res, u);
 });
 

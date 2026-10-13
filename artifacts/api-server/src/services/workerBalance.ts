@@ -13,7 +13,7 @@ import {
   hostelDeductionsTable, transportDeductionsTable, clothingItemsTable,
   type Shift,
 } from "@workspace/db";
-import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { factoryShiftHours, nowWarsaw } from "../bot/time";
 import { entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
@@ -130,8 +130,10 @@ export async function computeWorkerBalance(
       eq(scheduleEntriesTable.absenceExcused, false), isNull(scheduleEntriesTable.absenceDeductedMonth),
     ));
   const absencePenaltiesTotal = r2(absRows.reduce((s, e) => s + (absencePenaltyOf(e) ?? 0), 0));
+  // частинами: частини пізніших місяців у «стан на сьогодні» не входять
   const [bad] = await db.select({ total: sql<number>`coalesce(sum(${workerBadaniaTable.amount}), 0)` }).from(workerBadaniaTable)
-    .where(and(eq(workerBadaniaTable.workerId, workerId), eq(workerBadaniaTable.deducted, false)));
+    .where(and(eq(workerBadaniaTable.workerId, workerId), eq(workerBadaniaTable.deducted, false),
+      or(isNull(workerBadaniaTable.dueMonth), sql`${workerBadaniaTable.dueMonth} <= ${curMonth}`)));
 
   // 4) борг з M−1 (відносно найранішого показаного місяця): рядок сводної з мінусовою виплатою
   const [y, m] = monthsToShow[0]!.split("-").map(Number);
@@ -185,8 +187,11 @@ export async function computeWorkerBalance(
       .groupBy(transportDeductionsTable.periodMonth);
     for (const tr of transport) if (fac?.city !== "Лодзь") push(tr.month, "Dojazd", Number(tr.total));
     // одяг: «маємо зняти», ще не знято — до поточного місяця
+    // критерії «до зняття» ті самі, що в GET /clothing/pending (повернене/списане не рахуємо)
     const [cloth] = await db.select({ total: sql<number>`coalesce(sum(${clothingItemsTable.price}), 0)` })
-      .from(clothingItemsTable).where(and(eq(clothingItemsTable.workerId, workerId), eq(clothingItemsTable.deducted, false)));
+      .from(clothingItemsTable).where(and(eq(clothingItemsTable.workerId, workerId), eq(clothingItemsTable.deducted, false),
+        eq(clothingItemsTable.writtenOff, false), isNull(clothingItemsTable.returnedAt), sql`${clothingItemsTable.price} > 0`,
+        or(isNull(clothingItemsTable.dueMonth), sql`${clothingItemsTable.dueMonth} <= ${curMonth}`)));
     push(curMonth, "Odzież (не знято)", Number(cloth?.total ?? 0));
   }
   const otherTotal = r2(other.reduce((s, o) => s + o.amount, 0));

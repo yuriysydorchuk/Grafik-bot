@@ -17,7 +17,7 @@ import {
   emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
-import { eq, and, or, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
+import { eq, and, or, asc, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
 import { factoryCityMap, isUnder26, canonCity } from "../services/svodniSync";
 import { aliasedTable } from "drizzle-orm";
 import { authRequired, requireRole, requireCap, requireAnyCap, requireMainAdmin, invalidateRolesCache, type AuthedRequest } from "../lib/auth";
@@ -30,6 +30,7 @@ import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
 import { WORKER_FIELD_KEYS } from "../services/workerDocuments";
 import { findWorkerByReferralCode } from "../lib/referral";
+import { parseInstallments, installmentRows, dueBy, isMonth as isYm } from "../lib/installments";
 import { loadCampaignParams } from "../services/referralCampaign";
 import { factoryShiftHours, factoryShifts, nowWarsaw, warsawDayName, warsawDateStr, reportMonthFor } from "../bot/time";
 import { loadWeekShiftOverrides, loadDateShiftOverrides, loadDatesShiftOverrides, overrideFor, shiftOverrideKey, shiftDurationHours, type ShiftOverrideMap } from "../services/shiftOverrides";
@@ -888,11 +889,23 @@ router.post("/workers/:id/badania", ADV, async (req, res) => {
   const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return fail(res, 404, "Працівника не знайдено");
   const enteredAt = typeof req.body?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date) ? req.body.date : warsawToday();
-  const [created] = await db.insert(workerBadaniaTable).values({
-    workerId, amount: Math.round(amount * 100) / 100, enteredAt,
-    note: strOrNull(req.body?.note),
-  }).returning();
-  ok(res, created);
+  // частинами (13.10.2026): body.parts (1 = зразу) + body.firstMonth → N рядків зі
+  // своїм due_month; перенесення у сводну бере лише частини, чий місяць настав
+  const plan = parseInstallments(req.body);
+  if (typeof plan === "string") return fail(res, 400, plan);
+  const note = strOrNull(req.body?.note);
+  const created = await db.transaction(async (tx) => { // частини + part_group атомарно
+    const rows = await tx.insert(workerBadaniaTable).values(installmentRows(amount, plan).map(p => ({
+      workerId, amount: p.amount, enteredAt, note, dueMonth: p.dueMonth, partNo: p.partNo, partsTotal: p.partsTotal,
+    }))).returning();
+    if (rows.length > 1) {
+      await tx.update(workerBadaniaTable).set({ partGroup: rows[0]!.id })
+        .where(inArray(workerBadaniaTable.id, rows.map(c => c.id)));
+      for (const c of rows) c.partGroup = rows[0]!.id; // ехо після апдейту
+    }
+    return rows;
+  });
+  ok(res, created.length === 1 ? created[0] : { ...created[0], parts: created });
 });
 
 router.patch("/worker-badania/:id", ADV, async (req, res) => {
@@ -917,6 +930,10 @@ router.patch("/worker-badania/:id", ADV, async (req, res) => {
     patch.deductedAt = d ? warsawToday() : null; // дата «знято» живе разом зі статусом
   }
   if (req.body?.note !== undefined) patch.note = strOrNull(req.body.note);
+  if (req.body?.dueMonth !== undefined) { // місяць частини (NULL = зразу)
+    if (req.body.dueMonth != null && req.body.dueMonth !== "" && !isYm(req.body.dueMonth)) return fail(res, 400, "dueMonth=YYYY-MM");
+    patch.dueMonth = isYm(req.body.dueMonth) ? req.body.dueMonth : null;
+  }
   if (!Object.keys(patch).length) return fail(res, 400, "нема що оновлювати");
   const [u] = await db.update(workerBadaniaTable).set(patch).where(eq(workerBadaniaTable.id, id)).returning();
   ok(res, u);
@@ -937,11 +954,12 @@ router.get("/badania/pending", ADV, async (req, res) => {
     .from(workerBadaniaTable)
     .innerJoin(workersTable, eq(workerBadaniaTable.workerId, workersTable.id))
     .where(and(eq(workerBadaniaTable.deducted, false), scope ? workerInScopeSql(scope, workerBadaniaTable.workerId) : undefined))
-    .orderBy(workersTable.fullName, desc(workerBadaniaTable.enteredAt));
+    .orderBy(workersTable.fullName, desc(workerBadaniaTable.enteredAt), workerBadaniaTable.partNo);
   ok(res, {
     rows: rows.map(({ b, workerName, nationality }) => ({
       id: b.id, workerId: b.workerId, workerName, nationality,
       amount: b.amount, enteredAt: b.enteredAt, note: b.note,
+      dueMonth: b.dueMonth, partNo: b.partNo, partsTotal: b.partsTotal, // частинами: місяць частини
     })),
     total: Math.round(rows.reduce((s, { b }) => s + b.amount, 0) * 100) / 100,
   });
@@ -961,6 +979,7 @@ router.get("/badania/deducted", ADV, async (req, res) => {
     rows: rows.map(({ b, workerName, nationality }) => ({
       id: b.id, workerId: b.workerId, workerName, nationality,
       amount: b.amount, enteredAt: b.enteredAt, deductedAt: b.deductedAt, deductedMonth: b.deductedMonth, note: b.note,
+      dueMonth: b.dueMonth, partNo: b.partNo, partsTotal: b.partsTotal,
     })),
     total: Math.round(rows.reduce((s, { b }) => s + b.amount, 0) * 100) / 100,
   });
@@ -1235,8 +1254,10 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // полями і затирала б їх при збереженні
     gratyfikantName: w.gratyfikantName, pesel: w.pesel, middleName: w.middleName,
     // залічки за бадання — список записів (окрема таблиця, CRUD нижче)
+    // частини однієї залічки — поруч і по порядку (1/6, 2/6, …), новіші групи першими
     badania: await db.select().from(workerBadaniaTable)
-      .where(eq(workerBadaniaTable.workerId, id)).orderBy(desc(workerBadaniaTable.enteredAt), desc(workerBadaniaTable.id)),
+      .where(eq(workerBadaniaTable.workerId, id))
+      .orderBy(desc(workerBadaniaTable.enteredAt), sql`coalesce(${workerBadaniaTable.partGroup}, ${workerBadaniaTable.id}) desc`, asc(workerBadaniaTable.partNo), desc(workerBadaniaTable.id)),
     nationality: w.nationality,
     status: w.status, isActive: w.isActive, createdAt: w.createdAt, firedAt: w.firedAt,
     doNotHire: w.doNotHire, doNotHireReason: w.doNotHireReason, doNotHireAt: w.doNotHireAt,

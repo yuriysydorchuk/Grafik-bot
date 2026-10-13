@@ -377,7 +377,7 @@ export default function Advances() {
 }
 
 // ─── Бадання до зняття: незняті залічки за медогляд → Zaliczka BD сводної ────
-type BadaniaPendingRow = { id: number; workerId: number; workerName: string; nationality: string | null; amount: number; enteredAt: string; note: string | null };
+type BadaniaPendingRow = { id: number; workerId: number; workerName: string; nationality: string | null; amount: number; enteredAt: string; note: string | null; dueMonth: string | null; partNo: number | null; partsTotal: number | null };
 type BadaniaDeductedRow = BadaniaPendingRow & { deductedAt: string | null; deductedMonth: string | null };
 const curMonthWarsaw = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Warsaw" }).slice(0, 7);
 const fmtDateStr = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
@@ -468,7 +468,7 @@ function BadaniaDeductedList() {
                 <Link href={`/workers/${r.workerId}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName}</Link>
                 <NatFlag value={r.nationality} className="ml-1 cursor-default" />
               </td>
-              <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+              <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł{r.partNo != null && r.partsTotal != null && <span className="ml-1 text-xs font-normal text-slate-400">{r.partNo}/{r.partsTotal}</span>}</td>
               <td className="px-3 py-2 tabular-nums text-slate-500">{fmtDateStr(r.enteredAt)}</td>
               <td className="px-3 py-2 text-slate-600">
                 {r.deductedAt ? fmtDateStr(r.deductedAt) : "—"}
@@ -503,8 +503,10 @@ function BadaniaTab() {
   const { data, isLoading } = useQuery<{ rows: BadaniaPendingRow[]; total: number }>({
     queryKey: ["badania-pending"], queryFn: () => get("/badania/pending"),
   });
-  // типово вибрані всі — «перенести всі» це просто кнопка без зняття галочок
-  useEffect(() => { if (data) setSel(new Set(data.rows.map(r => r.id))); }, [data]);
+  // типово вибрані всі, що НАСТАЛИ для вибраного місяця (частини пізніших
+  // місяців — без галочки, але їх можна вибрати руками)
+  const isDue = (r: BadaniaPendingRow) => r.dueMonth == null || r.dueMonth <= month;
+  useEffect(() => { if (data) setSel(new Set(data.rows.filter(isDue).map(r => r.id))); }, [data, month]);
   const toggle = (id: number) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allSelected = (data?.rows.length ?? 0) > 0 && sel.size === data!.rows.length;
   const selSum = r2((data?.rows ?? []).filter(r => sel.has(r.id)).reduce((a, r) => a + r.amount, 0));
@@ -588,13 +590,14 @@ function BadaniaTab() {
                 </th>
                 <th className="px-3 py-2.5">{t("Працівник")}</th>
                 <th className="px-3 py-2.5 text-right">{t("Сума")}</th>
+                <th className="px-3 py-2.5">{t("Частина")}</th>
                 <th className="px-3 py-2.5">{t("вписано")}</th>
                 <th className="px-3 py-2.5">{t("Нотатка")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {data.rows.map(r => (
-                <tr key={r.id} className="cursor-pointer hover:bg-slate-50" onClick={() => toggle(r.id)}>
+                <tr key={r.id} className={`cursor-pointer hover:bg-slate-50 ${isDue(r) ? "" : "text-slate-400"}`} onClick={() => toggle(r.id)}>
                   <td className="px-3 py-2"><input type="checkbox" className="accent-red-600" checked={sel.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} /></td>
                   <td className="px-3 py-2">
                     <Link href={`/workers/${r.workerId}`} onClick={e => e.stopPropagation()}
@@ -602,6 +605,12 @@ function BadaniaTab() {
                     <NatFlag value={r.nationality} className="ml-1 cursor-default" />
                   </td>
                   <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{r.amount} zł</td>
+                  <td className="px-3 py-2 text-xs">
+                    {r.partNo != null && r.partsTotal != null ? `${r.partNo}/${r.partsTotal}` : ""}
+                    {r.dueMonth && (isDue(r)
+                      ? <span className="ml-1 text-slate-400">{r.dueMonth}</span>
+                      : <span className="ml-1 align-middle"><Badge color="amber">{t("з")} {r.dueMonth}</Badge></span>)}
+                  </td>
                   <td className="px-3 py-2 tabular-nums text-slate-500">{fmtD(r.enteredAt)}</td>
                   <td className="max-w-50 truncate px-3 py-2 text-xs text-slate-400" title={r.note ?? undefined}>{r.note ?? ""}</td>
                 </tr>

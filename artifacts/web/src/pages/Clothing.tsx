@@ -15,18 +15,21 @@ import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { IssueClothingModal, ReturnClothingModal } from "./WorkerDetail";
 import { useClothingTypes, type ClothingType } from "../lib/clothingTypes";
+import { InstallmentPicker, defaultPlan } from "../components/InstallmentPicker";
+import { fmtMonthShort } from "../lib/installments";
 
 type Item = {
   id: number; workerId: number | null; workerName: string | null; itemType: string;
   ownership: string | null; price: number | null; deducted: boolean; writtenOff: boolean; periodMonth: string | null; note: string | null;
   stockId: number | null; size: string | null; condition: string | null;
   issuedAt: string | null; returnedAt: string | null; deductedAmount: number | null; deductedMonth: string | null;
+  dueMonth?: string | null; partNo?: number | null; partsTotal?: number | null; partOf?: number | null;
 };
 type StockRow = {
   id: number; itemType: string; name: string | null; size: string | null; condition: string;
   price: number | null; qty: number; note: string | null; isActive: boolean;
 };
-type PendingGroup = { workerId: number | null; workerName: string | null; total: number; items: { id: number; itemType: string; size: string | null; condition: string | null; price: number | null; issuedAt: string | null; note: string | null }[] };
+type PendingGroup = { workerId: number | null; workerName: string | null; total: number; items: { id: number; itemType: string; size: string | null; condition: string | null; price: number | null; issuedAt: string | null; note: string | null; dueMonth?: string | null; partNo?: number | null; partsTotal?: number | null }[] };
 
 const fmtPln = (n: number) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtD = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
@@ -117,7 +120,7 @@ function IssuedTab() {
                     <WorkerCell workerId={i.workerId} workerName={i.workerName} />
                     {i.workerId == null && <span className="ml-1"><Badge color="amber">{t("не привʼязано")}</Badge></span>}
                   </td>
-                  <td className="px-3 py-2 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}</td>
+                  <td className="px-3 py-2 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}{i.partNo != null && i.partsTotal != null && <span className="ml-1 text-xs text-slate-400">({t("частина")} {i.partNo}/{i.partsTotal})</span>}</td>
                   <td className="px-3 py-2">{i.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : i.condition === "used" ? <Badge color="slate">{t("БУ")}</Badge> : "—"}</td>
                   <td className="px-3 py-2">
                     {i.ownership === "ours" ? <Badge color="blue">{t("наш")}</Badge>
@@ -136,14 +139,14 @@ function IssuedTab() {
                       ) : i.returnedAt ? <span className="text-xs text-slate-400">{t("повернуто без зняття")}</span>
                       : i.price != null ? (
                         <button onClick={() => toggleDeducted.mutate(i)} title={t("Клікни, щоб перемкнути")}>
-                          <Badge color="rose">{t("ще ні")}</Badge>
+                          <Badge color="rose">{t("ще ні")}{i.dueMonth ? ` · ${t("з")} ${fmtMonthShort(i.dueMonth)}` : ""}</Badge>
                         </button>
                       ) : "—"}
                   </td>
                   <td className="max-w-40 truncate px-3 py-2 text-xs text-slate-400" title={i.note ?? undefined}>{i.note ?? ""}</td>
                   <td className="px-3 py-2 text-right">
                     <div className="flex justify-end gap-1">
-                      {!i.returnedAt && (
+                      {!i.returnedAt && i.partOf == null && (
                         <button title={t("Повернення")} onClick={() => setReturning(i)}
                           className="rounded-lg px-1.5 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700">↩</button>
                       )}
@@ -383,13 +386,14 @@ function PendingTab() {
     queryKey: ["clothing-pending"], queryFn: () => get("/clothing/pending"),
   });
   const apply = useMutation({
-    mutationFn: () => post<{ updated: number; itemsMarked: number; verified: number; verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; amount: number }[] }>(
+    mutationFn: () => post<{ updated: number; itemsMarked: number; verified: number; verifyMismatches: { workerName: string; factoryLabel: string; expected: number | null; actual: number | null }[]; skippedLocked: number; unmatched: { workerName: string | null; amount: number }[]; deferred?: number }>(
       "/svodni/apply-clothing-deductions", { month }),
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: ["clothing-pending"] });
       qc.invalidateQueries({ queryKey: ["clothing"] });
       const parts = [`${t("оновлено рядків")}: ${d.updated}`, `${t("позицій знято")}: ${d.itemsMarked}`, `${t("звірено")}: ${d.verified - d.verifyMismatches.length}/${d.verified} ✓`];
       if (d.skippedLocked) parts.push(`${t("пропущено затверджених")}: ${d.skippedLocked}`);
+      if (d.deferred) parts.push(`${t("частин пізніших місяців лишилось")}: ${d.deferred}`);
       toast.success(t("Перенесено до сводної"), { description: parts.join(", ") });
       if (d.verifyMismatches.length) {
         toast.error(`${t("Самозвірка не зійшлася")}: ${d.verifyMismatches.length}`, {
@@ -442,7 +446,11 @@ function PendingTab() {
                 <tbody className="divide-y divide-slate-100">
                   {g.items.map(i => (
                     <tr key={i.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-1.5 text-slate-600">{t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}{i.condition === "used" && <span className="ml-1.5 align-middle"><Badge color="slate">{t("БУ")}</Badge></span>}</td>
+                      <td className="px-4 py-1.5 text-slate-600">
+                        {t(labelOf(i.itemType))}{i.size && <span className="text-slate-400"> · {i.size}</span>}{i.condition === "used" && <span className="ml-1.5 align-middle"><Badge color="slate">{t("БУ")}</Badge></span>}
+                        {i.partNo != null && i.partsTotal != null && <span className="ml-1 text-xs text-slate-400">({t("частина")} {i.partNo}/{i.partsTotal})</span>}
+                        {i.dueMonth && i.dueMonth > month && <span className="ml-1.5 align-middle"><Badge color="amber">{t("з")} {fmtMonthShort(i.dueMonth)}</Badge></span>}
+                      </td>
                       <td className="px-4 py-1.5 tabular-nums text-slate-500">{i.issuedAt ? fmtD(i.issuedAt) : "—"}</td>
                       <td className="px-4 py-1.5 text-right tabular-nums text-slate-700">{i.price != null ? fmtPln(i.price) : "—"} зл</td>
                     </tr>
@@ -512,6 +520,7 @@ function ItemModal({ item, onClose, onSaved }: { item?: Item; onClose: () => voi
     writtenOff: item?.writtenOff ?? false,
     month: item?.periodMonth ?? "", note: item?.note ?? "", size: item?.size ?? "",
   });
+  const [plan, setPlan] = useState(defaultPlan()); // лише при створенні незнятого з ціною
   const set = (k: keyof typeof f) => (e: any) => setF(s => ({ ...s, [k]: e.target?.type === "checkbox" ? e.target.checked : e.target.value }));
 
   const save = useMutation({
@@ -521,6 +530,7 @@ function ItemModal({ item, onClose, onSaved }: { item?: Item; onClose: () => voi
         itemType: f.itemType, ownership: f.ownership || null,
         price: f.price ? Number(f.price) : null, deducted: f.deducted, writtenOff: f.writtenOff,
         month: f.month || null, note: f.note, size: f.size,
+        ...(isEdit ? {} : { parts: plan.parts, firstMonth: plan.firstMonth }),
       };
       return isEdit ? patch(`/clothing/${item!.id}`, body) : post("/clothing", body);
     },
@@ -554,6 +564,7 @@ function ItemModal({ item, onClose, onSaved }: { item?: Item; onClose: () => voi
           <div><Label>{t("Ціна, зл")}</Label><Input type="number" value={f.price} onChange={set("price")} /></div>
           <div><Label>{t("Місяць")}</Label><Input type="month" value={f.month} onChange={set("month")} /></div>
         </div>
+        {!isEdit && !f.deducted && Number(f.price) > 0 && <InstallmentPicker value={plan} onChange={setPlan} amount={Number(f.price)} />}
         <div className="flex gap-4">
           <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600">
             <input type="checkbox" checked={f.deducted} onChange={set("deducted")} className="accent-red-600" /> {t("знято")}

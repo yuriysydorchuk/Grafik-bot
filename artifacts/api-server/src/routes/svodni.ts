@@ -8,6 +8,7 @@ import { db } from "@workspace/db";
 import { svodniRowsTable, svodniTabChecksTable, svodniTabMetaTable, svodniLocksTable, svodniClearsTable, workersTable, factoriesTable, factoryPositionsTable, factoryPayoutRulesTable, companiesTable, hostelDeductionsTable, advanceRequestsTable, positionsTable, workerChangesTable, factoryHoursTable, adminsTable, penaltiesTable, scheduleEntriesTable, scheduleWeeksTable, gratyfikantUmowyTable, workerFactoryCodesTable } from "@workspace/db";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { dueBy } from "../lib/installments";
 import { hasCap } from "../lib/roles";
 import { svodniCityAllowed, svodniRowAllowed, svodniRowInScopeSql, svodniClearAllowed, workersInScope, workerInScopeSql, type AdminScope } from "../lib/scope";
 import { logger } from "../lib/logger";
@@ -3236,11 +3237,14 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
   if (!month) return fail(res, 400, "month=YYYY-MM required");
   const rowOk = rowOkFor(req);
   const { clothingItemsTable } = await import("@workspace/db");
-  const items = await db.select().from(clothingItemsTable).where(and(
+  const allPending = await db.select().from(clothingItemsTable).where(and(
     eq(clothingItemsTable.deducted, false), eq(clothingItemsTable.writtenOff, false),
     isNull(clothingItemsTable.returnedAt), sql`${clothingItemsTable.price} is not null and ${clothingItemsTable.price} > 0`,
   ));
-  if (!items.length) return fail(res, 400, "немає одягу до зняття");
+  // частинами: частина з due_month пізнішим за місяць сводної ще не настала — лишається «до зняття»
+  const items = allPending.filter(it => dueBy(it.dueMonth, month));
+  const deferred = allPending.length - items.length;
+  if (!items.length) return fail(res, 400, deferred ? `немає одягу до зняття за ${month} (${deferred} частин — пізніших місяців)` : "немає одягу до зняття");
   const r2 = (n: number) => Math.round(n * 100) / 100;
   const unmatched: { workerName: string | null; amount: number }[] = [];
   const byWorker = new Map<number, { amount: number; itemIds: number[] }>();
@@ -3257,6 +3261,16 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
   const workerIds = [...byWorker.keys()];
   const workers = workerIds.length ? await db.select().from(workersTable).where(inArray(workersTable.id, workerIds)) : [];
   const wById = new Map(workers.map(w => [w.id, w]));
+  // уже перенесене в ЦЕЙ місяць раніше (ревʼю 13.10.2026): Odzież переписується
+  // повністю, тож без цього повторний прогін (додали ще річ) затирав попереднє
+  // зняття, хоча обидві позиції стояли «знято»
+  const already = workerIds.length ? await db.select({
+    workerId: clothingItemsTable.workerId,
+    total: sql<number>`coalesce(sum(coalesce(${clothingItemsTable.deductedAmount}, ${clothingItemsTable.price})), 0)`,
+  }).from(clothingItemsTable).where(and(
+    eq(clothingItemsTable.deducted, true), eq(clothingItemsTable.deductedMonth, month), inArray(clothingItemsTable.workerId, workerIds),
+  )).groupBy(clothingItemsTable.workerId) : [];
+  const alreadyByWorker = new Map(already.map(a => [a.workerId!, r2(Number(a.total))]));
 
   let updated = 0, skippedLocked = 0;
   const markedItemIds: number[] = [];
@@ -3271,7 +3285,8 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
     if (isLocked(locks, row.city, row.factoryLabel)) { skippedLocked++; continue; }
     // перенесений з M−1 борг в Odzież (extras.debtIn) — не затирається авто-переносом
     const odziezDebt = typeof (row.extras as any)?.debtIn?.cols?.odziez === "number" ? (row.extras as any).debtIn.cols.odziez as number : 0;
-    const amount = agg.amount + odziezDebt !== 0 ? r2(agg.amount + odziezDebt) : null;
+    const total = r2(agg.amount + odziezDebt + (alreadyByWorker.get(workerId) ?? 0));
+    const amount = total !== 0 ? total : null;
 
     // порізаний на сегменти рядок: Odzież — місячний ввід на батькові
     const [segMark] = await db.select({ id: svodniRowsTable.id }).from(svodniRowsTable)
@@ -3323,7 +3338,7 @@ router.post("/svodni/apply-clothing-deductions", requireCap("svodni"), async (re
       }
     }
   }
-  ok(res, { month, updated, itemsMarked: markedItemIds.length, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched });
+  ok(res, { month, updated, itemsMarked: markedItemIds.length, verified: expectedRows.length, verifyMismatches, skippedLocked, unmatched, deferred });
 });
 
 // Перенесення залічок за бадання у колонку Zaliczka BD сводної місяця.
@@ -3337,8 +3352,10 @@ router.post("/svodni/apply-badania-deductions", requireCap("svodni"), async (req
     ? req.body.ids.map(Number).filter(Number.isFinite) : null;
   const rowOk = rowOkFor(req);
   const { workerBadaniaTable } = await import("@workspace/db");
+  // частинами: без явних ids беремо лише частини, чий due_month настав (явний
+  // вибір галочками — рішення людини, не фільтруємо)
   const items = (await db.select().from(workerBadaniaTable).where(eq(workerBadaniaTable.deducted, false)))
-    .filter(b => onlyIds == null || onlyIds.includes(b.id));
+    .filter(b => onlyIds == null ? dueBy(b.dueMonth, month) : onlyIds.includes(b.id));
   if (!items.length) return fail(res, 400, "немає залічок за бадання до зняття");
   if (!(await sourcesAllowed(req, items.map(b => b.workerId)))) return scopeFail(res);
   const r2 = (n: number) => Math.round(n * 100) / 100;

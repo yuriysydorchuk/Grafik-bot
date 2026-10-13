@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { WorkerPayCard } from "../components/WorkerPayCard";
 import { ZoomImage } from "../components/ZoomImage";
+import { InstallmentPicker, defaultPlan } from "../components/InstallmentPicker";
+import { fmtMonthShort } from "../lib/installments";
 import { useRoute, Link } from "wouter";
 import { useBack } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -47,7 +49,7 @@ import { TAX_OFFICES } from "../lib/taxOffices";
 import { NFZ_BRANCHES } from "../lib/nfzBranches";
 import { peselCheck, fmtPeselDate } from "../lib/pesel";
 
-type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null };
+type BadaniaEntry = { id: number; amount: number; enteredAt: string; deducted: boolean; deductedAt: string | null; note: string | null; dueMonth?: string | null; partNo?: number | null; partsTotal?: number | null };
 
 interface WorkerProfile {
   id: number; fullName: string; workerCode: string | null; telegramId: string | null;
@@ -3433,10 +3435,11 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
   const confirm = useConfirm();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [plan, setPlan] = useState(defaultPlan()); // зразу / 2–3 місяці / N частин
   const inv = () => qc.invalidateQueries({ queryKey: ["worker"] });
   const add = useMutation({
-    mutationFn: () => post(`/workers/${workerId}/badania`, { amount: Number(draft) }),
-    onSuccess: () => { inv(); setAdding(false); setDraft(""); },
+    mutationFn: () => post(`/workers/${workerId}/badania`, { amount: Number(draft), parts: plan.parts, firstMonth: plan.firstMonth }),
+    onSuccess: () => { inv(); setAdding(false); setDraft(""); setPlan(defaultPlan()); },
     onError: (e: any) => toast.error(e.message),
   });
   const toggle = useMutation({
@@ -3453,6 +3456,11 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
       {entries.map(b => (
         <span key={b.id} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-1.5 py-0.5">
           <span className="font-medium text-slate-700">{b.amount} зл</span>
+          {b.partNo != null && b.partsTotal != null && (
+            <span className="text-xs text-slate-500" title={b.dueMonth ? `${t("частина")} ${b.partNo}/${b.partsTotal} · ${t("з")} ${b.dueMonth}` : undefined}>
+              {b.partNo}/{b.partsTotal}{b.dueMonth && !b.deducted ? ` · ${t("з")} ${fmtMonthShort(b.dueMonth)}` : ""}
+            </span>
+          )}
           <span className="text-xs text-slate-400" title={`${t("вписано")} ${b.enteredAt}`}>{fmtD(b.enteredAt)}</span>
           <button title={t("Клікни, щоб перемкнути")} onClick={() => toggle.mutate(b)}>
             {b.deducted
@@ -3464,12 +3472,13 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
         </span>
       ))}
       {adding ? (
-        <span className="flex items-center gap-1">
+        <span className="flex flex-wrap items-center gap-1">
           <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)} autoFocus
             onKeyDown={e => { if (e.key === "Enter" && Number(draft) > 0) add.mutate(); }}
             className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" placeholder={t("сума")} />
+          <InstallmentPicker compact value={plan} onChange={setPlan} amount={Number(draft) || 0} />
           <button className="text-xs font-medium text-emerald-600" onClick={() => Number(draft) > 0 && add.mutate()}>{t("Зберегти")}</button>
-          <button className="text-xs text-slate-400" onClick={() => { setAdding(false); setDraft(""); }}>{t("Скасувати")}</button>
+          <button className="text-xs text-slate-400" onClick={() => { setAdding(false); setDraft(""); setPlan(defaultPlan()); }}>{t("Скасувати")}</button>
         </span>
       ) : (
         <button className="text-xs font-medium text-slate-400 hover:text-red-600" onClick={() => setAdding(true)}>+ {t("додати")}</button>
@@ -3818,6 +3827,7 @@ type WorkerClothingItem = {
   id: number; itemType: string; size: string | null; condition: string | null; ownership: string | null;
   price: number | null; deducted: boolean; deductedAmount: number | null; deductedMonth: string | null;
   writtenOff: boolean; issuedAt: string | null; returnedAt: string | null; periodMonth: string | null; note: string | null;
+  dueMonth?: string | null; partNo?: number | null; partsTotal?: number | null; partOf?: number | null;
 };
 type ClothingStockRow = { id: number; itemType: string; name: string | null; size: string | null; condition: string; price: number | null; qty: number; isActive: boolean };
 
@@ -3859,6 +3869,7 @@ function WorkerClothing({ workerId }: { workerId: number }) {
                   <td className="px-4 py-2 font-medium text-slate-700">
                     {t(labelOf(i.itemType))}
                     {i.size && <span className="ml-1 text-slate-400">· {i.size}</span>}
+                    {i.partNo != null && i.partsTotal != null && <span className="ml-1 text-xs text-slate-500">({t("частина")} {i.partNo}/{i.partsTotal})</span>}
                     {i.condition && <span className="ml-1.5 align-middle">{i.condition === "new" ? <Badge color="blue">{t("новий")}</Badge> : <Badge color="slate">{t("БУ")}</Badge>}</span>}
                     {i.writtenOff && <span className="ml-1.5 align-middle"><Badge color="slate">{t("списано")}</Badge></span>}
                   </td>
@@ -3869,10 +3880,10 @@ function WorkerClothing({ workerId }: { workerId: number }) {
                     {i.deducted
                       ? <Badge color="green">{(i.deductedAmount ?? i.price)?.toFixed(2)} зл{i.deductedMonth ? ` · ${i.deductedMonth}` : ""}</Badge>
                       : i.returnedAt ? <span className="text-xs text-slate-400">{t("повернуто без зняття")}</span>
-                      : i.price != null ? <Badge color="rose">{t("ще ні")}</Badge> : "—"}
+                      : i.price != null ? <Badge color="rose">{t("ще ні")}{i.dueMonth ? ` · ${t("з")} ${fmtMonthShort(i.dueMonth)}` : ""}</Badge> : "—"}
                   </td>
                   <td className="px-2 py-2 text-right">
-                    {!i.returnedAt && (
+                    {!i.returnedAt && i.partOf == null && (
                       <button className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                         onClick={() => setReturning(i)}>
                         ↩ {t("Повернення")}
@@ -3940,6 +3951,7 @@ export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: 
   const [price, setPrice] = useState("");
   const [date, setDate] = useState(new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }));
   const [note, setNote] = useState("");
+  const [plan, setPlan] = useState(defaultPlan()); // як знімати: зразу / 2–3 місяці / N частин
   const [pickedWorker, setPickedWorker] = useState("");
   const { data: workers = [] } = useQuery<{ id: number; fullName: string }[]>({
     queryKey: ["workers-light"], queryFn: () => get("/workers"), enabled: workerId == null,
@@ -3953,6 +3965,7 @@ export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: 
     mutationFn: () => post("/clothing/issue", {
       stockId: Number(stockId), workerId: targetWorkerId,
       ...(price.trim() !== "" ? { price: Number(price) } : {}), date, note,
+      parts: plan.parts, firstMonth: plan.firstMonth,
     }),
     onSuccess: () => { toast.success(t("Видано")); onSaved(); },
     onError: (e: any) => toast.error(e.message),
@@ -3980,6 +3993,9 @@ export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: 
           </div>
           <div><Label>{t("Дата видачі")}</Label><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></div>
         </div>
+        {(price.trim() !== "" ? Number(price) : sel?.price ?? 0) > 0 && (
+          <InstallmentPicker value={plan} onChange={setPlan} amount={price.trim() !== "" ? Number(price) : sel?.price ?? 0} />
+        )}
         <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
