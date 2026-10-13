@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useSessionState } from "../lib/nav";
+import { matchesQuery } from "../components/SearchBox";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
@@ -122,7 +123,8 @@ export default function Workers() {
       return true;
     })()) &&
     (!expiringOnly || (() => { const d = daysUntil(w.legality?.nextExpiryAt); return d != null && d <= 30; })()) &&
-    (!q || w.fullName.toLowerCase().includes(q.toLowerCase()) || (w.workerCode ?? "").includes(q))
+    // по словах у будь-якому порядку й без діакритики («Sithole Tanatswa» знаходить «TANATSWA SITHOLE»)
+    (!q || matchesQuery(q, w.fullName, w.workerCode))
   ), [workers, q, facFilter, coFilter, posFilter, legFilter, natFilter, stud26Only, docLegFilter, umowaFilter, expiringOnly, mode]);
 
   if (isLoading) return <Spinner />;

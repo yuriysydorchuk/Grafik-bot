@@ -114,6 +114,8 @@ const SCOPE_RULES: Rule[] = [
   R("GET", /^\/notifications$/, { kind: "free" }),
   R("GET", /^\/legalization\/(globals|status-map)$/, { kind: "free" }),
   R("GET", /^\/(workers|legalization|factories)$/, { kind: "free" }),
+  // глобальний пошук (routes/search.ts) — групи фільтрує сам хендлер по скоупу (до 13.10.2026 скоуп-адмін діставав 403 → порожній пошук)
+  R("GET", /^\/search$/, { kind: "free" }),
   // Лінк скану для нового кандидата — factoryId у тілі обовʼязковий (перевіряє body-гейт)
   R("POST", /^\/workers\/scan-invite$/, { kind: "free" }),
   // Профіль і все під ним

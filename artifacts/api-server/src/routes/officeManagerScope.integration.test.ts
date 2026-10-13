@@ -36,6 +36,21 @@ test("скоуп: список працівників і фабрик — лиш
   assert.deepEqual(fs.body.map((f: any) => f.id), [poz.id]);
 });
 
+// 13.10.2026: глобальний пошук (Ctrl+K) для скоуп-адміна давав 403 → порожнє поле; імʼя шукається по словах у будь-якому порядку
+test("скоуп: глобальний пошук — 200, лише свої люди/фабрики, слова імені в будь-якому порядку", opts, async () => {
+  const { om, main, wPoz, wLodz } = await world();
+  const mine = await request(app).get("/api/search?q=poz%20anna").set("Cookie", om.cookie);
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.body.hits.filter((h: any) => h.kind === "worker").map((h: any) => h.id), [wPoz.id]);
+  // роль без сторінки /factories — групи фабрик у пошуку нема взагалі (гейт по roles.pages лишається)
+  assert.equal(mine.body.hits.filter((h: any) => h.kind === "factory").length, 0);
+  const other = await request(app).get("/api/search?q=Olek").set("Cookie", om.cookie);
+  assert.equal(other.status, 200);
+  assert.equal(other.body.hits.length, 0, "чужа людина у пошуку скоуп-адміна");
+  const all = await request(app).get("/api/search?q=Lodz%20Olek").set("Cookie", main.cookie);
+  assert.deepEqual(all.body.hits.filter((h: any) => h.kind === "worker").map((h: any) => h.id), [wLodz.id]);
+});
+
 test("скоуп: профіль працівника іншого міста — 403, свого — 200", opts, async () => {
   const { om, wPoz, wLodz } = await world();
   assert.equal((await request(app).get(`/api/workers/${wPoz.id}`).set("Cookie", om.cookie)).status, 200);
