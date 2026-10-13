@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { post, type Me } from "./api";
 import { useMe } from "./hooks";
 
@@ -9,12 +9,28 @@ import { useMe } from "./hooks";
 // не критичний, наступний drag перепише).
 // POST-и одного ключа — послідовно: при швидких кліках старіший запит міг би
 // прийти на сервер останнім і затерти новіший стан. Помилку лише логуємо.
+// Після останнього POST у черзі — перечитати ["me"]: значення пишеться цілим
+// набором зі стану кешу, тож стейл-кеш (друга вкладка, refetch у польоті під
+// час оптимістичного запису) інакше показував би старий стан і наступним кліком
+// затирав чужу зміну (13.10.2026: у Роми «повернулась» схована колонка).
+// Перечитуємо лише коли НЕ лишилось жодного POST у польоті (по всіх ключах):
+// інакше GET після ключа A повернув би ще старе значення ключа B, чий POST
+// ще йде, і затер би його оптимістичний стан.
 const prefQueues = new Map<string, Promise<unknown>>();
-function postPref(key: string, value: unknown) {
+let prefInFlight = 0;
+function postPref(qc: QueryClient, key: string, value: unknown) {
+  prefInFlight++;
   const next = (prefQueues.get(key) ?? Promise.resolve())
     .then(() => post("/auth/web-prefs", { key, value }))
-    .catch(e => console.warn("web-prefs save failed", key, e));
+    .catch(e => console.warn("web-prefs save failed", key, e))
+    .then(() => { if (--prefInFlight === 0) void qc.invalidateQueries({ queryKey: ["me"] }); });
   prefQueues.set(key, next);
+}
+// оптимістичний запис у кеш: спершу скасувати refetch у польоті, інакше його
+// (старіша) відповідь перекрила б щойно записане значення
+function setPrefCache(qc: QueryClient, key: string, next: unknown) {
+  void qc.cancelQueries({ queryKey: ["me"] });
+  qc.setQueryData<Me>(["me"], m => m ? { ...m, prefs: { ...(m.prefs ?? {}), [key]: next } } : m);
 }
 
 export function useOrderPref(key: string): [string[], (next: string[]) => void] {
@@ -23,8 +39,8 @@ export function useOrderPref(key: string): [string[], (next: string[]) => void] 
   const raw = me?.prefs?.[key];
   const order = Array.isArray(raw) ? (raw as string[]) : [];
   const save = useCallback((next: string[]) => {
-    qc.setQueryData<Me>(["me"], m => m ? { ...m, prefs: { ...(m.prefs ?? {}), [key]: next } } : m);
-    postPref(key, next);
+    setPrefCache(qc, key, next);
+    postPref(qc, key, next);
   }, [key, qc]);
   return [order, save];
 }
@@ -37,8 +53,8 @@ export function useJsonPref<T>(key: string, fallback: T): [T, (next: T) => void]
   const raw = me?.prefs?.[key];
   const value = raw === undefined || raw === null ? fallback : (raw as T);
   const save = useCallback((next: T) => {
-    qc.setQueryData<Me>(["me"], m => m ? { ...m, prefs: { ...(m.prefs ?? {}), [key]: next } } : m);
-    postPref(key, next);
+    setPrefCache(qc, key, next);
+    postPref(qc, key, next);
   }, [key, qc]);
   return [value, save];
 }

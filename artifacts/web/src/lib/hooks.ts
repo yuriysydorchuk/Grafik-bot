@@ -12,7 +12,10 @@ export function usePersisted<T extends string>(key: string, initial: T) {
 
 // Current logged-in user (cached; App already fetches it)
 export function useMe() {
-  return useQuery<Me>({ queryKey: ["me"], queryFn: () => get("/auth/me"), staleTime: 60_000 }).data;
+  // refetchOnWindowFocus (глобально вимкнений) тут "always" (без огляду на staleTime): prefs панелі
+  // (порядок/видимість колонок) живуть у ["me"] і пишуться цілим набором — друга
+  // вкладка зі стейл-кешем інакше затирала б зміни першої (lib/prefs.ts)
+  return useQuery<Me>({ queryKey: ["me"], queryFn: () => get("/auth/me"), staleTime: 60_000, refetchOnWindowFocus: "always" }).data;
 }
 
 // Week dropdown options: real DB weeks (with status + entry count) merged with
