@@ -4,8 +4,9 @@
 // поверхні (список посадки в боті, driver-board, pickupGaps, пресмінні пуші,
 // графік водію) і генерація знять за довіз (routes/transport.ts) беруть режим
 // звідси, а не з legacy workers.self_transport.
-import { db, workerSelfTransportTable } from "@workspace/db";
+import { db, workerSelfTransportTable, workerChangesTable, transportDeductionsTable } from "@workspace/db";
 import { inArray } from "drizzle-orm";
+import { logger } from "../lib/logger";
 
 export type SelfInterval = { id: number; since: string; until: string | null };
 /** `${workerId}|${factoryId}` → інтервали (упорядковані за since). */
@@ -62,6 +63,52 @@ export function isSelfWholeRange(map: SelfTransportMap, workerId: number, factor
   return cur >= to;
 }
 
+/** Чи перекриваються два інтервали [since, until) (until null = відкритий). */
+export function intervalsOverlap(a: { since: string; until: string | null }, b: { since: string; until: string | null }): boolean {
+  return a.since < (b.until ?? "9999-12-31") && b.since < (a.until ?? "9999-12-31");
+}
+
+/** Підпис інтервалу для журналу: `self 2026-08-20..2026-09-03` / `self 2026-08-20..` */
+export const selfLabel = (iv: { since: string; until: string | null } | null | undefined): string =>
+  iv ? `self ${iv.since}..${iv.until ?? ""}` : "firma";
+
+/**
+ * Журнал worker_changes, поле `selfTransport`: значення — `self <since>..<until>` або
+ * `firma`, з суфіксом ` @<factoryId>` (як terminationDate; веб підставляє назву фабрики).
+ * Запис не відкочується через «Видалити зміну» — лише правкою інтервалів.
+ */
+export async function journalSelfTransport(workerId: number, factoryId: number, oldV: string, newV: string, effectiveDate: string, adminId: number | null): Promise<void> {
+  if (oldV === newV) return;
+  await db.insert(workerChangesTable).values({
+    workerId, field: "selfTransport", oldValue: `${oldV} @${factoryId}`, newValue: `${newV} @${factoryId}`, effectiveDate, adminId,
+  }).catch(err => logger.error({ err }, "self-transport journal failed"));
+}
+
+/** Місяці (YYYY-MM) з уже розрахованими зняттями за довіз по парах працівника — для попередження при правці минулого. */
+export async function deductedMonthsOf(workerId: number): Promise<{ month: string; factoryId: number | null }[]> {
+  const { eq } = await import("drizzle-orm");
+  const rows = await db.selectDistinct({ month: transportDeductionsTable.periodMonth, factoryId: transportDeductionsTable.factoryId })
+    .from(transportDeductionsTable).where(eq(transportDeductionsTable.workerId, workerId));
+  return rows.sort((a, b) => a.month.localeCompare(b.month));
+}
+
+/**
+ * Додати інтервал у довільному місці (вкл. минуле): перекриття з наявними
+ * інтервалами пари — помилка (рядок для 400). Повертає id нового рядка.
+ */
+export async function addSelfInterval(workerId: number, factoryId: number, since: string, until: string | null): Promise<{ id: number } | { error: string }> {
+  const { and, eq } = await import("drizzle-orm");
+  if (until != null && until <= since) return { error: "«до» має бути пізніше за «з»" };
+  return withPairLock(workerId, async tx => {
+    const siblings = await tx.select().from(workerSelfTransportTable)
+      .where(and(eq(workerSelfTransportTable.workerId, workerId), eq(workerSelfTransportTable.factoryId, factoryId)));
+    if (siblings.some(s => intervalsOverlap({ since: String(s.since), until: s.until ? String(s.until) : null }, { since, until })))
+      return { error: "Період перекривається з іншим записом цієї фабрики" };
+    const [row] = await tx.insert(workerSelfTransportTable).values({ workerId, factoryId, since, until }).returning({ id: workerSelfTransportTable.id });
+    return { id: row!.id };
+  });
+}
+
 /** Мапа лише по одному працівнику: `factoryId` → інтервали (для профілю/API). */
 export function intervalsOfWorker(map: SelfTransportMap, workerId: number): Map<number, SelfInterval[]> {
   const out = new Map<number, SelfInterval[]>();
@@ -113,6 +160,74 @@ export async function setSelfTransport(workerId: number, factoryId: number, self
   } else {
     for (const c of covering) await db.update(workerSelfTransportTable).set({ until: since }).where(eq(workerSelfTransportTable.id, c.id));
   }
+}
+
+const PAIR_LOCK_NS = 7231003; // простір pg_advisory_xact_lock(ns, workerId) для записів worker_self_transport пари
+
+/** Мутації інтервалів пари — лише під транзакційним advisory-локом працівника (паралельні
+ *  «Підтвердити»/подвійний клік інакше дають два відкриті інтервали — exclusion constraint у схемі нема). */
+async function withPairLock<T>(workerId: number, fn: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<T>): Promise<T> {
+  const { sql } = await import("drizzle-orm");
+  return db.transaction(async tx => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${PAIR_LOCK_NS}, ${workerId})`);
+    return fn(tx);
+  });
+}
+
+/**
+ * Подія «з дати D — сам» / «з дати D — возить фірма» для пари (веб-профіль, 13.10.2026).
+ * На відміну від setSelfTransport, МАЙБУТНЄ не затирає: self відкриває інтервал від D
+ * до початку наступного (або безстроково; інтервал, що закінчується рівно в D, —
+ * подовжується, без стику); firma закриває інтервал, що покриває D (D == since →
+ * інтервал зноситься). Повертає помилку-рядок, якщо подія нічого не змінює.
+ */
+export async function applySelfEvent(workerId: number, factoryId: number, self: boolean, date: string): Promise<{ ok: true } | { error: string }> {
+  const { and, eq } = await import("drizzle-orm");
+  return withPairLock(workerId, async tx => {
+    const rows = (await tx.select().from(workerSelfTransportTable)
+      .where(and(eq(workerSelfTransportTable.workerId, workerId), eq(workerSelfTransportTable.factoryId, factoryId))))
+      .map(r => ({ id: r.id, since: String(r.since), until: r.until ? String(r.until) : null }))
+      .sort((a, b) => a.since.localeCompare(b.since));
+    const covering = rows.find(r => r.since <= date && (r.until == null || r.until > date));
+    if (self) {
+      if (covering) return { error: "На цю дату вже «доїжджає сам»" };
+      const next = rows.find(r => r.since > date);
+      const prev = rows.find(r => r.until === date);
+      if (prev) await tx.update(workerSelfTransportTable).set({ until: next?.since ?? null }).where(eq(workerSelfTransportTable.id, prev.id));
+      else await tx.insert(workerSelfTransportTable).values({ workerId, factoryId, since: date, until: next?.since ?? null });
+    } else {
+      if (!covering) return { error: "На цю дату й так возить фірма" };
+      if (covering.since === date) await tx.delete(workerSelfTransportTable).where(eq(workerSelfTransportTable.id, covering.id));
+      else await tx.update(workerSelfTransportTable).set({ until: date }).where(eq(workerSelfTransportTable.id, covering.id));
+    }
+    return { ok: true };
+  });
+}
+
+/**
+ * Прибрати подію «з нами» (кінець інтервалу): «сам» триває далі — наступний інтервал
+ * пари (якщо є) поглинається в один суцільний. Повертає старий/новий until.
+ */
+export async function reopenSelfInterval(workerId: number, rowId: number): Promise<{ since: string; oldUntil: string | null; until: string | null } | undefined> {
+  const { and, eq, gt } = await import("drizzle-orm");
+  return withPairLock(workerId, async tx => {
+    const [row] = await tx.select().from(workerSelfTransportTable).where(and(eq(workerSelfTransportTable.id, rowId), eq(workerSelfTransportTable.workerId, workerId)));
+    if (!row) return undefined;
+    const since = String(row.since);
+    const later = (await tx.select({ id: workerSelfTransportTable.id, since: workerSelfTransportTable.since, until: workerSelfTransportTable.until }).from(workerSelfTransportTable)
+      .where(and(eq(workerSelfTransportTable.workerId, workerId), eq(workerSelfTransportTable.factoryId, row.factoryId), gt(workerSelfTransportTable.since, since))))
+      .map(r => ({ id: r.id, since: String(r.since), until: r.until ? String(r.until) : null }))
+      .sort((a, b) => a.since.localeCompare(b.since))[0];
+    const oldUntil = row.until ? String(row.until) : null;
+    if (later) {
+      // без події «з нами» режим «сам» триває до кінця наступного інтервалу — зливаємо в один рядок
+      await tx.delete(workerSelfTransportTable).where(eq(workerSelfTransportTable.id, later.id));
+      await tx.update(workerSelfTransportTable).set({ until: later.until }).where(eq(workerSelfTransportTable.id, rowId));
+      return { since, oldUntil, until: later.until };
+    }
+    await tx.update(workerSelfTransportTable).set({ until: null }).where(eq(workerSelfTransportTable.id, rowId));
+    return { since, oldUntil, until: null };
+  });
 }
 
 /** Зсунути дату «діє з» чинного (відкритого) інтервалу пари. */

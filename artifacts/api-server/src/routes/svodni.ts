@@ -2193,6 +2193,7 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
   if (!entry) return fail(res, 404, "запис не знайдено");
   if (["fired", "restored"].includes(entry.field))
     return fail(res, 400, "звільнення/поновлення скасовуються кнопками профілю");
+  if (entry.field === "selfTransport") return fail(res, 400, "«доїжджає сам» правиться періодами у профілі (Транспорт)");
   // гейти — ті самі, що в застосуванні змін
   if (FINANCE_TRACKED.has(entry.field) && !hasCap(req.admin!.role, req.admin!.caps, "viewFinance")) return fail(res, 403, "forbidden");
   if (SENSITIVE_TRACKED.has(entry.field) && !canSensitive(req)) return fail(res, 403, "forbidden");

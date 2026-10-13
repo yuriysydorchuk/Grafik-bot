@@ -55,7 +55,7 @@ import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
 import { zaliczkaRecords, groupPayDate, listaXlsxBuffer, type ZaliczkaSourceRow } from "../services/gratyfikantExport";
 import { umowaStatusFor } from "../services/gratyfikantImport";
-import { loadSelfTransport, isSelfOn, selfIntervalOn, intervalsOfWorker, selfPredicateForWeek, setSelfTransport, moveSelfTransportSince } from "../services/selfTransport";
+import { loadSelfTransport, isSelfOn, selfIntervalOn, intervalsOfWorker, selfPredicateForWeek, setSelfTransport, moveSelfTransportSince, journalSelfTransport, selfLabel, addSelfInterval, deductedMonthsOf, applySelfEvent, reopenSelfInterval } from "../services/selfTransport";
 
 const router: IRouter = Router();
 
@@ -493,6 +493,7 @@ router.post("/workers", RW, async (req, res) => {
     const since = typeof req.body?.selfTransportSince === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.selfTransportSince)
       ? req.body.selfTransportSince : warsawToday();
     await setSelfTransport(w!.id, w!.factoryId, true, since);
+    await journalSelfTransport(w!.id, w!.factoryId, "firma", selfLabel({ since, until: null }), since, (req as AuthedRequest).admin?.adminId ?? null);
   }
   // нова людина могла вже фігурувати в сводних — підвʼязуємо її історію за іменем
   import("../services/svodniSync").then(m => m.rematchSvodni()).catch(() => {});
@@ -584,10 +585,15 @@ router.patch("/workers/:id", RW, async (req, res) => {
     const curIv = selfIntervalOn(await loadSelfTransport([id]), id, selfFactoryId, today);
     const wantSelf = selfTransport !== undefined ? !!selfTransport : !!curIv;
     const wantSince = typeof selfSinceRaw === "string" && selfSinceRaw ? selfSinceRaw : null;
+    const selfAdmin = (req as AuthedRequest).admin?.adminId ?? null;
     if (wantSelf !== !!curIv) {
-      await setSelfTransport(id, selfFactoryId, wantSelf, wantSince ?? today);
+      const at = wantSince ?? today;
+      await setSelfTransport(id, selfFactoryId, wantSelf, at);
+      const after = selfIntervalOn(await loadSelfTransport([id]), id, selfFactoryId, at);
+      await journalSelfTransport(id, selfFactoryId, selfLabel(curIv), selfLabel(after), at, selfAdmin);
     } else if (curIv && wantSince && wantSince !== curIv.since) {
       await moveSelfTransportSince(id, selfFactoryId, wantSince);
+      await journalSelfTransport(id, selfFactoryId, selfLabel(curIv), selfLabel({ ...curIv, since: wantSince }), wantSince, selfAdmin);
     }
   }
   // перший робочий день — операційне поле графікової (editData), не фінансове;
@@ -1036,9 +1042,11 @@ router.get("/workers/:id/self-transport", WORKERS_RO, async (req, res) => {
   const map = await loadSelfTransport([id]);
   const rows = [...intervalsOfWorker(map, id)].flatMap(([factoryId, list]) =>
     list.map(i => ({ id: i.id, factoryId, factoryName: facName.get(factoryId) ?? null, since: i.since, until: i.until })));
-  ok(res, { rows });
+  // місяці з уже розрахованими зняттями за довіз — веб попереджає при правці минулого
+  ok(res, { rows, deductedMonths: await deductedMonthsOf(id) });
 });
-// PUT {factoryId, self, since?} — перемкнути режим на фабриці з дати (типово сьогодні)
+// PUT {factoryId, self, since?} — подія «з дати — сам / возить фірма» (типово сьогодні);
+// майбутні періоди пари не чіпає (applySelfEvent), нічого не міняє → 400
 router.put("/workers/:id/self-transport", RW, async (req, res) => {
   const id = Number(req.params.id);
   const factoryId = Number(req.body?.factoryId);
@@ -1046,8 +1054,30 @@ router.put("/workers/:id/self-transport", RW, async (req, res) => {
   if (!Number.isFinite(id) || !Number.isFinite(factoryId)) return fail(res, 400, "factoryId обовʼязковий");
   const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
   if (!w) return fail(res, 404, "not found");
-  await setSelfTransport(id, factoryId, !!req.body?.self, since);
+  const selfBefore = selfIntervalOn(await loadSelfTransport([id]), id, factoryId, since);
+  const ev = await applySelfEvent(id, factoryId, !!req.body?.self, since);
+  if ("error" in ev) return fail(res, 400, ev.error);
+  const selfAfter = selfIntervalOn(await loadSelfTransport([id]), id, factoryId, since);
+  await journalSelfTransport(id, factoryId, selfLabel(selfBefore), selfLabel(selfAfter), since, (req as AuthedRequest).admin?.adminId ?? null);
   ok(res, { ok: true });
+});
+// POST {factoryId, since, until?} — додати період у довільному місці (вкл. минуле: «з 20.08 сам,
+// з 03.09 знову фірма»); перекриття з наявними періодами пари — 400
+router.post("/workers/:id/self-transport", RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const factoryId = Number(req.body?.factoryId);
+  const isDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  if (!Number.isFinite(id) || !Number.isFinite(factoryId)) return fail(res, 400, "factoryId обовʼязковий");
+  if (!isDate(req.body?.since)) return fail(res, 400, "since — YYYY-MM-DD");
+  const rawUntil = req.body?.until;
+  const until: string | null = rawUntil == null || rawUntil === "" ? null : String(rawUntil);
+  if (until != null && !isDate(until)) return fail(res, 400, "until — YYYY-MM-DD");
+  const [w] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id));
+  if (!w) return fail(res, 404, "not found");
+  const r = await addSelfInterval(id, factoryId, req.body.since, until);
+  if ("error" in r) return fail(res, 400, r.error);
+  await journalSelfTransport(id, factoryId, "firma", selfLabel({ since: req.body.since, until }), req.body.since, (req as AuthedRequest).admin?.adminId ?? null);
+  ok(res, { ok: true, id: r.id });
 });
 // PATCH рядка — правка дат вручну (since/until)
 router.patch("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
@@ -1070,11 +1100,23 @@ router.patch("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
   const overlaps = siblings.some(s => s.id !== rowId && String(s.since) < (until ?? "9999-12-31") && (s.until == null || String(s.until) > since));
   if (overlaps) return fail(res, 400, "Період перекривається з іншим записом цієї фабрики");
   await db.update(workerSelfTransportTable).set(patch).where(eq(workerSelfTransportTable.id, rowId));
+  await journalSelfTransport(id, row.factoryId, selfLabel({ since: String(row.since), until: row.until ? String(row.until) : null }), selfLabel({ since, until }),
+    since < String(row.since) ? since : String(row.since), (req as AuthedRequest).admin?.adminId ?? null);
   ok(res, { ok: true });
 });
 router.delete("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
   const id = Number(req.params.id), rowId = Number(req.params.rowId);
-  await db.delete(workerSelfTransportTable).where(and(eq(workerSelfTransportTable.id, rowId), eq(workerSelfTransportTable.workerId, id)));
+  const [row] = await db.select().from(workerSelfTransportTable).where(and(eq(workerSelfTransportTable.id, rowId), eq(workerSelfTransportTable.workerId, id)));
+  if (!row) return fail(res, 404, "not found");
+  // ?part=end — прибрати лише подію «з нами» (кінець періоду): період знову відкритий
+  if (req.query.part === "end") {
+    const r = await reopenSelfInterval(id, rowId);
+    if (!r) return fail(res, 404, "not found");
+    await journalSelfTransport(id, row.factoryId, selfLabel({ since: r.since, until: r.oldUntil }), selfLabel({ since: r.since, until: r.until }), r.oldUntil ?? r.since, (req as AuthedRequest).admin?.adminId ?? null);
+    return ok(res, { ok: true });
+  }
+  await db.delete(workerSelfTransportTable).where(eq(workerSelfTransportTable.id, rowId));
+  await journalSelfTransport(id, row.factoryId, selfLabel({ since: String(row.since), until: row.until ? String(row.until) : null }), "firma", String(row.since), (req as AuthedRequest).admin?.adminId ?? null);
   ok(res, { ok: true });
 });
 

@@ -2,7 +2,7 @@
 // перевірка дня, наявності в діапазоні і повного покриття діапазону.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSelfOn, hasSelfInRange, isSelfWholeRange, selfIntervalOn, intervalsOfWorker, type SelfTransportMap } from "./selfTransport";
+import { isSelfOn, hasSelfInRange, isSelfWholeRange, selfIntervalOn, intervalsOfWorker, intervalsOverlap, type SelfTransportMap } from "./selfTransport";
 
 const map: SelfTransportMap = new Map([
   ["1|10", [{ id: 1, since: "2026-08-20", until: null }]],                              // відкритий з 20.08
@@ -34,4 +34,13 @@ test("selfIntervalOn / intervalsOfWorker", () => {
   assert.equal(selfIntervalOn(map, 2, 10, "2026-08-05")?.id, 3);
   assert.equal(selfIntervalOn(map, 2, 10, "2026-08-10")?.id, 4);
   assert.deepEqual([...intervalsOfWorker(map, 1).keys()], [10, 11]);
+});
+
+test("intervalsOverlap: [since, until) — стик без перекриття, відкритий інтервал перекриває все пізніше", () => {
+  const o = (a: [string, string | null], b: [string, string | null]) => intervalsOverlap({ since: a[0], until: a[1] }, { since: b[0], until: b[1] });
+  assert.equal(o(["2026-08-20", "2026-09-03"], ["2026-09-03", null]), false, "стик: until == since сусіда");
+  assert.equal(o(["2026-08-20", "2026-09-03"], ["2026-09-02", null]), true);
+  assert.equal(o(["2026-08-20", null], ["2027-01-01", "2027-02-01"]), true, "відкритий — перекриває майбутнє");
+  assert.equal(o(["2026-08-01", "2026-08-10"], ["2026-08-10", "2026-08-20"]), false);
+  assert.equal(o(["2026-08-01", "2026-08-10"], ["2026-07-01", "2026-08-01"]), false);
 });

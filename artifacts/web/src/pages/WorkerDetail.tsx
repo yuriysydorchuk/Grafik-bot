@@ -622,54 +622,115 @@ function InlineText({ value, placeholder, width = "w-40", onSave, disabled }: { 
 // «Доїжджає сам» по фабриках: рядок на кожну фабрику, де людина працює (основна +
 // історія + фабрики з інтервалами), перемикач режиму й дата «з» чинного
 // інтервалу. Дані — worker_self_transport через /workers/:id/self-transport.
-function SelfTransportRows({ workerId, mainFactoryId, rows, historyFactoryIds, factories, canEdit }: {
+type SelfRow = { id: number; factoryId: number; factoryName: string | null; since: string; until: string | null };
+const prevDay = (iso: string) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+const dmy = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("uk-UA");
+// «Доїжджає сам» — події «з дати: сам / возить фірма» по фабриці (власник 13.10.2026: форма
+// «режим + фабрика + від коли + Підтвердити», нижче — терміни списком). Під капотом —
+// інтервали worker_self_transport: початок = подія «сам», until = подія «возить фірма».
+function SelfTransportRows({ workerId, mainFactoryId, rows: initialRows, historyFactoryIds, factories, canEdit }: {
   workerId: number; mainFactoryId: number | null;
-  rows: { id: number; factoryId: number; factoryName: string | null; since: string; until: string | null }[];
-  historyFactoryIds: number[]; factories: Factory[]; canEdit: boolean;
+  rows: SelfRow[]; historyFactoryIds: number[]; factories: Factory[]; canEdit: boolean;
 }) {
   const t = useT();
   const qc = useQueryClient();
-  const [extra, setExtra] = useState<number[]>([]);
-  const inv = () => { qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); qc.invalidateQueries({ queryKey: ["workers"] }); };
-  const toggle = useMutation({
-    mutationFn: (v: { factoryId: number; self: boolean }) => put(`/workers/${workerId}/self-transport`, v),
-    onSuccess: inv, onError: (e: any) => toast.error(e.message),
+  const confirm = useConfirm();
+  // повний список періодів + місяці з уже розрахованими зняттями за довіз (попередження при правці минулого)
+  const { data } = useQuery<{ rows: SelfRow[]; deductedMonths: { month: string; factoryId: number | null }[] }>({
+    queryKey: ["worker-self-transport", workerId], queryFn: () => get(`/workers/${workerId}/self-transport`),
   });
-  const moveSince = useMutation({
-    mutationFn: (v: { rowId: number; since: string }) => patch(`/workers/${workerId}/self-transport/${v.rowId}`, { since: v.since }),
-    onSuccess: inv, onError: (e: any) => toast.error(e.message),
-  });
+  const rows = data?.rows ?? initialRows;
+  const deducted = data?.deductedMonths ?? [];
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
-  const facIds = [...new Set([mainFactoryId, ...rows.map(r => r.factoryId), ...historyFactoryIds, ...extra].filter((x): x is number => x != null))];
+  // фабрики людини: основна + з періодами + історія змін; решта — у кінці списку форми
+  const facIds = [...new Set([mainFactoryId, ...rows.map(r => r.factoryId), ...historyFactoryIds].filter((x): x is number => x != null))];
   const facName = (id: number) => factories.find(f => f.id === id)?.name ?? rows.find(r => r.factoryId === id)?.factoryName ?? `#${id}`;
   const others = factories.filter(f => !facIds.includes(f.id));
+  const [form, setForm] = useState<{ factoryId: string; self: "self" | "firma"; date: string }>({ factoryId: String(mainFactoryId ?? facIds[0] ?? ""), self: "self", date: today });
+  const inv = () => {
+    qc.invalidateQueries({ queryKey: ["worker-self-transport", workerId] }); qc.invalidateQueries({ queryKey: ["worker", String(workerId)] });
+    qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] });
+  };
+  const onError = (e: any) => toast.error(e.message);
+  const apply = useMutation({
+    mutationFn: (v: { factoryId: number; self: boolean; since: string }) => put(`/workers/${workerId}/self-transport`, v),
+    onSuccess: () => { inv(); toast.success(t("Збережено")); }, onError,
+  });
+  // прибрати термін: подія «сам» = весь період (разом з його кінцем), подія «возить фірма» = лише кінець
+  const remove = useMutation({ mutationFn: (v: { rowId: number; part?: "end" }) => del(`/workers/${workerId}/self-transport/${v.rowId}${v.part ? "?part=end" : ""}`), onSuccess: inv, onError });
+  // місяці з розрахованими зняттями, яких торкається період [since, until)
+  const touched = (factoryId: number, since: string, until: string | null) => {
+    const last = until ? prevDay(until).slice(0, 7) : "9999-12";
+    return deducted.filter(d => (d.factoryId == null || d.factoryId === factoryId) && d.month >= since.slice(0, 7) && d.month <= last).map(d => d.month);
+  };
+  // кінець періоду = подія «возить фірма», але не на стику з наступним періодом тієї ж фабрики
+  // (там режим не змінюється); її попередження — місяці, які стануть «сам», якщо кінець прибрати
+  const events = rows.flatMap(r => {
+    const next = rows.filter(o => o.factoryId === r.factoryId && o.since > r.since).sort((a, b) => a.since.localeCompare(b.since))[0];
+    const endShown = !!r.until && next?.since !== r.until;
+    return [
+      { key: `s${r.id}`, rowId: r.id, factoryId: r.factoryId, date: r.since, self: true, warn: touched(r.factoryId, r.since, r.until) },
+      ...(endShown ? [{ key: `e${r.id}`, rowId: r.id, factoryId: r.factoryId, date: r.until!, self: false, warn: touched(r.factoryId, r.until!, next?.since ?? null) }] : []),
+    ];
+  }).sort((a, b) => b.date.localeCompare(a.date) || a.factoryId - b.factoryId);
+  const current = facIds.map(fid => ({ fid, cur: rows.find(r => r.factoryId === fid && r.since <= today && (r.until == null || r.until > today)) }));
+  const ctl = "rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs text-slate-700";
   if (!facIds.length && !canEdit) return <span className="text-sm text-slate-400">—</span>;
   return (
-    <div className="flex w-full flex-col gap-1">
-      {facIds.map(fid => {
-        // чинний інтервал на сьогодні; майбутній — показуємо як «з дати»
-        const list = rows.filter(r => r.factoryId === fid);
-        const cur = list.find(r => r.since <= today && (r.until == null || r.until > today));
-        const future = !cur ? list.find(r => r.since > today && r.until == null) : undefined;
-        const iv = cur ?? future;
-        return (
-          <div key={fid} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className={`max-w-[9rem] truncate text-xs ${fid === mainFactoryId ? "font-medium text-slate-600" : "text-slate-400"}`} title={facName(fid)}>{facName(fid)}</span>
-            <InlineSelect value={iv ? "self" : ""} none={t("Возить фірма")} options={[{ value: "self", label: t("Доїжджає сам") }]}
-              disabled={!canEdit || toggle.isPending} onChange={v => toggle.mutate({ factoryId: fid, self: v === "self" })} />
-            {iv && (canEdit ? (
-              <input type="date" value={iv.since} title={t("з")} onChange={e => e.target.value && moveSince.mutate({ rowId: iv.id, since: e.target.value })}
-                className="rounded border border-slate-200 px-1 py-0.5 text-xs text-slate-500" />
-            ) : <span className="text-xs text-slate-400">{t("з")} {iv.since}</span>)}
-          </div>
-        );
-      })}
-      {canEdit && others.length > 0 && (
-        <select value="" onChange={e => { const v = Number(e.target.value); if (v) setExtra(x => [...x, v]); }}
-          className="w-fit rounded border border-transparent bg-transparent py-0.5 text-xs text-slate-400 hover:border-slate-300 focus:outline-none">
-          <option value="">{t("+ інша фабрика")}</option>
-          {others.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
+    <div className="flex w-full flex-col gap-1.5">
+      {/* стан на сьогодні по фабриках людини */}
+      <div className="flex flex-wrap gap-1">
+        {current.map(({ fid, cur }) => (
+          <span key={fid} className={`rounded px-1.5 py-0.5 text-xs ${cur ? "bg-sky-100 text-sky-700" : "bg-slate-100 text-slate-600"}`} title={facName(fid)}>
+            <span className="font-medium">{facName(fid)}</span>: {cur ? `${t("сам")} ${t("з")} ${dmy(cur.since)}` : t("возить фірма")}
+          </span>
+        ))}
+      </div>
+      {canEdit && (
+        <div className="flex flex-wrap items-center gap-1">
+          <select value={form.self} onChange={e => setForm({ ...form, self: e.target.value as "self" | "firma" })} className={ctl}>
+            <option value="self">{t("Доїжджає сам")}</option>
+            <option value="firma">{t("Возить фірма")}</option>
+          </select>
+          <select value={form.factoryId} onChange={e => setForm({ ...form, factoryId: e.target.value })} className={`${ctl} max-w-[10rem]`} title={t("Фабрика")}>
+            {!form.factoryId && <option value="">{t("— фабрика —")}</option>}
+            {facIds.map(fid => <option key={fid} value={fid}>{facName(fid)}</option>)}
+            {others.length > 0 && facIds.length > 0 && <option disabled>──</option>}
+            {others.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <input type="date" value={form.date} title={t("Від коли")} onChange={e => setForm({ ...form, date: e.target.value })} className={`${ctl} w-[7.6rem]`} />
+          <button type="button" disabled={!form.date || !form.factoryId || apply.isPending}
+            onClick={() => apply.mutate({ factoryId: Number(form.factoryId), self: form.self === "self", since: form.date })}
+            className="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white disabled:opacity-50">{t("Підтвердити")}</button>
+        </div>
+      )}
+      {events.length > 0 && (
+        <div className="flex flex-col gap-0.5 border-l border-slate-200 pl-2">
+          {events.map(ev => (
+            <div key={ev.key} className="flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500">
+              <span>{t("з")} {dmy(ev.date)}</span>
+              <span className={`font-medium ${ev.self ? "text-sky-700" : "text-slate-700"}`}>{ev.self ? t("Доїжджає сам") : t("Возить фірма")}</span>
+              <span className="text-slate-400">· {facName(ev.factoryId)}</span>
+              {ev.warn.length > 0 && (
+                <span className="rounded bg-amber-50 px-1.5 text-[11px] text-amber-700" title={t("За ці місяці вже розраховано зняття за довіз — після правки перерахуй на вкладці «Зняття за довіз»")}>
+                  ⚠ {ev.warn.join(", ")}
+                </span>
+              )}
+              {canEdit && (
+                <button type="button" title={t("Прибрати термін")} className="rounded p-0.5 text-slate-300 hover:bg-rose-50 hover:text-rose-600"
+                  onClick={async () => {
+                    if (await confirm({
+                      title: t("Прибрати термін?"),
+                      message: `${t("з")} ${dmy(ev.date)} — ${ev.self ? t("Доїжджає сам") : t("Возить фірма")} · ${facName(ev.factoryId)}${ev.self ? `. ${t("Разом з ним зникне і дата повернення «возить фірма» цього періоду, якщо була.")}` : ""}`,
+                      confirmText: t("Прибрати"),
+                    })) remove.mutate({ rowId: ev.rowId, part: ev.self ? undefined : "end" });
+                  }}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -3956,11 +4017,21 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
   // журнал зберігає id — для показу підтягуємо назви фабрик/посад
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
-  const showVal = (field: string, v: string | null): string => {
+  const showVal = (field: string, v: string | null, withDates = false): string => {
     if (v == null || v === "") return "—";
     if (field === "factoryId" || field === "factoryEnded" || field === "factoryAdded") return factories.find(f => String(f.id) === v)?.name ?? v;
     if (field === "terminationDate") return v.replace(/ @(\d+)$/, (_m, id) => ` · ${factories.find(f => String(f.id) === id)?.name ?? `#${id}`}`);
     if (field === "positionId") return positions.find(p => String(p.id) === v)?.name ?? v;
+    // «self 2026-08-20..2026-09-03 @13» / «firma @13» (services/selfTransport.ts journalSelfTransport):
+    // показуємо режим · фабрика; дата події — у бейджі «діє з». Межі періоду додаємо
+    // лише коли обидві сторони «сам» (правка/відкриття періоду), інакше вони дублюють бейдж.
+    if (field === "selfTransport") {
+      const m = v.match(/^(self|firma)(?: (\S+)\.\.(\S*))? @(\d+)$/);
+      if (!m) return v;
+      const fac = factories.find(f => String(f.id) === m[4])?.name ?? `#${m[4]}`;
+      const dates = withDates && m[2] ? ` ${m[2]} → ${m[3] || t("досі")}` : "";
+      return `${m[1] === "self" ? t("Доїжджає сам") : t("Возить фірма")}${dates} · ${fac}`;
+    }
     return fmtVal(v, t);
   };
   if (!changes.length) return null;
@@ -3970,13 +4041,15 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
         {changes.map(c => (
           <div key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-5 py-2 text-sm">
             <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}:</span>
-            <span className="text-slate-500">{showVal(c.field, c.oldValue)} → <span className="font-medium text-slate-700">{showVal(c.field, c.newValue)}</span></span>
+            {(() => { const wd = c.field === "selfTransport" && !!c.oldValue?.startsWith("self") && !!c.newValue?.startsWith("self"); return (
+              <span className="text-slate-500">{showVal(c.field, c.oldValue, wd)} → <span className="font-medium text-slate-700">{showVal(c.field, c.newValue, wd)}</span></span>
+            ); })()}
             <span className="rounded bg-sky-50 px-1.5 text-xs font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>
             {!!c.appliedRows?.length && <span className="rounded bg-emerald-50 px-1.5 text-xs text-emerald-700">{t("сводні: {n}", { n: c.appliedRows.length })}</span>}
             {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
               {c.adminName ?? "—"} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
-              {canUndo && !["fired", "restored"].includes(c.field) && (
+              {canUndo && !["fired", "restored", "selfTransport"].includes(c.field) && (
                 <button type="button"
                   title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
                   onClick={async () => {
