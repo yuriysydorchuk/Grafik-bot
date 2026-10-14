@@ -224,7 +224,7 @@ function RunScreen({ id, onClose, onFinished }: { id: number; onClose: () => voi
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
             <Button variant="secondary" onClick={() => decide.mutate("cancel")} loading={decide.isPending}>{t("Скасувати")}</Button>
             <Button variant="secondary" onClick={() => decide.mutate("save_draft")} loading={decide.isPending} title={t("Zapis do schowka praca.gov.pl — далі підпис руками на порталі")}>{t("Чернетка на порталі")}</Button>
-            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} disabled title={t("Автоматичний підпис підключається на етапі 3")}>{t("Підписати й надіслати")}</Button>
+            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} title={t("Поки що: чернетка в schowek + розвідка сторінки підпису (без підпису). Автопідпис — етап 3.")}>{t("Підписати й надіслати")}</Button>
           </div>
         </>
       )}

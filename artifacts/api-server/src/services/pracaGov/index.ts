@@ -10,7 +10,7 @@ import { cancelCodeWait, isAwaitingCode, provideCode } from "./codes";
 import { RobotError, ensureContext, ensureLoggedIn, isAccountBusy, reserveAccount, releaseAccount, snap, withBrowser, type RobotCtx } from "./robot";
 import { createSubmission, setSubmission, submissionById, openSubmissionsForAccount } from "./submissions";
 import { buildUaFormPayload, applyOverrides, missingOf } from "./payload";
-import { fillForm, openForm, captureWydruk, saveDraft } from "./form";
+import { fillForm, openForm, captureWydruk, saveDraft, exploreStep3 } from "./form";
 import { cancelDecisionWait, isAwaitingDecision, provideDecision, waitForDecision, type ReviewDecision } from "./decisions";
 import { requestCancel, isCancelled, clearCancel } from "./cancel";
 
@@ -142,8 +142,13 @@ export async function startSubmission(v: { taskId: number | null; workerId: numb
         const where = "Usługi elektroniczne → PSZ-PPWPU → Wczytaj dane → Ze schowka";
         const note = saved ? `чернетка збережена на порталі: ${where}` : `чернетку відправлено в schowek, але portal не підтвердив — перевірте: ${where}`;
         if (d === "save_draft") { await setSubmission(sub.id, { status: "done", step: note, finished: true }); return; }
-        // d === "sign": етап 3 (підпис/відправка) ще не реалізовано — лишаємо чернетку і кажемо прямо
-        await setSubmission(sub.id, { status: "done", step: `${note}; автоматичний підпис ще не підключено — підпишіть на порталі`, finished: true });
+        // d === "sign": автопідпис ще не підключено — чернетка вже в schowku, далі розвідка кроку 3
+        // (знімки сторінки підпису для реалізації етапу 3), без підпису й відправки
+        let explored = false, exploreErr = "";
+        try { explored = await exploreStep3(ctx, page); }
+        catch (e: any) { if (isCancelled(sub.id)) throw e; exploreErr = e?.message ?? String(e); logger.warn({ err: e, id: sub.id }, "praca.gov: step3 exploration failed"); }
+        const tail = explored ? "знімки кроку 3 збережено для розробки автопідпису" : `розвідка кроку 3 не вдалася (${exploreErr})`;
+        await setSubmission(sub.id, { status: "done", step: `${note}; автоматичний підпис ще не підключено — підпишіть руками на порталі; ${tail}`, finished: true });
       });
       await markPzLogin(account.id, true);
     } catch (e: any) {

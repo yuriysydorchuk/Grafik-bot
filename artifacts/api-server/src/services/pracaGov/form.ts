@@ -431,6 +431,32 @@ async function dumpHtmlNear(ctx: RobotCtx, page: Page, re: RegExp, slug: string)
   } catch { /* діагностика не має валити подачу */ }
 }
 
+// Розвідка кроку 3 «Wysłanie wniosku» (до появи автопідпису): після збереження чернетки натиснути
+// «Dalej», зняти знімки й розмітку сторінки підпису, НІЧОГО не підписувати й не відправляти.
+export async function exploreStep3(ctx: RobotCtx, page: Page): Promise<boolean> {
+  await step(ctx, page, "running", "розвідка кроку 3 (Wysłanie wniosku): знімки для автопідпису, без підпису");
+  const before = await pageText(page);
+  if (!(await clickByText(page, /^Dalej$/i, { tags: "button:not([disabled])" }))) throw new RobotError("Нема активної кнопки «Dalej» на формі", "step3");
+  // перехід підтверджуємо зміною сторінки: зникла секція даних cudzoziemca або змінився URL/текст
+  const moved = await waitFor(page, async () => { const t = await pageText(page); return t !== before && !/2\. Dane cudzoziemca/i.test(t); }, 20_000);
+  await sleep(1500);
+  await snap(ctx, page, moved ? "step3-top" : "step3-not-opened");
+  if (!moved) { const errs = await formErrors(page); throw new RobotError(`Крок 3 не відкрився${errs.length ? `: ${errs.slice(0, 3).join(" | ")}` : ""}`, "step3"); }
+  await dumpHtmlNear(ctx, page, /Wysłanie wniosku|Podpis|podpis/i, "step3");
+  try {
+    const fs = await import("node:fs"); const path = await import("node:path"); const { UA_SUBMISSIONS_DIR } = await import("./submissions");
+    const dir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId)); fs.mkdirSync(dir, { recursive: true });
+    const main = await page.evaluate(() => (document.querySelector("main") || document.body).outerHTML.slice(0, 200_000));
+    fs.writeFileSync(path.join(dir, "step3-main.html"), main);
+    fs.writeFileSync(path.join(dir, "step3-text.txt"), await pageText(page));
+    const ctrls = await page.evaluate(() => [...document.querySelectorAll("button, a, input, mat-select, mat-radio-button, mat-checkbox")].filter((e: any) => e.getBoundingClientRect().width > 0).map((e: any) => [e.tagName, e.type || "", e.id || "", (e.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)].join(" | ")).join("\n"));
+    fs.writeFileSync(path.join(dir, "step3-controls.txt"), ctrls);
+  } catch { /* діагностика не валить подачу */ }
+  const h = await page.evaluate(() => document.documentElement.scrollHeight as number);
+  for (let y = 900, i = 2; y < h && i <= 5; y += 850, i++) { await page.evaluate((yy: number) => window.scrollTo(0, yy), y); await sleep(300); await snap(ctx, page, `step3-${i}`); }
+  return true;
+}
+
 function esc(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 async function waitFor(page: Page, pred: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
