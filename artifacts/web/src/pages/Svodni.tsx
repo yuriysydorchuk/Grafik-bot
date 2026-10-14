@@ -1039,9 +1039,11 @@ function hideFormulaTip() { if (tipEl) tipEl.style.display = "none"; }
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
 if (typeof window !== "undefined") window.addEventListener("scroll", () => hideFormulaTip(), true);
 
-// Імʼя у вузькій колонці: один рядок із трикрапкою (рядок не росте), повний
-// текст лишається в DOM — Ctrl+F браузера його знаходить і підсвічує видиму
-// частину; якщо імʼя обрізане — спливайка з повним іменем одразу при наведенні
+// Імʼя у вузькій колонці: один рядок (рядок не росте), повний текст у DOM, край
+// затінюється градієнтом замість CSS-трикрапки: text-overflow:ellipsis
+// вкорочує текстові фрагменти, і Chrome не малює підсвітку Ctrl+F навіть на
+// видимій частині (інцидент 14.10.2026); overflow:clip лише обрізає малювання,
+// тож збіг підсвічується. Обрізане імʼя — спливайка одразу при наведенні
 function NameLabel({ name, className, children }: { name: string; className?: string; children: ReactNode }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [tip, setTip] = useState(false);
@@ -1052,7 +1054,7 @@ function NameLabel({ name, className, children }: { name: string; className?: st
   return (
     <>
       <span ref={ref} onMouseEnter={onEnter} onMouseLeave={() => setTip(false)} onMouseDownCapture={() => setTip(false)}
-        className={`min-w-0 flex-1 truncate font-medium text-slate-700 ${className ?? ""}`}>
+        className={`min-w-0 flex-1 overflow-clip whitespace-nowrap font-medium text-slate-700 [mask-image:linear-gradient(to_right,#000_calc(100%-18px),transparent)] ${className ?? ""}`}>
         {children}
       </span>
       {/* поза truncate-спаном (той має overflow:hidden); позиціонується від sticky-td, накриває клітинку */}
@@ -1376,7 +1378,7 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
                       {r.workerId
                         ? <NameLabel name={r.workerName ?? r.rawName}><Link href={`/workers/${r.workerId}`} onClick={saveScroll} className="hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link></NameLabel>
-                        : <NameLabel name={r.rawName} className="[&_button]:truncate"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></NameLabel>}
+                        : <NameLabel name={r.rawName}><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></NameLabel>}
                       <NatFlag value={r.nationality} className="shrink-0 cursor-default text-xs" />
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {(r.isStudent || r.legalStatus === "student") && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700" title={t(LEGAL_LABEL.student)}>STUD</span>}
