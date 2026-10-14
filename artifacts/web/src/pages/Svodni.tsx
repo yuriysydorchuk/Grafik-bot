@@ -615,8 +615,11 @@ export default function Svodni() {
     if (rows.length > 0) return;
     const other = orderedFactories.find(f => (factoryFlags.get(f)?.count ?? 0) > 0);
     if (other) { setFactory(other); return; }
-    const hit = data.rows.find(r => !isSpecial(r.factoryLabel) && r.city !== effCity && (r.workerName ?? r.rawName).toLowerCase().includes(q));
-    if (hit && cityTabs.includes(hit.city)) { setCity(hit.city); setFactory(hit.factoryLabel); }
+    // той самий предикат, що й у таблиці (імʼя + фільтр легалізації); офісні
+    // вкладки живуть у віртуальному місті «Офіс»
+    const hit = data.rows.find(r => matchesFilters(r) && (isSpecial(r.factoryLabel) ? OFFICE_CITY : r.city) !== effCity);
+    const hitCity = hit ? (isSpecial(hit.factoryLabel) ? OFFICE_CITY : hit.city) : "";
+    if (hit && cityTabs.includes(hitCity)) { setCity(hitCity); setFactory(hit.factoryLabel); }
   }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -1057,7 +1060,7 @@ function NameLabel({ name, className, children }: { name: string; className?: st
         className={`min-w-0 flex-1 overflow-clip whitespace-nowrap font-medium text-slate-700 [mask-image:linear-gradient(to_right,#000_calc(100%-18px),transparent)] ${className ?? ""}`}>
         {children}
       </span>
-      {/* поза truncate-спаном (той має overflow:hidden); позиціонується від sticky-td, накриває клітинку */}
+      {/* поза clip-спаном (той обрізає малювання); позиціонується від sticky-td, накриває клітинку */}
       {tip && (
         <span className="pointer-events-none absolute left-2 top-1/2 z-40 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-100 px-2.5 py-1 text-sm font-medium text-slate-900 shadow-xl ring-1 ring-slate-300">
           {name}
