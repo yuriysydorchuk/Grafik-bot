@@ -221,7 +221,7 @@ export async function ensureLoggedIn(ctx: RobotCtx, page: Page): Promise<void> {
   if (!back) throw new RobotError(`Після входу portal не показав сесію (${page.url()})`, "portal-session");
 }
 
-async function findCodeInput(page: Page, timeoutMs: number): Promise<string | null> {
+export async function findCodeInput(page: Page, timeoutMs: number): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const sel = await page.evaluate(() => {
@@ -237,7 +237,7 @@ async function findCodeInput(page: Page, timeoutMs: number): Promise<string | nu
   return null;
 }
 
-async function waitUntil(pred: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
+export async function waitUntil(pred: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { if (await pred().catch(() => false)) return true; await sleep(1000); }
   return false;

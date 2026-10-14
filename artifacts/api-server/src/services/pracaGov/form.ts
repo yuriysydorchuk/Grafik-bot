@@ -3,7 +3,9 @@
 // (label[for] → input), випадайки/автодоповнення — через overlay mat-option. Кожна група кроків
 // робить скріншот; невдалий довідник = RobotError з назвою поля.
 import type { Page } from "puppeteer";
-import { RobotError, PORTAL, clickByText, pageText, snap, step, typeInto, type RobotCtx } from "./robot";
+import { RobotError, PORTAL, clickByText, pageText, snap, step, typeInto, findCodeInput, waitUntil, type RobotCtx } from "./robot";
+import { pzCredentials } from "./accounts";
+import { waitForCode } from "./codes";
 import type { UaFormPayload } from "./payload";
 
 declare const document: any;
@@ -412,6 +414,9 @@ export async function saveDraft(ctx: RobotCtx, page: Page): Promise<boolean> {
   const saved = await waitFor(page, async () => /zapisan|schowk/i.test(await pageText(page)) && !/Zapis do dokumentów roboczych/i.test(await pageText(page)), 10_000);
   await sleep(1000);
   await snap(ctx, page, saved ? "draft-saved" : "draft-save-unconfirmed");
+  // модалка «Sukces — Formularz został pomyślnie zapisany» → OK, інакше вона перекриває «Dalej»
+  await clickByText(page, /^OK$/i, { tags: ".cdk-overlay-container button, [role=dialog] button, button", timeoutMs: 2000 });
+  await sleep(500);
   return saved;
 }
 
@@ -438,7 +443,9 @@ export async function exploreStep3(ctx: RobotCtx, page: Page): Promise<boolean> 
   const before = await pageText(page);
   if (!(await clickByText(page, /^Dalej$/i, { tags: "button:not([disabled])" }))) throw new RobotError("Нема активної кнопки «Dalej» на формі", "step3");
   // перехід підтверджуємо зміною сторінки: зникла секція даних cudzoziemca або змінився URL/текст
-  const moved = await waitFor(page, async () => { const t = await pageText(page); return t !== before && !/2\. Dane cudzoziemca/i.test(t); }, 20_000);
+  // після «Dalej» портал повертається в кабінет (/eurzad/…) і довго малює крок 3 (спінер) —
+  // чекаємо на змістовну сторінку: нема спінера, є кнопки/текст про підпис або відправку
+  const moved = await waitStep3(page, before);
   await sleep(1500);
   await snap(ctx, page, moved ? "step3-top" : "step3-not-opened");
   if (!moved) { const errs = await formErrors(page); throw new RobotError(`Крок 3 не відкрився${errs.length ? `: ${errs.slice(0, 3).join(" | ")}` : ""}`, "step3"); }
@@ -455,6 +462,127 @@ export async function exploreStep3(ctx: RobotCtx, page: Page): Promise<boolean> 
   const h = await page.evaluate(() => document.documentElement.scrollHeight as number);
   for (let y = 900, i = 2; y < h && i <= 5; y += 850, i++) { await page.evaluate((yy: number) => window.scrollTo(0, yy), y); await sleep(300); await snap(ctx, page, `step3-${i}`); }
   return true;
+}
+
+// Крок 3 «Wysłanie wniosku» (кабінет /eurzad): три плитки підпису з кнопками «Podpisz i wyślij».
+// Індикатор таймера сесії має role=progressbar постійно — спінер НЕ перевіряємо, лише текст плиток.
+async function waitStep3(page: Page, before: string): Promise<boolean> {
+  return waitFor(page, async () => { const t = await pageText(page); return t !== before && !/2\. Dane cudzoziemca/i.test(t) && /Wysłanie wniosku/i.test(t) && /Podpisz i wyślij/i.test(t); }, 60_000);
+}
+
+// ── Етап 3: підпис profilem zaufanym і відправка ──────────────────────────────
+// Крок 3 → плитка «Podpisz wniosek profilem zaufanym i wyślij» → pz.gov.pl (за потреби логін +
+// SMS) → підтвердження підпису (код SMS) → повернення у кабінет, крок 4 «Podsumowanie» → PDF/UPP.
+// Сторінки pz.gov.pl для підпису не зняті наперед: кожен крок робить знімок і падає з назвою
+// кроку, якщо очікуваного елемента нема. Незворотний крок — підтвердження підпису на pz.gov.pl
+// (зазвичай після коду SMS від людини); людина авторизує підпис рішенням «sign» на екрані Wydruk.
+export interface SignResult { confirmationNo: string | null; file: { absPath: string; fileName: string; mime: string } | null; summaryText: string }
+export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult> {
+  await step(ctx, page, "signing", "крок 3: відкриваю «Wysłanie wniosku»");
+  const before = await pageText(page);
+  if (!(await clickByText(page, /^Dalej$/i, { tags: "button:not([disabled])" }))) throw new RobotError("Нема активної кнопки «Dalej» на формі", "sign-dalej");
+  if (!(await waitStep3(page, before))) { await snap(ctx, page, "sign-step3-missing"); throw new RobotError("Крок 3 «Wysłanie wniosku» не відкрився", "sign-step3"); }
+  await snap(ctx, page, "sign-step3");
+  await step(ctx, page, "signing", "крок 3: обираю «Podpisz wniosek profilem zaufanym i wyślij»");
+  const clicked = await page.evaluate(() => {
+    const vis = (el: any) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const tiles = [...document.querySelectorAll("div, section, article, li")].filter((d: any) => vis(d) && /profilem zaufanym/i.test(d.textContent || "") && d.querySelector("button"));
+    tiles.sort((a: any, b: any) => (a.textContent || "").length - (b.textContent || "").length);
+    const btn = tiles[0]?.querySelector("button");
+    if (!btn) return false; (btn as any).click(); return true;
+  });
+  if (!clicked) throw new RobotError("Не знайшов кнопку «Podpisz i wyślij» у плитці profilu zaufanego", "sign-tile");
+  await Promise.race([page.waitForNavigation({ waitUntil: "networkidle2" }).catch(() => {}), sleep(20_000)]);
+  await sleep(2000);
+  await snap(ctx, page, "sign-after-tile");
+  // можлива проміжна сторінка/діалог підтвердження в кабінеті
+  await clickByText(page, /^(Tak|Potwierdź|Dalej|Kontynuuj)$/i, { tags: ".cdk-overlay-container button", timeoutMs: 1500 });
+
+  // pz.gov.pl: логін (якщо сесії нема) → сторінка підпису
+  let deadline = Date.now() + 90_000; // після вводу коду дедлайн переставляється — очікування людини його не зʼїдає
+  let signedBack = false;
+  const isSummaryOk = (t: string) => /Podsumowanie/i.test(t) && /(został[ao]? (wysłan|złożon|przekazan)|Urzędowe Poświadczenie|UPP|przyjęt|wysłano)/i.test(t) && !/nie został|nie udało|niepowodzen|błąd|błędn|odrzucon/i.test(t);
+  while (Date.now() < deadline) {
+    const url = page.url(); const t = await pageText(page);
+    if (/praca\.gov\.pl/i.test(url) && isSummaryOk(t)) { signedBack = true; break; }
+    if (/pz\.gov\.pl|login\.gov\.pl/i.test(url)) {
+      if (/login\.gov\.pl/i.test(url)) { await clickByText(page, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a" }); await sleep(3000); continue; }
+      if (await page.$("input#password")) {
+        await step(ctx, page, "signing", "pz.gov.pl: повторний вхід для підпису");
+        const cred = pzCredentials(ctx.account);
+        await typeInto(page, "input#username", cred.login); await typeInto(page, "input#password", cred.password);
+        if (!(await clickByText(page, /^Zaloguj( się)?$/i, { tags: "button[type=submit], button" }))) await page.keyboard.press("Enter");
+        await sleep(3000); continue;
+      }
+      const codeSel = await findCodeInput(page, 3000);
+      if (codeSel) {
+        await snap(ctx, page, "sign-code-page");
+        const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
+        await step(ctx, page, "awaiting_code", "підпис: чекаю код SMS profilu zaufanego від власника акаунта");
+        await ctx.onAwaitCode(ctx, "sign");
+        const code = await codeP;
+        await step(ctx, page, "signing", "підпис: вводжу код SMS");
+        await typeInto(page, codeSel, code);
+        if (!(await clickByText(page, /^(Potwierdź|Podpisz|Zaloguj( się)?|Dalej|Autoryzuj)/i, { tags: ".cdk-overlay-container button, button[type=submit], button" }))) await page.keyboard.press("Enter");
+        await sleep(4000); await snap(ctx, page, "sign-after-code");
+        deadline = Date.now() + 90_000;
+        const t2 = await pageText(page);
+        if (/pz\.gov\.pl/i.test(page.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
+        continue;
+      }
+      // сторінка підпису без поля коду: кнопка «Podpisz podpisem zaufanym» / «Podpisz»
+      if (await clickByText(page, /Podpisz podpisem zaufanym|^Podpisz$|Podpisz dokument|Podpisz i wyślij/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, page, "sign-pz-clicked"); await sleep(3000); continue; }
+      await clickByText(page, /^(Dalej|Kontynuuj|Potwierdź)$/i, { tags: "button, a", timeoutMs: 1500 });
+      await sleep(2000); continue;
+    }
+    await sleep(1500);
+  }
+  await snap(ctx, page, signedBack ? "sign-summary" : "sign-timeout");
+  if (!signedBack) throw new RobotError(`Підпис не завершився: ${page.url()}`, "sign-return");
+
+  // крок 4: Podsumowanie — потвердження (UPP/PDF) і номер
+  await step(ctx, page, "signing", "крок 4: забираю потвердження");
+  const summaryText = await pageText(page);
+  const m = summaryText.match(/(?:Numer sprawy|Numer dokumentu|Identyfikator dokumentu|Nr dokumentu|Numer UPP|Identyfikator)[^:0-9A-Z]*[:\s]+([A-Z0-9][A-Z0-9\/\-.]{4,})/i);
+  const confirmationNo = m?.[1] ?? null;
+  const file = await captureSummaryPdf(ctx, page).catch(() => null);
+  return { confirmationNo, file, summaryText: summaryText.slice(0, 4000) };
+}
+
+// Потвердження з «Podsumowanie»: клік по лінку/кнопці UPP/Pobierz → PDF із відповіді або завантаження;
+// без нього — PNG усієї сторінки підсумку (теж документ-доказ).
+async function captureSummaryPdf(ctx: RobotCtx, page: Page): Promise<{ absPath: string; fileName: string; mime: string }> {
+  const fs = await import("node:fs"); const path = await import("node:path");
+  const { UA_SUBMISSIONS_DIR } = await import("./submissions");
+  const dir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId)); fs.mkdirSync(dir, { recursive: true });
+  const startedAt = Date.now();
+  let pdf: Buffer | null = null;
+  const onResp = async (r: any) => { try { const ct = String(r.headers()["content-type"] || ""); if (/pdf/i.test(ct) && !pdf) pdf = Buffer.from(await r.buffer()); } catch { /* ignore */ } };
+  page.on("response", onResp);
+  const client = await page.createCDPSession();
+  await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true } as any).catch(() => {});
+  const extra: Page[] = []; const browser = page.browser();
+  const onTarget = async (t: any) => { try { if (t.type() === "page") { const p = await t.page(); if (p) { extra.push(p); p.on("response", onResp); } } } catch { /* ignore */ } };
+  browser.on("targetcreated", onTarget);
+  try {
+    await clickByText(page, /UPP|Urzędowe Poświadczenie|Pobierz potwierdzenie|Pobierz dokument|Pobierz wniosek|Pobierz/i, { tags: "a, button", timeoutMs: 4000 });
+    const stamp = String(startedAt);
+    const newFile = () => fs.readdirSync(dir).map(f => path.join(dir, f)).filter(f => /\.(pdf|xml)$/i.test(f) && !/wydruk|PSZ-PPWPU\.pdf$|potwierdzenie-/i.test(f) && fs.statSync(f).mtimeMs >= startedAt - 1000)[0];
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && !pdf && !newFile()) await sleep(400);
+    // лише свіжий файл цього прогону (ім'я зі штампом), формат зберігаємо: XML не видаємо за PDF
+    if (pdf) { const out = path.join(dir, `potwierdzenie-${stamp}.pdf`); fs.writeFileSync(out, pdf); return { absPath: out, fileName: "powiadomienie-potwierdzenie.pdf", mime: "application/pdf" }; }
+    const f = newFile();
+    if (f) { const ext = /\.xml$/i.test(f) ? "xml" : "pdf"; const out = path.join(dir, `potwierdzenie-${stamp}.${ext}`); fs.renameSync(f, out); return { absPath: out, fileName: `powiadomienie-potwierdzenie.${ext}`, mime: ext === "xml" ? "application/xml" : "application/pdf" }; }
+    const png = path.join(dir, `podsumowanie-${stamp}.png`);
+    fs.writeFileSync(png, await page.screenshot({ fullPage: true, type: "png" }));
+    return { absPath: png, fileName: "powiadomienie-podsumowanie.png", mime: "image/png" };
+  } finally {
+    page.off("response", onResp); browser.off("targetcreated", onTarget);
+    for (const p of extra) await p.close().catch(() => {});
+    await client.detach().catch(() => {});
+    await page.bringToFront().catch(() => {});
+  }
 }
 
 function esc(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }

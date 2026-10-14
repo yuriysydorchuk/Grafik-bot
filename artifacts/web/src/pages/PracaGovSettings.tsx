@@ -338,7 +338,7 @@ export function SubmissionPanel({ id, onClose }: { id: number; onClose: () => vo
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="secondary" onClick={() => decide.mutate("cancel")} loading={decide.isPending}>{t("Скасувати")}</Button>
             <Button variant="secondary" onClick={() => decide.mutate("save_draft")} loading={decide.isPending}>{t("Чернетка на порталі")}</Button>
-            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} title={t("Поки що: чернетка в schowek + розвідка сторінки підпису (без підпису). Автопідпис — етап 3.")}>{t("Підписати й надіслати")}</Button>
+            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} title={t("Чернетка в schowek → підпис profilem zaufanym (код SMS) → відправка → потвердження в профіль")}>{t("Підписати й надіслати")}</Button>
           </div>
         </div>
       )}

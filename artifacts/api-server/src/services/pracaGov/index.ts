@@ -1,6 +1,6 @@
 // Фасад робота praca.gov.pl (12.10.2026): запуск тесту входу / подачі у фоні, сповіщення
 // власника акаунта про потрібний код (бот + веб), скасування. Один прогін на акаунт одночасно.
-import { db, adminsTable } from "@workspace/db";
+import { db, adminsTable, uaSubmissionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { Markup } from "telegraf";
 import { bot } from "../../bot/instance";
@@ -10,7 +10,8 @@ import { cancelCodeWait, isAwaitingCode, provideCode } from "./codes";
 import { RobotError, ensureContext, ensureLoggedIn, isAccountBusy, reserveAccount, releaseAccount, snap, withBrowser, type RobotCtx } from "./robot";
 import { createSubmission, setSubmission, submissionById, openSubmissionsForAccount } from "./submissions";
 import { buildUaFormPayload, applyOverrides, missingOf } from "./payload";
-import { fillForm, openForm, captureWydruk, saveDraft, exploreStep3 } from "./form";
+import { fillForm, openForm, captureWydruk, saveDraft, signAndSend } from "./form";
+import { attachConfirmation } from "./confirm";
 import { cancelDecisionWait, isAwaitingDecision, provideDecision, waitForDecision, type ReviewDecision } from "./decisions";
 import { requestCancel, isCancelled, clearCancel } from "./cancel";
 
@@ -142,13 +143,15 @@ export async function startSubmission(v: { taskId: number | null; workerId: numb
         const where = "Usługi elektroniczne → PSZ-PPWPU → Wczytaj dane → Ze schowka";
         const note = saved ? `чернетка збережена на порталі: ${where}` : `чернетку відправлено в schowek, але portal не підтвердив — перевірте: ${where}`;
         if (d === "save_draft") { await setSubmission(sub.id, { status: "done", step: note, finished: true }); return; }
-        // d === "sign": автопідпис ще не підключено — чернетка вже в schowku, далі розвідка кроку 3
-        // (знімки сторінки підпису для реалізації етапу 3), без підпису й відправки
-        let explored = false, exploreErr = "";
-        try { explored = await exploreStep3(ctx, page); }
-        catch (e: any) { if (isCancelled(sub.id)) throw e; exploreErr = e?.message ?? String(e); logger.warn({ err: e, id: sub.id }, "praca.gov: step3 exploration failed"); }
-        const tail = explored ? "знімки кроку 3 збережено для розробки автопідпису" : `розвідка кроку 3 не вдалася (${exploreErr})`;
-        await setSubmission(sub.id, { status: "done", step: `${note}; автоматичний підпис ще не підключено — підпишіть руками на порталі; ${tail}`, finished: true });
+        // d === "sign": чернетка вже в schowku (страховка) → підпис profilem zaufanym → відправка → потвердження в профіль
+        const res = await signAndSend(ctx, page);
+        await setSubmission(sub.id, { status: "submitted", step: "підписано й відправлено — вношу потвердження в профіль", confirmationNo: res.confirmationNo });
+        const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+        const [fresh] = await db.select().from(uaSubmissionsTable).where(eq(uaSubmissionsTable.id, sub.id));
+        let docId: number | null = null;
+        if (res.file && fresh) docId = await attachConfirmation(fresh, res.file, today, res.confirmationNo, v.adminId).catch(e => { logger.warn({ err: e, id: sub.id }, "praca.gov: attachConfirmation failed"); return null; });
+        await setSubmission(sub.id, { status: "done", step: docId ? `подано й підписано${res.confirmationNo ? ` · ${res.confirmationNo}` : ""}; потвердження внесено в профіль` : `подано й підписано${res.confirmationNo ? ` · ${res.confirmationNo}` : ""}; потвердження не вдалося внести автоматично — додайте файл у задачі`, finished: true });
+        await notifyResult(v.adminId, `✅ praca.gov.pl: powiadomienie для ${payload.workerName} (${payload.companyName}) підписано й відправлено${res.confirmationNo ? ` · ${res.confirmationNo}` : ""}.`);
       });
       await markPzLogin(account.id, true);
     } catch (e: any) {

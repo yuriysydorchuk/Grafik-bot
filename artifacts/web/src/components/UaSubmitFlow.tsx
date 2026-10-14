@@ -217,14 +217,14 @@ function RunScreen({ id, onClose, onFinished }: { id: number; onClose: () => voi
       )}
       {s.status === "review" && (
         <>
-          <p className="text-xs text-slate-500">{t("Нижче — офіційний Wydruk заповненої форми з praca.gov.pl: саме це піде на підпис. Перевірте кожне поле.")}</p>
+          <p className="text-xs text-slate-500">{t("Нижче — офіційний Wydruk заповненої форми з praca.gov.pl: саме це піде на підпис. Перевірте кожне поле. «Підписати й надіслати» = підпис вашим profilem zaufanym (код SMS) і відправка до urzędu; відкликати подане повідомлення портал не дозволяє.")}</p>
           {s.previewFile
             ? <iframe title="Wydruk" src={`/api/praca-gov/submissions/${s.id}/preview`} className="h-[70vh] w-full rounded-lg border border-slate-200 bg-white" />
             : <p className="text-sm text-rose-600">{t("Wydruk не вдалося отримати")}</p>}
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
             <Button variant="secondary" onClick={() => decide.mutate("cancel")} loading={decide.isPending}>{t("Скасувати")}</Button>
             <Button variant="secondary" onClick={() => decide.mutate("save_draft")} loading={decide.isPending} title={t("Zapis do schowka praca.gov.pl — далі підпис руками на порталі")}>{t("Чернетка на порталі")}</Button>
-            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} title={t("Поки що: чернетка в schowek + розвідка сторінки підпису (без підпису). Автопідпис — етап 3.")}>{t("Підписати й надіслати")}</Button>
+            <Button onClick={() => decide.mutate("sign")} loading={decide.isPending} title={t("Чернетка в schowek → підпис profilem zaufanym (код SMS) → відправка → потвердження в профіль")}>{t("Підписати й надіслати")}</Button>
           </div>
         </>
       )}
