@@ -67,9 +67,9 @@
 
 Кнопки внизу: Wstecz, **Zapisz dane** (у schowek порталу), Wydruk (disabled до валідації), **Dalej** (валідація → крок 3).
 
-## Крок 3 — Wysłanie wniosku, крок 4 — Podsumowanie
+## Крок 3 — Wysłanie wniosku (знято 14.10.2026), крок 4 — Podsumowanie
 
-Не зняті (потребують повністю валідної форми). Зняти на реальній подачі: кнопка підпису → редирект на pz.gov.pl → код SMS/push → повернення → «Wyślij» → UPP/потвердження (PDF) у «Sprawy».
+Після «Dalej» на формі portal повертає в кабінет `/eurzad/uslugi-elektroniczne/PSZ-PPWPU` і малює крок 3 (спінер кілька секунд; індикатор таймера сесії має `role=progressbar` постійно — на нього не орієнтуватись). Текст: «Reprezentanci wskazani na dokumencie powinni zalogować się … do dnia <сьогодні> do godziny 23:59». Три плитки з кнопкою «Podpisz i wyślij» кожна: kwalifikowany podpis elektroniczny / podpis osobisty (e-dowód) / **«Podpisz wniosek profilem zaufanym i wyślij»** («Wybór opcji przekieruje Cię na stronę pz.gov.pl»). Робот (`form.ts signAndSend`) клікає третю. Сторінки підпису на pz.gov.pl і крок 4 ще не зняті — робот іде евристиками (повторний логін #username/#password, код через `findCodeInput`, кнопки «Podpisz…»/«Potwierdź»), успіх = повернення на praca.gov.pl з «Podsumowanie» і маркером відправки без «nie został/błąd»; потвердження — PDF/XML з «Pobierz/UPP» або PNG підсумку.
 
 ## Мапа наших даних → поля форми
 
