@@ -3,7 +3,7 @@
 // Google його більше не перезаписує — сайт є джерелом). Відкритий шар: фактичні
 // години, ставки, відрахування, до виплати. Закритий (księgowość/готівка/конто)
 // приходить з API лише з capability svodniSensitive — показуємо, що прийшло.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   RefreshCw, Link2, CircleAlert, CircleCheck, Users, PencilLine, Columns3,
@@ -1006,6 +1006,32 @@ function hideFormulaTip() { if (tipEl) tipEl.style.display = "none"; }
 // колонки, як data validation в екселі), Enter/blur → PATCH. Порожнє = очистити.
 if (typeof window !== "undefined") window.addEventListener("scroll", () => hideFormulaTip(), true);
 
+// Імʼя у вузькій колонці: один рядок із трикрапкою (рядок не росте), повний
+// текст лишається в DOM — Ctrl+F браузера його знаходить і підсвічує видиму
+// частину; якщо імʼя обрізане — спливайка з повним іменем одразу при наведенні
+function NameLabel({ name, className, children }: { name: string; className?: string; children: ReactNode }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [tip, setTip] = useState(false);
+  const onEnter = () => {
+    const el = ref.current;
+    if (el && [el, ...el.querySelectorAll("*")].some(n => n.scrollWidth > n.clientWidth + 1)) setTip(true);
+  };
+  return (
+    <>
+      <span ref={ref} onMouseEnter={onEnter} onMouseLeave={() => setTip(false)} onMouseDownCapture={() => setTip(false)}
+        className={`min-w-0 flex-1 truncate font-medium text-slate-700 ${className ?? ""}`}>
+        {children}
+      </span>
+      {/* поза truncate-спаном (той має overflow:hidden); позиціонується від sticky-td, накриває клітинку */}
+      {tip && (
+        <span className="pointer-events-none absolute left-2 top-1/2 z-40 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-100 px-2.5 py-1 text-sm font-medium text-slate-900 shadow-xl ring-1 ring-slate-300">
+          {name}
+        </span>
+      )}
+    </>
+  );
+}
+
 function EditableCell({ row, field, value, month, text, strong, options, formula, locked }: {
   row: Row; field: string; value: unknown; month: string; text?: boolean; strong?: boolean; options?: string[]; formula?: string | null; locked?: boolean;
 }) {
@@ -1312,13 +1338,12 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                   </tr>
                 ) : null,
                 <tr key={r.id} className={`group/row transition ${r.mismatch || isUnlegalized(r) ? "bg-rose-50/70 hover:bg-rose-100/60" : `${i % 2 ? "bg-slate-50/70" : ""} hover:bg-red-50/30`}`}>
-                  <td className={`sticky left-0 z-10 px-3 py-1 ${r.mismatch || isUnlegalized(r) ? "border-l-2 border-rose-400 bg-rose-50" : `${i % 2 ? "bg-slate-50" : "bg-white"} group-hover/row:bg-red-50/60`}`}
-                    title={r.workerName ?? r.rawName}>
+                  <td className={`sticky left-0 z-10 px-3 py-1 ${r.mismatch || isUnlegalized(r) ? "border-l-2 border-rose-400 bg-rose-50" : `${i % 2 ? "bg-slate-50" : "bg-white"} group-hover/row:bg-red-50/60`}`}>
                     <span className="flex w-56 items-center gap-1.5">
                       {r.manual && <PencilLine className="h-3 w-3 shrink-0 text-sky-500" aria-label={t("є ручні правки")} />}
                       {r.workerId
-                        ? <Link href={`/workers/${r.workerId}`} onClick={saveScroll} className="min-w-0 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link>
-                        : <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></span>}
+                        ? <NameLabel name={r.workerName ?? r.rawName}><Link href={`/workers/${r.workerId}`} onClick={saveScroll} className="hover:text-red-600 hover:underline">{r.workerName ?? r.rawName}</Link></NameLabel>
+                        : <NameLabel name={r.rawName} className="[&_button]:truncate"><EditableCell row={r} field="rawName" value={r.rawName} month={month} text locked={locked} /></NameLabel>}
                       <NatFlag value={r.nationality} className="shrink-0 cursor-default text-xs" />
                       {r.linkStatus === "unmatched" && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title={t("Немає в системі")} />}
                       {(r.isStudent || r.legalStatus === "student") && <span className="rounded bg-sky-50 px-1 text-[10px] font-medium text-sky-700" title={t(LEGAL_LABEL.student)}>STUD</span>}
