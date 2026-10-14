@@ -375,6 +375,23 @@ export default function Svodni() {
   useEffect(() => {
     try { localStorage.setItem("svodni.nav", JSON.stringify({ m: effMonth, c: effCity, f: effFactory })); } catch { /* ignore */ }
   }, [effMonth, effCity, effFactory]);
+  // Ctrl/⌘+F на сводній — у власний пошук по імені: нативний пошук браузера
+  // рахує збіг, але не прокручує вкладений скрол-контейнер таблиці (людина нижче
+  // 70vh лишається невидимою) і не бачить інших вкладок фабрик/міст. Другий
+  // Ctrl+F, коли поле вже у фокусі, — віддаємо браузеру. e.code — незалежно від
+  // розкладки (кирилична «а» на тій самій клавіші)
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.code !== "KeyF") return;
+      if (document.activeElement === searchRef.current) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
   // hiddenCols — сховані вручну; shownCols — показані ТОЧКОВО всупереч
   // тумблерам («Без порожніх колонок» / «Księgowe: сховано»): клік по чіпу
   // схованої тумблером колонки показує лише її, не вимикаючи тумблер.
@@ -589,6 +606,18 @@ export default function Svodni() {
     }
     return m;
   }, [factories, cityRows, filterActive, matchesFilters]);
+  // Пошук по імені дивиться на ВЕСЬ місяць: якщо на поточній вкладці збігів нема —
+  // перейти на фабрику цього міста зі збігами, а як і в місті нема — в інше місто
+  // (стрибаємо лише з порожньої вкладки, щоб не смикати, поки людина друкує)
+  useEffect(() => {
+    const q = search.trim().toLowerCase();
+    if (!q || !data) return;
+    if (rows.length > 0) return;
+    const other = orderedFactories.find(f => (factoryFlags.get(f)?.count ?? 0) > 0);
+    if (other) { setFactory(other); return; }
+    const hit = data.rows.find(r => !isSpecial(r.factoryLabel) && r.city !== effCity && (r.workerName ?? r.rawName).toLowerCase().includes(q));
+    if (hit && cityTabs.includes(hit.city)) { setCity(hit.city); setFactory(hit.factoryLabel); }
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
@@ -658,9 +687,13 @@ export default function Svodni() {
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
           <div className="relative">
             <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-300" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t("Пошук по імені…")}
+            <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={t("Пошук по імені…")}
+              onKeyDown={e => { if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); } }}
+              title={t("Пошук по всіх вкладках місяця (Ctrl+F)")}
               className="w-56 rounded-lg border border-slate-200 py-1.5 pl-8 pr-7 text-sm focus:border-red-400 focus:outline-none" />
-            {search && <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500">×</button>}
+            {search
+              ? <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500">×</button>
+              : <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-slate-200 bg-slate-50 px-1 text-[10px] text-slate-400">Ctrl F</kbd>}
           </div>
           <Select value={legalFilter} onChange={e => setLegalFilter(e.target.value)} className="w-48 text-sm">
             <option value="">{t("Легалізація: всі")}</option>

@@ -203,7 +203,7 @@ const EN: Record<string, string> = {
   "звільнення": "terminations",
   "перший робочий день": "first working day", "останній робочий день": "last working day",
   // загальний пошук (components/GlobalSearch.tsx)
-  "Пошук по панелі (Ctrl+K)": "Search the panel (Ctrl+K)", "Працівник, кандидат, водій, фабрика, хостел, задача…": "Worker, candidate, driver, factory, hostel, task…",
+  "Пошук по панелі (Ctrl+K)": "Search the panel (Ctrl+K)", "Пошук по всіх вкладках місяця (Ctrl+F)": "Search all tabs of the month (Ctrl+F)", "Працівник, кандидат, водій, фабрика, хостел, задача…": "Worker, candidate, driver, factory, hostel, task…",
   "Введіть щонайменше 2 символи — ім'я, код, PESEL, телефон, назву": "Type at least 2 characters — name, code, PESEL, phone, title",
   "працівник": "worker", "кандидат": "candidate", "водій": "driver",
   "Пошук за іменем": "Search by name",
