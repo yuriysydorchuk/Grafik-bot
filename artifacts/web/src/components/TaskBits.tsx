@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { X, CheckCircle2, Clock, Play, RotateCcw, Ban, Users, CalendarClock, ExternalLink, Send, Repeat, MapPin, AlertTriangle, Wrench, FileText } from "lucide-react";
 import { get, post, patch, upload, type Factory, type Worker } from "../lib/api";
+import { UaSubmitFlow, type UaQueueItem } from "./UaSubmitFlow";
 import {
   type TaskRow, type TaskDetail, type TaskKind, type TaskPriority, type TaskAdmin, type TaskTemplate, type Recurrence, type TaskAction, type UaRow, type UaCard,
   STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, RULE_LABEL, fmtD, fmtDShort, todayStr, addDays,
@@ -587,18 +588,28 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
   const qc = useQueryClient();
   const [card, setCard] = useState<UaRow | null>(null); // рядок = людина×фірма (картка PSZ на конкретну фірму)
   const [uploadFor, setUploadFor] = useState<UaRow | null>(null);
+  const [robotQueue, setRobotQueue] = useState<UaQueueItem[] | null>(null); // подача роботом praca.gov.pl: один або черга (анкета → робот → Wydruk)
+  const [picked, setPicked] = useState<Set<string>>(new Set()); // вибір для групової подачі (ключ людина×фірма)
+  const rowKey = (r: UaRow) => `${r.id}:${r.companyId ?? 0}`;
+  const togglePick = (r: UaRow) => setPicked(p => { const n = new Set(p); const k = rowKey(r); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const queueOf = (rows: UaRow[]): UaQueueItem[] => rows.map(r => ({ workerId: r.id, companyId: r.companyId ?? null, name: r.name }));
   const tone = (d: number) => d < 0 ? "text-rose-600 font-semibold" : d <= 2 ? "text-amber-600 font-semibold" : "text-slate-600";
   const chip = (ok: boolean, label: string, title?: string) => <span title={title} className={cn("rounded-full px-1.5 py-0.5 text-[10px]", ok ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>{ok ? "✓" : "○"} {label}</span>;
   return (
     <div className="mb-2 rounded-md border border-slate-100 bg-white text-xs">
       <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
         {ua.stage === 1 ? tr("Чекають на powiadomienie") : tr("Подати powiadomienie")} · {ua.rows.length}
-        {ua.stage === 2 && <span className="ml-auto font-normal normal-case text-slate-400">{tr("кроки: дані → подано на praca.gov.pl → підтвердження в профілі")}</span>}
+        {ua.stage === 2 && <span className="ml-auto flex items-center gap-2 font-normal normal-case text-slate-400">
+          {picked.size > 0
+            ? <><span>{tr("вибрано")}: {picked.size}</span><button onClick={() => setRobotQueue(queueOf(ua.rows.filter(r => picked.has(rowKey(r)) && !r.steps.entered)))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")} ({picked.size})</button><button onClick={() => setPicked(new Set())} className="hover:underline">{tr("зняти")}</button></>
+            : <button onClick={() => setPicked(new Set(ua.rows.filter(r => !r.steps.entered).map(rowKey)))} className="hover:underline">{tr("вибрати всіх для групової подачі")}</button>}
+        </span>}
       </div>
       {!ua.rows.length && <div className="px-3 py-2 text-slate-400">{tr("Список порожній — усе подано")}</div>}
       <ul className="divide-y divide-slate-50">
         {ua.rows.map(r => (
           <li key={`${r.id}:${r.companyId ?? 0}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
+            {ua.stage === 2 && !r.steps.entered && <input type="checkbox" checked={picked.has(rowKey(r))} onChange={() => togglePick(r)} title={tr("до групової подачі")} />}
             <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
             {r.companyName && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title={tr("Фірма-роботодавець, на яку подається powiadomienie")}>{r.companyName}</span>}
             {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
@@ -615,12 +626,14 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
               {ua.stage === 2 && <>
                 <button onClick={() => setCard(r)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
                 {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}${r.companyId != null ? `.${r.companyId}` : ""}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
+                {!r.steps.entered && <button title={tr("Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом")} onClick={() => setRobotQueue(queueOf([r]))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")}</button>}
                 {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
               </>}
             </span>
           </li>
         ))}
       </ul>
+      {robotQueue && robotQueue.length > 0 && <UaSubmitFlow taskId={taskId} queue={robotQueue} onClose={() => { setRobotQueue(null); setPicked(new Set()); }} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); }} />}
       {card != null && <UaCardModal taskId={taskId} workerId={card.id} companyId={card.companyId ?? null} onClose={() => setCard(null)} />}
       {uploadFor && <UaUploadModal taskId={taskId} row={uploadFor} onClose={() => setUploadFor(null)} onDone={() => { setUploadFor(null); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); }} />}
     </div>

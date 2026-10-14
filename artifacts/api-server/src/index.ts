@@ -8,6 +8,7 @@ import { setBotLaunched } from "./bot/instance";
 import { startScheduler, stopScheduler } from "./services/scheduler";
 import { loadStates } from "./bot/state";
 import { ensureUploadDirs } from "./lib/uploads";
+import { failStaleSubmissions } from "./services/pracaGov";
 import { sendAlert, sendStartupAlert } from "./lib/alerts";
 import { ensureReferralFunnel, backfillOrphanReferralCandidates } from "./services/funnels";
 
@@ -50,6 +51,8 @@ async function main() {
 
     // Ensure local upload directories exist (worker documents, etc.)
     ensureUploadDirs();
+    // подачі робота praca.gov.pl, що були «в роботі» до рестарту, браузера вже не мають
+    failStaleSubmissions().then(n => { if (n) logger.warn({ n }, "praca.gov: stale submissions failed on startup"); }).catch(() => {});
 
     // The referral funnel is built-in and must exist, else referral candidates
     // land with funnel_id = null and never show on the board. Ensure + self-heal.

@@ -146,6 +146,8 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const [v, setV] = useState({
     name: factory?.name ?? "", address: factory?.address ?? "",
     city: factory?.city ?? "",
+    addrPostalCode: factory?.addrPostalCode ?? "", addrWojewodztwo: factory?.addrWojewodztwo ?? "", addrPowiat: factory?.addrPowiat ?? "", addrGmina: factory?.addrGmina ?? "",
+    addrMiejscowosc: factory?.addrMiejscowosc ?? "", addrStreet: factory?.addrStreet ?? "", addrHouseNo: factory?.addrHouseNo ?? "", addrAptNo: factory?.addrAptNo ?? "",
     contractDuties: factory?.contractDuties ?? "",
     minDaysPerWeek: factory?.minDaysPerWeek != null ? String(factory.minDaysPerWeek) : "",
     companyId: factory?.companyId ? String(factory.companyId) : "",
@@ -199,6 +201,8 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
   const num = (s: string) => s.trim() === "" ? null : Number(s.replace(",", "."));
   const payload = () => ({
     name: v.name.trim(), address: v.address, city: v.city.trim() || null,
+    addrPostalCode: v.addrPostalCode.trim() || null, addrWojewodztwo: v.addrWojewodztwo.trim() || null, addrPowiat: v.addrPowiat.trim() || null, addrGmina: v.addrGmina.trim() || null,
+    addrMiejscowosc: v.addrMiejscowosc.trim() || null, addrStreet: v.addrStreet.trim() || null, addrHouseNo: v.addrHouseNo.trim() || null, addrAptNo: v.addrAptNo.trim() || null,
     contractDuties: v.contractDuties.trim() || null,
     minDaysPerWeek: v.minDaysPerWeek.trim() ? Number(v.minDaysPerWeek) : null,
     companyId: v.companyId ? Number(v.companyId) : null,
@@ -266,6 +270,20 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
           </Select>
         </div>
         <div><Label>{t("Адреса")}</Label><Input value={v.address} onChange={set("address")} /></div>
+        <details className="rounded-lg border border-slate-200 p-2">
+          <summary className="cursor-pointer text-sm text-slate-600">{t("Адреса для praca.gov.pl (TERYT) — секція 3.4 powiadomienia")}</summary>
+          <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div><Label>{t("Індекс")}</Label><Input value={v.addrPostalCode} onChange={set("addrPostalCode")} placeholder="20-076" /></div>
+            <div><Label>Województwo</Label><Input value={v.addrWojewodztwo} onChange={set("addrWojewodztwo")} placeholder="lubelskie" /></div>
+            <div><Label>Powiat</Label><Input value={v.addrPowiat} onChange={set("addrPowiat")} placeholder="m. Lublin" /></div>
+            <div><Label>Gmina</Label><Input value={v.addrGmina} onChange={set("addrGmina")} placeholder="Lublin" /></div>
+            <div><Label>Miejscowość</Label><Input value={v.addrMiejscowosc} onChange={set("addrMiejscowosc")} placeholder="Lublin" /></div>
+            <div><Label>Ulica</Label><Input value={v.addrStreet} onChange={set("addrStreet")} placeholder="ul. Dzierżawna" /></div>
+            <div><Label>Nr domu</Label><Input value={v.addrHouseNo} onChange={set("addrHouseNo")} /></div>
+            <div><Label>Nr lokalu</Label><Input value={v.addrAptNo} onChange={set("addrAptNo")} /></div>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">{t("Значення мають збігатися з довідником порталу (województwo/powiat/gmina/miejscowość як на praca.gov.pl).")}</p>
+        </details>
         <div>
           <Label>{t("Місто")}</Label>
           <Input value={v.city} onChange={set("city")} list="factory-city-options" />

@@ -18,9 +18,10 @@ import Factories from "./Factories";
 import Admins from "./Admins";
 import { LegalRulesSettings } from "./LegalRulesSettings";
 import { TasksSettings } from "./TasksSettings";
+import { PracaGovSettings } from "./PracaGovSettings";
 import { canAccessPage } from "../lib/roles";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "tasks" | "funnels" | "email" | "gratyfikant" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "pracaGov" | "tasks" | "funnels" | "email" | "gratyfikant" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
@@ -28,6 +29,7 @@ const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "positions", label: "Посади", show: m => can(m, "editData") },
   { id: "documents", label: "Документи", show: m => can(m, "editData") },
   { id: "legalRules", label: "Правила легальності", show: m => can(m, "legalization") },
+  { id: "pracaGov", label: "praca.gov.pl", show: m => can(m, "legalization") },
   { id: "tasks", label: "Задачі", show: m => canAccessPage(m, "/tasks") },
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
   { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
@@ -66,6 +68,7 @@ export default function Settings() {
       {active === "positions" && <PositionsSettings />}
       {active === "documents" && <DocTypesSettings />}
       {active === "legalRules" && <LegalRulesSettings />}
+      {active === "pracaGov" && <PracaGovSettings />}
       {active === "funnels" && <FunnelsSettings />}
       {active === "email" && <><EmailTemplatesSettings /><TerminationEmailSettings /></>}
       {active === "gratyfikant" && <GratyfikantSettings />}
@@ -335,6 +338,8 @@ function CompanyRegistryModal({ co, onClose }: { co: Company; onClose: () => voi
     street: co.street ?? "", houseNumber: co.houseNumber ?? "", postalCode: co.postalCode ?? "", city: co.city ?? "",
     representative: co.representative ?? "",
     pkd: co.pkd ?? "",
+    contactEmail: co.contactEmail ?? "", contactPhone: co.contactPhone ?? "",
+    kraz: co.kraz ?? "", headcountEmployment: co.headcountEmployment != null ? String(co.headcountEmployment) : "", headcountCivil: co.headcountCivil != null ? String(co.headcountCivil) : "",
   });
   const save = useMutation({
     mutationFn: () => patch(`/companies/${co.id}`, f),
@@ -362,6 +367,16 @@ function CompanyRegistryModal({ co, onClose }: { co: Company; onClose: () => voi
         </div>
         <div><Label>{t("Представник (ПІБ + посада)")}</Label><Input value={f.representative} onChange={set("representative")} placeholder="Alona Kovalchuk – Prezes Zarządu" /></div>
         <div><Label>{t("PKD (переважна діяльність) — для powiadomienia UA")}</Label><Input value={f.pkd} onChange={set("pkd")} placeholder="78.10.Z" /></div>
+        <div className="grid grid-cols-2 gap-2">
+          <div><Label>{t("E-mail фірми (powiadomienie 1.2)")}</Label><Input type="email" value={f.contactEmail} onChange={set("contactEmail")} placeholder="biuro@…" /></div>
+          <div><Label>{t("Телефон фірми (powiadomienie 1.3)")}</Label><Input value={f.contactPhone} onChange={set("contactPhone")} placeholder="+48 …" /></div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <div><Label>{t("Numer KRAZ")}</Label><Input value={f.kraz} onChange={set("kraz")} placeholder="12345" /></div>
+          <div><Label>{t("Осіб за umową o pracę")}</Label><Input type="number" min={0} value={f.headcountEmployment} onChange={set("headcountEmployment")} /></div>
+          <div><Label>{t("Осіб за umowami cywilnoprawnymi")}</Label><Input type="number" min={0} value={f.headcountCivil} onChange={set("headcountCivil")} /></div>
+        </div>
+        <p className="text-xs text-slate-400">{t("KRAZ і чисельність — секції 1 і 4 форми PSZ-PPWPU (powiadomienie на praca.gov.pl); чисельність «на день подачі», 0 якщо нема.")}</p>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
           <Button onClick={() => save.mutate()} loading={save.isPending}>{t("Зберегти")}</Button>
@@ -548,10 +563,12 @@ function PositionsSettings() {
 function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any) => void; onDelete: () => void }) {
   const t = useT();
   const [name, setName] = useState(p.name);
+  const [kzis, setKzis] = useState(p.kzisCode ?? "");
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(p.color)}`}><span className={`h-2 w-2 rounded-full ${dotClass(p.color)}`} />{p.name}</span>
       <Input value={name} onChange={e => setName(e.target.value)} className="min-w-32 flex-1" />
+      <Input value={kzis} onChange={e => setKzis(e.target.value.replace(/\D/g, "").slice(0, 6))} onBlur={() => { if (kzis !== (p.kzisCode ?? "")) onSave({ kzisCode: kzis }); }} placeholder={t("код KZiS")} title={t("Kod zawodu KZiS (6 цифр) — форма PSZ-PPWPU 3.3")} className="w-24" />
       <Select value={p.color} onChange={e => onSave({ color: e.target.value })} className="w-28">
         {STAGE_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
       </Select>

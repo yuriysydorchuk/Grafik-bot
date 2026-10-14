@@ -82,10 +82,12 @@ export interface Company {
   street?: string | null; houseNumber?: string | null; postalCode?: string | null; city?: string | null;
   representative?: string | null;
   pkd?: string | null; // код PKD — форма PSZ-PPWPU (powiadomienie UA)
+  kraz?: string | null; headcountEmployment?: number | null; headcountCivil?: number | null; // форма PSZ-PPWPU: KRAZ, секція 4
+  contactEmail?: string | null; contactPhone?: string | null; // форма PSZ-PPWPU 1.2/1.3
   employsWorkers?: boolean; // false — приватний підприємець власника (RS/TS): не роботодавець, не в списках «фабрика · фірма»
 }
 export type Gender = "male" | "female";
-export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean }
+export interface Position { id: number; name: string; color: string; sortOrder: number; isActive: boolean; kzisCode?: string | null }
 // Додаткова фабрика працівника (worker_factories): умова потрібна на кожну активну;
 // companyId — ефективна наша фірма-роботодавець на ній (обрана або фірма фабрики)
 export interface WorkerFactory { id: number; factoryId: number; factoryName: string | null; multiFirm?: boolean; companyId: number | null; companyName: string | null; validFrom: string | null; validTo: string | null; note: string | null }
@@ -220,6 +222,8 @@ export interface EmailTemplate { id: number; name: string; subject: string; body
 export interface FactoryPositionConf { positionId: number; name?: string | null; color?: string | null; rate?: number | null; invoiceRate?: number | null; contractDuties?: string | null }
 export interface Factory {
   id: number; name: string; address: string | null; city?: string | null;
+  // структурована адреса (TERYT) для форми PSZ-PPWPU 3.4 (робот praca.gov.pl)
+  addrPostalCode?: string | null; addrWojewodztwo?: string | null; addrPowiat?: string | null; addrGmina?: string | null; addrMiejscowosc?: string | null; addrStreet?: string | null; addrHouseNo?: string | null; addrAptNo?: string | null;
   companyId?: number | null; companyName?: string | null;
   multiFirm?: boolean; // кілька наших фірм на одній фабриці (Sushi): фірма умови/роботодавця обирається
   isOffice?: boolean;  // «Biuro» — фабрика офісних працівників

@@ -30,6 +30,14 @@ export const companiesTable = pgTable("companies", {
   city: text("city"),
   representative: text("representative"), // ПІБ + посада (напр. "Alona Kovalchuk – Prezes Zarządu")
   pkd: text("pkd"),                       // код PKD переважної діяльності — поле форми PSZ-PPWPU (powiadomienie UA)
+  // Форма PSZ-PPWPU (робот praca.gov.pl, 12.10.2026): секція 4 — скільки осіб працює у фірмі
+  // за umową o pracę / за umowami cywilnoprawnymi («на день подачі», 0 якщо нема); секція 1 —
+  // numer KRAZ (реєстр агенцій праці тимчасової). Вписує офіс у Налаштуваннях → Фірми.
+  headcountEmployment: integer("headcount_employment"),
+  headcountCivil: integer("headcount_civil"),
+  kraz: text("kraz"),
+  contactEmail: text("contact_email"),    // секція 1.2 форми (adres do doręczeń e-mail) — обовʼязкове в контексті організації
+  contactPhone: text("contact_phone"),    // секція 1.3 (nr telefonu)
   // Укладає умови з працівниками. false — приватні підприємці власників (RS/TS):
   // фінблок/фактури так, але не роботодавець → не в списках «фабрика · фірма» (05.09.2026)
   employsWorkers: boolean("employs_workers").notNull().default(true),
@@ -46,6 +54,9 @@ export const positionsTable = pgTable("positions", {
   color: text("color").notNull().default("slate"), // tailwind color key for badges/grouping
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
+  // Код zawodu за KZiS (6 цифр, напр. 932101 «Pakowacz ręczny») — поле 3.3 форми PSZ-PPWPU;
+  // робот praca.gov.pl шукає його у довіднику порталу за кодом (12.10.2026).
+  kzisCode: text("kzis_code"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -78,6 +89,10 @@ export const factoryPositionsTable = pgTable("factory_positions", {
   // Обов'язки для {%Czynności%} в Umowa саме на цій посаді цієї фабрики (05.09.2026);
   // фолбек — factories.contract_duties, далі назва посади
   contractDuties: text("contract_duties"),
+  // Powiadomienie PSZ-PPWPU (13.10.2026): як назвати посаду у 3.2 «Stanowisko» і який код KZiS у 3.3
+  // саме на цій фабриці; фолбек — factories.ua_stanowisko/ua_kzis_code, далі positions.kzis_code/назва
+  uaStanowisko: text("ua_stanowisko"),
+  kzisCode: text("kzis_code"),
 });
 
 export const workersTable = pgTable("workers", {
@@ -390,6 +405,20 @@ export const factoriesTable = pgTable("factories", {
   name: text("name").notNull(),
   companyId: integer("company_id").references(() => companiesTable.id), // which of our agencies staffs this factory
   address: text("address"),
+  // Структурована адреса (TERYT) для секції 3.4 «Miejsce wykonywania pracy» форми PSZ-PPWPU
+  // (робот praca.gov.pl, 12.10.2026): поля-автодоповнення порталу приймають лише значення зі
+  // своїх довідників, тож вільний `address` для них непридатний. Порожні = робот зупиниться
+  // з помилкою «нема адреси фабрики».
+  addrPostalCode: text("addr_postal_code"),
+  addrWojewodztwo: text("addr_wojewodztwo"),
+  addrPowiat: text("addr_powiat"),
+  addrGmina: text("addr_gmina"),
+  addrMiejscowosc: text("addr_miejscowosc"),
+  addrStreet: text("addr_street"),
+  addrHouseNo: text("addr_house_no"),
+  addrAptNo: text("addr_apt_no"),
+  uaStanowisko: text("ua_stanowisko"), // powiadomienie 3.2 для всіх посад фабрики (якщо не задано по посаді)
+  uaKzisCode: text("ua_kzis_code"),    // powiadomienie 3.3 для всіх посад фабрики
   shift1Start: text("shift1_start"), // legacy (start only) — superseded by `shifts`
   shift2Start: text("shift2_start"),
   shift3Start: text("shift3_start"),
@@ -2715,3 +2744,50 @@ export const smsEventsTable = pgTable("sms_events", {
 export type SmsCampaign = typeof smsCampaignsTable.$inferSelect;
 export type SmsRecipient = typeof smsRecipientsTable.$inferSelect;
 export type SmsEvent = typeof smsEventsTable.$inferSelect;
+
+// ─── Робот подачі на praca.gov.pl (powiadomienie PSZ-PPWPU, 12.10.2026) ───────────
+// Акаунт profilu zaufanego адміна, від імені якого робот подає. Пароль — лише шифротекст
+// (lib/secretBox.ts, ключ з env PZ_SECRET), API його ніколи не повертає; додає сам власник
+// акаунта (cap legalization), головний бачить список усіх без секретів.
+export const pzAccountsTable = pgTable("pz_accounts", {
+  id: serial("id").primaryKey(),
+  adminId: integer("admin_id").notNull().references(() => adminsTable.id, { onDelete: "cascade" }),
+  label: text("label"),                     // підпис для списку («Влада — ES»)
+  login: text("login").notNull(),           // логін login.gov.pl / pz.gov.pl
+  passwordEnc: text("password_enc").notNull(),
+  companyIds: jsonb("company_ids").$type<number[]>().notNull().default([]), // фірми, за які цей акаунт подає (порожньо = будь-яка)
+  contextName: text("context_name"),        // назва організації в «Kontekst» порталу (порожньо = osoba fizyczna)
+  signerFunction: text("signer_function"),  // «Pełniona funkcja» підписанта (напр. Pełnomocnik)
+  poaFilePath: text("poa_file_path"),       // PDF pełnomocnictwa (відносно UPLOADS_ROOT): галочка «składa pełnomocnik» вимагає załącznik
+  isActive: boolean("is_active").notNull().default(true),
+  lastLoginAt: timestamp("last_login_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export type PzAccount = typeof pzAccountsTable.$inferSelect;
+
+// Одна подача (або тест входу) робота: стан-машина з кроками й скріншотами для розбору.
+// status: queued | running | awaiting_code (чекає SMS-код від адміна) | review (форма заповнена,
+// чекає «Підписати й надіслати») | signing | submitted | done | failed | cancelled.
+export const uaSubmissionsTable = pgTable("ua_submissions", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull().default("submission"), // login_test | submission
+  accountId: integer("account_id").references(() => pzAccountsTable.id, { onDelete: "set null" }),
+  adminId: integer("admin_id").references(() => adminsTable.id),   // хто запустив / кому слати коди
+  workerId: integer("worker_id").references(() => workersTable.id, { onDelete: "set null" }),
+  companyId: integer("company_id").references(() => companiesTable.id),
+  taskId: integer("task_id"),
+  status: text("status").notNull().default("queued"),
+  step: text("step"),                       // поточний крок людською мовою («вхід: чекаю код SMS»)
+  payload: jsonb("payload"),                // знімок картки uaCard на момент старту
+  error: text("error"),
+  screenshots: jsonb("screenshots").$type<string[]>().notNull().default([]), // відносні шляхи під UPLOADS_ROOT (технічні, для розбору)
+  previewFile: text("preview_file"),        // «Wydruk» порталу (PDF/PNG заповненої форми) — що саме піде на підпис
+  confirmationNo: text("confirmation_no"),  // номер sprawy/UPP з порталу
+  documentId: integer("document_id"),       // worker_documents.id потвердження
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+}, (t) => [index("ua_submissions_account_status_idx").on(t.accountId, t.status)]);
+export type UaSubmission = typeof uaSubmissionsTable.$inferSelect;

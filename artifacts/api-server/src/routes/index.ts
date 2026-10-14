@@ -42,6 +42,8 @@ import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
 import workerPayRouter from "./workerPay";
 import signupLinksRouter from "./signupLinks";
+import pracaGovRouter from "./pracaGov";
+import pracaGovReferenceRouter from "./pracaGovReference";
 
 const router: IRouter = Router();
 
@@ -63,6 +65,8 @@ router.use(adminApiRouter);
 router.use(searchRouter);
 router.use(workerPayRouter); // /workers/:id/pay — зарплата по фабриках у профілі (svodni|workerPay)
 router.use(signupLinksRouter); // /signup-links — персональні лінки реєстрації рекрутерів (cap signupLinks)
+router.use(pracaGovRouter); // /praca-gov — робот подачі powiadomienia PSZ-PPWPU (cap legalization)
+router.use(pracaGovReferenceRouter); // /praca-gov/reference — довідкові дані форми (фірми/фабрики/посади), cap legalization
 router.use(fleetRouter);
 router.use(transportRouter);
 router.use(clothingRouter);

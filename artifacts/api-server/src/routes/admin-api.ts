@@ -1417,6 +1417,7 @@ router.patch("/positions/:id", RW, async (req, res) => {
   const patch: any = {};
   if (req.body?.name !== undefined) { const n = String(req.body.name).trim(); if (!n) return fail(res, 400, "Назва не може бути порожньою"); patch.name = n; }
   if (req.body?.color !== undefined) patch.color = String(req.body.color);
+  if (req.body?.kzisCode !== undefined) { const k = String(req.body.kzisCode ?? "").trim(); if (k && !/^\d{6}$/.test(k)) return fail(res, 400, "Код KZiS — 6 цифр"); patch.kzisCode = k || null; } // форма PSZ-PPWPU 3.3
   if (req.body?.isActive !== undefined) patch.isActive = !!req.body.isActive;
   if (req.body?.sortOrder !== undefined) patch.sortOrder = Number(req.body.sortOrder);
   const [p] = await db.update(positionsTable).set(patch).where(eq(positionsTable.id, id)).returning();
@@ -2221,7 +2222,9 @@ router.post("/companies", RW, async (req, res) => {
   const [c] = await db.insert(companiesTable).values({ name }).returning();
   ok(res, c);
 });
-const COMPANY_REGISTRY_FIELDS = ["legalName", "nip", "krs", "regon", "street", "houseNumber", "postalCode", "city", "representative", "pkd"] as const; // pkd — форма PSZ-PPWPU (powiadomienie UA)
+const COMPANY_REGISTRY_FIELDS = ["legalName", "nip", "krs", "regon", "street", "houseNumber", "postalCode", "city", "representative", "pkd", "kraz", "contactEmail", "contactPhone"] as const; // pkd/kraz — форма PSZ-PPWPU (powiadomienie UA)
+// Секція 4 форми PSZ-PPWPU: чисельність за umową o pracę / umowami cywilnoprawnymi (ціле ≥0, "" = порожньо)
+const parseHeadcount = (v: unknown): number | null => { if (v === undefined || v === null || v === "") return null; const n = Number(v); return Number.isInteger(n) && n >= 0 ? n : null; };
 router.patch("/companies/:id", RW, async (req, res) => {
   const patch: Record<string, unknown> = {};
   if (req.body?.name !== undefined) {
@@ -2230,6 +2233,7 @@ router.patch("/companies/:id", RW, async (req, res) => {
     patch.name = name;
   }
   for (const k of COMPANY_REGISTRY_FIELDS) if (req.body?.[k] !== undefined) patch[k] = String(req.body[k]).trim() || null;
+  for (const k of ["headcountEmployment", "headcountCivil"] as const) if (req.body?.[k] !== undefined) patch[k] = parseHeadcount(req.body[k]);
   if (req.body?.employsWorkers !== undefined) patch.employsWorkers = !!req.body.employsWorkers; // RS/TS (JDG власників) — не роботодавці
   const [c] = await db.update(companiesTable).set(patch).where(eq(companiesTable.id, Number(req.params.id))).returning();
   ok(res, c);
@@ -2293,9 +2297,11 @@ async function setFactoryPositions(factoryId: number, positions: any, ratesAllow
       const old = prevById.get(positionId);
       // обов'язки в умові (Czynności) — не фінансове поле, зберігаються з будь-яким правом
       const contractDuties = p?.contractDuties !== undefined ? (String(p.contractDuties ?? "").trim() || null) : (old?.contractDuties ?? null);
+      // поля powiadomienia (Налаштування → praca.gov.pl) ведуться окремим API — тут лише зберігаємо наявні
+      const ua = { uaStanowisko: old?.uaStanowisko ?? null, kzisCode: old?.kzisCode ?? null };
       return ratesAllowed
-        ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i, contractDuties }
-        : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i, contractDuties };
+        ? { positionId, rate: parseRate(p?.rate), rateNetto: parseRate(p?.rateNetto), invoiceRate: parseRate(p?.invoiceRate), sortOrder: i, contractDuties, ...ua }
+        : { positionId, rate: old?.rate ?? null, rateNetto: old?.rateNetto ?? null, invoiceRate: old?.invoiceRate ?? null, sortOrder: i, contractDuties, ...ua };
     })
     .filter(p => Number.isInteger(p.positionId) && p.positionId > 0 && !seen.has(p.positionId) && seen.add(p.positionId));
   if (rows.length) await db.insert(factoryPositionsTable).values(rows.map(r => ({ factoryId, ...r })));
@@ -2319,6 +2325,12 @@ const parseRate = (v: any): number | null => {
   if (v === undefined || v === null || v === "") return null;
   const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null;
 };
+
+// Структурована адреса фабрики (TERYT) для форми PSZ-PPWPU 3.4 — робот praca.gov.pl (12.10.2026)
+const FACTORY_ADDR_FIELDS = ["addrPostalCode", "addrWojewodztwo", "addrPowiat", "addrGmina", "addrMiejscowosc", "addrStreet", "addrHouseNo", "addrAptNo"] as const;
+function applyFactoryAddr(body: any, target: Record<string, unknown>): void {
+  for (const k of FACTORY_ADDR_FIELDS) if (body?.[k] !== undefined) target[k] = String(body[k] ?? "").trim() || null;
+}
 
 // Validate/clean pickup stops: [{name, time}], time optional "HH:MM"
 function cleanStops(input: any): { name: string; time: string }[] | undefined {
@@ -2351,6 +2363,7 @@ router.post("/factories", RW, async (req, res) => {
   if (req.body?.schedulerAdminId !== undefined) values.schedulerAdminId = req.body.schedulerAdminId ? Number(req.body.schedulerAdminId) : null;
   if (req.body?.isOffice !== undefined) values.isOffice = !!req.body.isOffice;
   if (req.body?.city !== undefined) values.city = canonCity(req.body.city); // не String(null)="null"
+  applyFactoryAddr(req.body, values);
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
@@ -2384,6 +2397,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   }
   if (companyId !== undefined) patch.companyId = companyId ?? null;
   if (req.body?.city !== undefined) patch.city = canonCity(req.body.city); // не String(null)="null"
+  applyFactoryAddr(req.body, patch);
   if (req.body?.fuelCommute !== undefined) patch.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) patch.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) patch.transportFeePerShift = parseRate(req.body.transportFeePerShift);

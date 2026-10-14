@@ -360,7 +360,8 @@ export async function uaCard(workerId: number, companyId: number | null = null):
       { key: "pesel", label: "PESEL", value: w.pesel ?? "", source: "профіль" },
       { key: "passport", label: "Dokument podróży (paszport) — seria i numer", value: q?.passportNumber ?? "", required: true, source: "анкета" },
       { key: "passportExp", label: "Paszport ważny do", value: dateStr(q?.passportExpiresAt) ?? "", source: "анкета" },
-      { key: "addr", label: "Adres zamieszkania w Polsce", value: plAddr, required: true, source: "анкета → адреса" },
+      // у чинній формі PSZ-PPWPU (знято 12.10.2026) адреси cudzoziemca немає — довідково, не обовʼязково
+      { key: "addr", label: "Adres zamieszkania w Polsce", value: plAddr, source: "анкета → адреса" },
       { key: "phone", label: "Telefon", value: q?.phone ?? "", source: "анкета" },
       { key: "email", label: "E-mail", value: q?.email ?? "", source: "анкета" },
     ] },

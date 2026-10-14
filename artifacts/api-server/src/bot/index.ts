@@ -108,6 +108,7 @@ import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
 import { registerTaskActions } from "./handlers/tasks";
+import { registerPracaGov } from "./handlers/pracaGov";
 import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
 import { registerSmsCampaign, handleSmsStart } from "./handlers/smsCampaign";
 import { loadSelfTransport, isSelfOn } from "../services/selfTransport";
@@ -140,6 +141,7 @@ registerSignupLinks(bot as any);
 registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кнопки sms:*
 // «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
 registerTaskActions(bot as any);
+registerPracaGov(bot as any); // код SMS для робота praca.gov.pl (pz:code)
 
 // Time/view helpers live in ./time and ./views.
 

@@ -252,6 +252,43 @@ router.get("/tasks/:id/ua-card/:workerId", TP, async (req: AuthedRequest, res) =
   const cid = req.query.companyId != null && Number(req.query.companyId) > 0 ? Number(req.query.companyId) : null; // рядок людина×фірма
   try { ok(res, await (await import("../services/uaNotification")).uaCard(wid, cid)); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
+// робот praca.gov.pl: автоматична подача по людині×фірмі (services/pracaGov, cap legalization у роутері /praca-gov;
+// тут — гейт задачі: учасник/виконавець). Повертає id подачі; стан — GET /praca-gov/submissions/:id.
+router.post("/tasks/:id/ua-submit/:workerId", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  const wid = Number(req.params.workerId);
+  const listed = (((t.autoParams as any)?.workers ?? []) as { id: number }[]).some(w => w.id === wid);
+  if (!listed) return fail(res, 400, "Людина не в списку цієї задачі");
+  const companyId = req.body?.companyId != null && Number(req.body.companyId) > 0 ? Number(req.body.companyId) : null;
+  try { ok(res, await (await import("../services/pracaGov")).startSubmission({ taskId: t.id, workerId: wid, companyId, adminId: me(req), overrides: req.body?.overrides })); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+// повна анкета, яку робот відправить у форму (перегляд ДО запуску) + список прогалин
+router.get("/tasks/:id/ua-preview/:workerId", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  const wid = Number(req.params.workerId);
+  if (!(((t.autoParams as any)?.workers ?? []) as { id: number }[]).some(w => w.id === wid)) return fail(res, 400, "Людина не в списку цієї задачі");
+  const companyId = req.query.companyId != null && Number(req.query.companyId) > 0 ? Number(req.query.companyId) : null;
+  try {
+    const { buildUaFormPayload, pzAccountFor } = await import("../services/pracaGov");
+    const r = await buildUaFormPayload(wid, companyId);
+    const acc = await pzAccountFor(me(req), r.payload.companyId);
+    r.payload.podpis.funkcja = acc?.signerFunction ?? "";
+    r.payload.podpis.pelnomocnik = !!acc?.poaFilePath; // як у startSubmission: галочка лише з файлом довіреності
+    ok(res, { ...r, account: acc ? { id: acc.id, label: acc.label ?? acc.login, contextName: acc.contextName || r.payload.contextPattern, signerFunction: acc.signerFunction } : null });
+  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+// стан відкритої подачі робота по людині×фірмі (для кнопки в задачі)
+router.get("/tasks/:id/ua-submission/:workerId", TP, async (req: AuthedRequest, res) => {
+  const t = await loadTask(Number(req.params.id));
+  if (!t) return fail(res, 404, "Задачу не знайдено");
+  if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
+  const companyId = req.query.companyId != null && Number(req.query.companyId) > 0 ? Number(req.query.companyId) : null;
+  ok(res, { submissionId: await (await import("../services/pracaGov")).openSubmissionFor(Number(req.params.workerId), companyId, me(req)) });
+});
 // підтвердження з praca.gov.pl (PDF/фото) → документ powiadomienie_ua у профіль
 const uaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
 router.post("/tasks/:id/ua-upload/:workerId", TP, uaUpload.single("file"), async (req: AuthedRequest, res) => {
