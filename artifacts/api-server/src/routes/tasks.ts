@@ -272,14 +272,7 @@ router.get("/tasks/:id/ua-preview/:workerId", TP, async (req: AuthedRequest, res
   const wid = Number(req.params.workerId);
   if (!(((t.autoParams as any)?.workers ?? []) as { id: number }[]).some(w => w.id === wid)) return fail(res, 400, "Людина не в списку цієї задачі");
   const companyId = req.query.companyId != null && Number(req.query.companyId) > 0 ? Number(req.query.companyId) : null;
-  try {
-    const { buildUaFormPayload, pzAccountFor } = await import("../services/pracaGov");
-    const r = await buildUaFormPayload(wid, companyId);
-    const acc = await pzAccountFor(me(req), r.payload.companyId);
-    r.payload.podpis.funkcja = acc?.signerFunction ?? "";
-    r.payload.podpis.pelnomocnik = !!acc?.poaFilePath; // як у startSubmission: галочка лише з файлом довіреності
-    ok(res, { ...r, account: acc ? { id: acc.id, label: acc.label ?? acc.login, contextName: acc.contextName || r.payload.contextPattern, signerFunction: acc.signerFunction } : null });
-  } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+  try { ok(res, await (await import("../services/pracaGov")).previewSubmission(wid, companyId, me(req))); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 // стан відкритої подачі робота по людині×фірмі (для кнопки в задачі)
 router.get("/tasks/:id/ua-submission/:workerId", TP, async (req: AuthedRequest, res) => {

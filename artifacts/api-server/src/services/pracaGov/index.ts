@@ -165,6 +165,17 @@ export async function startSubmission(v: { taskId: number | null; workerId: numb
   return { submissionId: sub.id };
 }
 
+// Анкета на перегляд ДО запуску (задача ступеня 2 або профіль): дані форми + прогалини + акаунт
+// цього адміна під фірму подачі; підпис — функція з акаунта, галочка pełnomocnika лише з файлом довіреності.
+export async function previewSubmission(workerId: number, companyId: number | null, adminId: number) {
+  const { pzAccountFor } = await import("./accounts");
+  const r = await buildUaFormPayload(workerId, companyId);
+  const acc = await pzAccountFor(adminId, r.payload.companyId);
+  r.payload.podpis.funkcja = acc?.signerFunction ?? "";
+  r.payload.podpis.pelnomocnik = !!acc?.poaFilePath;
+  return { ...r, account: acc ? { id: acc.id, label: acc.label ?? acc.login, contextName: acc.contextName || r.payload.contextPattern, signerFunction: acc.signerFunction } : null };
+}
+
 export async function decideSubmission(submissionId: number, decision: ReviewDecision): Promise<void> {
   const sub = await submissionById(submissionId);
   if (!sub) throw new Error("Подачу не знайдено");

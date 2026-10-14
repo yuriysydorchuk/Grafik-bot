@@ -8,7 +8,9 @@ import { STAY_ARTICLE_OPTIONS } from "./stayArticles";
 export type DocFieldKey =
   | "number" | "validFrom" | "expiresAt" | "issuedAt" | "issuer"
   | "employerCompanyId" | "caseStatus" | "submittedAt" | "caseNumber" | "decisionAt"
-  | "laborMarketAccess" | "studyMode" | "purpose" | "article";
+  | "laborMarketAccess" | "studyMode" | "purpose" | "article"
+  // powiadomienie_ua (attrs, 14.10.2026) — ті самі ключі, що пише робот praca.gov.pl (services/pracaGov/confirm.ts)
+  | "factory" | "dateFromActual" | "hoursPerMonth" | "hourlyRate" | "position" | "kzis";
 
 export interface DocFieldOption { value: string; label: string }
 
@@ -16,7 +18,7 @@ export interface DocField {
   key: DocFieldKey;
   label: string;
   required?: boolean;
-  kind: "text" | "date" | "company" | "caseStatus" | "boolean" | "select";
+  kind: "text" | "date" | "number" | "company" | "caseStatus" | "boolean" | "select";
   hint?: string;
   options?: DocFieldOption[]; // лише для kind: "select"
   // "ukrEnd" — значення читається з LegalizationGlobals.ukrStatusEnd, поле read-only й НЕ шлеться на сервер;
@@ -114,10 +116,19 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
     F("validFrom", "Чинний з", "date", { required: true }),
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
+  // Ті самі дані, що робот бере з подачі (фірма, фабрика, дати, години, ставка, посада) — щоб ручне
+  // завантаження потвердження мало той самий набір у профілі (прохання власника 14.10.2026).
   powiadomienie_ua: [
     F("employerCompanyId", "Роботодавець", "company", { required: true }),
+    F("factory", "Фабрика", "text"),
     F("validFrom", "Праця від", "date", { required: true }),
     F("expiresAt", "Праця до", "date"),
+    F("dateFromActual", "Фактичний перший день", "date", { hint: "якщо повідомлення подано пізніше за 7-денний строк — реальна дата початку" }),
+    F("hoursPerMonth", "Годин на місяць", "number"),
+    F("hourlyRate", "Ставка, zł/год", "text"),
+    F("position", "Посада у формі (stanowisko)", "text"),
+    F("kzis", "Код KZiS", "text"),
+    F("number", "Nr potwierdzenia", "text"),
   ],
   student_cert: [
     // Тип навчання — зберігається в attrs.studyMode (як laborMarketAccess у TRC):

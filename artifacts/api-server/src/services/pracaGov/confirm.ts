@@ -2,12 +2,13 @@
 // powiadomienie_ua у профілі з даними з подачі — фірма-роботодавець, фабрика, від якої дати,
 // скільки годин/міс. (attrs + читабельна назва), обовʼязок закривається, задача ступеня 2 синкається.
 // Викликається з робота одразу після «Wyślij»; той самий шлях, що й ручне «Додати підтвердження».
+// Подача з профілю (без задачі, 14.10.2026) кладе документ напряму — задачі ступеня 2 закриє нічний синк.
 import fs from "node:fs";
 import path from "node:path";
 import { db, tasksTable, workerDocumentsTable, type UaSubmission } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { WORKER_DOCS_DIR, makeStoredName } from "../../lib/uploads";
-import { uaUploadConfirmation } from "../uaNotification";
+import { uaUploadConfirmation, uaInsertConfirmationDoc, syncUaNotificationTasks } from "../uaNotification";
 import type { UaFormPayload } from "./payload";
 import { setSubmission } from "./submissions";
 
@@ -17,12 +18,16 @@ export async function attachConfirmation(sub: UaSubmission, file: { absPath: str
   const stored = makeStoredName(file.fileName);
   fs.mkdirSync(WORKER_DOCS_DIR, { recursive: true });
   fs.copyFileSync(file.absPath, path.join(WORKER_DOCS_DIR, stored));
+  const relPath = path.join("worker-documents", stored);
   const [task] = sub.taskId ? await db.select().from(tasksTable).where(eq(tasksTable.id, sub.taskId)) : [undefined];
   let docId: number | null = null;
   if (task) {
-    await uaUploadConfirmation(task, sub.workerId, { relPath: path.join("worker-documents", stored), fileName: file.fileName, mime: file.mime }, submittedAt, { adminId }, p.companyId);
-    const [d] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable).where(eq(workerDocumentsTable.filePath, path.join("worker-documents", stored)));
+    await uaUploadConfirmation(task, sub.workerId, { relPath, fileName: file.fileName, mime: file.mime }, submittedAt, { adminId }, p.companyId);
+    const [d] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable).where(eq(workerDocumentsTable.filePath, relPath));
     docId = d?.id ?? null;
+  } else {
+    docId = (await uaInsertConfirmationDoc(sub.workerId, { relPath, fileName: file.fileName, mime: file.mime }, submittedAt, { adminId }, p.companyId)).id;
+    await syncUaNotificationTasks().catch(() => {});
   }
   if (docId) {
     const title = `Powiadomienie UA — ${p.companyName}${p.praca.infoDodatkowe ? ` · ${p.praca.infoDodatkowe.split(" — ")[0]}` : ""} · od ${p.praca.dataPodjecia} · ${p.praca.godzinMiesiac} h/mies.`;

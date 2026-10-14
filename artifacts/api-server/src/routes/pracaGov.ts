@@ -5,11 +5,14 @@ import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
 import { Router, type IRouter } from "express";
+import { eq } from "drizzle-orm";
+import { db, workersTable } from "@workspace/db";
 import { UPLOADS_ROOT, sniffDocMime } from "../lib/uploads";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import {
   listPzAccounts, createPzAccount, updatePzAccount, deletePzAccount, pzAccountById, pzReady, setPzAccountPoa,
   startLoginTest, submitCode, cancelSubmission, submissionById, recentSubmissions, screenshotPath, previewPath, isAccountBusy, decideSubmission,
+  previewSubmission, startSubmission, openSubmissionFor,
 } from "../services/pracaGov";
 
 const router: IRouter = Router();
@@ -103,6 +106,27 @@ router.post("/praca-gov/accounts/:id/test-login", async (req: AuthedRequest, res
   if (!a) return fail(res, 404, "Акаунт не знайдено");
   if (a.adminId !== req.admin!.adminId) return fail(res, 403, "Тест входу запускає власник акаунта");
   try { ok(res, { submissionId: await startLoginTest(a.id, req.admin!.adminId) }); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+
+// Подача з профілю працівника (14.10.2026): плюсик біля Powiadomienie → «Автоматична подача» без задачі
+// ступеня 2. Той самий ланцюжок, що з задачі (перегляд анкети → робот → Wydruk → підпис); документ у профіль
+// кладе attachConfirmation напряму, задачу ступеня 2 (якщо є) закриє синк. ?companyId= — рядок людина×фірма.
+const workerExists = async (id: number) => id > 0 && !!(await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, id))).length;
+const companyOf = (v: unknown) => v != null && Number(v) > 0 ? Number(v) : null;
+router.get("/praca-gov/workers/:id/ua-preview", async (req: AuthedRequest, res) => {
+  const wid = Number(req.params.id);
+  if (!(await workerExists(wid))) return fail(res, 404, "Працівника не знайдено");
+  try { ok(res, await previewSubmission(wid, companyOf(req.query.companyId), req.admin!.adminId)); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+router.post("/praca-gov/workers/:id/ua-submit", async (req: AuthedRequest, res) => {
+  const wid = Number(req.params.id);
+  if (!(await workerExists(wid))) return fail(res, 404, "Працівника не знайдено");
+  try { ok(res, await startSubmission({ taskId: null, workerId: wid, companyId: companyOf(req.body?.companyId), adminId: req.admin!.adminId, overrides: req.body?.overrides })); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+router.get("/praca-gov/workers/:id/ua-submission", async (req: AuthedRequest, res) => {
+  const wid = Number(req.params.id);
+  if (!(await workerExists(wid))) return fail(res, 404, "Працівника не знайдено");
+  ok(res, { submissionId: await openSubmissionFor(wid, companyOf(req.query.companyId), req.admin!.adminId) });
 });
 
 router.get("/praca-gov/submissions", async (req: AuthedRequest, res) => {

@@ -405,18 +405,29 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
       // purpose — мета перебування карти (з decyzji, на карті не друкується): інформаційно + для задач офісу
       // article — стаття decyzji (services/stayArticles.ts, 20.09.2026): мета виводиться з неї, а
       // право на працю движок бере з довідника (articleGrantsWork) або з анотації карти
-      const ALLOWED: Record<string, "boolean" | "string"> = { laborMarketAccess: "boolean", studyMode: "string", purpose: "string", article: "string" };
+      // powiadomienie_ua (14.10.2026): фабрика/фактичний перший день/години/ставка/посада/KZiS — ті самі ключі,
+      // що пише робот praca.gov.pl (services/pracaGov/confirm.ts); ручна форма в профілі їх редагує.
+      const ALLOWED: Record<string, "boolean" | "string" | "number"> = {
+        laborMarketAccess: "boolean", studyMode: "string", purpose: "string", article: "string",
+        factory: "string", dateFromActual: "string", hoursPerMonth: "number", hourlyRate: "string", position: "string", kzis: "string",
+      };
       const ENUMS: Record<string, string[]> = { studyMode: ["stationary", "part_time", "school"], purpose: ["work", "study", "family", "business", "other"], article: STAY_ARTICLE_CODES };
-      const clean: Record<string, unknown> = {};
+      // злиття з наявними attrs: службові ключі робота (source, submissionId, confirmationNo, …) не затираються;
+      // null у запиті = прибрати ключ
+      const merged: Record<string, unknown> = { ...((before.attrs as Record<string, unknown> | null) ?? {}) };
       for (const [k, v] of Object.entries(b.attrs)) {
         if (!(k in ALLOWED)) return fail(res, 400, `attrs.${k}: невідомий атрибут`);
         if (v !== null && typeof v !== ALLOWED[k]) return fail(res, 400, `attrs.${k}: очікується ${ALLOWED[k]}`);
         if (v !== null && ENUMS[k] && !ENUMS[k].includes(String(v))) return fail(res, 400, `attrs.${k}: одне з ${ENUMS[k].join("|")}`);
-        if (v !== null) clean[k] = v;
+        if (k === "dateFromActual" && v !== null && !isDate(v)) return fail(res, 400, "attrs.dateFromActual: формат YYYY-MM-DD");
+        if (k === "kzis" && v !== null && !/^\d{6}$/.test(String(v))) return fail(res, 400, "attrs.kzis: рівно 6 цифр");
+        if (k === "hoursPerMonth" && v !== null && (!Number.isInteger(v) || (v as number) <= 0)) return fail(res, 400, "attrs.hoursPerMonth: ціле число > 0");
+        if (v === null || v === "") delete merged[k]; else merged[k] = typeof v === "string" ? v.trim() : v;
       }
-      const art = stayArticleOf(clean.article);
-      if (art && !clean.purpose) clean.purpose = art.purpose; // мета — зі статті, якщо не вказана явно
-      patch.attrs = Object.keys(clean).length ? clean : null;
+      // мета — зі статті: коли статтю змінили без явної мети, стара мета зі злиття не має лишатись
+      const art = stayArticleOf(merged.article);
+      if (art && (!merged.purpose || ("article" in b.attrs && !("purpose" in b.attrs)))) merged.purpose = art.purpose;
+      patch.attrs = Object.keys(merged).length ? merged : null;
     }
   }
   if (b.replacesDocumentId !== undefined) {

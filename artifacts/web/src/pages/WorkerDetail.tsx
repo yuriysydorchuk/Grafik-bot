@@ -18,6 +18,7 @@ import { PdfPreview } from "../components/PdfPreview";
 import { ResidenceCardScanModal } from "../components/ResidenceCardScanModal";
 import { ProfileChangeModal, CHANGE_FIELD_LABEL, PAYOUT_PREF_LABEL, fmtVal, type RequestChange } from "../components/ProfileChangeModal";
 import { DocumentAuditModal } from "../components/DocumentAuditModal";
+import { UaSubmitFlow, type UaQueueItem } from "../components/UaSubmitFlow";
 import { HoursCell, EntryFactorySelect } from "../components/DetailModals";
 import { can } from "../lib/roles";
 import { LEGAL_STATUSES, LEGAL_LABEL, LEGAL_BADGE, type LegalStatus } from "../lib/legalStatus";
@@ -442,7 +443,7 @@ export default function WorkerDetail() {
       {/* Секції у дві колонки на широких екранах: ліворуч — активність, праворуч — облікові блоки */}
       {/* Легалізація і документи — один блок на всю ширину одразу під шапкою (рішення власника 03.09.2026) */}
       <div className="mb-5 space-y-5">
-        <WorkerDocuments workerId={w.id} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} companyId={w.companyId ?? null} />
+        <WorkerDocuments workerId={w.id} workerName={w.fullName} companies={companies} nationality={w.nationality ?? null} factoryId={w.factoryId} companyId={w.companyId ?? null} />
         {/* Умови — теж на всю ширину, одразу під легалізацією (рішення власника 05.09.2026) */}
         {can(me, "workerDocs") && <WorkerContracts workerId={w.id} factoryId={w.factoryId} factories={factories} />}
         {can(me, "workerDocs") && <WorkerFamily workerId={w.id} />}
@@ -2443,10 +2444,24 @@ function SlotSendButton({ candidates, onPick, title }: { candidates: DocumentTyp
 
 // Один рядок документа: слот каталогу (кілька можливих типів) або вже наявний
 // документ поза слотами — один макет на все.
-function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScan, scanTitle }: {
+// «+» слоту з двома діями (Powiadomienie): завантажити файл руками або подати роботом praca.gov.pl
+function SlotAddMenu({ onAdd, onAuto }: { onAdd: () => void; onAuto: () => void }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button type="button" onClick={() => { setOpen(false); onAdd(); }} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50">{t("Завантажити файл")}</button>
+      <button type="button" onClick={() => { setOpen(false); onAuto(); }} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-800 hover:bg-sky-100" title={t("Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом")}>🤖 {t("Автоматична подача")}</button>
+      <button type="button" onClick={() => setOpen(false)} className="rounded p-1 text-slate-400 hover:bg-slate-100" title={t("Скасувати")}><XCircle className="h-3.5 w-3.5" /></button>
+    </span>
+  );
+}
+
+function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, requestCandidates, requestTitle, onAdd, onAuto, onEdit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScan, scanTitle }: {
   icon: any; label: string; subLabel?: string | null; state: DocRowState; canLegal: boolean; companies: Company[];
   requestCandidates?: DocumentType[]; requestTitle?: string;
-  onAdd?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
+  onAdd?: () => void; onAuto?: () => void; onEdit?: (doc: WorkerDocument) => void; onRequest?: (docTypeId: number) => void;
   onHistory?: (doc: WorkerDocument) => void; onDelete?: (doc: WorkerDocument) => void;
   onVerify?: (doc: WorkerDocument) => void; onReject?: (doc: WorkerDocument) => void; onPreview?: (doc: WorkerDocument) => void;
   onSend?: (doc: WorkerDocument) => void;
@@ -2476,7 +2491,8 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
             {requestedAt && <span className="text-xs font-medium text-blue-600" title={state.requestedDoc?.requestedBy == null ? t("автозапит системи в бот") : t("запит офісу")}>{t("запрошено {date}", { date: fmtShortDate(requestedAt) })}{state.requestedDoc?.requestedBy == null ? " 🤖" : ""}{(state.requestedDoc?.requestRemindCount ?? 0) > 0 ? ` · ${t("нагад.")} ${state.requestedDoc!.requestRemindCount}` : ""}</span>}
             <span className="flex items-center gap-0.5">
               {onScan && <button type="button" onClick={onScan} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={scanTitle ?? t("Сканувати карту")}><ScanLine className="h-3.5 w-3.5" /></button>}
-              {onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}
+              {onAdd && onAuto ? <SlotAddMenu onAdd={onAdd} onAuto={onAuto} />
+                : onAdd && <button type="button" onClick={onAdd} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title={t("Додати")}><Plus className="h-3.5 w-3.5" /></button>}
               {requestCandidates && onRequest && <SlotSendButton candidates={requestCandidates} onPick={onRequest} title={requestTitle ?? t("Попросити подати")} />}
             </span>
           </span>
@@ -2549,10 +2565,11 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
 
 // Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
-function DocSlotList({ types, docs, companies, employers, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
+function DocSlotList({ types, docs, companies, employers, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onAutoSubmit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; employers: DocEmployer[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
   onOpenDoc: (doc: WorkerDocument) => void; onOpenEmpty: (type: DocumentType | null, restrictCodes?: string[], employerCompanyId?: number | null) => void;
+  onAutoSubmit?: (companyId: number | null) => void; // Powiadomienie: «Автоматична подача» роботом praca.gov.pl (cap legalization)
   onRequest: (docTypeId: number) => void; onHistory: (doc: WorkerDocument) => void; onDelete: (doc: WorkerDocument) => void;
   onVerify: (doc: WorkerDocument) => void; onReject: (doc: WorkerDocument) => void; onPreview: (doc: WorkerDocument) => void;
   onSend: (doc: WorkerDocument) => void;
@@ -2576,11 +2593,14 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     if (!type) return null;
     const state = resolveDocSlot(items, [code], globals);
     const scanOnly = SCAN_ONLY_CODES.has(code) && !!onScan;
-    const onAdd = () => (state.kind === "empty" && state.requestedDoc && !scanOnly) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type);
+    // Powiadomienie з одним роботодавцем: «+» = завантажити (фірма профілю вже вибрана) АБО подати роботом
+    const uaCompany = code === "powiadomienie_ua" ? employers[0]?.companyId ?? null : undefined;
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc && !scanOnly) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type, undefined, uaCompany);
+    const onAuto = code === "powiadomienie_ua" && onAutoSubmit ? () => onAutoSubmit(uaCompany ?? null) : undefined;
     return (
       <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
-        onAdd={scanOnly ? undefined : onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onAdd={scanOnly ? undefined : onAdd} onAuto={onAuto} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={onScan} scanTitle={scanTitle} />
     );
   };
@@ -2597,7 +2617,7 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     return (
       <DocRow key={`${code}-${e.companyId}`} icon={docTypeIcon(type.icon)} label={label} subLabel={e.companyName} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
-        onAdd={onAdd} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
+        onAdd={onAdd} onAuto={onAutoSubmit ? () => onAutoSubmit(e.companyId) : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
     );
   };
@@ -2699,7 +2719,7 @@ type DocModalState =
 // Роботодавець для слотів документів «по фірмі» (powiadomienie): фірма + чи основна
 type DocEmployer = { companyId: number; companyName: string; primary: boolean };
 
-function WorkerDocuments({ workerId, companies, nationality, factoryId, companyId }: { workerId: number; companies: Company[]; nationality: string | null; factoryId: number | null; companyId: number | null }) {
+function WorkerDocuments({ workerId, workerName, companies, nationality, factoryId, companyId }: { workerId: number; workerName: string; companies: Company[]; nationality: string | null; factoryId: number | null; companyId: number | null }) {
   const t = useT();
   const qc = useQueryClient();
   const me = useMe();
@@ -2728,6 +2748,7 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId, companyI
     return out;
   })();
   const [docModal, setDocModal] = useState<DocModalState | null>(null);
+  const [uaQueue, setUaQueue] = useState<UaQueueItem[] | null>(null);
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
@@ -2811,6 +2832,7 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId, companyI
           <DocSlotList types={types} docs={docs} companies={companies} employers={employers} nationality={nationality} requiresSanepid={requiresSanepid} globals={globals} canLegal={canLegal}
             onOpenDoc={doc => setDocModal({ mode: "edit", doc })}
             onOpenEmpty={(type, restrictCodes, employerCompanyId) => setDocModal({ mode: "add", type, restrictCodes, employerCompanyId })}
+            onAutoSubmit={canLegal ? companyId => setUaQueue([{ workerId, companyId, name: workerName }]) : undefined}
             onRequest={docTypeId => request.mutate(docTypeId)}
             onHistory={doc => setAuditFor(doc)}
             onDelete={async doc => { if (await confirm({ title: t("Видалити документ?"), danger: true, confirmText: t("Видалити") })) remove.mutate(doc.id); }}
@@ -2833,9 +2855,11 @@ function WorkerDocuments({ workerId, companies, nationality, factoryId, companyI
           type={docModal.mode === "add" ? docModal.type : null}
           restrictCodes={docModal.mode === "add" ? docModal.restrictCodes ?? null : null}
           defaultEmployerCompanyId={docModal.mode === "add" ? docModal.employerCompanyId ?? null : null}
-          types={types} companies={companies} allDocs={docs} canLegal={canLegal} nationality={nationality} globals={globals}
+          types={types} companies={companies} factories={factories} allDocs={docs} canLegal={canLegal} nationality={nationality} globals={globals}
           onClose={() => setDocModal(null)} onSaved={() => { inv(); setDocModal(null); }} />
       )}
+      {/* «Автоматична подача» з плюсика Powiadomienie — робот praca.gov.pl без задачі ступеня 2 (14.10.2026) */}
+      {uaQueue && <UaSubmitFlow taskId={null} queue={uaQueue} onClose={() => setUaQueue(null)} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />}
       {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
       {rejecting && (
         <RejectDocModal doc={rejecting} loading={reject.isPending} onClose={() => setRejecting(null)}
@@ -2954,7 +2978,8 @@ function WorkerBankAccounts({ workerId }: { workerId: number }) {
 // код.status_ukr + деякі legal-поля (validFrom/issuedAt/.../laborMarketAccess) —
 // шляються окремим PATCH .../legal і доступні лише canLegal; number/expiresAt/
 // title/status — базові поля документа, редагує будь-хто з доступом до профілю.
-const LEGAL_FIELD_KEYS = new Set<DocFieldKey>(["validFrom", "issuedAt", "issuer", "employerCompanyId", "caseStatus", "submittedAt", "caseNumber", "decisionAt", "laborMarketAccess"]);
+const LEGAL_FIELD_KEYS = new Set<DocFieldKey>(["validFrom", "issuedAt", "issuer", "employerCompanyId", "caseStatus", "submittedAt", "caseNumber", "decisionAt", "laborMarketAccess",
+  "factory", "dateFromActual", "hoursPerMonth", "hourlyRate", "position", "kzis"]); // UA-поля йдуть лише через /legal — без cap вимкнені, а не губляться мовчки
 
 // Чиста календарна арифметика через UTC-якір (без toISOString() від "зараз" —
 // тут дата вже рядок, зсуву TZ немає; те саме, що daysUntil у lib/legality.ts).
@@ -2969,7 +2994,7 @@ function pairFields(fields: DocField[]): DocField[][] {
   const rows: DocField[][] = [];
   let buf: DocField[] = [];
   for (const f of fields) {
-    if (f.kind === "text" || f.kind === "date") {
+    if (f.kind === "text" || f.kind === "date" || f.kind === "number") {
       buf.push(f);
       if (buf.length === 2) { rows.push(buf); buf = []; }
     } else {
@@ -2981,9 +3006,9 @@ function pairFields(fields: DocField[]): DocField[][] {
   return rows;
 }
 
-function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId = null, types, companies, canLegal, nationality, globals, onClose, onSaved }: {
+function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId = null, types, companies, factories = [], canLegal, nationality, globals, onClose, onSaved }: {
   workerId: number; doc: WorkerDocument | null; type: DocumentType | null; restrictCodes: string[] | null; defaultEmployerCompanyId?: number | null;
-  types: DocumentType[]; companies: Company[]; allDocs: WorkerDocument[]; canLegal: boolean;
+  types: DocumentType[]; companies: Company[]; factories?: Factory[]; allDocs: WorkerDocument[]; canLegal: boolean;
   nationality: string | null; globals: LegalizationGlobals | undefined; onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
@@ -3016,6 +3041,12 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const [studyMode, setStudyMode] = useState<string>((doc?.attrs?.studyMode as string | undefined) ?? "");
   const [purpose, setPurpose] = useState<string>((doc?.attrs?.purpose as string | undefined) ?? ""); // мета TRC (attrs.purpose)
   const [article, setArticle] = useState<string>((doc?.attrs?.article as string | undefined) ?? ""); // стаття decyzji (attrs.article, lib/stayArticles.ts)
+  // powiadomienie_ua: фабрика/фактичний перший день/години/ставка/посада/KZiS — attrs, як пише робот praca.gov.pl
+  const UA_ATTR_KEYS = ["factory", "dateFromActual", "hoursPerMonth", "hourlyRate", "position", "kzis"] as const;
+  type UaAttrKey = typeof UA_ATTR_KEYS[number];
+  const isUaAttr = (k: DocFieldKey): k is UaAttrKey => (UA_ATTR_KEYS as readonly string[]).includes(k);
+  const [uaAttrs, setUaAttrs] = useState<Record<UaAttrKey, string>>(() => Object.fromEntries(UA_ATTR_KEYS.map(k => [k, doc?.attrs?.[k] == null ? "" : String(doc.attrs[k])])) as Record<UaAttrKey, string>);
+  const robotSub = doc?.attrs?.source === "praca_gov_robot" ? Number(doc.attrs.submissionId) || null : null;
   const [showAllTypes, setShowAllTypes] = useState(false);
   const selectedType = types.find(ty => String(ty.id) === docTypeId) ?? type ?? null;
   const fields = fieldsFor(selectedType);
@@ -3062,7 +3093,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
       case "studyMode": return studyMode;
       case "purpose": return purpose;
       case "article": return article;
-      default: return "";
+      default: return isUaAttr(key) ? uaAttrs[key] : "";
     }
   };
   const setStr = (key: DocFieldKey, v: string) => {
@@ -3085,6 +3116,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
         if (expField?.auto === "plus730" && !expiresAt && v) setExpiresAt(addDaysStr(v, 730));
         break;
       }
+      default: if (isUaAttr(key)) setUaAttrs(a => ({ ...a, [key]: v }));
     }
   };
   const fieldDisabled = (f: DocField) => LEGAL_FIELD_KEYS.has(f.key) && !f.open && !canLegal;
@@ -3148,7 +3180,10 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
     }
     return (
       <div key={f.key}><Label>{t(f.label)}{req}</Label>
-        <Input type={f.kind === "date" ? "date" : "text"} value={getStr(f.key)} disabled={fieldDisabled(f)} onChange={e => setStr(f.key, e.target.value)} />
+        <Input type={f.kind === "date" ? "date" : f.kind === "number" ? "number" : "text"} value={getStr(f.key)} disabled={fieldDisabled(f)} onChange={e => setStr(f.key, e.target.value)}
+          list={f.key === "factory" ? "doc-factory-names" : undefined} />
+        {f.key === "factory" && <datalist id="doc-factory-names">{factories.map(fa => <option key={fa.id} value={fa.name} />)}</datalist>}
+        {f.hint && <p className="mt-0.5 text-[11px] text-slate-400">{t(f.hint)}</p>}
       </div>
     );
   };
@@ -3172,12 +3207,14 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
     caseStatus: caseStatus || null,
     replacesDocumentId: replacesDocumentId ? Number(replacesDocumentId) : null,
     // усі типоспецифічні атрибути — одним обʼєктом (окремі spread-и затирали б один одного)
-    ...(fields.some(f => f.key === "laborMarketAccess" || f.key === "studyMode" || f.key === "purpose" || f.key === "article") ? {
+    ...(fields.some(f => f.key === "laborMarketAccess" || f.key === "studyMode" || f.key === "purpose" || f.key === "article" || isUaAttr(f.key)) ? {
       attrs: {
         ...(fields.some(f => f.key === "laborMarketAccess") ? { laborMarketAccess } : {}),
         ...(fields.some(f => f.key === "studyMode") ? { studyMode: studyMode || null } : {}),
         ...(fields.some(f => f.key === "purpose") ? { purpose: purpose || null } : {}),
         ...(fields.some(f => f.key === "article") ? { article: article || null } : {}),
+        // сервер зливає з наявними attrs (службові ключі робота лишаються); порожнє = прибрати ключ
+        ...Object.fromEntries(fields.filter(f => isUaAttr(f.key)).map(f => { const k = f.key as UaAttrKey; const v = uaAttrs[k].trim(); return [k, !v ? null : k === "hoursPerMonth" ? Number(v) : v]; })),
       },
     } : {}),
   });
@@ -3241,6 +3278,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
           </>
         )}
 
+        {robotSub && <p className="rounded-md bg-sky-50 px-2 py-1 text-xs text-sky-800">🤖 {t("Подано роботом praca.gov.pl")} · <Link href="/settings?tab=pracaGov" className="underline">{t("подача")} #{robotSub}</Link></p>}
         {pairFields(fields).map((row, i) => (
           <div key={i} className={row.length === 2 ? "grid grid-cols-2 gap-2" : ""}>
             {row.map(renderField)}

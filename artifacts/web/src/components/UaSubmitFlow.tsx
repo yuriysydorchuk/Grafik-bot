@@ -30,19 +30,22 @@ type ItemState = { status: "pending" | "active" | "done" | "failed" | "skipped";
 
 // Черга людей: для кожного по черзі — анкета → робот → Wydruk → рішення; далі наступний.
 // Один акаунт виконує одну подачу за раз, тож послідовно; підсумок з PDF кожного внизу.
-export function UaSubmitFlow({ taskId, queue, onClose, onDone }: { taskId: number; queue: UaQueueItem[]; onClose: () => void; onDone: () => void }) {
+// taskId null — запуск з профілю працівника (плюсик біля Powiadomienie, 14.10.2026): ті самі три екрани,
+// ендпойнти під /praca-gov/workers/:id (cap legalization) замість гейту задачі.
+export function UaSubmitFlow({ taskId, queue, onClose, onDone }: { taskId: number | null; queue: UaQueueItem[]; onClose: () => void; onDone: () => void }) {
   const t = useT();
   const [i, setI] = useState(0);
+  const url = (kind: "ua-preview" | "ua-submit" | "ua-submission", workerId: number) => taskId != null ? `/tasks/${taskId}/${kind}/${workerId}` : `/praca-gov/workers/${workerId}/${kind}`;
   const [states, setStates] = useState<ItemState[]>(() => queue.map((_, k) => ({ status: k === 0 ? "active" : "pending" })));
   const cur = queue[i];
   const setState = (k: number, patch: Partial<ItemState>) => setStates(st => st.map((x, j) => j === k ? { ...x, ...patch } : x));
   const advance = () => { const n = i + 1; if (n < queue.length) { setI(n); setState(n, { status: "active" }); } };
   // уже є відкрита подача по цій людині (модалку закривали) — продовжуємо її, а не стартуємо нову
-  const { data: openSub, isLoading: openLoading } = useQuery<{ submissionId: number | null }>({ queryKey: ["ua-open-submission", taskId, cur?.workerId, cur?.companyId], queryFn: () => get(`/tasks/${taskId}/ua-submission/${cur!.workerId}${cur!.companyId != null ? `?companyId=${cur!.companyId}` : ""}`), enabled: !!cur && states[i]?.submissionId == null && states[i]?.status === "active", staleTime: 0 });
+  const { data: openSub, isLoading: openLoading } = useQuery<{ submissionId: number | null }>({ queryKey: ["ua-open-submission", taskId, cur?.workerId, cur?.companyId], queryFn: () => get(`${url("ua-submission", cur!.workerId)}${cur!.companyId != null ? `?companyId=${cur!.companyId}` : ""}`), enabled: !!cur && states[i]?.submissionId == null && states[i]?.status === "active", staleTime: 0 });
   useEffect(() => { if (openSub?.submissionId && states[i]?.submissionId == null) setState(i, { submissionId: openSub.submissionId }); }, [openSub?.submissionId]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { data: prev, isLoading, error } = useQuery<Preview>({ queryKey: ["ua-preview", taskId, cur?.workerId, cur?.companyId], queryFn: () => get(`/tasks/${taskId}/ua-preview/${cur!.workerId}${cur!.companyId != null ? `?companyId=${cur!.companyId}` : ""}`), enabled: !!cur && states[i]?.submissionId == null && states[i]?.status === "active" && openSub != null && !openSub.submissionId });
+  const { data: prev, isLoading, error } = useQuery<Preview>({ queryKey: ["ua-preview", taskId, cur?.workerId, cur?.companyId], queryFn: () => get(`${url("ua-preview", cur!.workerId)}${cur!.companyId != null ? `?companyId=${cur!.companyId}` : ""}`), enabled: !!cur && states[i]?.submissionId == null && states[i]?.status === "active" && openSub != null && !openSub.submissionId });
   const start = useMutation({
-    mutationFn: (overrides: Payload) => post<{ submissionId: number }>(`/tasks/${taskId}/ua-submit/${cur!.workerId}`, { companyId: cur!.companyId, overrides }),
+    mutationFn: (overrides: Payload) => post<{ submissionId: number }>(url("ua-submit", cur!.workerId), { companyId: cur!.companyId, overrides }),
     onSuccess: d => setState(i, { submissionId: d.submissionId }),
     onError: (e: any) => toast.error(e.message),
   });

@@ -264,19 +264,26 @@ export async function uaUploadConfirmation(task: Task, workerId: number, file: {
   const rows = paramsOf(task).workers.filter(x => x.id === workerId);
   const w = rows.find(x => companyId == null || (x.companyId ?? null) === companyId);
   if (!w) throw new Error(companyId != null && rows.length ? "Цієї фірми немає в рядках людини — оновіть задачу" : "Людину в списку не знайдено");
+  const { id: docId, typeName } = await uaInsertConfirmationDoc(workerId, file, submittedAt, actor, companyId ?? w.companyId ?? null);
+  await logTaskEvent(task.id, "worker_upload", actor.adminId, { documentId: docId, title: `${typeName} — ${w.name}${w.companyName ? ` (${w.companyName})` : ""}` });
+  await syncUaNotificationTasks().catch(() => {});
+  return `${w.name}${w.companyName ? ` (${w.companyName})` : ""}: підтвердження внесено в профіль (${typeName})`;
+}
+
+// Сам документ powiadomienie_ua (present, verified, submitted_at) — спільний для задачі ступеня 2 і робота
+// praca.gov.pl, запущеного з профілю без задачі (14.10.2026). Без companyId роботодавець = фірма профілю.
+export async function uaInsertConfirmationDoc(workerId: number, file: { relPath: string; fileName: string; mime: string | null }, submittedAt: string | null, actor: { adminId: number }, companyId: number | null): Promise<{ id: number; typeName: string }> {
   const { ensureDocumentType } = await import("./workerDocuments");
   const ty = await ensureDocumentType(DOC_CODE);
   const [worker] = await db.select({ companyId: workersTable.companyId }).from(workersTable).where(eq(workersTable.id, workerId));
-  const employerCompanyId = companyId ?? w.companyId ?? worker?.companyId ?? null;
+  const employerCompanyId = companyId ?? worker?.companyId ?? null;
   const sub = submittedAt && /^\d{4}-\d{2}-\d{2}$/.test(submittedAt) ? submittedAt : warsawToday();
   const [d] = await db.insert(workerDocumentsTable).values({
     workerId, docTypeId: ty.id, title: ty.name, status: "present", filePath: file.relPath, fileName: file.fileName, fileMime: file.mime,
     submittedAt: sub, validFrom: sub, issuedAt: sub, employerCompanyId, source: "office", verifiedAt: new Date(), verifiedBy: actor.adminId,
   }).returning();
   await documentChanged({ id: d!.id, workerId }, "created", { adminId: actor.adminId });
-  await logTaskEvent(task.id, "worker_upload", actor.adminId, { documentId: d!.id, title: `${ty.name} — ${w.name}${w.companyName ? ` (${w.companyName})` : ""}` });
-  await syncUaNotificationTasks().catch(() => {});
-  return `${w.name}${w.companyName ? ` (${w.companyName})` : ""}: підтвердження внесено в профіль (${ty.name})`;
+  return { id: d!.id, typeName: ty.name };
 }
 
 // ── Контекст для «Як вирішити» ────────────────────────────────────────────────

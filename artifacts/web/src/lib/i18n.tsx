@@ -3983,6 +3983,10 @@ const EN: Record<string, string> = {
   "Підписати й надіслати": "Sign and send",
   "Автопідпис — етап 3": "Auto-signing — stage 3",
   "Автоматична подача": "Automatic submission",
+  // Powiadomienie у профілі: ручна форма з даними подачі + «+» із вибором (14.10.2026)
+  "Фактичний перший день": "Actual first working day", "якщо повідомлення подано пізніше за 7-денний строк — реальна дата початку": "if the notification was filed after the 7-day deadline — the real start date",
+  "Годин на місяць": "Hours per month", "Посада у формі (stanowisko)": "Position on the form (stanowisko)", "Код KZiS": "KZiS code", "Nr potwierdzenia": "Confirmation no.",
+  "Завантажити файл": "Upload a file", "Подано роботом praca.gov.pl": "Filed by the praca.gov.pl robot",
   "вибрати всіх для групової подачі": "select all for batch submission",
   "до групової подачі": "add to batch submission",
   "вибрано": "selected",
