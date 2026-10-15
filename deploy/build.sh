@@ -28,8 +28,12 @@ echo "▶ Building API/bot…"
 pnpm --filter @workspace/api-server run build
 
 echo "▶ Typecheck (api + web)…"
+# tsc api-server займає ~2 ГБ — на межі типового ліміту купи Node 22 (2096 MB); 15.10.2026 впав
+# з «Reached heap limit». Даємо 4 ГБ (VPS має 12 ГБ), щоб деплой не залежав від цієї межі.
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=4096"
 pnpm --filter @workspace/api-server run typecheck
 ( cd artifacts/web && npx tsc -b --noEmit )
+unset NODE_OPTIONS
 
 echo "▶ (Re)starting under pm2…"
 pm2 start ecosystem.config.cjs --update-env || pm2 restart grafik-bot --update-env
