@@ -47,4 +47,14 @@ test("PUT questionnaire: citizenship P0L (OCR) → nationality poland, sex M →
   await request(app).put(`/api/workers/${w!.id}/questionnaire`).set("Cookie", owner.cookie).set(H).send({ isStudent: true });
   const [after5] = await db.select({ isStudent: workersTable.isStudent }).from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(after5?.isStudent, false);
+
+  // ім'я/прізвище: профіль віддає їх модалці анкети, а порожні з модалки НЕ обнуляють профіль
+  // (до 14.10.2026 GET /workers/:id їх не віддавав → «Зберегти» в анкеті стирало ім'я)
+  await db.update(workersTable).set({ firstName: "Taras", lastName: "Kowalenko", middleName: "Ivan" }).where(eq(workersTable.id, w!.id));
+  const prof = await request(app).get(`/api/workers/${w!.id}`).set("Cookie", owner.cookie);
+  assert.equal(prof.body.firstName, "Taras"); assert.equal(prof.body.lastName, "Kowalenko");
+  await request(app).put(`/api/workers/${w!.id}/questionnaire`).set("Cookie", owner.cookie).set(H).send({ firstName: "", middleName: "", lastName: " " });
+  const [after6] = await db.select({ firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName }).from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(after6?.firstName, "Taras"); assert.equal(after6?.lastName, "Kowalenko");
+  assert.equal(after6?.middleName, null, "друге ім'я очистити можна");
 });

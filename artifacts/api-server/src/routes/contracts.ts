@@ -125,10 +125,12 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   // Ім'я/по-батькові/прізвище — поля workersTable, не анкети (той самий поділ,
   // що routes/passportScan.ts) — офіс редагує напряму, fullName НЕ чіпаємо
   // (канонічне поле для сортування/матчингу/бота лишається як є).
+  // Порожні ім'я/прізвище НЕ обнуляють профіль (обов'язкові для umowy; так модалка з
+  // порожніми полями тихо стирала їх до 14.10.2026) — друге ім'я очистити можна.
   const namePatch: Record<string, unknown> = {};
-  if (body.firstName !== undefined) namePatch.firstName = String(body.firstName).trim() || null;
+  if (body.firstName !== undefined && String(body.firstName).trim()) namePatch.firstName = String(body.firstName).trim();
   if (body.middleName !== undefined) namePatch.middleName = String(body.middleName).trim() || null;
-  if (body.lastName !== undefined) namePatch.lastName = String(body.lastName).trim() || null;
+  if (body.lastName !== undefined && String(body.lastName).trim()) namePatch.lastName = String(body.lastName).trim();
   if (Object.keys(namePatch).length) await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
   // анкета → профіль (громадянство/стать) + перерахунок світлофорів легальності
   await syncProfileFromQuestionnaire(workerId, {

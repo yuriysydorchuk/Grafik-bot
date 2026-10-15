@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
-import { sanitizeAmount, normDate, normNip, entitiesToDraft, detectOurCompany, parsePassportMrz, mrzToPassportDraft, toVisionCompatible, normalizeForOcr, mrzNationalityToCatalog } from "./docai.ts";
+import { sanitizeAmount, normDate, normNip, entitiesToDraft, detectOurCompany, parsePassportMrz, mrzToPassportDraft, toVisionCompatible, normalizeForOcr, mrzNationalityToCatalog, findPassportIssueDate, passportDatesInText } from "./docai.ts";
 
 // ── sanitizeAmount ────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ test("mrzToPassportDraft: канонічний приклад → повна ч�
   assert.equal(d.citizenship, "UTO");
   assert.equal(d.sex, "F");
   assert.equal(d.birthDate, "1974-08-12");
-  assert.equal(d.fullName, "ANNA MARIA ERIKSSON");
+  assert.equal(d.fullName, "ERIKSSON ANNA MARIA", "Прізвище Ім'я — порядок профілю");
   assert.equal(d.firstName, "ANNA", "перше слово givenNames");
   assert.equal(d.middleName, "MARIA", "друге (і подальші) слово givenNames — по-батькові/друге ім'я");
   assert.equal(d.lastName, "ERIKSSON", "surname як є");
@@ -142,6 +142,35 @@ test("mrzToPassportDraft: null (MRZ не знайдено) → усі поля n
     citizenship: null, sex: null, birthDate: null, fullName: null,
     firstName: null, middleName: null, lastName: null,
   });
+});
+
+// ── Дата видачі з візуальної зони (15.10.2026) ──────────────────────────────────
+test("findPassportIssueDate: UA-паспорт «22 БЕР/MAR 24» — 10 років до закінчення", () => {
+  const text = [
+    "УКРАЇНА / UKRAINE", "Прізвище/Surname KOWALENKO", "Ім'я/Given Names TARAS",
+    "Дата народження/Date of birth 14 ЛИП/JUL 01", "Дата видачі/Date of issue 22 БЕР/MAR 24",
+    "Дата закінчення строку дії/Date of expiry 22 БЕР/MAR 34", "P<UKRKOWALENKO<<TARAS<<<<<<<<<<<<<<<<<<<<<<<<",
+  ].join("\n");
+  assert.deepEqual(passportDatesInText(text, "2026-10-15").sort(), ["2001-07-14", "2024-03-22", "2034-03-22"]);
+  assert.equal(findPassportIssueDate(text, { birthDate: "2001-07-14", expiryDate: "2034-03-22" }, "2026-10-15"), "2024-03-22");
+});
+
+test("findPassportIssueDate: «N років − 1 день», числові дати, кілька кандидатів", () => {
+  // PL: ważny do 04.03.2034, wydany 05.03.2024 (строк 10 років − 1 день); інша дата на сторінці не плутає
+  const pl = "Data urodzenia 12.07.1990\nData wydania 05.03.2024\nData ważności 04.03.2034\nPodpis 01.02.2020";
+  assert.equal(findPassportIssueDate(pl, { birthDate: "1990-07-12", expiryDate: "2034-03-04" }, "2026-10-15"), "2024-03-05");
+  // закінчення 31.12 → видача 01.01 через (N років − 1 день)
+  assert.equal(findPassportIssueDate("01 JAN 2020\n31 DEC 2029", { birthDate: "1990-01-01", expiryDate: "2029-12-31" }, "2026-10-15"), "2020-01-01");
+  // дві «ювілейні» дати — неоднозначно → null (людина впише)
+  assert.equal(findPassportIssueDate("05.03.2020\n05.03.2024", { birthDate: "1990-01-01", expiryDate: "2030-03-04" }, "2026-10-15"), null);
+  // без MRZ-дат не вгадуємо (єдина дата могла б бути датою народження)
+  assert.equal(findPassportIssueDate("Date of birth 12 JUL 1990", { birthDate: null, expiryDate: null }, "2026-10-15"), null);
+  // без зв'язку з закінченням — лише якщо кандидат один
+  assert.equal(findPassportIssueDate("Date of issue 17 MAR 2021", { birthDate: "1990-01-01", expiryDate: "2031-05-02" }, "2026-10-15"), "2021-03-17");
+  assert.equal(findPassportIssueDate("17 MAR 2021\n18 APR 2022", { birthDate: "1990-01-01", expiryDate: "2031-05-02" }, "2026-10-15"), null);
+  // майбутня дата або нічого не знайдено → null
+  assert.equal(findPassportIssueDate("05 JAN 2030", { birthDate: null, expiryDate: "2040-01-05" }, "2026-10-15"), null);
+  assert.equal(findPassportIssueDate("", { birthDate: null, expiryDate: null }, "2026-10-15"), null);
 });
 
 // ── mrzNationalityToCatalog (створення працівника з паспорта) ──────────────────

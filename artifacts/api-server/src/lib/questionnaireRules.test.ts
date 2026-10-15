@@ -88,7 +88,7 @@ test("validatePassport: обов'язкові поля, вік, термін д�
   const today = "2026-09-08";
   const okIn = {
     firstName: "Jan", lastName: "Kowalski", birthDate: "1995-05-05", passportNumber: "fc 1234567",
-    passportCountry: "Ukraina", passportExpiresAt: "2030-01-01", citizenship: "UKR", sex: "M",
+    passportCountry: "Ukraina", passportIssuedAt: "2020-01-02", passportExpiresAt: "2030-01-01", citizenship: "UKR", sex: "M",
   };
   const ok = validatePassport(okIn, today);
   assert.deepEqual(ok.errors, {});
@@ -101,7 +101,13 @@ test("validatePassport: обов'язкові поля, вік, термін д�
   assert.equal(bad.errors.passportNumber, "format");
   assert.equal(bad.errors.passportCountry, "required");
   assert.equal(bad.errors.passportExpiresAt, "expired");
+  assert.equal(bad.errors.passportIssuedAt, "required", "дати видачі в MRZ нема — людина вписує сама");
   assert.equal(bad.errors.citizenship, "latin");
+  assert.equal(validatePassport({ ...okIn, passportIssuedAt: "2026-09-09" }, today).errors.passportIssuedAt, "future");
+  assert.equal(validatePassport({ ...okIn, passportIssuedAt: "2030-01-01" }, today).errors.passportIssuedAt, "future");
+  assert.equal(validatePassport({ ...okIn, passportIssuedAt: "2020-01-02", passportExpiresAt: "2020-01-01" }, "2020-06-01").errors.passportIssuedAt, "issuedOrder");
+  assert.equal(ok.values.passportIssuedAt, "2020-01-02");
+  assert.equal(validatePassport({ ...okIn, passportIssuedAt: "1990-01-01" }, today).errors.passportIssuedAt, "issuedBirth", "видача раніше народження");
   assert.equal(ok.values.citizenship, "Ukraina", "код MRZ UKR → назва зі списку");
   assert.equal(ok.values.passportCountry, "Ukraina");
   const unknown = validatePassport({ ...okIn, citizenship: "CHU", passportCountry: "P0L" }, "2026-01-01");

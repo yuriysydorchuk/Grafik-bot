@@ -249,7 +249,8 @@ export async function syncAvailabilityToDb(weekStart: string): Promise<{
 // Get workers from master list who have NOT submitted for this week
 export async function getWorkersWhoHaventSubmitted(weekStart: string): Promise<Worker[]> {
   const rows = await readAvailabilityFromSheets(weekStart);
-  const submittedNames = new Set(rows.map(r => normalizeFullName(r.fullName)));
+  // ключ без порядку слів: у профілях «Прізвище Ім'я» (15.10.2026), а у формі люди пишуть як завгодно
+  const submittedNames = new Set(rows.map(r => nameKeyAnyOrder(r.fullName)));
 
   const allWorkers = await db.select().from(workersTable).where(eq(workersTable.isActive, true));
 
@@ -264,7 +265,7 @@ export async function getWorkersWhoHaventSubmitted(weekStart: string): Promise<W
 
   return allWorkers.filter(w =>
     !(w.factoryId && manualFactoryIds.has(w.factoryId)) &&
-    !submittedNames.has(normalizeFullName(w.fullName))
+    !submittedNames.has(nameKeyAnyOrder(w.fullName))
   );
 }
 
@@ -273,3 +274,5 @@ type Worker = typeof workersTable.$inferSelect;
 export function normalizeFullName(name: string): string {
   return name.toLowerCase().replace(/\s+/g, " ").trim();
 }
+
+export const nameKeyAnyOrder = (name: string): string => normalizeFullName(name).split(" ").sort().join(" ");

@@ -49,7 +49,7 @@ async function mkAnalyzedToken(opts: { purpose: "office" | "self" | "anketa"; fa
 
 // Повні валідні payload-и (08.09.2026: усі поля обов'язкові, лише латиниця, формати — lib/questionnaireRules)
 const PASSPORT_OK = {
-  birthDate: "1995-05-05", passportNumber: "AB1234567", passportCountry: "POL", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M",
+  birthDate: "1995-05-05", passportNumber: "AB1234567", passportCountry: "POL", passportIssuedAt: "2020-01-02", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M",
 };
 const CONSENTS_OK = { rodo_info: true, processing: true, storage: true, sharing: true, e_comm: true };
 const ANKETA_OK = {
@@ -122,10 +122,10 @@ test("POST .../confirm: щасливий шлях (self) — створює пр
   const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({
     firstName: "Jan", middleName: "Paweł", lastName: "Kowalski",
     birthDate: "1995-05-05", passportNumber: "AB1234567",
-    passportCountry: "POL", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M",
+    passportCountry: "POL", passportIssuedAt: "2020-01-02", passportExpiresAt: "2030-01-01", citizenship: "POL", sex: "M",
   });
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.equal(res.body.worker.fullName, "Jan Kowalski", "fullName — канонічний, компонується з firstName+lastName (без middleName)");
+  assert.equal(res.body.worker.fullName, "Kowalski Jan", "fullName — канонічний, «Прізвище Ім'я» з lastName+firstName (без middleName)");
 
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, res.body.worker.id));
   assert.equal(worker!.firstName, "Jan");
@@ -142,6 +142,7 @@ test("POST .../confirm: щасливий шлях (self) — створює пр
 
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, worker!.id));
   assert.equal(q!.passportNumber, "AB1234567");
+  assert.equal(q!.passportIssuedAt, "2020-01-02", "дата видачі (в MRZ її нема) — з форми підтвердження");
 
   const [tokenRow] = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.token, token));
   assert.ok(tokenRow!.usedAt);
@@ -283,7 +284,7 @@ test("POST .../questionnaire з anketa-токеном — працює одра�
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, regUlica: "Nowa", regNumerDomu: "2", isStudent: false });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2020-01-02", regUlica: "Nowa", regNumerDomu: "2", isStudent: false });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
   assert.equal(q!.addressPl, "Nowa 2, 00-001 Warszawa");
@@ -294,7 +295,7 @@ test("POST .../questionnaire з anketa-токеном — пише firstName/mid
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, firstName: "Jan", middleName: "Paweł", lastName: "Kowalski" });
+  const res = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2020-01-02", firstName: "Jan", middleName: "Paweł", lastName: "Kowalski" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const [updated] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
   assert.equal(updated!.firstName, "Jan");
@@ -302,7 +303,7 @@ test("POST .../questionnaire з anketa-токеном — пише firstName/mid
   assert.equal(updated!.lastName, "Kowalski");
   assert.equal(updated!.fullName, "Jan Kowalski", "fullName лишається як був, не перекомпоновується");
 
-  const bad = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, firstName: "Іван", lastName: "Kowalski" });
+  const bad = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2020-01-02", firstName: "Іван", lastName: "Kowalski" });
   assert.equal(bad.status, 400, "невалідне ім'я — 400 (08.09.2026: нічого не ігнорується мовчки)");
   assert.equal(bad.body.fields.firstName, "latin");
   const [afterBad] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
@@ -313,13 +314,31 @@ test("anketa-токен НЕ одноразовий — можна дозапо�
   const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
   const token = await createAnketaToken(w!.id);
 
-  const first = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, phone: "+48111111111" });
+  const first = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2020-01-02", phone: "+48111111111" });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const second = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, phone: "+48222222222" });
   assert.equal(second.status, 200, "той самий токен — ще раз, не «використано»");
 
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
   assert.equal(q!.phone, "+48222222222");
+});
+
+test("POST .../questionnaire: порожня дата видачі паспорта (скан до 14.10.2026) — дозапитується; уже є — не питається", opts, async () => {
+  const [w] = await db.insert(workersTable).values({ fullName: "Jan Kowalski" }).returning({ id: workersTable.id });
+  await db.insert(workerQuestionnairesTable).values({ workerId: w!.id, passportNumber: "GN1234567", passportExpiresAt: "2036-01-05" });
+  const token = await createAnketaToken(w!.id);
+
+  const missing = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send(ANKETA_OK);
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.fields.passportIssuedAt, "required");
+  const order = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2036-01-05" });
+  assert.equal(order.body.fields.passportIssuedAt, "future");
+  const ok = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, passportIssuedAt: "2026-01-05" });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, w!.id));
+  assert.equal(q!.passportIssuedAt, "2026-01-05");
+  const again = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send(ANKETA_OK);
+  assert.equal(again.status, 200, "дата вже є — повторно не вимагається");
 });
 
 // ── Запрошення ІСНУЮЧОГО працівника на скан+анкету (needsPassportScan) ─────

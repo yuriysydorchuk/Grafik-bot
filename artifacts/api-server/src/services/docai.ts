@@ -158,7 +158,7 @@ export type PassportDraft = {
 };
 
 // MRZ не кодує дату видачі паспорта (лише народження й закінчення — ICAO 9303) —
-// це поле лишається порожнім, працівник/офіс вводить вручну.
+// тут вона порожня; processPassport добирає її з візуальної зони (findPassportIssueDate).
 export function mrzToPassportDraft(mrz: MrzResult | null): PassportDraft {
   if (!mrz) return { passportNumber: null, passportCountry: null, passportIssuedAt: null, passportExpiresAt: null, citizenship: null, sex: null, birthDate: null, fullName: null, firstName: null, middleName: null, lastName: null };
   // givenNames може містити кілька слів («JAN PAWEL») — перше = firstName,
@@ -175,9 +175,67 @@ export function mrzToPassportDraft(mrz: MrzResult | null): PassportDraft {
     citizenship: countryNamePl(mrz.nationality) || null,
     sex: mrz.sex,
     birthDate: mrz.birthDate,
-    fullName: [mrz.givenNames, mrz.surname].filter(Boolean).join(" ") || null,
+    // «Прізвище Ім'я» — порядок full_name у профілях (рішення власника 15.10.2026)
+    fullName: [mrz.surname, mrz.givenNames].filter(Boolean).join(" ") || null,
     firstName, middleName, lastName,
   };
+}
+
+// ── Дата видачі з візуальної зони (15.10.2026) ──────────────────────────────────
+// Дата видачі є на кожній сторінці даних паспорта, але не в MRZ — шукаємо її в
+// тексті Vision. Формати: «22 БЕР/MAR 24» (UA), «22 MAR 2024», «22.03.2024».
+// Зі знайдених дат відкидаємо народження й закінчення; серед решти перевага тій,
+// від якої закінчення = рівно N років (або N років − 1 день) — так видають
+// паспорти (UA 10/4 р., PL 10/5 р.). Неоднозначно або без MRZ-дат → null.
+// Лише ПРОПОЗИЦІЯ — людина підтверджує у формі.
+const EN_MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const LOCAL_MONTH = "[A-ZА-ЯІЇЄҐЁ]{2,5}\\.?";
+const MONTH_DATE_RE = new RegExp(
+  `(?<![0-9])(\\d{1,2})\\s{0,3}(?:${LOCAL_MONTH}\\s{0,2}/\\s{0,2})?(${EN_MONTHS.join("|")})[A-Z]{0,6}\\.?(?:\\s{0,2}/\\s{0,2}${LOCAL_MONTH})?\\s{0,3}(\\d{4}|\\d{2})(?![0-9])`, "gu");
+const NUMERIC_DATE_RE = /(?<![0-9])(\d{2})[./\- ](\d{2})[./\- ](\d{4})(?![0-9])/g;
+
+function isoOf(y: number, m: number, d: number): string | null {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+const localTodayIso = (): string => { const n = new Date(); return isoOf(n.getFullYear(), n.getMonth() + 1, n.getDate())!; };
+
+export function passportDatesInText(text: string, todayIso: string = localTodayIso()): string[] {
+  const up = text.toUpperCase();
+  const thisYear = Number(todayIso.slice(0, 4));
+  const out = new Set<string>();
+  for (const m of up.matchAll(MONTH_DATE_RE)) {
+    let y = Number(m[3]);
+    // дворічний рік: 20yy, якщо не далі ніж строк дії вперед, інакше 19yy (дата народження)
+    if (m[3]!.length === 2) y = 2000 + y > thisYear + 11 ? 1900 + y : 2000 + y;
+    const iso = isoOf(y, EN_MONTHS.indexOf(m[2]!) + 1, Number(m[1]));
+    if (iso) out.add(iso);
+  }
+  for (const m of up.matchAll(NUMERIC_DATE_RE)) {
+    const iso = isoOf(Number(m[3]), Number(m[2]), Number(m[1]));
+    if (iso) out.add(iso);
+  }
+  return [...out];
+}
+
+export function findPassportIssueDate(
+  text: string, known: { birthDate: string | null; expiryDate: string | null }, todayIso: string = localTodayIso(),
+): string | null {
+  const { birthDate, expiryDate } = known;
+  // без MRZ-дат не вгадуємо: єдина знайдена дата могла б бути датою народження
+  if (!birthDate || !expiryDate) return null;
+  const cands = passportDatesInText(text, todayIso).filter(d => d > birthDate && d < expiryDate && d <= todayIso);
+  const [ey, em, ed] = expiryDate.split("-").map(Number);
+  const next = new Date(Date.UTC(ey!, em! - 1, ed! + 1)); // закінчення + 1 день (строк «N років − 1 день»)
+  const sameDay = (y: number, m: number, d: number, ty: number, tm: number, td: number) => m === tm && d === td && ty - y >= 1 && ty - y <= 15;
+  const anniversary = cands.filter(iso => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return sameDay(y!, m!, d!, ey!, em!, ed!) || sameDay(y!, m!, d!, next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
+  });
+  if (anniversary.length === 1) return anniversary[0]!;
+  if (anniversary.length > 1) return null; // неоднозначно — хай людина впише
+  return cands.length === 1 ? cands[0]! : null;
 }
 
 // ── MRZ (ICAO 9303 TD3, 2×44) — детерміновано з чек-сумами, без жодного OCR API ──
@@ -384,6 +442,7 @@ export async function processPassport(buffer: Buffer, mimeType: string): Promise
   const fullText = await callVisionOcr(prepared);
   const mrz = parsePassportMrz(fullText);
   const draft = mrzToPassportDraft(mrz);
+  draft.passportIssuedAt = findPassportIssueDate(fullText, { birthDate: draft.birthDate, expiryDate: draft.passportExpiresAt });
   logger.info({ passportTail: draft.passportNumber ? String(draft.passportNumber).slice(-3) : null, mrzValid: mrz?.documentNumberValid ?? null }, "vision passport parsed");
   return { draft, mrz, fullText };
 }

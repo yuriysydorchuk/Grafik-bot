@@ -1250,9 +1250,10 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: !!selfToday,
     selfTransportSince: selfToday?.since ?? null,
     selfTransportRows: selfRows,
-    // без цих двох модалка редагування з профілю відкривалась би з порожніми
-    // полями і затирала б їх при збереженні
-    gratyfikantName: w.gratyfikantName, pesel: w.pesel, middleName: w.middleName,
+    // без цих полів модалки профілю (редагування, анкета) відкривались би з порожніми
+    // полями і затирали б їх при збереженні (firstName/lastName — анкета, до 14.10.2026
+    // «Зберегти» в анкеті обнуляло ім'я/прізвище в профілі)
+    gratyfikantName: w.gratyfikantName, pesel: w.pesel, firstName: w.firstName, middleName: w.middleName, lastName: w.lastName,
     // залічки за бадання — список записів (окрема таблиця, CRUD нижче)
     // частини однієї залічки — поруч і по порядку (1/6, 2/6, …), новіші групи першими
     badania: await db.select().from(workerBadaniaTable)

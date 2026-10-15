@@ -31,7 +31,7 @@ import { bot } from "../bot/instance";
 import { logger } from "../lib/logger";
 import { ensureDocumentType, applyWorkerDocumentUpload } from "../services/workerDocuments";
 import { requestRehire } from "../bot/handlers/rehire";
-import { validatePassport, validateQuestionnaire, CONSENTS_VERSION } from "../lib/questionnaireRules";
+import { validatePassport, validateQuestionnaire, passportIssuedError, trimStr, CONSENTS_VERSION } from "../lib/questionnaireRules";
 import { companiesTable } from "@workspace/db";
 
 const router: IRouter = Router();
@@ -40,7 +40,8 @@ const fail = (res: any, code: number, msg: string) => res.status(code).json({ er
 // Валідація анкети: 400 + мапа field → код помилки (клієнт підсвічує поле й перекладає код)
 const failFields = (res: any, fields: Record<string, string>) =>
   res.status(400).json({ error: `Перевір поля: ${Object.keys(fields).join(", ")}`, fields });
-const todayIso = () => new Date().toISOString().slice(0, 10);
+// календарний день за Варшавою (toISOString давав UTC — о 00:30 ще «вчора»)
+const todayIso = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 
 const scanLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 60,
@@ -203,7 +204,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
   // (рішення 08.09.2026; ті самі правила підсвічує клієнт).
   const pv = validatePassport(req.body ?? {}, todayIso());
   if (Object.keys(pv.errors).length) return failFields(res, pv.errors);
-  const { birthDate, passportExpiresAt, sex, passportNumber, passportCountry, citizenship } = pv.values;
+  const { birthDate, passportIssuedAt, passportExpiresAt, sex, passportNumber, passportCountry, citizenship } = pv.values;
 
   // Для anketa-токена з уже відомим workerId (запрошення ІСНУЮЧОГО працівника
   // без паспорта на файлі) — доповнюємо профіль, НЕ створюємо новий (інакше
@@ -228,7 +229,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
   try {
     let worker: typeof workersTable.$inferSelect;
     if (row.purpose === "self" && !isExistingWorker && !forceNew) {
-      const dup = findLikelyDuplicate([firstName, lastName].join(" "), await db.select().from(workersTable));
+      const dup = findLikelyDuplicate([lastName, firstName].join(" "), await db.select().from(workersTable));
       if (dup && !dup.isActive) return ok(res, { rehireCandidate: { id: dup.id, fullName: dup.fullName, workerCode: dup.workerCode } });
     }
     if (isExistingWorker) {
@@ -245,7 +246,8 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       worker = updated!;
     } else {
       const workerCode = await nextWorkerCode();
-      const fullName = [firstName, lastName].join(" ");
+      // «Прізвище Ім'я» — порядок full_name у профілях (рішення власника 15.10.2026)
+      const fullName = [lastName, firstName].join(" ");
       const [created] = await db.insert(workersTable).values({
         fullName, firstName, middleName: middleNameIn, lastName,
         workerCode, factoryId: row.factoryId, telegramId: row.telegramId, language: row.language,
@@ -270,7 +272,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
 
     // Upsert — для isExistingWorker анкета могла вже частково існувати
     // (напр. дозаповнена раніше через бот без скану паспорта).
-    const qPatch = { ocrRaw: row.draftJson, ocrDocId: doc!.id, passportNumber, passportCountry, passportExpiresAt, citizenship, sex };
+    const qPatch = { ocrRaw: row.draftJson, ocrDocId: doc!.id, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
     const [existingQ] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, worker.id));
     if (existingQ) await db.update(workerQuestionnairesTable).set(qPatch).where(eq(workerQuestionnairesTable.workerId, worker.id));
     else await db.insert(workerQuestionnairesTable).values({ workerId: worker.id, ...qPatch });
@@ -379,6 +381,18 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
     }
   }
 
+  // Дата видачі паспорта (у MRZ її нема): хто пройшов скан до 14.10.2026, має її
+  // порожньою — дозапитуємо тут, поки поле порожнє (клієнт показує його за тим самим
+  // правилом: questionnaire.passportIssuedAt порожнє і кроку скану в цій сесії не було).
+  const [qRow] = await db.select({ passportIssuedAt: workerQuestionnairesTable.passportIssuedAt, passportExpiresAt: workerQuestionnairesTable.passportExpiresAt })
+    .from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, row.workerId));
+  let issuedPatch: string | null = null;
+  if (!qRow?.passportIssuedAt || b.passportIssuedAt !== undefined) {
+    const issued = trimStr(b.passportIssuedAt);
+    const issuedErr = passportIssuedError(issued, qRow?.passportExpiresAt ?? null, todayIso(), workerRow?.birthDate ? String(workerRow.birthDate) : null);
+    if (issuedErr) errors.passportIssuedAt = issuedErr; else issuedPatch = issued;
+  }
+
   // Усі обов'язкові поля/формати/латиниця/згоди — lib/questionnaireRules (те саме на клієнті).
   const qv = validateQuestionnaire(b, { birthDate: workerRow?.birthDate ? String(workerRow.birthDate) : null });
   Object.assign(errors, qv.errors);
@@ -387,6 +401,7 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
 
   const patch: Record<string, unknown> = {
     status: "submitted", submittedAt: new Date(), updatedAt: new Date(),
+    ...(issuedPatch ? { passportIssuedAt: issuedPatch } : {}),
     birthPlace: v.birthPlace, motherName: v.motherName, fatherName: v.fatherName, bankName: v.bankName, bankIban: v.bankIban,
     phone: v.phone, email: v.email, taxOffice: v.taxOffice, nfzBranch: v.nfzBranch,
     isStudent: v.isStudent, schoolName: v.schoolName, hasOtherEmployment: v.hasOtherEmployment, otherEmploymentNote: v.otherEmploymentNote,

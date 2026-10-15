@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { Card, Button, Spinner, SearchableSelect } from "../components/ui";
 import { TAX_OFFICES } from "../lib/taxOffices";
-import { validatePassport, validateQuestionnaire, CONSENT_KEYS, type ConsentKey } from "../lib/questionnaireRules";
+import { validatePassport, validateQuestionnaire, passportIssuedError, CONSENT_KEYS, type ConsentKey } from "../lib/questionnaireRules";
 import { COUNTRY_NAMES, COUNTRY_NAMES_TOP, canonicalCountry } from "../lib/countries";
 import { NFZ_BRANCHES } from "../lib/nfzBranches";
 
@@ -41,6 +41,7 @@ const STR: Record<string, Record<Lang, string>> = {
   birthDate: { uk: "Дата народження", en: "Date of birth", es: "Fecha de nacimiento", ru: "Дата рождения", pl: "Data urodzenia" },
   passportNumber: { uk: "Номер паспорта", en: "Passport number", es: "Número de pasaporte", ru: "Номер паспорта", pl: "Numer paszportu" },
   passportCountry: { uk: "Країна видачі", en: "Issuing country", es: "País de emisión", ru: "Страна выдачи", pl: "Kraj wydania" },
+  passportIssuedAt: { uk: "Дата видачі", en: "Date of issue", es: "Fecha de expedición", ru: "Дата выдачи", pl: "Data wydania" },
   passportExpiresAt: { uk: "Дійсний до", en: "Valid until", es: "Válido hasta", ru: "Действителен до", pl: "Ważny do" },
   citizenship: { uk: "Громадянство", en: "Citizenship", es: "Ciudadanía", ru: "Гражданство", pl: "Obywatelstwo" },
   sex: { uk: "Стать", en: "Sex", es: "Sexo", ru: "Пол", pl: "Płeć" },
@@ -114,6 +115,9 @@ const STR: Record<string, Record<Lang, string>> = {
   errBadDate: { uk: "Неправильна дата", en: "Invalid date", es: "Fecha no válida", ru: "Неверная дата", pl: "Nieprawidłowa data" },
   errAge: { uk: "Вік має бути від 16 до 80 років", en: "Age must be between 16 and 80", es: "La edad debe estar entre 16 y 80", ru: "Возраст должен быть от 16 до 80 лет", pl: "Wiek musi być między 16 a 80 lat" },
   errExpired: { uk: "Дата має бути в майбутньому", en: "Must be a future date", es: "Debe ser una fecha futura", ru: "Дата должна быть в будущем", pl: "Data musi być w przyszłości" },
+  errFuture: { uk: "Дата не може бути в майбутньому", en: "Can't be a future date", es: "No puede ser una fecha futura", ru: "Дата не может быть в будущем", pl: "Data nie może być z przyszłości" },
+  errIssuedBirth: { uk: "Дата видачі має бути пізніше за дату народження", en: "Date of issue must be after the date of birth", es: "La fecha de expedición debe ser posterior a la fecha de nacimiento", ru: "Дата выдачи должна быть позже даты рождения", pl: "Data wydania musi być późniejsza niż data urodzenia" },
+  errIssuedOrder: { uk: "Дата видачі має бути раніше, ніж «Дійсний до»", en: "Date of issue must be before \"Valid until\"", es: "La fecha de expedición debe ser anterior a \"Válido hasta\"", ru: "Дата выдачи должна быть раньше, чем «Действителен до»", pl: "Data wydania musi być wcześniejsza niż „Ważny do”" },
   errList: { uk: "Обери зі списку (почни вводити місто)", en: "Choose from the list (start typing the city)", es: "Elige de la lista (empieza a escribir la ciudad)", ru: "Выбери из списка (начни вводить город)", pl: "Wybierz z listy (zacznij wpisywać miasto)" },
   errConsent: { uk: "Потрібна згода", en: "Consent required", es: "Se requiere consentimiento", ru: "Нужно согласие", pl: "Wymagana zgoda" },
   hintName: { uk: "напр. Jan", en: "e.g. Jan", es: "p. ej. Jan", ru: "напр. Jan", pl: "np. Jan" },
@@ -124,6 +128,7 @@ const STR: Record<string, Record<Lang, string>> = {
   errCountryList: { uk: "Не розпізнано зі скану — вибери країну зі списку", en: "Not recognised from the scan — choose the country from the list", es: "No se reconoció en el escaneo — elige el país de la lista", ru: "Не распознано со скана — выбери страну из списка", pl: "Nie rozpoznano ze skanu — wybierz kraj z listy" },
   countryPick: { uk: "— вибери країну —", en: "— choose a country —", es: "— elige un país —", ru: "— выбери страну —", pl: "— wybierz kraj —" },
   countryOther: { uk: "Інші країни", en: "Other countries", es: "Otros países", ru: "Другие страны", pl: "Inne kraje" },
+  hintIssued: { uk: "дата з паспорта (Дата видачі / Date of issue) — перевір", en: "from the passport (Date of issue) — please check", es: "del pasaporte (Fecha de expedición / Date of issue) — compruébala", ru: "дата из паспорта (Дата выдачи / Date of issue) — проверь", pl: "z paszportu (Data wydania / Date of issue) — sprawdź" },
   hintExpires: { uk: "дата з паспорта, має бути в майбутньому", en: "from the passport, must be in the future", es: "del pasaporte, debe ser futura", ru: "дата из паспорта, должна быть в будущем", pl: "z paszportu, musi być w przyszłości" },
   hintBirthPlace: { uk: "місто латиницею, напр. Lwów", en: "city in Latin letters, e.g. Lwów", es: "ciudad en letras latinas, p. ej. Lwów", ru: "город латиницей, напр. Lwów", pl: "miasto, np. Lwów" },
   hintPesel: { uk: "11 цифр, напр. 95050512346", en: "11 digits, e.g. 95050512346", es: "11 dígitos, p. ej. 95050512346", ru: "11 цифр, напр. 95050512346", pl: "11 cyfr, np. 95050512346" },
@@ -168,7 +173,7 @@ type Meta = {
 export class FieldError extends Error { fields: Record<string, string>; constructor(msg: string, fields: Record<string, string>) { super(msg); this.fields = fields; } }
 type AddrParts = { wojewodztwo: string; powiat: string; gmina: string; miejscowosc: string; ulica: string; numerDomu: string; kodPocztowy: string };
 type Draft = {
-  passportNumber: string | null; passportCountry: string | null; passportExpiresAt: string | null;
+  passportNumber: string | null; passportCountry: string | null; passportIssuedAt?: string | null; passportExpiresAt: string | null;
   citizenship: string | null; sex: string | null; birthDate: string | null; fullName: string | null;
 } & NameDraft;
 
@@ -369,7 +374,10 @@ export default function PassportScan() {
           // питати вдруге поспіль — зайве.
           <QuestionnaireForm s={s} busy={busy} error={analyzeErr} serverErrors={serverErrors} initial={meta.questionnaire} initialPesel={meta.pesel}
             birthDate={birthDate} companyName={meta.companyName}
-            showNameFields={!meta.needsPassportScan} nameDraft={meta.nameDraft} onSubmit={submitQuestionnaire} />
+            showNameFields={!meta.needsPassportScan} nameDraft={meta.nameDraft}
+            // дата видачі паспорта — те саме правило, що на сервері: порожня в анкеті (скан до 14.10.2026) і скану в цій сесії не було
+            showIssuedAt={!meta.needsPassportScan && !meta.questionnaire?.passportIssuedAt}
+            onSubmit={submitQuestionnaire} />
         )}
       </div>
     </div>
@@ -539,6 +547,9 @@ function errText(s: S, code: string | undefined): string | null {
     case "date": return s("errDate");
     case "age": return s("errAge");
     case "expired": return s("errExpired");
+    case "future": return s("errFuture");
+    case "issuedOrder": return s("errIssuedOrder");
+    case "issuedBirth": return s("errIssuedBirth");
     case "list": return s("errList");
     case "consent": return s("errConsent");
     default: return code ? s("errFormat") : null;
@@ -561,7 +572,8 @@ function Field({ label, required, hint, error, children }: { label: string; requ
 function scrollToFirstError() {
   requestAnimationFrame(() => document.querySelector('[data-err="1"]')?.scrollIntoView({ behavior: "smooth", block: "center" }));
 }
-const todayIso = () => new Date().toISOString().slice(0, 10);
+// локальний календарний день (toISOString давав UTC — о 00:30 ще «вчора»)
+const todayIso = () => new Date().toLocaleDateString("sv-SE");
 
 function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: {
   s: S; draft: Draft; busy: boolean; error: string | null; serverErrors: Errs;
@@ -575,13 +587,15 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
   // Країна/громадянство — лише зі списку; зі скану підставляємо, якщо розпізнано, інакше вибір вручну
   // (старі чернетки/анкети можуть містити код «UKR» або назву в іншому регістрі — canonicalCountry зводить до option-а)
   const [passportCountry, setPassportCountry] = useState(canonicalCountry(draft.passportCountry));
+  // дата видачі — зі скану візуальної зони (у MRZ її нема), людина перевіряє/вписує
+  const [passportIssuedAt, setPassportIssuedAt] = useState(draft.passportIssuedAt ?? "");
   const [passportExpiresAt, setPassportExpiresAt] = useState(draft.passportExpiresAt ?? "");
   const [citizenship, setCitizenship] = useState(canonicalCountry(draft.citizenship));
   const [sex, setSex] = useState(draft.sex ?? "");
   const [tried, setTried] = useState(false);
   const [touched, setTouched] = useState<Record<string, true>>({});
 
-  const body = { firstName, middleName, lastName, birthDate, passportNumber, passportCountry, passportExpiresAt, citizenship, sex };
+  const body = { firstName, middleName, lastName, birthDate, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
   const local = tried ? validatePassport(body, todayIso()).errors : {};
   const errs: Errs = { ...local };
   for (const [k, v] of Object.entries(serverErrors)) if (!touched[k]) errs[k] = v;
@@ -597,7 +611,7 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
     onSubmit({
       firstName: v.values.firstName, middleName: v.values.middleName, lastName: v.values.lastName,
       birthDate: v.values.birthDate, passportNumber: v.values.passportNumber, passportCountry: v.values.passportCountry,
-      passportExpiresAt: v.values.passportExpiresAt, citizenship: v.values.citizenship, sex: v.values.sex,
+      passportIssuedAt: v.values.passportIssuedAt, passportExpiresAt: v.values.passportExpiresAt, citizenship: v.values.citizenship, sex: v.values.sex,
     });
   }
   const hasErr = Object.keys(errs).length > 0;
@@ -616,6 +630,7 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
         <Field label={s("birthDate")} required hint={s("hintBirthDate")} error={er("birthDate")}><input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); touch("birthDate"); }} className={cls("birthDate")} /></Field>
         <Field label={s("passportNumber")} required hint={s("hintPassportNo")} error={er("passportNumber")}><input value={passportNumber} onChange={e => { setPassportNumber(e.target.value.toUpperCase()); touch("passportNumber"); }} autoCapitalize="characters" className={cls("passportNumber")} /></Field>
         <Field label={s("passportCountry")} required hint={s("hintCountry")} error={erCountry("passportCountry")}><CountrySelect s={s} value={passportCountry} onChange={v => { setPassportCountry(v); touch("passportCountry"); }} className={cls("passportCountry")} /></Field>
+        <Field label={s("passportIssuedAt")} required hint={s("hintIssued")} error={er("passportIssuedAt")}><input type="date" value={passportIssuedAt} onChange={e => { setPassportIssuedAt(e.target.value); touch("passportIssuedAt"); }} className={cls("passportIssuedAt")} /></Field>
         <Field label={s("passportExpiresAt")} required hint={s("hintExpires")} error={er("passportExpiresAt")}><input type="date" value={passportExpiresAt} onChange={e => { setPassportExpiresAt(e.target.value); touch("passportExpiresAt"); }} className={cls("passportExpiresAt")} /></Field>
         <Field label={s("citizenship")} required hint={s("hintCountry")} error={erCountry("citizenship")}><CountrySelect s={s} value={citizenship} onChange={v => { setCitizenship(v); touch("citizenship"); }} className={cls("citizenship")} /></Field>
         <Field label={s("sex")} required error={er("sex")}>
@@ -672,10 +687,10 @@ const CONSENT_LABEL: Record<ConsentKey, keyof typeof STR> = { rodo_info: "cRodoI
 // кожним полем, згоди RODO — короткі рядки з галочками в кінці. Правила —
 // lib/questionnaireRules (копія серверного файлу): підсвічуємо тут, сервер
 // перевіряє ще раз і відповідає 400 fields.
-function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel, birthDate, companyName, showNameFields, nameDraft, onSubmit }: {
+function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel, birthDate, companyName, showNameFields, nameDraft, showIssuedAt, onSubmit }: {
   s: S; busy: boolean; error: string | null; serverErrors: Errs;
   initial: Record<string, unknown> | null; initialPesel: string | null; birthDate: string | null; companyName: string | null;
-  showNameFields: boolean; nameDraft: NameDraft | null;
+  showNameFields: boolean; nameDraft: NameDraft | null; showIssuedAt: boolean;
   onSubmit: (fields: Record<string, unknown>, certFile: File | null) => void;
 }) {
   // Дозаповнення (purpose=anketa, лінк з бота «📄 Документи») — стартові
@@ -686,6 +701,7 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
   const [firstName, setFirstName] = useState(nameDraft?.firstName ?? "");
   const [middleName, setMiddleName] = useState(nameDraft?.middleName ?? "");
   const [lastName, setLastName] = useState(nameDraft?.lastName ?? "");
+  const [passportIssuedAt, setPassportIssuedAt] = useState("");
   const [birthPlace, setBirthPlace] = useState(str("birthPlace"));
   const [pesel, setPesel] = useState(initialPesel ?? "");
   const [motherName, setMotherName] = useState(str("motherName"));
@@ -729,6 +745,7 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
   });
   const body: Record<string, unknown> = {
     ...(showNameFields ? { firstName, middleName, lastName } : {}),
+    ...(showIssuedAt ? { passportIssuedAt } : {}),
     birthPlace, pesel, motherName, fatherName, bankName, bankIban, phone, email, taxOffice, nfzBranch,
     isStudent, schoolName, hasOtherEmployment, otherEmploymentNote, isRegisteredUnemployed, emergencyContact, nip, pit0,
     ankietaInnyPracodawca, ankietaEmeryt, ankietaRencista, ankietaNiepelnosprawnosc, ankietaSkladkaChorobowa,
@@ -739,6 +756,10 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
     if (showNameFields) {
       const pv = validatePassport({ firstName, middleName, lastName }, todayIso()).errors;
       for (const k of ["firstName", "middleName", "lastName"] as const) if (pv[k]) errs[k] = pv[k]!;
+    }
+    if (showIssuedAt) {
+      const ie = passportIssuedError(passportIssuedAt, str("passportExpiresAt") || null, todayIso(), birthDate);
+      if (ie) errs.passportIssuedAt = ie;
     }
     return errs;
   };
@@ -776,6 +797,11 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
             <Field label={s("middleName")} hint={s("latinOnly")} error={er("middleName")}>{txt("middleName", setMiddleName)}</Field>
             <Field label={s("lastName")} required hint={s("hintLastName")} error={er("lastName")}>{txt("lastName", setLastName)}</Field>
           </>
+        )}
+        {showIssuedAt && (
+          <Field label={s("passportIssuedAt")} required hint={s("hintIssued")} error={er("passportIssuedAt")}>
+            <input type="date" value={passportIssuedAt} onChange={e => { setPassportIssuedAt(e.target.value); touch("passportIssuedAt"); }} className={cls("passportIssuedAt")} />
+          </Field>
         )}
         <Field label={s("birthPlace")} required hint={s("hintBirthPlace")} error={er("birthPlace")}>{txt("birthPlace", setBirthPlace)}</Field>
         <Field label={s("pesel")} required hint={s("hintPesel")} error={er("pesel")}>
