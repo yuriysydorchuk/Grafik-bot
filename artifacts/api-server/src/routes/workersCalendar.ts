@@ -7,7 +7,7 @@ import { and, eq, gte, lte, inArray, isNotNull, or, sql } from "drizzle-orm";
 import {
   db, workersTable, factoriesTable, workerDocumentsTable, documentTypesTable, contractsTable, workerLegalityTable,
   absenceRequestsTable, workerFactoriesTable, tasksTable, hoursMonthExclusionsTable, hostelStaysTable, hostelsTable, scheduleEntriesTable, scheduleWeeksTable,
-  workerChangesTable,
+  workerChangesTable, signupLinksTable, adminsTable,
 } from "@workspace/db";
 import { authRequired, requirePage, type AuthedRequest } from "../lib/auth";
 import { factoryInScope } from "../lib/scope";
@@ -21,7 +21,9 @@ router.use("/workers-calendar", authRequired, requirePage("/workers-calendar"));
 
 // termination (20.09.2026) — звільнення: заплановане (workers.termination_date, людина ще активна)
 // і фактичне (fired_at) — щоб графікова бачила, на які дати шукати заміну
-export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "termination" | "task" | "shift";
+// created (15.10.2026) — «нові в системі»: день, коли профіль зʼявився (workers.created_at), щоб бачити, хто
+// в який день додався; лише за явним запитом, як і shift
+export type CalKind = "doc" | "contract" | "obligation" | "absence" | "vacation" | "hostel" | "birthday" | "start" | "end" | "termination" | "task" | "shift" | "created";
 // «зміни з графіку» — лише за явним запитом (kinds=…,shift): їх багато, у макеті фільтр вимкнений
 const DEFAULT_KINDS: CalKind[] = ["doc", "contract", "obligation", "absence", "vacation", "hostel", "birthday", "start", "end", "termination", "task"];
 export interface CalEvent {
@@ -65,7 +67,26 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
       .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id)).where(and(...firedWhere));
     return fired.map(w => ({ id: `fired:${w.id}`, kind: "termination" as CalKind, date: new Date(w.firedAt!).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), title: "Звільнено", workerId: w.id, workerName: w.fullName, factoryId: w.factoryId, factoryName: w.factoryName ?? null, severity: "info" as const }));
   };
-  if (!workers.length) return want("termination") ? firedEvents() : [];
+  // додані в діапазоні (created_at — настінний Warsaw, тож ::date і є день додавання); і вже звільнені —
+  // «додали й того ж тижня звільнили» теж має бути видно
+  const createdEvents = async (): Promise<CalEvent[]> => {
+    const cw = [sql`${workersTable.createdAt}::date >= ${from}`, sql`${workersTable.createdAt}::date <= ${to}`] as any[];
+    if (opts.workerId) cw.push(eq(workersTable.id, opts.workerId));
+    if (opts.companyId) cw.push(eq(workersTable.companyId, opts.companyId));
+    if (opts.city) cw.push(sql`exists (select 1 from factories f where f.id = ${workersTable.factoryId} and f.city = ${opts.city})`);
+    if (opts.factoryId) cw.push(sql`(${workersTable.factoryId} = ${opts.factoryId} or exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${opts.factoryId}))`);
+    if (opts.factoryIds) cw.push(scopeSql(opts.factoryIds));
+    const rows = await db.select({ id: workersTable.id, fullName: workersTable.fullName, factoryId: workersTable.factoryId, factoryName: factoriesTable.name, isActive: workersTable.isActive,
+      day: sql<string>`${workersTable.createdAt}::date::text`, createdSource: workersTable.createdSource, recruiter: adminsTable.name })
+      .from(workersTable).leftJoin(factoriesTable, eq(workersTable.factoryId, factoriesTable.id))
+      .leftJoin(signupLinksTable, eq(workersTable.signupLinkId, signupLinksTable.id)).leftJoin(adminsTable, eq(signupLinksTable.adminId, adminsTable.id))
+      .where(and(...cw));
+    return rows.map(w => {
+      const detail = [w.recruiter ? `лінк рекрутера: ${w.recruiter}` : null, w.createdSource === "hours_import" ? "створено імпортом годин" : null, w.isActive ? null : "вже звільнений"].filter(Boolean).join(" · ") || null;
+      return { id: `created:${w.id}`, kind: "created" as CalKind, date: w.day, title: "Доданий у систему", detail, workerId: w.id, workerName: w.fullName, factoryId: w.factoryId, factoryName: w.factoryName ?? null, severity: "info" as const };
+    });
+  };
+  if (!workers.length) return [...(want("termination") ? await firedEvents() : []), ...(want("created") ? await createdEvents() : [])];
   const wmap = new Map(workers.map(w => [w.id, w]));
   const ids = [...wmap.keys()];
   const facs = new Map((await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable)).map(f => [f.id, f.name]));
@@ -127,6 +148,7 @@ export async function collectWorkerEvents(opts: { from: string; to: string; fact
     }
     out.push(...await firedEvents()); // фактично звільнені в діапазоні — теж «звільнення»
   }
+  if (want("created")) out.push(...await createdEvents());
   // Перший / останній робочий день — ПО ФАБРИКАХ (рішення власника 21.09.2026): графіковій треба бачити,
   // хто коли почав на якій фабриці й у кого коли останній день на якій. Раніше події були лише з
   // worker_factories (додаткові фабрики) — для людей з однією фабрикою календар мовчав.
@@ -275,7 +297,7 @@ router.get("/workers-calendar/export.xlsx", async (req: AuthedRequest, res) => {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Kalendarz");
-  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Pierwszy dzień pracy", end: "Ostatni dzień pracy", termination: "Zwolnienie", task: "Zadanie", shift: "Zmiana" };
+  const KIND_PL: Record<string, string> = { doc: "Dokument", contract: "Umowa", obligation: "Obowiązek", absence: "Nieobecność", vacation: "Urlop / poza ewidencją", hostel: "Hostel", birthday: "Urodziny", start: "Pierwszy dzień pracy", end: "Ostatni dzień pracy", termination: "Zwolnienie", task: "Zadanie", shift: "Zmiana", created: "Dodany do systemu" };
   ws.addRow(["Data", "Pracownik", "Zakład", "Rodzaj", "Zdarzenie", "Szczegóły"]).font = { bold: true };
   for (const e of events) ws.addRow([e.date, nameCaps(e.workerName), e.factoryName ?? "", KIND_PL[e.kind] ?? e.kind, e.title, e.detail ?? ""]);
   ws.columns.forEach((c, i) => { c.width = [12, 32, 22, 16, 44, 30][i] ?? 16; });

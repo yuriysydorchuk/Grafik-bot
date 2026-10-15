@@ -31,6 +31,43 @@ test("advance: adv:new → amount → comment creates a pending request", opts, 
   assert.equal(rows[0]!.comment, "na paliwo");
 });
 
+// Аванс через бот — лише перші 45 днів від першого робочого дня (15.10.2026)
+test("advance: a worker past 45 days of work is refused and sent to the office", opts, async () => {
+  const workerId = await seedWorker();
+  const old = new Date(); old.setDate(old.getDate() - 60);
+  await db.update(workersTable).set({ firstWorkDate: old.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) }).where(eq(workersTable.id, workerId));
+  resetSent();
+  await pressButton(TID, "adv:new");
+  assert.match(sentText(), /новим працівникам/);
+  assert.match(sentText(), /поважна причина/);
+  await sendText(TID, "300");
+  assert.equal((await advances(workerId)).length, 0, "no amount step — no request");
+});
+
+test("advance: a request started before day 45 is rechecked before it is saved", opts, async () => {
+  const workerId = await seedWorker();
+  const recent = new Date(); recent.setDate(recent.getDate() - 30);
+  await db.update(workersTable).set({ firstWorkDate: recent.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) }).where(eq(workersTable.id, workerId));
+  await pressButton(TID, "adv:new");
+  await sendText(TID, "200");
+  const old = new Date(); old.setDate(old.getDate() - 60); // тим часом людина вже «не нова»
+  await db.update(workersTable).set({ firstWorkDate: old.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) }).where(eq(workersTable.id, workerId));
+  resetSent();
+  await sendText(TID, "-");
+  assert.match(sentText(), /новим працівникам/);
+  assert.equal((await advances(workerId)).length, 0);
+});
+
+test("advance: a worker within 45 days can still request", opts, async () => {
+  const workerId = await seedWorker();
+  const recent = new Date(); recent.setDate(recent.getDate() - 30);
+  await db.update(workersTable).set({ firstWorkDate: recent.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) }).where(eq(workersTable.id, workerId));
+  await pressButton(TID, "adv:new");
+  await sendText(TID, "200");
+  await sendText(TID, "-");
+  assert.equal((await advances(workerId)).length, 1);
+});
+
 test("advance: a '-' comment stores no note", opts, async () => {
   const workerId = await seedWorker();
   await pressButton(TID, "adv:new");
@@ -119,8 +156,8 @@ test("advance: balance block goes only to admins with the /advances page", opts,
   assert.doesNotMatch(toClerk, /Стан на сьогодні/, "role without /advances gets no financial data");
 });
 
-// ── Відпрошування: мінімум 48 год до зміни (03.09.2026, було 24) ─────────────
-test("absence: a whole-day request closer than 48h is refused with the rule text", opts, async () => {
+// ── Відпрошування: мінімум 36 год до зміни (15.10.2026; було 48, ще раніше 24) ─────────────
+test("absence: a whole-day request closer than 36h is refused with the rule text", opts, async () => {
   const workerId = await seedWorker();
   const { nowWarsaw } = await import("./time.ts");
   const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -128,8 +165,8 @@ test("absence: a whole-day request closer than 48h is refused with the rule text
   const in4days = new Date(nowWarsaw()); in4days.setDate(in4days.getDate() + 4);
   setState(TID, "absence:pick", { workerId, lang: "uk", factoryId: null, items: [] });
   await pressButton(TID, `absday:${ymd(tomorrow)}`);
-  assert.match(sentText(), /запізно/, "tomorrow (< 48h before a 06:00 shift) is refused");
-  assert.match(sentText(), /48 годин/, "worker sees the rule");
+  assert.match(sentText(), /запізно/, "tomorrow (< 36h before a 06:00 shift) is refused");
+  assert.match(sentText(), /36 годин/, "worker sees the rule");
   assert.equal((await db.select().from(absenceRequestsTable)).length, 0);
   resetSent();
   setState(TID, "absence:pick", { workerId, lang: "uk", factoryId: null, items: [] });
@@ -137,12 +174,12 @@ test("absence: a whole-day request closer than 48h is refused with the rule text
   assert.match(sentText(), /причин/i, "4 days ahead → asks for the reason");
 });
 
-test("absence: the menu text and the day picker carry the 48h rule", opts, async () => {
+test("absence: the menu text and the day picker carry the 36h rule", opts, async () => {
   await seedWorker();
   await sendText(TID, "🏖 Взяти вихідний");
-  assert.match(sentText(), /за 48 годин/);
+  assert.match(sentText(), /за 36 годин/);
   await pressButton(TID, "absother");
-  assert.match(sentText(), /≥ 48 годин/);
+  assert.match(sentText(), /≥ 36 годин/);
 });
 
 test("advance balance: other deductions come from the svodni row (prev month) and deduction tables (current month)", opts, async () => {

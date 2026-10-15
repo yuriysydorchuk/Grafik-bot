@@ -48,6 +48,10 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
     F("expiresAt", "Дійсний до", "date", { required: true }),
     F("number", "Номер", "text"),
   ],
+  // скан підтвердження надання PESEL (15.10.2026): номер іде в профіль, якщо там ще порожньо
+  pesel: [
+    F("number", "Numer PESEL", "text", { required: true, hint: "11 цифр — запишеться в профіль працівника, якщо там PESEL ще немає" }),
+  ],
   id_card_pl: [
     F("expiresAt", "Дійсний до", "date", { required: true }),
   ],
@@ -73,6 +77,17 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
     // для статей з привʼязкою до роботодавця (114/126/127/139a) движок вимагає фірму з decyzji
     F("employerCompanyId", "Роботодавець з decyzji (для art. 114/126/127/139a)", "company"),
     // мета перебування — з decyzji (на карті не друкується), інформаційно + для задач офісу
+    F("purpose", "Мета перебування (з decyzji)", "select", { options: TRC_PURPOSE_OPTIONS }),
+  ],
+  // скан decyzji o zezwoleniu na pobyt (15.10.2026) — окремо від карти; як TRC: стаття decyzji каже,
+  // чи дає працю, для 114/126/127/139a — роботодавець з decyzji
+  decyzja_pobyt: [
+    F("validFrom", "Від", "date", { required: true }),
+    F("expiresAt", "До", "date", { required: true }),
+    F("decisionAt", "Дата decyzji", "date"),
+    F("article", "Podstawa — стаття decyzji", "select", { options: STAY_ARTICLE_OPTIONS, hint: "Мета перебування підставиться сама; підказка під полем — що стаття дає для праці" }),
+    F("laborMarketAccess", "Z dostępem do rynku pracy — дає й право на працю", "boolean"),
+    F("employerCompanyId", "Роботодавець з decyzji (для art. 114/126/127/139a)", "company"),
     F("purpose", "Мета перебування (з decyzji)", "select", { options: TRC_PURPOSE_OPTIONS }),
   ],
   zezwolenie_jednolite: [

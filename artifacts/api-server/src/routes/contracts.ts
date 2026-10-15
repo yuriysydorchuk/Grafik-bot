@@ -25,6 +25,7 @@ import {
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { factoryInScope } from "../lib/scope";
+import { KSIEG_STD_BRUTTO } from "../services/svodni";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature, EVENT_KINDS } from "../services/contracts";
@@ -542,6 +543,19 @@ router.get("/workers/:id/contract-duties", WD, async (req, res) => {
   if (!worker) return fail(res, 404, "Працівника не знайдено");
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : null;
   ok(res, await resolveContractDuties(worker.positionId, factoryId));
+});
+
+// Превʼю ставки {%Wynagrodzenie%} для модалки генерації (15.10.2026): та сама черга, що й у
+// buildContractData (ставка фабрики «в умові» → мінімальна ставка року), плюс ручна ставка з
+// останньої умови цієї людини на цій фабриці — підказкою, щоб нова версія не губила її мовчки.
+router.get("/workers/:id/contract-rate", WD, async (req, res) => {
+  const workerId = Number(req.params.id);
+  const factoryId = req.query.factoryId ? Number(req.query.factoryId) : null;
+  const [factory] = factoryId ? await db.select({ rate: factoriesTable.contractRateBrutto }).from(factoriesTable).where(eq(factoriesTable.id, factoryId)) : [undefined];
+  const [last] = factoryId ? await db.select({ rate: contractsTable.contractRateBrutto }).from(contractsTable)
+    .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.factoryId, factoryId), sql`${contractsTable.contractRateBrutto} is not null`))
+    .orderBy(desc(contractsTable.id)).limit(1) : [];
+  ok(res, { defaultRate: factory?.rate ?? KSIEG_STD_BRUTTO(), source: factory?.rate != null ? "factory" : "minimum", lastRate: last?.rate ?? null });
 });
 
 // Список умов працівника з назвами фабрики/фірми і файлами пакета — картка в

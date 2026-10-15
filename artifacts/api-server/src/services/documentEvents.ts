@@ -6,6 +6,9 @@
 import { logDocumentAudit, type DocumentAuditAction, type DocumentAuditChange, type DocumentAuditSource } from "./documentAudit";
 import { recomputeWorkerLegality } from "./legalityRecompute";
 import { logger } from "../lib/logger";
+import { db, workersTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
+import { and, eq, isNull, or } from "drizzle-orm";
+import { peselChecksumOk } from "../lib/questionnaireRules";
 
 export async function documentChanged(
   doc: { id: number; workerId: number }, action: DocumentAuditAction,
@@ -21,7 +24,23 @@ export async function documentChanged(
     // внесено ZUA → задача зголошення нового працівника закривається одразу
     try { await (await import("./hireRegistration")).resolveHireTasksNow(doc.workerId); }
     catch (e) { logger.warn({ err: String(e), workerId: doc.workerId }, "hire task resolve after doc change failed"); }
+    try { await peselToProfile(doc.id, doc.workerId); }
+    catch (e) { logger.warn({ err: String(e), workerId: doc.workerId }, "pesel from document failed"); }
   }
+}
+
+// Документ типу «PESEL» з номером (15.10.2026, рішення власника) → workers.pesel, лише якщо в профілі
+// порожньо і номер проходить контрольну суму; наявний PESEL профілю не перезаписується.
+async function peselToProfile(docId: number, workerId: number): Promise<void> {
+  const [r] = await db.select({ number: workerDocumentsTable.number, code: documentTypesTable.code })
+    .from(workerDocumentsTable).leftJoin(documentTypesTable, eq(workerDocumentsTable.docTypeId, documentTypesTable.id))
+    .where(eq(workerDocumentsTable.id, docId));
+  const pesel = (r?.number ?? "").replace(/\s+/g, "");
+  if (r?.code !== "pesel" || !peselChecksumOk(pesel)) return;
+  const set = await db.update(workersTable).set({ pesel })
+    .where(and(eq(workersTable.id, workerId), or(isNull(workersTable.pesel), eq(workersTable.pesel, ""))))
+    .returning({ id: workersTable.id });
+  if (set.length) logger.info({ workerId, docId }, "pesel set from document");
 }
 
 // Поля профілю, від яких залежить результат движка (nationality/company/дати/легасі-статус).

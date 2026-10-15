@@ -1809,6 +1809,9 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
     if (d && !dateFrom) setDateFrom(d);
   }, [profile?.firstWorkDate, profile?.employmentStartDate]); // eslint-disable-line react-hooks/exhaustive-deps
   const [rateOverride, setRateOverride] = useState("");
+  // фабрика, для якої ставку правили руками: зміна фабрики знову бере ставку з її превʼю (ревʼю codex 15.10.2026 —
+  // інакше до завантаження превʼю нової фабрики пішла б ставка попередньої)
+  const [rateTouchedFor, setRateTouchedFor] = useState<string | null>(null);
   const [payoutCash, setPayoutCash] = useState(false);
   const [checkedFactory, setCheckedFactory] = useState<Set<number>>(new Set());
   const [checkedStandard, setCheckedStandard] = useState<Set<number>>(new Set());
@@ -1836,6 +1839,18 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
     queryFn: () => get(`/workers/${workerId}/document-set`),
     enabled: showStandardSection,
   });
+  // Ставка в умові видна одразу (15.10.2026): поле заповнене ставкою, яка піде в {%Wynagrodzenie%}
+  // (фабрики «в умові» → мінімальна року); перекриття шлемо лише коли її змінили
+  const { data: rateInfo } = useQuery<{ defaultRate: number; source: "factory" | "minimum"; lastRate: number | null }>({
+    queryKey: ["contract-rate", workerId, factoryId],
+    queryFn: () => get(`/workers/${workerId}/contract-rate?factoryId=${factoryId}`),
+    enabled: !isStandard,
+  });
+  const fmtRate = (n: number) => String(n).replace(".", ",");
+  const rateTouched = rateTouchedFor === factoryId;
+  useEffect(() => {
+    if (!rateTouched) setRateOverride(rateInfo ? fmtRate(rateInfo.defaultRate) : "");
+  }, [rateInfo?.defaultRate, factoryId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Превʼю {%Czynności%}: звідки візьметься текст обов'язків (посада на фабриці / фабрика / назва посади)
   const { data: duties } = useQuery<{ text: string; source: "position" | "factory" | "position_name" | "none" }>({
     queryKey: ["contract-duties", workerId, factoryId],
@@ -1895,10 +1910,13 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   const save = useMutation({
     mutationFn: async () => {
       if (!isStandard && checkedFactory.size > 0) {
+        // перекриття — лише ставка, яку змінили руками для ЦІЄЇ фабрики; інакше сервер бере ставку фабрики сам
+        const rate = !rateTouched || rateOverride.trim() === "" ? null : Number(rateOverride.replace(",", "."));
+        if (rate != null && !(Number.isFinite(rate) && rate > 0)) throw new Error(t("Ставка має бути додатним числом"));
         await post(`/workers/${workerId}/contracts`, {
           factoryId: Number(factoryId), templateIds: [...checkedFactory],
           dateFrom: dateFrom || null, dateTo: dateTo || null,
-          contractRateBrutto: rateOverride.trim() === "" ? null : Number(rateOverride.replace(",", ".")),
+          contractRateBrutto: rate == null || rate === rateInfo?.defaultRate ? null : rate,
           companyId: companyId ? Number(companyId) : null,
         });
       }
@@ -1963,7 +1981,18 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
         {!isStandard && (
           <div>
             <Label>{t("Ставка в умові для цього працівника (zł/год брутто)")}</Label>
-            <Input value={rateOverride} onChange={e => setRateOverride(e.target.value)} placeholder={t("порожньо = ставка фабрики")} inputMode="decimal" className="w-40" />
+            <Input value={rateOverride} onChange={e => { setRateTouchedFor(factoryId); setRateOverride(e.target.value); }} placeholder={t("порожньо = ставка фабрики")} inputMode="decimal" className="w-40" />
+            {rateInfo && (
+              <p className="mt-1 text-xs text-slate-500">
+                {rateInfo.source === "factory"
+                  ? t("Ставка фабрики «в умові»: {rate} zł", { rate: fmtRate(rateInfo.defaultRate) })
+                  : t("У фабрики ставка «в умові» не задана — мінімальна ставка року: {rate} zł", { rate: fmtRate(rateInfo.defaultRate) })}
+                {rateInfo.lastRate != null && rateInfo.lastRate !== rateInfo.defaultRate && (
+                  <> · {t("у попередній умові: {rate} zł", { rate: fmtRate(rateInfo.lastRate) })}{" "}
+                    <button type="button" className="text-blue-600 hover:underline" onClick={() => { setRateTouchedFor(factoryId); setRateOverride(fmtRate(rateInfo.lastRate!)); }}>{t("взяти")}</button></>
+                )}
+              </p>
+            )}
             <p className="mt-1 text-xs text-slate-400">{t("Перекриває ставку «в умові» з налаштувань фабрики лише для цієї людини й цього пакета.")}</p>
           </div>
         )}
@@ -2325,25 +2354,29 @@ function LegalitySummary({ workerId }: { workerId: number }) {
 // ── Список документів: один слот = один рядок ───────────────────────────────
 // Відгук власника 03.09.2026: «бачу і плитки, і список — має бути щось одне,
 // легке, зрозуміле» — плитки прибрані, лишився єдиний список рядків. «Karta
-// pobytu» і «Zezwolenie/Oświadczenie» — не фіксований тип, а «найкращий»
+// pobytu», «Wiza» і «Zezwolenie/Oświadczenie» — не фіксований тип, а «найкращий»
 // (найпізніший строк) present-документ серед кількох кодів каталогу (людина
 // могла мати кілька підстав одночасно, або підстава змінилась).
-const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue", "status_ukr", "visa_d", "visa_c", "visa_free",
-  "humanitarian_visa", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"];
+// 15.10.2026 (запит власника): візи, Status UKR, PESEL і decyzja більше не в слоті карти —
+// кожен має своє місце, «+» у слоті пропонує лише свої типи.
+const KARTA_POBYTU_CODES = ["trc", "zezwolenie_jednolite", "karta_stalego_pobytu", "rezydent_ue",
+  "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"];
 const KARTA_POBYTU_SHORT: Record<string, string> = {
   trc: "TRC", zezwolenie_jednolite: "Zezwolenie jednolite", karta_stalego_pobytu: "Karta stałego pobytu",
-  rezydent_ue: "Rezydent UE", status_ukr: "Status UKR", visa_d: "Wiza D", visa_c: "Wiza C", visa_free: "Ruch bezwizowy",
-  humanitarian_visa: "Wiza humanitarna", refugee_status: "Status uchodźcy", subsidiary_protection: "Ochrona uzupełniająca",
+  rezydent_ue: "Rezydent UE", refugee_status: "Status uchodźcy", subsidiary_protection: "Ochrona uzupełniająca",
   humanitarian_stay: "Pobyt humanitarny", tolerated_stay: "Pobyt tolerowany", eu_family_member_card: "Rodzina obywatela UE",
 };
+const WIZA_CODES = ["visa_d", "visa_c", "visa_free", "humanitarian_visa"];
+const WIZA_SHORT: Record<string, string> = { visa_d: "Wiza D", visa_c: "Wiza C", visa_free: "Ruch bezwizowy", humanitarian_visa: "Wiza humanitarna" };
+const DECYZJA_CODES = ["decyzja_pobyt"];
 // Паспорт і карти побиту додаються ЛИШЕ через скан (рішення власника 04.09.2026):
 // «+» у цих слотах відкриває сканер, у модалці «Документ» цих типів немає.
 // Редагування вже доданого документа — як завжди.
 const SCAN_ONLY_CODES = new Set<string>(["passport", "trc", "karta_stalego_pobytu", "rezydent_ue", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"]);
 const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
 const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };
-// Коди всіх 7 слотів — решта документів людини йде окремим списком «інші» нижче.
-const SLOT_CODES = new Set<string>(["passport", ...KARTA_POBYTU_CODES, "student_cert", "powiadomienie_ua", ...ZEZWOLENIE_CODES, "medical_exam", "sanepid"]);
+// Коди всіх слотів — решта документів людини йде окремим списком «інші» нижче.
+const SLOT_CODES = new Set<string>(["passport", "pesel", ...WIZA_CODES, ...KARTA_POBYTU_CODES, ...DECYZJA_CODES, "status_ukr", "student_cert", "powiadomienie_ua", ...ZEZWOLENIE_CODES, "medical_exam", "sanepid"]);
 
 type DocRowState =
   | { kind: "notneeded" }
@@ -2564,7 +2597,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   );
 }
 
-// Секція «Документи»: 7 фіксованих слотів (у порядку) + окремо решта
+// Секція «Документи»: фіксовані слоти (у порядку) + окремо решта
 // документів людини, що в слоти не потрапили. Один макет рядка на все.
 function DocSlotList({ types, docs, companies, employers, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onAutoSubmit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; employers: DocEmployer[]; nationality: string | null; requiresSanepid: boolean;
@@ -2582,6 +2615,7 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     .map(d => ({ doc: d, type: types.find(ty => ty.id === d.docTypeId) }))
     .filter((it): it is { doc: WorkerDocument; type: DocumentType } => !!it.type);
   const byCode = (code: string) => types.find(ty => ty.code === code) ?? null;
+  const hasCode = (code: string) => items.some(it => it.type.code === code);
   const notNeeded = isEuNationality(nationality);
   const requestTitle = t("Попросити подати");
 
@@ -2629,11 +2663,12 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
   const multiSlot = (key: string, label: string, codes: string[], shortNames: Record<string, string>, fallbackIcon: any, onScan?: () => void) => {
     const state: DocRowState = notNeeded ? { kind: "notneeded" } : resolveDocSlot(items, codes, globals);
     const icon = state.kind === "doc" ? docTypeIcon(state.type?.icon) : fallbackIcon;
-    const subLabel = state.kind === "doc" && state.type?.code ? (shortNames[state.type.code] ?? state.type.name) : null;
-    // «+» у слоті карти — лише не-карткові підстави (status UKR, візи, безвіз); самі карти — сканером
+    const subLabel = state.kind === "doc" && state.type?.code
+      ? (state.type.code === "decyzja_pobyt" ? (stayArticleOf(state.doc.attrs?.article)?.label.split(" — ")[0] ?? null) : (shortNames[state.type.code] ?? state.type.name)) : null;
+    // «+» — лише не-карткові типи слоту (самі карти — сканером); один такий тип — одразу обраний
     const manualCodes = codes.filter(c => !SCAN_ONLY_CODES.has(c));
     const onAdd = () => (state.kind === "empty" && state.requestedDoc && !SCAN_ONLY_CODES.has(types.find(ty => ty.id === state.requestedDoc!.docTypeId)?.code ?? ""))
-      ? onOpenDoc(state.requestedDoc) : onOpenEmpty(null, manualCodes);
+      ? onOpenDoc(state.requestedDoc) : onOpenEmpty(manualCodes.length === 1 ? byCode(manualCodes[0]!) : null, manualCodes);
     const slotTypes = types.filter(ty => ty.code && codes.includes(ty.code) && ty.isActive !== false);
     let candidates: DocumentType[] = [];
     if (state.kind === "doc" && state.type) candidates = [state.type];
@@ -2661,7 +2696,12 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
   return (
     <div>
       {fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"))}
+      {/* PESEL файлом — іноземцям (у поляків він у dowodzie); показуємо й тоді, коли документ уже є */}
+      {(nationality !== "poland" || hasCode("pesel")) && fixedSlot("pesel", t("PESEL"))}
+      {multiSlot("wiza", t("Wiza"), WIZA_CODES, WIZA_SHORT, docTypeIcon("residence_card"))}
       {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard)}
+      {multiSlot("decyzja", t("Decyzja (pobyt)"), DECYZJA_CODES, {}, docTypeIcon("decision"))}
+      {(nationality === "ukraine" || hasCode("status_ukr")) && fixedSlot("status_ukr", t("Status UKR"))}
       {fixedSlot("student_cert", t("Student"))}
       {nationality === "ukraine" && (employers.length > 1
         ? employers.map(e => employerSlot("powiadomienie_ua", t("Powiadomienie"), e))

@@ -73,6 +73,37 @@ test("TRC «z dostępem do rynku pracy» (attrs.laborMarketAccess) дає й п�
   assert.equal(access?.legacy.derivedLegalStatus, "karta_pobytu");
 });
 
+// скан decyzji окремим типом (15.10.2026): як TRC — побут на строк, праця за статтею, статус виплат karta_pobytu
+test("decyzja_pobyt: побут завжди; праця — за статтею (art_144), art. 114 лише на фірму працівника; PESEL з документа → профіль", opts, async () => {
+  const [w] = await db.insert(workersTable).values({ fullName: "Decyzja India", nationality: "south_asia", isActive: true }).returning();
+  const [dec] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: await typeId("decyzja_pobyt"), title: "Decyzja", status: "present", validFrom: "2026-01-01", expiresAt: "2027-12-07" }).returning();
+  const plain = await recomputeWorkerLegality(w!.id, "2026-10-15");
+  assert.equal(plain?.stay.status, "legal"); assert.equal(plain?.work.status, "unknown");
+  assert.equal(plain?.legacy.derivedLegalStatus, "karta_pobytu");
+  await db.update(workerDocumentsTable).set({ attrs: { article: "art_144" } }).where(eq(workerDocumentsTable.id, dec!.id));
+  const work = await recomputeWorkerLegality(w!.id, "2026-10-15");
+  assert.equal(work?.work.status, "legal"); assert.equal(work?.work.basisDocId, dec!.id);
+  // art. 114 привʼязаний до роботодавця: decyzja на іншу нашу фірму — праця у фірмі працівника не легальна
+  const [c1] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [c2] = await db.insert(companiesTable).values({ name: "Klinex" }).returning();
+  await db.update(workersTable).set({ companyId: c1!.id }).where(eq(workersTable.id, w!.id));
+  await db.update(workerDocumentsTable).set({ attrs: { article: "art_114" }, employerCompanyId: c2!.id }).where(eq(workerDocumentsTable.id, dec!.id));
+  assert.notEqual((await recomputeWorkerLegality(w!.id, "2026-10-15"))?.work.status, "legal", "art. 114 на іншу фірму — праця не підтверджена");
+  await db.update(workerDocumentsTable).set({ employerCompanyId: c1!.id }).where(eq(workerDocumentsTable.id, dec!.id));
+  assert.equal((await recomputeWorkerLegality(w!.id, "2026-10-15"))?.work.status, "legal", "art. 114 на фірму працівника — праця легальна");
+
+  const { documentChanged } = await import("./documentEvents.ts");
+  const [p1] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: await typeId("pesel"), title: "PESEL", status: "present", number: "4405140135 8" }).returning();
+  await documentChanged({ id: p1!.id, workerId: w!.id }, "created", {});
+  assert.equal((await db.select().from(workersTable).where(eq(workersTable.id, w!.id)))[0]?.pesel, null, "невалідна контрольна сума — не пишемо");
+  await db.update(workerDocumentsTable).set({ number: "4405140135 9" }).where(eq(workerDocumentsTable.id, p1!.id));
+  await documentChanged({ id: p1!.id, workerId: w!.id }, "updated", {});
+  assert.equal((await db.select().from(workersTable).where(eq(workersTable.id, w!.id)))[0]?.pesel, "44051401359");
+  await db.update(workerDocumentsTable).set({ number: "02230200000" }).where(eq(workerDocumentsTable.id, p1!.id));
+  await documentChanged({ id: p1!.id, workerId: w!.id }, "updated", {});
+  assert.equal((await db.select().from(workersTable).where(eq(workersTable.id, w!.id)))[0]?.pesel, "44051401359", "наявний PESEL профілю не перезаписується");
+});
+
 test("zaświadczenie студента: лише stationary дає працю; part_time/school — ні (payroll-ставка окремо)", opts, async () => {
   const [w] = await db.insert(workersTable).values({ fullName: "Student Georgia", nationality: "georgia", isActive: true }).returning();
   const [cert] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: await typeId("student_cert"), title: "Student", status: "present", expiresAt: "2027-02-28" }).returning();

@@ -19,10 +19,15 @@ export const DOCUMENT_TYPE_SEED: DocTypeSeed[] = [
   T("passport", "Paszport", "identity", 10, "passport", { required: true, hasExpiry: true, renewalLeadDays: null }),
   T("id_card_pl", "Dowód osobisty (PL)", "identity", 20, "passport", { hasExpiry: true, renewalLeadDays: null, appliesToNationalities: ["poland"] }),
   T("id_card_eu", "Dowód tożsamości UE/EOG", "identity", 30, "passport", { hasExpiry: true, renewalLeadDays: null, appliesToNationalities: ["eu"] }),
+  // скан підтвердження надання PESEL (15.10.2026): окремий слот для іноземців; номер → workers.pesel, якщо порожньо
+  T("pesel", "PESEL (potwierdzenie nadania numeru)", "identity", 40, "passport"),
   T("visa_d", "Wiza krajowa (D)", "stay", 100, "residence_card", { hasExpiry: true, grantsStay: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("visa_c", "Wiza Schengen (C)", "stay", 110, "residence_card", { hasExpiry: true, grantsStay: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("visa_free", "Ruch bezwizowy (data „do” wpisywana ręcznie)", "stay", 120, "residence_card", { hasExpiry: true, grantsStay: true, defaultValidityDays: 90, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("trc", "Karta pobytu czasowego", "stay", 130, "residence_card", { hasExpiry: true, grantsStay: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
+  // decyzja o zezwoleniu na pobyt (15.10.2026) — окремо від карти: побут на строк decyzji, праця — за статтею
+  // (attrs.article) або «dostęp do rynku pracy», як TRC (legalityRecompute.ts STAY_DECISION_CODES)
+  T("decyzja_pobyt", "Decyzja o zezwoleniu na pobyt czasowy", "stay", 131, "decision", { hasExpiry: true, grantsStay: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("zezwolenie_jednolite", "Zezwolenie jednolite na pobyt czasowy i pracę", "stay", 140, "decision", { hasExpiry: true, grantsStay: true, grantsWork: true, requiresEmployerMatch: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("karta_stalego_pobytu", "Karta stałego pobytu", "stay", 150, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),
   T("rezydent_ue", "Karta rezydenta długoterminowego UE", "stay", 160, "residence_card", { hasExpiry: true, grantsStay: true, grantsWork: true, renewalLeadDays: null, appliesToNationalities: ["non_eu"] }),

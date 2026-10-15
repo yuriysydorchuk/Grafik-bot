@@ -34,6 +34,8 @@ import { ensureReferralCode, findWorkerByReferralCode, referralLink } from "../l
 import { loadCampaignParams, campaignVars, campaignKeyboard, renderCampaign, friendCopyHtml } from "../services/referralCampaign";
 import { createSelfScanToken, createOfficeScanToken, passportScanLink } from "../routes/passportScan";
 import { payoutFor } from "../lib/advancePayout";
+import { diffDays, dateStr, warsawToday, fmtDate } from "../services/taskUtils";
+import { ensureFirstWorkDate } from "../services/firstWorkDate";
 import { nowWarsaw, warsawDateStr, warsawDayName, shiftAnchor, factoryShiftStart, factoryShifts, factoryShiftHours, reportMonthFor } from "./time";
 import { loadDateShiftOverrides, loadDatesShiftOverrides, loadWeekShiftOverrides, overrideFor, shiftOverrideKey, type ShiftOverrideMap } from "../services/shiftOverrides";
 import {
@@ -1025,12 +1027,27 @@ bot.hears(trAll("menu.advance"), async (ctx) => {
   return ctx.reply(msg, { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: t(lang, "adv.new"), callback_data: "adv:new" }]] } });
 });
 
+// Аванс через бот — лише новим (рішення власника 15.10.2026): до ADV_MAX_WORK_DAYS днів від
+// першого робочого дня (повернений після звільнення = новий найм, first_work_date обнулено).
+// Старшим — лише за поважної причини напряму через офіс (офіс створює залічку в /advances).
+// Повертає дату початку, якщо людина вже не «нова» (null — можна просити).
+const ADV_MAX_WORK_DAYS = 45;
+async function advanceNotNewSince(worker: { id: number; isActive: boolean; firstWorkDate: unknown; employmentStartDate: unknown }): Promise<string | null> {
+  const since = dateStr(worker.firstWorkDate) ?? (worker.isActive ? await ensureFirstWorkDate(worker.id).catch(() => null) : null) ?? dateStr(worker.employmentStartDate);
+  return since && diffDays(warsawToday(), since) > ADV_MAX_WORK_DAYS ? since : null;
+}
+const advNotNewText = (lang: Lang, since: string) => t(lang, "adv.notNew", { days: String(ADV_MAX_WORK_DAYS), date: fmtDate(since) });
 bot.action("adv:new", async (ctx) => {
   const tid = String(ctx.from.id);
   await ctx.answerCbQuery();
   const worker = await getWorker(tid);
   const lang = wlang(worker);
   if (!worker) return;
+  const notNew = await advanceNotNewSince(worker);
+  if (notNew) {
+    if (getState(tid)?.action?.startsWith("advance:")) clearState(tid); // незавершений запит з минулого — теж закрити
+    return ctx.reply(advNotNewText(lang, notNew), { parse_mode: "Markdown" });
+  }
   // Rate limit: at most 1 request per day and 3 per month (all statuses counted).
   // Counted in SQL on the DB server's clock: created_at is a naive timestamp in that
   // same clock (prod = Berlin = Warsaw wall time), while the driver would parse it
@@ -1395,10 +1412,10 @@ bot.action("hrv:x", async (ctx) => {
 // schedule, ≥ABS_MIN_HOURS ahead), off a day with FILLED AVAILABILITY (schedule not
 // made yet), or off any calendar day within the next 2 weeks. The scheduler
 // approves/rejects all of them; whole-day requests are stored with shift = NULL.
-// Правило «мінімум 48 год до зміни» (03.09.2026, було 24): для цілого дня рахуємо
+// Правило «мінімум 36 год до зміни» (15.10.2026; 03.09–15.10 було 48, до того 24): для цілого дня рахуємо
 // від старту 1-ї зміни фабрики працівника (фолбек 06:00).
 const ABS_DAY_HORIZON = 14;
-const ABS_MIN_HOURS = 48;
+const ABS_MIN_HOURS = 36;
 // Перший календарний день, на який ще можна попросити вихідний цілком.
 function absFirstAllowedDay(now: Date, shift1Start: string): Date {
   const [hh, mm] = shift1Start.split(":").map(Number);
@@ -1440,7 +1457,7 @@ bot.hears(trAll("menu.absence"), async (ctx) => {
   const now = nowWarsaw();
   const taken = await absTakenDates(worker.id);
 
-  // 1) Assigned shifts in approved weeks (≥24h before start).
+  // 1) Assigned shifts in approved weeks (≥ABS_MIN_HOURS before start).
   const weeks = await db.select().from(scheduleWeeksTable)
     .where(and(eq(scheduleWeeksTable.status, "approved"), inArray(scheduleWeeksTable.weekStart, [curMon, nextMon])));
   const weekById = new Map(weeks.map(w => [w.id, w]));
@@ -4635,6 +4652,10 @@ bot.on("text", async (ctx) => {
     const { data } = state;
     const lang = asLang(data.lang);
     clearState(tid);
+    // повторна перевірка перед записом: діалог міг початись до 45-го дня (стани переживають рестарт)
+    const advWorker = await getWorker(tid);
+    const notNew = advWorker ? await advanceNotNewSince(advWorker) : null;
+    if (notNew) return ctx.reply(advNotNewText(lang, notNew), { parse_mode: "Markdown", ...(await workerMenuFor(advWorker!, lang)) });
     const comment = text.trim() === "-" ? null : text.trim();
     const ins = await db.insert(advanceRequestsTable)
       .values({ workerId: data.workerId, factoryId: data.factoryId ?? null, amount: data.amount, comment, status: "pending" })

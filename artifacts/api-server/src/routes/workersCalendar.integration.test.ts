@@ -56,6 +56,14 @@ test("календар: усі джерела подій, фільтри й ге
   const byWorker = await request(app).get(`/api/workers-calendar?from=${from}&to=${to}&workerId=${w!.id}`).set("Cookie", cookie);
   assert.equal(byWorker.body.events.length, 5);
   assert.equal((await request(app).get(`/api/workers-calendar?from=bad&to=${to}`).set("Cookie", cookie)).status, 400);
+  // «нові в системі» (15.10.2026) — лише за явним kinds; і вже звільнені додані теж видно
+  const [w3] = await db.insert(workersTable).values({ fullName: "Petro Fired", factoryId: f1!.id, isActive: false }).returning();
+  const byCreated = await request(app).get(`/api/workers-calendar?from=${from}&to=${to}&kinds=created`).set("Cookie", cookie);
+  assert.deepEqual(byCreated.body.events.map((e: any) => e.workerId).sort(), [w!.id, w2!.id, w3!.id].sort());
+  assert.ok(byCreated.body.events.every((e: any) => e.kind === "created" && e.date === today));
+  assert.match(byCreated.body.events.find((e: any) => e.workerId === w3!.id).detail, /звільнений/);
+  const createdF2 = await request(app).get(`/api/workers-calendar?from=${from}&to=${to}&kinds=created&factoryId=${f2!.id}`).set("Cookie", cookie);
+  assert.deepEqual(createdF2.body.events.map((e: any) => e.workerId), [w2!.id]);
 
   // гейт: роль без сторінки → 403
   await seedRole("noaccess", ["editData"], ["/workers"]);

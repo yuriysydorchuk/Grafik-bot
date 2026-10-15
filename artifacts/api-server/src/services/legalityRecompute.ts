@@ -35,6 +35,10 @@ export async function loadLegalRules(): Promise<LegalRuleInput[]> {
 // Жовта/червона зона строків з активного правила defaults.lead_days (кеш не потрібен — один select).
 export async function loadLeadDays(): Promise<LeadDays> { return readLeadDays(await loadLegalRules()); }
 
+// Документи decyzji про побут, де право на працю й привʼязка до роботодавця — зі статті (attrs.article)
+// або анотації «dostęp do rynku pracy»: сама карта (TRC) і скан decyzji (окремий тип з 15.10.2026)
+const STAY_DECISION_CODES = new Set(["trc", "decyzja_pobyt"]);
+
 export async function loadWorkerDocuments(workerId: number): Promise<LegalityDocument[]> {
   const rows = await db.select({ d: workerDocumentsTable, t: documentTypesTable })
     .from(workerDocumentsTable)
@@ -47,14 +51,14 @@ export async function loadWorkerDocuments(workerId: number): Promise<LegalityDoc
     // Атрибути документа перекривають прапорець типу: TRC «z dostępem do rynku pracy» дає й працю;
     // zaświadczenie студента дає право на працю ЛИШЕ для стаціонару університету (attrs.studyMode='stationary') —
     // заочне/школа/policealna дають тільки студентську ставку (payroll), не work-basis (рішення власника 03.09.2026)
-    // TRC: право на працю — з анотації «dostęp do rynku pracy» АБО зі статті decyzji (attrs.article,
+    // TRC і скан decyzji: право на працю — з анотації «dostęp do rynku pracy» АБО зі статті decyzji (attrs.article,
     // довідник services/stayArticles.ts: 114/126/127/139a/144/158/159/186… дають працю без zezwolenia)
     grantsWork: t?.code === "student_cert"
       ? (d.attrs as Record<string, unknown> | null)?.studyMode === "stationary"
-      : (t?.grantsWork ?? false) || (t?.code === "trc" && ((d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true || articleGrantsWork((d.attrs as Record<string, unknown> | null)?.article) === true)),
+      : (t?.grantsWork ?? false) || (STAY_DECISION_CODES.has(t?.code ?? "") && ((d.attrs as Record<string, unknown> | null)?.laborMarketAccess === true || articleGrantsWork((d.attrs as Record<string, unknown> | null)?.article) === true)),
     // TRC за статтею з привʼязкою до роботодавця (114/126/127/139a) — праця лише у фірми з decyzji:
     // документ має нести employer_company_id, інакше движок дасть «роботодавець невідомий»
-    requiresEmployerMatch: (t?.requiresEmployerMatch ?? false) || (t?.code === "trc" && !!stayArticleOf((d.attrs as Record<string, unknown> | null)?.article)?.employerBound),
+    requiresEmployerMatch: (t?.requiresEmployerMatch ?? false) || (STAY_DECISION_CODES.has(t?.code ?? "") && !!stayArticleOf((d.attrs as Record<string, unknown> | null)?.article)?.employerBound),
     // диплом: data ukończenia studiów (issued_at) = початок чинності — нормалізуємо ТУТ, щоб і
     // движок, і effectiveSinceOf (дата зміни статусу для сводної) бачили ту саму дату (ревʼю codex 02.10.2026)
     validFrom: dateStr(d.validFrom) ?? (t?.code === "diploma" ? dateStr(d.issuedAt) : null), issuedAt: dateStr(d.issuedAt),
