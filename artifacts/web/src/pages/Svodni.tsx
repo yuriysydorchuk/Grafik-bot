@@ -79,7 +79,7 @@ type ClearSnap = { id: number; city: string; factoryLabel: string; rowCount: num
 type PendingChange = {
   id: number; workerId: number; workerName: string; field: string;
   oldValue: string | null; newValue: string | null; effectiveDate: string;
-  createdAt: string; adminName: string | null; propagatable: boolean; items?: ImpactItem[];
+  createdAt: string; adminName: string | null; propagatable: boolean; items?: ImpactItem[]; factoryName?: string | null;
 };
 // незняті штрафи (пропуски + реєстр /penalties), що цілять у рядки області —
 // поки вона була затверджена, перенесення їх пропускало; пропуски згруповані
@@ -896,7 +896,7 @@ function LockReviewModal({ data, scopeLabel, pending, onCancel, onConfirm }: {
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-700">
                     {c.workerName}
-                    <span className="text-slate-500">· {t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}: {fmtVal(c.oldValue, t)} → <span className="font-semibold">{fmtVal(c.newValue, t)}</span></span>
+                    <span className="text-slate-500">· {t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}{c.factoryName ? ` · ${c.factoryName}` : ""}: {fmtVal(c.oldValue, t)} → <span className="font-semibold">{fmtVal(c.newValue, t)}</span></span>
                     <span className="rounded bg-sky-50 px-1.5 text-[10px] font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>
                   </span>
                   <span className="mt-0.5 block text-[11px] text-slate-400">

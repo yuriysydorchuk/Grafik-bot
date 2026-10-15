@@ -11,6 +11,8 @@ import { WORKER_DOCS_DIR, makeStoredName } from "../../lib/uploads";
 import { uaUploadConfirmation, uaInsertConfirmationDoc, syncUaNotificationTasks } from "../uaNotification";
 import type { UaFormPayload } from "./payload";
 import { setSubmission } from "./submissions";
+import { logger } from "../../lib/logger";
+import { applyNotificationHours, notifyFactoryOfDocument } from "../notifyHours";
 
 export async function attachConfirmation(sub: UaSubmission, file: { absPath: string; fileName: string; mime: string }, submittedAt: string, confirmationNo: string | null, adminId: number): Promise<number | null> {
   const p = sub.payload as UaFormPayload | null;
@@ -33,9 +35,14 @@ export async function attachConfirmation(sub: UaSubmission, file: { absPath: str
     const title = `Powiadomienie UA — ${p.companyName}${p.praca.infoDodatkowe ? ` · ${p.praca.infoDodatkowe.split(" — ")[0]}` : ""} · od ${p.praca.dataPodjecia} · ${p.praca.godzinMiesiac} h/mies.`;
     await db.update(workerDocumentsTable).set({
       title, number: confirmationNo, validFrom: p.praca.dataPodjecia,
-      attrs: { source: "praca_gov_robot", submissionId: sub.id, companyId: p.companyId, companyName: p.companyName, factory: p.praca.infoDodatkowe.split(" — ")[0] || null,
+      attrs: { source: "praca_gov_robot", submissionId: sub.id, companyId: p.companyId, companyName: p.companyName, factoryId: p.factoryId ?? null, factory: p.praca.infoDodatkowe.split(" — ")[0] || null,
         dateFrom: p.praca.dataPodjecia, dateFromActual: p.praca.dataPodjeciaFakt ?? p.praca.dataPodjecia, hoursPerMonth: Number(p.praca.godzinMiesiac) || null, hourlyRate: p.praca.stawkaGodz, position: p.praca.stanowisko, kzis: p.praca.zawodKod, confirmationNo },
     }).where(eq(workerDocumentsTable.id, docId));
+    // години з повідомлення → профіль на фабрику подачі (якщо там нема ручного значення) + сводна
+    try {
+      const factoryId = p.factoryId ?? await notifyFactoryOfDocument(sub.workerId, { factory: p.praca.infoDodatkowe.split(" — ")[0] || null });
+      await applyNotificationHours({ workerId: sub.workerId, factoryId, hours: Number(p.praca.godzinMiesiac) || null, documentId: docId, effectiveDate: p.praca.dataPodjeciaFakt ?? p.praca.dataPodjecia });
+    } catch (e) { logger.warn({ err: String(e), workerId: sub.workerId }, "powiadomienie: hours → profile failed"); }
   }
   await setSubmission(sub.id, { documentId: docId, confirmationNo });
   return docId;

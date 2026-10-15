@@ -19,6 +19,7 @@ import {
 } from "./svodni";
 import { PayoutRules } from "./factoryRules";
 import { effectiveView, type WithEffective } from "./effectiveStatus";
+import { loadNotifyHours, resolveNotifyHours, setFactoryNotifyHours } from "./notifyHours";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -145,6 +146,7 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
     legalStatus: workersTable.legalStatus, isStudent: workersTable.isStudent, payoutPrefKind: workersTable.payoutPrefKind, payoutPrefValue: workersTable.payoutPrefValue,
     notifyHours: workersTable.notifyHours,
   }).from(workersTable));
+  const notifyByWorker = await loadNotifyHours(); // години в повідомленні по фабриці вкладки
   // ефективний статус виплат (за документами або вручну) — знімається в рядок при імпорті
   const lgFor = (await import("./legalityMonth")).legalityPairMemo(periodMonth); // за місяць сводної, ПО ФАБРИЦІ вкладки (01.10.2026)
   type WorkerLite = WithEffective<(typeof allWorkers)[number]>;
@@ -225,7 +227,8 @@ export async function importSvodniGrids(input: SvodniImportInput): Promise<Svodn
         const w = rawW ? effectiveView(rawW, await lgFor(rawW.id, facIdOf(t.trim()))) : null;
         if (w) {
           rowWorker.set(row, w);
-          if (row.hoursNotified == null && w.notifyHours != null && w.notifyHours > 0) row.hoursNotified = w.notifyHours;
+          const nh = resolveNotifyHours(w.notifyHours, notifyByWorker.get(w.id), facIdOf(t.trim()));
+          if (row.hoursNotified == null && nh != null && nh > 0) row.hoursNotified = nh;
         }
         applyLegalDefaults(row, false, {
           factoryLabel: t.trim(), profileLegal: (w?.legalStatus ?? null) as any, city,
@@ -516,6 +519,18 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
   const workers = await db.select().from(workersTable)
     .where(inArray(workersTable.id, [...perWorker.keys()]));
   const payoutRules = await PayoutRules.load();
+  // години в повідомленні — ПО ФАБРИЦІ кожного рядка (15.10.2026): рядок з фабрикою → значення
+  // цієї фабрики (вручну), без фабрики → спільне поле профілю (як раніше, з рядка perWorker)
+  const notifyByWorker = await loadNotifyHours([...perWorker.keys()]);
+  const notifyUpd = new Set<number>();
+  for (const r of rows) {
+    if (r.workerId == null || r.factoryId == null || r.hoursNotified == null) continue;
+    const w0 = workers.find(x => x.id === r.workerId);
+    if (!w0 || resolveNotifyHours(w0.notifyHours, notifyByWorker.get(w0.id), r.factoryId) === r.hoursNotified) continue;
+    await setFactoryNotifyHours(r.workerId, r.factoryId, r.hoursNotified, { source: "manual" });
+    notifyByWorker.set(r.workerId, (notifyByWorker.get(r.workerId) ?? new Map()).set(r.factoryId, { hours: r.hoursNotified, source: "manual", documentId: null, updatedAt: new Date() }));
+    notifyUpd.add(r.workerId);
+  }
   let updated = 0, skipped = 0;
   for (const w of workers) {
     const s = perWorker.get(w.id)!;
@@ -541,8 +556,8 @@ export async function applyRatesFromSvodni(periodMonth: string): Promise<RatesAp
     // форма легалізації з тексту Księgowość + години в повідомленні
     const ls = legalStatusOf((s.extras as Record<string, unknown> | null)?.zusStatus as string);
     if (ls && ls !== w.legalStatus) set.legalStatus = ls;
-    if (s.hoursNotified != null && s.hoursNotified !== w.notifyHours) set.notifyHours = s.hoursNotified;
-    if (!Object.keys(set).length) { skipped++; continue; }
+    if (s.factoryId == null && s.hoursNotified != null && s.hoursNotified !== w.notifyHours) set.notifyHours = s.hoursNotified;
+    if (!Object.keys(set).length) { if (notifyUpd.has(w.id)) updated++; else skipped++; continue; }
     await db.update(workersTable).set(set).where(eq(workersTable.id, w.id));
     updated++;
   }

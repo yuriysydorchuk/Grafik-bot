@@ -18,6 +18,7 @@ import { mrzNationalityToCatalog } from "./docai";
 import { resolveEffectiveLegal, type EffectiveLegal } from "./effectiveStatus";
 import { articleGrantsWork, stayArticleOf } from "./stayArticles";
 import { logger } from "../lib/logger";
+import { loadNotifyHours, totalNotifyHours } from "./notifyHours";
 
 export const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 const dateStr = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v.slice(0, 10) : v instanceof Date ? v.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : String(v).slice(0, 10));
@@ -150,7 +151,8 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
   const worker: LegalityWorker = {
     id: w.id, nationality, birthDate: dateStr(w.birthDate), companyId: w.companyId,
     employmentStartDate: dateStr(w.employmentStartDate), employerSince: await employerSinceOf({ id: w.id, employmentStartDate: dateStr(w.employmentStartDate), firstWorkDate: dateStr(w.firstWorkDate) }),
-    isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: w.notifyHours,
+    // години в повідомленні — сума по фабриках (services/notifyHours.ts), без рядків фабрик — спільне поле
+    isStudent: w.isStudent, legalStatus: w.legalStatus, notifyHours: totalNotifyHours(w.notifyHours, (await loadNotifyHours([w.id])).get(w.id)),
     factoryId: w.factoryId,
     nationalityVerified: !!w.nationalityVerifiedAt,
     rehiredAt: await rehiredAtOf(w.id),

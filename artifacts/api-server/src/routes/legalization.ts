@@ -20,6 +20,7 @@ import { sendDocumentRequest } from "../services/docRequests";
 import { PAYROLL_GROUPS, resolveStatusMap } from "../services/legalStatusMap";
 import { nameCaps } from "../services/drive";
 import { logger } from "../lib/logger";
+import { applyNotificationHours, notifyFactoryOfDocument, revokeNotificationHours } from "../services/notifyHours";
 import { workerInScopeSql } from "../lib/scope";
 
 const router: IRouter = Router();
@@ -424,6 +425,8 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
         if (k === "hoursPerMonth" && v !== null && (!Number.isInteger(v) || (v as number) <= 0)) return fail(res, 400, "attrs.hoursPerMonth: ціле число > 0");
         if (v === null || v === "") delete merged[k]; else merged[k] = typeof v === "string" ? v.trim() : v;
       }
+      // виправили фабрику документа вручну — службовий factoryId робота більше не чинний (фабрика — з назви)
+      if ("factory" in b.attrs && merged.factory !== ((before.attrs as Record<string, unknown> | null) ?? {}).factory) delete merged.factoryId;
       // мета — зі статті: коли статтю змінили без явної мети, стара мета зі злиття не має лишатись
       const art = stayArticleOf(merged.article);
       if (art && (!merged.purpose || ("article" in b.attrs && !("purpose" in b.attrs)))) merged.purpose = art.purpose;
@@ -444,6 +447,29 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
   const [d] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, id)).returning();
   const changes = documentAuditDiff(before, patch);
   await documentChanged({ id, workerId: before.workerId }, changes.some(c => c.field === "caseStatus") ? "case" : "updated", adminOf(req), changes);
+  // Powiadomienie UA: години, вписані в ручну форму документа → профіль на фабрику документа
+  // (якщо там нема ручного значення) + незалочені рядки сводної (services/notifyHours.ts, 15.10.2026)
+  // виправили фабрику — години, що прийшли з ЦЬОГО документа, знімаються зі старої фабрики
+  const attrsBefore = (before.attrs as Record<string, unknown> | null) ?? {};
+  const attrsAfter = (d?.attrs as Record<string, unknown> | null) ?? {};
+  const hoursChanged = (attrsAfter.hoursPerMonth ?? null) !== (attrsBefore.hoursPerMonth ?? null);
+  const factoryChanged = (attrsAfter.factory ?? null) !== (attrsBefore.factory ?? null) || (attrsAfter.factoryId ?? null) !== (attrsBefore.factoryId ?? null);
+  if (d && d.docTypeId != null && patch.attrs !== undefined && (hoursChanged || factoryChanged)) {
+    const [dt] = await db.select({ code: documentTypesTable.code }).from(documentTypesTable).where(eq(documentTypesTable.id, d.docTypeId));
+    if (dt?.code === "powiadomienie_ua") {
+      try {
+        const effectiveDate = String(attrsAfter.dateFromActual ?? d.validFrom ?? warsawToday());
+        const facAfter = await notifyFactoryOfDocument(d.workerId, attrsAfter);
+        if (factoryChanged) {
+          const facBefore = await notifyFactoryOfDocument(d.workerId, attrsBefore);
+          if (facBefore != null && facBefore !== facAfter) await revokeNotificationHours({ workerId: d.workerId, factoryId: facBefore, documentId: d.id, effectiveDate });
+        }
+        if (attrsAfter.hoursPerMonth != null) {
+          await applyNotificationHours({ workerId: d.workerId, factoryId: facAfter, hours: Number(attrsAfter.hoursPerMonth), documentId: d.id, effectiveDate });
+        }
+      } catch (e) { logger.warn({ err: String(e), documentId: d.id }, "powiadomienie: hours → profile failed"); }
+    }
+  }
   ok(res, d);
 });
 

@@ -23,7 +23,7 @@ router.get("/praca-gov/reference", async (_req: AuthedRequest, res) => {
     db.select({ id: companiesTable.id, name: companiesTable.name, legalName: companiesTable.legalName, city: companiesTable.city, pkd: companiesTable.pkd, kraz: companiesTable.kraz, contactEmail: companiesTable.contactEmail, contactPhone: companiesTable.contactPhone, headcountEmployment: companiesTable.headcountEmployment, headcountCivil: companiesTable.headcountCivil, employsWorkers: companiesTable.employsWorkers, isActive: companiesTable.isActive }).from(companiesTable).orderBy(asc(companiesTable.name)),
     db.select({ id: factoriesTable.id, name: factoriesTable.name, address: factoriesTable.address, city: factoriesTable.city, companyId: factoriesTable.companyId, isOffice: factoriesTable.isOffice, contractDuties: factoriesTable.contractDuties,
       addrPostalCode: factoriesTable.addrPostalCode, addrWojewodztwo: factoriesTable.addrWojewodztwo, addrPowiat: factoriesTable.addrPowiat, addrGmina: factoriesTable.addrGmina, addrMiejscowosc: factoriesTable.addrMiejscowosc, addrStreet: factoriesTable.addrStreet, addrHouseNo: factoriesTable.addrHouseNo, addrAptNo: factoriesTable.addrAptNo,
-      uaStanowisko: factoriesTable.uaStanowisko, uaKzisCode: factoriesTable.uaKzisCode }).from(factoriesTable).orderBy(asc(factoriesTable.name)),
+      uaStanowisko: factoriesTable.uaStanowisko, uaKzisCode: factoriesTable.uaKzisCode, uaNotifyHours: factoriesTable.uaNotifyHours }).from(factoriesTable).orderBy(asc(factoriesTable.name)),
     db.select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, name: positionsTable.name, contractDuties: factoryPositionsTable.contractDuties, uaStanowisko: factoryPositionsTable.uaStanowisko, kzisCode: factoryPositionsTable.kzisCode, sortOrder: factoryPositionsTable.sortOrder }).from(factoryPositionsTable).leftJoin(positionsTable, eq(positionsTable.id, factoryPositionsTable.positionId)).orderBy(asc(factoryPositionsTable.sortOrder)),
     db.select({ id: positionsTable.id, name: positionsTable.name, kzisCode: positionsTable.kzisCode, isActive: positionsTable.isActive }).from(positionsTable).orderBy(asc(positionsTable.sortOrder)),
   ]);
@@ -50,6 +50,8 @@ router.patch("/praca-gov/reference/factory/:id", async (req: AuthedRequest, res)
   const b = req.body ?? {}; const patch: Record<string, unknown> = {};
   for (const k of ["addrPostalCode", "addrWojewodztwo", "addrPowiat", "addrGmina", "addrMiejscowosc", "addrStreet", "addrHouseNo", "addrAptNo", "uaStanowisko"] as const) if (b[k] !== undefined) patch[k] = str(b[k]);
   try { if (b.uaKzisCode !== undefined) patch.uaKzisCode = kzis(b.uaKzisCode); } catch (e: any) { return fail(res, 400, e.message); }
+  // години в повідомленні (3.6, umowa zlecenie) — на місяць: 1…744 (31×24), порожньо = не задано
+  try { if (b.uaNotifyHours !== undefined) { const h = int(b.uaNotifyHours); if (h != null && (h < 1 || h > 744)) throw new Error("Години на місяць — від 1 до 744"); patch.uaNotifyHours = h; } } catch (e: any) { return fail(res, 400, e.message); }
   if (!Object.keys(patch).length) return fail(res, 400, "Нема полів");
   await db.update(factoriesTable).set(patch).where(eq(factoriesTable.id, id));
   ok(res, { ok: true });

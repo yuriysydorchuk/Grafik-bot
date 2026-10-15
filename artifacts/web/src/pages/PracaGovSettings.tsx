@@ -16,7 +16,7 @@ interface PzAccount { id: number; adminId: number; adminName: string | null; lab
 interface Submission { id: number; kind: string; accountId: number | null; workerId: number | null; status: string; step: string | null; error: string | null; previewFile: string | null; screenshots: string[]; createdAt: string; finishedAt: string | null; payload?: { workerName?: string; companyName?: string } | null }
 interface RefCompany { id: number; name: string; legalName: string | null; city: string | null; pkd: string | null; kraz: string | null; contactEmail: string | null; contactPhone: string | null; headcountEmployment: number | null; headcountCivil: number | null }
 interface RefFactoryPosition { positionId: number; name: string | null; contractDuties: string | null; uaStanowisko: string | null; kzisCode: string | null }
-interface RefFactory { id: number; name: string; address: string | null; city: string | null; companyName: string | null; contractDuties: string | null; addrPostalCode: string | null; addrWojewodztwo: string | null; addrPowiat: string | null; addrGmina: string | null; addrMiejscowosc: string | null; addrStreet: string | null; addrHouseNo: string | null; addrAptNo: string | null; uaStanowisko: string | null; uaKzisCode: string | null; positions: RefFactoryPosition[] }
+interface RefFactory { id: number; name: string; uaNotifyHours: number | null; address: string | null; city: string | null; companyName: string | null; contractDuties: string | null; addrPostalCode: string | null; addrWojewodztwo: string | null; addrPowiat: string | null; addrGmina: string | null; addrMiejscowosc: string | null; addrStreet: string | null; addrHouseNo: string | null; addrAptNo: string | null; uaStanowisko: string | null; uaKzisCode: string | null; positions: RefFactoryPosition[] }
 interface RefPosition { id: number; name: string; kzisCode: string | null }
 interface Reference { companies: RefCompany[]; factories: RefFactory[]; positions: RefPosition[] }
 
@@ -221,7 +221,8 @@ function FactoriesTab() {
             <span className="font-semibold text-slate-800">{f.name}</span>
             {f.companyName && <Badge>{f.companyName}</Badge>}
             <span className="truncate text-xs text-slate-400">{f.address}</span>
-            <span className="ml-auto shrink-0 text-xs">{complete(f) ? <span className="text-emerald-700">{[f.addrMiejscowosc, f.addrPowiat].filter(Boolean).join(" · ")}</span> : <span className="text-amber-700">{t("адресу TERYT не заповнено")}</span>}</span>
+            <span className={cn("ml-auto shrink-0 text-xs", f.uaNotifyHours == null && "text-amber-700")}>{f.uaNotifyHours != null ? t("{h} год/міс", { h: f.uaNotifyHours }) : t("годин не задано")}</span>
+            <span className="shrink-0 text-xs">{complete(f) ? <span className="text-emerald-700">{[f.addrMiejscowosc, f.addrPowiat].filter(Boolean).join(" · ")}</span> : <span className="text-amber-700">{t("адресу TERYT не заповнено")}</span>}</span>
           </button>
           {open.has(f.id) && (
             <div className="space-y-3 border-t border-slate-100 px-4 py-3">
@@ -252,6 +253,14 @@ function FactoriesTab() {
                   </tbody>
                 </table>
                 <p className="mt-1 text-[11px] text-slate-400">{t("Порожнє поле = беремо з рядка вище: посада на фабриці → фабрика → обовʼязки з умови → назва посади. Сірий текст у полі показує, що саме піде.")}</p>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">3.6 Liczba godzin pracy w miesiącu (umowa zlecenie)</div>
+                <div className="flex items-center gap-2">
+                  <Cell value={f.uaNotifyHours} type="number" w="w-24" placeholder="40" onSave={v => r.factory.mutate({ id: f.id, patch: { uaNotifyHours: v } })} />
+                  <span className="text-xs text-slate-500">{t("год на місяць")}</span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400">{t("Підставляється в повідомлення всім людям цієї фабрики (перед подачею можна змінити). Після подачі години йдуть у профіль людини на цю фабрику, якщо там не вписано вручну, і обмежують konto у сводній.")}</p>
               </div>
             </div>
           )}

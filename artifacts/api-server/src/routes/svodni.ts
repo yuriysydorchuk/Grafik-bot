@@ -20,6 +20,7 @@ import { PayoutRules } from "../services/factoryRules";
 import { effectiveView, effectiveViewOf } from "../services/effectiveStatus";
 import { releaseSourcesForRows, remarkSources, findSourceConflicts, releasedCount, type ReleasedSources, type Executor } from "../services/svodniSourceMarkers";
 import { loadRateRules } from "../services/rateRules";
+import { loadNotifyHours, resolveNotifyHours, setFactoryNotifyHours } from "../services/notifyHours";
 import { nameCaps } from "../services/drive";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
@@ -434,6 +435,9 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
   const pending = await pendingJournalForScope(month, lock, workerIds);
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, [...new Set(pending.map(x => x.c.workerId))]));
   const wById = new Map(ws.map(w => [w.id, w]));
+  // зміни по фабриці (години в повідомленні) — назва фабрики для ревʼю
+  const chFacIds = [...new Set(pending.map(x => x.c.factoryId).filter((x): x is number => x != null))];
+  const chFacName = new Map((chFacIds.length ? await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable).where(inArray(factoriesTable.id, chFacIds)) : []).map(f => [f.id, f.name]));
   let hidden = 0;
   const out: Record<string, unknown>[] = [];
   for (const { c, adminName, workerName } of pending) {
@@ -451,6 +455,7 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
       id: c.id, workerId: c.workerId, workerName, field: c.field,
       oldValue: c.oldValue, newValue: c.newValue, effectiveDate: c.effectiveDate,
       createdAt: c.createdAt, adminName, propagatable: PROPAGATABLE_FIELDS.has(c.field),
+      factoryName: c.factoryId != null ? chFacName.get(c.factoryId) ?? null : null,
     };
     if (entry.propagatable) {
       // превʼю: «прийняти» = привести рядки області до ПОТОЧНОГО профілю по
@@ -458,7 +463,7 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
       const w = wById.get(c.workerId);
       // ефективний статус — не поле профілю: значення з кешу/журналу (до 29.09.2026 бралось
       // w.effectiveLegalStatus=undefined → «нема змін» → превʼю без ефекту → розлок гасив зміну)
-      const ctx = w ? await profileChangeContext(c.workerId, { changes: { [c.field]: await journalFieldValue(w, c) } }, c.effectiveDate, sensitive) : null;
+      const ctx = w ? await profileChangeContext(c.workerId, { changes: await journalChangesFor(w, c) }, c.effectiveDate, sensitive) : null;
       entry.items = ctx && !("err" in ctx)
         ? serializeImpact(ctx.items.filter(it => it.row.periodMonth === month && isLocked([lock], it.row.city, it.row.factoryLabel)), sensitive)
         : [];
@@ -478,6 +483,15 @@ async function journalFieldValue(w: typeof workersTable.$inferSelect, c: typeof 
   if (c.field !== "effectiveLegalStatus") return (w as any)[c.field];
   const eff = await effectiveViewOf(w);
   return eff.legalSource === "documents" ? eff.legalStatus : c.newValue;
+}
+// Зміни для двигуна з журнального запису: години в повідомленні по фабриці — поточне
+// значення рядка ЦІЄЇ фабрики (немає рядка = null → рядки сводної беруть спільне значення)
+async function journalChangesFor(w: typeof workersTable.$inferSelect, c: typeof workerChangesTable.$inferSelect): Promise<Record<string, unknown>> {
+  if (c.field === "notifyHours" && c.factoryId != null) {
+    const cur = (await loadNotifyHours([w.id])).get(w.id)?.get(c.factoryId)?.hours ?? null;
+    return { notifyHoursByFactory: { [c.factoryId]: cur } };
+  }
+  return { [c.field]: await journalFieldValue(w, c) };
 }
 
 // Прийняті при розблокуванні зміни: групуємо по людині (union полів, значення —
@@ -508,8 +522,11 @@ async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" |
       // ставка, очищена в профілі пізніше (NULL = «авто»), двигуном не
       // приймається — таку зміну пропускаємо, рядок і так рахує from-hours
       if (c.field === "hourlyRate" && (w as any).hourlyRate == null) continue;
-      // ефективний статус (за документами) — поточне значення з кешу легальності, не з профілю
-      changes[c.field] = await journalFieldValue(w, c);
+      // ефективний статус (за документами) — поточне значення з кешу легальності, не з профілю;
+      // години по фабриці — кілька фабрик однієї людини зливаються в одну мапу
+      const ch = await journalChangesFor(w, c);
+      if (ch.notifyHoursByFactory) changes.notifyHoursByFactory = { ...((changes.notifyHoursByFactory as Record<string, unknown>) ?? {}), ...(ch.notifyHoursByFactory as Record<string, unknown>) };
+      else Object.assign(changes, ch);
     }
     if (!Object.keys(changes).length) continue;
     const from = list.map(c => String(c.effectiveDate)).sort()[0]!;
@@ -1181,7 +1198,8 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     sortIdx: (maxSort ?? -1) + 1, rawName: worker!.fullName,
     workerId: worker!.id, linkStatus: "confirmed", manual: true,
     rateBrutto, rateNetto: prefillNetto, section: sectionAdd,
-    hoursNotified: worker!.notifyHours ?? null,
+    // години в повідомленні — ПО ФАБРИЦІ рядка (services/notifyHours.ts)
+    hoursNotified: resolveNotifyHours(worker!.notifyHours, (await loadNotifyHours([worker!.id])).get(worker!.id), factory?.id ?? null),
     isStudent: effW.isStudent, under26,
     legalStatus: effW.legalStatus ?? null, legalSource: effW.legalSource,
     extras: facBonus > 0 && prefillNetto != null ? { facBonus } : {}, hr, sheetValues: {},
@@ -1398,7 +1416,11 @@ async function syncWorkerProfile(workerId: number, field: string, merged: any) {
   }
   if (field === "isStudent" && merged.isStudent != null) set.isStudent = merged.isStudent;
   if (field === "under26" && merged.under26 != null) set.under26 = merged.under26;
-  if (field === "hoursNotified") set.notifyHours = merged.hoursNotified ?? null;
+  if (field === "hoursNotified") {
+    // години по фабриці рядка (15.10.2026) — вручну; рядок без фабрики — спільне поле профілю
+    if (merged.factoryId != null) await setFactoryNotifyHours(workerId, merged.factoryId, merged.hoursNotified ?? null, { source: "manual" });
+    else set.notifyHours = merged.hoursNotified ?? null;
+  }
   if (field === "extras.zusStatus") {
     // текст Księgowość → канонічна форма легалізації в профілі (якщо розпізнали)
     const ls = legalStatusOf(merged.extras?.zusStatus);
@@ -1621,6 +1643,9 @@ export async function writeSegments(parent: SegRow, plan: NonNullable<Awaited<Re
   // атомарно: конкурентний виклик/збій не має лишити рядок без сегментів
   // або з задубльованими
   await db.transaction(async (tx) => {
+  // години в повідомленні — рівень батька (ліміт konto місяця); зміна профілю передає їх у parent,
+  // а recomputeSegmentedParent читає батька з БД — пишемо до перерахунку (для інших викликів — те саме значення)
+  await tx.update(svodniRowsTable).set({ hoursNotified: parent.hoursNotified }).where(eq(svodniRowsTable.id, parent.id));
   await tx.delete(svodniRowsTable).where(eq(svodniRowsTable.segmentOf, parent.id));
   for (let i = 0; i < plan.windows.length; i++) {
     const win = plan.windows[i]!, p = plan.parts[i]!;
@@ -1655,7 +1680,12 @@ const FINANCE_TRACKED = new Set(["hourlyRate", "hourlyRateNetto"]);
 // virtual — ключі patch, які НЕ пишуться в профіль: ефективний статус за
 // документами (06.09.2026) для двигуна пропагації виглядає як зміна legalStatus,
 // але workers.legal_status лишається ручним полем (payroll-інваріант).
-function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typeof workersTable.$inferInsert>; virtual: Set<string>; err?: string } {
+// Години в повідомленні ПО ФАБРИЦІ (15.10.2026): { notifyHours, notifyHoursFactoryId } з профілю
+// або { notifyHoursByFactory: { [factoryId]: години|null } } з журналу/ревʼю — у workers не пишуться
+// (virtual), рядки сводної беруть години своєї фабрики (services/notifyHours.ts); null = прибрати
+// значення фабрики (назад до спільного). notifyHours без фабрики — старе спільне поле workers.notify_hours.
+type TrackedNorm = { patch: Partial<typeof workersTable.$inferInsert>; virtual: Set<string>; notifyByFactory?: Map<number, number | null>; err?: string };
+function normTrackedChanges(body: Record<string, unknown>): TrackedNorm {
   const patch: any = {};
   const virtual = new Set<string>();
   const has = (k: string) => body[k] !== undefined;
@@ -1687,7 +1717,26 @@ function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typ
     if (d && !DATE_RE.test(d)) return { patch, virtual, err: "Дата працевлаштування — YYYY-MM-DD" };
     patch.employmentStartDate = d;
   }
-  if (has("notifyHours")) { const v = n(body.notifyHours); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Год. повідомлення — число" }; patch.notifyHours = v; }
+  let notifyByFactory: Map<number, number | null> | undefined;
+  if (has("notifyHoursByFactory") || (has("notifyHours") && body.notifyHoursFactoryId != null)) {
+    const src = has("notifyHoursByFactory") ? body.notifyHoursByFactory : { [String(body.notifyHoursFactoryId)]: body.notifyHours };
+    if (!src || typeof src !== "object" || Array.isArray(src)) return { patch, virtual, err: "Год. повідомлення — по фабриках" };
+    notifyByFactory = new Map();
+    for (const [k, raw] of Object.entries(src as Record<string, unknown>)) {
+      const fid = Number(k);
+      if (!Number.isInteger(fid) || fid <= 0) return { patch, virtual, err: "Невідома фабрика" };
+      const v = n(raw);
+      if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Год. повідомлення — число" };
+      notifyByFactory.set(fid, v);
+    }
+    if (!notifyByFactory.size) return { patch, virtual, err: "нема змін" };
+  }
+  // спільне значення (без фабрики) — може йти разом із мапою (ревʼю розлоку зливає записи однієї людини)
+  if (has("notifyHours") && body.notifyHoursFactoryId == null) {
+    const v = n(body.notifyHours); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Год. повідомлення — число" }; patch.notifyHours = v;
+  } else if (notifyByFactory) {
+    patch.notifyHours = undefined; virtual.add("notifyHours"); // ключ — сигнал двигуну рядків; значення — по фабриці рядка
+  }
   if (has("hourlyRate")) { const v = n(body.hourlyRate); if (v == null || v <= 0) return { patch, virtual, err: "Ставка брутто — число > 0" }; patch.hourlyRate = v; }
   if (has("hourlyRateNetto")) { const v = n(body.hourlyRateNetto); if (v === undefined || (v != null && v <= 0)) return { patch, virtual, err: "Ставка нетто — число > 0" }; patch.hourlyRateNetto = v; }
   if (has("agramStazBonus")) patch.agramStazBonus = !!body.agramStazBonus;
@@ -1705,7 +1754,7 @@ function normTrackedChanges(body: Record<string, unknown>): { patch: Partial<typ
     if (!k) patch.payoutPrefValue = null;
   }
   if (has("payoutPrefValue")) { const v = n(body.payoutPrefValue); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Значення побажання — число" }; patch.payoutPrefValue = v; }
-  return { patch, virtual };
+  return { patch, virtual, notifyByFactory };
 }
 
 // Приведення рядка сводної до профілю w з урахуванням того, ЩО саме змінилось
@@ -1812,19 +1861,33 @@ function rowSetFromProfile(
 export async function profileChangeContext(workerId: number, body: Record<string, unknown>, from: string, sensitive: boolean) {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return { err: "працівника не знайдено" } as const;
-  const { patch, virtual, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
+  const { patch, virtual, notifyByFactory, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
   if (err) return { err } as const;
   if (!Object.keys(patch).length) return { err: "нема змін" } as const;
   const changed = new Set(Object.keys(patch));
-  // virtual (ефективний статус за документами) — лише для двигуна рядків, у профіль не пишеться
+  // virtual (ефективний статус за документами; години по фабриці) — лише для двигуна рядків, у профіль не пишеться
   const persistPatch = Object.fromEntries(Object.entries(patch).filter(([k]) => !virtual.has(k))) as Partial<typeof workersTable.$inferInsert>;
+  const virtualLegal = virtual.has("legalStatus");
   // джерело снапшоту для ефективної зміни: з кешу легальності, якщо він дає саме цей статус
   // (втрата документів → повернення до ручного поля має писати "manual", а не "documents")
   let virtualSource: string = "documents";
-  if (virtual.size) { const eff = await effectiveViewOf(w); if ((eff.legalStatus ?? null) === (patch.legalStatus ?? null)) virtualSource = eff.legalSource; }
-  const nextW = { ...w, ...patch, ...(virtual.size ? { legalSource: virtualSource } : {}) } as typeof workersTable.$inferSelect;
+  if (virtualLegal) { const eff = await effectiveViewOf(w); if ((eff.legalStatus ?? null) === (patch.legalStatus ?? null)) virtualSource = eff.legalSource; }
+  const nextW = { ...w, ...patch, ...(virtualLegal ? { legalSource: virtualSource } : {}) } as typeof workersTable.$inferSelect;
   const lgMonth = await import("../services/legalityMonth");
-  const lgRules = virtual.size ? (await import("../services/legalityRecompute")).loadLegalRules() : undefined;
+  const lgRules = virtualLegal ? (await import("../services/legalityRecompute")).loadLegalRules() : undefined;
+  // години в повідомленні по фабриці: стан до/після зміни; рядок сводної бере години СВОЄЇ фабрики
+  // (свій рядок → спільне workers.notify_hours) і зачіпається лише тоді, коли змінились саме вони
+  const notifyBefore = changed.has("notifyHours") ? (await loadNotifyHours([workerId])).get(workerId) ?? new Map() : new Map();
+  const notifyAfter = new Map(notifyBefore);
+  if (notifyByFactory) for (const [fid, v] of notifyByFactory) {
+    if (v == null) notifyAfter.delete(fid);
+    else notifyAfter.set(fid, { hours: v, source: "manual", documentId: null, updatedAt: new Date() });
+  }
+  const legacyChanged = changed.has("notifyHours") && !virtual.has("notifyHours");
+  const legacyAfter = legacyChanged ? (nextW.notifyHours ?? null) : w.notifyHours;
+  const notifyTouches = (row: typeof svodniRowsTable.$inferSelect) =>
+    (row.factoryId != null && !!notifyByFactory?.has(row.factoryId))
+    || (legacyChanged && !(row.factoryId != null && notifyAfter.has(row.factoryId))); // спільне не перекриває свій рядок фабрики
   const fromMonth = from.slice(0, 7);
   const rows = (await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf),
@@ -1868,25 +1931,31 @@ export async function profileChangeContext(workerId: number, body: Record<string
     unsplit?: boolean; // умови вирівнялись по всьому місяцю — сегменти зшиваються
   }[] = [];
   for (const row of rows) {
+    // зміна лише годин повідомлення іншої фабрики — рядок не чіпаємо взагалі
+    const rowChanged = changed.has("notifyHours") && !notifyTouches(row) ? new Set([...changed].filter(k => k !== "notifyHours")) : changed;
+    if (!rowChanged.size) continue;
     // ефективний статус (virtual) — ПО ФАБРИЦІ рядка й за його місяць (01.10.2026): розрахунок по фабриці
     // рядка дає «за документами» (умова на цю фабрику, обовʼязки її фірми) — беремо його; умови на цю
     // фабрику НЕМА (вісь «умова» червона) — передумова журнальної зміни тут не виконується → ручний/порожній
     // статус рядка; решта (умова чекає підпису тощо) — значення журналу, як і раніше (journalFieldValue).
     // Рядок без фабрики (factoryId null) = звичайний профільний розрахунок.
-    const rowW = virtual.size && row.factoryId != null ? await (async () => {
+    const rowWBase = virtualLegal && row.factoryId != null ? await (async () => {
       const lg = await lgMonth.legalityForMonth(w.id, row.periodMonth, lgRules, row.factoryId);
       const eff = effectiveView(w, lg);
       if (eff.legalSource === "documents" || lg?.contract === "illegal") return { ...nextW, legalStatus: eff.legalStatus, isStudent: eff.isStudent, legalSource: eff.legalSource } as typeof nextW;
       return nextW;
     })() : nextW;
+    const rowW = rowChanged.has("notifyHours") ? { ...rowWBase, notifyHours: resolveNotifyHours(legacyAfter, notifyAfter, row.factoryId) } : rowWBase;
     const locked = isLocked(locksByMonth.get(row.periodMonth) ?? [], row.city, row.factoryLabel);
     const rowPayoutRule = payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth);
-    const { set, diffs, merged } = rowSetFromProfile(row, rowW, changed, sectionOf(row), ruleOf(row.factoryId, rowW.positionId), rowPayoutRule);
+    const { set, diffs, merged } = rowSetFromProfile(row, rowW, rowChanged, sectionOf(row), ruleOf(row.factoryId, rowW.positionId), rowPayoutRule);
     // сегментний шлях: (а) зміна з середини першого місяця → порізка;
     // (б) рядок УЖЕ порізаний → нові умови застосовуються до сегментів
     // від дати (батько ніколи не пишеться повз сегменти)
     const existingSegs = (segsByParent.get(row.id) ?? []);
     if ((wantsSplit && row.periodMonth === fromMonth) || existingSegs.length) {
+      // години повідомлення — рівень батька: порізаний рядок рахується з НОВИМИ (перерахунок/зшивання/запис)
+      const segRow: SegRow = rowChanged.has("notifyHours") ? { ...row, hoursNotified: merged.hoursNotified ?? null } : row;
       const existing = existingSegs.sort((a, b) => (a.segmentFrom! < b.segmentFrom! ? -1 : 1));
       const oldAt = oldStateAt(row, existing, row.legalStatus ?? w.legalStatus ?? null);
       // ОВЕРЛЕЙ, не заміна: до стану кожного вікна ≥ from застосовуються лише
@@ -1943,7 +2012,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
       if (plan && plan.windows.length === 1 && existing.length) {
         const uniform = plan.parts[0]!;
         const m3: any = {
-          ...row, rateNetto: uniform.rateNetto, rateBrutto: uniform.rateBrutto,
+          ...segRow, rateNetto: uniform.rateNetto, rateBrutto: uniform.rateBrutto,
           section: uniform.section ?? row.section, isStudent: uniform.isStudent, under26: uniform.under26,
           extras: { ...(row.extras as Record<string, unknown>) },
         };
@@ -1963,7 +2032,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
         const uSet: Record<string, unknown> = {};
         const uDiffs: RowDiff[] = [];
         if (JSON.stringify(m3.extras) !== JSON.stringify(row.extras)) uSet.extras = m3.extras;
-        for (const k of ["rateBrutto", "rateNetto", "isStudent", "under26", "section", "doWyplaty", "brutto", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
+        for (const k of ["hoursNotified", "rateBrutto", "rateNetto", "isStudent", "under26", "section", "doWyplaty", "brutto", "hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka"] as const) {
           uSet[k] = m3[k] ?? null;
           const nv = typeof m3[k] === "number" ? Math.round(m3[k] * 100) / 100 : m3[k] ?? null;
           const ov = typeof (row as any)[k] === "number" ? Math.round((row as any)[k] * 100) / 100 : (row as any)[k] ?? null;
@@ -1976,7 +2045,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
         // чесний диф: повний посегментний розрахунок (кожен сегмент за правилами
         // свого статусу, батько = сума) — те саме, що зробить apply
         const calc = computeSegmented(
-          segParentInput(row, rowPayoutRule),
+          segParentInput(segRow, rowPayoutRule),
           plan.parts.map((p): SegmentCalcIn => ({
             hours: p.hours, rateNetto: p.rateNetto, rateBrutto: p.rateBrutto,
             isStudent: p.isStudent, under26: p.under26, legal: p.legal, facBonus: p.facBonus,
@@ -1997,7 +2066,8 @@ export async function profileChangeContext(workerId: number, body: Record<string
           legal: plan.parts[i]!.legal,
           doWyplaty: calc.segs[i]!.doWyplaty, konto: calc.segs[i]!.konto, gotowka: calc.segs[i]!.gotowka,
         }));
-        items.push({ row, locked, plan, split: splitView, diffs: sDiffs });
+        if (segRow.hoursNotified !== row.hoursNotified) sDiffs.unshift({ key: "hoursNotified", from: row.hoursNotified, to: segRow.hoursNotified });
+        items.push({ row: segRow, locked, plan, split: splitView, diffs: sDiffs });
         continue;
       }
       // порізаний рядок без плану (нема годин) — не чіпаємо батька повз сегменти
@@ -2010,7 +2080,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
   // сводних людина взагалі має (щоб підказати «обери ранішу дату»)
   const allMonths = await db.selectDistinct({ m: svodniRowsTable.periodMonth })
     .from(svodniRowsTable).where(and(eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf)));
-  return { w, patch, persistPatch, virtual, changed, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
+  return { w, patch, persistPatch, virtual, changed, notifyByFactory, notifyBefore, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
 }
 
 const SENSITIVE_DIFF_KEYS = new Set(["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka", "zusStatus"]);
@@ -2063,6 +2133,7 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
   const toApply = ctx.items.filter(it => !it.locked && rowIds.has(it.row.id));
   const skippedLocked = ctx.items.filter(it => it.locked).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
   if (Object.keys(ctx.persistPatch).length) await db.update(workersTable).set(ctx.persistPatch).where(eq(workersTable.id, workerId));
+  if (ctx.notifyByFactory) for (const [fid, v] of ctx.notifyByFactory) await setFactoryNotifyHours(workerId, fid, v, { source: "manual", adminId: req.admin!.adminId });
   for (const it of toApply) {
     if (it.plan) {
       // зміна з середини місяця → рядок ріжеться на сегменти
@@ -2077,6 +2148,7 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
   const changesBody = (req.body?.changes ?? {}) as Record<string, unknown>;
   for (const field of Object.keys(changesBody)) {
     if (!(field in ctx.patch)) continue;
+    if (field === "notifyHours" && ctx.virtual.has("notifyHours")) continue; // лише по фабриці — окремими записами нижче
     const oldV = (ctx.w as any)[field];
     const newV = (ctx.patch as any)[field];
     if (String(oldV ?? "") === String(newV ?? "")) continue; // фактичної зміни нема
@@ -2087,6 +2159,19 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
       effectiveDate: from,
       appliedRows: appliedRows.length ? appliedRows : null,
       skippedLocked: skippedLocked.length ? skippedLocked : null,
+      adminId: req.admin!.adminId,
+    });
+  }
+  // години в повідомленні по фабриці: запис на кожну фабрику, рядки — лише цієї фабрики
+  if (ctx.notifyByFactory) for (const [fid, v] of ctx.notifyByFactory) {
+    const oldV = ctx.notifyBefore.get(fid)?.hours ?? null;
+    if (String(oldV ?? "") === String(v ?? "")) continue;
+    const appliedF = toApply.filter(it => it.row.factoryId === fid).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
+    const skippedF = ctx.items.filter(it => it.locked && it.row.factoryId === fid).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
+    await db.insert(workerChangesTable).values({
+      workerId, field: "notifyHours", factoryId: fid,
+      oldValue: oldV == null ? null : String(oldV), newValue: v == null ? null : String(v),
+      effectiveDate: from, appliedRows: appliedF.length ? appliedF : null, skippedLocked: skippedF.length ? skippedF : null,
       adminId: req.admin!.adminId,
     });
   }
@@ -2154,13 +2239,26 @@ export async function autoApplyEffectiveChange(entryId: number): Promise<{ appli
     // повторний прохід добирає їх, уже застосовані області не чіпає)
     const stillOpen = !!c && c.reviewDismissedAt == null && (c.appliedRows == null || c.skippedLocked != null);
     if (!c || c.field !== "effectiveLegalStatus" || !stillOpen) return { applied: 0, skippedLocked: 0 };
-    return autoApplyEffectiveChangeLocked(c);
+    return autoApplyEntryLocked(c, { effectiveLegalStatus: c.newValue });
   });
 }
-async function autoApplyEffectiveChangeLocked(c: typeof workerChangesTable.$inferSelect): Promise<{ applied: number; skippedLocked: number }> {
+// Години з повідомлення (services/notifyHours.ts applyNotificationHours, 15.10.2026) — той самий
+// шлях: незалочені рядки фабрики від місяця дати одразу, залочені — у ревʼю при розлоку.
+export async function autoApplyNotifyChange(entryId: number): Promise<{ applied: number; skippedLocked: number }> {
+  return db.transaction(async tx => {
+    await tx.execute(sql`select pg_advisory_xact_lock(7291, ${entryId})`);
+    const [c] = await tx.select().from(workerChangesTable).where(eq(workerChangesTable.id, entryId));
+    const stillOpen = !!c && c.reviewDismissedAt == null && (c.appliedRows == null || c.skippedLocked != null);
+    if (!c || c.field !== "notifyHours" || c.factoryId == null || !stillOpen) return { applied: 0, skippedLocked: 0 };
+    const [w] = await db.select().from(workersTable).where(eq(workersTable.id, c.workerId));
+    if (!w) return { applied: 0, skippedLocked: 0 };
+    return autoApplyEntryLocked(c, await journalChangesFor(w, c));
+  });
+}
+async function autoApplyEntryLocked(c: typeof workerChangesTable.$inferSelect, changes: Record<string, unknown>): Promise<{ applied: number; skippedLocked: number }> {
   const entryId = c.id;
   const prevApplied: ScopeRef[] = Array.isArray(c.appliedRows) ? c.appliedRows as ScopeRef[] : [];
-  const ctx = await profileChangeContext(c.workerId, { changes: { effectiveLegalStatus: c.newValue } }, String(c.effectiveDate), true);
+  const ctx = await profileChangeContext(c.workerId, { changes }, String(c.effectiveDate), true);
   if ("err" in ctx) { logger.warn({ entryId, err: ctx.err }, "auto-apply effective change: context failed"); return { applied: 0, skippedLocked: 0 }; }
   const scopeOf = (it: typeof ctx.items[number]): ScopeRef => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel });
   const toApply = ctx.items.filter(it => !it.locked && !prevApplied.some(a => sameScope(a, scopeOf(it))));
@@ -2205,9 +2303,23 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
     await db.delete(workerChangesTable).where(eq(workerChangesTable.id, id));
     return ok(res, { applied: 0, skippedLocked: [] });
   }
-  const ctx = await profileChangeContext(entry.workerId, { changes: { [entry.field]: oldVal } }, entry.effectiveDate, canSensitive(req));
+  // години по фабриці: повертається значення рядка фабрики (null = прибрати, назад до спільного)
+  const byFactory = entry.field === "notifyHours" && entry.factoryId != null;
+  // джерело відновленого значення — з попереднього запису цієї фабрики: автоматичний (adminId NULL) =
+  // «з повідомлення» (наступні повідомлення й далі його оновлюють), інакше — вручну
+  let restoreSource: "manual" | "powiadomienie" = "manual";
+  if (byFactory) {
+    const [fac] = await db.select({ id: factoriesTable.id }).from(factoriesTable).where(eq(factoriesTable.id, entry.factoryId!));
+    if (!fac) return fail(res, 400, "фабрику цієї зміни видалено — відкат неможливий");
+    const [prev] = await db.select({ adminId: workerChangesTable.adminId }).from(workerChangesTable).where(and(
+      eq(workerChangesTable.workerId, entry.workerId), eq(workerChangesTable.field, "notifyHours"), eq(workerChangesTable.factoryId, entry.factoryId!),
+      sql`${workerChangesTable.id} < ${id}`)).orderBy(desc(workerChangesTable.id)).limit(1);
+    if (prev && prev.adminId == null) restoreSource = "powiadomienie";
+  }
+  const ctx = await profileChangeContext(entry.workerId, { changes: byFactory ? { notifyHoursByFactory: { [entry.factoryId!]: oldVal } } : { [entry.field]: oldVal } }, entry.effectiveDate, canSensitive(req));
   if ("err" in ctx) return fail(res, 400, ctx.err!);
-  await db.update(workersTable).set(ctx.patch).where(eq(workersTable.id, entry.workerId));
+  if (byFactory) await setFactoryNotifyHours(entry.workerId, entry.factoryId!, oldVal as number | null, { source: restoreSource, adminId: req.admin!.adminId });
+  else await db.update(workersTable).set(ctx.patch).where(eq(workersTable.id, entry.workerId));
   const toApply = ctx.items.filter(it => !it.locked);
   for (const it of toApply) {
     if (it.plan) {
@@ -2576,6 +2688,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   // ефективний статус виплат (за документами, коли людина повністю оформлена,
   // інакше ручне поле) — знімається в рядок на момент формування (06.09.2026)
   const workersRaw = await db.select().from(workersTable).where(inArray(workersTable.id, workerIds));
+  const notifyByWorker = await loadNotifyHours(workerIds); // години в повідомленні по фабриці пари
   // статус — ЗА МІСЯЦЬ сводної (services/legalityMonth.ts): умова, що перекриває місяць, зелена, документи — на кінець місяця
   // …і ПО ФАБРИЦІ пари (01.10.2026): умова на цю фабрику, обовʼязки її фірми — рядок Agram може бути
   // «за документами», а рядок Sushi тієї ж людини без умови — ручний/«не зголошений»
@@ -2924,7 +3037,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
       periodMonth: month, city, firm: rowFirm, factoryLabel, factoryId: pair.factoryId,
       section, sortIdx: created, rawName: w.fullName, workerId: w.id, linkStatus: "confirmed",
       manual: true, // сайт — джерело: синк із Google цей рядок не перезаписує
-      hoursNotified: w.notifyHours ?? null, hours: r2(pair.hours),
+      hoursNotified: resolveNotifyHours(w.notifyHours, notifyByWorker.get(w.id), pair.factoryId), hours: r2(pair.hours),
       // без статусу легалізації і без ставки (профіль+правила) — мінімалка
       // («як по освядченню»); розклад applyLegalDefaults і так віддасть готівкою.
       // Eurocash: пара від порогу продуктивності + нічні/потроненя з файлу фабрики

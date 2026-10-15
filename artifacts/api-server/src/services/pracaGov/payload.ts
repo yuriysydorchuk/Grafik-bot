@@ -8,6 +8,7 @@ import { dateStr } from "../taskUtils";
 
 export interface UaFormPayload {
   workerId: number; workerName: string; companyId: number | null; companyName: string;
+  factoryId?: number | null; // фабрика подачі — години з документа йдуть у профіль саме на неї (services/notifyHours.ts)
   contextPattern: string;                 // підрядок назви організації для «Zmiana kontekstu»
   miejscowosc: string;                    // місто складання (шапка форми)
   kraz: string; email: string; telefon: string;
@@ -66,7 +67,7 @@ export function missingOf(payload: UaFormPayload): string[] {
   need(p.praca.dataPodjecia, "дата початку роботи");
   if (p.praca.dataPodjecia && p.praca.dataPodjecia > new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" })) missing.push("дата початку роботи в майбутньому"); need(p.praca.pkd, "PKD фірми"); need(p.praca.stanowisko, "посада / обовʼязки"); need(p.praca.zawodKod, "код KZiS посади");
   need(p.praca.miejsce.wojewodztwo, "адреса фабрики: województwo"); need(p.praca.miejsce.powiat, "адреса фабрики: powiat"); need(p.praca.miejsce.gmina, "адреса фабрики: gmina");
-  need(p.praca.godzinMiesiac, "години в повідомленні"); need(p.praca.stawkaGodz, "ставка brutto"); need(p.praca.stawkaMies, "місячна сума за ставкою");
+  need(p.praca.godzinMiesiac, "години в повідомленні (Налаштування → praca.gov.pl → фабрика)"); need(p.praca.stawkaGodz, "ставка brutto"); need(p.praca.stawkaMies, "місячна сума за ставкою");
   need(p.liczby.umowaOPrace, "чисельність фірми: umowa o pracę"); need(p.liczby.cywilne, "чисельність фірми: umowy cywilnoprawne");
   return missing;
 }
@@ -120,7 +121,7 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   else if (startFakt && startFakt > today) warnings.push(`Дата початку ${startFakt} у майбутньому — portal такого не приймає; виправте дату в анкеті (підміна на «сьогодні» була б неправдивими відомостями).`);
 
   const payload: UaFormPayload = {
-    workerId, workerName: w.fullName, companyId: cid, companyName: c?.name ?? "",
+    workerId, workerName: w.fullName, companyId: cid, companyName: c?.name ?? "", factoryId: f?.id ?? null,
     contextPattern: contextPatternFor(c?.legalName ?? c?.name),
     miejscowosc: c?.city ?? "",
     kraz: c?.kraz ?? "", email: c?.contactEmail ?? "", telefon: c?.contactPhone ?? "",
@@ -139,11 +140,13 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
       miejsce: { kodPocztowy: f?.addrPostalCode ?? "", wojewodztwo: f?.addrWojewodztwo ?? "", powiat: f?.addrPowiat ?? "", gmina: f?.addrGmina ?? "", miejscowosc: f?.addrMiejscowosc ?? "", ulica: f?.addrStreet ?? "", nrDomu: f?.addrHouseNo ?? "", nrLokalu: f?.addrAptNo ?? "" },
       infoDodatkowe: f ? `${f.name}${f.address ? ` — ${f.address}` : ""}` : "",
       rodzajUmowy: RODZAJ_UMOWY_ZLECENIE,
-      godzinMiesiac: w.notifyHours != null ? String(Math.round(w.notifyHours)) : "",
+      // години — ЛИШЕ з налаштувань фабрики (рішення власника 15.10.2026; перед подачею правляться вручну)
+      godzinMiesiac: f?.uaNotifyHours != null ? String(f.uaNotifyHours) : "",
       stawkaGodz: fmtNum(rate),
-      stawkaMies: rate && w.notifyHours != null ? fmtNum(Math.round(rate * Math.round(w.notifyHours) * 100) / 100) : "",
+      stawkaMies: rate && f?.uaNotifyHours != null ? fmtNum(Math.round(rate * f.uaNotifyHours * 100) / 100) : "",
     },
-    liczby: { umowaOPrace: c?.headcountEmployment != null ? String(c.headcountEmployment) : "", cywilne: c?.headcountCivil != null ? String(c.headcountCivil) : "" },
+    // umowa o pracę у фірмах немає (лише zlecenie, рішення власника 15.10.2026): порожнє поле фірми = 0
+    liczby: { umowaOPrace: String(c?.headcountEmployment ?? 0), cywilne: c?.headcountCivil != null ? String(c.headcountCivil) : "" },
     warnings,
     podpis: { funkcja: "", pelnomocnik: true },
   };

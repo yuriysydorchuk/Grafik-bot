@@ -67,6 +67,7 @@ interface WorkerProfile {
   status: string; isActive: boolean; createdAt: string; firedAt: string | null; language: string | null;
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
+  notifyHoursByFactory?: NotifyFactoryRow[]; // години в повідомленні по фабриці (15.10.2026)
   doNotHire?: boolean; doNotHireReason?: string | null; doNotHireAt?: string | null; // чорний список
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
@@ -360,7 +361,7 @@ export default function WorkerDetail() {
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
             <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} byFactory={w.firstWorkDates ?? []} readOnly={!canEdit} />
             {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canLifecycle} />}
-            <NotifyHoursRow workerId={w.id} notifyHours={w.notifyHours ?? null} onRequest={requestChange} />
+            <NotifyHoursRows workerId={w.id} rows={w.notifyHoursByFactory ?? []} shared={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
             <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} pesel={w.pesel ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
@@ -3430,8 +3431,59 @@ function LegalStatusRow({ workerId, legalStatus, onRequest }: { workerId: number
   );
 }
 
-// Години в повідомленні (powiadomienie — дозвіл на працю): показуються в сводній
-function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number; notifyHours: number | null; onRequest?: RequestChange }) {
+// Години в повідомленні ПО ФАБРИЦІ (15.10.2026): ліміт konto у рядку сводної цієї фабрики.
+// Джерело: «з повідомлення» (документ Powiadomienie) / «вручну» / «спільне» (старе значення для
+// всіх фабрик). Правка рядка = вручну для цієї фабрики (повідомлення його вже не перезапише).
+type NotifyFactoryRow = { factoryId: number; factoryName: string | null; hours: number | null; source: "manual" | "powiadomienie" | "shared" | null; documentId: number | null; updatedAt: string | null };
+const NOTIFY_SOURCE_LABEL: Record<string, string> = { manual: "вручну", powiadomienie: "з повідомлення", shared: "спільне" };
+function NotifyHoursRows({ workerId, rows, shared, onRequest }: { workerId: number; rows: NotifyFactoryRow[]; shared: number | null; onRequest?: RequestChange }) {
+  // людина без фабрик — лише старе спільне поле; спільне значення показуємо окремо, поки воно є
+  if (!rows.length) return <NotifyHoursRow workerId={workerId} notifyHours={shared} onRequest={onRequest} />;
+  return (
+    <>
+      {rows.map(r => <NotifyHoursFactoryRow key={r.factoryId} workerId={workerId} row={r} onRequest={onRequest} />)}
+      {shared != null && <NotifyHoursRow workerId={workerId} notifyHours={shared} onRequest={onRequest} sharedLabel />}
+    </>
+  );
+}
+function NotifyHoursFactoryRow({ workerId, row, onRequest }: { workerId: number; row: NotifyFactoryRow; onRequest?: RequestChange }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const name = row.factoryName ?? `#${row.factoryId}`;
+  const value = () => draft === "" ? null : Number(draft);
+  const save = useMutation({
+    mutationFn: () => put(`/workers/${workerId}/notify-hours`, { factoryId: row.factoryId, hours: value() }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); setEditing(false); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const submit = () => {
+    if (onRequest) { onRequest({ notifyHours: value(), notifyHoursFactoryId: row.factoryId }, `${t("Год. у повідомленні")} — ${name}`); setEditing(false); }
+    else save.mutate();
+  };
+  return (
+    <InfoRow icon={Clock} label={`${t("Год. у повідомленні")} · ${name}`}>
+      {editing ? (
+        <span className="flex items-center gap-1">
+          <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
+            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-emerald-600" onClick={submit}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
+        </span>
+      ) : (
+        <button className="font-medium text-slate-700 hover:text-red-600"
+          onClick={() => { setDraft(row.hours == null || row.source === "shared" ? "" : String(row.hours)); setEditing(true); }}>
+          {row.hours != null ? `${row.hours} ${t("год")}` : t("вказати")}
+          {row.source && <span className="ml-1.5 text-[11px] font-normal text-slate-400">{t(NOTIFY_SOURCE_LABEL[row.source] ?? row.source)}</span>}
+        </button>
+      )}
+    </InfoRow>
+  );
+}
+
+// Старе спільне поле (workers.notify_hours, «для всіх фабрик») — для людей без фабрик і поки воно задане
+function NotifyHoursRow({ workerId, notifyHours, onRequest, sharedLabel }: { workerId: number; notifyHours: number | null; onRequest?: RequestChange; sharedLabel?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -3446,7 +3498,7 @@ function NotifyHoursRow({ workerId, notifyHours, onRequest }: { workerId: number
     else save.mutate();
   };
   return (
-    <InfoRow icon={Clock} label={t("Год. у повідомленні")}>
+    <InfoRow icon={Clock} label={sharedLabel ? `${t("Год. у повідомленні")} · ${t("усі фабрики (спільне)")}` : t("Год. у повідомленні")}>
       {editing ? (
         <span className="flex items-center gap-1">
           <input type="number" min={0} value={draft} onChange={e => setDraft(e.target.value)}
@@ -4067,6 +4119,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
     id: number; field: string; oldValue: string | null; newValue: string | null;
     effectiveDate: string; appliedRows: { month: string }[] | null;
     skippedLocked: { month: string }[] | null; adminName: string | null; createdAt: string;
+    factoryName?: string | null; // зміна по фабриці (години в повідомленні)
   }[]>({ queryKey: ["worker-changes", workerId], queryFn: () => get(`/workers/${workerId}/changes`) });
   // журнал зберігає id — для показу підтягуємо назви фабрик/посад
   const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
@@ -4094,7 +4147,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
       <div className="max-h-80 divide-y divide-slate-100 overflow-auto">
         {changes.map(c => (
           <div key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-5 py-2 text-sm">
-            <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}:</span>
+            <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}{c.factoryName ? ` · ${c.factoryName}` : ""}:</span>
             {(() => { const wd = c.field === "selfTransport" && !!c.oldValue?.startsWith("self") && !!c.newValue?.startsWith("self"); return (
               <span className="text-slate-500">{showVal(c.field, c.oldValue, wd)} → <span className="font-medium text-slate-700">{showVal(c.field, c.newValue, wd)}</span></span>
             ); })()}

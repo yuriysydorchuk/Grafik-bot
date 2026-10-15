@@ -337,6 +337,24 @@ export const workerSelfTransportTable = pgTable("worker_self_transport", {
 }, (t) => [index("worker_self_transport_pair_idx").on(t.workerId, t.factoryId)]);
 export type WorkerSelfTransport = typeof workerSelfTransportTable.$inferSelect;
 
+// Години в powiadomieniu ПО ФАБРИЦІ (15.10.2026): ліміт konto-годин рядка сводної цієї фабрики.
+// source: manual — вписано вручну (профіль/сводна), не перезаписується повідомленням;
+// powiadomienie — з документа Powiadomienie UA (робот praca.gov або ручна форма документа).
+// Немає рядка → фолбек workers.notify_hours (старе «для всіх фабрик», вважається ручним).
+// Резолвер і мутації — лише services/notifyHours.ts.
+export const workerNotifyHoursTable = pgTable("worker_notify_hours", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  hours: real("hours").notNull(), // очищення = видалення рядка (назад до спільного workers.notify_hours)
+  source: text("source").notNull().default("manual"), // manual | powiadomienie
+  documentId: integer("document_id").references(() => workerDocumentsTable.id, { onDelete: "set null" }),
+  updatedBy: integer("updated_by").references(() => adminsTable.id),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("worker_notify_hours_worker_factory_uniq").on(t.workerId, t.factoryId)]);
+export type WorkerNotifyHours = typeof workerNotifyHoursTable.$inferSelect;
+
 // Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
 // starting a workday; the plate shows up in the mileage report.
 export const vehiclesTable = pgTable("vehicles", {
@@ -419,6 +437,9 @@ export const factoriesTable = pgTable("factories", {
   addrAptNo: text("addr_apt_no"),
   uaStanowisko: text("ua_stanowisko"), // powiadomienie 3.2 для всіх посад фабрики (якщо не задано по посаді)
   uaKzisCode: text("ua_kzis_code"),    // powiadomienie 3.3 для всіх посад фабрики
+  // powiadomienie 3.6 «Liczba godzin pracy w miesiącu» (umowa zlecenie) для людей фабрики — єдине джерело
+  // годин у формі (рішення власника 15.10.2026; перед подачею правиться вручну); стандарт 40, NULL = не задано
+  uaNotifyHours: integer("ua_notify_hours").default(40),
   shift1Start: text("shift1_start"), // legacy (start only) — superseded by `shifts`
   shift2Start: text("shift2_start"),
   shift3Start: text("shift3_start"),
@@ -1798,6 +1819,9 @@ export const workerChangesTable = pgTable("worker_changes", {
   // незастосовані зміни, зроблені під старішим (заміненим) локом, назавжди.
   reviewDismissedAt: timestamp("review_dismissed_at"),
   adminId: integer("admin_id").references(() => adminsTable.id),
+  // фабрика, якої стосується зміна (15.10.2026: notifyHours по фабриці); NULL = уся людина.
+  // Без FK свідомо: після видалення фабрики запис мусить лишитись «по фабриці», а не стати спільним
+  factoryId: integer("factory_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("worker_changes_worker_idx").on(t.workerId, t.effectiveDate)]);
 

@@ -91,7 +91,7 @@ export async function mergeWorkers(keepId: number, dropId: number): Promise<{ ok
       await tx.execute(sql`UPDATE ${sql.identifier(t)} SET worker_id = ${keepId} WHERE worker_id = ${dropId}`);
     }
     // унікальні пари (worker, factory/month): переносимо лише ті, яких у keep ще нема
-    for (const [t, col] of [["worker_factories", "factory_id"], ["worker_factory_codes", "factory_id"], ["transport_fee_members", "factory_id"], ["hours_month_exclusions", "month"]] as const) {
+    for (const [t, col] of [["worker_factories", "factory_id"], ["worker_factory_codes", "factory_id"], ["transport_fee_members", "factory_id"], ["hours_month_exclusions", "month"], ["worker_notify_hours", "factory_id"]] as const) {
       await tx.execute(sql`UPDATE ${sql.identifier(t)} d SET worker_id = ${keepId} WHERE d.worker_id = ${dropId}
         AND NOT EXISTS (SELECT 1 FROM ${sql.identifier(t)} k WHERE k.worker_id = ${keepId} AND k.${sql.identifier(col)} = d.${sql.identifier(col)})`);
     }

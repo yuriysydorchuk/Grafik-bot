@@ -116,6 +116,7 @@ export function ProfileChangeModal({ workerId, changes, title, initialFrom, onCl
     onError: (e: any) => toast.error(e.message),
   });
   const changesSummary = Object.entries(changes)
+    .filter(([k]) => k !== "notifyHoursFactoryId") // фабрика годин — уже в заголовку зміни
     .map(([k, v]) => `${t(CHANGE_FIELD_LABEL[k] ?? k)} → ${fmtVal(v, t)}`).join("; ");
   // місця-споживачі поля + сумарний грошовий ефект по вибраних рядках
   const consumers = [...new Set(Object.keys(changes).flatMap(k => FIELD_IMPACTS[k] ?? []))];

@@ -377,7 +377,7 @@ export async function uaCard(workerId: number, companyId: number | null = null):
       { key: "position", label: "Stanowisko / rodzaj pracy", value: f?.contractDuties ?? pos?.name ?? "", required: true, source: "фабрика → обовʼязки / посада" },
       { key: "place", label: "Miejsce wykonywania pracy", value: f ? addr([f.name, f.address ?? f.city]) : "", required: true, source: "фабрика → адреса" },
       { key: "client", label: "Podmiot, do którego kierowany (klient)", value: f?.name ?? "", source: "фабрика" },
-      { key: "hours", label: "Wymiar czasu pracy / liczba godzin (mies.)", value: w.notifyHours != null ? String(w.notifyHours) : "", required: true, source: "профіль → години в повідомленні" },
+      { key: "hours", label: "Liczba godzin pracy w miesiącu (umowa zlecenie)", value: f?.uaNotifyHours != null ? String(f.uaNotifyHours) : "", required: true, source: "налаштування фабрики (praca.gov.pl) → години" },
       { key: "rate", label: "Wynagrodzenie (brutto, zł/h)", value: rate ? String(rate) : "", required: true, source: "фабрика → ставка в умові" },
       { key: "start", label: "Data rozpoczęcia pracy", value: start, required: true, source: "профіль → перший робочий день" },
       { key: "period", label: "Okres powierzenia pracy", value: contract ? `${dateStr(contract.dateFrom) ?? start} – ${dateStr(contract.dateTo) ?? "czas nieokreślony"}` : start ? `${start} – czas nieokreślony` : "", source: "умова" },

@@ -12,7 +12,7 @@ import {
   hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable, absenceAttachmentsTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
-  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
+  workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, workerFactoriesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
   contractsTable, contractFilesTable, documentTemplatesTable, passportScanTokensTable, workerLegalityTable,
   emailTemplatesTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
@@ -56,6 +56,7 @@ import { nextWorkerCode } from "../lib/workerCode";
 import { payoutFor } from "../lib/advancePayout";
 import { zaliczkaRecords, groupPayDate, listaXlsxBuffer, type ZaliczkaSourceRow } from "../services/gratyfikantExport";
 import { umowaStatusFor } from "../services/gratyfikantImport";
+import { loadNotifyHours, setFactoryNotifyHours } from "../services/notifyHours";
 import { loadSelfTransport, isSelfOn, selfIntervalOn, intervalsOfWorker, selfPredicateForWeek, setSelfTransport, moveSelfTransportSince, journalSelfTransport, selfLabel, addSelfInterval, deductedMonthsOf, applySelfEvent, reopenSelfInterval } from "../services/selfTransport";
 
 const router: IRouter = Router();
@@ -988,9 +989,10 @@ router.get("/badania/deducted", ADV, async (req, res) => {
 // Історія змін профілю (журнал worker_changes) — таймлайн у профілі
 router.get("/workers/:id/changes", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
-  const rows = await db.select({ c: workerChangesTable, adminName: adminsTable.name })
+  const rows = await db.select({ c: workerChangesTable, adminName: adminsTable.name, factoryName: factoriesTable.name })
     .from(workerChangesTable)
     .leftJoin(adminsTable, eq(workerChangesTable.adminId, adminsTable.id))
+    .leftJoin(factoriesTable, eq(workerChangesTable.factoryId, factoriesTable.id))
     .where(eq(workerChangesTable.workerId, id))
     .orderBy(desc(workerChangesTable.createdAt));
   // фінансові поля історії — лише з viewFinance; побажання по виплаті —
@@ -1001,10 +1003,11 @@ router.get("/workers/:id/changes", WORKERS_RO, async (req, res) => {
     .filter(({ c }) => (fin || !["hourlyRate", "hourlyRateNetto"].includes(c.field))
       // дзеркало SENSITIVE_TRACKED (svodni.ts): бонусні галочки і дата працевлаштування — теж закритий шар
       && (sens || !["payoutPrefKind", "payoutPrefValue", "agramStazBonus", "agramCashBonus", "employmentStartDate"].includes(c.field)))
-    .map(({ c, adminName }) => ({
+    .map(({ c, adminName, factoryName }) => ({
       id: c.id, field: c.field, oldValue: c.oldValue, newValue: c.newValue,
       effectiveDate: c.effectiveDate, appliedRows: c.appliedRows, skippedLocked: c.skippedLocked,
       adminName, createdAt: c.createdAt,
+      factoryId: c.factoryId, factoryName, // зміна по фабриці (години в повідомленні)
     })));
 });
 
@@ -1139,6 +1142,29 @@ router.delete("/workers/:id/self-transport/:rowId", RW, async (req, res) => {
   ok(res, { ok: true });
 });
 
+// Години в повідомленні ПО ФАБРИЦІ (15.10.2026) напряму, без превʼю сводної — для ролі без svodni
+// (з нею веб іде через /svodni/profile-apply з notifyHoursFactoryId). hours null = прибрати значення
+// фабрики (назад до спільного). Вписане тут — ручне: повідомлення його не перезапише.
+router.put("/workers/:id/notify-hours", RW, async (req, res) => {
+  const workerId = Number(req.params.id);
+  const factoryId = Number(req.body?.factoryId);
+  const raw = req.body?.hours;
+  const hours = raw == null || raw === "" ? null : Number(raw);
+  if (!Number.isInteger(factoryId) || factoryId <= 0) return fail(res, 400, "factoryId обовʼязковий");
+  if (hours != null && (!Number.isFinite(hours) || hours < 0)) return fail(res, 400, "Години в повідомленні — число");
+  const adminId = (req as AuthedRequest).admin?.adminId ?? null;
+  const before = (await loadNotifyHours([workerId])).get(workerId)?.get(factoryId)?.hours ?? null;
+  await setFactoryNotifyHours(workerId, factoryId, hours, { source: "manual", adminId });
+  if (String(before ?? "") !== String(hours ?? "")) {
+    await db.insert(workerChangesTable).values({
+      workerId, field: "notifyHours", factoryId,
+      oldValue: before == null ? null : String(before), newValue: hours == null ? null : String(hours),
+      effectiveDate: warsawToday(), adminId,
+    });
+  }
+  ok(res, { ok: true });
+});
+
 router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
@@ -1267,6 +1293,23 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // старі ключі статусів (oswiadczenie/student_do26/…) нормалізуються до
     // канонічних — інакше select у профілі показує порожнє
     legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, notifyHours: w.notifyHours,
+    // години в повідомленні ПО ФАБРИЦІ (15.10.2026): основна + чинні додаткові + ті, де вже є значення;
+    // без свого рядка фабрика показує спільне workers.notify_hours (source "shared")
+    notifyHoursByFactory: await (async () => {
+      const own = (await loadNotifyHours([w.id])).get(w.id) ?? new Map();
+      const extra = await db.select({ factoryId: workerFactoriesTable.factoryId }).from(workerFactoriesTable)
+        .where(and(eq(workerFactoriesTable.workerId, w.id), sql`(${workerFactoriesTable.validTo} is null or ${workerFactoriesTable.validTo} >= current_date)`));
+      const ids = [...new Set([w.factoryId, ...extra.map(e => e.factoryId), ...own.keys()].filter((x): x is number => x != null))];
+      return ids.map(fid => {
+        const e = own.get(fid);
+        return {
+          factoryId: fid, factoryName: facMap.get(fid)?.name ?? null,
+          hours: e ? e.hours : w.notifyHours ?? null,
+          source: e ? e.source : w.notifyHours != null ? "shared" : null,
+          documentId: e?.documentId ?? null, updatedAt: e?.updatedAt ?? null,
+        };
+      });
+    })(),
     employmentStartDate: w.employmentStartDate,
     firstWorkDate: w.firstWorkDate, firstWorkDates, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
     phone: qRow?.phone || candRow?.phone || null, phoneSource: qRow?.phone ? "questionnaire" : candRow?.phone ? "candidate" : null,
