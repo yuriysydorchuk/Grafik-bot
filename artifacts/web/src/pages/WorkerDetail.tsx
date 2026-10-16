@@ -2369,9 +2369,9 @@ const KARTA_POBYTU_SHORT: Record<string, string> = {
 const WIZA_CODES = ["visa_d", "visa_c", "visa_free", "humanitarian_visa"];
 const WIZA_SHORT: Record<string, string> = { visa_d: "Wiza D", visa_c: "Wiza C", visa_free: "Ruch bezwizowy", humanitarian_visa: "Wiza humanitarna" };
 const DECYZJA_CODES = ["decyzja_pobyt"];
-// Паспорт і карти побиту додаються ЛИШЕ через скан (рішення власника 04.09.2026):
-// «+» у цих слотах відкриває сканер, у модалці «Документ» цих типів немає.
-// Редагування вже доданого документа — як завжди.
+// Паспорт і карти побиту — через скан (рішення власника 04.09.2026): у загальному «+ інший документ»
+// цих типів немає. Карту можна додати й вручну «+» у слоті Karta pobytu (16.10.2026: сканер не прочитав
+// PDF карти — додати її не було як). Редагування вже доданого документа — як завжди.
 const SCAN_ONLY_CODES = new Set<string>(["passport", "trc", "karta_stalego_pobytu", "rezydent_ue", "refugee_status", "subsidiary_protection", "humanitarian_stay", "tolerated_stay", "eu_family_member_card"]);
 const ZEZWOLENIE_CODES = ["oswiadczenie", "zezwolenie_a", "zezwolenie_jednolite"];
 const ZEZWOLENIE_SHORT: Record<string, string> = { oswiadczenie: "Oświadczenie", zezwolenie_a: "Zezwolenie A", zezwolenie_jednolite: "Zezwolenie jednolite" };
@@ -2665,10 +2665,10 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     const icon = state.kind === "doc" ? docTypeIcon(state.type?.icon) : fallbackIcon;
     const subLabel = state.kind === "doc" && state.type?.code
       ? (state.type.code === "decyzja_pobyt" ? (stayArticleOf(state.doc.attrs?.article)?.label.split(" — ")[0] ?? null) : (shortNames[state.type.code] ?? state.type.name)) : null;
-    // «+» — лише не-карткові типи слоту (самі карти — сканером); один такий тип — одразу обраний
-    const manualCodes = codes.filter(c => !SCAN_ONLY_CODES.has(c));
-    const onAdd = () => (state.kind === "empty" && state.requestedDoc && !SCAN_ONLY_CODES.has(types.find(ty => ty.id === state.requestedDoc!.docTypeId)?.code ?? ""))
-      ? onOpenDoc(state.requestedDoc) : onOpenEmpty(manualCodes.length === 1 ? byCode(manualCodes[0]!) : null, manualCodes);
+    // «+» — вибір серед типів слоту (вкл. карти: сканер лишається швидким шляхом, ручне додавання — запасним);
+    // слот з одним типом (Decyzja) — тип одразу обраний
+    const onAdd = () => (state.kind === "empty" && state.requestedDoc)
+      ? onOpenDoc(state.requestedDoc) : onOpenEmpty(codes.length === 1 ? byCode(codes[0]!) : null, codes);
     const slotTypes = types.filter(ty => ty.code && codes.includes(ty.code) && ty.isActive !== false);
     let candidates: DocumentType[] = [];
     if (state.kind === "doc" && state.type) candidates = [state.type];
@@ -3104,13 +3104,19 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const typeOptions = types.filter(ty => {
     if (String(ty.id) === docTypeId) return true;
     if (ty.isActive === false) return false;
-    if (!doc && SCAN_ONLY_CODES.has(ty.code ?? "")) return false; // новий паспорт/карта — лише через скан
+    if (!doc && !restrictSet && SCAN_ONLY_CODES.has(ty.code ?? "")) return false; // новий паспорт/карта — сканом; з «+» слоту Karta pobytu — і вручну
     if (restrictSet && !restrictSet.has(ty.code ?? "")) return false;
     if (!showAllTypes && !typeMatchesNationality(ty, nationality)) return false;
     return true;
   });
   const CATEGORY_ORDER = Object.keys(DOC_CATEGORY_LABEL) as (keyof typeof DOC_CATEGORY_LABEL)[];
   const groupedTypes = CATEGORY_ORDER.map(cat => ({ cat, list: typeOptions.filter(ty => ty.category === cat) })).filter(g => g.list.length > 0);
+  // «+» слоту з кількома типами (Karta pobytu, Wiza): «власного» пункту нема — одразу перший тип слоту;
+  // інакше select показував перший пункт, а зберігався документ без типу (16.10.2026)
+  const firstSlotTypeId = restrictSet ? groupedTypes[0]?.list[0]?.id ?? null : null;
+  useEffect(() => {
+    if (!docTypeId && firstSlotTypeId != null) setDocTypeId(String(firstSlotTypeId));
+  }, [firstSlotTypeId]); // eslint-disable-line react-hooks/exhaustive-deps
   const natsText = (ty: DocumentType) => ty.appliesToNationalities?.length
     ? ty.appliesToNationalities.map(g => t(NAT_GROUP_LABEL[g] ?? natLabel(g) ?? g)).join(", ")
     : t("усіх");

@@ -415,7 +415,12 @@ export async function callVisionOcr(buffer: Buffer): Promise<string> {
     const pages: any[] = file?.responses ?? [];
     const errors = pages.filter(p => p?.error).map(p => p.error?.message ?? "?");
     if (errors.length) logger.warn({ errors, pages: pages.length }, "vision pdf: частина сторінок з помилкою");
-    if (errors.length && !pages.some(p => p?.fullTextAnnotation?.text)) throw new Error(errors[0] || "Vision API error");
+    if (errors.length && !pages.some(p => p?.fullTextAnnotation?.text)) {
+      // «Bad image data» — Vision не читає зображення всередині PDF (кодек скану; кейс карти 16.10.2026):
+      // людині — що робити далі, а не сирий англійський текст
+      if (/bad image data/i.test(errors[0] ?? "")) throw new Error("Сканер не зміг прочитати зображення в цьому PDF — надішліть фото документа (JPG/PNG) або додайте документ вручну");
+      throw new Error(errors[0] || "Vision API error");
+    }
     return pages.map(p => p?.fullTextAnnotation?.text ?? "").filter(Boolean).join("\n");
   }
   const res: any = await client.request({
@@ -424,7 +429,7 @@ export async function callVisionOcr(buffer: Buffer): Promise<string> {
     data: { requests: [{ image: { content: buffer.toString("base64") }, features: [{ type: "TEXT_DETECTION" }] }] },
   });
   const result = res.data?.responses?.[0];
-  if (result?.error) throw new Error(result.error.message || "Vision API error");
+  if (result?.error) throw new Error(/bad image data/i.test(result.error.message ?? "") ? "Сканер не зміг прочитати це зображення — надішліть інше фото (JPG/PNG) або додайте документ вручну" : (result.error.message || "Vision API error"));
   return result?.fullTextAnnotation?.text ?? result?.textAnnotations?.[0]?.description ?? "";
 }
 
