@@ -169,6 +169,17 @@ test("validateQuestionnaire: пропуски/формати/кирилиця/з
   assert.equal(r.errors["consents.rodo_info"], undefined);
 });
 
+test("validateQuestionnaire: «немає рахунку» — банк і IBAN не обов'язкові й порожні (16.10.2026)", () => {
+  const without = { ...fullAnketa(), bankName: "", bankIban: "" };
+  assert.equal(validateQuestionnaire(without, { birthDate: "1944-05-14" }).errors.bankIban, "required", "без галочки рахунок обов'язковий");
+  const r = validateQuestionnaire({ ...without, noBankAccount: true, bankIban: "сміття" }, { birthDate: "1944-05-14" });
+  assert.equal(r.errors.bankName, undefined);
+  assert.equal(r.errors.bankIban, undefined, "з галочкою вписане в поле ігнорується, не валідується");
+  assert.equal(r.values.noBankAccount, true);
+  assert.equal(r.values.bankIban, "");
+  assert.equal(r.values.bankName, "");
+});
+
 test("validateQuestionnaire: список urzędów/NFZ з контексту — значення поза списком відхиляється", () => {
   const r = validateQuestionnaire(fullAnketa(), { taxOffices: ["Urząd Skarbowy w Poznaniu"], nfzBranches: ["X"] });
   assert.equal(r.errors.taxOffice, "list");

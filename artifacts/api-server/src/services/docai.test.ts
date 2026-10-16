@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
-import { sanitizeAmount, normDate, normNip, entitiesToDraft, detectOurCompany, parsePassportMrz, mrzToPassportDraft, toVisionCompatible, normalizeForOcr, mrzNationalityToCatalog, findPassportIssueDate, passportDatesInText } from "./docai.ts";
+import { sanitizeAmount, normDate, normNip, entitiesToDraft, detectOurCompany, parsePassportMrz, mrzToPassportDraft, toVisionCompatible, normalizeForOcr, mrzNationalityToCatalog, findPassportIssueDate, passportDatesInText, trustedPassportDraft } from "./docai.ts";
 
 // ── sanitizeAmount ────────────────────────────────────────────────────────────
 
@@ -105,6 +105,18 @@ test("parsePassportMrz: підроблений номер документа л�
   assert.equal(r!.compositeValid, false, "композитна чек-сума теж падає — номер входить у її формулу");
 });
 
+test("parsePassportMrz: літера на місці цифри (O↔0, G↔6) у контрольних цифрах і датах — виправляється (кейс 16.10.2026)", () => {
+  // контрольна цифра номера «6» прочитана як «G», «0» у даті народження — як «O»
+  const ocr = MRZ_L2.slice(0, 9) + "G" + MRZ_L2.slice(10, 15) + "O" + MRZ_L2.slice(16);
+  const r = parsePassportMrz(`${MRZ_L1}\n${ocr}`);
+  assert.ok(r);
+  assert.equal(r!.documentNumberValid, true);
+  assert.equal(r!.birthDate, "1974-08-12");
+  assert.equal(r!.birthDateValid, true);
+  assert.equal(r!.compositeValid, true);
+  assert.equal(r!.documentNumber, "L898902C3", "сам номер (може містити літери) не змінюється");
+});
+
 test("parsePassportMrz: текст без MRZ-зони → null", () => {
   assert.equal(parsePassportMrz("Просто текст без машинозчитуваної зони паспорта."), null);
 });
@@ -142,6 +154,21 @@ test("mrzToPassportDraft: null (MRZ не знайдено) → усі поля n
     citizenship: null, sex: null, birthDate: null, fullName: null,
     firstName: null, middleName: null, lastName: null,
   });
+});
+
+test("trustedPassportDraft: поле з чек-сумою, що не зійшлась, — порожнє (людина впише), решта лишається", () => {
+  // помилка OCR у даті народження (740812 → 740813), чек-цифра стара; номер і строк — валідні
+  const mrz = parsePassportMrz(`${MRZ_L1}\n${MRZ_L2.replace("7408122", "7408132")}`);
+  assert.equal(mrz!.birthDateValid, false);
+  const d = trustedPassportDraft({ ...mrzToPassportDraft(mrz), passportIssuedAt: "2007-04-16" }, mrz);
+  assert.equal(d.birthDate, null, "дату з неправильною чек-сумою не підставляємо");
+  assert.equal(d.passportIssuedAt, null, "дата видачі вгадується від дат MRZ — без валідної дати народження теж порожня");
+  assert.equal(d.passportNumber, "L898902C3");
+  assert.equal(d.passportExpiresAt, "2012-04-15");
+  assert.equal(d.lastName, "ERIKSSON", "ім'я чек-суми не має — пропозиція лишається");
+  const ok = parsePassportMrz(`${MRZ_L1}\n${MRZ_L2}`);
+  assert.deepEqual(trustedPassportDraft(mrzToPassportDraft(ok), ok), mrzToPassportDraft(ok), "повністю валідна MRZ — без змін");
+  assert.deepEqual(trustedPassportDraft(mrzToPassportDraft(null), null), mrzToPassportDraft(null));
 });
 
 // ── Дата видачі з візуальної зони (15.10.2026) ──────────────────────────────────

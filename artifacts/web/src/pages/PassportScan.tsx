@@ -2,8 +2,9 @@
 // завантаження фото в Telegram: камера прямо в браузері з рамкою-підказкою
 // (без живого зелено/червоного індикатора — власник обрав просту статичну
 // підказку), або файл/PDF. Двоетапно: analyze() запускає OCR (Vision+MRZ) і
-// кладе файл+чернетку в токен; екран підтвердження показує РОЗПІЗНАНЕ —
-// вручну ввести ім'я «з нуля» не можна, а виправити (диктовки OCR) — можна;
+// кладе файл+чернетку в токен; екран підтвердження показує РОЗПІЗНАНЕ, а
+// нерозпізнане підсвічує жовтим — людина вписує з паспорта (16.10.2026: скан
+// більше не блокує реєстрацію; «✍️ Ввести дані вручну» — фото без OCR);
 // confirm() із фінальних полів створює працівника. БЕЗ сесії — токен єдина
 // авторизація (той самий підхід, що /sign/:token).
 import { useEffect, useRef, useState } from "react";
@@ -32,6 +33,15 @@ const STR: Record<string, Record<Lang, string>> = {
   analyzing: { uk: "🔎 Розпізнаю паспорт…", en: "🔎 Reading your passport…", es: "🔎 Leyendo tu pasaporte…", ru: "🔎 Распознаю паспорт…", pl: "🔎 Odczytuję paszport…" },
   analyzingHint: { uk: "Це може зайняти до хвилини — не закривай сторінку.", en: "This can take up to a minute — don't close the page.", es: "Esto puede tardar hasta un minuto — no cierres la página.", ru: "Это может занять до минуты — не закрывай страницу.", pl: "To może potrwać do minuty — nie zamykaj strony." },
   analyzeFailed: { uk: "Не вдалося розпізнати. Сфотографуй чіткіше (рівне освітлення, без відблисків) і спробуй ще раз.", en: "Couldn't read the passport. Take a clearer photo (even lighting, no glare) and try again.", es: "No se pudo leer el pasaporte. Toma una foto más clara (luz uniforme, sin reflejos) e inténtalo de nuevo.", ru: "Не удалось распознать. Сфотографируйте чётче (ровное освещение, без бликов) и попробуйте снова.", pl: "Nie udało się odczytać. Zrób wyraźniejsze zdjęcie (równe oświetlenie, bez odblasków) i spróbuj ponownie." },
+  // ручне введення / частково розпізнаний скан (16.10.2026)
+  manualBtn: { uk: "✍️ Ввести дані вручну", en: "✍️ Enter details manually", es: "✍️ Introducir los datos a mano", ru: "✍️ Ввести данные вручную", pl: "✍️ Wpisz dane ręcznie" },
+  manualBtnHint: { uk: "Паспорт не розпізнається? Завантаж його фото й впиши дані сам — офіс звірить їх із фото.", en: "Passport not recognised? Upload a photo of it and type the details yourself — the office will check them against the photo.", es: "¿No se reconoce el pasaporte? Sube una foto y escribe los datos tú mismo — la oficina los comprobará con la foto.", ru: "Паспорт не распознаётся? Загрузите его фото и впишите данные сами — офис сверит их с фото.", pl: "Paszport się nie odczytuje? Prześlij jego zdjęcie i wpisz dane samodzielnie — biuro sprawdzi je ze zdjęciem." },
+  manualTitle: { uk: "Впиши дані з паспорта", en: "Enter the passport details", es: "Introduce los datos del pasaporte", ru: "Впиши данные из паспорта", pl: "Wpisz dane z paszportu" },
+  manualHint: { uk: "Фото паспорта збережено. Заповни поля точно як у паспорті (латиницею) — офіс звірить їх із фото.", en: "The passport photo is saved. Fill in the fields exactly as in the passport (Latin letters) — the office will check them against the photo.", es: "La foto del pasaporte se ha guardado. Rellena los campos exactamente como en el pasaporte (letras latinas) — la oficina los comprobará con la foto.", ru: "Фото паспорта сохранено. Заполни поля точно как в паспорте (латиницей) — офис сверит их с фото.", pl: "Zdjęcie paszportu zapisano. Wypełnij pola dokładnie jak w paszporcie (alfabetem łacińskim) — biuro sprawdzi je ze zdjęciem." },
+  noneHint: { uk: "Паспорт не вдалося розпізнати. Переробити фото (рівне світло, без відблисків, видно рядки внизу сторінки) — або впиши дані вручну нижче, офіс звірить їх із фото.", en: "We couldn't read the passport. Retake the photo (even light, no glare, the lines at the bottom visible) — or enter the details manually below; the office will check them against the photo.", es: "No se pudo leer el pasaporte. Repite la foto (luz uniforme, sin reflejos, con las líneas de abajo visibles) — o introduce los datos a mano abajo; la oficina los comprobará con la foto.", ru: "Паспорт не удалось распознать. Переснимите фото (ровный свет, без бликов, видны строки внизу страницы) — или впишите данные вручную ниже, офис сверит их с фото.", pl: "Nie udało się odczytać paszportu. Zrób zdjęcie ponownie (równe światło, bez odblasków, widoczne linie na dole strony) — albo wpisz dane ręcznie poniżej; biuro sprawdzi je ze zdjęciem." },
+  partialHint: { uk: "Частину даних не вдалося розпізнати — поля, позначені жовтим, впиши вручну з паспорта. Решту перевір.", en: "Some details couldn't be read — fill in the fields highlighted in yellow from the passport. Check the rest.", es: "No se pudieron leer algunos datos — rellena desde el pasaporte los campos marcados en amarillo. Revisa el resto.", ru: "Часть данных не удалось распознать — поля, отмеченные жёлтым, впиши вручную из паспорта. Остальное проверь.", pl: "Części danych nie udało się odczytać — pola zaznaczone na żółto wpisz ręcznie z paszportu. Resztę sprawdź." },
+  notRecognized: { uk: "Не розпізнано — впиши з паспорта", en: "Not recognised — enter it from the passport", es: "No reconocido — escríbelo del pasaporte", ru: "Не распознано — впиши из паспорта", pl: "Nie odczytano — wpisz z paszportu" },
+  noBankAccount: { uk: "У мене немає банківського рахунку", en: "I don't have a bank account", es: "No tengo cuenta bancaria", ru: "У меня нет банковского счёта", pl: "Nie mam konta bankowego" },
   retry: { uk: "Спробувати ще раз", en: "Try again", es: "Intentar de nuevo", ru: "Попробовать снова", pl: "Spróbuj ponownie" },
   confirmTitle: { uk: "Перевір дані", en: "Check the details", es: "Revisa los datos", ru: "Проверь данные", pl: "Sprawdź dane" },
   confirmHint: { uk: "Розпізнано з паспорта — виправ, якщо десь помилка.", en: "Read from the passport — fix anything that's wrong.", es: "Leído del pasaporte — corrige si algo está mal.", ru: "Распознано с паспорта — исправь, если где-то ошибка.", pl: "Odczytano z paszportu — popraw, jeśli coś jest błędne." },
@@ -172,6 +182,8 @@ type Meta = {
 // 400 з мапою field → код помилки (lib/questionnaireRules) — форма підсвічує поля
 export class FieldError extends Error { fields: Record<string, string>; constructor(msg: string, fields: Record<string, string>) { super(msg); this.fields = fields; } }
 type AddrParts = { wojewodztwo: string; powiat: string; gmina: string; miejscowosc: string; ulica: string; numerDomu: string; kodPocztowy: string };
+// full — MRZ з валідними чек-сумами; partial — розпізнано частину; none — нічого; manual — без OCR («ввести вручну»)
+type Recognized = "full" | "partial" | "none" | "manual";
 type Draft = {
   passportNumber: string | null; passportCountry: string | null; passportIssuedAt?: string | null; passportExpiresAt: string | null;
   citizenship: string | null; sex: string | null; birthDate: string | null; fullName: string | null;
@@ -214,11 +226,15 @@ export default function PassportScan() {
   const [rehire, setRehire] = useState<{ candidate: { id: number; fullName: string; workerCode: string | null }; fields: Omit<Draft, "fullName"> } | null>(null);
   const [analyzeErr, setAnalyzeErr] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [recognized, setRecognized] = useState<Recognized>("full");
+  const [preview, setPreview] = useState<string | null>(null); // фото на екрані підтвердження — звіряти/вписувати дані
   const [busy, setBusy] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [birthDate, setBirthDate] = useState<string | null>(null); // з кроку паспорта — для звірки PESEL на кроці анкети
   const fileInputRef = useRef<HTMLInputElement>(null);
   const nativeCamRef = useRef<HTMLInputElement>(null);
+  const manualFileRef = useRef<HTMLInputElement>(null);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
 
   useEffect(() => {
     if (!token) return;
@@ -233,13 +249,16 @@ export default function PassportScan() {
     }).catch(e => setError(e.message));
   }, [token]);
 
-  async function handleCaptured(file: Blob, name: string) {
+  async function handleCaptured(file: Blob, name: string, manual = false) {
     setStep("analyzing"); setAnalyzeErr(null);
     try {
       const form = new FormData();
+      if (manual) form.append("manual", "1");
       form.append("file", file, name);
-      const r = await apiPostForm<{ draft: Draft }>(`/passport-scan/${token}/analyze`, form);
+      const r = await apiPostForm<{ draft: Draft; recognized?: Recognized }>(`/passport-scan/${token}/analyze`, form);
       setDraft(r.draft);
+      setRecognized(r.recognized ?? "full");
+      setPreview(file.type.startsWith("image/") ? URL.createObjectURL(file) : null);
       setStep("confirm");
     } catch (e: any) {
       setAnalyzeErr(e.message);
@@ -347,12 +366,22 @@ export default function PassportScan() {
               className="mt-2 w-full rounded-lg border border-slate-300 bg-white py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50">
               {s("upload")}
             </button>
+            {/* Ручне введення (16.10.2026): фото без розпізнавання — для паспортів, які OCR не бере */}
+            <input ref={manualFileRef} type="file" accept="image/*,application/pdf" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleCaptured(f, f.name || "passport.jpg", true); e.target.value = ""; }} />
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <button type="button" onClick={() => manualFileRef.current?.click()}
+                className="w-full rounded-lg border border-dashed border-slate-400 bg-white py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                {s("manualBtn")}
+              </button>
+              <p className="mt-1.5 text-center text-xs text-slate-500">{s("manualBtnHint")}</p>
+            </div>
           </>
         )}
 
         {step === "confirm" && draft && (
-          <ConfirmForm s={s} draft={draft} busy={busy} error={analyzeErr} serverErrors={serverErrors}
-            onBack={() => { setDraft(null); setStep("capture"); }}
+          <ConfirmForm s={s} draft={draft} recognized={recognized} preview={preview} busy={busy} error={analyzeErr} serverErrors={serverErrors}
+            onBack={() => { setDraft(null); setPreview(null); setStep("capture"); }}
             onSubmit={submitConfirm} />
         )}
 
@@ -520,6 +549,7 @@ type S = (k: keyof typeof STR) => string;
 type Errs = Record<string, string>;
 const inputCls = "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm";
 const inputErrCls = "w-full rounded-lg border border-rose-400 bg-rose-50/40 px-3 py-2 text-sm";
+const inputMissCls = "w-full rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-sm"; // не розпізнано — вписати з паспорта
 
 // Код помилки (lib/questionnaireRules, той самий на сервері) → текст мовою працівника
 // Країна видачі / громадянство — лише зі списку lib/countries (назви польською, як
@@ -556,12 +586,14 @@ function errText(s: S, code: string | undefined): string | null {
   }
 }
 
-function Field({ label, required, hint, error, children }: { label: string; required?: boolean; hint?: string; error?: string | null; children: React.ReactNode }) {
+function Field({ label, required, hint, warn, error, children }: { label: string; required?: boolean; hint?: string; warn?: string; error?: string | null; children: React.ReactNode }) {
   return (
     <label className="block" data-err={error ? "1" : undefined}>
       <div className="mb-1 text-xs font-medium text-slate-500">{label}{required && <span className="ml-0.5 text-rose-500">*</span>}</div>
       {children}
-      {error ? <p className="mt-1 text-xs text-rose-600">{error}</p> : hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
+      {error ? <p className="mt-1 text-xs text-rose-600">{error}</p>
+        : warn ? <p className="mt-1 text-xs font-medium text-amber-700">{warn}</p>
+        : hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
     </label>
   );
 }
@@ -575,8 +607,10 @@ function scrollToFirstError() {
 // локальний календарний день (toISOString давав UTC — о 00:30 ще «вчора»)
 const todayIso = () => new Date().toLocaleDateString("sv-SE");
 
-function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: {
-  s: S; draft: Draft; busy: boolean; error: string | null; serverErrors: Errs;
+const PASSPORT_REQUIRED = ["firstName", "lastName", "birthDate", "passportNumber", "passportCountry", "passportIssuedAt", "passportExpiresAt", "citizenship", "sex"] as const;
+
+function ConfirmForm({ s, draft, recognized, preview, busy, error, serverErrors, onBack, onSubmit }: {
+  s: S; draft: Draft; recognized: Recognized; preview: string | null; busy: boolean; error: string | null; serverErrors: Errs;
   onBack: () => void; onSubmit: (fields: Omit<Draft, "fullName">) => void;
 }) {
   const [firstName, setFirstName] = useState(draft.firstName ?? "");
@@ -596,12 +630,17 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
   const [touched, setTouched] = useState<Record<string, true>>({});
 
   const body = { firstName, middleName, lastName, birthDate, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
+  // Не розпізнано скан-ом (порожнє на старті) — жовтим, поки людина не впише. У ручному режимі
+  // нічого не «не розпізнано» (OCR не запускали) — звичайні підказки.
+  const [missing] = useState(() => new Set<string>(recognized === "manual" ? [] : PASSPORT_REQUIRED.filter(k => !body[k])));
+  const miss = (k: string) => missing.has(k) && !String(body[k as keyof typeof body] ?? "").trim();
+  const warn = (k: string) => (miss(k) ? s("notRecognized") : undefined);
   const local = tried ? validatePassport(body, todayIso()).errors : {};
   const errs: Errs = { ...local };
   for (const [k, v] of Object.entries(serverErrors)) if (!touched[k]) errs[k] = v;
   const er = (k: string) => errText(s, errs[k]);
   const erCountry = (k: string) => (errs[k] === "list" ? s("errCountryList") : errText(s, errs[k]));
-  const cls = (k: string) => (errs[k] ? inputErrCls : inputCls);
+  const cls = (k: string) => (errs[k] ? inputErrCls : miss(k) ? inputMissCls : inputCls);
   const touch = (k: string) => setTouched(t => (t[k] ? t : { ...t, [k]: true }));
 
   function submit() {
@@ -618,23 +657,32 @@ function ConfirmForm({ s, draft, busy, error, serverErrors, onBack, onSubmit }: 
 
   return (
     <Card className="p-4">
-      <h2 className="mb-1 text-base font-semibold text-slate-800">{s("confirmTitle")}</h2>
-      <p className="mb-1 text-xs text-slate-500">{s("confirmHint")}</p>
+      <h2 className="mb-1 text-base font-semibold text-slate-800">{recognized === "manual" ? s("manualTitle") : s("confirmTitle")}</h2>
+      {recognized === "full" && <p className="mb-1 text-xs text-slate-500">{s("confirmHint")}</p>}
+      {recognized === "manual" && <p className="mb-1 text-xs text-slate-500">{s("manualHint")}</p>}
+      {(recognized === "partial" || recognized === "none") && (
+        <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">{recognized === "none" ? s("noneHint") : s("partialHint")}</p>
+      )}
       <p className="mb-4 text-xs text-slate-500">{s("qHintStrict")}</p>
+      {preview && (
+        <a href={preview} target="_blank" rel="noreferrer" className="mb-4 block">
+          <img src={preview} alt="" className="max-h-56 w-full rounded-lg bg-slate-50 object-contain" />
+        </a>
+      )}
       {error && !hasErr && <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{error}</p>}
       {hasErr && <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{s("fixErrors")}</p>}
       <div className="space-y-3">
-        <Field label={s("firstName")} required hint={s("hintName")} error={er("firstName")}><input value={firstName} onChange={e => { setFirstName(e.target.value); touch("firstName"); }} className={cls("firstName")} /></Field>
+        <Field label={s("firstName")} required hint={s("hintName")} warn={warn("firstName")} error={er("firstName")}><input value={firstName} onChange={e => { setFirstName(e.target.value); touch("firstName"); }} className={cls("firstName")} /></Field>
         <Field label={s("middleName")} hint={s("latinOnly")} error={er("middleName")}><input value={middleName} onChange={e => { setMiddleName(e.target.value); touch("middleName"); }} className={cls("middleName")} /></Field>
-        <Field label={s("lastName")} required hint={s("hintLastName")} error={er("lastName")}><input value={lastName} onChange={e => { setLastName(e.target.value); touch("lastName"); }} className={cls("lastName")} /></Field>
-        <Field label={s("birthDate")} required hint={s("hintBirthDate")} error={er("birthDate")}><input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); touch("birthDate"); }} className={cls("birthDate")} /></Field>
-        <Field label={s("passportNumber")} required hint={s("hintPassportNo")} error={er("passportNumber")}><input value={passportNumber} onChange={e => { setPassportNumber(e.target.value.toUpperCase()); touch("passportNumber"); }} autoCapitalize="characters" className={cls("passportNumber")} /></Field>
-        <Field label={s("passportCountry")} required hint={s("hintCountry")} error={erCountry("passportCountry")}><CountrySelect s={s} value={passportCountry} onChange={v => { setPassportCountry(v); touch("passportCountry"); }} className={cls("passportCountry")} /></Field>
-        <Field label={s("passportIssuedAt")} required hint={s("hintIssued")} error={er("passportIssuedAt")}><input type="date" value={passportIssuedAt} onChange={e => { setPassportIssuedAt(e.target.value); touch("passportIssuedAt"); }} className={cls("passportIssuedAt")} /></Field>
-        <Field label={s("passportExpiresAt")} required hint={s("hintExpires")} error={er("passportExpiresAt")}><input type="date" value={passportExpiresAt} onChange={e => { setPassportExpiresAt(e.target.value); touch("passportExpiresAt"); }} className={cls("passportExpiresAt")} /></Field>
-        <Field label={s("citizenship")} required hint={s("hintCountry")} error={erCountry("citizenship")}><CountrySelect s={s} value={citizenship} onChange={v => { setCitizenship(v); touch("citizenship"); }} className={cls("citizenship")} /></Field>
-        <Field label={s("sex")} required error={er("sex")}>
-          <div className="flex gap-2">
+        <Field label={s("lastName")} required hint={s("hintLastName")} warn={warn("lastName")} error={er("lastName")}><input value={lastName} onChange={e => { setLastName(e.target.value); touch("lastName"); }} className={cls("lastName")} /></Field>
+        <Field label={s("birthDate")} required hint={s("hintBirthDate")} warn={warn("birthDate")} error={er("birthDate")}><input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); touch("birthDate"); }} className={cls("birthDate")} /></Field>
+        <Field label={s("passportNumber")} required hint={s("hintPassportNo")} warn={warn("passportNumber")} error={er("passportNumber")}><input value={passportNumber} onChange={e => { setPassportNumber(e.target.value.toUpperCase()); touch("passportNumber"); }} autoCapitalize="characters" className={cls("passportNumber")} /></Field>
+        <Field label={s("passportCountry")} required hint={s("hintCountry")} warn={warn("passportCountry")} error={erCountry("passportCountry")}><CountrySelect s={s} value={passportCountry} onChange={v => { setPassportCountry(v); touch("passportCountry"); }} className={cls("passportCountry")} /></Field>
+        <Field label={s("passportIssuedAt")} required hint={s("hintIssued")} warn={warn("passportIssuedAt")} error={er("passportIssuedAt")}><input type="date" value={passportIssuedAt} onChange={e => { setPassportIssuedAt(e.target.value); touch("passportIssuedAt"); }} className={cls("passportIssuedAt")} /></Field>
+        <Field label={s("passportExpiresAt")} required hint={s("hintExpires")} warn={warn("passportExpiresAt")} error={er("passportExpiresAt")}><input type="date" value={passportExpiresAt} onChange={e => { setPassportExpiresAt(e.target.value); touch("passportExpiresAt"); }} className={cls("passportExpiresAt")} /></Field>
+        <Field label={s("citizenship")} required hint={s("hintCountry")} warn={warn("citizenship")} error={erCountry("citizenship")}><CountrySelect s={s} value={citizenship} onChange={v => { setCitizenship(v); touch("citizenship"); }} className={cls("citizenship")} /></Field>
+        <Field label={s("sex")} required warn={warn("sex")} error={er("sex")}>
+          <div className={`flex gap-2 rounded-lg ${miss("sex") && !errs.sex ? "bg-amber-50 ring-1 ring-amber-400" : ""}`}>
             {(["M", "F"] as const).map(v => (
               <button key={v} type="button" onClick={() => { setSex(v); touch("sex"); }}
                 className={`flex-1 rounded-lg border px-3 py-2 text-sm ${sex === v ? "border-red-500 bg-red-50 text-red-700" : "border-slate-300 text-slate-600"}`}>
@@ -708,6 +756,8 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
   const [fatherName, setFatherName] = useState(str("fatherName"));
   const [bankName, setBankName] = useState(str("bankName"));
   const [bankIban, setBankIban] = useState(str("bankIban"));
+  // «немає рахунку» сервер зберігає як payoutMethod=reka без IBAN — так і відновлюємо галочку
+  const [noBankAccount, setNoBankAccount] = useState(initial?.payoutMethod === "reka" && !str("bankIban"));
   const [phone, setPhone] = useState(str("phone"));
   const [email, setEmail] = useState(str("email"));
   const [taxOffice, setTaxOffice] = useState(str("taxOffice"));
@@ -746,7 +796,7 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
   const body: Record<string, unknown> = {
     ...(showNameFields ? { firstName, middleName, lastName } : {}),
     ...(showIssuedAt ? { passportIssuedAt } : {}),
-    birthPlace, pesel, motherName, fatherName, bankName, bankIban, phone, email, taxOffice, nfzBranch,
+    birthPlace, pesel, motherName, fatherName, bankName, bankIban, noBankAccount, phone, email, taxOffice, nfzBranch,
     isStudent, schoolName, hasOtherEmployment, otherEmploymentNote, isRegisteredUnemployed, emergencyContact, nip, pit0,
     ankietaInnyPracodawca, ankietaEmeryt, ankietaRencista, ankietaNiepelnosprawnosc, ankietaSkladkaChorobowa,
     ...addrBody("reg", regAddr), ...addrBody("zam", zamAddr), zamSame, consents,
@@ -809,8 +859,13 @@ function QuestionnaireForm({ s, busy, error, serverErrors, initial, initialPesel
         </Field>
         <Field label={s("motherName")} required hint={s("hintParent")} error={er("motherName")}>{txt("motherName", setMotherName)}</Field>
         <Field label={s("fatherName")} required hint={s("hintParent")} error={er("fatherName")}>{txt("fatherName", setFatherName)}</Field>
-        <Field label={s("bankName")} required hint={s("hintBank")} error={er("bankName")}>{txt("bankName", setBankName)}</Field>
-        <Field label={s("bankIban")} required hint={s("hintNrb")} error={er("bankIban")}>{txt("bankIban", setBankIban, { autoCapitalize: "characters", autoComplete: "off", spellCheck: false })}</Field>
+        {check(s("noBankAccount"), noBankAccount, setNoBankAccount)}
+        {!noBankAccount && (
+          <>
+            <Field label={s("bankName")} required hint={s("hintBank")} error={er("bankName")}>{txt("bankName", setBankName)}</Field>
+            <Field label={s("bankIban")} required hint={s("hintNrb")} error={er("bankIban")}>{txt("bankIban", setBankIban, { autoCapitalize: "characters", autoComplete: "off", spellCheck: false })}</Field>
+          </>
+        )}
         <Field label={s("phone")} required hint={s("hintPhone")} error={er("phone")}>{txt("phone", setPhone, { type: "tel", inputMode: "tel" })}</Field>
         <Field label={s("email")} required hint={s("hintEmail")} error={er("email")}>{txt("email", setEmail, { type: "email", inputMode: "email", autoCapitalize: "none" })}</Field>
         <Field label={s("taxOffice")} required hint={s("hintTaxOffice")} error={er("taxOffice")}>

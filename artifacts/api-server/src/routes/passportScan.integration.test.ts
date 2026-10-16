@@ -6,7 +6,7 @@ import path from "node:path";
 import {
   app, hasTestDb, resetDb, closeDb, seedAdmin, db,
   workersTable, workerQuestionnairesTable, workerDocumentsTable, factoriesTable, passportScanTokensTable, documentTypesTable,
-  candidatesTable,
+  candidatesTable, tasksTable,
 } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 import { ensureUploadDirs, PASSPORT_SCAN_TMP_DIR, UPLOADS_ROOT } from "../lib/uploads.ts";
@@ -33,7 +33,7 @@ async function mkFactory(): Promise<number> {
 
 // Вставляє токен так, ніби analyze() уже успішно відпрацював — реальний
 // файл на диску (потрібен для rename() у confirm()) + чернетка з OCR.
-async function mkAnalyzedToken(opts: { purpose: "office" | "self" | "anketa"; factoryId?: number | null; telegramId?: string | null; createdBy?: number | null; workerId?: number | null; candidateId?: number | null }): Promise<string> {
+async function mkAnalyzedToken(opts: { purpose: "office" | "self" | "anketa"; factoryId?: number | null; telegramId?: string | null; createdBy?: number | null; workerId?: number | null; candidateId?: number | null; manual?: boolean }): Promise<string> {
   const token = `TESTPSTOK${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   const storedName = `${Date.now()}-test.jpg`;
   await fs.promises.writeFile(path.join(PASSPORT_SCAN_TMP_DIR, storedName), PNG);
@@ -42,7 +42,9 @@ async function mkAnalyzedToken(opts: { purpose: "office" | "self" | "anketa"; fa
     language: "uk", createdBy: opts.createdBy ?? null, workerId: opts.workerId ?? null, candidateId: opts.candidateId ?? null,
     expiresAt: new Date(Date.now() + 30 * 60 * 1000),
     tempFilePath: path.join("passport-scan-tmp", storedName), tempFileName: "passport.jpg", tempFileMime: "image/jpeg",
-    draftJson: { draft: { fullName: "JAN KOWALSKI", birthDate: "1990-01-01" }, mrz: null },
+    draftJson: opts.manual
+      ? { draft: { fullName: null, birthDate: null }, mrz: null, recognized: "none", manual: true }
+      : { draft: { fullName: "JAN KOWALSKI", birthDate: "1990-01-01" }, mrz: null },
   });
   return token;
 }
@@ -423,4 +425,98 @@ test("POST .../confirm з candidateId на токені — прив'язує к
   const [candidate] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, c!.id));
   assert.equal(candidate!.workerId, res.body.worker.id);
   assert.equal(candidate!.stage, "hired");
+});
+
+// ── Ручне введення / нерозпізнаний скан (16.10.2026) ─────────────────────────
+test("POST .../analyze: manual=1 — фото зберігається без OCR, чернетка порожня, recognized=manual", opts, async () => {
+  const token = `TESTPSTOK${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  await db.insert(passportScanTokensTable).values({ token, purpose: "self", expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
+  const res = await request(app).post(`/api/passport-scan/${token}/analyze`).set(H)
+    .field("manual", "1").attach("file", PNG, { filename: "passport.png", contentType: "image/png" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.recognized, "manual");
+  assert.equal(res.body.manual, true);
+  assert.equal(res.body.draft.passportNumber, null);
+  const [row] = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.token, token));
+  assert.ok(row!.tempFilePath && fs.existsSync(path.join(UPLOADS_ROOT, row!.tempFilePath)), "фото лягає в тимчасову теку — confirm() його перенесе");
+  assert.equal((row!.draftJson as any).manual, true);
+});
+
+test("POST .../confirm: дані вписані вручну працівником (self) — паспорт pending + задача «Перевірити завантажений документ»", opts, async () => {
+  await seedAdmin({ role: "owner", isMain: true });
+  const token = await mkAnalyzedToken({ purpose: "self", manual: true });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const [doc] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, res.body.worker.id));
+  assert.equal(doc!.status, "pending", "вписане вручну — офіс звіряє з фото");
+  assert.equal(doc!.source, "worker_bot");
+  assert.equal(doc!.number, "AB1234567");
+  const tasks = await db.select().from(tasksTable).where(eq(tasksTable.documentId, doc!.id));
+  assert.equal(tasks.length, 1, "задача перевірки створюється одразу");
+  const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, res.body.worker.id));
+  assert.ok(((q!.ocrRaw as any).enteredManually as string[]).includes("passportNumber"), "які поля вписано вручну — в ocrRaw");
+
+  // повторне відкриття лінка — одразу анкета, паспорт «на перевірці» вдруге не просимо
+  const meta = await request(app).get(`/api/passport-scan/${token}`).set(H);
+  assert.equal(meta.body.needsPassportScan, false);
+});
+
+test("POST .../confirm: офісний лінк з ручними даними — паспорт одразу present (вписав сам офіс)", opts, async () => {
+  const { adminId } = await seedAdmin({ role: "owner" });
+  const token = await mkAnalyzedToken({ purpose: "office", createdBy: adminId, manual: true });
+  const res = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Anna", lastName: "Nowak" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const [doc] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, res.body.worker.id));
+  assert.equal(doc!.status, "present");
+  assert.equal(doc!.source, "office");
+});
+
+test("POST .../questionnaire: «немає рахунку» — банк порожній, payoutMethod=reka; рахунок з'явився — reka лишається (рішення офісу)", opts, async () => {
+  const token = await mkAnalyzedToken({ purpose: "self" });
+  const confirmed = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Jan", lastName: "Kowalski" });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  const workerId = confirmed.body.worker.id;
+
+  const noBank = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, bankName: "", bankIban: "", noBankAccount: true });
+  assert.equal(noBank.status, 200, JSON.stringify(noBank.body));
+  let [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  assert.equal(q!.bankIban, null);
+  assert.equal(q!.bankName, null);
+  assert.equal(q!.payoutMethod, "reka", "без рахунку — Wniosek o wypłatę do rąk");
+
+  const withBank = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send(ANKETA_OK);
+  assert.equal(withBank.status, 200, JSON.stringify(withBank.body));
+  [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  assert.equal(q!.bankIban, "61109010140000071219812874");
+  assert.equal(q!.payoutMethod, "reka", "назад на konto анкета не перемикає — reka могла бути рішенням офісу");
+
+  const strFalse = await request(app).post(`/api/passport-scan/${token}/questionnaire`).set(H).send({ ...ANKETA_OK, bankIban: "", noBankAccount: "false" });
+  assert.equal(strFalse.status, 400, "рядок \"false\" не вмикає «немає рахунку» — IBAN обов'язковий");
+});
+
+test("POST .../confirm: валідний скан, але людина змінила розпізнаний номер — паспорт pending (звірка офісом)", opts, async () => {
+  const token = await mkAnalyzedToken({ purpose: "self" });
+  await db.update(passportScanTokensTable).set({ draftJson: { draft: { firstName: "JAN", lastName: "KOWALSKI", birthDate: "1995-05-05", passportNumber: "AB1234567", passportExpiresAt: "2030-01-01" }, mrz: null, recognized: "full", manual: false } })
+    .where(eq(passportScanTokensTable.token, token));
+  const same = await request(app).post(`/api/passport-scan/${token}/confirm`).set(H).send({ ...PASSPORT_OK, passportNumber: "XY7654321", firstName: "Jan", lastName: "Kowalski" });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  const [doc] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, same.body.worker.id));
+  assert.equal(doc!.status, "pending");
+
+  const token2 = await mkAnalyzedToken({ purpose: "self" });
+  await db.update(passportScanTokensTable).set({ draftJson: { draft: { firstName: "ANNA", lastName: "NOWAK", birthDate: "1995-05-05", passportNumber: "AB1234567", passportExpiresAt: "2030-01-01" }, mrz: null, recognized: "full", manual: false } })
+    .where(eq(passportScanTokensTable.token, token2));
+  const ok2 = await request(app).post(`/api/passport-scan/${token2}/confirm`).set(H).send({ ...PASSPORT_OK, firstName: "Anna", lastName: "Nowak" });
+  assert.equal(ok2.status, 200, JSON.stringify(ok2.body));
+  const [doc2] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, ok2.body.worker.id));
+  assert.equal(doc2!.status, "present", "розпізнане підтверджене без змін (лише регістр) — без звірки");
+
+  // змінена лише дата видачі (пропозиція з візуальної зони) — теж звірка
+  const token3 = await mkAnalyzedToken({ purpose: "self" });
+  await db.update(passportScanTokensTable).set({ draftJson: { draft: { firstName: "OLGA", lastName: "NOWAK", birthDate: "1995-05-05", passportNumber: "AB1234567", passportExpiresAt: "2030-01-01", passportIssuedAt: "2020-01-02" }, mrz: null, recognized: "full", manual: false } })
+    .where(eq(passportScanTokensTable.token, token3));
+  const r3 = await request(app).post(`/api/passport-scan/${token3}/confirm`).set(H).send({ ...PASSPORT_OK, passportIssuedAt: "2021-03-04", firstName: "Olga", lastName: "Nowak" });
+  assert.equal(r3.status, 200, JSON.stringify(r3.body));
+  const [doc3] = await db.select().from(workerDocumentsTable).where(eq(workerDocumentsTable.workerId, r3.body.worker.id));
+  assert.equal(doc3!.status, "pending");
 });

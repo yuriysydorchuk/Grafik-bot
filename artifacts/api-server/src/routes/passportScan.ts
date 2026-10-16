@@ -8,9 +8,10 @@
 // telegramId/language вже відомі — це його чат).
 //
 // Двоетапно: analyze() запускає OCR і кладе файл+чернетку в токен, сторінка
-// показує РЕДАГОВНИЙ екран підтвердження (вручну ввести ім'я «з нуля» не
-// можна, а виправити розпізнане — можна), confirm() із фінальних (можливо
-// підправлених) полів створює працівника.
+// показує РЕДАГОВНИЙ екран підтвердження, confirm() із фінальних (можливо
+// підправлених) полів створює працівника. З 16.10.2026 нерозпізнані поля (або
+// все — «ввести вручну») людина вписує сама, фото паспорта обов'язкове;
+// вписаний працівником паспорт іде офісу на звірку (status pending).
 import { Router, type IRouter } from "express";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
@@ -20,9 +21,12 @@ import {
   db, passportScanTokensTable, workersTable, workerQuestionnairesTable, workerDocumentsTable,
   documentTypesTable, factoriesTable, adminsTable, candidatesTable,
 } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { UPLOADS_ROOT, WORKER_DOCS_DIR, PASSPORT_SCAN_TMP_DIR, makeStoredName, sniffDocMime, deleteStoredFile, compressUploadImage } from "../lib/uploads";
-import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, mrzDiagnostics, type PassportDraft } from "../services/docai";
+import {
+  processPassport, passportOcrConfigured, mrzNationalityToCatalog, mrzDiagnostics, mrzToPassportDraft, trustedPassportDraft,
+  PASSPORT_REQUIRED_FIELDS, type PassportDraft, type MrzResult,
+} from "../services/docai";
 import { randomInviteCode, ensureWorkerInviteCode, workerInviteLink } from "../lib/invite";
 import { workerSignupInfo } from "../services/signupLinks";
 import { nextWorkerCode } from "../lib/workerCode";
@@ -113,8 +117,8 @@ router.get("/passport-scan/:token", async (req, res) => {
     if (row.purpose === "anketa" || row.usedAt) { // повторне відкриття після скану — одразу анкета, якщо паспорт уже є
       const [passportDoc] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable)
         .innerJoin(documentTypesTable, eq(workerDocumentsTable.docTypeId, documentTypesTable.id))
-        .where(and(eq(workerDocumentsTable.workerId, row.workerId), eq(documentTypesTable.code, "passport"), eq(workerDocumentsTable.status, "present")));
-      needsPassportScan = !passportDoc;
+        .where(and(eq(workerDocumentsTable.workerId, row.workerId), eq(documentTypesTable.code, "passport"), inArray(workerDocumentsTable.status, ["present", "pending"])));
+      needsPassportScan = !passportDoc; // pending = вписаний вручну, чекає звірки офісом — сканувати вдруге не треба
     }
   }
 
@@ -134,43 +138,54 @@ router.get("/passport-scan/:token", async (req, res) => {
 });
 
 // Файл → OCR → чернетка. Файл лягає у тимчасову теку (переноситься у постійну
-// лише при confirm()) — можна спробувати кілька разів (гірше фото не пройде
-// перевірку MRZ), кожна спроба перезаписує попередню тимчасову теку.
+// лише при confirm()) — можна спробувати кілька разів, кожна спроба перезаписує
+// попередню тимчасову теку.
+//
+// 16.10.2026 (скарга власника: жінку з нечитабельним паспортом не вдалося
+// зареєструвати взагалі) — нерозпізнаний скан більше НЕ відхиляється: фото
+// зберігається, розпізнане (лише з валідною чек-сумою) підставляється, решту
+// людина вписує вручну (сторінка підсвічує порожні поля). manual=1 — «ввести
+// вручну» без OCR взагалі. Чернетка не з повністю валідної MRZ = manual: на
+// confirm() паспорт від працівника йде офісу на перевірку з фото (status pending).
 router.post("/passport-scan/:token/analyze", uploadScan.single("file"), async (req, res) => {
   const { row, error } = await loadValidToken(String(req.params.token));
   if (error || !row) return fail(res, 404, error ?? "Лінк недійсний.");
   if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
   const realMime = sniffDocMime(req.file.buffer);
   if (!realMime || !SCAN_MIME_WHITELIST.has(realMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
-  if (!passportOcrConfigured()) return fail(res, 501, "OCR паспорта не налаштований на цьому сервері");
+  const manualRequested = String(req.body?.manual ?? "") === "1";
 
   try {
-    const { draft, mrz, fullText } = await processPassport(req.file.buffer, realMime);
-    // parsePassportMrz() навмисно повертає БУДЬ-яку структурно схожу на MRZ
-    // пару рядків, навіть якщо чек-суми не збігаються (це use-case для
-    // сервісів, яким потрібен сам факт розбіжності) — mrzToPassportDraft()
-    // так само беззастережно копіює поля. Без явної перевірки чек-сум ТУТ
-    // (на межі використання) хибно розпізнана MRZ-подібна послідовність
-    // (шум фону, злиті рядки) підставлялась як ніби достовірні дані —
-    // побачений на практиці баг: номер паспорта й громадянство — сміття,
-    // що користувач не мав шансів відрізнити від правди на екрані підтвердження.
-    // НЕ вимагаємо compositeValid: вона рахується разом з полем "особистий
-    // номер" (14 симв., у більшості паспортів — просто заповнювач "<<<<...",
-    // дрібний і рясний на "<" фрагмент рядка) — те, що ми взагалі не
-    // показуємо й не використовуємо. На практиці саме воно найчастіше
-    // помиляється при OCR і валило composite навіть коли номер паспорта,
-    // дата народження й дата закінчення (усе, що реально йде в анкету)
-    // розпізнались і перевірились чек-сумою бездоганно — цілком читабельне
-    // фото відхилялось як "не вдалося розпізнати".
-    const mrzValid = !!mrz && mrz.documentNumberValid && mrz.birthDateValid && mrz.expiryDateValid;
-    if (!draft.fullName || (mrz && !mrzValid)) {
-      // Сам текст паспорта в лог НЕ пишемо (RODO) — лише структурні метрики
-      // (mrzDiagnostics), щоб відрізнити «Vision взагалі нічого не побачив»
-      // (проблема якості фото/кропу) від «побачив щось, але структура/чек-сума
-      // не збіглась» (наприклад, Vision розбив один MRZ-рядок на два коротших).
-      logger.warn({ tokenId: row.id, fileBytes: req.file.buffer.length, realMime, mrzFound: !!mrz, mrzChecks: mrz ? { doc: mrz.documentNumberValid, birth: mrz.birthDateValid, exp: mrz.expiryDateValid, composite: mrz.compositeValid } : null, ...mrzDiagnostics(fullText) }, "passport-scan analyze failed");
-      return fail(res, 400, "Не вдалося розпізнати паспорт — сфотографуй чіткіше (рівне освітлення, без відблисків, сторінка з фото та машинозчитуваними рядками знизу, без стороннього фону в кадрі) і спробуй ще раз.");
+    let draft: PassportDraft = mrzToPassportDraft(null);
+    let mrz: MrzResult | null = null;
+    // full — MRZ з валідними чек-сумами; partial — щось розпізнано; none — нічого; manual — OCR не запускали
+    let recognized: "full" | "partial" | "none" | "manual" = "manual";
+    if (!manualRequested && passportOcrConfigured()) {
+      try {
+        const r = await processPassport(req.file.buffer, realMime);
+        mrz = r.mrz;
+        // parsePassportMrz() повертає БУДЬ-яку структурно схожу на MRZ пару рядків,
+        // навіть з чек-сумами, що не збігаються, — поля без валідної чек-суми
+        // відкидаємо тут (trustedPassportDraft), інакше сміття (номер паспорта,
+        // дата) виглядало б як правда на екрані підтвердження. compositeValid НЕ
+        // вимагаємо: вона включає «особистий номер» (здебільшого заповнювач «<<<»),
+        // який ми не використовуємо, а OCR саме в ньому помиляється найчастіше.
+        draft = trustedPassportDraft(r.draft, mrz);
+        const mrzValid = !!mrz && mrz.documentNumberValid && mrz.birthDateValid && mrz.expiryDateValid;
+        recognized = mrzValid && draft.fullName ? "full" : PASSPORT_REQUIRED_FIELDS.some(k => draft[k]) ? "partial" : "none";
+        if (recognized !== "full") {
+          // Сам текст паспорта в лог НЕ пишемо (RODO) — лише структурні метрики (mrzDiagnostics):
+          // «Vision нічого не побачив» (якість фото/кроп) vs «побачив, але структура/чек-сума не збіглась».
+          logger.warn({ tokenId: row.id, fileBytes: req.file.buffer.length, realMime, recognized, mrzFound: !!mrz, mrzChecks: mrz ? { doc: mrz.documentNumberValid, birth: mrz.birthDateValid, exp: mrz.expiryDateValid, composite: mrz.compositeValid } : null, ...mrzDiagnostics(r.fullText) }, "passport-scan analyze: not fully recognized → manual entry");
+        }
+      } catch (e: any) {
+        // Vision недоступний / PDF завеликий тощо — не блокуємо реєстрацію, дані впишуть вручну
+        logger.warn({ tokenId: row.id, err: e?.message }, "passport-scan OCR failed → manual entry");
+        recognized = "none";
+      }
     }
+    const manual = recognized !== "full";
+    const missing = PASSPORT_REQUIRED_FIELDS.filter(k => !draft[k]);
 
     deleteStoredFile(row.tempFilePath);
     const rawName = Buffer.from(req.file.originalname ?? "passport", "latin1").toString("utf8") || "passport.jpg";
@@ -181,13 +196,13 @@ router.post("/passport-scan/:token/analyze", uploadScan.single("file"), async (r
 
     await db.update(passportScanTokensTable).set({
       tempFilePath: path.join("passport-scan-tmp", storedName), tempFileName: stored.fileName, tempFileMime: stored.mime,
-      draftJson: { draft, mrz },
+      draftJson: { draft, mrz, recognized, manual, missing },
     }).where(eq(passportScanTokensTable.id, row.id));
 
-    logger.info({ tokenId: row.id, mrzValid }, "passport-scan analyze ok");
-    ok(res, { draft, mrzValid });
+    logger.info({ tokenId: row.id, recognized, missing: missing.length }, "passport-scan analyze ok");
+    ok(res, { draft, recognized, manual, missing });
   } catch (e: any) {
-    fail(res, 400, e?.message ?? "Не вдалося розпізнати паспорт");
+    fail(res, 400, e?.message ?? "Не вдалося зберегти фото паспорта");
   }
 });
 
@@ -259,20 +274,41 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       import("../services/tasks").then(m => m.workerTrigger("worker_created", created)).catch(() => {}); // шаблони задач «при реєстрації»
     }
 
+    // Дані не з повністю валідної MRZ (16.10.2026: нерозпізнаний скан / «ввести вручну») —
+    // вписані людиною; так само, якщо людина ЗМІНИЛА будь-яке розпізнане поле (інакше
+    // валідний скан + підмінені дані обходили б звірку). Від працівника (self/anketa)
+    // паспорт іде офісу на звірку з фото: status pending + задача «Перевірити завантажений
+    // документ» (той самий шлях, що й самозавантажені документи). Офісний лінк
+    // (purpose=office) вписує сам офіс — одразу present.
+    const draftJson = (row.draftJson ?? {}) as { draft?: Partial<PassportDraft>; manual?: boolean };
+    const manualEntry = draftJson.manual === true;
+    const norm = (v: unknown) => String(v ?? "").trim().toUpperCase();
+    const typed: Record<string, unknown> = { firstName, middleName: middleNameIn, lastName, birthDate, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
+    const fields = [...PASSPORT_REQUIRED_FIELDS, "middleName"] as const;
+    // Які поля людина вписала/змінила відносно розпізнаного — доказ походження для офісу (ocrRaw)
+    const enteredManually = fields.filter(k => norm(draftJson.draft?.[k]) !== norm(typed[k]));
+    // будь-яке РОЗПІЗНАНЕ поле змінене (вкл. дату видачі-пропозицію, країну, стать) → звірка
+    const changedRecognized = fields.some(k => norm(draftJson.draft?.[k]) && norm(draftJson.draft?.[k]) !== norm(typed[k]));
+    const needsReview = (manualEntry || changedRecognized) && row.purpose !== "office";
     const docType = await ensureDocumentType("passport");
     const tmpAbs = path.join(UPLOADS_ROOT, row.tempFilePath);
     const storedName = makeStoredName(row.tempFileName || "passport.jpg");
     const finalRel = path.join("worker-documents", storedName);
     await fs.promises.rename(tmpAbs, path.join(WORKER_DOCS_DIR, storedName));
     const [doc] = await db.insert(workerDocumentsTable).values({
-      workerId: worker.id, docTypeId: docType.id, title: docType.name, status: "present", source: "ocr",
-      expiresAt: passportExpiresAt, number: passportNumber, // номер і строк — з MRZ (підтверджені людиною на кроці confirm)
+      workerId: worker.id, docTypeId: docType.id, title: docType.name,
+      status: needsReview ? "pending" : "present", source: manualEntry || changedRecognized ? (row.purpose === "office" ? "office" : "worker_bot") : "ocr",
+      expiresAt: passportExpiresAt, number: passportNumber, // номер і строк — з MRZ або вписані (підтверджені людиною на кроці confirm)
       filePath: finalRel, fileName: row.tempFileName, fileMime: row.tempFileMime,
     }).returning();
+    if (needsReview) {
+      try { const { ensurePendingDocTask } = await import("../services/taskAutoRules"); await ensurePendingDocTask(doc!.id); }
+      catch (e: any) { logger.warn({ err: e?.message, workerId: worker.id }, "passport-scan: pending-doc task create failed"); }
+    }
 
     // Upsert — для isExistingWorker анкета могла вже частково існувати
     // (напр. дозаповнена раніше через бот без скану паспорта).
-    const qPatch = { ocrRaw: row.draftJson, ocrDocId: doc!.id, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
+    const qPatch = { ocrRaw: { ...draftJson, enteredManually }, ocrDocId: doc!.id, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
     const [existingQ] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, worker.id));
     if (existingQ) await db.update(workerQuestionnairesTable).set(qPatch).where(eq(workerQuestionnairesTable.workerId, worker.id));
     else await db.insert(workerQuestionnairesTable).values({ workerId: worker.id, ...qPatch });
@@ -305,13 +341,15 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
       const allWorkers = await db.select().from(workersTable);
       const dup = findLikelyDuplicate(worker.fullName, allWorkers.filter(w => w.id !== worker.id));
       const dupNote = dup ? `\n⚠️ Можливий дублікат: ${dup.fullName} (№${dup.workerCode ?? dup.id}${dup.isActive ? "" : ", звільнений"}).` : "";
+      const manualNote = needsReview ? "\n✍️ Дані паспорта вписано/виправлено вручну — звірте з фото (задача «Перевірити завантажений документ»)."
+        : manualEntry ? "\n✍️ Дані паспорта вписано вручну (не розпізнано)." : "";
 
       if (row.purpose === "office" && row.createdBy) {
         const [admin] = await db.select().from(adminsTable).where(eq(adminsTable.id, row.createdBy));
         if (admin?.telegramId) {
           const invite = await ensureWorkerInviteCode(worker.id);
           await bot.telegram.sendMessage(admin.telegramId,
-            `✅ Профіль створено зі сканування: ${worker.fullName} (№${worker.workerCode}).${dupNote}\n\nПосилання для кандидата (прив'язати Telegram і дозаповнити анкету):\n${workerInviteLink(invite)}`);
+            `✅ Профіль створено зі сканування: ${worker.fullName} (№${worker.workerCode}).${dupNote}${manualNote}\n\nПосилання для кандидата (прив'язати Telegram і дозаповнити анкету):\n${workerInviteLink(invite)}`);
         }
       } else if (row.purpose === "self") {
         // за персональним лінком — рекрутеру окремо (він може бути скоуп-адміном без ролі owner/scheduler)
@@ -320,7 +358,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
         const staff = await db.select().from(adminsTable);
         for (const a of staff) {
           if (!a.telegramId || (a.role !== "owner" && a.role !== "scheduler")) continue;
-          await bot.telegram.sendMessage(a.telegramId, `🆕 Новий працівник зареєструвався сам (паспорт):\n👤 ${worker.fullName}${viaNote}${dupNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`).catch(() => {});
+          await bot.telegram.sendMessage(a.telegramId, `🆕 Новий працівник зареєструвався сам (паспорт):\n👤 ${worker.fullName}${viaNote}${dupNote}${manualNote}\n\nПеревірте/відредагуйте в панелі (Працівники).`).catch(() => {});
         }
         if (via) {
           // деактивований між видачею скан-лінка і confirm() — персональні дані йому вже не шлемо
@@ -402,7 +440,12 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   const patch: Record<string, unknown> = {
     status: "submitted", submittedAt: new Date(), updatedAt: new Date(),
     ...(issuedPatch ? { passportIssuedAt: issuedPatch } : {}),
-    birthPlace: v.birthPlace, motherName: v.motherName, fatherName: v.fatherName, bankName: v.bankName, bankIban: v.bankIban,
+    birthPlace: v.birthPlace, motherName: v.motherName, fatherName: v.fatherName,
+    // «Немає рахунку» (16.10.2026) → банк порожній і виплата do rąk (у сталий пакет іде Wniosek
+    // o wypłatę do rąk, services/contracts.ts). Назад на konto анкета НЕ перемикає: reka без
+    // рахунку могла бути свідомим рішенням офісу — з'явився рахунок, офіс сам змінить у профілі.
+    bankName: v.noBankAccount ? null : v.bankName, bankIban: v.noBankAccount ? null : v.bankIban,
+    ...(v.noBankAccount ? { payoutMethod: "reka" } : {}),
     phone: v.phone, email: v.email, taxOffice: v.taxOffice, nfzBranch: v.nfzBranch,
     isStudent: v.isStudent, schoolName: v.schoolName, hasOtherEmployment: v.hasOtherEmployment, otherEmploymentNote: v.otherEmploymentNote,
     isRegisteredUnemployed: v.isRegisteredUnemployed, emergencyContact: v.emergencyContact, nip: v.nip, pit0: v.pit0,

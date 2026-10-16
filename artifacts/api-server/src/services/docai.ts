@@ -181,6 +181,23 @@ export function mrzToPassportDraft(mrz: MrzResult | null): PassportDraft {
   };
 }
 
+// Частково розпізнана MRZ (16.10.2026: скан більше не відхиляється цілком). Поле, чия
+// чек-сума не зійшлась, — порожнє: людина впише його з паспорта, а не підтвердить сміття
+// (номер/дата з помилкою OCR виглядають правдоподібно). Ім'я/стать/країни чек-суми не
+// мають — лишаються пропозицією; дата видачі вгадується від дат MRZ, тож без них теж порожня.
+export function trustedPassportDraft(draft: PassportDraft, mrz: MrzResult | null): PassportDraft {
+  if (!mrz) return draft;
+  return {
+    ...draft,
+    passportNumber: mrz.documentNumberValid ? draft.passportNumber : null,
+    birthDate: mrz.birthDateValid ? draft.birthDate : null,
+    passportExpiresAt: mrz.expiryDateValid ? draft.passportExpiresAt : null,
+    passportIssuedAt: mrz.birthDateValid && mrz.expiryDateValid ? draft.passportIssuedAt : null,
+  };
+}
+// Обов'язкові поля кроку паспорта — те, що сторінка скану позначає «не розпізнано, впиши»
+export const PASSPORT_REQUIRED_FIELDS = ["firstName", "lastName", "birthDate", "passportNumber", "passportCountry", "passportIssuedAt", "passportExpiresAt", "citizenship", "sex"] as const;
+
 // ── Дата видачі з візуальної зони (15.10.2026) ──────────────────────────────────
 // Дата видачі є на кожній сторінці даних паспорта, але не в MRZ — шукаємо її в
 // тексті Vision. Формати: «22 БЕР/MAR 24» (UA), «22 MAR 2024», «22.03.2024».
@@ -287,11 +304,24 @@ export function mrzDiagnostics(text: string): { totalLines: number; candidateLin
   };
 }
 
+// OCR плутає цифри зі схожими літерами (кейс 16.10.2026: UA-паспорт, контрольна цифра
+// номера «0» прочитана як «O» — чек-сума номера падала й скан відхилявся цілком). У
+// позиціях рядка 2, де ICAO 9303 допускає ЛИШЕ цифри (контрольні цифри, дати), літеру
+// повертаємо в цифру; номер документа (може містити літери) не чіпаємо — його чек-сума
+// далі сама ловить помилку. 42 — контрольна особистого номера, може бути «<» (лишається).
+const MRZ_DIGIT_FIX: Record<string, string> = { O: "0", Q: "0", D: "0", I: "1", L: "1", Z: "2", S: "5", G: "6", B: "8" };
+const MRZ_L2_DIGIT_POS = [9, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 42, 43];
+export function fixMrzLine2Digits(l2: string): string {
+  const chars = l2.split("");
+  for (const p of MRZ_L2_DIGIT_POS) { const c = chars[p]; if (c && MRZ_DIGIT_FIX[c]) chars[p] = MRZ_DIGIT_FIX[c]!; }
+  return chars.join("");
+}
+
 export function parsePassportMrz(text: string): MrzResult | null {
   const lines = text.split(/\r?\n/).map(l => l.trim().toUpperCase().replace(/\s/g, "")).filter(l => /^[A-Z0-9<]{30,44}$/.test(l));
   for (let i = 0; i < lines.length - 1; i++) {
     const l1 = lines[i]!.padEnd(44, "<").slice(0, 44);
-    const l2 = lines[i + 1]!.padEnd(44, "<").slice(0, 44);
+    const l2 = fixMrzLine2Digits(lines[i + 1]!.padEnd(44, "<").slice(0, 44));
     if (l1[0] !== "P" || !/^[A-Z<]{42}$/.test(l1.slice(2))) continue;
     if (!/^[A-Z0-9<]{44}$/.test(l2)) continue;
 
