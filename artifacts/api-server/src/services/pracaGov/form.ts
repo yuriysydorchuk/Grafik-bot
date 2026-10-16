@@ -127,8 +127,28 @@ async function pickSelectBySel(ctx: RobotCtx, page: Page, sel: string, label: st
   const countOpts = () => page.evaluate(() => document.querySelectorAll(".cdk-overlay-container mat-option").length as number);
   await page.$eval(sel, (el: any) => el.scrollIntoView({ block: "center" }));
   await sleep(300);
+  // Заблокований список портал заповнив сам (Płeć і Data urodzenia — з PESEL): клік його не відкриває,
+  // а Enter влучав у наступне поле з фокусом («Tytuł pobytu») — інцидент 16.10.2026. Звіряємо значення й не чіпаємо.
+  const readLocked = () => page.$eval(sel, (el: any) => ({
+    disabled: el.getAttribute("aria-disabled") === "true" || /select-disabled/.test(el.className || ""),
+    value: (el.querySelector(".mat-mdc-select-value-text, .mat-select-value-text")?.textContent || "").replace(/\s+/g, " ").trim(),
+  }));
+  let locked = await readLocked();
+  if (locked.disabled) {
+    // підстановка з PESEL асинхронна — порожнє заблоковане поле чекаємо, а не пропускаємо
+    const deadline = Date.now() + 5000;
+    while (!locked.value && Date.now() < deadline) { await sleep(250); locked = await readLocked(); }
+    if (!locked.value) { await snap(ctx, page, "select-locked-empty"); throw new RobotError(`«${label}» заблоковане порталом і порожнє — перевірте PESEL`, "form-data"); }
+    if (rx.test(locked.value)) return locked.value;
+    await snap(ctx, page, "select-locked-mismatch");
+    throw new RobotError(`«${label}» портал підставив сам: «${locked.value}», а в профілі «${String(option)}» — перевірте PESEL і дані профілю`, "form-data");
+  }
   for (let attempt = 0; attempt < 3 && !(await countOpts()); attempt++) {
-    if (attempt === 2) { await page.focus(sel).catch(() => {}); await page.keyboard.press("Enter"); }
+    if (attempt === 2) {
+      // Enter — лише якщо фокус справді на цьому списку, інакше відкриється чужий
+      const focused = await page.$eval(sel, (el: any) => { el.focus(); return el === document.activeElement || el.contains(document.activeElement); }).catch(() => false);
+      if (focused) await page.keyboard.press("Enter");
+    }
     else await page.click(sel).catch(() => {});
     const deadline = Date.now() + 4000;
     while (Date.now() < deadline && !(await countOpts())) await sleep(250);
