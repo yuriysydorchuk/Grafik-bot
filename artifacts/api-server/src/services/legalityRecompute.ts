@@ -109,15 +109,30 @@ export async function loadWorkerContracts(workerId: number): Promise<LegalityCon
   return rows.map(r => ({ id: r.id, factoryId: r.factoryId, companyId: r.companyId, status: r.status, dateFrom: dateStr(r.dateFrom), dateTo: dateStr(r.dateTo), hasUmowa: withUmowa.has(r.id) }));
 }
 
-// Роботодавці: основна фабрика (фірма фабрики) + активні сьогодні додаткові
+// Фірма з умови на фабрику (рішення власника 19.10.2026: «фірми привʼязані до контрактів»): остання не скасована
+// умова людини на цю фабрику (або без фабрики) → її company_id. Фолбек там, де фабрика без фірми (multi-firm) і профіль порожній.
+const CONTRACT_LIVE = ["signed", "worker_signed", "sent", "viewed", "approved"];
+// Лише умови ЦІЄЇ фабрики (або без фабрики), спершу чинні сьогодні; умова на чужу фабрику роботодавцем не стає.
+export async function contractCompanyOf(workerId: number, factoryId: number | null, today = warsawToday()): Promise<number | null> {
+  const rows = await db.select({ companyId: contractsTable.companyId, factoryId: contractsTable.factoryId, dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo }).from(contractsTable)
+    .where(and(eq(contractsTable.workerId, workerId), inArray(contractsTable.status, CONTRACT_LIVE))).orderBy(desc(contractsTable.id));
+  const own = rows.filter(r => r.companyId != null && (factoryId == null ? r.factoryId == null : r.factoryId === factoryId || r.factoryId == null));
+  const inForce = (r: typeof own[number]) => { const from = dateStr(r.dateFrom), to = dateStr(r.dateTo); return (!from || from <= today) && (!to || to >= today); };
+  return (own.find(inForce) ?? own[0])?.companyId ?? null;
+}
+
+// Роботодавці: основна фабрика (фірма фабрики; multi-firm — фірма профілю, інакше фірма з умови) + активні сьогодні додаткові
 // (worker_factories.company_id, інакше фірма фабрики). Назви фірм — для причин.
-export async function loadWorkerEmployers(worker: { id: number; factoryId: number | null }, today: string): Promise<LegalityEmployer[]> {
+export async function loadWorkerEmployers(worker: { id: number; factoryId: number | null; companyId?: number | null }, today: string): Promise<LegalityEmployer[]> {
   const out: LegalityEmployer[] = [];
   const companyName = new Map<number, string>();
   for (const c of await db.select({ id: companiesTable.id, name: companiesTable.name }).from(companiesTable)) companyName.set(c.id, c.name);
   if (worker.factoryId != null) {
     const [f] = await db.select({ id: factoriesTable.id, name: factoriesTable.name, companyId: factoriesTable.companyId }).from(factoriesTable).where(eq(factoriesTable.id, worker.factoryId));
-    if (f) out.push({ factoryId: f.id, factoryName: f.name, companyId: f.companyId, companyName: f.companyId != null ? companyName.get(f.companyId) ?? null : null, primary: true });
+    if (f) {
+      const cid = f.companyId ?? worker.companyId ?? await contractCompanyOf(worker.id, f.id);
+      out.push({ factoryId: f.id, factoryName: f.name, companyId: cid, companyName: cid != null ? companyName.get(cid) ?? null : null, primary: true });
+    }
   }
   const rows = await db.select({ factoryId: workerFactoriesTable.factoryId, name: factoriesTable.name, factoryCompanyId: factoriesTable.companyId, companyId: workerFactoriesTable.companyId, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo })
     .from(workerFactoriesTable).leftJoin(factoriesTable, eq(workerFactoriesTable.factoryId, factoriesTable.id))
@@ -161,7 +176,7 @@ export async function loadLegalityInput(workerId: number, today = warsawToday(),
     nationalityVerified: !!w.nationalityVerifiedAt,
     rehiredAt: await rehiredAtOf(w.id),
   };
-  const [contracts, employers, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerEmployers({ id: w.id, factoryId: w.factoryId }, today), scheduleFactoriesOf(workerId, today)]);
+  const [contracts, employers, scheduleFactories] = await Promise.all([loadWorkerContracts(workerId), loadWorkerEmployers({ id: w.id, factoryId: w.factoryId, companyId: w.companyId }, today), scheduleFactoriesOf(workerId, today)]);
   return {
     today, worker, documents: await loadWorkerDocuments(workerId), rules: rules ?? await loadLegalRules(),
     contracts, employers,

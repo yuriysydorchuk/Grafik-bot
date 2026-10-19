@@ -49,7 +49,7 @@ export async function payrollByFactory(workerId: number): Promise<{ factoryId: n
   const { loadWorkerEmployers } = await import("./legalityRecompute");
   const { resolveEffectiveLegal } = await import("./effectiveStatus");
   const { workersTable } = await import("@workspace/db");
-  const [w] = await db.select({ id: workersTable.id, factoryId: workersTable.factoryId, legalStatus: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, workerId));
+  const [w] = await db.select({ id: workersTable.id, factoryId: workersTable.factoryId, companyId: workersTable.companyId, legalStatus: workersTable.legalStatus }).from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return [];
   const employers = await loadWorkerEmployers(w, warsawToday());
   if (employers.length < 2) return [];

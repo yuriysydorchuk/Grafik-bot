@@ -337,7 +337,7 @@ export async function uaCard(workerId: number, companyId: number | null = null):
   if (!w) throw new Error("Працівника не знайдено");
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const [f] = w.factoryId ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [undefined];
-  const cid = companyId ?? w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null);
+  const cid = companyId ?? w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null) ?? await (await import("./legalityRecompute")).contractCompanyOf(workerId, f?.id ?? null);
   const [c] = cid ? await db.select().from(companiesTable).where(eq(companiesTable.id, cid)) : [undefined];
   const [pos] = w.positionId ? await db.select().from(positionsTable).where(eq(positionsTable.id, w.positionId)) : [undefined];
   const [contract] = await db.select().from(contractsTable).where(and(eq(contractsTable.workerId, workerId), w.factoryId ? eq(contractsTable.factoryId, w.factoryId) : isNull(contractsTable.factoryId), sql`${contractsTable.status} in ('signed','sent','viewed','worker_signed')`)).orderBy(desc(contractsTable.id)).limit(1);

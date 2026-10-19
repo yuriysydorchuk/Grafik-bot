@@ -5,6 +5,7 @@ import { db, workersTable, workerQuestionnairesTable, factoriesTable, companiesT
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { countryNamePl } from "../../lib/countries";
 import { dateStr } from "../taskUtils";
+import { contractCompanyOf } from "../legalityRecompute";
 
 export interface UaFormPayload {
   workerId: number; workerName: string; companyId: number | null; companyName: string;
@@ -90,7 +91,8 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   if (!w) throw new Error("Працівника не знайдено");
   const [q] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   let [f] = w.factoryId ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [undefined];
-  const cid = companyId ?? w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null);
+  // фірма подачі: явна → профіль → фірма фабрики → фірма з умови (multi-firm фабрика без фірми; рішення власника 19.10.2026)
+  const cid = companyId ?? w.companyId ?? (f?.multiFirm ? null : f?.companyId ?? null) ?? await contractCompanyOf(workerId, f?.id ?? null);
   // рядок задачі = людина×фірма: якщо фірма подачі не збігається з фірмою основної фабрики, місце роботи,
   // посада на фабриці та умова беруться з ДОДАТКОВОЇ фабрики цієї фірми (worker_factories), не з основної
   if (companyId != null && f && (w.companyId ?? f.companyId) !== companyId) {
