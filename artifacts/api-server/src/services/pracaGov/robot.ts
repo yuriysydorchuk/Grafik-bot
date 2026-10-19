@@ -42,7 +42,7 @@ export interface RobotCtx {
   submissionId: number;
   account: PzAccount;
   adminId: number | null;
-  onAwaitCode: (ctx: RobotCtx, purpose: "login" | "sign") => Promise<void>; // повідомити людину, що чекаємо код
+  onAwaitCode: (ctx: RobotCtx, purpose: "login" | "sign", hint?: string) => Promise<void>; // повідомити людину, що чекаємо код (hint — напр. час SMS / номер спроби)
 }
 
 // ── браузер ───────────────────────────────────────────────────────────────────

@@ -27,14 +27,14 @@ const panelUrl = () => (process.env.WEB_APP_URL || "").replace(/\/$/, "");
 
 // Запит коду власнику акаунта: прямий sendMessage по telegramId (без фільтра типів сповіщень —
 // без коду подача не рухається), кнопка «Ввести код» → стан бота pz:code (handlers/pracaGov.ts).
-async function askCodeViaBot(ctx: RobotCtx, purpose: "login" | "sign"): Promise<void> {
+async function askCodeViaBot(ctx: RobotCtx, purpose: "login" | "sign", hint?: string): Promise<void> {
   if (!ctx.adminId) return;
   const [a] = await db.select({ telegramId: adminsTable.telegramId }).from(adminsTable).where(eq(adminsTable.id, ctx.adminId));
   if (!a?.telegramId) return;
   const what = purpose === "login" ? "для входу на praca.gov.pl" : "для підпису powiadomienia";
   const web = panelUrl() ? `${panelUrl()}/settings?tab=pracaGov&submission=${ctx.submissionId}` : null;
   await bot.telegram.sendMessage(a.telegramId,
-    `🔐 Робот praca.gov.pl чекає код SMS ${what} (акаунт «${ctx.account.label ?? ctx.account.login}»).\nНадішліть код кнопкою нижче — він діє кілька хвилин.`,
+    `🔐 Робот praca.gov.pl чекає код SMS ${what} (акаунт «${ctx.account.label ?? ctx.account.login}»).${hint ? `\n${hint}` : ""}\nНадішліть код кнопкою нижче — він діє кілька хвилин.`,
     Markup.inlineKeyboard([[Markup.button.callback("🔢 Ввести код", `pz:code:${ctx.submissionId}`)], ...(web ? [[Markup.button.url("🖥 Відкрити в панелі", web)]] : [])]),
   ).catch(e => logger.warn({ err: e, id: ctx.submissionId }, "praca.gov: code prompt failed"));
 }

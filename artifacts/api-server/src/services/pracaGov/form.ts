@@ -668,9 +668,13 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
       }).catch(() => null);
       if (signCodeSel) {
         await snap(ctx, cur, "sign-code-page-2");
+        // підказка людині: який саме SMS (час з модалки) і скільки спроб лишилось — коди входу й підпису приходять поспіль
+        const when = (txt.match(/Kod SMS z ([0-9.]+),? godzina (\d\d:\d\d(?::\d\d)?)/i) ?? [])[2];
+        const tries = (txt.match(/Pozostałe próby:\s*(\d)/i) ?? [])[1];
+        const hint = `Це ДРУГИЙ код — для підпису документа${when ? `, SMS надіслано о ${when}` : ""}${tries ? `. Попередній код невірний, лишилось спроб: ${tries}` : ""}.`;
         const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
-        await step(ctx, cur, "awaiting_code", "підпис: чекаю код SMS для ПІДПИСУ документа (другий SMS) від власника акаунта");
-        await ctx.onAwaitCode(ctx, "sign");
+        await step(ctx, cur, "awaiting_code", `підпис: чекаю код SMS для ПІДПИСУ документа${when ? ` (SMS о ${when})` : ""}${tries ? ` — попередній невірний, спроб: ${tries}` : ""}`);
+        await ctx.onAwaitCode(ctx, "sign", hint);
         const code = await codeP;
         await step(ctx, cur, "signing", "підпис: вводжу код SMS підпису");
         await typeInto(cur, signCodeSel, code);
@@ -678,7 +682,9 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
         deadline = Date.now() + 150_000;
         await sleep(4000); await snap(ctx, cur, "sign-after-sign-code");
         const t2 = await pageText(cur);
-        if (/nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("podpis.gov.pl не прийняв код SMS підпису", "sign-code");
+        // невірний код — модалка лишається з «Niepoprawny kod. Pozostałe próby: N»: наступна ітерація попросить код знову
+        if (/Pozostałe próby:\s*0/i.test(t2)) throw new RobotError("podpis.gov.pl: вичерпано спроби коду SMS підпису — повторіть подачу", "sign-code");
+        if (/niepoprawny kod|nieprawidłowy kod/i.test(t2)) { logger.warn({ id: ctx.submissionId }, "praca.gov sign: невірний код підпису, прошу ще раз"); await sleep(500); continue; }
         continue;
       }
       if (await realClick(cur, /^Zamknij$/)) await sleep(600);
@@ -711,8 +717,8 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
       if (codeSel) {
         await snap(ctx, cur, "sign-code-page");
         const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
-        await step(ctx, cur, "awaiting_code", "підпис: чекаю код SMS profilu zaufanego від власника акаунта");
-        await ctx.onAwaitCode(ctx, "sign");
+        await step(ctx, cur, "awaiting_code", "підпис: чекаю код SMS ВХОДУ в profil zaufany (перший з двох) від власника акаунта");
+        await ctx.onAwaitCode(ctx, "sign", "Це ПЕРШИЙ код — для входу в profil zaufany. Після нього прийде другий SMS, уже для підпису: його робот попросить окремо.");
         const code = await codeP;
         await step(ctx, cur, "signing", "підпис: вводжу код SMS");
         await typeInto(cur, codeSel, code);
@@ -720,7 +726,7 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
         await sleep(4000); await snap(ctx, cur, "sign-after-code");
         deadline = Date.now() + 150_000; loginSubmittedAt = 0;
         const t2 = await pageText(cur);
-        if (/pz\.gov\.pl/i.test(cur.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
+        if (/pz\.gov\.pl/i.test(cur.url()) && /niepoprawny kod|nieprawidłowy kod|błędny kod/i.test(t2)) { logger.warn({ id: ctx.submissionId }, "praca.gov sign: невірний код входу, прошу ще раз"); loginSubmittedAt = Date.now(); continue; }
         continue;
       }
       if (pwVisible) { await sleep(2000); continue; } // форма логіну ще на екрані, submit уже був — чекаємо
