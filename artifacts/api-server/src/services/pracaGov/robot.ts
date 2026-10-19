@@ -249,8 +249,10 @@ export async function waitUntil(pred: () => Promise<boolean>, timeoutMs: number)
 export async function ensureContext(ctx: RobotCtx, page: Page): Promise<void> {
   const want = ctx.account.contextName?.trim();
   if (!want) return;
-  const rx = new RegExp(want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-  if (rx.test(await headerText(page))) return;
+  // порівняння без пробілів/регістру/діакритики: у порталу «EURO SUPPORT OUTSOURCING SPÓŁKA…», у нас «Eurosupport Outsourcing» (подача #30, 20.10.2026)
+  const normKey = (t: string) => t.toLowerCase().replace(/ł/g, "l").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+  const wantKey = normKey(want);
+  if (normKey(await headerText(page)).includes(wantKey)) return;
   await step(ctx, page, "running", `перемикаю контекст на «${want}»`);
   if (!(await clickByText(page, /Kontekst:/i, { tags: `${HEADER_SEL} button, ${HEADER_SEL} [role=button]` }))) throw new RobotError("Не знайшов меню користувача («Kontekst:») у шапці", "context-menu");
   await sleep(1000);
@@ -258,14 +260,14 @@ export async function ensureContext(ctx: RobotCtx, page: Page): Promise<void> {
   await page.waitForSelector(".cdk-overlay-container mat-dialog-container", { visible: true, timeout: 10_000 }).catch(() => {});
   await sleep(800);
   await snap(ctx, page, "context-dialog");
-  const picked = await page.evaluate((src: string, flags: string) => {
-    const rxx = new RegExp(src, flags);
+  const picked = await page.evaluate((key: string) => {
+    const nk = (t: string) => t.toLowerCase().replace(/ł/g, "l").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
     const rows = [...document.querySelectorAll(".cdk-overlay-container mat-dialog-container tr.mat-row, .cdk-overlay-container mat-dialog-container tr[class*=mat-row]")];
-    const row = rows.find(r => rxx.test((r.textContent || "").replace(/\s+/g, " ")));
+    const row = rows.find(r => nk(r.textContent || "").includes(key));
     if (!row) return false;
     (row as HTMLElement).click();
     return true;
-  }, rx.source, rx.flags);
+  }, wantKey);
   if (!picked) throw new RobotError(`У діалозі «Zmiana kontekstu» нема організації «${want}»`, "context-pick");
   await sleep(1500);
   // можливий крок підтвердження у тому ж діалозі
