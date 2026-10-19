@@ -785,13 +785,14 @@ async function captureSummaryPdf(ctx: RobotCtx, page: Page): Promise<{ absPath: 
     if (await exactClick(/^Zamknij$/)) await sleep(800);
     if (!(await exactClick(/^Zapisz$/))) await clickByText(page, /UPP|Urzędowe Poświadczenie|Pobierz potwierdzenie|Pobierz dokument|Pobierz wniosek/i, { tags: "a, button", timeoutMs: 3000 });
     const stamp = String(startedAt);
-    const newFile = () => fs.readdirSync(dir).map(f => path.join(dir, f)).filter(f => /\.(pdf|xml)$/i.test(f) && !/wydruk|PSZ-PPWPU\.pdf$|potwierdzenie-/i.test(f) && fs.statSync(f).mtimeMs >= startedAt - 1000)[0];
+    // «Zapisz» на кроці 4 скачує файл з тією самою назвою, що й Wydruk (PSZ-PPWPU.pdf) — відрізняємо лише за часом (подача #14)
+    const newFile = () => fs.readdirSync(dir).map(f => path.join(dir, f)).filter(f => /\.(pdf|xml)$/i.test(f) && !/wydruk\.pdf$|potwierdzenie-/i.test(f) && fs.statSync(f).mtimeMs >= startedAt - 1000)[0];
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline && !pdf && !newFile()) await sleep(400);
     // лише свіжий файл цього прогону (ім'я зі штампом), формат зберігаємо: XML не видаємо за PDF
     if (pdf) { const out = path.join(dir, `potwierdzenie-${stamp}.pdf`); fs.writeFileSync(out, pdf); return { absPath: out, fileName: "powiadomienie-PSZ-PPWPU-podpisane.pdf", mime: "application/pdf" }; }
     const f = newFile();
-    if (f) { const ext = /\.xml$/i.test(f) ? "xml" : "pdf"; const out = path.join(dir, `potwierdzenie-${stamp}.${ext}`); fs.renameSync(f, out); return { absPath: out, fileName: `powiadomienie-potwierdzenie.${ext}`, mime: ext === "xml" ? "application/xml" : "application/pdf" }; }
+    if (f) { const ext = /\.xml$/i.test(f) ? "xml" : "pdf"; const out = path.join(dir, `potwierdzenie-${stamp}.${ext}`); fs.copyFileSync(f, out); return { absPath: out, fileName: ext === "xml" ? "powiadomienie-potwierdzenie.xml" : "powiadomienie-PSZ-PPWPU-podpisane.pdf", mime: ext === "xml" ? "application/xml" : "application/pdf" }; }
     const png = path.join(dir, `podsumowanie-${stamp}.png`);
     fs.writeFileSync(png, await page.screenshot({ fullPage: true, type: "png" }));
     return { absPath: png, fileName: "powiadomienie-podsumowanie.png", mime: "image/png" };
