@@ -402,7 +402,8 @@ async function addAttachments(ctx: RobotCtx, page: Page, p: UaFormPayload): Prom
   if (!hasSection) { logger.warn({ id: ctx.submissionId }, "praca.gov: секцію «Załączniki» не знайдено — без залучників"); await step(ctx, page, "running", "секцію Załączniki не знайдено — подача без залучників, додайте руками за потреби"); return; }
   // кнопка «Dodaj załącznik» — справжній клік мишею по <button> (el.click() по span Angular не завжди приймає)
   const addBtn = async () => {
-    const h = await page.evaluateHandle(() => [...document.querySelectorAll("button")].find((b: any) => /dodaj załącznik/i.test((b.textContent || "").replace(/\s+/g, " "))) ?? null);
+    // після першого załącznika кнопка зветься «Dodaj kolejny załącznik» (жива подача #5, 19.10.2026)
+    const h = await page.evaluateHandle(() => [...document.querySelectorAll("button")].find((b: any) => /dodaj\s+(kolejny\s+)?załącznik/i.test((b.textContent || "").replace(/\s+/g, " "))) ?? null);
     const el = h.asElement(); return el;
   };
   // усі file-поля документа (вкл. приховані) з їх «домом»: діалог (cdk-overlay) чи форма
