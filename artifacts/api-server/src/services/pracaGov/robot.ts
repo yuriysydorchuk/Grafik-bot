@@ -272,7 +272,7 @@ export async function ensureContext(ctx: RobotCtx, page: Page): Promise<void> {
   await sleep(1500);
   // можливий крок підтвердження у тому ж діалозі
   await clickByText(page, /^(Zmień|Wybierz|Potwierdź|Zapisz|OK|Tak)$/i, { tags: ".cdk-overlay-container button", timeoutMs: 2000 });
-  const ok = await waitUntil(async () => rx.test(await headerText(page)), 20_000);
+  const ok = await waitUntil(async () => normKey(await headerText(page)).includes(wantKey), 20_000);
   await snap(ctx, page, ok ? "context-switched" : "context-failed");
   if (!ok) throw new RobotError(`Контекст на «${want}» не перемкнувся`, "context-verify");
 }
