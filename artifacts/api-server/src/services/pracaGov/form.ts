@@ -775,13 +775,21 @@ async function captureSummaryPdf(ctx: RobotCtx, page: Page): Promise<{ absPath: 
   const onTarget = async (t: any) => { try { if (t.type() === "page") { const p = await t.page(); if (p) { extra.push(p); p.on("response", onResp); } } } catch { /* ignore */ } };
   browser.on("targetcreated", onTarget);
   try {
-    await clickByText(page, /UPP|Urzędowe Poświadczenie|Pobierz potwierdzenie|Pobierz dokument|Pobierz wniosek|Pobierz/i, { tags: "a, button", timeoutMs: 4000 });
+    // Крок 4 «Podsumowanie» (знято на подачі #13, 19.10.2026): модалка «Informacja: Dokument został wysłany» (Zamknij) і три плитки —
+    // Podgląd / **Zapisz** (Zapis wypełnionego formularza do formatu PDF) / Zakończ. Клік по довільному «Pobierz» ловив інструкцію
+    // «Jak założyć Profil Zaufany» — тому лише точна кнопка «Zapisz», потім (якщо є) UPP.
+    const exactClick = async (re: RegExp) => {
+      const h = await page.evaluateHandle((src: string) => { const rx = new RegExp(src, "i"); const vis = (el: any) => el.getBoundingClientRect().height > 0; return [...document.querySelectorAll("button, a")].find((b: any) => vis(b) && rx.test((b.textContent || "").replace(/\s+/g, " ").trim())) ?? null; }, re.source);
+      const el = h.asElement(); if (!el) return false; await el.evaluate((e: any) => e.scrollIntoView({ block: "center" })); await sleep(150); await el.click().catch(() => {}); return true;
+    };
+    if (await exactClick(/^Zamknij$/)) await sleep(800);
+    if (!(await exactClick(/^Zapisz$/))) await clickByText(page, /UPP|Urzędowe Poświadczenie|Pobierz potwierdzenie|Pobierz dokument|Pobierz wniosek/i, { tags: "a, button", timeoutMs: 3000 });
     const stamp = String(startedAt);
     const newFile = () => fs.readdirSync(dir).map(f => path.join(dir, f)).filter(f => /\.(pdf|xml)$/i.test(f) && !/wydruk|PSZ-PPWPU\.pdf$|potwierdzenie-/i.test(f) && fs.statSync(f).mtimeMs >= startedAt - 1000)[0];
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline && !pdf && !newFile()) await sleep(400);
     // лише свіжий файл цього прогону (ім'я зі штампом), формат зберігаємо: XML не видаємо за PDF
-    if (pdf) { const out = path.join(dir, `potwierdzenie-${stamp}.pdf`); fs.writeFileSync(out, pdf); return { absPath: out, fileName: "powiadomienie-potwierdzenie.pdf", mime: "application/pdf" }; }
+    if (pdf) { const out = path.join(dir, `potwierdzenie-${stamp}.pdf`); fs.writeFileSync(out, pdf); return { absPath: out, fileName: "powiadomienie-PSZ-PPWPU-podpisane.pdf", mime: "application/pdf" }; }
     const f = newFile();
     if (f) { const ext = /\.xml$/i.test(f) ? "xml" : "pdf"; const out = path.join(dir, `potwierdzenie-${stamp}.${ext}`); fs.renameSync(f, out); return { absPath: out, fileName: `powiadomienie-potwierdzenie.${ext}`, mime: ext === "xml" ? "application/xml" : "application/pdf" }; }
     const png = path.join(dir, `podsumowanie-${stamp}.png`);
