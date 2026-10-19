@@ -611,12 +611,20 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
   await clickByText(page, /^(Tak|Potwierdź|Dalej|Kontynuuj)$/i, { tags: ".cdk-overlay-container button", timeoutMs: 1500 });
 
   // pz.gov.pl: логін (якщо сесії нема) → сторінка підпису
-  let deadline = Date.now() + 90_000; // після вводу коду дедлайн переставляється — очікування людини його не зʼїдає
+  let deadline = Date.now() + 150_000; // після кожного успішного кроку/коду дедлайн переставляється — очікування людини його не зʼїдає
   let signedBack = false;
   const isSummaryOk = (t: string) => /Podsumowanie/i.test(t) && /(został[ao]? (wysłan|złożon|przekazan)|Urzędowe Poświadczenie|UPP|przyjęt|wysłano)/i.test(t) && !/nie został|nie udało|niepowodzen|błąd|błędn|odrzucon/i.test(t);
   while (Date.now() < deadline) {
     const url = page.url(); const t = await pageText(page);
     if (/praca\.gov\.pl/i.test(url) && isSummaryOk(t)) { signedBack = true; break; }
+    // podpis.gov.pl (жива подача #6, 19.10.2026): «Sprawdź dokumenty przed podpisaniem» — банер клаузули «Zamknij», кнопка «Podpisz»
+    // → pz.gov.pl (логін/SMS) → назад на podpis.gov.pl → повернення в praca.gov.pl («Podsumowanie»)
+    if (/podpis\.gov\.pl/i.test(url)) {
+      await clickByText(page, /^Zamknij$/i, { tags: "button", timeoutMs: 800 });
+      if (await clickByText(page, /^Podpisz$/i, { tags: "button", timeoutMs: 2000 })) { await snap(ctx, page, "sign-podpis-clicked"); await step(ctx, page, "signing", "podpis.gov.pl: «Podpisz» → profil zaufany"); deadline = Date.now() + 150_000; await sleep(4000); continue; }
+      if (await clickByText(page, /^(Powrót|Wróć|Przejdź dalej|Kontynuuj|Dalej|Zakończ)/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, page, "sign-podpis-return"); deadline = Date.now() + 150_000; await sleep(4000); continue; }
+      await sleep(1500); continue;
+    }
     if (/pz\.gov\.pl|login\.gov\.pl/i.test(url)) {
       if (/login\.gov\.pl/i.test(url)) { await clickByText(page, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a" }); await sleep(3000); continue; }
       if (await page.$("input#password")) {
@@ -637,7 +645,7 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
         await typeInto(page, codeSel, code);
         if (!(await clickByText(page, /^(Potwierdź|Podpisz|Zaloguj( się)?|Dalej|Autoryzuj)/i, { tags: ".cdk-overlay-container button, button[type=submit], button" }))) await page.keyboard.press("Enter");
         await sleep(4000); await snap(ctx, page, "sign-after-code");
-        deadline = Date.now() + 90_000;
+        deadline = Date.now() + 150_000;
         const t2 = await pageText(page);
         if (/pz\.gov\.pl/i.test(page.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
         continue;
