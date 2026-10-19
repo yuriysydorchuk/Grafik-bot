@@ -617,13 +617,13 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
   // стежимо за всіма вкладками; мʼякий дедлайн кроку 150 с скидається після дії/коду, жорсткий — 10 хв на весь підпис.
   const browser = page.browser();
   const extra: Page[] = [];
-  const onTarget = async (t: any) => { try { if (t.type() === "page") { const p = await t.page(); if (p && p !== page) extra.push(p); } } catch { /* ignore */ } };
+  const onTarget = async (t: any) => { try { if (t.type() === "page") { const p = await t.page(); if (p && p !== page) { extra.push(p); logger.info({ id: ctx.submissionId, url: t.url() }, "praca.gov sign: нове вікно"); await sleep(3000); await snap(ctx, p, `sign-popup-${extra.length}`).catch(() => {}); } } } catch { /* ignore */ } };
   browser.on("targetcreated", onTarget);
   const livePages = () => [page, ...extra].filter(p => !p.isClosed());
   const hardDeadline = Date.now() + 10 * 60_000;
   let deadline = Date.now() + 150_000;
   let signedBack = false; let summaryPage: Page = page;
-  let podpisClickedAt = 0, podpisClicks = 0;
+  let podpisClickedAt = 0, podpisClicks = 0, lastDiag = 0;
   const isSummaryOk = (t: string) => /Podsumowanie/i.test(t) && /(został[ao]? (wysłan|złożon|przekazan)|Urzędowe Poświadczenie|UPP|przyjęt|wysłano)/i.test(t) && !/nie został|nie udało|niepowodzen|błąd|błędn|odrzucon/i.test(t);
   try {
   while (Date.now() < deadline && Date.now() < hardDeadline) {
@@ -636,13 +636,36 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
     const cur = auth ?? page;
     const url = cur.url();
     if (/podpis\.gov\.pl/i.test(url)) {
-      await clickByText(cur, /^Zamknij$/i, { tags: "button", timeoutMs: 600 });
+      // справжні кліки мишею по елементу з текстом (DOM-клік portal на praca.gov.pl ігнорував — «Dodaj załącznik»)
+      const realClick = async (re: RegExp) => {
+        const h = await cur.evaluateHandle((src: string) => {
+          const rx = new RegExp(src, "i"); const vis = (el: any) => el.getBoundingClientRect().height > 0;
+          const els = [...document.querySelectorAll("button, a, [role=button], [role=link], li, div")].filter((b: any) => vis(b) && rx.test((b.textContent || "").replace(/\s+/g, " ").trim()));
+          els.sort((a: any, b: any) => (a.textContent || "").length - (b.textContent || "").length);
+          const el: any = els[0]; if (!el) return null;
+          return el.closest("button, a, [role=button], [role=link]") ?? el;
+        }, re.source);
+        const el = h.asElement(); if (!el) return false;
+        await el.evaluate((e: any) => e.scrollIntoView({ block: "center" })); await sleep(150); await el.click(); return true;
+      };
+      if (await realClick(/^Zamknij$/)) await sleep(600);
+      const txt = await pageText(cur);
+      // «Podpisz dokument — wybierz metodę» (…/signature/select, жива подача #8): плитка «Profil zaufany»
+      if (/\/signature\/select/i.test(url) || /Wybierz jedną z poniższych metod/i.test(txt)) {
+        if (await realClick(/^Profil zaufany/)) { await step(ctx, cur, "signing", "podpis.gov.pl: метода «Profil zaufany»"); deadline = Date.now() + 150_000; await sleep(3000); await snap(ctx, cur, "sign-method-pz"); continue; }
+      }
       const sincePodpis = podpisClickedAt ? Date.now() - podpisClickedAt : Infinity;
-      // «Podpisz» — один раз; повтор лише якщо за 60 с нічого не змінилось і кнопка знову видима (макс. 3)
-      if (sincePodpis > 60_000 && podpisClicks < 3 && await clickByText(cur, /^Podpisz$/i, { tags: "button", timeoutMs: 1500 })) {
+      // «Podpisz» на «Sprawdź dokumenty…» — один раз; повтор лише якщо за 60 с нічого не змінилось (макс. 3)
+      if (/Sprawdź dokumenty przed podpisaniem/i.test(txt) && sincePodpis > 60_000 && podpisClicks < 3 && await realClick(/^Podpisz$/)) {
         podpisClickedAt = Date.now(); podpisClicks++;
-        await snap(ctx, cur, `sign-podpis-clicked-${podpisClicks}`); await step(ctx, cur, "signing", "podpis.gov.pl: «Podpisz» → чекаю profil zaufany");
+        await sleep(1500); await snap(ctx, cur, `sign-podpis-clicked-${podpisClicks}`); await step(ctx, cur, "signing", "podpis.gov.pl: «Podpisz» → чекаю вибір методи");
         deadline = Date.now() + 150_000;
+      }
+      // діагностика кожні 10 с: url усіх вкладок + початок тексту; помилка на сторінці → знімок
+      if (Date.now() - lastDiag > 10_000) {
+        lastDiag = Date.now();
+        logger.info({ id: ctx.submissionId, pages: livePages().map(p => p.url()), text: txt.slice(0, 240) }, "praca.gov sign: чекаю на podpis.gov.pl");
+        if (/błąd|nie udało|wystąpił problem|spróbuj ponownie/i.test(txt)) await snap(ctx, cur, "sign-podpis-error");
       }
       await sleep(2500); continue;
     }
