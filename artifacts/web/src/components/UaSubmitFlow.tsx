@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { get, post } from "../lib/api";
+import { get, post, upload } from "../lib/api";
 import { Modal, Button, Spinner, Input, Label, cn } from "./ui";
 import { useT } from "../lib/i18n";
 
@@ -35,6 +35,7 @@ type ItemState = { status: "pending" | "active" | "done" | "failed" | "skipped";
 // ендпойнти під /praca-gov/workers/:id (cap legalization) замість гейту задачі.
 export function UaSubmitFlow({ taskId, queue, onClose, onDone }: { taskId: number | null; queue: UaQueueItem[]; onClose: () => void; onDone: () => void }) {
   const t = useT();
+  const qc = useQueryClient();
   const [i, setI] = useState(0);
   const url = (kind: "ua-preview" | "ua-submit" | "ua-submission", workerId: number) => taskId != null ? `/tasks/${taskId}/${kind}/${workerId}` : `/praca-gov/workers/${workerId}/${kind}`;
   const [states, setStates] = useState<ItemState[]>(() => queue.map((_, k) => ({ status: k === 0 ? "active" : "pending" })));
@@ -63,7 +64,7 @@ export function UaSubmitFlow({ taskId, queue, onClose, onDone }: { taskId: numbe
         ? <Summary queue={queue} states={states} onClose={onClose} />
         : states[i]!.submissionId == null
           ? (isLoading || openLoading ? <Spinner /> : error ? <div className="space-y-2"><p className="text-sm text-rose-600">{(error as any).message}</p>{multi && <Button variant="secondary" onClick={() => { setState(i, { status: "skipped" }); advance(); }}>{t("Пропустити")}</Button>}</div>
-            : prev ? <PreviewScreen key={`${cur.workerId}:${cur.companyId ?? 0}`} prev={prev} onStart={p => start.mutate(p)} starting={start.isPending} onClose={onClose} onSkip={multi ? () => { setState(i, { status: "skipped" }); advance(); } : undefined} /> : null)
+            : prev ? <PreviewScreen key={`${cur.workerId}:${cur.companyId ?? 0}`} prev={prev} onStart={p => start.mutate(p)} starting={start.isPending} onClose={onClose} onSkip={multi ? () => { setState(i, { status: "skipped" }); advance(); } : undefined} onRefresh={() => { qc.invalidateQueries({ queryKey: ["ua-preview"] }); qc.invalidateQueries({ queryKey: ["worker-docs"] }); }} /> : null)
           : <RunScreen key={states[i]!.submissionId} id={states[i]!.submissionId!} onClose={onClose} onFinished={(ok, previewFile) => { setState(i, { status: ok ? "done" : "failed", previewFile }); onDone(); advance(); }} />}
     </Modal>
   );
@@ -112,9 +113,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return <div><div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{title}</div>{children}</div>;
 }
 
-function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Preview; onStart: (p: Payload) => void; starting: boolean; onClose: () => void; onSkip?: () => void }) {
+function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: { prev: Preview; onStart: (p: Payload) => void; starting: boolean; onClose: () => void; onSkip?: () => void; onRefresh?: () => void }) {
   const t = useT();
   const [form, setForm] = useState<Payload>(prev.payload);
+  // після дозавантаження паспорта анкету перечитано — підхоплюємо лише залучники, правки людини лишаються
+  useEffect(() => { setForm(f => ({ ...f, zalaczniki: prev.payload.zalaczniki })); }, [prev.payload.zalaczniki]);
+  const hasPassport = (form.zalaczniki ?? []).some(z => z.label === "Paszport");
+  const passUpload = useMutation({
+    mutationFn: (f: File) => { const fd = new FormData(); fd.append("file", f); return upload(`/praca-gov/workers/${form.workerId}/passport-file`, fd); },
+    onSuccess: () => { toast.success(t("Скан паспорта додано в профіль")); onRefresh?.(); }, onError: (e: any) => toast.error(e.message),
+  });
   const set: Setter = (path, v) => setForm(f => {
     let n = setPath(f, path, v);
     // місячна сума = ставка × години, поки її не правили руками
@@ -153,7 +161,17 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Pre
             <F l="umowa o pracę" path="liczby.umowaOPrace" form={form} set={set} type="number" /><F l="umowy cywilnoprawne" path="liczby.cywilne" form={form} set={set} type="number" />
           </Section>
           <Section title="Załączniki">
-            {(form.zalaczniki ?? []).length ? (form.zalaczniki ?? []).map((z, k) => <Static key={k} l={z.label} v={z.fileName} />) : <Static l="—" v={t("нема: додайте 88Z у Налаштуваннях → praca.gov.pl → Фірми; паспорт — скан у профілі")} />}
+            {(form.zalaczniki ?? []).map((z, k) => <Static key={k} l={z.label} v={z.fileName} />)}
+            {!hasPassport && (
+              <div className="my-1 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                <span>⚠ {t("Скану паспорта в профілі нема — подача піде без нього.")}</span>
+                <label className="cursor-pointer rounded-md border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100">
+                  {passUpload.isPending ? "…" : t("Додати скан паспорта")}
+                  <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) passUpload.mutate(f); e.target.value = ""; }} />
+                </label>
+              </div>
+            )}
+            {!(form.zalaczniki ?? []).some(z => z.label !== "Paszport") && <Static l="88Z" v={t("нема — додайте в Налаштуваннях → praca.gov.pl → Фірми")} />}
           </Section>
           <Section title="Osoba podpisująca">
             <Static l="Imię, nazwisko, PESEL" v={t("з акаунта на порталі")} /><F l="Pełniona funkcja" path="podpis.funkcja" form={form} set={set} /><Static l="Pełnomocnik" v={form.podpis.pelnomocnik ? "tak (z załącznikiem pełnomocnictwa)" : "nie — uprawnienie bezpośrednie"} />
@@ -177,7 +195,7 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Pre
         {edited && <span className="mr-auto text-xs text-amber-700">{t("є правки — підуть лише в цю подачу")}</span>}
         {onSkip && <Button variant="secondary" onClick={onSkip}>{t("Пропустити")}</Button>}
         <Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button>
-        <Button onClick={() => onStart(form)} loading={starting} disabled={!ok} title={ok ? "" : t("Заповніть прогалини й додайте акаунт")}>{t("Заповнити форму на порталі")} →</Button>
+        <Button onClick={() => onStart(form)} loading={starting} disabled={!ok || passUpload.isPending} title={ok ? "" : t("Заповніть прогалини й додайте акаунт")}>{t("Заповнити форму на порталі")} →</Button>
       </div>
     </div>
   );

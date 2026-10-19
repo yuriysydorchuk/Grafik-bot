@@ -5,9 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import multer from "multer";
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
-import { db, workersTable } from "@workspace/db";
-import { UPLOADS_ROOT, sniffDocMime } from "../lib/uploads";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { db, workersTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
+import { UPLOADS_ROOT, WORKER_DOCS_DIR, sniffDocMime, compressUploadImage, makeStoredName } from "../lib/uploads";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import {
   listPzAccounts, createPzAccount, updatePzAccount, deletePzAccount, pzAccountById, pzReady, setPzAccountPoa,
@@ -122,6 +122,39 @@ router.post("/praca-gov/workers/:id/ua-submit", async (req: AuthedRequest, res) 
   const wid = Number(req.params.id);
   if (!(await workerExists(wid))) return fail(res, 404, "Працівника не знайдено");
   try { ok(res, await startSubmission({ taskId: null, workerId: wid, companyId: companyOf(req.body?.companyId), adminId: req.admin!.adminId, overrides: req.body?.overrides })); } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
+});
+// Скан паспорта для załącznika, якщо в профілі його нема (19.10.2026): файл лягає в документ «Paszport» профілю
+// (наявний рядок без файлу — доповнюємо; нема — створюємо present), далі анкета перечитує залучники.
+const passUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
+router.post("/praca-gov/workers/:id/passport-file", passUpload.single("file"), async (req: AuthedRequest, res) => {
+  const wid = Number(req.params.id);
+  if (!(await workerExists(wid))) return fail(res, 404, "Працівника не знайдено");
+  if (!req.file) return fail(res, 400, "Файл не отримано");
+  const rawMime = sniffDocMime(req.file.buffer);
+  if (!rawMime || !["application/pdf", "image/jpeg", "image/png"].includes(rawMime)) return fail(res, 400, "Дозволено PDF, JPG або PNG");
+  const { ensureDocumentType } = await import("../services/workerDocuments");
+  const { documentChanged } = await import("../services/documentEvents");
+  const ty = await ensureDocumentType("passport");
+  // доповнюємо ЛИШЕ рядок без файлу (запрошений/на перевірці/внесений без скану); рядок зі сканом не чіпаємо — створюємо новий
+  const [existing] = await db.select().from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, wid), eq(workerDocumentsTable.docTypeId, ty.id), ne(workerDocumentsTable.status, "expired"), isNull(workerDocumentsTable.filePath))).orderBy(desc(workerDocumentsTable.id)).limit(1);
+  const rawName = Buffer.from(req.file.originalname || "paszport", "latin1").toString("utf8");
+  const { buffer, mime, fileName } = await compressUploadImage(req.file.buffer, rawMime, rawName);
+  const stored = makeStoredName(fileName);
+  fs.mkdirSync(WORKER_DOCS_DIR, { recursive: true });
+  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, stored), buffer);
+  const relPath = path.join("worker-documents", stored);
+  let docId: number;
+  if (existing) {
+    // офіс вантажить скан сам = перевірено: missing/pending стають present (інакше залучник не потрапить у подачу — payload бере лише present)
+    await db.update(workerDocumentsTable).set({ filePath: relPath, fileName, fileMime: mime, status: existing.status === "missing" || existing.status === "pending" ? "present" : existing.status, updatedAt: new Date() }).where(eq(workerDocumentsTable.id, existing.id));
+    docId = existing.id;
+    await documentChanged({ id: docId, workerId: wid }, "file", { adminId: req.admin!.adminId }, [{ field: "fileName", to: fileName }]);
+  } else {
+    const [d] = await db.insert(workerDocumentsTable).values({ workerId: wid, docTypeId: ty.id, title: ty.name, status: "present", filePath: relPath, fileName, fileMime: mime, source: "office" }).returning();
+    docId = d!.id;
+    await documentChanged({ id: docId, workerId: wid }, "created", { adminId: req.admin!.adminId });
+  }
+  ok(res, { ok: true, documentId: docId });
 });
 router.get("/praca-gov/workers/:id/ua-submission", async (req: AuthedRequest, res) => {
   const wid = Number(req.params.id);
