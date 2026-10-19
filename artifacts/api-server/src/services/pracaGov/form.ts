@@ -398,58 +398,77 @@ export async function fillForm(ctx: RobotCtx, page: Page, p: UaFormPayload): Pro
 // прибираємо («Usuń»), форма валідна й без залучників; людина бачить результат у Wydruku перед підписом.
 async function addAttachments(ctx: RobotCtx, page: Page, p: UaFormPayload): Promise<void> {
   if (!p.zalaczniki?.length) return;
-  // секція має бути впізнана по заголовку — інакше нічого не чіпаємо (запис у чужий input зіпсував би форму)
   const hasSection = await page.evaluate(() => [...document.querySelectorAll("h1,h2,h3,h4")].some((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki")));
   if (!hasSection) { logger.warn({ id: ctx.submissionId }, "praca.gov: секцію «Załączniki» не знайдено — без залучників"); await step(ctx, page, "running", "секцію Załączniki не знайдено — подача без залучників, додайте руками за потреби"); return; }
-  // останній елемент у секції; file-input не фільтруємо по видимості (він схований за стилізованою кнопкою)
-  const lastInSection = (sel: string, anyVis = false) => page.evaluate((s: string, av: boolean) => {
-    const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
-    const vis = (el: any) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-    const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => norm(x.textContent).startsWith("załączniki"));
-    if (!h?.parentElement) return null;
-    const els = [...h.parentElement.querySelectorAll(s)].filter((el: any) => av || vis(el));
-    const el: any = els[els.length - 1]; if (!el) return null;
-    if (!el.id) el.id = "__zal_" + Math.random().toString(36).slice(2, 8);
-    return "#" + CSS.escape(el.id);
-  }, sel, anyVis);
-  const fileInputsInSection = () => page.evaluate(() => {
-    const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki"));
-    return h?.parentElement ? h.parentElement.querySelectorAll("input[type=file]").length : 0;
-  });
-  // файл вантажимо під ОРИГІНАЛЬНОЮ назвою (portal показує basename шляху; на диску лежить timestamp-random.pdf)
+  // кнопка «Dodaj załącznik» — справжній клік мишею по <button> (el.click() по span Angular не завжди приймає)
+  const addBtn = async () => {
+    const h = await page.evaluateHandle(() => [...document.querySelectorAll("button")].find((b: any) => /dodaj załącznik/i.test((b.textContent || "").replace(/\s+/g, " "))) ?? null);
+    const el = h.asElement(); return el;
+  };
+  // усі file-поля документа (вкл. приховані) з їх «домом»: діалог (cdk-overlay) чи форма
+  const fileInputs = () => page.evaluate(() => [...document.querySelectorAll("input[type=file]")].map((el: any, i) => { if (!el.id) el.id = "__zf_" + i + "_" + Math.random().toString(36).slice(2, 6); return { sel: "#" + CSS.escape(el.id), inOverlay: !!el.closest(".cdk-overlay-container, mat-dialog-container, [role=dialog]") }; }));
+  const dumpOverlay = async (slug: string) => { try {
+    const html = await page.evaluate(() => {
+      const ov = document.querySelector(".cdk-overlay-container"); const sec = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").trim().toLowerCase().startsWith("załączniki"))?.parentElement;
+      return `<!-- overlay -->\n${(ov?.innerHTML || "").slice(0, 20000)}\n\n<!-- section -->\n${(sec?.outerHTML || "").slice(0, 20000)}`;
+    });
+    const dir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId)); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, `${slug}.html`), html);
+  } catch { /* діагностика */ } };
   const tmpDir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId), "zalaczniki");
   fs.mkdirSync(tmpDir, { recursive: true });
   for (const [i, z] of p.zalaczniki.entries()) {
     const tag = `zal-${i + 1}`;
-    const before = await fileInputsInSection();
-    let rowAdded = false;
+    const before = await fileInputs();
+    let opened = false;
     try {
       const safeName = z.fileName.replace(/[\/\\:*?"<>|]/g, "_");
       const tmp = path.join(tmpDir, safeName); fs.copyFileSync(z.absPath, tmp);
-      if (!(await clickByText(page, /^Dodaj załącznik/i, { timeoutMs: 5000 }))) throw new Error("нема кнопки «Dodaj załącznik»");
-      await sleep(800);
-      rowAdded = (await fileInputsInSection()) > before;
-      const nameSel = await lastInSection("input[type=text]:not([disabled]), textarea:not([disabled])");
+      const btn = await addBtn();
+      if (!btn) throw new Error("нема кнопки «Dodaj załącznik»");
+      await btn.evaluate((el: any) => el.scrollIntoView({ block: "center" }));
+      await sleep(200);
+      await btn.click();
+      // чекаємо нове file-поле (у діалозі або в секції) до 8 с
+      let fresh: { sel: string; inOverlay: boolean }[] = [];
+      await waitFor(page, async () => { const now = await fileInputs(); fresh = now.filter(n => !before.some(b => b.sel === n.sel)); return fresh.length > 0; }, 8_000);
+      if (i === 0) { await snap(ctx, page, `${tag}-after-click`); await dumpOverlay(`${tag}-markup`); }
+      if (!fresh.length) throw new Error(`після кліку нове поле файлу не зʼявилось (file-полів було ${before.length})`);
+      opened = true;
+      const target = fresh[fresh.length - 1]!;
+      // назва załącznika — текстове поле/textarea поряд: у діалозі — всі видимі, у секції — останнє
+      const nameSel = await page.evaluate((inOverlay: boolean) => {
+        const vis = (el: any) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const root: any = inOverlay ? (document.querySelector(".cdk-overlay-container") ?? document) : ([...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").trim().toLowerCase().startsWith("załączniki"))?.parentElement ?? document);
+        const els = [...root.querySelectorAll("input[type=text]:not([disabled]), input:not([type]):not([disabled]), textarea:not([disabled])")].filter(vis);
+        const el: any = els[els.length - 1]; if (!el) return null; if (!el.id) el.id = "__zn_" + Math.random().toString(36).slice(2, 7); return "#" + CSS.escape(el.id);
+      }, target.inOverlay);
       if (nameSel) { await typeInto(page, nameSel, z.label); await page.keyboard.press("Tab"); await sleep(150); }
-      const fileSel = await lastInSection("input[type=file]", true);
-      const fileInput = fileSel ? await page.$(fileSel) : null;
-      if (!fileInput) throw new Error(`нема поля файлу в секції (file-полів: ${before})`);
+      const fileInput = await page.$(target.sel);
+      if (!fileInput) throw new Error("file-поле зникло");
       await fileInput.uploadFile(tmp);
-      const attached = await waitFor(page, async () => (await pageText(page)).includes(safeName), 15_000);
+      await sleep(800);
+      // діалог: підтвердити кнопкою (Dodaj/Zapisz/Zatwierdź/OK), не «Anuluj»
+      if (target.inOverlay) {
+        await page.evaluate(() => { const ov = document.querySelector(".cdk-overlay-container"); const b: any = ov ? [...ov.querySelectorAll("button")].find((x: any) => /^(dodaj|zapisz|zatwierdź|ok|potwierdź)/i.test((x.textContent || "").trim())) : null; b?.click(); });
+        await sleep(800);
+      }
+      const attached = await waitFor(page, async () => { const t = await pageText(page); return t.includes(safeName) || /Maksymalna liczba załączonych plików[^0-9]*[1-9]/i.test(t); }, 15_000);
       if (!attached) throw new Error(`файл ${safeName} не зʼявився на сторінці`);
       await step(ctx, page, "running", `załącznik ${i + 1}/${p.zalaczniki.length}: ${z.label}`);
     } catch (e) {
-      await snap(ctx, page, `${tag}-fail`);
+      await snap(ctx, page, `${tag}-fail`); await dumpOverlay(`${tag}-fail-markup`);
       logger.warn({ id: ctx.submissionId, err: String(e), label: z.label }, "praca.gov: załącznik не прикріплено");
-      // порожній рядок załącznika валить валідацію («Nie dodano plików dla załącznika») — прибираємо ЛИШЕ щойно доданий
-      if (rowAdded) {
-        const rm = await page.evaluate(() => {
-          const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki"));
-          const btns = h?.parentElement ? [...h.parentElement.querySelectorAll("button, [role=button]")].filter((b: any) => /usuń/i.test(b.textContent || "")) : [];
-          const b: any = btns[btns.length - 1]; if (!b) return false; b.click(); return true;
+      // відкритий діалог — закрити (Anuluj/Zamknij/Esc), порожній рядок у секції — «Usuń»
+      if (opened) {
+        const closed = await page.evaluate(() => { const ov = document.querySelector(".cdk-overlay-container"); const b: any = ov ? [...ov.querySelectorAll("button")].find((x: any) => /anuluj|zamknij/i.test((x.textContent || "").trim())) : null; if (b) { b.click(); return true; } return false; });
+        if (!closed) await page.keyboard.press("Escape").catch(() => {});
+        await sleep(400);
+        await page.evaluate(() => {
+          const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").trim().toLowerCase().startsWith("załączniki"));
+          const btns = h?.parentElement ? [...h.parentElement.querySelectorAll("button")].filter((b: any) => /usuń/i.test(b.textContent || "")) : [];
+          const b: any = btns[btns.length - 1]; b?.click();
         });
-        await sleep(500);
-        if (!rm) await step(ctx, page, "running", `порожній рядок załącznika «${z.label}» не прибрався — Wydruk може не пройти, перевірте`);
+        await sleep(400);
       }
       await step(ctx, page, "running", `załącznik «${z.label}» не прикріпився — перевірте у Wydruku, за потреби додайте руками`);
     }
