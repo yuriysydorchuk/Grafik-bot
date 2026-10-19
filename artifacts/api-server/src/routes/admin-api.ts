@@ -95,6 +95,8 @@ const canFinance = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req
 // Скоуп міст/фабрик поточного адміна (null = без обмежень) — lib/scope.ts.
 const scopeOf = (req: any) => (req as AuthedRequest).admin?.scope ?? null;
 const canSensitiveReq = (req: any) => hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "svodniSensitive");
+// Примітка в профілі — закритий шар АБО вужче право workerNote (без готівки/побажань по виплаті)
+const canWorkerNoteReq = (req: any) => canSensitiveReq(req) || hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "workerNote");
 // Ставки фабрик (rateBrutto/rateNetto/nightAddon/invoiceRate + ставки посад) відкриті
 // й вужчим правом factoryRates; привʼязка клієнта до фінблоку (clientNip, pnlLabel)
 // лишається лише під viewFinance.
@@ -106,8 +108,9 @@ function stripWorkerEcho(w: Record<string, unknown> | undefined, req: any) {
   if (!w) return w;
   const out: Record<string, unknown> = { ...w };
   if (!canFinance(req)) { delete out.hourlyRate; delete out.hourlyRateNetto; delete out.isStudent; delete out.under26; }
+  if (!canWorkerNoteReq(req)) delete out.note;
   if (!canSensitiveReq(req)) {
-    delete out.note; delete out.payoutPrefKind; delete out.payoutPrefValue;
+    delete out.payoutPrefKind; delete out.payoutPrefValue;
     delete out.agramStazBonus; delete out.agramCashBonus;
   }
   return out;
@@ -648,11 +651,15 @@ router.patch("/workers/:id", RW, async (req, res) => {
     if (agramStazBonus !== undefined) patch.agramStazBonus = !!agramStazBonus;
     if (agramCashBonus !== undefined) patch.agramCashBonus = !!agramCashBonus;
   }
-  // примітка і побажання по виплаті — лише з доступом до закритого шару сводних
+  // примітка — закритий шар сводних або право workerNote
   const { note, payoutPrefKind, payoutPrefValue } = req.body ?? {};
-  if (note !== undefined || payoutPrefKind !== undefined || payoutPrefValue !== undefined) {
+  if (note !== undefined) {
+    if (!canWorkerNoteReq(req)) return fail(res, 403, "forbidden");
+    patch.note = strOrNull(note);
+  }
+  // побажання по виплаті — лише з доступом до закритого шару сводних
+  if (payoutPrefKind !== undefined || payoutPrefValue !== undefined) {
     if (!hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")) return fail(res, 403, "forbidden");
-    if (note !== undefined) patch.note = strOrNull(note);
     if (payoutPrefKind !== undefined) {
       const k = strOrNull(payoutPrefKind);
       if (k && !["all_konto", "hours", "amount"].includes(k)) return fail(res, 400, "Невідомий тип побажання");
@@ -1334,8 +1341,9 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
         return {};
       })()
       : {}),
+    ...(canWorkerNoteReq(req) ? { note: w.note } : {}),
     ...(hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive")
-      ? { note: w.note, payoutPrefKind: w.payoutPrefKind, payoutPrefValue: w.payoutPrefValue }
+      ? { payoutPrefKind: w.payoutPrefKind, payoutPrefValue: w.payoutPrefValue }
       : {}),
     ...(isOwner ? { hourlyRate: w.hourlyRate, hourlyRateNetto: w.hourlyRateNetto, positionRate: fpRate, effectiveRate: fpRate ?? w.hourlyRate, isStudent: w.isStudent, under26: w.under26 } : {}),
     stats: {

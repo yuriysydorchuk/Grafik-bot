@@ -6,7 +6,7 @@ export type Role = string;        // role key stored in admins.role (owner | sch
 export const OWNER = "owner";     // immutable superuser — always full access, never lockable
 
 // Action capabilities a role can be granted (the "what can it do" catalogue).
-export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist", "workerLifecycle", "advances", "signupLinks"] as const;
+export const CAP_KEYS = ["editData", "viewFinance", "factoryRates", "assignDrivers", "deleteWorkers", "viewWorkers", "svodni", "svodniSensitive", "costInvoices", "invoiceScan", "fuel", "hostelOps", "cleaning", "workerDocs", "legalization", "tasksGroup", "tasksManage", "workerPay", "blacklist", "workerLifecycle", "advances", "signupLinks", "workerNote"] as const;
 export type Capability = (typeof CAP_KEYS)[number];
 export const CAP_LABEL: Record<Capability, string> = {
   editData: "Редагувати дані (графіки, замовлення, фабрики, працівники)",
@@ -31,6 +31,7 @@ export const CAP_LABEL: Record<Capability, string> = {
   workerLifecycle: "Запрошувати й звільняти працівників (лінк у бот, звільнення, виповідзення, повернення) — без решти редагування",
   advances: "Залічки й потрачення — залічки, бадання, одяг (вносити, редагувати, передавати до виплати); без сводних",
   signupLinks: "Лінки реєстрації працівників — персональний лінк/QR на фабрику (веб і бот), «хто привів» у профілі",
+  workerNote: "Примітка в профілі працівника — читати й писати (без решти закритого шару сводних)",
 };
 
 // Режим ролі «лише перегляд» (08.10.2026, роль для власника-спостерігача фінансів).
