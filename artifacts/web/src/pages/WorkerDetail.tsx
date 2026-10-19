@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine, UserCheck, Phone,
+  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2,
 } from "lucide-react";
 import { fmtIban } from "../lib/iban";
 import { SendFileModal, printFile } from "../components/SendFileModal";
@@ -162,6 +162,9 @@ export default function WorkerDetail() {
   // повернення звільненого прямо з профілю (той самий POST, що й у списку)
   const confirmDlg = useConfirm();
   const [firing, setFiring] = useState(false);
+  // «Запросити в бот» (19.10.2026): той самий одноразовий лінк ?start=emp…, що іконка 🔗 у списку
+  // працівників; показуємо у вікні, а не тостом
+  const [botInviteLink, setBotInviteLink] = useState<string | null>(null);
   // «Останні зміни» правляться на місці: години / фабрика / статус (той самий PATCH, що й модалка /hours)
   const editEntry = useMutation({
     mutationFn: (v: { id: number; hoursOverride?: number | null; status?: string; factoryId?: number }) => patch(`/worker-days/entry/${v.id}`, v),
@@ -186,6 +189,11 @@ export default function WorkerDetail() {
   const blacklistOff = useMutation({
     mutationFn: () => del(`/workers/${id}/do-not-hire`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Прибрано з чорного списку")); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const botInvite = useMutation({
+    mutationFn: () => get<{ link: string }>(`/workers/${id}/invite`),
+    onSuccess: (d) => { navigator.clipboard?.writeText(d.link).catch(() => {}); setBotInviteLink(d.link); },
     onError: (e: any) => toast.error(e.message),
   });
   const restore = useMutation({
@@ -384,7 +392,15 @@ export default function WorkerDetail() {
                 options={NATIONALITIES.map(n => ({ value: n.value, label: `${n.flag} ${t(n.label)}` }))} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={Send} label="Telegram">
-              <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} disabled={!canEdit} />
+              <span className="flex flex-wrap items-center gap-2">
+                <InlineText value={w.telegramId ?? ""} placeholder={t("не приєднаний")} width="w-32" onSave={v => wpatch.mutate({ telegramId: v.trim() || null })} disabled={!canEdit} />
+                {w.isActive && !w.telegramId && canLifecycle && (
+                  <button type="button" onClick={() => botInvite.mutate()} disabled={botInvite.isPending}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100">
+                    <Link2 className="h-3.5 w-3.5" /> {t("Запросити в бот")}
+                  </button>
+                )}
+              </span>
             </InfoRow>
             {/* Телефон (20.09.2026): читається з анкети працівника (у workers колонки немає), у профілі
                 не редагується — анкета «яка є, така є» (рішення власника); фолбек — картка кандидата */}
@@ -541,6 +557,18 @@ export default function WorkerDetail() {
         </div>
       </div>
 
+      {botInviteLink && (
+        <Modal open onClose={() => setBotInviteLink(null)} title={t("Запросити в бот")}>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">{t("Надішліть цей лінк")} <b>{w.fullName}</b> {t("(SMS, WhatsApp). Відкривши його й натиснувши Start, людина привʼяже свій Telegram до цього профілю. Лінк одноразовий.")}</p>
+            <div className="flex gap-2">
+              <Input readOnly value={botInviteLink} onFocus={e => e.currentTarget.select()} className="flex-1 font-mono text-xs" />
+              <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(botInviteLink).then(() => toast.success(t("Скопійовано"))).catch(() => {}); }}>{t("Копіювати")}</Button>
+            </div>
+            <div className="flex justify-end pt-1"><Button onClick={() => setBotInviteLink(null)}>{t("Готово")}</Button></div>
+          </div>
+        </Modal>
+      )}
       {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
       {blacklisting && (
         <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
