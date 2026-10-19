@@ -152,7 +152,8 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
         sql`${workerDocumentsTable.filePath} is not null`, sql`(${workerDocumentsTable.fileMime} is null or ${workerDocumentsTable.fileMime} in ('application/pdf','image/jpeg','image/png'))`))
       .orderBy(desc(workerDocumentsTable.id)).limit(1); // найновіший паспорт, у якого Є придатний скан
     const abs = pass?.filePath ? existsAbs(pass.filePath) : null;
-    if (abs) zalaczniki.unshift({ label: "Paszport", fileName: pass!.fileName ?? path.basename(abs), absPath: abs });
+    // назва файлу на порталі = імʼя людини, а не «Unknown.jpg» з Telegram (жива подача #5, 19.10.2026)
+    if (abs) zalaczniki.unshift({ label: "Paszport", fileName: `Paszport ${w.fullName.replace(/[\/\\:*?"<>|]/g, " ").trim()}${path.extname(pass!.fileName ?? abs).toLowerCase() || ".pdf"}`, absPath: abs });
   }
 
   const payload: UaFormPayload = {
