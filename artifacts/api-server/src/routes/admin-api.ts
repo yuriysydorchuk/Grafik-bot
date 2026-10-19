@@ -2913,7 +2913,21 @@ router.get("/schedule", async (req, res) => {
     }
   }
 
-  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells, shiftOverrides });
+  // примітки профілю людей на сторінці (workerNote/svodniSensitive, як у профілі) — коротко біля імені, повністю в тултипі
+  const workerNotes: Record<number, string> = {};
+  if (canWorkerNoteReq(req)) {
+    const ids = new Set<number>();
+    for (const e of entries) if (e.workerId != null) ids.add(e.workerId);
+    for (const list of [...Object.values(reserve), ...Object.values(available)]) for (const w of list) ids.add(w.workerId);
+    for (const list of Object.values(unplanned)) for (const u of list) if (u.workerId != null) ids.add(u.workerId);
+    if (ids.size) {
+      const rows = await db.select({ id: workersTable.id, note: workersTable.note }).from(workersTable)
+        .where(and(inArray(workersTable.id, [...ids]), isNotNull(workersTable.note)));
+      for (const r of rows) if (r.note?.trim()) workerNotes[r.id] = r.note.trim();
+    }
+  }
+
+  ok(res, { week: week ? { id: week.id, weekStart: week.weekStart, status: week.status } : null, entries, reserve, available, approved, factory: factoryInfo, assignments, drivers, orders, orderReq, positions, unplanned, absenceByWorker, substituteFor, cancelledCells, shiftOverrides, workerNotes });
 });
 
 // Link a driver-typed unplanned worker to a real worker from the base.

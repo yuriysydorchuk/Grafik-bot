@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Zap, CheckCircle2, RefreshCw, Download, Send, X, GripVertical, Users, Check, Pencil, Link2, Car, Mail, Ban, Copy, Eraser } from "lucide-react";
@@ -37,6 +38,7 @@ type SchedResp = {
   substituteFor: Record<string, string>;
   cancelledCells: string[];
   shiftOverrides: Record<string, { start: string; end: string }>; // "day-shift" → разовий час зміни на цю дату
+  workerNotes?: Record<number, string>; // примітка профілю (лише workerNote/svodniSensitive)
 };
 type DragData =
   | { kind: "entry"; id: number; day: DayCode; shift: ShiftCode }
@@ -121,6 +123,9 @@ export default function Schedule() {
   const substituteFor = data?.substituteFor ?? {};
   const cancelledCells = new Set(data?.cancelledCells ?? []);
   const shiftOverrides = data?.shiftOverrides ?? {};
+  const workerNotes = data?.workerNotes ?? {};
+  // з приміткою імʼя бере свою ширину, а примітка — решту (стискається до 📝), інакше імʼя тягнеться на всю
+  const nameFlex = (id: number | null | undefined) => id != null && workerNotes[id] ? "flex-initial" : "flex-1";
   // A shift "has happened" once its start time has passed → show actuals, lock editing.
   const factoryShiftsArr = data?.factory?.shiftTimes ?? factory?.shifts ?? [];
   // Compare in Warsaw wall-clock (independent of the viewer's timezone)
@@ -553,7 +558,8 @@ export default function Schedule() {
                                 <div key={e.id} title={e.pickedUpByName ? t("Забрав: {name}", { name: e.pickedUpByName }) : undefined}
                                   className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-sm ${tint}`}>
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
-                                  <Link href={profileHref(e.workerId)} className="min-w-0 flex-1 truncate font-medium text-slate-700 hover:text-red-600 hover:underline">{e.workerName}</Link>
+                                  <Link href={profileHref(e.workerId)} className={`min-w-0 ${nameFlex(e.workerId)} truncate font-medium text-slate-700 hover:text-red-600 hover:underline`}>{e.workerName}</Link>
+                                  <NoteChip note={workerNotes[e.workerId]} />
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {cellEditing ? (
@@ -573,7 +579,8 @@ export default function Schedule() {
                             })}
                             {extras.map((u, i) => (
                               <div key={`u${i}`} className="flex items-center gap-2 rounded-lg border border-dashed border-sky-300 bg-sky-50/60 px-2 py-1.5 text-sm">
-                                <span className="min-w-0 flex-1 truncate font-medium text-sky-700">{u.name}</span>
+                                <span className={`min-w-0 ${nameFlex(u.workerId)} truncate font-medium text-sky-700`}>{u.name}</span>
+                                {u.workerId != null && <NoteChip note={workerNotes[u.workerId]} />}
                                 {u.workerId == null && editable ? (
                                   <button onClick={() => { setLinkTo({ id: u.id, name: u.name, day, shift }); setLinkQuery(""); }}
                                     title={t("Водій вписав ім'я вручну — прив'яжіть працівника з бази")}
@@ -629,7 +636,8 @@ export default function Schedule() {
                                   <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
                                   {usesPositions && e.positionId != null && <span title={posName(e.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(e.positionId))}`} />}
                                   <Link href={profileHref(e.workerId)} draggable={false} onClick={ev => ev.stopPropagation()}
-                                    className={`min-w-0 flex-1 truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
+                                    className={`min-w-0 ${nameFlex(e.workerId)} truncate hover:underline ${off ? "text-rose-600 line-through decoration-rose-400" : restGap != null ? "text-orange-700" : "text-slate-700 hover:text-red-600"}`}>{e.workerName}</Link>
+                                  <NoteChip note={workerNotes[e.workerId]} />
                                   {e.selfTransport && <span title={t("Доїжджає сам")} className="shrink-0 text-sky-500"><Car className="h-3.5 w-3.5" /></span>}
                                   {usesGender && e.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(e.gender)}`}>{genderIcon(e.gender)}</span>}
                                   {restGap != null && <span className="shrink-0 text-xs" title={restTip}>⚠️</span>}
@@ -654,7 +662,8 @@ export default function Schedule() {
                                   className={`flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm ${editable ? "cursor-grab hover:border-emerald-300 active:cursor-grabbing" : ""}`}>
                                   <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-300" />
                                   {usesPositions && r.positionId != null && <span title={posName(r.positionId)} className={`h-2 w-2 shrink-0 rounded-full ${dotClass(posColor(r.positionId))}`} />}
-                                  <Link href={profileHref(r.workerId)} draggable={false} className="min-w-0 flex-1 truncate text-slate-600 hover:text-red-600 hover:underline">{r.name}</Link>
+                                  <Link href={profileHref(r.workerId)} draggable={false} className={`min-w-0 ${nameFlex(r.workerId)} truncate text-slate-600 hover:text-red-600 hover:underline`}>{r.name}</Link>
+                                  <NoteChip note={workerNotes[r.workerId]} />
                                   {usesGender && r.gender && <span className={`shrink-0 text-xs font-semibold ${genderClass(r.gender)}`}>{genderIcon(r.gender)}</span>}
                                   {editable && <button onClick={() => addEntry.mutate({ workerId: r.workerId, day, shift })} className="shrink-0 rounded px-1 text-xs text-emerald-600 hover:bg-emerald-50">+</button>}
                                 </div>
@@ -678,6 +687,7 @@ export default function Schedule() {
                           className={`flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 ${editable ? "cursor-grab hover:border-red-300 active:cursor-grabbing" : ""}`}>
                           <GripVertical className="h-3 w-3 shrink-0 text-slate-300" />
                           <Link href={profileHref(w.workerId)} draggable={false} className="truncate hover:text-red-600 hover:underline">{w.name}</Link>
+                          <NoteChip note={workerNotes[w.workerId]} inline />
                         </div>
                       ))}
                     </div>
@@ -823,6 +833,64 @@ export default function Schedule() {
 }
 
 // Вибір режиму генерації: доповнити (наявні призначення недоторкані) чи перескласти.
+// Примітка профілю біля імені: коротко (обрізана), повністю — у картці при наведенні
+// (на дотик — по тапу). Картка в порталі: клітинки графіку обрізають overflow.
+// Довга примітка — картка не вища за екран і прокручується; мишку можна перевести на неї.
+// У рядку займає місце між імʼям і значками справа (при довгому імені — лише 📝);
+// inline — для «пігулок» вільних працівників, де рядка на всю ширину нема.
+function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
+  const t = useT();
+  const ref = useRef<HTMLSpanElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const ptr = useRef("mouse");
+  const hideTimer = useRef<number | undefined>(undefined);
+  const [pos, setPos] = useState<{ x: number; y: number; up: boolean; maxH: number } | null>(null);
+  useEffect(() => {
+    if (!pos) return;
+    // тап/клік поза бейджем і карткою або прокрутка сторінки (не самої картки) — закрити
+    const outside = (e: Event) => { const n = e.target as Node; if (!ref.current?.contains(n) && !cardRef.current?.contains(n)) setPos(null); };
+    document.addEventListener("pointerdown", outside);
+    window.addEventListener("scroll", outside, true);
+    return () => { document.removeEventListener("pointerdown", outside); window.removeEventListener("scroll", outside, true); };
+  }, [pos]);
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+  if (!note) return null;
+  const show = () => {
+    window.clearTimeout(hideTimer.current);
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 14, above = r.top - 14;
+    const up = below < 160 && above > below;
+    setPos({ x: Math.max(8, Math.min(r.left, window.innerWidth - 8 - 288)), y: up ? r.top - 6 : r.bottom + 6, up, maxH: Math.max(80, up ? above : below) });
+  };
+  // пауза, щоб встигнути перевести мишку з бейджа на картку
+  const hideSoon = () => { window.clearTimeout(hideTimer.current); hideTimer.current = window.setTimeout(() => setPos(null), 150); };
+  const chip = "max-w-[10rem] truncate rounded bg-amber-50 px-1 py-px text-[10px] font-medium leading-4 text-amber-700 ring-1 ring-amber-200";
+  const handlers = {
+    onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType === "mouse") show(); },
+    onPointerLeave: (e: React.PointerEvent) => { if (e.pointerType === "mouse") hideSoon(); },
+    onPointerDown: (e: React.PointerEvent) => { ptr.current = e.pointerType; },
+    onClick: (e: React.MouseEvent) => { e.stopPropagation(); if (ptr.current !== "mouse") { if (pos) setPos(null); else show(); } },
+  };
+  return (
+    <>
+      {inline
+        ? <span ref={ref} {...handlers} className={`max-w-[7rem] shrink-0 cursor-help ${chip}`}>📝 {note}</span>
+        : <span ref={ref} {...handlers} className="flex min-w-[1.75rem] flex-1 cursor-help"><span className={chip}>📝 {note}</span></span>}
+      {pos && createPortal(
+        <div ref={cardRef} style={{ left: pos.x, top: pos.y, maxHeight: pos.maxH }}
+          onPointerEnter={() => window.clearTimeout(hideTimer.current)}
+          onPointerLeave={e => { if (e.pointerType === "mouse") hideSoon(); }}
+          className={`fixed z-50 w-max max-w-[18rem] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-white px-3 py-2 text-xs leading-snug text-slate-700 shadow-lg ring-1 ring-amber-200 ${pos.up ? "-translate-y-full" : ""}`}>
+          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600">📝 {t("Примітка")}</div>
+          {note}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 function GenerateModal({ loading, onClose, onGenerate }: {
   loading: boolean; onClose: () => void; onGenerate: (augment: boolean) => void;
 }) {
