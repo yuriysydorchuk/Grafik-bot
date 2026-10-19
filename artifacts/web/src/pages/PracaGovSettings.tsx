@@ -16,7 +16,7 @@ interface PzAccount { id: number; adminId: number; adminName: string | null; lab
 interface Submission { id: number; kind: string; accountId: number | null; workerId: number | null; status: string; step: string | null; error: string | null; previewFile: string | null; screenshots: string[]; createdAt: string; finishedAt: string | null; payload?: { workerName?: string; companyName?: string } | null }
 interface RefCompany { id: number; name: string; legalName: string | null; city: string | null; pkd: string | null; kraz: string | null; contactEmail: string | null; contactPhone: string | null; headcountEmployment: number | null; headcountCivil: number | null }
 interface RefFactoryPosition { positionId: number; name: string | null; contractDuties: string | null; uaStanowisko: string | null; kzisCode: string | null }
-interface RefFactory { id: number; name: string; uaNotifyHours: number | null; address: string | null; city: string | null; companyName: string | null; contractDuties: string | null; addrPostalCode: string | null; addrWojewodztwo: string | null; addrPowiat: string | null; addrGmina: string | null; addrMiejscowosc: string | null; addrStreet: string | null; addrHouseNo: string | null; addrAptNo: string | null; uaStanowisko: string | null; uaKzisCode: string | null; positions: RefFactoryPosition[] }
+interface RefFactory { id: number; name: string; uaNotifyHours: number | null; address: string | null; city: string | null; companyName: string | null; contractDuties: string | null; addrPostalCode: string | null; addrWojewodztwo: string | null; addrPowiat: string | null; addrGmina: string | null; addrMiejscowosc: string | null; addrStreet: string | null; addrHouseNo: string | null; addrAptNo: string | null; uaStanowisko: string | null; uaKzisCode: string | null; uaPkd: string | null; positions: RefFactoryPosition[] }
 interface RefPosition { id: number; name: string; kzisCode: string | null }
 interface Reference { companies: RefCompany[]; factories: RefFactory[]; positions: RefPosition[] }
 
@@ -231,6 +231,13 @@ function FactoriesTab() {
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-8">
                   {([["addrPostalCode", "Kod pocztowy"], ["addrWojewodztwo", "Województwo"], ["addrPowiat", "Powiat"], ["addrGmina", "Gmina"], ["addrMiejscowosc", "Miejscowość"], ["addrStreet", "Ulica"], ["addrHouseNo", "Nr domu"], ["addrAptNo", "Nr lokalu"]] as const).map(([k, l]) => (
                     <div key={k}><div className="text-[10px] text-slate-400">{l}</div><Cell value={f[k]} onSave={v => r.factory.mutate({ id: f.id, patch: { [k]: v } })} /></div>))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">3.1 Symbol PKD</div>
+                <div className="flex items-center gap-2">
+                  <Cell value={f.uaPkd} placeholder="1039Z" w="w-24" mono onSave={v => r.factory.mutate({ id: f.id, patch: { uaPkd: v } })} />
+                  <span className="text-xs text-slate-500">{t("PKD роботи, яку виконує людина на цій фабриці (напр. 1039Z — przetwarzanie owoców i warzyw); порожнє = PKD фірми")}</span>
                 </div>
               </div>
               <div>

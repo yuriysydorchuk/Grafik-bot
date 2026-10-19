@@ -1,8 +1,8 @@
 // Дані для форми PSZ-PPWPU (етап 2 робота praca.gov.pl, 13.10.2026): збираються з профілю,
 // анкети, фабрики, фірми й посади у структуру під поля форми (docs/PRACA_GOV_PPWPU.md) і
 // перевіряються ДО запуску браузера — список прогалин повертається людині одразу.
-import { db, workersTable, workerQuestionnairesTable, factoriesTable, companiesTable, positionsTable, contractsTable, factoryPositionsTable, workerFactoriesTable } from "@workspace/db";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { db, workersTable, workerQuestionnairesTable, factoriesTable, companiesTable, positionsTable, contractsTable, factoryPositionsTable, workerFactoriesTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { countryNamePl } from "../../lib/countries";
 import { dateStr } from "../taskUtils";
 
@@ -16,6 +16,7 @@ export interface UaFormPayload {
     imie: string; kolejneImiona: string; nazwisko: string; obywatelstwo: string;
     dokRodzaj: "Paszport"; panstwoWydania: string; seriaNr: string; dataWydania: string; dataWaznosci: string;
     pesel: string; dataUrodzenia: string; plec: "Kobieta" | "Mężczyzna";
+    tytulPobytu: string; // довідник порталу (TYTUL_POBYTU_OPTIONS): з документів — karta czasowa → POBYT CZASOWY, інакше OCHRONA CZASOWA
   };
   praca: {
     dataPodjecia: string; dataPodjeciaFakt?: string; pkdVersion: "PKD_2007" | "PKD_2025"; pkd: string; stanowisko: string; zawodKod: string;
@@ -28,13 +29,15 @@ export interface UaFormPayload {
 }
 
 export const RODZAJ_UMOWY_ZLECENIE = "Umowa zlecenie / Umowa o świadczenie usług";
+// Опції «Tytuł pobytu» в контексті організації (зняті з порталу 16.10.2026, подача #2)
+export const TYTUL_POBYTU_OPTIONS = ["OCHRONA CZASOWA", "OCHRONA UZUPEŁNIAJĄCA", "POBYT CZASOWY", "POBYT CZŁONKA RODZINY OBYWATELA UE", "POBYT HUMANITARNY", "POBYT NA PODSTAWIE ART. 108 UST. 1 PKT 1, ART. 206 UST. 1 PKT 2 LUB 223 USTAWY O CUDZOZIEMCACH"] as const;
 
 // Правки з екрана анкети (лише для цієї подачі, у джерела не пишуться): білий список шляхів,
 // щоб з клієнта не прилетіло нічого поза полями форми.
 const OVERRIDE_PATHS = [
   "miejscowosc", "kraz", "email", "telefon",
   "cudzoziemiec.imie", "cudzoziemiec.kolejneImiona", "cudzoziemiec.nazwisko", "cudzoziemiec.obywatelstwo", "cudzoziemiec.panstwoWydania",
-  "cudzoziemiec.seriaNr", "cudzoziemiec.dataWydania", "cudzoziemiec.dataWaznosci", "cudzoziemiec.pesel", "cudzoziemiec.dataUrodzenia", "cudzoziemiec.plec",
+  "cudzoziemiec.seriaNr", "cudzoziemiec.dataWydania", "cudzoziemiec.dataWaznosci", "cudzoziemiec.pesel", "cudzoziemiec.dataUrodzenia", "cudzoziemiec.plec", "cudzoziemiec.tytulPobytu",
   "praca.dataPodjecia", "praca.pkdVersion", "praca.pkd", "praca.stanowisko", "praca.zawodKod", "praca.infoDodatkowe", "praca.rodzajUmowy", "praca.godzinMiesiac", "praca.stawkaGodz", "praca.stawkaMies",
   "praca.miejsce.kodPocztowy", "praca.miejsce.wojewodztwo", "praca.miejsce.powiat", "praca.miejsce.gmina", "praca.miejsce.miejscowosc", "praca.miejsce.ulica", "praca.miejsce.nrDomu", "praca.miejsce.nrLokalu",
   "liczby.umowaOPrace", "liczby.cywilne", "podpis.funkcja",
@@ -65,7 +68,7 @@ export function missingOf(payload: UaFormPayload): string[] {
   need(p.cudzoziemiec.imie, "імʼя"); need(p.cudzoziemiec.nazwisko, "прізвище"); need(p.cudzoziemiec.obywatelstwo, "громадянство"); need(p.cudzoziemiec.seriaNr, "номер паспорта");
   need(p.cudzoziemiec.dataWydania, "дата видачі паспорта"); need(p.cudzoziemiec.dataWaznosci, "термін паспорта"); need(p.cudzoziemiec.dataUrodzenia, "дата народження"); need(p.cudzoziemiec.plec, "стать");
   need(p.praca.dataPodjecia, "дата початку роботи");
-  if (p.praca.dataPodjecia && p.praca.dataPodjecia > new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" })) missing.push("дата початку роботи в майбутньому"); need(p.praca.pkd, "PKD фірми"); need(p.praca.stanowisko, "посада / обовʼязки"); need(p.praca.zawodKod, "код KZiS посади");
+  if (p.praca.dataPodjecia && p.praca.dataPodjecia > new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" })) missing.push("дата початку роботи в майбутньому"); need(p.praca.pkd, "PKD роботи (фабрика → PKD, або PKD фірми)"); need(p.cudzoziemiec.tytulPobytu, "tytuł pobytu"); need(p.praca.stanowisko, "посада / обовʼязки"); need(p.praca.zawodKod, "код KZiS посади");
   need(p.praca.miejsce.wojewodztwo, "адреса фабрики: województwo"); need(p.praca.miejsce.powiat, "адреса фабрики: powiat"); need(p.praca.miejsce.gmina, "адреса фабрики: gmina");
   need(p.praca.godzinMiesiac, "години в повідомленні (Налаштування → praca.gov.pl → фабрика)"); need(p.praca.stawkaGodz, "ставка brutto"); need(p.praca.stawkaMies, "місячна сума за ставкою");
   need(p.liczby.umowaOPrace, "чисельність фірми: umowa o pracę"); need(p.liczby.cywilne, "чисельність фірми: umowy cywilnoprawne");
@@ -103,6 +106,15 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   const [contract] = await db.select().from(contractsTable).where(and(eq(contractsTable.workerId, workerId), f ? eq(contractsTable.factoryId, f.id) : isNull(contractsTable.factoryId), sql`${contractsTable.status} in ('signed','sent','viewed','worker_signed')`)).orderBy(desc(contractsTable.id)).limit(1);
   const { KSIEG_STD_BRUTTO } = await import("../svodni");
   const rate = f?.contractRateBrutto ?? KSIEG_STD_BRUTTO();
+  // Tytuł pobytu — з документів (подачі Влади 09–10.2026: власник karty czasowej подається як POBYT CZASOWY, не OCHRONA CZASOWA);
+  // zaświadczenie o złożeniu wniosku (справа в toku) → pobyt na podstawie art. 108; решта громадян UA — OCHRONA CZASOWA
+  const today0 = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const stayDocs = await db.select({ code: documentTypesTable.code, validFrom: workerDocumentsTable.validFrom, expiresAt: workerDocumentsTable.expiresAt, caseStatus: workerDocumentsTable.caseStatus })
+    .from(workerDocumentsTable).innerJoin(documentTypesTable, eq(documentTypesTable.id, workerDocumentsTable.docTypeId))
+    .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.status, "present"), inArray(documentTypesTable.code, ["trc", "stay_case_certificate"])));
+  const hasTrc = stayDocs.some(d => d.code === "trc" && (!d.validFrom || dateStr(d.validFrom)! <= today0) && (!d.expiresAt || dateStr(d.expiresAt)! >= today0));
+  const hasCase = stayDocs.some(d => d.code === "stay_case_certificate" && (!d.caseStatus || ["submitted", "in_progress"].includes(d.caseStatus)));
+  const tytulPobytu: string = hasTrc ? TYTUL_POBYTU_OPTIONS[2] : hasCase ? TYTUL_POBYTU_OPTIONS[5] : TYTUL_POBYTU_OPTIONS[0];
   const sex: "Kobieta" | "Mężczyzna" | "" = w.gender === "male" ? "Mężczyzna" : w.gender === "female" ? "Kobieta" : q?.sex === "M" ? "Mężczyzna" : q?.sex === "F" ? "Kobieta" : "";
   const citizen = countryNamePl(q?.citizenship) || (w.nationality === "ukraine" ? "Ukraina" : "");
   const first = w.firstName ?? w.fullName.split(" ").slice(1).join(" ");
@@ -129,11 +141,13 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
       imie: first, kolejneImiona: w.middleName ?? "", nazwisko: last, obywatelstwo: citizen,
       dokRodzaj: "Paszport", panstwoWydania: countryNamePl(q?.passportCountry) || citizen,
       seriaNr: q?.passportNumber ?? "", dataWydania: dateStr(q?.passportIssuedAt) ?? "", dataWaznosci: dateStr(q?.passportExpiresAt) ?? "",
-      pesel: w.pesel ?? "", dataUrodzenia: dateStr(w.birthDate) ?? "", plec: sex as "Kobieta" | "Mężczyzna",
+      pesel: w.pesel ?? "", dataUrodzenia: dateStr(w.birthDate) ?? "", plec: sex as "Kobieta" | "Mężczyzna", tytulPobytu,
     },
     praca: {
       dataPodjecia: start, dataPodjeciaFakt: startFakt || undefined,
-      pkdVersion: "PKD_2007", pkd: (c?.pkd ?? "").replace(/[^0-9A-Za-z]/g, "").toUpperCase(),
+      // PKD — діяльності, яку виконує cudzoziemiec (по фабриці, напр. 1039Z на овочево-фруктових заводах), не PKD агенції;
+      // фолбек — PKD фірми. Класифікація PKD 2025 (подачі Влади 10.2026).
+      pkdVersion: "PKD_2025", pkd: (f?.uaPkd || c?.pkd || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase(),
       // посада для повідомлення: по посаді на фабриці → по фабриці → обовʼязки умови → назва посади
       stanowisko: fp?.uaStanowisko || f?.uaStanowisko || fp?.contractDuties || f?.contractDuties || pos?.name || "",
       zawodKod: fp?.kzisCode || f?.uaKzisCode || pos?.kzisCode || "",

@@ -13,7 +13,7 @@ import { useT } from "../lib/i18n";
 interface Payload {
   workerId: number; workerName: string; companyId: number | null; companyName: string; contextPattern: string;
   miejscowosc: string; kraz: string; email: string; telefon: string;
-  cudzoziemiec: { imie: string; kolejneImiona: string; nazwisko: string; obywatelstwo: string; dokRodzaj: string; panstwoWydania: string; seriaNr: string; dataWydania: string; dataWaznosci: string; pesel: string; dataUrodzenia: string; plec: string };
+  cudzoziemiec: { imie: string; kolejneImiona: string; nazwisko: string; obywatelstwo: string; dokRodzaj: string; panstwoWydania: string; seriaNr: string; dataWydania: string; dataWaznosci: string; pesel: string; dataUrodzenia: string; plec: string; tytulPobytu: string };
   praca: { dataPodjecia: string; pkdVersion: string; pkd: string; stanowisko: string; zawodKod: string; miejsce: { kodPocztowy: string; wojewodztwo: string; powiat: string; gmina: string; miejscowosc: string; ulica: string; nrDomu: string; nrLokalu: string }; infoDodatkowe: string; rodzajUmowy: string; godzinMiesiac: string; stawkaGodz: string; stawkaMies: string };
   liczby: { umowaOPrace: string; cywilne: string };
   warnings?: string[];
@@ -90,7 +90,7 @@ function getPath(o: any, path: string): string { return String(path.split(".").r
 function setPath(o: any, path: string, v: string): any { const out = structuredClone(o); const ks = path.split("."); let d = out; for (const k of ks.slice(0, -1)) d = d[k]; d[ks[ks.length - 1]!] = v; return out; }
 
 // Обовʼязкові поля — дзеркало services/pracaGov/payload.ts missingOf()
-const REQUIRED = new Set(["miejscowosc", "cudzoziemiec.imie", "cudzoziemiec.nazwisko", "cudzoziemiec.obywatelstwo", "cudzoziemiec.seriaNr", "cudzoziemiec.dataWydania", "cudzoziemiec.dataWaznosci", "cudzoziemiec.dataUrodzenia", "cudzoziemiec.plec", "praca.dataPodjecia", "praca.pkd", "praca.stanowisko", "praca.zawodKod", "praca.miejsce.wojewodztwo", "praca.miejsce.powiat", "praca.miejsce.gmina", "praca.godzinMiesiac", "praca.stawkaGodz", "praca.stawkaMies", "liczby.umowaOPrace", "liczby.cywilne", "podpis.funkcja"]);
+const REQUIRED = new Set(["miejscowosc", "cudzoziemiec.imie", "cudzoziemiec.nazwisko", "cudzoziemiec.obywatelstwo", "cudzoziemiec.seriaNr", "cudzoziemiec.dataWydania", "cudzoziemiec.dataWaznosci", "cudzoziemiec.dataUrodzenia", "cudzoziemiec.plec", "cudzoziemiec.tytulPobytu", "praca.dataPodjecia", "praca.pkd", "praca.stanowisko", "praca.zawodKod", "praca.miejsce.wojewodztwo", "praca.miejsce.powiat", "praca.miejsce.gmina", "praca.godzinMiesiac", "praca.stawkaGodz", "praca.stawkaMies", "liczby.umowaOPrace", "liczby.cywilne", "podpis.funkcja"]);
 
 function F({ l, path, form, set, type, options, placeholder, readOnly }: { l: string; path: string; form: Payload; set: Setter; type?: string; options?: string[]; placeholder?: string; readOnly?: boolean }) {
   const v = getPath(form, path); const req = REQUIRED.has(path); const bad = req && !v;
@@ -146,7 +146,7 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Pre
             <F l="Imię" path="cudzoziemiec.imie" form={form} set={set} /><F l="Kolejne imiona" path="cudzoziemiec.kolejneImiona" form={form} set={set} /><F l="Nazwisko" path="cudzoziemiec.nazwisko" form={form} set={set} />
             <F l="Obywatelstwo" path="cudzoziemiec.obywatelstwo" form={form} set={set} placeholder="Ukraina" /><Static l="Rodzaj dokumentu" v="Paszport" /><F l="Państwo wydania" path="cudzoziemiec.panstwoWydania" form={form} set={set} />
             <F l="Seria i nr" path="cudzoziemiec.seriaNr" form={form} set={set} /><F l="Data wydania" path="cudzoziemiec.dataWydania" form={form} set={set} type="date" /><F l="Data ważności" path="cudzoziemiec.dataWaznosci" form={form} set={set} type="date" />
-            <F l="PESEL" path="cudzoziemiec.pesel" form={form} set={set} /><F l="Data urodzenia" path="cudzoziemiec.dataUrodzenia" form={form} set={set} type="date" /><F l="Płeć" path="cudzoziemiec.plec" form={form} set={set} options={["Kobieta", "Mężczyzna"]} /><Static l="Tytuł pobytu" v="OCHRONA CZASOWA" />
+            <F l="PESEL" path="cudzoziemiec.pesel" form={form} set={set} /><F l="Data urodzenia" path="cudzoziemiec.dataUrodzenia" form={form} set={set} type="date" /><F l="Płeć" path="cudzoziemiec.plec" form={form} set={set} options={["Kobieta", "Mężczyzna"]} /><F l="Tytuł pobytu" path="cudzoziemiec.tytulPobytu" form={form} set={set} options={["OCHRONA CZASOWA", "OCHRONA UZUPEŁNIAJĄCA", "POBYT CZASOWY", "POBYT CZŁONKA RODZINY OBYWATELA UE", "POBYT HUMANITARNY", "POBYT NA PODSTAWIE ART. 108 UST. 1 PKT 1, ART. 206 UST. 1 PKT 2 LUB 223 USTAWY O CUDZOZIEMCACH"]} />
           </Section>
           <Section title="4. Liczba osób u pracodawcy">
             <F l="umowa o pracę" path="liczby.umowaOPrace" form={form} set={set} type="number" /><F l="umowy cywilnoprawne" path="liczby.cywilne" form={form} set={set} type="number" />
@@ -158,7 +158,7 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Pre
         <div>
           <Section title="3. Informacje o oferowanej pracy">
             <F l="Data podjęcia pracy" path="praca.dataPodjecia" form={form} set={set} type="date" />
-            <F l="3.1 Klasyfikacja PKD" path="praca.pkdVersion" form={form} set={set} options={["PKD_2007", "PKD_2025"]} /><F l="Symbol PKD" path="praca.pkd" form={form} set={set} placeholder="7810Z" />
+            <F l="3.1 Klasyfikacja PKD" path="praca.pkdVersion" form={form} set={set} options={["PKD_2007", "PKD_2025"]} /><F l="Symbol PKD (роботи)" path="praca.pkd" form={form} set={set} placeholder="1039Z" />
             <F l="3.2 Stanowisko / rodzaj pracy" path="praca.stanowisko" form={form} set={set} />
             <F l="3.3 Kod zawodu (KZiS)" path="praca.zawodKod" form={form} set={set} placeholder="932101" />
             <F l="3.4 Kod pocztowy" path="praca.miejsce.kodPocztowy" form={form} set={set} placeholder="20-404" /><F l="Województwo" path="praca.miejsce.wojewodztwo" form={form} set={set} /><F l="Powiat" path="praca.miejsce.powiat" form={form} set={set} /><F l="Gmina" path="praca.miejsce.gmina" form={form} set={set} />

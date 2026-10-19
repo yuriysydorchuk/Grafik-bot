@@ -354,7 +354,7 @@ export async function uaCard(workerId: number, companyId: number | null = null):
       { key: "nip", label: "NIP", value: c?.nip ?? "", required: true, source: "компанія" },
       { key: "regon", label: "REGON", value: c?.regon ?? "", required: true, source: "компанія" },
       { key: "krs", label: "KRS", value: c?.krs ?? "", source: "компанія" },
-      { key: "pkd", label: "PKD (przeważająca działalność)", value: c?.pkd ?? "", required: true, source: "компанія → PKD" },
+      { key: "pkd", label: "PKD (działalność związana z pracą cudzoziemca)", value: f?.uaPkd || c?.pkd || "", required: true, source: "фабрика → PKD (Налаштування → praca.gov.pl), інакше фірма" },
       { key: "caddr", label: "Adres siedziby", value: addr([c?.street ? `ul. ${c.street}${c?.houseNumber ? " " + c.houseNumber : ""}` : null, c?.postalCode, c?.city]), required: true, source: "компанія" },
       { key: "rep", label: "Osoba reprezentująca", value: c?.representative ?? "", source: "компанія" },
     ] },

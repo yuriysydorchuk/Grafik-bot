@@ -113,3 +113,17 @@
 - «Zapisz dane» відкриває меню: «Zapis do schowka praca.gov.pl» | «Zapis do dokumentów roboczych».
 - Поле «Wydruk» стає активним лише на валідній формі — ознака, що всі обовʼязкові поля прийнято.
 - Ulica (3.4) — автодоповнення «Wpisz min. 3 znaki», поки не заповнюється (необовʼязкове).
+
+## Звірка з реальними подачами (19.10.2026)
+
+Три повідомлення, подані Владою руками (ESO/DAWTONA 12.10, Klinex/PREMIUM FRUITS 28.09, ESG/AGRAM LUBLIN 12.10), проти нашого payload:
+
+- **3.1 PKD** — діяльність, яку виконує cudzoziemiec, не PKD агенції: у всіх трьох `1039Z` (przetwarzanie owoców i warzyw), класифікація **PKD-2025** (одна — 2007). Тепер `factories.ua_pkd` → фолбек `companies.pkd`; дефолт версії PKD_2025.
+- **3.2/3.3** — «Przetwórca owoców i warzyw» / **751402** на овочево-фруктових заводах (сід у `2026-10-19-praca-gov-pkd-filings.sql`), не «Pracownik produkcji» 932990.
+- **Tytuł pobytu** — не завжди OCHRONA CZASOWA: власник karty czasowej → **POBYT CZASOWY**. Опції довідника в контексті організації: OCHRONA CZASOWA; OCHRONA UZUPEŁNIAJĄCA; POBYT CZASOWY; POBYT CZŁONKA RODZINY OBYWATELA UE; POBYT HUMANITARNY; POBYT NA PODSTAWIE ART. 108 UST. 1 PKT 1, ART. 206 UST. 1 PKT 2 LUB 223 USTAWY O CUDZOZIEMCACH. Payload виводить з документів (trc → POBYT CZASOWY, zaświadczenie o złożeniu wniosku → art. 108, інакше OCHRONA CZASOWA), поле редагується в анкеті; якщо portal підставив і заблокував — лишаємо його значення (warn у лог).
+- **3.4** — nr budynku і nr lokalu окремо (44 / B); «Informacje dodatkowe» Влада лишає порожнім або пише примітку (у нас — назва фабрики + адреса, не шкодить).
+- **3.6/3.7** — 40 год, 31,40 → 1 256,00 — збігається з `ua_notify_hours`.
+- **4** — ESG 0/209, ESO 3/131, Klinex 3/25 (на дату подач).
+- **1.2/1.3** — office.eurosupp@gmail.com; телефони ESO/ESG 792182764, Klinex 530878711.
+- **Załączniki** — Влада додає скан паспорта і два файли «88Z» фірми за місяць; портал без них форму приймає, робот поки нічого не додає (рішення власника відкрите).
+- Підписант: «Pracownik działu kadr» (у нас налаштовано «Specjalista ds. kadr» — поле акаунта).

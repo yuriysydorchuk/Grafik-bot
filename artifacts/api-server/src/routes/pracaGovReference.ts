@@ -15,6 +15,8 @@ const fail = (res: any, code: number, error: string) => res.status(code).json({ 
 const str = (v: unknown) => String(v ?? "").trim() || null;
 const int = (v: unknown): number | null => { if (v === undefined || v === null || v === "") return null; const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new Error("Очікується ціле число ≥ 0"); return n; };
 const idOf = (v: string | string[]): number | null => { const n = Number(Array.isArray(v) ? v[0] : v); return Number.isInteger(n) && n > 0 ? n : null; };
+// PKD роботи на фабриці (3.1): «10.39.Z» / «1039Z» → «1039Z»; порожньо → null
+const pkd = (v: unknown): string | null => { const k = String(v ?? "").replace(/[^0-9A-Za-z]/g, "").toUpperCase(); if (!k) return null; if (!/^\d{4}[A-Z]$/.test(k)) throw new Error("Код PKD — 4 цифри й літера, напр. 1039Z"); return k; };
 // KZiS: порожньо → null; інакше рівно 6 цифр, інакше помилка (обрізання/доповнення дало б інший код)
 const kzis = (v: unknown): string | null => { const k = String(v ?? "").trim(); if (!k) return null; if (!/^\d{6}$/.test(k)) throw new Error("Код KZiS — рівно 6 цифр"); return k; };
 
@@ -23,7 +25,7 @@ router.get("/praca-gov/reference", async (_req: AuthedRequest, res) => {
     db.select({ id: companiesTable.id, name: companiesTable.name, legalName: companiesTable.legalName, city: companiesTable.city, pkd: companiesTable.pkd, kraz: companiesTable.kraz, contactEmail: companiesTable.contactEmail, contactPhone: companiesTable.contactPhone, headcountEmployment: companiesTable.headcountEmployment, headcountCivil: companiesTable.headcountCivil, employsWorkers: companiesTable.employsWorkers, isActive: companiesTable.isActive }).from(companiesTable).orderBy(asc(companiesTable.name)),
     db.select({ id: factoriesTable.id, name: factoriesTable.name, address: factoriesTable.address, city: factoriesTable.city, companyId: factoriesTable.companyId, isOffice: factoriesTable.isOffice, contractDuties: factoriesTable.contractDuties,
       addrPostalCode: factoriesTable.addrPostalCode, addrWojewodztwo: factoriesTable.addrWojewodztwo, addrPowiat: factoriesTable.addrPowiat, addrGmina: factoriesTable.addrGmina, addrMiejscowosc: factoriesTable.addrMiejscowosc, addrStreet: factoriesTable.addrStreet, addrHouseNo: factoriesTable.addrHouseNo, addrAptNo: factoriesTable.addrAptNo,
-      uaStanowisko: factoriesTable.uaStanowisko, uaKzisCode: factoriesTable.uaKzisCode, uaNotifyHours: factoriesTable.uaNotifyHours }).from(factoriesTable).orderBy(asc(factoriesTable.name)),
+      uaStanowisko: factoriesTable.uaStanowisko, uaKzisCode: factoriesTable.uaKzisCode, uaPkd: factoriesTable.uaPkd, uaNotifyHours: factoriesTable.uaNotifyHours }).from(factoriesTable).orderBy(asc(factoriesTable.name)),
     db.select({ factoryId: factoryPositionsTable.factoryId, positionId: factoryPositionsTable.positionId, name: positionsTable.name, contractDuties: factoryPositionsTable.contractDuties, uaStanowisko: factoryPositionsTable.uaStanowisko, kzisCode: factoryPositionsTable.kzisCode, sortOrder: factoryPositionsTable.sortOrder }).from(factoryPositionsTable).leftJoin(positionsTable, eq(positionsTable.id, factoryPositionsTable.positionId)).orderBy(asc(factoryPositionsTable.sortOrder)),
     db.select({ id: positionsTable.id, name: positionsTable.name, kzisCode: positionsTable.kzisCode, isActive: positionsTable.isActive }).from(positionsTable).orderBy(asc(positionsTable.sortOrder)),
   ]);
@@ -49,7 +51,7 @@ router.patch("/praca-gov/reference/factory/:id", async (req: AuthedRequest, res)
   const id = idOf(req.params.id); if (!id) return fail(res, 400, "Невірний id");
   const b = req.body ?? {}; const patch: Record<string, unknown> = {};
   for (const k of ["addrPostalCode", "addrWojewodztwo", "addrPowiat", "addrGmina", "addrMiejscowosc", "addrStreet", "addrHouseNo", "addrAptNo", "uaStanowisko"] as const) if (b[k] !== undefined) patch[k] = str(b[k]);
-  try { if (b.uaKzisCode !== undefined) patch.uaKzisCode = kzis(b.uaKzisCode); } catch (e: any) { return fail(res, 400, e.message); }
+  try { if (b.uaKzisCode !== undefined) patch.uaKzisCode = kzis(b.uaKzisCode); if (b.uaPkd !== undefined) patch.uaPkd = pkd(b.uaPkd); } catch (e: any) { return fail(res, 400, e.message); }
   // години в повідомленні (3.6, umowa zlecenie) — на місяць: 1…744 (31×24), порожньо = не задано
   try { if (b.uaNotifyHours !== undefined) { const h = int(b.uaNotifyHours); if (h != null && (h < 1 || h > 744)) throw new Error("Години на місяць — від 1 до 744"); patch.uaNotifyHours = h; } } catch (e: any) { return fail(res, 400, e.message); }
   if (!Object.keys(patch).length) return fail(res, 400, "Нема полів");

@@ -437,6 +437,7 @@ export const factoriesTable = pgTable("factories", {
   addrAptNo: text("addr_apt_no"),
   uaStanowisko: text("ua_stanowisko"), // powiadomienie 3.2 для всіх посад фабрики (якщо не задано по посаді)
   uaKzisCode: text("ua_kzis_code"),    // powiadomienie 3.3 для всіх посад фабрики
+  uaPkd: text("ua_pkd"),               // powiadomienie 3.1 — PKD роботи, яку виконує людина на фабриці (напр. 1039Z), не PKD фірми-агенції
   // powiadomienie 3.6 «Liczba godzin pracy w miesiącu» (umowa zlecenie) для людей фабрики — єдине джерело
   // годин у формі (рішення власника 15.10.2026; перед подачею правиться вручну); стандарт 40, NULL = не задано
   uaNotifyHours: integer("ua_notify_hours").default(40),

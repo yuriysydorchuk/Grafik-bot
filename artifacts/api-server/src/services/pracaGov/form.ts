@@ -7,6 +7,7 @@ import { RobotError, PORTAL, clickByText, pageText, snap, step, typeInto, findCo
 import { pzCredentials } from "./accounts";
 import { waitForCode } from "./codes";
 import type { UaFormPayload } from "./payload";
+import { logger } from "../../lib/logger";
 
 declare const document: any;
 declare const CSS: any;
@@ -316,7 +317,10 @@ export async function fillForm(ctx: RobotCtx, page: Page, p: UaFormPayload): Pro
   await pickSelect(ctx, page, "Płeć", p.cudzoziemiec.plec, { section: S2 });
   // у контексті організації «Tytuł pobytu» — обовʼязковий список (у fizycznej був підставлений «OCHRONA CZASOWA»)
   // pgp-autocomplete (mat-label без for, input role=combobox «Wybierz wartość»); у fizycznej — disabled з «OCHRONA CZASOWA»
-  await fillAutocomplete(ctx, page, "Tytuł pobytu", "ochr", /ochrona czasowa|czasow/i, { section: S2 });
+  // значення з payload (POBYT CZASOWY для власників karty, OCHRONA CZASOWA для решти); portal інколи підставляє
+  // «OCHRONA CZASOWA» і блокує поле — тоді змінити не можемо, лишаємо як є (fillAutocomplete повертає поточне)
+  { const want = p.cudzoziemiec.tytulPobytu || "OCHRONA CZASOWA"; const got = await fillAutocomplete(ctx, page, "Tytuł pobytu", want.slice(0, 5), new RegExp("^" + esc(want) + "$", "i"), { section: S2 });
+    if (got && got.toUpperCase() !== want.toUpperCase()) logger.warn({ id: ctx.submissionId, got, want }, "praca.gov: Tytuł pobytu заблокований порталом — лишаємо підставлене"); }
   await snap(ctx, page, "form-2-cudzoziemiec");
 
   await step(ctx, page, "running", "заповнюю дані про роботу");

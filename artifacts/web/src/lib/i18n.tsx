@@ -4009,7 +4009,8 @@ const EN: Record<string, string> = {
   // Powiadomienie у профілі: ручна форма з даними подачі + «+» із вибором (14.10.2026)
   "Фактичний перший день": "Actual first working day", "якщо повідомлення подано пізніше за 7-денний строк — реальна дата початку": "if the notification was filed after the 7-day deadline — the real start date",
   "Годин на місяць": "Hours per month", "Посада у формі (stanowisko)": "Position on the form (stanowisko)", "Код KZiS": "KZiS code", "Nr potwierdzenia": "Confirmation no.",
-  "Завантажити файл": "Upload a file", "Подано роботом praca.gov.pl": "Filed by the praca.gov.pl robot",
+  "Завантажити файл": "Upload a file",
+  "PKD роботи, яку виконує людина на цій фабриці (напр. 1039Z — przetwarzanie owoców i warzyw); порожнє = PKD фірми": "PKD of the work the person performs at this factory (e.g. 1039Z — fruit and vegetable processing); empty = company PKD", "Подано роботом praca.gov.pl": "Filed by the praca.gov.pl robot",
   "вибрати всіх для групової подачі": "select all for batch submission",
   "до групової подачі": "add to batch submission",
   "вибрано": "selected",
