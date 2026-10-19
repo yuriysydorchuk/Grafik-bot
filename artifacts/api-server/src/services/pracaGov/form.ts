@@ -623,9 +623,24 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
   const hardDeadline = Date.now() + 10 * 60_000;
   let deadline = Date.now() + 150_000;
   let signedBack = false; let summaryPage: Page = page;
-  let podpisClickedAt = 0, podpisClicks = 0, lastDiag = 0;
+  let podpisClickedAt = 0, podpisClicks = 0;
   const isSummaryOk = (t: string) => /Podsumowanie/i.test(t) && /(został[ao]? (wysłan|złożon|przekazan)|Urzędowe Poświadczenie|UPP|przyjęt|wysłano)/i.test(t) && !/nie został|nie udało|niepowodzen|błąd|błędn|odrzucon/i.test(t);
   try {
+  // справжній клік мишею по елементу з текстом (DOM-клік portal місцями ігнорує); не торкаємось Anuluj/Odrzuć/Wróć
+  const realClick = async (p: Page, re: RegExp) => {
+    const h = await p.evaluateHandle((src: string) => {
+      const rx = new RegExp(src, "i"); const vis = (el: any) => el.getBoundingClientRect().height > 0;
+      const els = [...document.querySelectorAll("button, a, [role=button], [role=link], li, div")].filter((b: any) => vis(b) && rx.test((b.textContent || "").replace(/\s+/g, " ").trim()));
+      els.sort((x: any, y: any) => (x.textContent || "").length - (y.textContent || "").length);
+      const el: any = els[0]; if (!el) return null;
+      return el.closest("button, a, [role=button], [role=link]") ?? el;
+    }, re.source);
+    const el = h.asElement(); if (!el) return false;
+    await el.evaluate((e: any) => e.scrollIntoView({ block: "center" })); await sleep(150); await el.click().catch(() => {}); return true;
+  };
+  const changed = async (p: Page, url0: string, txt0: string, ms: number) => waitFor(p, async () => p.isClosed() || p.url() !== url0 || (await pageText(p)) !== txt0, ms);
+  const FORWARD: RegExp[] = [/^Podpisz podpisem zaufanym/, /^Podpisz( dokument)?$/, /^Potwierdź/, /^Autoryzuj/, /^Zatwierdź/, /^Dalej$/, /^Kontynuuj/, /^Przejdź/, /^(Wróć|Powrót) do (e-)?(usługi|serwisu)/, /^Zakończ/];
+  let loginSubmittedAt = 0, lastUrl = "", urlIdx = 0;
   while (Date.now() < deadline && Date.now() < hardDeadline) {
     // підсумок може зʼявитись у будь-якій вкладці
     let found = false;
@@ -635,50 +650,40 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
     const auth = [...livePages()].reverse().find(p => /pz\.gov\.pl|login\.gov\.pl|podpis\.gov\.pl/i.test(p.url()));
     const cur = auth ?? page;
     const url = cur.url();
+    // кожна нова сторінка — знімок (діагностика без здогадок) + лог усіх вкладок
+    if (url !== lastUrl) { lastUrl = url; urlIdx++; await snap(ctx, cur, `sign-page-${urlIdx}`); logger.info({ id: ctx.submissionId, url, pages: livePages().map(p => p.url()) }, "praca.gov sign: нова сторінка"); }
+    const txt = await pageText(cur);
+    // сторінки помилок — зупиняємось одразу з зрозумілим текстом (чекати 150 с нема сенсу)
+    if (/pz\.gov\.pl\/ui\/au\/alert|nie może zostać dokończony/i.test(url + " " + txt)) throw new RobotError("pz.gov.pl: процес логіну перервано («Aktualny proces logowania nie może zostać dokończony») — повторіть подачу", "sign-pz-alert");
+    if (/podpis\.gov\.pl\/ui\/wp\/error/i.test(url)) throw new RobotError(`podpis.gov.pl повернув помилку (${url.replace(/.*code=(\d+).*/, "$1")}) — повторіть подачу`, "sign-podpis-error");
     if (/podpis\.gov\.pl/i.test(url)) {
-      // справжні кліки мишею по елементу з текстом (DOM-клік portal на praca.gov.pl ігнорував — «Dodaj załącznik»)
-      const realClick = async (re: RegExp) => {
-        const h = await cur.evaluateHandle((src: string) => {
-          const rx = new RegExp(src, "i"); const vis = (el: any) => el.getBoundingClientRect().height > 0;
-          const els = [...document.querySelectorAll("button, a, [role=button], [role=link], li, div")].filter((b: any) => vis(b) && rx.test((b.textContent || "").replace(/\s+/g, " ").trim()));
-          els.sort((a: any, b: any) => (a.textContent || "").length - (b.textContent || "").length);
-          const el: any = els[0]; if (!el) return null;
-          return el.closest("button, a, [role=button], [role=link]") ?? el;
-        }, re.source);
-        const el = h.asElement(); if (!el) return false;
-        await el.evaluate((e: any) => e.scrollIntoView({ block: "center" })); await sleep(150); await el.click(); return true;
-      };
-      if (await realClick(/^Zamknij$/)) await sleep(600);
-      const txt = await pageText(cur);
-      // «Podpisz dokument — wybierz metodę» (…/signature/select, жива подача #8): плитка «Profil zaufany»
+      if (await realClick(cur, /^Zamknij$/)) await sleep(600);
+      // «Podpisz dokument — wybierz metodę» (…/signature/select): плитка «Profil zaufany»
       if (/\/signature\/select/i.test(url) || /Wybierz jedną z poniższych metod/i.test(txt)) {
-        if (await realClick(/^Profil zaufany/)) { await step(ctx, cur, "signing", "podpis.gov.pl: метода «Profil zaufany»"); deadline = Date.now() + 150_000; await sleep(3000); await snap(ctx, cur, "sign-method-pz"); continue; }
+        if (await realClick(cur, /^Profil zaufany/)) { await step(ctx, cur, "signing", "podpis.gov.pl: метода «Profil zaufany»"); deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); continue; }
       }
       const sincePodpis = podpisClickedAt ? Date.now() - podpisClickedAt : Infinity;
-      // «Podpisz» на «Sprawdź dokumenty…» — один раз; повтор лише якщо за 60 с нічого не змінилось (макс. 3)
-      if (/Sprawdź dokumenty przed podpisaniem/i.test(txt) && sincePodpis > 60_000 && podpisClicks < 3 && await realClick(/^Podpisz$/)) {
+      if (/Sprawdź dokumenty przed podpisaniem/i.test(txt) && sincePodpis > 60_000 && podpisClicks < 3 && await realClick(cur, /^Podpisz$/)) {
         podpisClickedAt = Date.now(); podpisClicks++;
-        await sleep(1500); await snap(ctx, cur, `sign-podpis-clicked-${podpisClicks}`); await step(ctx, cur, "signing", "podpis.gov.pl: «Podpisz» → чекаю вибір методи");
-        deadline = Date.now() + 150_000;
+        await step(ctx, cur, "signing", "podpis.gov.pl: «Podpisz» → чекаю вибір методи"); deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); continue;
       }
-      // діагностика кожні 10 с: url усіх вкладок + початок тексту; помилка на сторінці → знімок
-      if (Date.now() - lastDiag > 10_000) {
-        lastDiag = Date.now();
-        logger.info({ id: ctx.submissionId, pages: livePages().map(p => p.url()), text: txt.slice(0, 240) }, "praca.gov sign: чекаю на podpis.gov.pl");
-        if (/błąd|nie udało|wystąpił problem|spróbuj ponownie/i.test(txt)) await snap(ctx, cur, "sign-podpis-error");
-      }
-      await sleep(2500); continue;
+      // підписано / невідомий екран: кнопка «вперед» (повернення до e-usługi тощо)
+      if (!/Sprawdź dokumenty przed podpisaniem/i.test(txt)) for (const re of FORWARD) if (await realClick(cur, re)) { logger.info({ id: ctx.submissionId, re: re.source }, "praca.gov sign: podpis.gov.pl — кнопка вперед"); deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); break; }
+      await sleep(2000); continue;
     }
     if (/pz\.gov\.pl|login\.gov\.pl/i.test(url)) {
-      if (/login\.gov\.pl/i.test(url)) { if (await clickByText(cur, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a", timeoutMs: 3000 })) deadline = Date.now() + 150_000; await sleep(3000); continue; }
-      if (await cur.$("input#password")) {
-        await step(ctx, cur, "signing", "pz.gov.pl: повторний вхід для підпису");
+      if (/login\.gov\.pl/i.test(url)) { if (await clickByText(cur, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a", timeoutMs: 3000 })) { deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); } else await sleep(2000); continue; }
+      // логін — ОДИН раз (повторний submit ламає процес WK: «login-used-process», жива подача #9), далі чекаємо SMS як у перевіреному вході
+      const pwVisible = await cur.$eval("input#password, input[type=password]", (el: any) => el.getBoundingClientRect().height > 0).catch(() => false);
+      if (pwVisible && Date.now() - loginSubmittedAt > 120_000) {
+        await step(ctx, cur, "signing", "pz.gov.pl: вхід для підпису");
         const cred = pzCredentials(ctx.account);
-        await typeInto(cur, "input#username", cred.login); await typeInto(cur, "input#password", cred.password);
+        await typeInto(cur, "input#username", cred.login); await typeInto(cur, "input#password, input[type=password]", cred.password);
         if (!(await clickByText(cur, /^Zaloguj( się)?$/i, { tags: "button[type=submit], button" }))) await cur.keyboard.press("Enter");
-        deadline = Date.now() + 150_000; await sleep(3000); continue;
+        loginSubmittedAt = Date.now(); deadline = Date.now() + 150_000;
+        await sleep(2500);
       }
-      const codeSel = await findCodeInput(cur, 3000);
+      const codeSel = await findCodeInput(cur, loginSubmittedAt && Date.now() - loginSubmittedAt < 60_000 ? 25_000 : 3000);
       if (codeSel) {
         await snap(ctx, cur, "sign-code-page");
         const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
@@ -689,20 +694,23 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
         await typeInto(cur, codeSel, code);
         if (!(await clickByText(cur, /^(Potwierdź|Podpisz|Zaloguj( się)?|Dalej|Autoryzuj)/i, { tags: ".cdk-overlay-container button, button[type=submit], button" }))) await cur.keyboard.press("Enter");
         await sleep(4000); await snap(ctx, cur, "sign-after-code");
-        deadline = Date.now() + 150_000;
+        deadline = Date.now() + 150_000; loginSubmittedAt = 0;
         const t2 = await pageText(cur);
         if (/pz\.gov\.pl/i.test(cur.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
         continue;
       }
-      // сторінка підпису без поля коду: кнопка «Podpisz podpisem zaufanym» / «Podpisz»
-      if (await clickByText(cur, /Podpisz podpisem zaufanym|^Podpisz$|Podpisz dokument|Podpisz i wyślij/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, cur, "sign-pz-clicked"); deadline = Date.now() + 150_000; await sleep(3000); continue; }
-      if (await clickByText(cur, /^(Dalej|Kontynuuj|Potwierdź)$/i, { tags: "button, a", timeoutMs: 1500 })) deadline = Date.now() + 150_000;
-      await sleep(2000); continue;
+      if (pwVisible) { await sleep(2000); continue; } // форма логіну ще на екрані, submit уже був — чекаємо
+      // сторінка підпису / невідомий екран pz.gov.pl: перша кнопка «вперед»
+      let moved = false;
+      for (const re of FORWARD) if (await realClick(cur, re)) { logger.info({ id: ctx.submissionId, re: re.source }, "praca.gov sign: pz.gov.pl — кнопка вперед"); deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); moved = true; break; }
+      if (!moved) await sleep(2000);
+      continue;
     }
     await sleep(1500);
   }
   } finally { browser.off("targetcreated", onTarget); }
   { const last = [...livePages()].reverse().find(p => /pz\.gov\.pl|login\.gov\.pl|podpis\.gov\.pl/i.test(p.url())) ?? page; await snap(ctx, last, signedBack ? "sign-summary" : "sign-timeout"); }
+  if (!signedBack) { try { const dir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId)); let k = 0; for (const p of livePages()) { k++; fs.writeFileSync(path.join(dir, `sign-timeout-${k}.html`), `<!-- ${p.url()} -->\n` + (await p.content().catch(() => ""))); } } catch { /* діагностика */ } }
   if (!signedBack) throw new RobotError(`Підпис не завершився: ${[...livePages()].map(p => p.url()).join(" | ")}`, "sign-return");
   for (const p of extra) if (!p.isClosed() && p !== summaryPage) await p.close().catch(() => {});
   await summaryPage.bringToFront().catch(() => {});
