@@ -642,6 +642,7 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
   const FORWARD: RegExp[] = [/^Podpisz podpisem zaufanym/, /^Podpisz( dokument)?$/, /^Potwierdź/, /^Autoryzuj/, /^Zatwierdź/, /^Dalej$/, /^Kontynuuj/, /^Przejdź/, /^(Wróć|Powrót) do (e-)?(usługi|serwisu)/, /^Zakończ/];
   let loginSubmittedAt = 0, lastUrl = "", urlIdx = 0;
   while (Date.now() < deadline && Date.now() < hardDeadline) {
+   try {
     // підсумок може зʼявитись у будь-якій вкладці
     let found = false;
     for (const p of livePages()) { const u = p.url(); if (/praca\.gov\.pl/i.test(u) && isSummaryOk(await pageText(p))) { summaryPage = p; found = true; break; } }
@@ -707,6 +708,11 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
       continue;
     }
     await sleep(1500);
+   } catch (e: any) {
+    // виклик у момент навігації (жива подача #10: /signature/select/pz-auth → pz.gov.pl) — не помилка, просто чекаємо
+    if (/Execution context was destroyed|Target closed|detached|Session closed|Cannot find context|Navigating frame|frame got detached|Attempted to use detached/i.test(String(e?.message ?? e))) { await sleep(1000); continue; }
+    throw e;
+   }
   }
   } finally { browser.off("targetcreated", onTarget); }
   { const last = [...livePages()].reverse().find(p => /pz\.gov\.pl|login\.gov\.pl|podpis\.gov\.pl/i.test(p.url())) ?? page; await snap(ctx, last, signedBack ? "sign-summary" : "sign-timeout"); }
