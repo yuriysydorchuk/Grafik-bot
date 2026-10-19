@@ -277,10 +277,11 @@ function CandidateDetail({ id, funnel, factories, workers, staff, meId, onClose,
             </div>
 
             {/* Перевести у працівники — для БУДЬ-ЯКОЇ воронки (раніше лише реферальна: кандидата
-                з «Працюють» не було як запросити в бот — запит офісу 09.10.2026); бонус — лише реферальна */}
-            {(!c.workerId || isReferral) && (
+                з «Працюють» не було як запросити в бот — запит офісу 09.10.2026); бонус — лише реферальна.
+                Картка, привʼязана до ЗВІЛЬНЕНОГО профілю, теж має кнопку — сервер його повертає. */}
+            {(!c.workerId || !c.workerActive || isReferral) && (
               <div className="flex gap-2">
-                {!c.workerId
+                {!c.workerId || !c.workerActive
                   ? <Button variant="success" className="flex-1" onClick={() => onConvert(c)}><UserCheck className="h-4 w-4" /> {t("У працівники")}</Button>
                   : isReferral && c.referrerName && !c.bonusPaid
                     ? <Button className="flex-1" onClick={() => onBonus(c)}><Gift className="h-4 w-4" /> {t("Виписати бонус")}</Button>
@@ -421,33 +422,84 @@ function CandidateModal({ candidate, funnel, factories, workers, staff, onClose,
   );
 }
 
+type FormerWorker = { id: number; fullName: string; workerCode: string | null; firedAt: string | null; factoryName: string | null; by: "phone" | "name" };
+
 function ConvertModal({ candidate, factories, isReferral, onClose, onDone }: { candidate: Candidate; factories: Factory[]; isReferral: boolean; onClose: () => void; onDone: () => void }) {
   const t = useT();
   const [factoryId, setFactoryId] = useState(candidate.factoryId ? String(candidate.factoryId) : "");
+  // Схожий звільнений профіль (409 formerWorker): офіс вирішує — повернути його чи це інша людина
+  const [former, setFormer] = useState<FormerWorker | null>(null);
+  // Telegram кандидата невідомий — лінк треба ПЕРЕДАТИ вручну; показуємо його в модалці,
+  // а не лише тостом (12.10.2026 тост «лінк скопійовано» ніхто не помітив — «нічого не відбувається»)
+  const [handoffLink, setHandoffLink] = useState<string | null>(null);
+  const linkedFired = !!candidate.workerId && !candidate.workerActive;
   // Живий онбординг: якщо цей Telegram кандидата ще не належить активному
   // працівнику — сервер НЕ створює профіль одразу, а шле лінк на скан
   // паспорта+анкету (worker/stage прив'яжуться лише після сканування).
-  // Якщо ж Telegram уже відомий системі (повторний реферал) — реактивує
-  // існуючий профіль миттєво, без скану.
+  // Якщо ж людина вже є в системі (її Telegram, картка привʼязана до звільненого
+  // профілю або офіс підтвердив тезку/телефон) — профіль повертається миттєво, без скану.
   const convert = useMutation({
-    mutationFn: () => post<{ notified: boolean; link: string | null }>(`/candidates/${candidate.id}/convert`, { factoryId: factoryId ? Number(factoryId) : null }),
+    mutationFn: (extra: { restoreWorkerId?: number; newPerson?: boolean } = {}) =>
+      post<{ notified: boolean; link: string | null; restoredWorkerId?: number | null; hasTelegram?: boolean }>(`/candidates/${candidate.id}/convert`, { factoryId: factoryId ? Number(factoryId) : null, ...extra }),
     onSuccess: (r) => {
       if (!r.link) {
         toast.success(t("{name} — тепер активний працівник", { name: candidate.fullName }));
+        if (r.restoredWorkerId && !r.hasTelegram) toast.info(t("Telegram не привʼязаний — запросіть у бот з профілю працівника"));
       } else if (r.notified) {
         toast.success(t("Запрошення на скан паспорта+анкету надіслано {name} у Telegram", { name: candidate.fullName }));
       } else {
         navigator.clipboard?.writeText(r.link).catch(() => {});
-        toast.success(t("Запрошення створено — Telegram не надіслано, лінк скопійовано"));
+        setHandoffLink(r.link);
+        return;
       }
       onDone();
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any) => {
+      if (e?.status === 409 && e?.data?.error === "formerWorker") { setFormer(e.data.worker); return; }
+      if (e?.status === 409 && e?.data?.error === "blacklisted") {
+        const w = e.data.worker;
+        toast.error(`${t("Людина в чорному списку")}: ${w.fullName}${w.reason ? ` — ${w.reason}` : ""}`);
+        return;
+      }
+      toast.error(e.message);
+    },
   });
+  if (handoffLink) return (
+    <Modal open onClose={onDone} title={t("Передайте лінк кандидату")}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">{t("Telegram кандидата невідомий, тож нічого не надіслано автоматично. Надішліть цей лінк")} <b>{candidate.fullName}</b> {t("(SMS, WhatsApp) — за ним кандидат відсканує паспорт і заповнить анкету. Лінк діє 7 днів; профіль працівника зʼявиться після анкети.")}</p>
+        <div className="flex gap-2">
+          <Input readOnly value={handoffLink} onFocus={e => e.currentTarget.select()} className="flex-1 font-mono text-xs" />
+          <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(handoffLink).then(() => toast.success(t("Скопійовано"))).catch(() => {}); }}>{t("Копіювати")}</Button>
+        </div>
+        <div className="flex justify-end pt-1"><Button onClick={onDone}>{t("Готово")}</Button></div>
+      </div>
+    </Modal>
+  );
+  if (former) return (
+    <Modal open onClose={onClose} title={t("Колишній працівник")}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">
+          {t("Схоже, це колишній працівник")}: <Link href={`/workers/${former.id}`} className="font-semibold underline">{former.fullName}</Link>
+          {former.workerCode ? ` · №${former.workerCode}` : ""}
+          {former.firedAt ? ` · ${t("звільнений")} ${new Date(former.firedAt).toLocaleDateString("uk-UA")}` : ""}
+          {former.factoryName ? ` · ${t("був на")} ${former.factoryName}` : ""}
+          {` (${former.by === "phone" ? t("той самий телефон") : t("збіг імені")})`}.
+        </p>
+        <p className="text-sm text-slate-600">{t("Повернути цей профіль? Історія й документи лишаються, скан паспорта не потрібен.")}</p>
+        <div className="flex flex-wrap justify-end gap-2 pt-1">
+          <Button variant="secondary" disabled={convert.isPending} onClick={() => convert.mutate({ newPerson: true })}>{t("Це інша людина — надіслати скан")}</Button>
+          <Button variant="success" loading={convert.isPending} onClick={() => convert.mutate({ restoreWorkerId: former.id })}>{t("Повернути профіль")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
   return (
     <Modal open onClose={onClose} title={t("Перевести в працівники")}>
       <div className="space-y-3">
-        <p className="text-sm text-slate-600">{t("Надіслати")} <b>{candidate.fullName}</b> {t("лінк на скан паспорта й анкету")}{candidate.telegramId ? t(" (у його Telegram)") : t(" (лінк для ручної передачі — Telegram кандидата невідомий)")}. {t("Профіль працівника створиться після сканування паспорта й анкети.")}{isReferral && candidate.referrerName ? ` ${t("Далі можна буде виписати бонус тому, хто запросив.")}` : ""}</p>
+        {linkedFired
+          ? <p className="text-sm text-slate-600">{t("Картку привʼязано до звільненого профілю")}{candidate.workerCode ? ` №${candidate.workerCode}` : ""}. {t("Повернути цей профіль? Історія й документи лишаються, скан паспорта не потрібен.")}</p>
+          : <p className="text-sm text-slate-600">{t("Надіслати")} <b>{candidate.fullName}</b> {t("лінк на скан паспорта й анкету")}{candidate.telegramId ? t(" (у його Telegram)") : t(" (лінк для ручної передачі — Telegram кандидата невідомий)")}. {t("Профіль працівника створиться після сканування паспорта й анкети.")}{isReferral && candidate.referrerName ? ` ${t("Далі можна буде виписати бонус тому, хто запросив.")}` : ""}</p>}
         <div><Label>{t("Фабрика")}</Label>
           <Select value={factoryId} onChange={e => setFactoryId(e.target.value)}>
             <option value="">{t("— без фабрики —")}</option>
@@ -456,7 +508,7 @@ function ConvertModal({ candidate, factories, isReferral, onClose, onDone }: { c
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button loading={convert.isPending} onClick={() => convert.mutate()}>{t("Перевести")}</Button>
+          <Button loading={convert.isPending} onClick={() => convert.mutate({})}>{linkedFired ? t("Повернути профіль") : t("Перевести")}</Button>
         </div>
       </div>
     </Modal>

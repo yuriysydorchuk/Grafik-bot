@@ -289,7 +289,9 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     const enteredManually = fields.filter(k => norm(draftJson.draft?.[k]) !== norm(typed[k]));
     // будь-яке РОЗПІЗНАНЕ поле змінене (вкл. дату видачі-пропозицію, країну, стать) → звірка
     const changedRecognized = fields.some(k => norm(draftJson.draft?.[k]) && norm(draftJson.draft?.[k]) !== norm(typed[k]));
-    const needsReview = (manualEntry || changedRecognized) && row.purpose !== "office";
+    // офісний лінк з картки кандидата заповнює сам кандидат (передали йому) — теж на звірку
+    const filledByOffice = row.purpose === "office" && !row.candidateId;
+    const needsReview = (manualEntry || changedRecognized) && !filledByOffice;
     const docType = await ensureDocumentType("passport");
     const tmpAbs = path.join(UPLOADS_ROOT, row.tempFilePath);
     const storedName = makeStoredName(row.tempFileName || "passport.jpg");
@@ -297,7 +299,7 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     await fs.promises.rename(tmpAbs, path.join(WORKER_DOCS_DIR, storedName));
     const [doc] = await db.insert(workerDocumentsTable).values({
       workerId: worker.id, docTypeId: docType.id, title: docType.name,
-      status: needsReview ? "pending" : "present", source: manualEntry || changedRecognized ? (row.purpose === "office" ? "office" : "worker_bot") : "ocr",
+      status: needsReview ? "pending" : "present", source: manualEntry || changedRecognized ? (filledByOffice ? "office" : "worker_bot") : "ocr",
       expiresAt: passportExpiresAt, number: passportNumber, // номер і строк — з MRZ або вписані (підтверджені людиною на кроці confirm)
       filePath: finalRel, fileName: row.tempFileName, fileMime: row.tempFileMime,
     }).returning();
@@ -508,8 +510,11 @@ const SELF_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // самореєстраці
 
 export async function createOfficeScanToken(adminId: number, candidateId?: number, factoryId?: number): Promise<string> {
   const token = randomInviteCode(24);
+  // Лінк з картки кандидата без Telegram офіс ПЕРЕДАЄ кандидату (SMS/WhatsApp) — 30 хв на це
+  // замало (інцидент Ndlovu 12.10.2026: лінк протух, «нічого не відбувалось»)
+  const ttl = candidateId != null ? SELF_TOKEN_TTL_MS : SCAN_TOKEN_TTL_MS;
   await db.insert(passportScanTokensTable).values({
-    token, purpose: "office", createdBy: adminId, candidateId: candidateId ?? null, factoryId: factoryId ?? null, expiresAt: new Date(Date.now() + SCAN_TOKEN_TTL_MS),
+    token, purpose: "office", createdBy: adminId, candidateId: candidateId ?? null, factoryId: factoryId ?? null, expiresAt: new Date(Date.now() + ttl),
   });
   return token;
 }

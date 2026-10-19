@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   app, hasTestDb, resetDb, seedAdmin, seedRole, closeDb, db,
   funnelsTable, candidatesTable, candidateActivityTable, workersTable, factoriesTable, passportScanTokensTable,
+  workerChangesTable, workerQuestionnairesTable,
 } from "../test/harness.ts";
 import { eq } from "drizzle-orm";
 import { ensureUploadDirs, PASSPORT_SCAN_TMP_DIR } from "../lib/uploads.ts";
@@ -101,6 +102,8 @@ test("convert (без telegramId) — шле office-скан-токен, НЕ с
   assert.equal(again.body.link, res.body.link, "той самий живий лінк, не другий токен");
   const liveTokens = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.candidateId, id));
   assert.equal(liveTokens.length, 1, "жодного дубль-токена");
+  assert.equal(liveTokens[0]!.factoryId, fac!.id, "фабрика з модалки — на лінку");
+  assert.ok(liveTokens[0]!.expiresAt.getTime() > Date.now() + 24 * 3600_000, "лінк для ручної передачі живе днями, не 30 хв");
 
   // Кандидат проходить сканування — симулюємо, як analyze() уже відпрацював.
   const token = res.body.link.split("/").pop();
@@ -117,6 +120,8 @@ test("convert (без telegramId) — шле office-скан-токен, НЕ с
   const [candidateAfter] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, id));
   assert.equal(candidateAfter!.workerId, confirm.body.worker.id, "кандидат прив'язаний до щойно створеного працівника");
   assert.equal(candidateAfter!.stage, "hired");
+  const [created] = await db.select().from(workersTable).where(eq(workersTable.id, confirm.body.worker.id));
+  assert.equal(created!.factoryId, fac!.id, "профіль отримує фабрику з картки");
 });
 
 // Telegram кандидата вже належить АКТИВНОМУ працівнику (повторний реферал) —
@@ -141,6 +146,74 @@ test("convert (telegramId уже належить активному праці�
 
   const again = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
   assert.equal(again.status, 400, "кандидат уже переведений — повторний convert блокується");
+});
+
+// Колишній працівник (інцидент Ndlovu 10.2026): картка без Telegram, профіль
+// звільнений — скан закінчувався заявкою на повернення в боті, картка висіла «переведений».
+test("convert (тезка/телефон звільненого) — 409 formerWorker; restoreWorkerId повертає профіль через журнал restored; newPerson — скан", opts, async () => {
+  const f = await mkFunnel();
+  const [fac] = await db.insert(factoriesTable).values({ name: "Fabryka Testowa" }).returning({ id: factoriesTable.id });
+  const [w] = await db.insert(workersTable).values({ fullName: "Moyo Tendai Rutendo", isActive: false, status: "fired", firedAt: new Date("2026-08-06T12:00:00") }).returning({ id: workersTable.id });
+  const id = await mkCandidate(f.id, { fullName: "Tendai Moyo" });
+
+  const ask = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id });
+  assert.equal(ask.status, 409, JSON.stringify(ask.body));
+  assert.equal(ask.body.error, "formerWorker");
+  assert.equal(ask.body.worker.id, w!.id);
+  assert.equal(ask.body.worker.by, "name");
+  assert.equal((await db.select().from(passportScanTokensTable)).length, 0, "до рішення офісу лінк скану не створюється");
+
+  const res = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id, restoreWorkerId: w!.id });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.link, null);
+  assert.equal(res.body.restoredWorkerId, w!.id);
+  const [restored] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(restored!.isActive, true);
+  assert.equal(restored!.factoryId, fac!.id);
+  const journal = await db.select().from(workerChangesTable).where(eq(workerChangesTable.workerId, w!.id));
+  assert.ok(journal.some(j => j.field === "restored"), "повернення — через restoreWorker (новий найм)");
+  const [c] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, id));
+  assert.equal(c!.workerId, w!.id);
+  assert.equal(c!.stage, "hired");
+  assert.equal((await db.select().from(workersTable)).length, 1, "дубль-профіль не створено");
+
+  // «Це інша людина» — звичайний скан
+  const id2 = await mkCandidate(f.id, { fullName: "Tendai Moyo", phone: "+48 600 100 200" });
+  await db.update(workersTable).set({ isActive: false, status: "fired" }).where(eq(workersTable.id, w!.id));
+  await db.insert(workerQuestionnairesTable).values({ workerId: w!.id, phone: "600100200" });
+  const byPhone = await request(app).post(`/api/candidates/${id2}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id });
+  assert.equal(byPhone.status, 409);
+  assert.equal(byPhone.body.worker.by, "phone");
+  const scan = await request(app).post(`/api/candidates/${id2}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id, newPerson: true });
+  assert.equal(scan.status, 200, JSON.stringify(scan.body));
+  assert.ok(scan.body.link, "інша людина — лінк на скан+анкету");
+
+  // той самий номер у АКТИВНОГО працівника — людина вже працює, повернення не пропонуємо
+  const [act] = await db.insert(workersTable).values({ fullName: "Banda Chipo", isActive: true, status: "active" }).returning({ id: workersTable.id });
+  await db.insert(workerQuestionnairesTable).values({ workerId: act!.id, phone: "600100200" });
+  const id3 = await mkCandidate(f.id, { fullName: "Chipo Banda", phone: "600 100 200" });
+  const noAsk = await request(app).post(`/api/candidates/${id3}/convert`).set("Cookie", owner).set(H).send({ factoryId: fac!.id });
+  assert.equal(noAsk.status, 200, JSON.stringify(noAsk.body));
+  assert.ok(noAsk.body.link, "активний власник номера — звичайний скан, без «повернути»");
+});
+
+test("convert (картку вже привʼязано до звільненого профілю) — повертає профіль, живий лінк скану анулюється", opts, async () => {
+  const f = await mkFunnel();
+  const [w] = await db.insert(workersTable).values({ fullName: "Moyo Tendai", isActive: false, status: "fired" }).returning({ id: workersTable.id });
+  const id = await mkCandidate(f.id, { fullName: "Tendai Moyo" });
+  await db.update(candidatesTable).set({ workerId: w!.id, stage: "hired" }).where(eq(candidatesTable.id, id));
+  await db.insert(passportScanTokensTable).values({ token: "live-token-test", purpose: "office", candidateId: id, expiresAt: new Date(Date.now() + 86400_000) });
+
+  const res = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.restoredWorkerId, w!.id);
+  const [restored] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(restored!.isActive, true);
+  const [tok] = await db.select().from(passportScanTokensTable).where(eq(passportScanTokensTable.candidateId, id));
+  assert.ok(tok!.expiresAt <= new Date(), "старий лінк скану більше не живий");
+
+  const again = await request(app).post(`/api/candidates/${id}/convert`).set("Cookie", owner).set(H).send({});
+  assert.equal(again.status, 400, "профіль активний — повторний convert блокується");
 });
 
 test("bonus: marking it paid flips the flag and logs a bonus activity", opts, async () => {

@@ -845,17 +845,20 @@ router.post("/workers/:id/restore", LIFECYCLE, async (req, res) => {
   const force = b.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers");
   const r = await restoreWorker({ workerId: id, factoryId: optId(b.factoryId), positionId: optId(b.positionId), adminId: (req as AuthedRequest).admin?.adminId ?? null, force });
   if (!r.ok) return fail(res, 400, r.error);
-  // Людина чекала відповіді на заявку з бота (клавіатуру тоді прибрали) — кажемо, що відновлено,
-  // і просимо /start, який віддасть меню (02.10.2026). Best-effort, без бота відповідь та сама.
-  if (r.clearedRehire && r.worker.telegramId) {
-    try {
-      const [{ bot }, { t, asLang }, { Markup }] = await Promise.all([import("../bot/instance"), import("../bot/i18n"), import("telegraf")]);
-      const [fac] = r.worker.factoryId != null ? await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, r.worker.factoryId)) : [undefined];
-      await bot.telegram.sendMessage(r.worker.telegramId, t(asLang(r.worker.language), "rehire.restoredWeb", { factory: (fac?.name ?? "—").replace(/[*_`\[]/g, "") }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
-    } catch (e) { logger.warn({ err: String(e), workerId: id }, "restore notify failed"); }
-  }
+  if (r.clearedRehire) await notifyRestoredInBot(r.worker);
   ok(res, stripWorkerEcho(r.worker, req));
 });
+
+// Людина чекала відповіді на заявку з бота (клавіатуру тоді прибрали) — кажемо, що відновлено,
+// і просимо /start, який віддасть меню (02.10.2026). Best-effort, без бота відповідь та сама.
+async function notifyRestoredInBot(w: typeof workersTable.$inferSelect) {
+  if (!w.telegramId) return;
+  try {
+    const [{ bot }, { t, asLang }, { Markup }] = await Promise.all([import("../bot/instance"), import("../bot/i18n"), import("telegraf")]);
+    const [fac] = w.factoryId != null ? await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, w.factoryId)) : [undefined];
+    await bot.telegram.sendMessage(w.telegramId, t(asLang(w.language), "rehire.restoredWeb", { factory: (fac?.name ?? "—").replace(/[*_`\[]/g, "") }), { parse_mode: "Markdown", ...Markup.removeKeyboard() });
+  } catch (e) { logger.warn({ err: String(e), workerId: w.id }, "restore notify failed"); }
+}
 
 // ─── Чорний список (рішення власника 21.09.2026): «не наймати» з причиною ────────────────
 // Прапорець не звільняє і нічого не ховає; звільнений з прапорцем показується лише у вкладці
@@ -2045,22 +2048,49 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
   const id = Number(req.params.id);
   const c = (await db.select().from(candidatesTable).where(eq(candidatesTable.id, id)))[0];
   if (!c) return fail(res, 404, "Не знайдено");
-  if (c.workerId) return fail(res, 400, "Кандидат вже переведений у працівники");
   const factoryId = req.body?.factoryId != null ? Number(req.body.factoryId) : c.factoryId;
+  const workerById = async (wid: number) => (await db.select().from(workersTable).where(eq(workersTable.id, wid)))[0];
+  // Картку вже привʼязано до профілю: активний — готово; звільнений — повертаємо його
+  // (скан колишньої працівниці з «Це я?» привʼязував картку до старого профілю, а сама
+  // заявка на повернення в боті могла загубитись — картка висіла «переведений»).
+  const linked = c.workerId ? await workerById(c.workerId) : undefined;
+  if (linked?.isActive) return fail(res, 400, "Кандидат вже переведений у працівники");
 
-  // Telegram кандидата вже належить ІСНУЮЧОМУ активному працівнику — це не
-  // живий онбординг (паспорт/анкета вже мали пройти раніше), просто
-  // реактивуємо профіль одразу, без скану.
-  const existingWorker = c.telegramId
-    ? (await db.select().from(workersTable).where(eq(workersTable.telegramId, c.telegramId)))[0]
-    : undefined;
+  // Профіль людини вже є в системі — це не живий онбординг (паспорт/анкета вже мали
+  // пройти раніше), повертаємо/привʼязуємо його одразу, без скану: (1) привʼязаний
+  // звільнений, (2) Telegram кандидата, (3) офіс підтвердив «це той самий» (restoreWorkerId)
+  // після 409 formerWorker — тезка або той самий телефон серед звільнених.
+  const restoreWorkerId = Number.isInteger(req.body?.restoreWorkerId) ? Number(req.body.restoreWorkerId) : null;
+  const existingWorker = linked
+    ?? (c.telegramId ? (await db.select().from(workersTable).where(eq(workersTable.telegramId, c.telegramId)))[0] : undefined)
+    ?? (restoreWorkerId != null ? await workerById(restoreWorkerId) : undefined);
+  if (restoreWorkerId != null && !existingWorker) return fail(res, 404, "Профіль не знайдено");
+  if (!existingWorker && req.body?.newPerson !== true) {
+    const { findFormerWorker } = await import("../services/workerRehire");
+    const former = await findFormerWorker({ fullName: c.fullName, phone: c.phone });
+    if (former) return res.status(409).json({ error: "formerWorker", worker: former });
+  }
 
   if (existingWorker) {
     // чорний список: конвертація кандидата не має обходити force/deleteWorkers з restoreWorker
-    if (existingWorker.doNotHire && !(req.body?.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers")))
+    const force = req.body?.force === true && hasCap((req as AuthedRequest).admin?.role, (req as AuthedRequest).admin?.caps, "deleteWorkers");
+    if (existingWorker.doNotHire && !force)
       return res.status(409).json({ error: "blacklisted", worker: { id: existingWorker.id, fullName: existingWorker.fullName, reason: existingWorker.doNotHireReason } });
-    await db.update(workersTable).set({ isActive: true, status: "active", factoryId: factoryId ?? existingWorker.factoryId, ...(existingWorker.doNotHire ? { doNotHire: false, doNotHireReason: null, doNotHireAt: null, doNotHireBy: null } : {}) }).where(eq(workersTable.id, existingWorker.id));
-    if (existingWorker.doNotHire) await db.insert(workerChangesTable).values({ workerId: existingWorker.id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId: actingAdminId(req) });
+    if (!existingWorker.isActive) {
+      // повернення — лише через сервіс: журнал `restored` (новий найм: first_work_date, powiadomienie),
+      // фабрика/Telegram з журналом, зняття завислої заявки rehire:* у боті
+      const { restoreWorker } = await import("../services/workerRehire");
+      const r = await restoreWorker({ workerId: existingWorker.id, factoryId: factoryId ?? undefined, telegramId: c.telegramId, adminId: actingAdminId(req), force });
+      if (!r.ok) return fail(res, 400, r.error);
+      if (r.clearedRehire) await notifyRestoredInBot(r.worker);
+      // старий ще не пройдений лінк скану цієї картки більше не потрібен: пройдений пізніше,
+      // він бачив би активного тезку і створив би дубль-профіль
+      await db.update(passportScanTokensTable).set({ expiresAt: new Date() })
+        .where(and(eq(passportScanTokensTable.candidateId, id), isNull(passportScanTokensTable.usedAt)));
+    } else {
+      await db.update(workersTable).set({ factoryId: factoryId ?? existingWorker.factoryId, ...(existingWorker.doNotHire ? { doNotHire: false, doNotHireReason: null, doNotHireAt: null, doNotHireBy: null } : {}) }).where(eq(workersTable.id, existingWorker.id));
+      if (existingWorker.doNotHire) await db.insert(workerChangesTable).values({ workerId: existingWorker.id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }), adminId: actingAdminId(req) });
+    }
     const [updated] = await db.update(candidatesTable)
       .set({ workerId: existingWorker.id, stage: "hired", factoryId: factoryId ?? c.factoryId })
       .where(eq(candidatesTable.id, id)).returning();
@@ -2075,9 +2105,11 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
       }
     } catch (e) { logger.error({ err: e }, "notify referrer (convert) failed"); }
 
-    await logActivity(id, actingAdminId(req), "converted", "Переведено у працівники (профіль уже існував)");
+    await logActivity(id, actingAdminId(req), "converted", existingWorker.isActive
+      ? "Переведено у працівники (профіль уже існував)"
+      : `Повернено звільнений профіль${existingWorker.workerCode ? ` №${existingWorker.workerCode}` : ""}`);
     try { const { markCandidateSmsEvent } = await import("../services/sms/campaigns"); await markCandidateSmsEvent(id, "hired"); } catch { /* best-effort */ }
-    return ok(res, { notified: true, link: null, worker: updated });
+    return ok(res, { notified: true, link: null, worker: updated, restoredWorkerId: existingWorker.isActive ? null : existingWorker.id, hasTelegram: !!(existingWorker.telegramId || c.telegramId) });
   }
 
   // Живий новий кандидат — НЕ створюємо працівника напряму: шлемо лінк на
@@ -2103,7 +2135,7 @@ router.post("/candidates/:id/convert", RW, async (req, res) => {
     const { sendDocsInviteLink } = await import("../bot/notify");
     notified = await sendDocsInviteLink(c.telegramId, "uk", link);
   } else {
-    const token = await createOfficeScanToken(adminId, id);
+    const token = await createOfficeScanToken(adminId, id, factoryId); // фабрика з модалки → профіль після скану
     link = passportScanLink(token);
   }
 

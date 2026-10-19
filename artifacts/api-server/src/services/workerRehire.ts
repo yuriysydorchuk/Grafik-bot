@@ -4,10 +4,11 @@
 // рапорти) — новий НЕ створюється; фабрика/посада/Telegram оновлюються за
 // потреби, кожна зміна йде в журнал worker_changes (старий Telegram — «архів»
 // саме там, окремої колонки немає).
-import { db, workersTable, workerChangesTable } from "@workspace/db";
+import { db, workersTable, workerChangesTable, workerQuestionnairesTable, candidatesTable, factoriesTable } from "@workspace/db";
 import type { Worker } from "@workspace/db";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNotNull, ne } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { findLikelyDuplicate } from "../bot/workerMatch";
 
 const warsawToday = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
 
@@ -82,4 +83,38 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
   import("./documentEvents").then(m => m.workerLegalityChanged(w.id)).catch(() => {});
   logger.info({ workerId: w.id, factoryChanged, positionChanged, tgChanged, clearedRehire, adminId: opts.adminId }, "worker restored");
   return { ok: true, worker: restored, clearedRehire };
+}
+
+export type FormerWorkerHit = { id: number; fullName: string; workerCode: string | null; firedAt: Date | null; factoryName: string | null; by: "phone" | "name" };
+
+// Звільнений профіль тієї самої людини для картки кандидата (рекрутинг «У працівники»):
+// той самий телефон (анкета або картка, з якої людина колись прийшла) або впевнений
+// тезка — той самий матчер, що «Це я?» на скані паспорта: шукаємо серед УСІХ профілів,
+// і якщо найкращий збіг активний — це не повернення (інцидент Ndlovu 10.2026:
+// скан для колишньої працівниці закінчувався заявкою на повернення в боті, картка — «переведений»).
+export async function findFormerWorker(input: { fullName: string; phone?: string | null }): Promise<FormerWorkerHit | null> {
+  const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive, firedAt: workersTable.firedAt, factoryId: workersTable.factoryId })
+    .from(workersTable);
+  const inactive = all.filter(w => !w.isActive);
+  if (!inactive.length) return null;
+  let hit: (typeof all)[number] | undefined;
+  let by: FormerWorkerHit["by"] = "phone";
+  const digits = (s: string | null | undefined) => (s ?? "").replace(/\D/g, "").slice(-9);
+  const phone = digits(input.phone);
+  if (phone.length === 9) {
+    const q = await db.select({ workerId: workerQuestionnairesTable.workerId, phone: workerQuestionnairesTable.phone }).from(workerQuestionnairesTable);
+    const c = await db.select({ workerId: candidatesTable.workerId, phone: candidatesTable.phone }).from(candidatesTable).where(isNotNull(candidatesTable.workerId));
+    const ids = new Set([...q, ...c].filter(x => x.workerId != null && digits(x.phone) === phone).map(x => x.workerId!));
+    const matched = all.filter(w => ids.has(w.id));
+    // той самий номер у АКТИВНОГО — людина вже працює, це не повернення (ревʼю codex 19.10.2026)
+    if (matched.some(w => w.isActive)) return null;
+    hit = matched[0];
+  }
+  if (!hit && input.fullName.trim()) {
+    const dup = findLikelyDuplicate(input.fullName, all);
+    if (dup && !dup.isActive) { hit = dup; by = "name"; }
+  }
+  if (!hit) return null;
+  const [fac] = hit.factoryId != null ? await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, hit.factoryId)) : [];
+  return { id: hit.id, fullName: hit.fullName, workerCode: hit.workerCode, firedAt: hit.firedAt, factoryName: fac?.name ?? null, by };
 }
