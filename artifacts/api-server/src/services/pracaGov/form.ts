@@ -8,6 +8,9 @@ import { pzCredentials } from "./accounts";
 import { waitForCode } from "./codes";
 import type { UaFormPayload } from "./payload";
 import { logger } from "../../lib/logger";
+import fs from "node:fs";
+import path from "node:path";
+import { UA_SUBMISSIONS_DIR } from "./submissions";
 
 declare const document: any;
 declare const CSS: any;
@@ -370,6 +373,7 @@ export async function fillForm(ctx: RobotCtx, page: Page, p: UaFormPayload): Pro
   const S4 = "4. Informacja o liczbie";
   await fillText(ctx, page, "Liczba wszystkich osób wykonujących pracę na podstawie umowy o pracę", p.liczby.umowaOPrace, { section: S4, required: true });
   await fillText(ctx, page, "Liczba wszystkich osób wykonujących pracę na podstawie umów cywilnoprawnych", p.liczby.cywilne, { section: S4, required: true });
+  await addAttachments(ctx, page, p);
   if (p.podpis.funkcja) await fillText(ctx, page, "Pełniona funkcja", p.podpis.funkcja, { section: "Osoba podpisująca" });
   // pełnomocnik: галочка відкриває обовʼязковий załącznik «Pełnomocnictwo (…)» — вантажимо PDF з акаунта
   await setCheckbox(page, /pełnomocnik/i, !!(p.podpis.pelnomocnik && p.podpis.poaAbsPath));
@@ -387,6 +391,70 @@ export async function fillForm(ctx: RobotCtx, page: Page, p: UaFormPayload): Pro
 
   const errs = await formErrors(page);
   if (errs.length) { await snap(ctx, page, "form-errors"); throw new RobotError(`Форма показує помилки: ${errs.join(" | ")}`, "form-validate"); }
+}
+
+// ── Załączniki (best-effort, 19.10.2026): «Dodaj załącznik» → назва + файл, як у ручних подачах (Paszport + 88Z ×2).
+// Розмітку секції наживо не знято, тож кожен załącznik під try: не прикріпився — знімок, warn у лог, порожній рядок
+// прибираємо («Usuń»), форма валідна й без залучників; людина бачить результат у Wydruku перед підписом.
+async function addAttachments(ctx: RobotCtx, page: Page, p: UaFormPayload): Promise<void> {
+  if (!p.zalaczniki?.length) return;
+  // секція має бути впізнана по заголовку — інакше нічого не чіпаємо (запис у чужий input зіпсував би форму)
+  const hasSection = await page.evaluate(() => [...document.querySelectorAll("h1,h2,h3,h4")].some((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki")));
+  if (!hasSection) { logger.warn({ id: ctx.submissionId }, "praca.gov: секцію «Załączniki» не знайдено — без залучників"); await step(ctx, page, "running", "секцію Załączniki не знайдено — подача без залучників, додайте руками за потреби"); return; }
+  // останній елемент у секції; file-input не фільтруємо по видимості (він схований за стилізованою кнопкою)
+  const lastInSection = (sel: string, anyVis = false) => page.evaluate((s: string, av: boolean) => {
+    const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
+    const vis = (el: any) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => norm(x.textContent).startsWith("załączniki"));
+    if (!h?.parentElement) return null;
+    const els = [...h.parentElement.querySelectorAll(s)].filter((el: any) => av || vis(el));
+    const el: any = els[els.length - 1]; if (!el) return null;
+    if (!el.id) el.id = "__zal_" + Math.random().toString(36).slice(2, 8);
+    return "#" + CSS.escape(el.id);
+  }, sel, anyVis);
+  const fileInputsInSection = () => page.evaluate(() => {
+    const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki"));
+    return h?.parentElement ? h.parentElement.querySelectorAll("input[type=file]").length : 0;
+  });
+  // файл вантажимо під ОРИГІНАЛЬНОЮ назвою (portal показує basename шляху; на диску лежить timestamp-random.pdf)
+  const tmpDir = path.join(UA_SUBMISSIONS_DIR, String(ctx.submissionId), "zalaczniki");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  for (const [i, z] of p.zalaczniki.entries()) {
+    const tag = `zal-${i + 1}`;
+    const before = await fileInputsInSection();
+    let rowAdded = false;
+    try {
+      const safeName = z.fileName.replace(/[\/\\:*?"<>|]/g, "_");
+      const tmp = path.join(tmpDir, safeName); fs.copyFileSync(z.absPath, tmp);
+      if (!(await clickByText(page, /^Dodaj załącznik/i, { timeoutMs: 5000 }))) throw new Error("нема кнопки «Dodaj załącznik»");
+      await sleep(800);
+      rowAdded = (await fileInputsInSection()) > before;
+      const nameSel = await lastInSection("input[type=text]:not([disabled]), textarea:not([disabled])");
+      if (nameSel) { await typeInto(page, nameSel, z.label); await page.keyboard.press("Tab"); await sleep(150); }
+      const fileSel = await lastInSection("input[type=file]", true);
+      const fileInput = fileSel ? await page.$(fileSel) : null;
+      if (!fileInput) throw new Error(`нема поля файлу в секції (file-полів: ${before})`);
+      await fileInput.uploadFile(tmp);
+      const attached = await waitFor(page, async () => (await pageText(page)).includes(safeName), 15_000);
+      if (!attached) throw new Error(`файл ${safeName} не зʼявився на сторінці`);
+      await step(ctx, page, "running", `załącznik ${i + 1}/${p.zalaczniki.length}: ${z.label}`);
+    } catch (e) {
+      await snap(ctx, page, `${tag}-fail`);
+      logger.warn({ id: ctx.submissionId, err: String(e), label: z.label }, "praca.gov: załącznik не прикріплено");
+      // порожній рядок załącznika валить валідацію («Nie dodano plików dla załącznika») — прибираємо ЛИШЕ щойно доданий
+      if (rowAdded) {
+        const rm = await page.evaluate(() => {
+          const h = [...document.querySelectorAll("h1,h2,h3,h4")].find((x: any) => (x.textContent || "").replace(/\s+/g, " ").trim().toLowerCase().startsWith("załączniki"));
+          const btns = h?.parentElement ? [...h.parentElement.querySelectorAll("button, [role=button]")].filter((b: any) => /usuń/i.test(b.textContent || "")) : [];
+          const b: any = btns[btns.length - 1]; if (!b) return false; b.click(); return true;
+        });
+        await sleep(500);
+        if (!rm) await step(ctx, page, "running", `порожній рядок załącznika «${z.label}» не прибрався — Wydruk може не пройти, перевірте`);
+      }
+      await step(ctx, page, "running", `załącznik «${z.label}» не прикріпився — перевірте у Wydruku, за потреби додайте руками`);
+    }
+  }
+  await snap(ctx, page, "form-zalaczniki");
 }
 
 // «Wydruk» порталу — офіційний друк заповненої форми (PDF): саме його людина бачить перед підписом.

@@ -1,7 +1,10 @@
 // Дані для форми PSZ-PPWPU (етап 2 робота praca.gov.pl, 13.10.2026): збираються з профілю,
 // анкети, фабрики, фірми й посади у структуру під поля форми (docs/PRACA_GOV_PPWPU.md) і
 // перевіряються ДО запуску браузера — список прогалин повертається людині одразу.
-import { db, workersTable, workerQuestionnairesTable, factoriesTable, companiesTable, positionsTable, contractsTable, factoryPositionsTable, workerFactoriesTable, workerDocumentsTable, documentTypesTable } from "@workspace/db";
+import { db, workersTable, workerQuestionnairesTable, factoriesTable, companiesTable, positionsTable, contractsTable, factoryPositionsTable, workerFactoriesTable, workerDocumentsTable, documentTypesTable, pzCompanyAttachmentsTable } from "@workspace/db";
+import fs from "node:fs";
+import path from "node:path";
+import { UPLOADS_ROOT } from "../../lib/uploads";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { countryNamePl } from "../../lib/countries";
 import { dateStr } from "../taskUtils";
@@ -27,6 +30,8 @@ export interface UaFormPayload {
   liczby: { umowaOPrace: string; cywilne: string };
   warnings: string[]; // не блокують подачу, показуються людині (напр. прострочення 7-денного вікна)
   podpis: { funkcja: string; pelnomocnik: boolean; poaAbsPath?: string | null };
+  // залучники (не редагуються): oświadczenia «88Z» фірми (pz_company_attachments) + скан паспорта з профілю — як у ручних подачах Влади
+  zalaczniki: { label: string; fileName: string; absPath: string }[];
 }
 
 export const RODZAJ_UMOWY_ZLECENIE = "Umowa zlecenie / Umowa o świadczenie usług";
@@ -134,6 +139,22 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   if (startFakt && startFakt < windowStart) { start = windowStart; warnings.push(`Прострочено: фактичний перший робочий день ${startFakt}, портал приймає лише дати з ${windowStart} по ${today} — у форму підставлено ${windowStart}.`); }
   else if (startFakt && startFakt > today) warnings.push(`Дата початку ${startFakt} у майбутньому — portal такого не приймає; виправте дату в анкеті (підміна на «сьогодні» була б неправдивими відомостями).`);
 
+  // залучники: oświadczenia фірми (88Z) + скан паспорта (present, з файлом PDF/JPG/PNG); файл без диску — пропускаємо
+  const zalaczniki: UaFormPayload["zalaczniki"] = [];
+  const existsAbs = (rel: string) => { const abs = path.resolve(UPLOADS_ROOT, rel); return abs.startsWith(UPLOADS_ROOT + path.sep) && fs.existsSync(abs) ? abs : null; };
+  if (cid) for (const a of await db.select().from(pzCompanyAttachmentsTable).where(eq(pzCompanyAttachmentsTable.companyId, cid)).orderBy(pzCompanyAttachmentsTable.id)) {
+    const abs = existsAbs(a.filePath); if (abs) zalaczniki.push({ label: a.label, fileName: a.fileName, absPath: abs });
+  }
+  {
+    const [pass] = await db.select({ filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, mime: workerDocumentsTable.fileMime }).from(workerDocumentsTable)
+      .innerJoin(documentTypesTable, eq(documentTypesTable.id, workerDocumentsTable.docTypeId))
+      .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.status, "present"), eq(documentTypesTable.code, "passport"),
+        sql`${workerDocumentsTable.filePath} is not null`, sql`(${workerDocumentsTable.fileMime} is null or ${workerDocumentsTable.fileMime} in ('application/pdf','image/jpeg','image/png'))`))
+      .orderBy(desc(workerDocumentsTable.id)).limit(1); // найновіший паспорт, у якого Є придатний скан
+    const abs = pass?.filePath ? existsAbs(pass.filePath) : null;
+    if (abs) zalaczniki.unshift({ label: "Paszport", fileName: pass!.fileName ?? path.basename(abs), absPath: abs });
+  }
+
   const payload: UaFormPayload = {
     workerId, workerName: w.fullName, companyId: cid, companyName: c?.name ?? "", factoryId: f?.id ?? null,
     contextPattern: contextPatternFor(c?.legalName ?? c?.name),
@@ -165,6 +186,7 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
     liczby: { umowaOPrace: String(c?.headcountEmployment ?? 0), cywilne: c?.headcountCivil != null ? String(c.headcountCivil) : "" },
     warnings,
     podpis: { funkcja: "", pelnomocnik: true },
+    zalaczniki,
   };
 
   const missing = missingOf(payload);

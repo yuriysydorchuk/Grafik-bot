@@ -18,7 +18,8 @@ interface RefCompany { id: number; name: string; legalName: string | null; city:
 interface RefFactoryPosition { positionId: number; name: string | null; contractDuties: string | null; uaStanowisko: string | null; kzisCode: string | null }
 interface RefFactory { id: number; name: string; uaNotifyHours: number | null; address: string | null; city: string | null; companyName: string | null; contractDuties: string | null; addrPostalCode: string | null; addrWojewodztwo: string | null; addrPowiat: string | null; addrGmina: string | null; addrMiejscowosc: string | null; addrStreet: string | null; addrHouseNo: string | null; addrAptNo: string | null; uaStanowisko: string | null; uaKzisCode: string | null; uaPkd: string | null; positions: RefFactoryPosition[] }
 interface RefPosition { id: number; name: string; kzisCode: string | null }
-interface Reference { companies: RefCompany[]; factories: RefFactory[]; positions: RefPosition[] }
+interface RefAttachment { id: number; companyId: number; label: string; fileName: string; period: string | null; createdAt: string }
+interface Reference { companies: (RefCompany & { attachments: RefAttachment[] })[]; factories: RefFactory[]; positions: RefPosition[] }
 
 const STATUS_COLOR: Record<string, "slate" | "green" | "amber" | "blue" | "rose"> = { queued: "slate", running: "blue", awaiting_code: "amber", review: "amber", signing: "blue", submitted: "green", done: "green", failed: "rose", cancelled: "slate" };
 const STATUS_LABEL: Record<string, string> = { queued: "у черзі", running: "виконується", awaiting_code: "чекає код SMS", review: "на перегляді", signing: "підпис", submitted: "подано", done: "готово", failed: "помилка", cancelled: "скасовано" };
@@ -199,7 +200,50 @@ function CompaniesTab() {
             <td className={TD}><Cell value={c.city} w="w-28" onSave={save(c.id, "city")} /></td>
           </tr>))}</tbody>
       </table></div>
+      <div className="mt-5">
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t("Залучники до кожного повідомлення")}</div>
+        <p className="mb-2 text-xs text-slate-500">{t("Oświadczenie «88Z» фірми (некараність за art. 13 ustawy) — по два PDF на фірму, оновлюються щомісяця. Робот додає їх до кожної подачі разом зі сканом паспорта з профілю; замінюючи на новий місяць, видаліть старі.")}</p>
+        <div className="grid gap-3 md:grid-cols-3">
+          {r.data.companies.map(c => <CompanyAttachments key={c.id} company={c} />)}
+        </div>
+      </div>
     </Card>
+  );
+}
+
+function CompanyAttachments({ company: c }: { company: RefCompany & { attachments: RefAttachment[] } }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [label, setLabel] = useState("88Z");
+  const [period, setPeriod] = useState("");
+  const inv = () => qc.invalidateQueries({ queryKey: ["praca-gov-reference"] });
+  const add = useMutation({
+    mutationFn: (f: File) => { const fd = new FormData(); fd.append("file", f); fd.append("label", label); fd.append("period", period); return upload(`/praca-gov/reference/company/${c.id}/attachments`, fd); },
+    onSuccess: () => { toast.success(t("Додано")); inv(); }, onError: (e: any) => toast.error(e.message),
+  });
+  const remove = useMutation({ mutationFn: (aid: number) => del(`/praca-gov/reference/company/${c.id}/attachments/${aid}`), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  return (
+    <div className="rounded-lg border border-slate-100 p-3">
+      <div className="mb-1 font-medium text-slate-800">{c.name}</div>
+      <ul className="mb-2 space-y-1 text-xs">
+        {c.attachments.map(a => <li key={a.id} className="flex items-center gap-2">
+          <Badge>{a.label}</Badge>
+          <a className="truncate text-blue-600 hover:underline" href={`/api/praca-gov/reference/company/${c.id}/attachments/${a.id}/file`} target="_blank" rel="noreferrer">{a.fileName}</a>
+          {a.period && <span className="shrink-0 text-slate-400">{a.period}</span>}
+          <button type="button" className="ml-auto shrink-0 rounded p-0.5 text-slate-400 hover:text-rose-600" title={t("Видалити")} onClick={async () => { if (await confirm({ title: t("Видалити залучник?"), danger: true, confirmText: t("Видалити") })) remove.mutate(a.id); }}><Trash2 className="h-3.5 w-3.5" /></button>
+        </li>)}
+        {c.attachments.length === 0 && <li className="text-amber-700">{t("залучників нема — подача піде без 88Z")}</li>}
+      </ul>
+      <div className="flex flex-wrap items-center gap-1">
+        <Input value={label} onChange={e => setLabel(e.target.value)} className="w-20 px-2 py-1 text-xs" placeholder="88Z" />
+        <Input value={period} onChange={e => setPeriod(e.target.value)} className="w-20 px-2 py-1 text-xs" placeholder="10.26" />
+        <label className="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50">
+          {add.isPending ? t("…") : `+ ${t("файл")}`}
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) add.mutate(f); e.target.value = ""; }} />
+        </label>
+      </div>
+    </div>
   );
 }
 

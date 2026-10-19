@@ -2,10 +2,14 @@
 // фабрики (3.4 TERYT + назва посади/KZiS за замовчуванням), посади на фабриці (3.2/3.3), посади (KZiS).
 // Окремий вузький API, щоб людина з легалізації вела ці поля без права editData на весь довідник;
 // білі списки полів — лише те, що потрібно повідомленню.
+import fs from "node:fs";
+import path from "node:path";
+import multer from "multer";
 import { Router, type IRouter } from "express";
 import { and, asc, eq } from "drizzle-orm";
-import { db, companiesTable, factoriesTable, factoryPositionsTable, positionsTable } from "@workspace/db";
+import { db, companiesTable, factoriesTable, factoryPositionsTable, positionsTable, pzCompanyAttachmentsTable } from "@workspace/db";
 import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { UPLOADS_ROOT, makeStoredName, sniffDocMime } from "../lib/uploads";
 
 const router: IRouter = Router();
 router.use("/praca-gov/reference", authRequired, requireCap("legalization"));
@@ -30,8 +34,9 @@ router.get("/praca-gov/reference", async (_req: AuthedRequest, res) => {
     db.select({ id: positionsTable.id, name: positionsTable.name, kzisCode: positionsTable.kzisCode, isActive: positionsTable.isActive }).from(positionsTable).orderBy(asc(positionsTable.sortOrder)),
   ]);
   const coName = new Map(cos.map(c => [c.id, c.name]));
+  const atts = await db.select({ id: pzCompanyAttachmentsTable.id, companyId: pzCompanyAttachmentsTable.companyId, label: pzCompanyAttachmentsTable.label, fileName: pzCompanyAttachmentsTable.fileName, period: pzCompanyAttachmentsTable.period, createdAt: pzCompanyAttachmentsTable.createdAt }).from(pzCompanyAttachmentsTable).orderBy(asc(pzCompanyAttachmentsTable.id));
   ok(res, {
-    companies: cos.filter(c => c.employsWorkers !== false && c.isActive !== false),
+    companies: cos.filter(c => c.employsWorkers !== false && c.isActive !== false).map(c => ({ ...c, attachments: atts.filter(a => a.companyId === c.id) })),
     factories: fas.filter(f => !f.isOffice).map(f => ({ ...f, companyName: f.companyId ? coName.get(f.companyId) ?? null : null, positions: fps.filter(p => p.factoryId === f.id) })),
     positions: pos.filter(p => p.isActive !== false),
   });
@@ -77,6 +82,45 @@ router.patch("/praca-gov/reference/position/:id", async (req: AuthedRequest, res
   let code: string | null; try { code = kzis(b.kzisCode); } catch (e: any) { return fail(res, 400, e.message); }
   await db.update(positionsTable).set({ kzisCode: code }).where(eq(positionsTable.id, id));
   ok(res, { ok: true });
+});
+
+// Залучники фірми до кожного powiadomienia (oświadczenie 88Z): PDF/JPG/PNG до 10 МБ, файл під
+// UPLOADS_ROOT/pz-company-attachments/<companyId>/; робот бере всі рядки фірми подачі (services/pracaGov/payload.ts).
+const ATT_DIR = path.join(UPLOADS_ROOT, "pz-company-attachments");
+const ATT_MIMES = new Set(["application/pdf", "image/jpeg", "image/png"]);
+const attUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+router.post("/praca-gov/reference/company/:id/attachments", attUpload.single("file"), async (req: AuthedRequest, res) => {
+  const id = idOf(req.params.id); if (!id) return fail(res, 400, "Невірний id");
+  const [c] = await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, id));
+  if (!c) return fail(res, 404, "Фірму не знайдено");
+  if (!req.file) return fail(res, 400, "Файл не отримано");
+  const mime = sniffDocMime(req.file.buffer);
+  if (!mime || !ATT_MIMES.has(mime)) return fail(res, 400, "Дозволено PDF, JPG або PNG");
+  const label = str(req.body?.label) ?? "88Z"; const period = str(req.body?.period);
+  const stored = makeStoredName(req.file.originalname || "zalacznik.pdf");
+  const dir = path.join(ATT_DIR, String(id)); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, stored), req.file.buffer);
+  const [row] = await db.insert(pzCompanyAttachmentsTable).values({ companyId: id, label, fileName: req.file.originalname || stored, filePath: path.posix.join("pz-company-attachments", String(id), stored), period, uploadedBy: req.admin!.adminId }).returning();
+  ok(res, row);
+});
+router.delete("/praca-gov/reference/company/:id/attachments/:aid", async (req: AuthedRequest, res) => {
+  const id = idOf(req.params.id), aid = idOf(req.params.aid); if (!id || !aid) return fail(res, 400, "Невірний id");
+  const [a] = await db.select().from(pzCompanyAttachmentsTable).where(and(eq(pzCompanyAttachmentsTable.id, aid), eq(pzCompanyAttachmentsTable.companyId, id)));
+  if (!a) return fail(res, 404, "Залучник не знайдено");
+  const abs = path.resolve(UPLOADS_ROOT, a.filePath); if (abs.startsWith(ATT_DIR + path.sep)) fs.rmSync(abs, { force: true });
+  await db.delete(pzCompanyAttachmentsTable).where(eq(pzCompanyAttachmentsTable.id, aid));
+  ok(res, { ok: true });
+});
+router.get("/praca-gov/reference/company/:id/attachments/:aid/file", async (req: AuthedRequest, res) => {
+  const id = idOf(req.params.id), aid = idOf(req.params.aid); if (!id || !aid) return fail(res, 400, "Невірний id");
+  const [a] = await db.select().from(pzCompanyAttachmentsTable).where(and(eq(pzCompanyAttachmentsTable.id, aid), eq(pzCompanyAttachmentsTable.companyId, id)));
+  if (!a) return fail(res, 404, "Залучник не знайдено");
+  const abs = path.resolve(UPLOADS_ROOT, a.filePath);
+  if (!abs.startsWith(ATT_DIR + path.sep) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
+  const mime = sniffDocMime(fs.readFileSync(abs, { flag: "r" }).subarray(0, 16)) ?? "application/octet-stream";
+  res.setHeader("Content-Type", mime); res.setHeader("X-Content-Type-Options", "nosniff"); res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(a.fileName)}`);
+  fs.createReadStream(abs).pipe(res);
 });
 
 export default router;

@@ -2795,6 +2795,21 @@ export type PzAccount = typeof pzAccountsTable.$inferSelect;
 // Одна подача (або тест входу) робота: стан-машина з кроками й скріншотами для розбору.
 // status: queued | running | awaiting_code (чекає SMS-код від адміна) | review (форма заповнена,
 // чекає «Підписати й надіслати») | signing | submitted | done | failed | cancelled.
+// Залучники фірми до КОЖНОГО powiadomienia (19.10.2026): oświadczenie «88Z» (некараність за art. 13 ustawy
+// o warunkach dopuszczalności…), по два PDF на фірму, оновлюються щомісяця; файли під UPLOADS_ROOT/pz-company-attachments/<companyId>/.
+// Робот додає їх разом зі сканом паспорта з профілю; офіс вантажить у Налаштуваннях → praca.gov.pl → Фірми.
+export const pzCompanyAttachmentsTable = pgTable("pz_company_attachments", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id").notNull().references(() => companiesTable.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),            // назва załącznika на порталі (напр. «88Z»)
+  fileName: text("file_name").notNull(),     // оригінальна назва файлу (видно в Wydruku)
+  filePath: text("file_path").notNull(),     // відносно UPLOADS_ROOT
+  period: text("period"),                    // «10.26» — за який місяць oświadczenie
+  uploadedBy: integer("uploaded_by").references(() => adminsTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type PzCompanyAttachment = typeof pzCompanyAttachmentsTable.$inferSelect;
+
 export const uaSubmissionsTable = pgTable("ua_submissions", {
   id: serial("id").primaryKey(),
   kind: text("kind").notNull().default("submission"), // login_test | submission

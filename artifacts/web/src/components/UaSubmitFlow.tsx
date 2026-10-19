@@ -18,6 +18,7 @@ interface Payload {
   liczby: { umowaOPrace: string; cywilne: string };
   warnings?: string[];
   podpis: { funkcja: string; pelnomocnik: boolean };
+  zalaczniki?: { label: string; fileName: string }[];
 }
 interface Preview { payload: Payload; missing: string[]; account: { id: number; label: string; contextName: string; signerFunction: string | null } | null }
 interface Submission { id: number; status: string; step: string | null; error: string | null; previewFile: string | null; finishedAt: string | null }
@@ -150,6 +151,9 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip }: { prev: Pre
           </Section>
           <Section title="4. Liczba osób u pracodawcy">
             <F l="umowa o pracę" path="liczby.umowaOPrace" form={form} set={set} type="number" /><F l="umowy cywilnoprawne" path="liczby.cywilne" form={form} set={set} type="number" />
+          </Section>
+          <Section title="Załączniki">
+            {(form.zalaczniki ?? []).length ? (form.zalaczniki ?? []).map((z, k) => <Static key={k} l={z.label} v={z.fileName} />) : <Static l="—" v={t("нема: додайте 88Z у Налаштуваннях → praca.gov.pl → Фірми; паспорт — скан у профілі")} />}
           </Section>
           <Section title="Osoba podpisująca">
             <Static l="Imię, nazwisko, PESEL" v={t("з акаунта на порталі")} /><F l="Pełniona funkcja" path="podpis.funkcja" form={form} set={set} /><Static l="Pełnomocnik" v={form.podpis.pelnomocnik ? "tak (z załącznikiem pełnomocnictwa)" : "nie — uprawnienie bezpośrednie"} />
