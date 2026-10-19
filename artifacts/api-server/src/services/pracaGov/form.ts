@@ -611,61 +611,85 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
   await clickByText(page, /^(Tak|Potwierdź|Dalej|Kontynuuj)$/i, { tags: ".cdk-overlay-container button", timeoutMs: 1500 });
 
   // pz.gov.pl: логін (якщо сесії нема) → сторінка підпису
-  let deadline = Date.now() + 150_000; // після кожного успішного кроку/коду дедлайн переставляється — очікування людини його не зʼїдає
-  let signedBack = false;
+  // Сторінки підпису (знято на живих подачах #6–#7, 19.10.2026): podpis.gov.pl «Sprawdź dokumenty przed podpisaniem» →
+  // «Podpisz» → спінер і редирект на pz.gov.pl (можливо в НОВОМУ вікні) → логін/SMS → назад → praca.gov.pl «Podsumowanie».
+  // Правила: «Podpisz» тиснемо один раз і ЧЕКАЄМО (повторні кліки повертали на той самий екран по колу);
+  // стежимо за всіма вкладками; мʼякий дедлайн кроку 150 с скидається після дії/коду, жорсткий — 10 хв на весь підпис.
+  const browser = page.browser();
+  const extra: Page[] = [];
+  const onTarget = async (t: any) => { try { if (t.type() === "page") { const p = await t.page(); if (p && p !== page) extra.push(p); } } catch { /* ignore */ } };
+  browser.on("targetcreated", onTarget);
+  const livePages = () => [page, ...extra].filter(p => !p.isClosed());
+  const hardDeadline = Date.now() + 10 * 60_000;
+  let deadline = Date.now() + 150_000;
+  let signedBack = false; let summaryPage: Page = page;
+  let podpisClickedAt = 0, podpisClicks = 0;
   const isSummaryOk = (t: string) => /Podsumowanie/i.test(t) && /(został[ao]? (wysłan|złożon|przekazan)|Urzędowe Poświadczenie|UPP|przyjęt|wysłano)/i.test(t) && !/nie został|nie udało|niepowodzen|błąd|błędn|odrzucon/i.test(t);
-  while (Date.now() < deadline) {
-    const url = page.url(); const t = await pageText(page);
-    if (/praca\.gov\.pl/i.test(url) && isSummaryOk(t)) { signedBack = true; break; }
-    // podpis.gov.pl (жива подача #6, 19.10.2026): «Sprawdź dokumenty przed podpisaniem» — банер клаузули «Zamknij», кнопка «Podpisz»
-    // → pz.gov.pl (логін/SMS) → назад на podpis.gov.pl → повернення в praca.gov.pl («Podsumowanie»)
+  try {
+  while (Date.now() < deadline && Date.now() < hardDeadline) {
+    // підсумок може зʼявитись у будь-якій вкладці
+    let found = false;
+    for (const p of livePages()) { const u = p.url(); if (/praca\.gov\.pl/i.test(u) && isSummaryOk(await pageText(p))) { summaryPage = p; found = true; break; } }
+    if (found) { signedBack = true; break; }
+    // активна вкладка: та, що на pz/login/podpis.gov.pl (нове вікно має пріоритет), інакше основна
+    const auth = [...livePages()].reverse().find(p => /pz\.gov\.pl|login\.gov\.pl|podpis\.gov\.pl/i.test(p.url()));
+    const cur = auth ?? page;
+    const url = cur.url();
     if (/podpis\.gov\.pl/i.test(url)) {
-      await clickByText(page, /^Zamknij$/i, { tags: "button", timeoutMs: 800 });
-      if (await clickByText(page, /^Podpisz$/i, { tags: "button", timeoutMs: 2000 })) { await snap(ctx, page, "sign-podpis-clicked"); await step(ctx, page, "signing", "podpis.gov.pl: «Podpisz» → profil zaufany"); deadline = Date.now() + 150_000; await sleep(4000); continue; }
-      if (await clickByText(page, /^(Powrót|Wróć|Przejdź dalej|Kontynuuj|Dalej|Zakończ)/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, page, "sign-podpis-return"); deadline = Date.now() + 150_000; await sleep(4000); continue; }
-      await sleep(1500); continue;
+      await clickByText(cur, /^Zamknij$/i, { tags: "button", timeoutMs: 600 });
+      const sincePodpis = podpisClickedAt ? Date.now() - podpisClickedAt : Infinity;
+      // «Podpisz» — один раз; повтор лише якщо за 60 с нічого не змінилось і кнопка знову видима (макс. 3)
+      if (sincePodpis > 60_000 && podpisClicks < 3 && await clickByText(cur, /^Podpisz$/i, { tags: "button", timeoutMs: 1500 })) {
+        podpisClickedAt = Date.now(); podpisClicks++;
+        await snap(ctx, cur, `sign-podpis-clicked-${podpisClicks}`); await step(ctx, cur, "signing", "podpis.gov.pl: «Podpisz» → чекаю profil zaufany");
+        deadline = Date.now() + 150_000;
+      }
+      await sleep(2500); continue;
     }
     if (/pz\.gov\.pl|login\.gov\.pl/i.test(url)) {
-      if (/login\.gov\.pl/i.test(url)) { await clickByText(page, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a" }); await sleep(3000); continue; }
-      if (await page.$("input#password")) {
-        await step(ctx, page, "signing", "pz.gov.pl: повторний вхід для підпису");
+      if (/login\.gov\.pl/i.test(url)) { if (await clickByText(cur, /Profil zaufany/i, { tags: "button.wds-action-tile, button, a", timeoutMs: 3000 })) deadline = Date.now() + 150_000; await sleep(3000); continue; }
+      if (await cur.$("input#password")) {
+        await step(ctx, cur, "signing", "pz.gov.pl: повторний вхід для підпису");
         const cred = pzCredentials(ctx.account);
-        await typeInto(page, "input#username", cred.login); await typeInto(page, "input#password", cred.password);
-        if (!(await clickByText(page, /^Zaloguj( się)?$/i, { tags: "button[type=submit], button" }))) await page.keyboard.press("Enter");
-        await sleep(3000); continue;
+        await typeInto(cur, "input#username", cred.login); await typeInto(cur, "input#password", cred.password);
+        if (!(await clickByText(cur, /^Zaloguj( się)?$/i, { tags: "button[type=submit], button" }))) await cur.keyboard.press("Enter");
+        deadline = Date.now() + 150_000; await sleep(3000); continue;
       }
-      const codeSel = await findCodeInput(page, 3000);
+      const codeSel = await findCodeInput(cur, 3000);
       if (codeSel) {
-        await snap(ctx, page, "sign-code-page");
+        await snap(ctx, cur, "sign-code-page");
         const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
-        await step(ctx, page, "awaiting_code", "підпис: чекаю код SMS profilu zaufanego від власника акаунта");
+        await step(ctx, cur, "awaiting_code", "підпис: чекаю код SMS profilu zaufanego від власника акаунта");
         await ctx.onAwaitCode(ctx, "sign");
         const code = await codeP;
-        await step(ctx, page, "signing", "підпис: вводжу код SMS");
-        await typeInto(page, codeSel, code);
-        if (!(await clickByText(page, /^(Potwierdź|Podpisz|Zaloguj( się)?|Dalej|Autoryzuj)/i, { tags: ".cdk-overlay-container button, button[type=submit], button" }))) await page.keyboard.press("Enter");
-        await sleep(4000); await snap(ctx, page, "sign-after-code");
+        await step(ctx, cur, "signing", "підпис: вводжу код SMS");
+        await typeInto(cur, codeSel, code);
+        if (!(await clickByText(cur, /^(Potwierdź|Podpisz|Zaloguj( się)?|Dalej|Autoryzuj)/i, { tags: ".cdk-overlay-container button, button[type=submit], button" }))) await cur.keyboard.press("Enter");
+        await sleep(4000); await snap(ctx, cur, "sign-after-code");
         deadline = Date.now() + 150_000;
-        const t2 = await pageText(page);
-        if (/pz\.gov\.pl/i.test(page.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
+        const t2 = await pageText(cur);
+        if (/pz\.gov\.pl/i.test(cur.url()) && /nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("pz.gov.pl не прийняв код SMS підпису", "sign-code");
         continue;
       }
       // сторінка підпису без поля коду: кнопка «Podpisz podpisem zaufanym» / «Podpisz»
-      if (await clickByText(page, /Podpisz podpisem zaufanym|^Podpisz$|Podpisz dokument|Podpisz i wyślij/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, page, "sign-pz-clicked"); await sleep(3000); continue; }
-      await clickByText(page, /^(Dalej|Kontynuuj|Potwierdź)$/i, { tags: "button, a", timeoutMs: 1500 });
+      if (await clickByText(cur, /Podpisz podpisem zaufanym|^Podpisz$|Podpisz dokument|Podpisz i wyślij/i, { tags: "button, a", timeoutMs: 1500 })) { await snap(ctx, cur, "sign-pz-clicked"); deadline = Date.now() + 150_000; await sleep(3000); continue; }
+      if (await clickByText(cur, /^(Dalej|Kontynuuj|Potwierdź)$/i, { tags: "button, a", timeoutMs: 1500 })) deadline = Date.now() + 150_000;
       await sleep(2000); continue;
     }
     await sleep(1500);
   }
-  await snap(ctx, page, signedBack ? "sign-summary" : "sign-timeout");
-  if (!signedBack) throw new RobotError(`Підпис не завершився: ${page.url()}`, "sign-return");
+  } finally { browser.off("targetcreated", onTarget); }
+  { const last = [...livePages()].reverse().find(p => /pz\.gov\.pl|login\.gov\.pl|podpis\.gov\.pl/i.test(p.url())) ?? page; await snap(ctx, last, signedBack ? "sign-summary" : "sign-timeout"); }
+  if (!signedBack) throw new RobotError(`Підпис не завершився: ${[...livePages()].map(p => p.url()).join(" | ")}`, "sign-return");
+  for (const p of extra) if (!p.isClosed() && p !== summaryPage) await p.close().catch(() => {});
+  await summaryPage.bringToFront().catch(() => {});
 
   // крок 4: Podsumowanie — потвердження (UPP/PDF) і номер
-  await step(ctx, page, "signing", "крок 4: забираю потвердження");
-  const summaryText = await pageText(page);
+  await step(ctx, summaryPage, "signing", "крок 4: забираю потвердження");
+  const summaryText = await pageText(summaryPage);
   const m = summaryText.match(/(?:Numer sprawy|Numer dokumentu|Identyfikator dokumentu|Nr dokumentu|Numer UPP|Identyfikator)[^:0-9A-Z]*[:\s]+([A-Z0-9][A-Z0-9\/\-.]{4,})/i);
   const confirmationNo = m?.[1] ?? null;
-  const file = await captureSummaryPdf(ctx, page).catch(() => null);
+  const file = await captureSummaryPdf(ctx, summaryPage).catch(() => null);
   return { confirmationNo, file, summaryText: summaryText.slice(0, 4000) };
 }
 
