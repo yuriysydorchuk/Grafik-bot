@@ -658,9 +658,32 @@ export async function signAndSend(ctx: RobotCtx, page: Page): Promise<SignResult
     if (/pz\.gov\.pl\/ui\/au\/alert|nie może zostać dokończony/i.test(url + " " + txt)) throw new RobotError("pz.gov.pl: процес логіну перервано («Aktualny proces logowania nie może zostać dokończony») — повторіть подачу", "sign-pz-alert");
     if (/podpis\.gov\.pl\/ui\/wp\/error/i.test(url)) throw new RobotError(`podpis.gov.pl повернув помилку (${url.replace(/.*code=(\d+).*/, "$1")}) — повторіть подачу`, "sign-podpis-error");
     if (/podpis\.gov\.pl/i.test(url)) {
+      // модалка «Potwierdź podpisanie dokumentu» (…/pz-auth/sms, жива подача #11): поле «Kod SMS» + «Potwierdź» — другий SMS, вже для підпису
+      const signCodeSel = (await findCodeInput(cur, 800)) ?? await cur.evaluate(() => {
+        const vis = (el: any) => el.getBoundingClientRect().height > 0;
+        const boxes = [...document.querySelectorAll("[role=dialog], dialog, .modal, div")].filter((d: any) => vis(d) && /kod sms/i.test(d.textContent || "") && d.querySelector("input"));
+        boxes.sort((a: any, b: any) => (a.textContent || "").length - (b.textContent || "").length);
+        const inp: any = boxes[0] ? [...boxes[0].querySelectorAll("input")].find((i: any) => vis(i) && !["hidden", "checkbox", "radio", "submit"].includes(i.type)) : null;
+        if (!inp) return null; if (!inp.id) inp.id = "__pz_sign_code"; return "#" + CSS.escape(inp.id);
+      }).catch(() => null);
+      if (signCodeSel) {
+        await snap(ctx, cur, "sign-code-page-2");
+        const codeP = waitForCode(ctx.submissionId, ctx.adminId); codeP.catch(() => {});
+        await step(ctx, cur, "awaiting_code", "підпис: чекаю код SMS для ПІДПИСУ документа (другий SMS) від власника акаунта");
+        await ctx.onAwaitCode(ctx, "sign");
+        const code = await codeP;
+        await step(ctx, cur, "signing", "підпис: вводжу код SMS підпису");
+        await typeInto(cur, signCodeSel, code);
+        if (!(await realClick(cur, /^Potwierdź$/))) await cur.keyboard.press("Enter");
+        deadline = Date.now() + 150_000;
+        await sleep(4000); await snap(ctx, cur, "sign-after-sign-code");
+        const t2 = await pageText(cur);
+        if (/nieprawidłow|błędn|niepoprawn|nieważn/i.test(t2)) throw new RobotError("podpis.gov.pl не прийняв код SMS підпису", "sign-code");
+        continue;
+      }
       if (await realClick(cur, /^Zamknij$/)) await sleep(600);
-      // «Podpisz dokument — wybierz metodę» (…/signature/select): плитка «Profil zaufany»
-      if (/\/signature\/select/i.test(url) || /Wybierz jedną z poniższych metod/i.test(txt)) {
+      // «Podpisz dokument — wybierz metodę» (рівно …/signature/select, без модалки): плитка «Profil zaufany»
+      if (/\/signature\/select(\?|#|$)/i.test(url) && /Wybierz jedną z poniższych metod/i.test(txt)) {
         if (await realClick(cur, /^Profil zaufany/)) { await step(ctx, cur, "signing", "podpis.gov.pl: метода «Profil zaufany»"); deadline = Date.now() + 150_000; await changed(cur, url, txt, 15_000); continue; }
       }
       const sincePodpis = podpisClickedAt ? Date.now() - podpisClickedAt : Infinity;
