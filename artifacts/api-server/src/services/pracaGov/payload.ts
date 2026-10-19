@@ -31,7 +31,7 @@ export interface UaFormPayload {
   warnings: string[]; // не блокують подачу, показуються людині (напр. прострочення 7-денного вікна)
   podpis: { funkcja: string; pelnomocnik: boolean; poaAbsPath?: string | null };
   // залучники (не редагуються): oświadczenia «88Z» фірми (pz_company_attachments) + скан паспорта з профілю — як у ручних подачах Влади
-  zalaczniki: { label: string; fileName: string; absPath: string }[];
+  zalaczniki: { label: string; fileName: string; absPath: string; url?: string; mime?: string | null; kind?: "passport" | "company" }[]; // url/mime — для перегляду в анкеті перед запуском
 }
 
 export const RODZAJ_UMOWY_ZLECENIE = "Umowa zlecenie / Umowa o świadczenie usług";
@@ -143,17 +143,17 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   const zalaczniki: UaFormPayload["zalaczniki"] = [];
   const existsAbs = (rel: string) => { const abs = path.resolve(UPLOADS_ROOT, rel); return abs.startsWith(UPLOADS_ROOT + path.sep) && fs.existsSync(abs) ? abs : null; };
   if (cid) for (const a of await db.select().from(pzCompanyAttachmentsTable).where(eq(pzCompanyAttachmentsTable.companyId, cid)).orderBy(pzCompanyAttachmentsTable.id)) {
-    const abs = existsAbs(a.filePath); if (abs) zalaczniki.push({ label: a.label, fileName: a.fileName, absPath: abs });
+    const abs = existsAbs(a.filePath); if (abs) zalaczniki.push({ label: a.label, fileName: a.fileName, absPath: abs, url: `/api/praca-gov/reference/company/${cid}/attachments/${a.id}/file`, mime: /\.pdf$/i.test(a.fileName) ? "application/pdf" : "image/jpeg", kind: "company" });
   }
   {
-    const [pass] = await db.select({ filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, mime: workerDocumentsTable.fileMime }).from(workerDocumentsTable)
+    const [pass] = await db.select({ id: workerDocumentsTable.id, filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, mime: workerDocumentsTable.fileMime }).from(workerDocumentsTable)
       .innerJoin(documentTypesTable, eq(documentTypesTable.id, workerDocumentsTable.docTypeId))
       .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.status, "present"), eq(documentTypesTable.code, "passport"),
         sql`${workerDocumentsTable.filePath} is not null`, sql`(${workerDocumentsTable.fileMime} is null or ${workerDocumentsTable.fileMime} in ('application/pdf','image/jpeg','image/png'))`))
       .orderBy(desc(workerDocumentsTable.id)).limit(1); // найновіший паспорт, у якого Є придатний скан
     const abs = pass?.filePath ? existsAbs(pass.filePath) : null;
     // назва файлу на порталі = імʼя людини, а не «Unknown.jpg» з Telegram (жива подача #5, 19.10.2026)
-    if (abs) zalaczniki.unshift({ label: "Paszport", fileName: `Paszport ${w.fullName.replace(/[\/\\:*?"<>|]/g, " ").trim()}${path.extname(pass!.fileName ?? abs).toLowerCase() || ".pdf"}`, absPath: abs });
+    if (abs) zalaczniki.unshift({ label: "Paszport", fileName: `Paszport ${w.fullName.replace(/[\/\\:*?"<>|]/g, " ").trim()}${path.extname(pass!.fileName ?? abs).toLowerCase() || ".pdf"}`, absPath: abs, url: `/api/worker-documents/${pass!.id}/file`, mime: pass!.mime ?? (/\.pdf$/i.test(abs) ? "application/pdf" : "image/jpeg"), kind: "passport" });
   }
 
   const payload: UaFormPayload = {

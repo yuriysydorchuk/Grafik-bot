@@ -131,7 +131,7 @@ export function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-export function Modal({ open, onClose, title, children, size = "md" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; size?: "md" | "lg" | "xl" }) {
+export function Modal({ open, onClose, title, children, size = "md" }: { open: boolean; onClose: () => void; title: string; children: ReactNode; size?: "md" | "lg" | "xl" | "2xl" }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     if (open) window.addEventListener("keydown", h);
@@ -144,10 +144,10 @@ export function Modal({ open, onClose, title, children, size = "md" }: { open: b
   // закриваємось, коли виділення тексту з панелі відпустили поза нею.
   const downOnBackdrop = useRef(false);
   if (!open) return null;
-  const maxW = size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md";
+  const maxW = size === "2xl" ? "max-w-[1400px]" : size === "xl" ? "max-w-4xl" : size === "lg" ? "max-w-2xl" : "max-w-md"; // 2xl — робочі поверхні з бічною панеллю (анкета подачі + скан паспорта)
   // xl modals are real "work surfaces" (e.g. driver assignments) — go full-screen on phones
-  const overlay = size === "xl" ? "p-0 sm:p-4 sm:pt-20" : "p-4 pt-20";
-  const panel = size === "xl" ? "min-h-dvh rounded-none sm:min-h-0 sm:rounded-2xl" : "rounded-2xl";
+  const overlay = size === "xl" || size === "2xl" ? "p-0 sm:p-4 sm:pt-20" : "p-4 pt-20";
+  const panel = size === "xl" || size === "2xl" ? "min-h-dvh rounded-none sm:min-h-0 sm:rounded-2xl" : "rounded-2xl";
   // Портал у body: модалка, відкрита ЗСЕРЕДИНИ іншої модалки (превʼю впливу
   // правил у модалці фабрики), інакше невидима — backdrop-blur батьківського
   // оверлея робить його containing block для fixed-нащадків, і вкладене

@@ -18,7 +18,7 @@ interface Payload {
   liczby: { umowaOPrace: string; cywilne: string };
   warnings?: string[];
   podpis: { funkcja: string; pelnomocnik: boolean };
-  zalaczniki?: { label: string; fileName: string }[];
+  zalaczniki?: { label: string; fileName: string; url?: string; mime?: string | null; kind?: "passport" | "company" }[];
 }
 interface Preview { payload: Payload; missing: string[]; account: { id: number; label: string; contextName: string; signerFunction: string | null } | null }
 interface Submission { id: number; status: string; step: string | null; error: string | null; previewFile: string | null; finishedAt: string | null }
@@ -54,7 +54,7 @@ export function UaSubmitFlow({ taskId, queue, onClose, onDone }: { taskId: numbe
   const multi = queue.length > 1;
   const finishedAll = states.every(x => ["done", "failed", "skipped"].includes(x.status));
   return (
-    <Modal open onClose={onClose} title={multi ? `${t("Автоматична подача")} · ${i + 1}/${queue.length} · ${cur?.name ?? ""}` : `${t("Powiadomienie")} · ${cur?.name ?? ""}`} size="xl">
+    <Modal open onClose={onClose} title={multi ? `${t("Автоматична подача")} · ${i + 1}/${queue.length} · ${cur?.name ?? ""}` : `${t("Powiadomienie")} · ${cur?.name ?? ""}`} size="2xl">
       {multi && (
         <ol className="mb-3 flex flex-wrap gap-1 text-xs">
           {queue.map((q, k) => <li key={`${q.workerId}:${q.companyId ?? 0}`} className={cn("rounded-full px-2 py-0.5", states[k]!.status === "done" ? "bg-emerald-50 text-emerald-700" : states[k]!.status === "failed" ? "bg-rose-50 text-rose-700" : states[k]!.status === "skipped" ? "bg-slate-100 text-slate-400 line-through" : states[k]!.status === "active" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-500")}>{k + 1}. {q.name}</li>)}
@@ -118,7 +118,9 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
   const [form, setForm] = useState<Payload>(prev.payload);
   // після дозавантаження паспорта анкету перечитано — підхоплюємо лише залучники, правки людини лишаються
   useEffect(() => { setForm(f => ({ ...f, zalaczniki: prev.payload.zalaczniki })); }, [prev.payload.zalaczniki]);
-  const hasPassport = (form.zalaczniki ?? []).some(z => z.label === "Paszport");
+  const passport = (form.zalaczniki ?? []).find(z => z.kind === "passport" || z.label === "Paszport");
+  const hasPassport = !!passport;
+  const [showPassport, setShowPassport] = useState(true); // бічна панель зі сканом — звірити дані cudzoziemca очима
   const passUpload = useMutation({
     mutationFn: (f: File) => { const fd = new FormData(); fd.append("file", f); return upload(`/praca-gov/workers/${form.workerId}/passport-file`, fd); },
     onSuccess: () => { toast.success(t("Скан паспорта додано в профіль")); onRefresh?.(); }, onError: (e: any) => toast.error(e.message),
@@ -132,7 +134,14 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
   const missing = [...REQUIRED].filter(p => !getPath(form, p));
   const ok = missing.length === 0 && !!prev.account;
   const edited = JSON.stringify(form) !== JSON.stringify(prev.payload);
+  const passUploadInput = (label: string, cls: string) => (
+    <label className={cls}>
+      {passUpload.isPending ? "…" : label}
+      <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) passUpload.mutate(f); e.target.value = ""; }} />
+    </label>
+  );
   return (
+    <div className={cn("gap-4", passport && showPassport && "xl:grid xl:grid-cols-[minmax(0,1fr)_380px]")}>
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
         <span>{t("Фірма")}: <b className="text-slate-800">{form.companyName || "—"}</b></span>
@@ -161,14 +170,19 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
             <F l="umowa o pracę" path="liczby.umowaOPrace" form={form} set={set} type="number" /><F l="umowy cywilnoprawne" path="liczby.cywilne" form={form} set={set} type="number" />
           </Section>
           <Section title="Załączniki">
-            {(form.zalaczniki ?? []).map((z, k) => <Static key={k} l={z.label} v={z.fileName} />)}
+            {(form.zalaczniki ?? []).map((z, k) => (
+              <div key={k} className="flex items-center gap-2 py-0.5 text-sm">
+                <span className="w-[44%] shrink-0 text-slate-500">{z.label}</span>
+                {z.url ? <a href={z.url} target="_blank" rel="noreferrer" className="truncate text-blue-600 hover:underline" title={t("Відкрити файл")}>{z.fileName}</a> : <span className="truncate text-slate-500 italic">{z.fileName}</span>}
+                {z.kind === "passport" && passUploadInput(t("замінити"), "shrink-0 cursor-pointer text-xs text-slate-400 hover:text-slate-700 underline")}
+                {z.kind === "passport" && <button type="button" onClick={() => setShowPassport(v => !v)} className="shrink-0 text-xs text-slate-400 hover:text-slate-700 underline">{showPassport ? t("сховати") : t("показати збоку")}</button>}
+                {z.kind === "company" && <Link href="/settings?tab=pracaGov" className="shrink-0 text-xs text-slate-400 hover:text-slate-700 underline">{t("змінити")}</Link>}
+              </div>
+            ))}
             {!hasPassport && (
               <div className="my-1 flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
                 <span>⚠ {t("Скану паспорта в профілі нема — подача піде без нього.")}</span>
-                <label className="cursor-pointer rounded-md border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100">
-                  {passUpload.isPending ? "…" : t("Додати скан паспорта")}
-                  <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) passUpload.mutate(f); e.target.value = ""; }} />
-                </label>
+                {passUploadInput(t("Додати скан паспорта"), "cursor-pointer rounded-md border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100")}
               </div>
             )}
             {!(form.zalaczniki ?? []).some(z => z.label !== "Paszport") && <Static l="88Z" v={t("нема — додайте в Налаштуваннях → praca.gov.pl → Фірми")} />}
@@ -197,6 +211,18 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
         <Button variant="secondary" onClick={onClose}>{t("Закрити")}</Button>
         <Button onClick={() => onStart(form)} loading={starting} disabled={!ok || passUpload.isPending} title={ok ? "" : t("Заповніть прогалини й додайте акаунт")}>{t("Заповнити форму на порталі")} →</Button>
       </div>
+    </div>
+    {/* бічна панель: скан паспорта поряд із секцією 2, щоб звірити імʼя/номер/дати очима (прохання власника 19.10.2026) */}
+    {passport && showPassport && passport.url && (
+      <aside className="hidden xl:block">
+        <div className="sticky top-0 space-y-1">
+          <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-400"><span>Paszport</span><a href={passport.url} target="_blank" rel="noreferrer" className="normal-case font-normal text-blue-600 hover:underline">{t("відкрити")} ↗</a></div>
+          {/^image\//.test(passport.mime ?? "") || /\.(jpe?g|png)$/i.test(passport.fileName)
+            ? <a href={passport.url} target="_blank" rel="noreferrer"><img src={passport.url} alt="Paszport" className="max-h-[75vh] w-full rounded-lg border border-slate-200 object-contain bg-slate-50" /></a>
+            : <iframe src={passport.url} title="Paszport" className="h-[75vh] w-full rounded-lg border border-slate-200 bg-white" />}
+        </div>
+      </aside>
+    )}
     </div>
   );
 }
