@@ -842,8 +842,7 @@ export default function Schedule() {
 // inline — для «пігулок» вільних працівників, де рядка на всю ширину нема.
 function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
   const t = useT();
-  const ref = useRef<HTMLSpanElement>(null);
-  const textRef = useRef<HTMLSpanElement>(null); // елемент з truncate — по ньому міряємо обрізання
+  const ref = useRef<HTMLSpanElement>(null); // сама плашка (truncate): обрізання, позиція, «тап поза»
   const cardRef = useRef<HTMLDivElement>(null);
   const ptr = useRef("mouse");
   const [pos, setPos] = useState<{ x: number; y: number; up: boolean; maxH: number } | null>(null);
@@ -857,7 +856,7 @@ function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
     return () => { document.removeEventListener("pointerdown", outside); window.removeEventListener("scroll", outside, true); };
   }, [pos]);
   if (!note) return null;
-  const isClipped = () => { const el = textRef.current; return !!el && el.scrollWidth > el.clientWidth; };
+  const isClipped = () => { const el = ref.current; return !!el && el.scrollWidth > el.clientWidth; };
   const show = () => {
     if (!isClipped()) return;
     const r = ref.current?.getBoundingClientRect();
@@ -876,8 +875,8 @@ function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
   return (
     <>
       {inline
-        ? <span ref={el => { ref.current = el; textRef.current = el; }} {...handlers} className={`max-w-[7rem] shrink-0 ${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span>
-        : <span ref={ref} className="flex min-w-[1.75rem] flex-1"><span ref={textRef} {...handlers} className={`${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span></span>}
+        ? <span ref={ref} {...handlers} className={`max-w-[7rem] shrink-0 ${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span>
+        : <span className="flex min-w-[1.75rem] flex-1"><span ref={ref} {...handlers} className={`${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span></span>}
       {pos && createPortal(
         <div ref={cardRef} style={{ left: pos.x, top: pos.y, maxHeight: pos.maxH }}
           className={`fixed z-50 w-max max-w-[18rem] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-white px-3 py-2 text-xs leading-snug text-slate-700 shadow-lg ring-1 ring-amber-200 ${pos.up ? "-translate-y-full" : ""}`}>
