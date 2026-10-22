@@ -16,7 +16,8 @@ import {
   invoicesTable, ksefInvoicesTable, cashEntriesTable, cashCategoriesTable, companiesTable,
 } from "@workspace/db";
 import { and, eq, desc, inArray, sql } from "drizzle-orm";
-import { authRequired, requireCap } from "../lib/auth";
+import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { logInvoiceAudit, auditDiff } from "../services/invoiceAudit";
 import { CLEANING_OFFICE_RE } from "./pnl";
 import { calcPayroll } from "../lib/payroll";
 
@@ -166,6 +167,8 @@ router.get("/cleaning/income", async (req, res) => {
       buyerName: inv.buyerName, buyerNip: inv.buyerNip,
       net: inv.net, gross: inv.gross, paid,
       paidDate: inv.manualStatus === "paid" ? inv.manualPaidDate ?? inv.paidDate : inv.manualStatus ? null : inv.paidDate,
+      // як на /ksef: ручне перекриття або чим вирішив авто-матч (bank/register/korekta)
+      paidSource: inv.manualStatus ? "manual" : inv.paidDate ? inv.paidVia ?? (inv.paidTxnId ? "bank" : "register") : null,
       drivePdfId: inv.drivePdfId,
       projectId: resolve(inv.cleaningProjectId, inv.buyerNip),
       projectManual: inv.cleaningProjectId != null,
@@ -196,6 +199,30 @@ router.patch("/cleaning/income/:id", async (req, res) => {
   }
   const [updated] = await db.update(ksefInvoicesTable).set({ cleaningProjectId: pid }).where(eq(ksefInvoicesTable.id, id)).returning();
   ok(res, { id: updated!.id, projectId: updated!.cleaningProjectId });
+});
+
+// Ручний статус оплати фактури доходу — та сама семантика перекриття, що й
+// PATCH /ksef/invoices/:id (розділ прибирання має власну капу, а /ksef фактури
+// вспульнот не показує): збіг з авто-станом = назад на авто, інакше manual_status
+// (+ дата оплати); paid: null — явно назад на авто (ручну «оплачено» могли
+// поставити ще до того, як матчер знайшов переказ). Пишеться в журнал змін фактур.
+router.patch("/cleaning/income/:id/paid", async (req, res) => {
+  const id = Number(req.params.id);
+  const [inv] = await db.select().from(ksefInvoicesTable)
+    .where(and(eq(ksefInvoicesTable.id, id), eq(ksefInvoicesTable.kind, "sale"), eq(ksefInvoicesTable.segment, "cleaning")));
+  if (!inv) return fail(res, 404, "not found");
+  const b = req.body ?? {};
+  if (typeof b.paid !== "boolean" && b.paid !== null) return fail(res, 400, "paid: boolean | null");
+  if (b.paidDate != null && !(typeof b.paidDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(b.paidDate))) return fail(res, 400, "bad paidDate");
+  const autoPaid = inv.paidDate != null;
+  const patch = b.paid === null || b.paid === autoPaid
+    ? { manualStatus: null, manualPaidDate: null }
+    : { manualStatus: b.paid ? "paid" : "unpaid", manualPaidDate: b.paid ? b.paidDate ?? null : null };
+  await db.update(ksefInvoicesTable).set(patch).where(eq(ksefInvoicesTable.id, id));
+  const adm = (req as AuthedRequest).admin;
+  const changes = auditDiff(inv as any, patch);
+  if (changes.length) await logInvoiceAudit("ksef", id, "updated", { adminId: adm?.adminId, name: adm?.name }, changes);
+  ok(res, { id, manualStatus: patch.manualStatus });
 });
 
 // ── Працівники прибирання (довідник; фірма Klinex і посада sprzątanie — статичні) ──

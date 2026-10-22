@@ -19,8 +19,8 @@ type Project = { id: number; name: string; nip: string | null; active: boolean; 
 type IncomeRow = {
   id: number; month: string; issueDate: string; number: string; firm: string | null;
   buyerName: string | null; buyerNip: string | null; net: number; gross: number;
-  paid: boolean; paidDate: string | null; drivePdfId: string | null;
-  projectId: number | null; projectManual: boolean;
+  paid: boolean; paidDate: string | null; paidSource: "bank" | "manual" | "register" | "korekta" | null;
+  drivePdfId: string | null; projectId: number | null; projectManual: boolean;
 };
 type IncomeData = { rows: IncomeRow[]; projects: Project[]; totals: { net: number; gross: number; unpaidGross: number; count: number; unmatched: number } };
 type Component = { label: string; amount: number };
@@ -106,6 +106,25 @@ function IncomeTab({ month }: { month: string }) {
     queryKey: ["cleaning-income", month], queryFn: () => get(`/cleaning/income?month=${month}`),
   });
   const projById = useMemo(() => new Map((data?.projects ?? []).map(p => [p.id, p])), [data]);
+  const confirm = useConfirm();
+  const [markPaid, setMarkPaid] = useState<IncomeRow | null>(null);
+  const setPaid = useMutation({
+    mutationFn: (p: { id: number; paid: boolean | null; paidDate?: string }) => patch(`/cleaning/income/${p.id}/paid`, { paid: p.paid, paidDate: p.paidDate }),
+    onSuccess: () => { setMarkPaid(null); qc.invalidateQueries({ queryKey: ["cleaning-income"] }); qc.invalidateQueries({ queryKey: ["cleaning-pnl"] }); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  // ручна позначка (будь-яка) → підтвердження і назад на авто (paid: null); авто-оплату
+  // (витяг/коректа/реєстр) — підтвердження й ручна «не оплачена»; не оплачена → модалка з датою
+  const onPaidClick = async (r: IncomeRow) => {
+    if (r.paidSource === "manual") {
+      if (await confirm({ title: t("Зняти ручну позначку оплати?"), message: `${r.number} · ${t("статус повернеться до автоматичного (за витягом банку)")}` }))
+        setPaid.mutate({ id: r.id, paid: null });
+      return;
+    }
+    if (!r.paid) { setMarkPaid(r); return; }
+    if (await confirm({ title: t("Позначити неоплаченою?"), message: `${r.number} · ${t("оплату знайдено автоматично — ручна позначка її перекриє")}`, danger: true }))
+      setPaid.mutate({ id: r.id, paid: false });
+  };
   const attach = useMutation({
     mutationFn: (p: { id: number; projectId: number | null }) => patch(`/cleaning/income/${p.id}`, { projectId: p.projectId }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["cleaning-income"] }); qc.invalidateQueries({ queryKey: ["cleaning-pnl"] }); },
@@ -165,7 +184,13 @@ function IncomeTab({ month }: { month: string }) {
                   <td className="px-4 py-2 text-right tabular-nums">{fmt(r.net)}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-slate-500">{fmt(r.gross)}</td>
                   <td className="px-4 py-2">
-                    {r.paid ? <Badge color="green">{r.paidDate ?? t("оплачена")}</Badge> : <Badge color="amber">{t("очікує")}</Badge>}
+                    <button type="button" className="whitespace-nowrap" title={t("клік — змінити статус оплати")} onClick={() => onPaidClick(r)}>
+                      {r.paid ? <Badge color="green">{r.paidDate ?? t("оплачена")}</Badge> : <Badge color="amber">{t("очікує")}</Badge>}
+                      {r.paidSource === "bank" && <span className="ml-1 text-[10px] text-slate-400">{t("витяг")}</span>}
+                      {r.paidSource === "register" && <span className="ml-1 text-[10px] text-sky-500">{t("реєстр")}</span>}
+                      {r.paidSource === "korekta" && <span className="ml-1 text-[10px] text-slate-500">{t("коректа")}</span>}
+                      {r.paidSource === "manual" && <span className="ml-1 text-[10px] text-violet-500">{t("вручну")}</span>}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -173,7 +198,32 @@ function IncomeTab({ month }: { month: string }) {
           </table>
         </Card>
       )}
+      {markPaid && <MarkPaidModal row={markPaid} saving={setPaid.isPending} onClose={() => setMarkPaid(null)}
+        onSave={paidDate => setPaid.mutate({ id: markPaid.id, paid: true, paidDate })} />}
     </>
+  );
+}
+
+// Позначити фактуру доходу оплаченою вручну (готівка, переказ з чужим номером у
+// призначенні тощо) — з датою оплати, типово сьогодні
+function MarkPaidModal({ row, saving, onClose, onSave }: { row: IncomeRow; saving: boolean; onClose: () => void; onSave: (paidDate: string) => void }) {
+  const t = useT();
+  const [date, setDate] = useState(() => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }));
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  return (
+    <Modal open onClose={onClose} title={t("Позначити оплаченою")}>
+      <div className="space-y-3">
+        <div className="text-sm text-slate-600">
+          <span className="font-medium text-slate-800">{row.number}</span> · {fmt(row.gross)} zł
+          <div className="text-xs text-slate-400">{row.buyerName}</div>
+        </div>
+        <div><Label>{t("Дата оплати")}</Label><Input type="date" value={date} onChange={e => setDate(e.target.value)} autoFocus /></div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button loading={saving} disabled={!valid} onClick={() => onSave(date)}>{t("Позначити")}</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
