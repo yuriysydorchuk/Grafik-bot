@@ -3091,7 +3091,8 @@ function DocPreviewModal({ doc, onClose, canRotate }: { doc: WorkerDocument; onC
       await post(`/worker-documents/${doc.id}/rotate`, { degrees, page: pg ?? null });
       setVer(Date.now()); qc.invalidateQueries({ queryKey: ["worker-docs", doc.workerId] });
       toast.success(t("Поворот збережено"));
-    } catch (e: any) { toast.error(e.message); }
+      return true;
+    } catch (e: any) { toast.error(e.message); return false; }
   };
   return (
     <Modal open onClose={onClose} title={doc.title} size="xl">

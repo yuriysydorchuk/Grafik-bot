@@ -1761,7 +1761,11 @@ router.post("/worker-documents/:id/rotate", DOCS_RW, async (req, res) => {
   const ext = path.extname(doc.fileName ?? doc.filePath) || (src.mime === "application/pdf" ? ".pdf" : ".jpg");
   const storedName = makeStoredName(`rotated${ext}`);
   await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), out);
-  const [d] = await db.update(workerDocumentsTable).set({ filePath: path.join("worker-documents", storedName), updatedAt: new Date() }).where(eq(workerDocumentsTable.id, id)).returning();
+  const newPath = path.join("worker-documents", storedName);
+  // лише якщо файл не замінили, поки крутили (паралельне завантаження/поворот) — інакше затерли б новий
+  const [d] = await db.update(workerDocumentsTable).set({ filePath: newPath, updatedAt: new Date() })
+    .where(and(eq(workerDocumentsTable.id, id), eq(workerDocumentsTable.filePath, doc.filePath))).returning();
+  if (!d) { deleteStoredFile(newPath); return fail(res, 409, "Файл документа щойно змінився — відкрийте його ще раз"); }
   deleteStoredFile(doc.filePath);
   await documentChanged({ id, workerId: doc.workerId }, "file", { adminId: actingAdminId(req) }, [{ field: "rotation", to: page != null ? `стор. ${page}: ${deg}°` : `${deg}°` }]);
   ok(res, d);

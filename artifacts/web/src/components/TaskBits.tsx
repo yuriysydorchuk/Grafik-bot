@@ -597,8 +597,8 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
         <Modal open onClose={() => setZoom(null)} title={zoom.title} size="xl">
           <ZoomImage src={v(zoom.url)} alt={zoom.title} className="h-[78vh]" downloadUrl={`${zoom.url}?download=1`}
             onSaveRotation={canRotate ? async (degrees) => {
-              try { await post(`/worker-documents/${zoom.docId}/rotate`, { degrees }); setBust(Date.now()); toast.success(tr("Поворот збережено")); }
-              catch (e: any) { toast.error(e.message); }
+              try { await post(`/worker-documents/${zoom.docId}/rotate`, { degrees }); setBust(Date.now()); toast.success(tr("Поворот збережено")); return true; }
+              catch (e: any) { toast.error(e.message); return false; }
             } : undefined} />
         </Modal>
       )}

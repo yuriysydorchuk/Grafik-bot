@@ -12,7 +12,7 @@ const MIN = 1, MAX = 8;
 
 export function ZoomImage({ src, alt, className, downloadUrl, onSaveRotation }: {
   src: string; alt?: string; className?: string;
-  downloadUrl?: string; onSaveRotation?: (degrees: 90 | 180 | 270) => Promise<unknown>;
+  downloadUrl?: string; onSaveRotation?: (degrees: 90 | 180 | 270) => Promise<unknown>; // false = не збережено
 }) {
   const t = useT();
   const boxRef = useRef<HTMLDivElement>(null);
@@ -50,7 +50,8 @@ export function ZoomImage({ src, alt, className, downloadUrl, onSaveRotation }: 
   const saveRotation = async () => {
     if (!onSaveRotation || rot === 0) return;
     setSaving(true);
-    try { await onSaveRotation(rot); setRot(0); } finally { setSaving(false); }
+    // помилка (колбек повертає false) — поворот вигляду лишається, щоб повторити
+    try { if ((await onSaveRotation(rot)) !== false) setRot(0); } finally { setSaving(false); }
   };
   // 90°/270°: картинку кладемо в «перевернутий» бокс (ширина = висота контейнера) і крутимо
   // навколо центру — object-contain вписує її в контейнер без обрізання
