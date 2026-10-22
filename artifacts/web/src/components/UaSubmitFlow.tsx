@@ -9,6 +9,7 @@ import { Link } from "wouter";
 import { get, post, upload } from "../lib/api";
 import { Modal, Button, Spinner, Input, Label, cn } from "./ui";
 import { useT } from "../lib/i18n";
+import { ZoomImage } from "./ZoomImage";
 
 interface Payload {
   workerId: number; workerName: string; companyId: number | null; companyName: string; contextPattern: string;
@@ -212,13 +213,14 @@ function PreviewScreen({ prev, onStart, starting, onClose, onSkip, onRefresh }: 
         <Button onClick={() => onStart(form)} loading={starting} disabled={!ok || passUpload.isPending} title={ok ? "" : t("Заповніть прогалини й додайте акаунт")}>{t("Заповнити форму на порталі")} →</Button>
       </div>
     </div>
-    {/* бічна панель: скан паспорта поряд із секцією 2, щоб звірити імʼя/номер/дати очима (прохання власника 19.10.2026) */}
+    {/* бічна панель: скан паспорта поряд із секцією 2, щоб звірити імʼя/номер/дати очима (прохання власника 19.10.2026);
+        фото — з зумом і поворотом (22.10.2026), PDF — у вбудованому переглядачі браузера */}
     {passport && showPassport && passport.url && (
       <aside className="hidden xl:block">
         <div className="sticky top-0 space-y-1">
           <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-400"><span>Paszport</span><a href={passport.url} target="_blank" rel="noreferrer" className="normal-case font-normal text-blue-600 hover:underline">{t("відкрити")} ↗</a></div>
           {/^image\//.test(passport.mime ?? "") || /\.(jpe?g|png)$/i.test(passport.fileName)
-            ? <a href={passport.url} target="_blank" rel="noreferrer"><img src={passport.url} alt="Paszport" className="max-h-[75vh] w-full rounded-lg border border-slate-200 object-contain bg-slate-50" /></a>
+            ? <ZoomImage src={passport.url} alt="Paszport" className="h-[75vh] w-full rounded-lg border border-slate-200 bg-slate-50" />
             : <iframe src={passport.url} title="Paszport" className="h-[75vh] w-full rounded-lg border border-slate-200 bg-white" />}
         </div>
       </aside>

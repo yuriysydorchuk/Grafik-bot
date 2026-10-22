@@ -834,17 +834,20 @@ export default function Schedule() {
 
 // Вибір режиму генерації: доповнити (наявні призначення недоторкані) чи перескласти.
 // Примітка профілю біля імені: коротко (обрізана), повністю — у картці при наведенні
-// (на дотик — по тапу). Картка в порталі: клітинки графіку обрізають overflow.
-// Довга примітка — картка не вища за екран і прокручується; мишку можна перевести на неї.
+// (на дотик — по тапу), лише якщо текст справді обрізаний (22.10.2026 — коротка примітка
+// і так видна цілком). Картка в порталі: клітинки графіку обрізають overflow.
+// Довга примітка — картка не вища за екран і прокручується. Мишка зійшла з плашки — картка
+// зникає одразу (без паузи й без «переходу» на картку, прохання власника 22.10.2026).
 // У рядку займає місце між імʼям і значками справа (при довгому імені — лише 📝);
 // inline — для «пігулок» вільних працівників, де рядка на всю ширину нема.
 function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
   const t = useT();
   const ref = useRef<HTMLSpanElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null); // елемент з truncate — по ньому міряємо обрізання
   const cardRef = useRef<HTMLDivElement>(null);
   const ptr = useRef("mouse");
-  const hideTimer = useRef<number | undefined>(undefined);
   const [pos, setPos] = useState<{ x: number; y: number; up: boolean; maxH: number } | null>(null);
+  const [clipped, setClipped] = useState(false);
   useEffect(() => {
     if (!pos) return;
     // тап/клік поза бейджем і карткою або прокрутка сторінки (не самої картки) — закрити
@@ -853,34 +856,30 @@ function NoteChip({ note, inline }: { note?: string; inline?: boolean }) {
     window.addEventListener("scroll", outside, true);
     return () => { document.removeEventListener("pointerdown", outside); window.removeEventListener("scroll", outside, true); };
   }, [pos]);
-  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
   if (!note) return null;
+  const isClipped = () => { const el = textRef.current; return !!el && el.scrollWidth > el.clientWidth; };
   const show = () => {
-    window.clearTimeout(hideTimer.current);
+    if (!isClipped()) return;
     const r = ref.current?.getBoundingClientRect();
     if (!r) return;
     const below = window.innerHeight - r.bottom - 14, above = r.top - 14;
     const up = below < 160 && above > below;
     setPos({ x: Math.max(8, Math.min(r.left, window.innerWidth - 8 - 288)), y: up ? r.top - 6 : r.bottom + 6, up, maxH: Math.max(80, up ? above : below) });
   };
-  // пауза, щоб встигнути перевести мишку з бейджа на картку
-  const hideSoon = () => { window.clearTimeout(hideTimer.current); hideTimer.current = window.setTimeout(() => setPos(null), 150); };
   const chip = "max-w-[10rem] truncate rounded bg-amber-50 px-1 py-px text-[10px] font-medium leading-4 text-amber-700 ring-1 ring-amber-200";
   const handlers = {
-    onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType === "mouse") show(); },
-    onPointerLeave: (e: React.PointerEvent) => { if (e.pointerType === "mouse") hideSoon(); },
+    onPointerEnter: (e: React.PointerEvent) => { setClipped(isClipped()); if (e.pointerType === "mouse") show(); },
+    onPointerLeave: (e: React.PointerEvent) => { if (e.pointerType === "mouse") setPos(null); },
     onPointerDown: (e: React.PointerEvent) => { ptr.current = e.pointerType; },
     onClick: (e: React.MouseEvent) => { e.stopPropagation(); if (ptr.current !== "mouse") { if (pos) setPos(null); else show(); } },
   };
   return (
     <>
       {inline
-        ? <span ref={ref} {...handlers} className={`max-w-[7rem] shrink-0 cursor-help ${chip}`}>📝 {note}</span>
-        : <span ref={ref} {...handlers} className="flex min-w-[1.75rem] flex-1 cursor-help"><span className={chip}>📝 {note}</span></span>}
+        ? <span ref={el => { ref.current = el; textRef.current = el; }} {...handlers} className={`max-w-[7rem] shrink-0 ${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span>
+        : <span ref={ref} className="flex min-w-[1.75rem] flex-1"><span ref={textRef} {...handlers} className={`${clipped ? "cursor-help" : ""} ${chip}`}>📝 {note}</span></span>}
       {pos && createPortal(
         <div ref={cardRef} style={{ left: pos.x, top: pos.y, maxHeight: pos.maxH }}
-          onPointerEnter={() => window.clearTimeout(hideTimer.current)}
-          onPointerLeave={e => { if (e.pointerType === "mouse") hideSoon(); }}
           className={`fixed z-50 w-max max-w-[18rem] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-white px-3 py-2 text-xs leading-snug text-slate-700 shadow-lg ring-1 ring-amber-200 ${pos.up ? "-translate-y-full" : ""}`}>
           <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600">📝 {t("Примітка")}</div>
           {note}
