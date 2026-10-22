@@ -17,7 +17,7 @@ import { cleanName } from "../services/payrollSummaries";
 import { rematchSvodni, applyRatesFromSvodni, ensureSvodniFactories, dedupeWorkers, parseSheetDate, isUnder26, cityOfRegion, factoryCityMap, OFFICE_TAB_RE, EXTRA_STUDENTS_LABEL } from "../services/svodniSync";
 import { computePayout, legalStatusOf, normalizeProfileLegal, applyLegalDefaults, ksiegRatesOf, KSIEG_STD_NETTO, KSIEG_STD_BRUTTO, EUROCASH_FACTORY_IDS, eurocashRatesFromBlock, eurocashBracketIndex, factoryBonusPerHour, hasCashBonus, legacyPayoutRule, resolveBaseRates, monthEndStr, splitTotalByWindows, computeSegmented, findSvodniRowForPair, SEG_SHARE_COLS, debtCarryFromRow, type PayoutRule, type RateRules, type SegmentCalcIn, type EurocashRates } from "../services/svodni";
 import { PayoutRules } from "../services/factoryRules";
-import { effectiveView, effectiveViewOf } from "../services/effectiveStatus";
+import { effectiveView, effectiveViewOf, manualStudent, studentForStatus } from "../services/effectiveStatus";
 import { releaseSourcesForRows, remarkSources, findSourceConflicts, releasedCount, type ReleasedSources, type Executor } from "../services/svodniSourceMarkers";
 import { loadRateRules } from "../services/rateRules";
 import { loadNotifyHours, resolveNotifyHours, setFactoryNotifyHours } from "../services/notifyHours";
@@ -87,10 +87,14 @@ function serializeRow(r: typeof svodniRowsTable.$inferSelect, workerName: string
     // червона підсвітка клітинки в вебі, щоб не ловити очима (інцидент BIMIZ).
     // Батьки сегментованих рядків пропускаються: їхня ставка = min сегментів.
     if (r.hoursDeclared != null && r.ksiegBrutto != null && r.segmentOf == null) {
-      const { brutto: kbRate } = ksiegRatesOf(
+      const { netto: knRate, brutto: kbRate } = ksiegRatesOf(
         { rateBrutto: r.rateBrutto, rateNetto: r.rateNetto, isStudent: r.isStudent, extras: r.extras as Record<string, unknown> },
         base.legalStatus as any);
-      if (kbRate != null && Math.abs(r.hoursDeclared * kbRate - r.ksiegBrutto) > 0.2) base.ksiegMismatch = true;
+      // студент (нетто = брутто) з премією: години обрізані до відпрацьованих (22.10.2026),
+      // а брутто = конто разом із премією — це не розрив пари
+      const untaxedCapped = kbRate != null && knRate != null && kbRate <= knRate + 0.001 && r.hours != null
+        && Math.abs(r.hoursDeclared - r.hours) < 0.01 && r.ksiegBrutto > r.hoursDeclared * kbRate;
+      if (kbRate != null && !untaxedCapped && Math.abs(r.hoursDeclared * kbRate - r.ksiegBrutto) > 0.2) base.ksiegMismatch = true;
     }
   }
   return base;
@@ -1784,7 +1788,7 @@ function rowSetFromProfile(
     else delete merged.hr.dataUrodzenia;
   }
   if (changed.has("legalStatus") || changed.has("isStudent")) {
-    merged.isStudent = w.legalStatus != null ? w.legalStatus === "student" : w.isStudent;
+    merged.isStudent = w.legalStatus != null ? studentForStatus(w.legalStatus, !!w.isStudent) : w.isStudent;
     // снапшот статусу рядка йде за зміною (ручною або ефективною за документами)
     merged.legalStatus = w.legalStatus ?? null;
     merged.legalSource = (w as any).legalSource ?? "manual";
@@ -1876,6 +1880,8 @@ export async function profileChangeContext(workerId: number, body: Record<string
   let virtualSource: string = "documents";
   if (virtualLegal) { const eff = await effectiveViewOf(w); if ((eff.legalStatus ?? null) === (patch.legalStatus ?? null)) virtualSource = eff.legalSource; }
   const nextW = { ...w, ...patch, ...(virtualLegal ? { legalSource: virtualSource } : {}) } as typeof workersTable.$inferSelect;
+  // «polak» за документами (громадянство) студентства з профілю не знімає (effectiveStatus.studentForStatus)
+  if (virtualLegal) nextW.isStudent = studentForStatus(patch.legalStatus ?? null, manualStudent(w)) || !!patch.isStudent;
   const lgMonth = await import("../services/legalityMonth");
   const lgRules = virtualLegal ? (await import("../services/legalityRecompute")).loadLegalRules() : undefined;
   // години в повідомленні по фабриці: стан до/після зміни; рядок сводної бере години СВОЄЇ фабрики
@@ -1972,7 +1978,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
         const st: SegState = { ...base };
         if (legalChanged) {
           st.legal = rowW.legalStatus ?? null;
-          st.isStudent = rowW.legalStatus != null ? rowW.legalStatus === "student" : !!rowW.isStudent;
+          st.isStudent = rowW.legalStatus != null ? studentForStatus(rowW.legalStatus, !!rowW.isStudent) : !!rowW.isStudent;
         }
         if (changed.has("birthDate")) st.under26 = rowW.birthDate ? isUnder26(rowW.birthDate) : rowW.under26;
         if (changed.has("positionId")) { st.section = sectionOf(row) ?? null; st.label = sectionOf(row) ?? null; }

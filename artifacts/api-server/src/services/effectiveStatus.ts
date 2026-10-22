@@ -32,8 +32,26 @@ export function resolveEffectiveLegal(worker: { legalStatus: string | null }, ca
 // (довідка + вік до 26 уже враховані движком); вручну — старий канон
 // (чекбокс is_student АБО legal_status='student').
 export function effectiveStudent(worker: { isStudent: boolean | null; legalStatus: string | null }, eff: EffectiveLegal): boolean {
-  if (eff.source === "documents") return eff.status === "student";
+  const manual = manualStudent(worker);
+  if (eff.source === "documents") return studentForStatus(eff.status, manual);
+  return manual;
+}
+
+// Студент, вписаний у профілі вручну: чекбокс is_student АБО legal_status='student'.
+export function manualStudent(worker: { isStudent: boolean | null; legalStatus: string | null }): boolean {
   return !!(worker.isStudent || normalizeProfileLegal(worker.legalStatus) === "student");
+}
+
+// Студентство при статусі для виплат. Громадянство (PL / ЄС → «polak») — підстава
+// перебування, а не про навчання: поляк-студент до 26 так само без ZUS, тож «polak»
+// студентства з профілю НЕ знімає (рішення 22.10.2026, кейс Kuanyshbek — хибне
+// «poland» з імпорту nexo перетворило студента на «не студента» й накрутило конто).
+// Решта статусів — студент лише зі статусом «student».
+export function studentForStatus(status: string | null, manual: boolean): boolean {
+  const ls = normalizeProfileLegal(status) ?? status;
+  if (ls === "student") return true;
+  if (ls === "polak") return manual;
+  return false;
 }
 
 // «Ефективний вигляд» профілю для payroll-коду: legalStatus/isStudent підмінені

@@ -257,7 +257,7 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
       return parts.map(k => `${extraLabel(k)} ${f(ex(k))}`).join(" + ") + ` = ${f(r.premia)}`;
     }
     case "hoursDeclared": {
-      if (prefText) return `${prefText}`;
+      if (prefText) return `${prefText}; ${t("книжкові години — не більше відпрацьованих")} = ${f(r.hoursDeclared)}`;
       if (studentDo26) return `${t("Студент до 26: усі години офіційні")} = ${f(r.hoursDeclared)}`;
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.hours != null && r.hoursDeclared != null)
         return `${t("Офіційно — години oświadczenia, але не більше відпрацьованих")}: min(${f(r.hoursNotified)}, ${f(r.hours)}) = ${f(r.hoursDeclared)}`;
@@ -282,7 +282,9 @@ function cellFormula(r: Row, key: string, t: (s: string) => string): string | nu
     case "konto":
       return r.konto != null ? `= ${t("Księg. netto (конто)")} ${f(r.konto)}` : null;
     case "gotowka":
-      if (prefText) return `${prefText}; ${t("решта готівкою")} = ${f(r.gotowka)}`;
+      if (prefText) return untaxedStud(r)
+        ? `${prefText}; ${t("решта готівкою")} = ${f(r.gotowka)}`
+        : `${prefText}; ${t("конто — не більше відпрацьованих год × księg. нетто")} ${f(r.hours)} × ${f(ksiegRate(r))}; ${t("решта готівкою")} = ${f(r.gotowka)}`;
       if (studentDo26) return `${t("Студент до 26: усе на конто, готівки немає")} = 0`;
       if (r.hoursNotified != null && r.hoursNotified > 0 && r.gotowka != null && r.doWyplaty != null && r.ksiegNetto != null)
         return `${t("До виплати")} ${f(r.doWyplaty)} − ${t("Księg. netto (конто)")} ${f(r.ksiegNetto)}${ex("doplataEs") ? ` + Dopłata ES ${f(ex("doplataEs"))}` : ""} = ${f(r.gotowka)}`;
@@ -1459,9 +1461,14 @@ function FactoryTable({ month, city, label, rows, checks, sensitive, visible, ci
                     // розрив пари księgowości (brutto ≠ год × ставка) — червона
                     // клітинка, щоб не ловити очима (інцидент BIMIZ 07.2026)
                     const broken = k === "ksiegBrutto" && r.ksiegMismatch;
+                    // «усе на конто», а частина не влізла (конто ≤ відпрацьовані × księg. нетто) — видно одразу
+                    const notFit = k === "gotowka" && r.payoutPref?.kind === "all_konto" && (r.gotowka ?? 0) > 0.005
+                      && r.hours != null && r.hoursDeclared != null && Math.abs(r.hoursDeclared - r.hours) < 0.01; // уперлось у відпрацьовані
                     return (
-                      <td key={k} className={`px-1 py-0.5 text-right ${broken ? "bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300" : "bg-amber-50/50 text-slate-700"} ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}
-                        title={[broken ? t("Розрив пари: księg. brutto ≠ год. księg. × ставка брутто") : null, cellLockTitle(r, k, t)].filter(Boolean).join("\n") || undefined}>
+                      <td key={k} className={`px-1 py-0.5 text-right ${broken ? "bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300" : notFit ? "bg-amber-100 text-amber-900 ring-1 ring-inset ring-amber-400" : "bg-amber-50/50 text-slate-700"} ${ci === 0 ? "border-l-2 border-amber-300" : ""}`}
+                        title={[broken ? t("Розрив пари: księg. brutto ≠ год. księg. × ставка брутто") : null,
+                          notFit ? t("Усе на конто: ця сума не влізла — книжкові години не можуть перевищити відпрацьовані") : null,
+                          cellLockTitle(r, k, t)].filter(Boolean).join("\n") || undefined}>
                         <EditableCell row={r} field={k} value={r[k]} month={month} formula={cellFormula(r, k, t)}
                           locked={locked || cellIsSegLocked(r, k)} />
                       </td>

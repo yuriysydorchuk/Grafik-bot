@@ -448,6 +448,13 @@ export interface LegalCtx {
   firm?: string | null;
   /** явна стеля księgowych годин (сегменти: місячний ліміт ділиться між ними) — перекриває factoryDeclaredCap */
   declaredCapH?: number | null;
+  /**
+   * стеля конто сегментованого батька з побажанням, зл: Σ ємностей вікон під «усе на конто» (кожне —
+   * своїм applyLegalDefaults: готівкові бонус/премія вікна, відпрацьовані × księg. нетто, студент — уся
+   * виплата). Передана — замінює батьківський cap (ставки/студентство батька — від одного вікна).
+   * Не передане — звичайний рядок: відпрацьовані × księg. нетто.
+   */
+  kontoHoursCap?: number | null;
   /** id фабрики рядка — фабрико-залежні правила (премія Agram завжди готівкою) */
   factoryId?: number | null;
   /** сума вшитого бонусу за місяць, зл (сегментований батько: Σ по сегментах) — перекриває facBonus × години */
@@ -510,20 +517,38 @@ export function applyLegalDefaults(row: SvodniParsedRow, force = false, ctx: Leg
   // бонус і премія Agram.
   // Якщо конто обрізане кепом — księgowe години/брутто рахуються від фактичного конто.
   const cap = Math.max(row.doWyplaty - (doplataInPayout ? doplata : 0) - bonusSum - premiaCash, 0);
+  // неоподаткована пара (студент: нетто = брутто) — конто може нести й премії: księg. brutto = конто
+  const untaxedRates = (row.isStudent === true || ls === "student")
+    && ksiegNettoRate != null && ksiegBruttoRate != null && ksiegBruttoRate <= ksiegNettoRate + 0.001;
+  const workedH = row.hours != null && row.hours >= 0 ? row.hours : null;
   const finish = (targetKonto: number, declaredHours: number | null, studentBrutto = false) => {
-    const konto = r2(Math.max(0, Math.min(targetKonto, cap)));
+    const untaxed = studentBrutto || untaxedRates;
+    // сегментований батько (ctx.kontoHoursCap): готівкові бонуси/премії вже враховані в ємностях вікон —
+    // батьківський cap (за статусом одного вікна) тут хибний, лишається лише «не більше до виплати»
+    let konto = r2(Math.max(0, Math.min(targetKonto, ctx.kontoHoursCap != null ? Math.max(row.doWyplaty!, 0) : cap)));
+    // Księgowe години НІКОЛИ не більші за відпрацьовані (рішення 22.10.2026, кейс
+    // Kuanyshbek: «усе на конто» при нетто 31,40 > księg. 25,35 вигадало 45 год і
+    // 1 424 zł брутто). Оподаткована пара: конто ≤ відпрацьовані × księg. нетто,
+    // надлишок — готівкою (брутто понад години не вигадуємо). Неоподаткована —
+    // усе на конто, як і було; обрізаються лише години (премія — у брутто = конто).
+    if (ctx.kontoHoursCap != null) konto = Math.min(konto, ctx.kontoHoursCap); // сегменти: Σ ємностей вікон
+    else if (!untaxed && workedH != null && ksiegNettoRate != null && ksiegNettoRate > 0)
+      konto = Math.min(konto, r2(workedH * ksiegNettoRate));
     row.konto = konto;
     row.ksiegNetto = konto;
-    // Księgowe години — ЗАВЖДИ від фактичного конто (інваріант пари: год ×
-    // ставка = brutto). Раніше перераховувались лише при обрізанні стелею —
-    // у студентів до 26 (konto = виплата ПІСЛЯ знять: kara/hostel/zaliczka)
-    // і «все на конто» лишались повні години при меншій сумі, і пара рвалась
-    // рівно на суму знять (BIMIZ 07.2026, рішення 22.08.2026).
-    row.hoursDeclared = ksiegNettoRate != null && ksiegNettoRate > 0 ? r2(konto / ksiegNettoRate) : declaredHours;
+    // Księgowe години — від фактичного конто (інваріант пари: год × ставка =
+    // brutto). Раніше перераховувались лише при обрізанні стелею — у студентів
+    // до 26 (konto = виплата ПІСЛЯ знять: kara/hostel/zaliczka) і «все на конто»
+    // лишались повні години при меншій сумі, і пара рвалась рівно на суму знять
+    // (BIMIZ 07.2026, рішення 22.08.2026). Стеля — відпрацьовані (див. вище).
+    const fromKonto = ksiegNettoRate != null && ksiegNettoRate > 0 ? r2(konto / ksiegNettoRate) : declaredHours;
+    const hoursCapped = fromKonto != null && workedH != null && fromKonto > workedH;
+    row.hoursDeclared = hoursCapped ? workedH : fromKonto;
     // księg. brutto — від фактичного конто: konto ÷ ставка нетто × ставка брутто
     // (не «всі години × брутто» — конто може включати премію чи бути обрізаним)
-    row.ksiegBrutto = studentBrutto
+    row.ksiegBrutto = untaxed
       ? konto // студент: netto = brutto
+      : hoursCapped && ksiegBruttoRate != null ? r2(workedH! * ksiegBruttoRate) // уперлось у відпрацьовані (усереднена ставка батька)
       : ksiegNettoRate != null && ksiegBruttoRate != null && ksiegNettoRate > 0
         ? r2(konto / ksiegNettoRate * ksiegBruttoRate)
         : row.hoursDeclared != null && ksiegBruttoRate != null ? r2(row.hoursDeclared * ksiegBruttoRate) : null;
@@ -1278,6 +1303,9 @@ export function computeSegmented(
   // зверне до правила (те все одно поверне null).
   const segRule = parent.rule !== undefined ? parent.rule : legacyPayoutRule(parent.factoryId ?? null, parent.factoryLabel);
   let capLeft = declaredCapOf(segRule, hoursSum > 0 ? hoursSum : null, parent.firm ?? null);
+  // ємність конто кожного вікна під «усе на конто» (тим самим applyLegalDefaults: готівкові бонус/премія
+  // вікна, стеля відпрацьованих, студентство — за статусом САМЕ цього вікна) + його księgowa пара
+  const winInfo: { cap: number; kn: number | null; kb: number | null; untaxed: boolean; hours: number }[] = [];
   const outSegs: SegmentCalcOut[] = segs.map((s, i) => {
     const legalNorm = normalizeProfileLegal(s.legal) ?? null;
     const stud26 = (s.isStudent === true || legalNorm === "student") && s.under26 === true;
@@ -1310,6 +1338,17 @@ export function computeSegmented(
       ...(capLeft != null ? { declaredCapH: r2(Math.max(capLeft, 0)) } : {}),
     });
     if (capLeft != null && !stud26 && row.hoursDeclared != null) capLeft = r2(capLeft - row.hoursDeclared);
+    if (payoutPref && (payoutPref.kind === "all_konto" || payoutPref.value != null)) {
+      const capRow: any = { ...row, extras: { ...extras } };
+      applyLegalDefaults(capRow, true, {
+        profileLegal: s.legal as any, factoryLabel: parent.factoryLabel, payoutPref: { kind: "all_konto", value: null },
+        city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null, rule: segRule,
+      });
+      const ln = normalizeProfileLegal(s.legal) ?? null;
+      const kr = ksiegRatesOf({ rateBrutto: s.rateBrutto, rateNetto: s.rateNetto, isStudent: s.isStudent, extras }, ln);
+      const untaxed = stud26 || ((s.isStudent === true || ln === "student") && kr.netto != null && kr.brutto != null && kr.brutto <= kr.netto + 0.001);
+      winInfo.push({ cap: Math.max(capRow.konto ?? 0, 0), kn: kr.netto, kb: kr.brutto, untaxed, hours: s.hours ?? 0 });
+    }
     // особа обмежена повідомленням, а сегменту ліміту не лишилось → konto 0
     // (інакше applyLegalDefaults трактує «0 годин» як «без oświadczenia — все на карту»)
     if (notifyLimited && usesNotify && (segNotify ?? 0) <= 0 && row.doWyplaty != null) {
@@ -1364,11 +1403,43 @@ export function computeSegmented(
       premia: parent.premia ?? null,
       extras: prowExtras, hr: {}, sheetValues: {},
     };
+    // стеля конто місяця — Σ ємностей вікон (22.10.2026; ставки/студентство батька — від одного вікна,
+    // тож бонуси, премії й стелю годин тут не перераховуємо). «N годин» → сума по księgowych парах вікон
+    // пропорційно їхнім годинам (батьківська мінімальна ставка дала б не ті години).
+    const kontoHoursCap = r2(winInfo.reduce((a, c) => a + c.cap, 0));
+    let prefM = payoutPref;
+    // ваги розкладу конто по вікнах: ємності; для «N годин» — цілі вікон (ratio × год × księg. нетто),
+    // інакше після відрахувань пропорція ємностей дала б не ті години
+    let weights = winInfo.map(c => c.cap);
+    if (payoutPref.kind === "hours" && payoutPref.value != null) {
+      const H = winInfo.reduce((a, c) => a + Math.max(c.hours, 0), 0);
+      const ratio = H > 0 ? Math.max(payoutPref.value, 0) / H : 0;
+      const targets = winInfo.map(c => (c.kn != null && c.kn > 0 ? ratio * Math.max(c.hours, 0) * c.kn : 0));
+      prefM = { kind: "amount", value: r2(targets.reduce((a, t) => a + t, 0)) };
+      if (targets.some(t => t > 0)) weights = targets;
+    }
     applyLegalDefaults(prow, true, {
-      profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref,
+      profileLegal: (last?.legal ?? null) as any, factoryLabel: parent.factoryLabel, payoutPref: prefM,
       city: parent.city, firm: parent.firm ?? null, factoryId: parent.factoryId ?? null, rule: segRule,
       ...(bonusTotal > 0 ? { bonusTotal } : {}),
+      kontoHoursCap,
     });
+    // конто місяця → по вікнах пропорційно ємностям; години й księg. brutto — сумою вікон
+    // (своя пара ставок кожного; години вікна ≤ його відпрацьованих; невідома ставка → brutto невідоме)
+    const kontoM = prow.konto ?? 0;
+    const wSumK = weights.reduce((a, x) => a + Math.max(x, 0), 0);
+    let hd = 0;
+    let kb: number | null = 0;
+    for (let i = 0; i < winInfo.length; i++) {
+      const c = winInfo[i]!;
+      const share = wSumK > 0 ? kontoM * Math.max(weights[i]!, 0) / wSumK : 0;
+      if (share <= 0) continue;
+      const hMax = Math.max(c.hours, 0); // коригувальні мінусові години вікна не віднімають księgowych
+      hd += c.kn != null && c.kn > 0 ? Math.min(share / c.kn, hMax) : hMax;
+      if (kb != null) kb = c.untaxed ? kb + share : c.kn != null && c.kn > 0 && c.kb != null ? kb + share / c.kn * c.kb : null;
+    }
+    prow.hoursDeclared = r2(hd);
+    prow.ksiegBrutto = kb != null ? r2(kb) : null;
     parentOut.hoursDeclared = prow.hoursDeclared ?? null;
     parentOut.ksiegBrutto = prow.ksiegBrutto ?? null;
     parentOut.ksiegNetto = prow.ksiegNetto ?? null;

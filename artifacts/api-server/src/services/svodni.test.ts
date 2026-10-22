@@ -478,11 +478,13 @@ test("księgowa ставка — нижча зі ставок (LST 26.35 → д�
   applyLegalDefaults(b, true, { factoryLabel: "LST", payoutPref: { kind: "amount", value: 3000 } });
   assert.equal(b.konto, 3000);
   near(b.hoursDeclared, 118.34, "години від суми по księgowej ставці");
-  // побажання «все на конто»
+  // побажання «все на конто»: конто ≤ відпрацьовані × księg. нетто (144 × 25,35), фабрична
+  // надбавка 1 zł/год — готівкою; години не накручуються (рішення 22.10.2026)
   const c = mk();
   applyLegalDefaults(c, true, { factoryLabel: "LST", payoutPref: { kind: "all_konto", value: null } });
-  assert.equal(c.konto, 3794.4);
-  assert.equal(c.gotowka, 0);
+  assert.equal(c.konto, 3650.4);
+  assert.equal(c.hoursDeclared, 144);
+  assert.equal(c.gotowka, 144);
   // побажання «N годин на конто»
   const d = mk();
   applyLegalDefaults(d, true, { factoryLabel: "LST", payoutPref: { kind: "hours", value: 100 } });
@@ -528,15 +530,18 @@ test("Premia ES (бонус/год): входить у виплату, конт�
   assert.equal(p.ksiegNetto, 3447.6, "конто = 136 × 25,35 (без бонусу)");
   near(p.gotowka, 204, "бонус 136 × 1,5 — готівкою");
   near(p.ksiegBrutto, 3447.6 / 25.35 * 31.4, "księg. brutto = konto ÷ нетто × брутто");
-  // без factoryId (легасі-рядок поза Agram-правилом): «все на конто» разом із
-  // премією, brutto теж від конто, не від фактичних годин
+  // без factoryId (легасі-рядок поза Agram-правилом): оформлений без oświadczenia —
+  // на конто відпрацьовані × 25,35, премія понад це — готівкою (з 22.10.2026 години
+  // не накручуються: раніше премія йшла в конто й давала 83,94 год при 80 відпрацьованих)
   const k = parseLublinTab("AGRAM", [
     [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Premia Agram", "Do wypłaty Netto", "Księgowość"],
     ["Z PREMIA ADAM", "", 80, 31.4, 25.35, 100, 80 * 25.35 + 100, "Zgłoszony, Decyzja Karty Pobytu"],
   ])!.rows[0]!;
   applyLegalDefaults(k, true, { factoryLabel: "AGRAM" });
-  assert.equal(k.konto, 2128, "все на конто разом із премією");
-  near(k.ksiegBrutto, 2128 / 25.35 * 31.4, "brutto від конто (83,94 год × 31,4), не 80 × 31,4");
+  assert.equal(k.konto, 2028, "конто = 80 × 25,35");
+  assert.equal(k.hoursDeclared, 80, "години = відпрацьовані");
+  near(k.gotowka, 100, "премія — готівкою");
+  near(k.ksiegBrutto, 80 * 31.4, "brutto = 80 × 31,4");
 });
 
 // ── Премія Agram (колонка Premia) — завжди готівкою; на конто лише студентам до 26
@@ -1059,10 +1064,13 @@ test("applyLegalDefaults: кастомне правило перекриває l
   assert.equal(row.konto, Math.round(50 * 25.35 * 100) / 100);
   assert.equal(row.hoursDeclared, 50);
   assert.equal(row.gotowka, Math.round((row.doWyplaty - row.konto) * 100) / 100);
-  // без правила (legacy) той самий рядок на ALMIZ стелі не має — все на конто
+  // без правила (legacy) той самий рядок на ALMIZ стелі не має — на конто всі відпрацьовані
+  // години, премія понад них — готівкою (години не накручуються, 22.10.2026)
   const row2 = mkRow();
   applyLegalDefaults(row2, true, { profileLegal: "zus" as any, factoryLabel: "ALMIZ", factoryId: 5, city: "Люблін" });
-  assert.equal(row2.konto, row2.doWyplaty, "legacy ALMIZ: без стелі, premia в конто");
+  assert.equal(row2.konto, 4563, "legacy ALMIZ: 180 × 25,35");
+  assert.equal(row2.hoursDeclared, 180);
+  assert.equal(row2.gotowka, 200, "премія — готівкою");
 });
 
 // ── from-hours: матч наявного рядка вкладки для пари (працівник, фабрика) ────
@@ -1105,4 +1113,112 @@ test("findSvodniRowForPair: рядок без factory_id — фолбек по �
   const rows = [{ workerId: 1, factoryId: null, factoryLabel: "SCANDIC FOOD" }];
   assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "Scandic Food", firmSuffix: "", multiFirm: false }), rows[0]);
   assert.equal(findSvodniRowForPair(rows, { workerId: 1, factoryId: 25, label: "INNA", firmSuffix: "", multiFirm: false }), undefined);
+});
+
+test("книжкові години НІКОЛИ не більші за відпрацьовані (22.10.2026, кейс Kuanyshbek)", () => {
+  const mk = (hours: number, brutto: number, netto: number, doW: number, status: string) => parseLublinTab("DAWTONA", [
+    [46174, "Ilość godz w powiadomieniu", "Ilość godzin", "Stawka brutto", "Stawka netto", "Do wypłaty Netto", "Księgowość"],
+    ["TEST OSOBA", "", hours, brutto, netto, doW, status],
+  ])!.rows[0]!;
+  const allKonto = { kind: "all_konto" as const, value: null };
+  // не студент (polak), нетто 31,40 > księg. 25,35, «усе на конто»: конто ≤ 276 × 25,35, решта готівкою
+  const a = mk(276, 31.4, 31.4, 8146.4, "");
+  applyLegalDefaults(a, true, { factoryLabel: "DAWTONA", profileLegal: "polak", payoutPref: allKonto });
+  near(a.konto, 6996.6); near(a.ksiegNetto, 6996.6);
+  near(a.hoursDeclared, 276, "години — не 321,36");
+  near(a.ksiegBrutto, 8666.4, "брутто — не 10 090,61");
+  near(a.gotowka, 1149.8);
+  // той самий, але студент до 26: усе на конто, брутто = нетто, години з конто (259,44 ≤ 276)
+  const b = mk(276, 31.4, 31.4, 8146.4, "Zgłoszony, do 26, student");
+  applyLegalDefaults(b, true, { factoryLabel: "DAWTONA", payoutPref: allKonto });
+  near(b.konto, 8146.4); near(b.ksiegBrutto, 8146.4); near(b.hoursDeclared, 259.44); near(b.gotowka, 0);
+  // студент до 26 з премією (до виплати > години × ставка): усе на конто, години обрізані до відпрацьованих
+  const c = mk(100, 31.4, 31.4, 3340, "Zgłoszony, do 26, student");
+  applyLegalDefaults(c, true, { factoryLabel: "DAWTONA" });
+  near(c.konto, 3340); near(c.ksiegBrutto, 3340); near(c.hoursDeclared, 100); near(c.gotowka, 0);
+  // побажання «N годин на конто» понад відпрацьовані — обрізається до відпрацьованих
+  const d = mk(100, 31.4, 25.35, 2535, "Zgłoszony, Wyżej 26");
+  applyLegalDefaults(d, true, { factoryLabel: "DAWTONA", payoutPref: { kind: "hours", value: 150 } });
+  near(d.hoursDeclared, 100); near(d.konto, 2535); near(d.gotowka, 0);
+  // не студент із премією, «усе на конто»: премія понад години × 25,35 — готівкою, години не накручуються
+  const e = mk(100, 31.4, 25.35, 2835, "Zgłoszony, Wyżej 26");
+  applyLegalDefaults(e, true, { factoryLabel: "DAWTONA", payoutPref: allKonto });
+  near(e.konto, 2535); near(e.hoursDeclared, 100); near(e.ksiegBrutto, 3140); near(e.gotowka, 300);
+});
+
+test("порізаний рядок «усе на конто»: стеля й години/брутто — по вікнах (ревʼю codex 22.10.2026)", () => {
+  const base = {
+    city: "Люблін", factoryLabel: "TEST", factoryId: null, hoursNotified: null, rule: null,
+    premia: null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {},
+  };
+  const allKonto = { kind: "all_konto" as const, value: null };
+  const taxed = (hours: number, netto = 25.35, brutto = 31.4) => ({ hours, rateNetto: netto, rateBrutto: brutto, isStudent: false, under26: false, legal: "zus", facBonus: null });
+  // 1) порожнє вікно не знімає стелі з відомого: премія 200 понад 100 × 25,35 — готівкою
+  const { parent: a } = computeSegmented({ ...base, premia: 200 } as any, [
+    taxed(100), { hours: null, rateNetto: null, rateBrutto: null, isStudent: false, under26: false, legal: "zus", facBonus: null },
+  ], allKonto);
+  near(a.konto, 2535); near(a.gotowka, 200); near(a.hoursDeclared, 100);
+  // …і студентське вікно з 0 год теж
+  const { parent: a2 } = computeSegmented({ ...base, premia: 200 } as any, [
+    taxed(100), { hours: 0, rateNetto: 31.4, rateBrutto: 31.4, isStudent: true, under26: true, legal: "student", facBonus: null },
+  ], allKonto);
+  near(a2.konto, 2535); near(a2.gotowka, 200);
+  // 2) різні пари ставок у вікнах: брутто — сумою вікон, як без побажання (не по мінімальній ставці)
+  const { parent: b } = computeSegmented(base as any, [taxed(100, 20, 25), taxed(100)], allKonto);
+  near(b.konto, 4535); near(b.hoursDeclared, 200); near(b.ksiegBrutto, 100 * 25 + 100 * 31.4);
+  // 3) останнє вікно студентське: бонус і премія оподаткованого вікна лишаються готівкою (premiaCash)
+  const { parent: c } = computeSegmented({ ...base, premia: 200, rule: { capH: null, capHighH: null, capThresholdH: null, capFirm: null, cashBonus: 0, stazBonus: false, stazMinHours: null, stazSteps: [], premiaCash: true } } as any, [
+    { hours: 100, rateNetto: 26.85, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus", facBonus: 1.5 },
+    { hours: 100, rateNetto: 31.4, rateBrutto: 31.4, isStudent: true, under26: true, legal: "student", facBonus: null },
+  ], allKonto);
+  assert.ok((c.gotowka ?? 0) >= 150 - 0.01, `бонус вікна 1 (150) — готівкою, а не на конто: готівка ${c.gotowka}`);
+  near((c.konto ?? 0) + (c.gotowka ?? 0), c.doWyplaty!, "конто + готівка = до виплати");
+  assert.ok((c.hoursDeclared ?? 0) <= 200 + 0.01);
+});
+
+test("порізаний рядок з побажанням — повторне ревʼю codex 22.10.2026", () => {
+  const base = {
+    city: "Люблін", factoryLabel: "TEST", factoryId: null, hoursNotified: null, rule: null,
+    premia: null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {},
+  };
+  const allKonto = { kind: "all_konto" as const, value: null };
+  const bonusWin = { hours: 100, rateNetto: 26.85, rateBrutto: 31.4, isStudent: false, under26: false, legal: "zus", facBonus: 1.5 };
+  const studWin = { hours: 100, rateNetto: 31.4, rateBrutto: 31.4, isStudent: true, under26: true, legal: "student", facBonus: null };
+  const premiaCash = { capH: null, capHighH: null, capThresholdH: null, capFirm: null, cashBonus: 0, stazBonus: false, stazMinHours: null, stazSteps: [], premiaCash: true };
+  // 1) студентське вікно останнім + хостел: бонус 150 оподаткованого вікна лишається готівкою
+  const { parent: a } = computeSegmented({ ...base, hostel: 1000 } as any, [bonusWin, studWin], allKonto);
+  near(a.gotowka, 150); near(a.konto, a.doWyplaty! - 150);
+  // 2) порядок вікон не змінює суми: студентська частка премії — на конто, оподаткована — готівкою
+  const fwd = computeSegmented({ ...base, premia: 200, rule: premiaCash } as any, [bonusWin, studWin], allKonto).parent;
+  const rev = computeSegmented({ ...base, premia: 200, rule: premiaCash } as any, [studWin, bonusWin], allKonto).parent;
+  near(fwd.konto, rev.konto!, "конто однакове за будь-якого порядку вікон");
+  near(fwd.gotowka, rev.gotowka!);
+  near(fwd.gotowka, 150 + 200 * 2685 / (2685 + 3140), "готівка = бонус + частка премії оподаткованого вікна");
+  // 3) «100 год на конто» при різних парах ставок вікон — рівно 100 księg. год
+  const taxed = (netto: number, brutto: number) => ({ hours: 100, rateNetto: netto, rateBrutto: brutto, isStudent: false, under26: false, legal: "zus", facBonus: null });
+  const { parent: c } = computeSegmented(base as any, [taxed(20, 25), taxed(25.35, 31.4)], { kind: "hours", value: 100 });
+  near(c.hoursDeclared, 100); near(c.konto, 2267.5);
+  // 4) невідома ставка брутто — księg. brutto невідоме (null), не 0
+  const { parent: d } = computeSegmented(base as any, [
+    { hours: 100, rateNetto: 26.85, rateBrutto: null, isStudent: false, under26: false, legal: "zus", facBonus: null },
+    taxed(25.35, 31.4),
+  ], { kind: "amount", value: 1000 });
+  assert.equal(d.ksiegBrutto, null);
+});
+
+test("порізаний рядок «N годин» з відрахуваннями і мінусові години вікна — третій прохід codex 22.10.2026", () => {
+  const base = {
+    city: "Люблін", factoryLabel: "TEST", factoryId: null, hoursNotified: null, rule: null,
+    premia: null, zaliczka: null, zaliczkaBd: null, hostel: null, odziez: null,
+    dojazd: null, kara: null, komornik: null, kaucja: null, potracenia: null, extras: {},
+  };
+  const win = (hours: number, netto: number, brutto: number) => ({ hours, rateNetto: netto, rateBrutto: brutto, isStudent: false, under26: false, legal: "zus", facBonus: null });
+  // «10 год» при хостелі: по 5 год кожної пари → рівно 10 księg. год
+  const { parent: a } = computeSegmented({ ...base, hostel: 100 } as any, [win(10, 30, 31.4), win(10, 20, 25)], { kind: "hours", value: 10 });
+  near(a.hoursDeclared, 10); near(a.ksiegBrutto, 5 * 31.4 + 5 * 25);
+  // мінусові години коригувального вікна не дають мінусових księg. год
+  const { parent: b } = computeSegmented({ ...base, hostel: 300, extras: { premiaEs: 50 } } as any, [win(-10, 30, 31.4), win(20, 20, 25)], { kind: "amount", value: 150 });
+  assert.ok((b.hoursDeclared ?? 0) >= 0, `години ${b.hoursDeclared}`);
 });

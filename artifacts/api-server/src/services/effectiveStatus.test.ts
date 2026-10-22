@@ -26,8 +26,12 @@ test("повністю оформлений за документами → ст
   }
 });
 
-test("студент: за документами — лише статус student із документів; вручну — чекбокс або legal_status", () => {
-  assert.equal(effectiveStudent({ isStudent: true, legalStatus: "zus" }, { status: "polak", source: "documents" }), false, "чекбокс не рятує, коли документи кажуть «оформлений»");
+test("студент: за документами — статус student; «polak» (громадянство) студентства з профілю не знімає; вручну — чекбокс або legal_status", () => {
+  // рішення 22.10.2026 (кейс Kuanyshbek): громадянство — не про навчання, поляк-студент до 26 так само без ZUS
+  assert.equal(effectiveStudent({ isStudent: true, legalStatus: "zus" }, { status: "polak", source: "documents" }), true, "polak за документами + чекбокс студента → студент");
+  assert.equal(effectiveStudent({ isStudent: false, legalStatus: "student" }, { status: "polak", source: "documents" }), true, "polak за документами + ручний статус student → студент");
+  assert.equal(effectiveStudent({ isStudent: false, legalStatus: "zus" }, { status: "polak", source: "documents" }), false, "polak без студентства в профілі → не студент");
+  assert.equal(effectiveStudent({ isStudent: true, legalStatus: "student" }, { status: "karta_pobytu", source: "documents" }), false, "інші статуси за документами — студент лише зі статусу student");
   assert.equal(effectiveStudent({ isStudent: false, legalStatus: null }, { status: "student", source: "documents" }), true);
   assert.equal(effectiveStudent({ isStudent: true, legalStatus: null }, { status: null, source: "none" }), true);
   assert.equal(effectiveStudent({ isStudent: false, legalStatus: "student" }, { status: "student", source: "manual" }), true);
