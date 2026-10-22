@@ -284,17 +284,18 @@ export async function buildTaskResolution(task: Task): Promise<{ context: TaskCo
       const c = await ua.uaContext(task);
       ctx.ua = c;
       for (const k of ua.uaSatisfied(c.stage, c.rows)) satisfied.add(k);
-      if (c.stage === 1 && c.rows.length) {
-        actions.push({ code: "ua_send_all", label: `Вислати всіх (${c.rows.length}) до powiadomienia`, kind: "api", primary: true, confirm: "Передати весь список виконавцю ступеня 2?" });
-        for (const r of c.rows) actions.push({ code: `ua_send.${r.id}`, label: `Вислати: ${r.name}`, kind: "api", bot: false });
+      // подані графіковою самою («Подано») — не висилаються далі (дзеркало uaSend)
+      const toSend = c.stage === 1 ? c.rows.filter(r => !r.submittedAt) : [];
+      if (toSend.length) {
+        actions.push({ code: "ua_send_all", label: `Вислати всіх (${toSend.length}) до powiadomienia`, kind: "api", primary: true, confirm: "Передати весь список виконавцю ступеня 2?" });
+        for (const r of toSend) actions.push({ code: `ua_send.${r.id}`, label: `Вислати: ${r.name}`, kind: "api", bot: false });
       }
-      if (c.stage === 2) {
-        for (const r of c.rows) {
-          const who = `${r.name}${r.companyName ? ` (${r.companyName})` : ""}`;
-          const coSeg = r.companyId != null ? `.${r.companyId}` : "";
-          actions.push({ code: `ua_card.${r.id}${coSeg}`, label: `Картка PSZ-PPWPU: ${who}`, kind: "modal", bot: false });
-          actions.push({ code: `ua_submitted.${r.id}${coSeg}`, label: r.submittedAt ? `Зняти «подано»: ${who}` : `Подано на praca.gov.pl: ${who}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
-        }
+      // картка/«подано» — і в ступені 2, і в ступені 1 (графікова може подати сама, 22.10.2026)
+      for (const r of c.rows) {
+        const who = `${r.name}${r.companyName ? ` (${r.companyName})` : ""}`;
+        const coSeg = r.companyId != null ? `.${r.companyId}` : "";
+        actions.push({ code: `ua_card.${r.id}${coSeg}`, label: `Картка PSZ-PPWPU: ${who}`, kind: "modal", bot: false });
+        actions.push({ code: `ua_submitted.${r.id}${coSeg}`, label: r.submittedAt ? `Зняти «подано»: ${who}` : `Подано на praca.gov.pl: ${who}`, kind: "api", bot: false, done: r.steps.entered ? "внесено" : null });
       }
       break;
     }

@@ -4027,6 +4027,7 @@ const EN: Record<string, string> = {
   "вибрано": "selected",
   "зняти": "clear",
   "Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом": "Review the data and let the robot fill the PSZ-PPWPU form on praca.gov.pl",
+  "Передати виконавцю ступеня 2 — подасть він": "Hand over to the stage 2 assignee — they will submit",
   "Технічні знімки кроків": "Technical step screenshots",
   "Контекст на порталі": "Portal context",
   "Акаунт": "Account",

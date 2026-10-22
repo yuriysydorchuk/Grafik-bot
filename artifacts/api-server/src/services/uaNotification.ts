@@ -4,7 +4,9 @@
 // виконавця, список людей в autoParams.workers):
 //   1) графіковій фабрики (→ відповідальний → фолбек правила → головний) на
 //      stage1Days-й день роботи: «нові люди чекають на powiadomienie», кнопки
-//      «Вислати» по людині / «Вислати всіх» → людина переходить у ступінь 2;
+//      «Вислати» по людині / «Вислати всіх» → людина переходить у ступінь 2,
+//      АБО графікова подає сама прямо з цієї задачі (22.10.2026): ті самі картка PSZ-PPWPU,
+//      «Подано», робот praca.gov.pl і «Додати підтвердження», що й у ступені 2;
 //   2) виконавцю ступеня 2 (params.stage2AdminId → фолбек правила → головний):
 //      по кожній людині кроки «дані зібрано» (авто з анкети/профілю), «подано на
 //      praca.gov.pl» (руками або авто після завантаження), «підтвердження внесено»
@@ -142,7 +144,7 @@ async function upsertStageTask(stage: 1 | 2, assigneeId: number | null, add: UaW
   const dueAt = add.map(w => w.dueAt).sort()[0]!;
   const minLeft = diffDays(dueAt, today);
   const checklist = stage === 1
-    ? [{ id: "", text: "Переглянути список і вислати людей до powiadomienia (кнопки нижче)", done: false, auto: "all_sent" }]
+    ? [{ id: "", text: "Вислати людей до powiadomienia або подати самостійно (кнопки нижче)", done: false, auto: "all_sent" }]
     : [{ id: "", text: "Зібрати дані по кожній людині (картка PSZ-PPWPU)", done: false, auto: "all_data" }, { id: "", text: "Подати повідомлення на praca.gov.pl по кожній людині", done: false, auto: "all_submitted" }, { id: "", text: "Завантажити підтвердження в профіль кожного", done: false, auto: "all_entered" }];
   const t = await createTask({
     kind: "task", title: titleFor(stage, distinctWorkers(add)), priority: minLeft < 0 ? "urgent" : priorityForDays(minLeft, ld.urgent, ld.warn), dueAt, assigneeAdminId: assigneeId,
@@ -220,8 +222,10 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
   const rule = await loadUaRule();
   const ld = await loadLeadDays();
   const cur = paramsOf(task).workers;
-  const move = workerId ? cur.filter(w => w.id === workerId) : cur;
-  if (!move.length) throw new Error("Людину в списку не знайдено");
+  // «Вислати всіх» не бере тих, кого графікова вже подала сама («Подано» в ступені 1) — інакше ступінь 2
+  // отримав би людину, яку вже подано (подвійна подача); такі лишаються тут до підтвердження
+  const move = workerId ? cur.filter(w => w.id === workerId) : cur.filter(w => !w.submittedAt);
+  if (!move.length) throw new Error(workerId ? "Людину в списку не знайдено" : "Усіх у списку вже подано — лишилось додати підтвердження");
   const rest = cur.filter(w => !move.some(m => uaKey(m) === uaKey(w)));
   const stamped = move.map(w => ({ ...w, sentAt: new Date().toISOString(), sentBy: actor.adminId }));
   const to = await stage2Assignee(rule);
@@ -237,10 +241,10 @@ export async function uaSend(task: Task, workerId: number | null, actor: { admin
   return workerId ? `${stamped[0]!.name} → задача «${t2.title}» (${await adminName(to)})` : `${stamped.length} ос. → задача «${t2.title}» (${await adminName(to)})`;
 }
 
-// Ступінь 2: «подано» руками (до появи підтвердження).
+// «Подано» руками (до появи підтвердження) — у ступені 2 або графіковою, що подає сама (ступінь 1).
 // companyId — який саме рядок (людина×фірма); без нього — усі рядки людини.
 export async function uaMarkSubmitted(task: Task, workerId: number, actor: { adminId: number }, companyId: number | null = null): Promise<string> {
-  if (!isUa(task) || paramsOf(task).stage !== 2) throw new Error("Це не задача ступеня 2");
+  if (!isUa(task)) throw new Error("Це не задача powiadomienia");
   const cur = paramsOf(task).workers;
   // рядок = людина×фірма: з companyId — саме він; без — єдиний рядок людини (або старий без фірми);
   // кілька рядків без вказаної фірми — помилка, інакше toggle зачепив би обидві фірми
@@ -255,12 +259,12 @@ export async function uaMarkSubmitted(task: Task, workerId: number, actor: { adm
   return w.submittedAt ? `${who}: позначку «подано» знято` : `${who}: подано на praca.gov.pl — лишилось внести підтвердження`;
 }
 
-// Ступінь 2: підтвердження (PDF/фото з praca.gov.pl) → документ powiadomienie_ua у профіль
-// (present, verified, submitted_at) → перерахунок легальності → людина зникає зі списку.
+// Підтвердження (PDF/фото з praca.gov.pl) → документ powiadomienie_ua у профіль (present, verified,
+// submitted_at) → перерахунок легальності → людина зникає зі списку (ступінь 2 або ступінь 1 — подала сама).
 // companyId — фірма рядка (людина×фірма); документ отримує employer_company_id саме цієї фірми,
 // інакше движок не зарахує його для другого роботодавця.
 export async function uaUploadConfirmation(task: Task, workerId: number, file: { relPath: string; fileName: string; mime: string | null }, submittedAt: string | null, actor: { adminId: number }, companyId: number | null = null): Promise<string> {
-  if (!isUa(task) || paramsOf(task).stage !== 2) throw new Error("Це не задача ступеня 2");
+  if (!isUa(task)) throw new Error("Це не задача powiadomienia");
   const rows = paramsOf(task).workers.filter(x => x.id === workerId);
   const w = rows.find(x => companyId == null || (x.companyId ?? null) === companyId);
   if (!w) throw new Error(companyId != null && rows.length ? "Цієї фірми немає в рядках людини — оновіть задачу" : "Людину в списку не знайдено");
@@ -311,7 +315,7 @@ export async function uaContext(task: Task): Promise<{ stage: 1 | 2; rows: UaCon
     // документ рахується для рядка лише коли виданий саме на його фірму (як у движку employerOk==="ok";
     // документ без фірми = «роботодавець невідомий», обовʼязок не закриває); старий рядок без фірми — будь-який
     const doc = docs.find(d => d.workerId === w.id && d.status !== "missing" && (w.companyId == null || d.employerCompanyId === w.companyId) && fromThisHire(d));
-    const missing = p.stage === 2 ? (await uaCard(w.id, w.companyId ?? null)).missing : [];
+    const missing = (await uaCard(w.id, w.companyId ?? null)).missing; // обидві ступені: графікова теж може подати сама
     rows.push({ ...w, daysLeft: diffDays(w.dueAt, today), missing, docId: doc?.id ?? null, docFileUrl: doc?.filePath ? `/api/worker-documents/${doc.id}/file` : null, nationality: ws.find(x => x.id === w.id)?.nationality ?? null,
       steps: { data: !missing.length, submitted: !!w.submittedAt || !!doc, entered: !!doc } });
   }

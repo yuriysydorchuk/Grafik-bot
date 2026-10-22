@@ -3,7 +3,7 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import {
   hasTestDb, resetDb, closeDb, db, app, seedAdmin, workersTable, factoriesTable, companiesTable, workerDocumentsTable,
   workerChangesTable, scheduleWeeksTable, scheduleEntriesTable, availabilityTable, contractsTable, contractFilesTable, tasksTable, taskAutoRulesTable, workerQuestionnairesTable,
@@ -129,7 +129,8 @@ test("powiadomienie UA: ступінь 1 на 3-й день графіковій
   const { adminId: vladaId, cookie } = await seedAdmin({ name: "Vlada", isMain: true });
   await db.update(taskAutoRulesTable).set({ params: { stage1Days: 3, stage2AdminId: vladaId } }).where(eq(taskAutoRulesTable.code, "ua_notification"));
   const [es] = await db.insert(companiesTable).values({ name: "ES", nip: "1111111111", regon: "222", pkd: "78.10.Z", street: "Lipowa 1", postalCode: "20-000", city: "Lublin" }).returning();
-  const [f] = await db.insert(factoriesTable).values({ name: "AGRAM", shiftCount: 2, schedulerAdminId: schedulerId, companyId: es!.id, address: "Motycz 1", contractDuties: "pakowanie owoców" }).returning();
+  // години в картці — з налаштувань фабрики (praca.gov.pl → години, 15.10.2026), не з профілю
+  const [f] = await db.insert(factoriesTable).values({ name: "AGRAM", shiftCount: 2, schedulerAdminId: schedulerId, companyId: es!.id, address: "Motycz 1", contractDuties: "pakowanie owoców", uaNotifyHours: 160 }).returning();
   const start = addDaysStr(today, -2); // сьогодні — 3-й день роботи
   const [w] = await db.insert(workersTable).values({ fullName: "Shevchenko Taras", nationality: "ukraine", companyId: es!.id, factoryId: f!.id, isActive: true, firstWorkDate: start, gender: "male", birthDate: "1990-05-05", notifyHours: 160 }).returning();
   const [late] = await db.insert(workersTable).values({ fullName: "Melnyk Oksana", nationality: "ukraine", companyId: es!.id, factoryId: f!.id, isActive: true, firstWorkDate: today }).returning(); // 1-й день — ще рано
@@ -140,7 +141,7 @@ test("powiadomienie UA: ступінь 1 на 3-й день графіковій
 
   const s1 = await syncUaNotificationTasks(today);
   assert.equal(s1.created, 1);
-  const [t1] = await db.select().from(tasksTable).where(eq(tasksTable.sourceKey, `ua1:${schedulerId}`));
+  const [t1] = await db.select().from(tasksTable).where(like(tasksTable.sourceKey, `ua1:${schedulerId}:%`));
   assert.ok(t1); assert.equal(t1!.assigneeAdminId, schedulerId); assert.equal(t1!.source, UA_SOURCE);
   const p1 = t1!.autoParams as any;
   assert.equal(p1.stage, 1); assert.deepEqual(p1.workers.map((x: any) => x.id), [w!.id], "Melnyk ще рано (1-й день)");
@@ -157,7 +158,7 @@ test("powiadomienie UA: ступінь 1 на 3-й день графіковій
   assert.match(msg, /Shevchenko/);
   const [t1b] = await db.select().from(tasksTable).where(eq(tasksTable.id, t1!.id));
   assert.equal(t1b?.status, "done", "список спорожнів → готово");
-  const [t2] = await db.select().from(tasksTable).where(eq(tasksTable.sourceKey, `ua2:${vladaId}`));
+  const [t2] = await db.select().from(tasksTable).where(like(tasksTable.sourceKey, `ua2:${vladaId}:%`));
   assert.ok(t2); assert.equal(t2!.assigneeAdminId, vladaId); assert.equal((t2!.autoParams as any).stage, 2);
   assert.ok((t2!.autoParams as any).workers[0].sentAt);
 
@@ -186,6 +187,48 @@ test("powiadomienie UA: ступінь 1 на 3-й день графіковій
   const [t2b] = await db.select().from(tasksTable).where(eq(tasksTable.id, t2!.id));
   assert.equal(t2b?.status, "auto_resolved");
   assert.equal((await recomputeWorkerLegality(w!.id, today))?.obligations[0]?.satisfied, true);
+});
+
+test("powiadomienie UA: графікова подає сама з задачі ступеня 1 — «подано» + підтвердження закривають задачу без ступеня 2", opts, async () => {
+  ensureUploadDirs();
+  const { adminId: schedulerId, cookie } = await seedAdmin({ name: "Grafikowa" });
+  const { adminId: vladaId } = await seedAdmin({ name: "Vlada", isMain: true });
+  await db.update(taskAutoRulesTable).set({ params: { stage1Days: 1, stage2AdminId: vladaId } }).where(eq(taskAutoRulesTable.code, "ua_notification"));
+  const [es] = await db.insert(companiesTable).values({ name: "ES", nip: "1111111111", regon: "222", pkd: "78.10.Z", street: "Lipowa 1", postalCode: "20-000", city: "Lublin" }).returning();
+  const [f] = await db.insert(factoriesTable).values({ name: "AGRAM", shiftCount: 2, schedulerAdminId: schedulerId, companyId: es!.id, address: "Motycz 1", contractDuties: "pakowanie owoców" }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Bondar Ivan", nationality: "ukraine", companyId: es!.id, factoryId: f!.id, isActive: true, firstWorkDate: addDaysStr(today, -1), gender: "male", birthDate: "1991-03-03", notifyHours: 160 }).returning();
+  await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: (await ensureDocumentType("status_ukr")).id, title: "UKR", status: "present" });
+  await db.insert(workerQuestionnairesTable).values({ workerId: w!.id, status: "verified", passportNumber: "FE654321", citizenship: "UKR" });
+  await recomputeWorkerLegality(w!.id, today);
+  await syncUaNotificationTasks(today);
+  const [t1] = await db.select().from(tasksTable).where(and(eq(tasksTable.source, UA_SOURCE), like(tasksTable.sourceKey, `ua1:${schedulerId}%`)));
+  assert.ok(t1); assert.equal((t1!.autoParams as any).stage, 1);
+
+  // у ступені 1 — ті самі інструменти, що й у ступені 2: дані зібрано, картка, «подано»
+  const g = await request(app).get(`/api/tasks/${t1!.id}`).set("Cookie", cookie);
+  assert.equal(g.status, 200);
+  const row = g.body.resolution.context.ua.rows[0];
+  assert.deepEqual(row.steps, { data: true, submitted: false, entered: false }, `бракує: ${row.missing.join(", ")}`);
+  const codes = g.body.resolution.actions.map((a: any) => a.code);
+  assert.ok(codes.includes(`ua_card.${w!.id}.${es!.id}`) && codes.includes(`ua_submitted.${w!.id}.${es!.id}`) && codes.includes("ua_send_all"), codes.join(","));
+  assert.equal((await request(app).get(`/api/tasks/${t1!.id}/ua-card/${w!.id}`).set("Cookie", cookie)).status, 200);
+  const sub = await request(app).post(`/api/tasks/${t1!.id}/action/ua_submitted.${w!.id}.${es!.id}`).set("Cookie", cookie).set(H).send({});
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  // подану самою людину «Вислати всіх» уже не бере (інакше Влада подала б її вдруге)
+  const g1 = await request(app).get(`/api/tasks/${t1!.id}`).set("Cookie", cookie);
+  assert.ok(!g1.body.resolution.actions.some((a: any) => a.code === "ua_send_all"));
+  const [t1s] = await db.select().from(tasksTable).where(eq(tasksTable.id, t1!.id));
+  await assert.rejects(uaSend(t1s!, null, { adminId: schedulerId, name: "Grafikowa" }), /вже подано/);
+
+  // підтвердження прямо з задачі ступеня 1 → документ у профілі на фірму рядка → задача закрита, ступінь 2 не створено
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
+  const up = await request(app).post(`/api/tasks/${t1!.id}/ua-upload/${w!.id}`).set("Cookie", cookie).set(H)
+    .field("submittedAt", today).field("companyId", String(es!.id)).attach("file", pdf, { filename: "pow.pdf", contentType: "application/pdf" });
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  const docs = await db.select().from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, w!.id), eq(workerDocumentsTable.docTypeId, (await ensureDocumentType("powiadomienie_ua")).id)));
+  assert.equal(docs.length, 1); assert.equal(docs[0]?.employerCompanyId, es!.id);
+  assert.equal((await db.select().from(tasksTable).where(eq(tasksTable.id, t1!.id)))[0]?.status, "auto_resolved");
+  assert.equal((await db.select().from(tasksTable).where(and(eq(tasksTable.source, UA_SOURCE), like(tasksTable.sourceKey, `ua2:%`)))).length, 0, "Владі нічого не пішло");
 });
 
 test("звільнення: świadectwo НЕ видається навіть з активним шаблоном (рішення 10.09.2026); zaświadczenie на підписану умову → задача send_sign → лінк у Telegram, статус sent", opts, async () => {

@@ -582,10 +582,14 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
 }
 
 // Групова задача ланцюжка powiadomienie UA: список людей з кроками по кожній, «Вислати»
-// (ступінь 1), картка даних для форми PSZ-PPWPU + завантаження підтвердження (ступінь 2).
+// (ступінь 1), картка даних для форми PSZ-PPWPU + завантаження підтвердження (ступінь 2;
+// з 22.10.2026 і в ступені 1 — графікова може подати сама, не висилаючи далі).
+// Робот praca.gov.pl — лише з cap legalization (акаунт PZ і стан подачі живуть під /praca-gov).
 function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 1 | 2; rows: UaRow[] }; run: (code: string) => void; busy: boolean; inv: () => void }) {
   const tr = useT();
   const qc = useQueryClient();
+  const me = useMe();
+  const canRobot = can(me, "legalization");
   const [card, setCard] = useState<UaRow | null>(null); // рядок = людина×фірма (картка PSZ на конкретну фірму)
   const [uploadFor, setUploadFor] = useState<UaRow | null>(null);
   const [robotQueue, setRobotQueue] = useState<UaQueueItem[] | null>(null); // подача роботом praca.gov.pl: один або черга (анкета → робот → Wydruk)
@@ -599,7 +603,7 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
     <div className="mb-2 rounded-md border border-slate-100 bg-white text-xs">
       <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
         {ua.stage === 1 ? tr("Чекають на powiadomienie") : tr("Подати powiadomienie")} · {ua.rows.length}
-        {ua.stage === 2 && <span className="ml-auto flex items-center gap-2 font-normal normal-case text-slate-400">
+        {canRobot && ua.rows.some(r => !r.steps.entered) && <span className="ml-auto flex items-center gap-2 font-normal normal-case text-slate-400">
           {picked.size > 0
             ? <><span>{tr("вибрано")}: {picked.size}</span><button onClick={() => setRobotQueue(queueOf(ua.rows.filter(r => picked.has(rowKey(r)) && !r.steps.entered)))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")} ({picked.size})</button><button onClick={() => setPicked(new Set())} className="hover:underline">{tr("зняти")}</button></>
             : <button onClick={() => setPicked(new Set(ua.rows.filter(r => !r.steps.entered).map(rowKey)))} className="hover:underline">{tr("вибрати всіх для групової подачі")}</button>}
@@ -609,26 +613,24 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
       <ul className="divide-y divide-slate-50">
         {ua.rows.map(r => (
           <li key={`${r.id}:${r.companyId ?? 0}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
-            {ua.stage === 2 && !r.steps.entered && <input type="checkbox" checked={picked.has(rowKey(r))} onChange={() => togglePick(r)} title={tr("до групової подачі")} />}
+            {canRobot && !r.steps.entered && <input type="checkbox" checked={picked.has(rowKey(r))} onChange={() => togglePick(r)} title={tr("до групової подачі")} />}
             <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
             {r.companyName && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title={tr("Фірма-роботодавець, на яку подається powiadomienie")}>{r.companyName}</span>}
             {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
             <span className="text-slate-500">{tr("з")} {r.start ? fmtD(r.start) : "—"}</span>
             <span className={tone(r.daysLeft)}>{tr("до")} {fmtD(r.dueAt)}{r.daysLeft < 0 ? ` · −${-r.daysLeft} ${tr("дн.")}` : r.daysLeft === 0 ? ` · ${tr("сьогодні")}` : ` · ${r.daysLeft} ${tr("дн.")}`}</span>
-            {ua.stage === 2 && <span className="flex flex-wrap gap-1">
+            <span className="flex flex-wrap gap-1">
               {chip(r.steps.data, tr("дані"), r.missing.length ? `${tr("бракує")}: ${r.missing.join(", ")}` : undefined)}
               {chip(r.steps.submitted, tr("подано"))}
               {chip(r.steps.entered, tr("внесено"))}
               {r.docFileUrl && <a href={r.docFileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("файл")} ↗</a>}
-            </span>}
+            </span>
             <span className="ml-auto flex flex-wrap gap-1">
-              {ua.stage === 1 && <button disabled={busy} onClick={() => run(`ua_send.${r.id}`)} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
-              {ua.stage === 2 && <>
-                <button onClick={() => setCard(r)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
-                {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}${r.companyId != null ? `.${r.companyId}` : ""}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
-                {!r.steps.entered && <button title={tr("Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом")} onClick={() => setRobotQueue(queueOf([r]))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")}</button>}
-                {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
-              </>}
+              <button onClick={() => setCard(r)} className="rounded-md border border-slate-200 bg-white px-2 py-0.5 hover:bg-slate-50">{tr("Картка PSZ-PPWPU")}</button>
+              {!r.steps.entered && <button disabled={busy} onClick={() => run(`ua_submitted.${r.id}${r.companyId != null ? `.${r.companyId}` : ""}`)} className={cn("rounded-md border px-2 py-0.5", r.submittedAt ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white hover:bg-slate-50")}>{r.submittedAt ? tr("подано ✓") : tr("Подано")}</button>}
+              {canRobot && !r.steps.entered && <button title={tr("Переглянути анкету й заповнити форму PSZ-PPWPU на praca.gov.pl роботом")} onClick={() => setRobotQueue(queueOf([r]))} className="rounded-md border border-sky-300 bg-sky-50 px-2 py-0.5 font-semibold text-sky-800 hover:bg-sky-100">{tr("Автоматична подача")}</button>}
+              {!r.steps.entered && <button onClick={() => setUploadFor(r)} className="rounded-md border border-violet-600 bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700">{tr("Додати підтвердження")}</button>}
+              {ua.stage === 1 && !r.submittedAt && !r.steps.entered && <button disabled={busy} onClick={() => run(`ua_send.${r.id}`)} title={tr("Передати виконавцю ступеня 2 — подасть він")} className="rounded-md border border-violet-300 bg-white px-2 py-0.5 font-semibold text-violet-800 hover:bg-violet-50">{tr("Вислати")} →</button>}
             </span>
           </li>
         ))}
