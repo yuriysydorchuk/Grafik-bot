@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge,
+  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge, RotateCcw, RotateCw,
 } from "lucide-react";
 import { fmtIban } from "../lib/iban";
 import { SendFileModal, printFile } from "../components/SendFileModal";
@@ -3039,7 +3039,7 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
       )}
       {/* «Автоматична подача» з плюсика Powiadomienie — робот praca.gov.pl без задачі ступеня 2 (14.10.2026) */}
       {uaQueue && <UaSubmitFlow taskId={null} queue={uaQueue} onClose={() => setUaQueue(null)} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />}
-      {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
+      {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} canRotate={canLegal || can(me, "editData") || can(me, "workerDocs")} />}
       {requestMany && <RequestDocsModal workerId={workerId} types={types} docs={docs} onClose={() => setRequestMany(false)} />}
       {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={applyPassport.isPending} onApply={() => applyPassport.mutate(passportDiff.documentId)} onClose={() => setPassportDiff(null)} />}
       {rejecting && (
@@ -3074,17 +3074,44 @@ function RejectDocModal({ doc, loading, onClose, onReject }: { doc: WorkerDocume
 // вбудовано, без переходу в нову вкладку). filePath уже віддається сервером з
 // Content-Disposition: inline (routes/admin-api.ts), тож просте <img>/<iframe>
 // на цей самий URL не тригерить завантаження.
-function DocPreviewModal({ doc, onClose }: { doc: WorkerDocument; onClose: () => void }) {
+// Перегляд файлу документа: «Скачати» завжди; фото — поворот у вигляді + «Зберегти поворот»,
+// PDF — поворот сторінки (POST /worker-documents/:id/rotate, 22.10.2026). ver — обхід кешу
+// перегляду після повороту (файл той самий URL).
+function DocPreviewModal({ doc, onClose, canRotate }: { doc: WorkerDocument; onClose: () => void; canRotate?: boolean }) {
   const t = useT();
-  const url = `/api/worker-documents/${doc.id}/file`;
+  const qc = useQueryClient();
+  const [ver, setVer] = useState(0);
+  const [page, setPage] = useState("1");
+  const base = `/api/worker-documents/${doc.id}/file`;
+  const url = ver ? `${base}?v=${ver}` : base;
   const isImage = !!doc.fileMime?.startsWith("image/");
   const isPdf = doc.fileMime === "application/pdf";
+  const rotate = async (degrees: 90 | 180 | 270, pg?: number) => {
+    try {
+      await post(`/worker-documents/${doc.id}/rotate`, { degrees, page: pg ?? null });
+      setVer(Date.now()); qc.invalidateQueries({ queryKey: ["worker-docs", doc.workerId] });
+      toast.success(t("Поворот збережено"));
+    } catch (e: any) { toast.error(e.message); }
+  };
   return (
     <Modal open onClose={onClose} title={doc.title} size="xl">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        {isPdf && canRotate && (
+          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+            {t("Повернути сторінку №")}
+            <input type="number" min={1} value={page} onChange={e => setPage(e.target.value)} className="w-14 rounded border border-slate-300 px-1 py-0.5 text-xs" />
+            <button type="button" onClick={() => void rotate(270, Number(page) || 1)} className="rounded p-1 hover:bg-slate-100" title={t("Повернути вліво")}><RotateCcw className="h-3.5 w-3.5" /></button>
+            <button type="button" onClick={() => void rotate(90, Number(page) || 1)} className="rounded p-1 hover:bg-slate-100" title={t("Повернути вправо")}><RotateCw className="h-3.5 w-3.5" /></button>
+          </span>
+        )}
+        <a href={`${base}?download=1`} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100">
+          <Download className="h-3.5 w-3.5" /> {t("Скачати")}
+        </a>
+      </div>
       {isImage ? (
-        <ZoomImage src={url} alt={doc.title} className="h-[80vh]" />
+        <ZoomImage src={url} alt={doc.title} className="h-[78vh]" downloadUrl={`${base}?download=1`} onSaveRotation={canRotate ? (d) => rotate(d) : undefined} />
       ) : isPdf ? (
-        <iframe src={url} title={doc.title} className="h-[80vh] w-full rounded-lg border border-slate-200" />
+        <iframe key={ver} src={url} title={doc.title} className="h-[78vh] w-full rounded-lg border border-slate-200" />
       ) : (
         <div className="flex flex-col items-center gap-3 py-10 text-center">
           <p className="text-sm text-slate-500">{t("Перегляд неможливий для цього типу файлу.")}</p>

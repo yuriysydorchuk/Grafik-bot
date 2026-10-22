@@ -1729,6 +1729,44 @@ router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.fields([{ name: "fi
   ok(res, d);
 });
 
+// Поворот завантаженого файлу (22.10.2026: фото боком/догори дриґом): фото — цілком (спершу
+// вирівнюємо за EXIF, як браузер показує, потім degrees), PDF — сторінка page (з 1) або всі
+// (pdf-lib setRotation). Новий файл на диску (кеш перегляду), старий — геть, поворот — у журнал документа.
+router.post("/worker-documents/:id/rotate", DOCS_RW, async (req, res) => {
+  const id = Number(req.params.id);
+  const deg = Number(req.body?.degrees);
+  if (![90, 180, 270].includes(deg)) return fail(res, 400, "degrees: 90 | 180 | 270");
+  const page = req.body?.page == null || req.body.page === "" ? null : Number(req.body.page);
+  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, fileMime: workerDocumentsTable.fileMime, fileName: workerDocumentsTable.fileName, workerId: workerDocumentsTable.workerId })
+    .from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  if (!doc?.filePath) return fail(res, 404, "Файл не прикріплено");
+  const { readDocFile } = await import("../services/workerDocuments");
+  const src = await readDocFile(doc.filePath, doc.fileMime);
+  if (!src) return fail(res, 400, "Повернути можна лише фото (JPG/PNG) або PDF");
+  let out: Buffer;
+  try {
+    if (src.mime === "application/pdf") {
+      const { PDFDocument, degrees } = await import("pdf-lib");
+      const pdf = await PDFDocument.load(new Uint8Array(src.buffer), { ignoreEncryption: true });
+      const pages = pdf.getPages();
+      if (page != null && (!Number.isInteger(page) || page < 1 || page > pages.length)) return fail(res, 400, `Сторінка має бути від 1 до ${pages.length}`);
+      pages.forEach((p, i) => { if (page == null || i === page - 1) p.setRotation(degrees((p.getRotation().angle + deg) % 360)); });
+      out = Buffer.from(await pdf.save());
+    } else {
+      const sharp = (await import("sharp")).default;
+      const upright = await sharp(src.buffer).rotate().toBuffer();
+      out = await sharp(upright).rotate(deg).toBuffer();
+    }
+  } catch (e: any) { return fail(res, 400, `Не вдалося повернути: ${e?.message ?? e}`); }
+  const ext = path.extname(doc.fileName ?? doc.filePath) || (src.mime === "application/pdf" ? ".pdf" : ".jpg");
+  const storedName = makeStoredName(`rotated${ext}`);
+  await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), out);
+  const [d] = await db.update(workerDocumentsTable).set({ filePath: path.join("worker-documents", storedName), updatedAt: new Date() }).where(eq(workerDocumentsTable.id, id)).returning();
+  deleteStoredFile(doc.filePath);
+  await documentChanged({ id, workerId: doc.workerId }, "file", { adminId: actingAdminId(req) }, [{ field: "rotation", to: page != null ? `стор. ${page}: ${deg}°` : `${deg}°` }]);
+  ok(res, d);
+});
+
 // Stream an uploaded document file (behind auth — these are personal docs).
 router.get("/worker-documents/:id/file", requireAnyCap("editData", "viewWorkers", "workerDocs", "legalization"), async (req, res) => {
   const id = Number(req.params.id);
@@ -5242,7 +5280,8 @@ router.get("/absence-attachments/:id/file", WORKERS_RO, async (req, res) => {
   if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
   if (f.fileMime) res.type(f.fileMime);
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.fileName || `absence-${id}`)}`);
+  // ?download=1 — кнопка «Скачати» (22.10.2026); без нього — перегляд
+  res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(f.fileName || `absence-${id}`)}`);
   fs.createReadStream(abs).pipe(res);
 });
 

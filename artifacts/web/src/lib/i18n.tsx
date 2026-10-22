@@ -3875,6 +3875,8 @@ const EN: Record<string, string> = {
   "усіх": "all",
   "Заповніть обов'язкові поля: {list}": "Fill in the required fields: {list}",
   "Номер паспорта": "Passport number",
+  // ── поворот/скачування фото (22.10.2026) ──
+  "Повернути вліво": "Rotate left", "Повернути вправо": "Rotate right", "Зберегти поворот": "Save rotation", "Зберегти файл повернутим": "Save the file rotated", "Поворот збережено": "Rotation saved", "Повернути сторінку №": "Rotate page no.",
   // ── новий паспорт → оновити анкету (22.10.2026) ──
   "Оновити анкету з нового паспорта?": "Update the questionnaire from the new passport?",
   "Дані підтвердженого паспорта відрізняються від анкети. Зміна запишеться в «Історію змін» профілю.": "The confirmed passport differs from the questionnaire. The change will be recorded in the profile's “Change history”.",

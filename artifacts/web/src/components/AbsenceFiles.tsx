@@ -32,13 +32,16 @@ export function AbsenceFiles({ files, compact }: { files?: AbsenceFile[]; compac
             <div className="rounded-lg border border-slate-200 bg-slate-50">
               {isPdf
                 ? <iframe src={fileUrl(open.id)} title={open.fileName ?? "PDF"} className="h-[70vh] w-full" />
-                : <ZoomImage src={fileUrl(open.id)} alt={open.fileName ?? ""} className="h-[70vh]" />}
+                : <ZoomImage src={fileUrl(open.id)} alt={open.fileName ?? ""} className="h-[70vh]" downloadUrl={`${fileUrl(open.id)}?download=1`} />}
             </div>
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span className="truncate">{open.fileName}</span>
-              <a href={fileUrl(open.id)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sky-700 hover:underline">
-                {t("Відкрити в новій вкладці")} <ExternalLink className="h-3 w-3" />
-              </a>
+              <span className="flex items-center gap-3">
+                <a href={`${fileUrl(open.id)}?download=1`} className="inline-flex items-center gap-1 text-sky-700 hover:underline">⬇ {t("Скачати")}</a>
+                <a href={fileUrl(open.id)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sky-700 hover:underline">
+                  {t("Відкрити в новій вкладці")} <ExternalLink className="h-3 w-3" />
+                </a>
+              </span>
             </div>
           </div>
         )}

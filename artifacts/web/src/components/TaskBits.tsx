@@ -13,6 +13,7 @@ import {
 } from "../lib/tasksApi";
 import { ProfileChangeModal } from "./ProfileChangeModal";
 import { PassportAnketaSyncModal, type PassportDiff } from "./PassportAnketaSyncModal";
+import { ZoomImage } from "./ZoomImage";
 import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
 import { reasonText } from "../lib/legality";
 import { Button, Badge, Modal, Input, Select, Label, Textarea, Spinner, cn } from "./ui";
@@ -504,6 +505,13 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
   const [applyChange, setApplyChange] = useState(false);
   // підтверджено паспорт, що розходиться з анкетою → «оновити анкету?» (дія passport_to_anketa.<docId>)
   const [passportDiff, setPassportDiff] = useState<PassportDiff | null>(null);
+  // фото з документа/завантаження — збільшення з поворотом і «Скачати» (22.10.2026); bust — нова версія
+  // мініатюр після збереженого повороту (той самий URL файлу)
+  const me = useMe();
+  const canRotate = can(me, "editData") || can(me, "workerDocs") || can(me, "legalization");
+  const [zoom, setZoom] = useState<{ docId: number; url: string; title: string } | null>(null);
+  const [bust, setBust] = useState(0);
+  const v = (u: string) => (bust ? `${u}?v=${bust}` : u);
   const run = useMutation({
     mutationFn: (v: { code: string; note?: string }) => post<{ message: string; questionnaireDiff?: PassportDiff | null }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note }),
     onSuccess: (d) => {
@@ -534,9 +542,10 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
               : c.document.expiresAt && <span>{tr("до")} <b className={c.document.expiresAt < todayStr() ? "text-rose-600" : "text-slate-700"}>{fmtD(c.document.expiresAt)}</b></span>}
             {c.document.requestedAt && <span className="text-amber-700">{tr("запитано")} {fmtD(c.document.requestedAt.slice(0, 10))}</span>}
             {c.document.hasFile && c.document.fileUrl && <a href={c.document.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a>}
+            {c.document.hasFile && c.document.fileUrl && <a href={`${c.document.fileUrl}?download=1`} className="text-blue-600 hover:underline">⬇ {tr("Скачати")}</a>}
             {c.document.reviewNote && <span className="text-rose-600">{tr("відхилено")}: {c.document.reviewNote}</span>}
           </div>
-          {c.document.hasFile && c.document.fileUrl && c.document.isImage && <a href={c.document.fileUrl} target="_blank" rel="noreferrer"><img src={c.document.fileUrl} alt="" className="mt-2 max-h-48 rounded-md border border-slate-200 object-contain" /></a>}
+          {c.document.hasFile && c.document.fileUrl && c.document.isImage && <button type="button" onClick={() => setZoom({ docId: c.document!.id, url: c.document!.fileUrl!, title: c.document!.title })}><img src={v(c.document.fileUrl)} alt="" className="mt-2 max-h-48 cursor-zoom-in rounded-md border border-slate-200 object-contain" /></button>}
         </div>
       )}
       {c.uploads && c.uploads.length > 0 && (
@@ -544,8 +553,8 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
           <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">📎 {tr("Файли від працівника на перевірці")} · {c.uploads.length}</div>
           {c.uploads.map(u => (
             <div key={u.id} className="rounded-md border border-emerald-100 bg-white px-3 py-2 text-xs">
-              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-slate-800">{u.typeName ?? u.title}</span>{u.uploadedAt && <span className="text-slate-400">{new Date(u.uploadedAt).toLocaleString("uk-UA")}</span>}<a href={u.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a></div>
-              {u.isImage && <a href={u.fileUrl} target="_blank" rel="noreferrer"><img src={u.fileUrl} alt="" className="mt-2 max-h-56 rounded-md border border-slate-200 object-contain" /></a>}
+              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-slate-800">{u.typeName ?? u.title}</span>{u.uploadedAt && <span className="text-slate-400">{new Date(u.uploadedAt).toLocaleString("uk-UA")}</span>}<a href={u.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{tr("Відкрити файл")} ↗</a><a href={`${u.fileUrl}?download=1`} className="text-blue-600 hover:underline">⬇ {tr("Скачати")}</a></div>
+              {u.isImage && <button type="button" onClick={() => setZoom({ docId: u.id, url: u.fileUrl, title: u.typeName ?? u.title })}><img src={v(u.fileUrl)} alt="" className="mt-2 max-h-56 cursor-zoom-in rounded-md border border-slate-200 object-contain" /></button>}
             </div>
           ))}
         </div>
@@ -583,6 +592,15 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
       {applyChange && c.worker && c.change && (
         <ProfileChangeModal workerId={c.worker.id} changes={{ effectiveLegalStatus: c.change.newValue }} title={tr("статус для виплат (за документами)")} initialFrom={c.change.effectiveDate ?? undefined}
           onClose={() => { setApplyChange(false); inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />
+      )}
+      {zoom && (
+        <Modal open onClose={() => setZoom(null)} title={zoom.title} size="xl">
+          <ZoomImage src={v(zoom.url)} alt={zoom.title} className="h-[78vh]" downloadUrl={`${zoom.url}?download=1`}
+            onSaveRotation={canRotate ? async (degrees) => {
+              try { await post(`/worker-documents/${zoom.docId}/rotate`, { degrees }); setBust(Date.now()); toast.success(tr("Поворот збережено")); }
+              catch (e: any) { toast.error(e.message); }
+            } : undefined} />
+        </Modal>
       )}
       {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={run.isPending}
         onApply={() => run.mutate({ code: `passport_to_anketa.${passportDiff.documentId}` })} onClose={() => setPassportDiff(null)} />}
