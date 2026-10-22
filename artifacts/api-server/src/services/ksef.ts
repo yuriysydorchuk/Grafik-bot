@@ -322,8 +322,20 @@ export async function syncKsef(): Promise<KsefSyncResult> {
   return result;
 }
 
+// Якір оплати — ідентифікатор фактури в призначенні переказу: її номер АБО номер
+// KSeF. Бухгалтерські системи адміністраторів вспульнот (з 10.2026) пишуть
+// «<KSeF-номер>… ___ B7_9_2026» — слеші номера замінені на «_», тож номер не
+// знаходиться, а KSeF-номер — так. Він фіксованого формату й унікальний (одна
+// фактура), тому підрядком не зачепить чужу; формат перевіряємо, щоб порожній чи
+// нестандартний ksef_number не збігся з будь-яким призначенням (так само порожній
+// номер: position('' IN …) = 1). Лише для проходів з точною сумою — у пакетному
+// (сума інша) KSeF-номер не якір: часткова оплата не має закривати всю фактуру.
+const TITLE_HAS_INVOICE = sql`((i.invoice_number <> '' AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0)
+  OR (i.ksef_number ~ '^[0-9]{10}-[0-9]{8}-[0-9A-Fa-f]{12}-[0-9A-Fa-f]{2}$'
+      AND position(upper(i.ksef_number) IN upper(coalesce(t.title, ''))) > 0))`;
+
 // Strict payment matching, three passes. The anchor is always the invoice
-// number inside the incoming transfer title; the exact gross amount
+// number (or its KSeF number) inside the incoming transfer title; the exact gross amount
 // disambiguates, because invoice numbers collide across our firms (A3/4/2026
 // exists at ES, ESO and Klinex at once) and clients sometimes pay to the
 // wrong firm's account:
@@ -332,7 +344,9 @@ export async function syncKsef(): Promise<KsefSyncResult> {
 //  3) invoice minus the same buyer's open korekta: the transfer carries the
 //     main invoice number and equals exactly invoice + korekta — closes both;
 //  4) same firm + number in title, amount differs (batch transfers covering
-//     several invoices) — only with transfers not already claimed by an exact match.
+//     several invoices) — only with transfers not already claimed by an exact match;
+//  5) sales cancelled by their korekta (same buyer, unambiguous) and zero-sum
+//     korekty — settled at the korekta date without money.
 export async function matchKsefPayments(): Promise<number> {
   let total = 0;
   const run = async (q: any) => {
@@ -345,14 +359,14 @@ export async function matchKsefPayments(): Promise<number> {
     FROM bank_transactions t
     WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
-      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND ${TITLE_HAS_INVOICE}
       AND abs(t.amount - i.gross) <= 0.02`);
   await run(sql`
     UPDATE ksef_invoices i
     SET paid_date = t.value_date, paid_txn_id = t.id, paid_via = 'bank'
     FROM bank_transactions t
     WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
-      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND ${TITLE_HAS_INVOICE}
       AND abs(t.amount - i.gross) <= 0.02`);
   await run(sql`
     WITH pairs AS (
@@ -362,7 +376,7 @@ export async function matchKsefPayments(): Promise<number> {
         AND coalesce(k.buyer_nip, '?') = coalesce(i.buyer_nip, '!')
         AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL AND k.id <> i.id
       JOIN bank_transactions t ON t.direction = 'in' AND t.value_date >= i.issue_date
-        AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+        AND ${TITLE_HAS_INVOICE}
         AND abs(t.amount - (i.gross + k.gross)) <= 0.02
       WHERE i.kind = 'sale' AND i.paid_date IS NULL AND i.manual_status IS NULL AND i.gross > 0
     )
@@ -374,8 +388,34 @@ export async function matchKsefPayments(): Promise<number> {
     FROM bank_transactions t
     WHERE i.kind = 'sale' AND i.paid_date IS NULL AND t.direction = 'in' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
-      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND i.invoice_number <> '' AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
       AND NOT EXISTS (SELECT 1 FROM ksef_invoices x WHERE x.paid_txn_id = t.id)`);
+  // sales fully cancelled by our korekta (дзеркало закупівельного fallback нижче;
+  // corrected_hash на наших продажах KSeF не заповнює): гроші не рухались, обидві
+  // ноги закриваються датою коректи. Той самий покупець (NIP) + та сама фірма +
+  // суми в нуль, ЛИШЕ коли пара однозначна в обидва боки. Кандидатів рахуємо серед
+  // УСІХ фактур покупця (і оплачених): коректа може стосуватись оплаченої — тоді це
+  // повернення клієнту (борг), і закрити нею іншу відкриту фактуру на ту саму суму
+  // не можна. Тож єдиний кандидат мусить бути ще й відкритим.
+  await run(sql`
+    WITH cand AS (
+      SELECT k.id AS kor_id, i.id AS inv_id, k.issue_date,
+             i.paid_date IS NULL AND i.manual_status IS NULL AS inv_open,
+             count(*) OVER (PARTITION BY k.id) AS n_inv,
+             count(*) OVER (PARTITION BY i.id) AS n_kor
+      FROM ksef_invoices k
+      JOIN ksef_invoices i ON i.kind = 'sale' AND i.company_id = k.company_id
+        AND i.buyer_nip IS NOT NULL AND i.buyer_nip = k.buyer_nip
+        AND i.gross > 0 AND abs(i.gross + k.gross) <= 0.02 AND i.issue_date <= k.issue_date
+      WHERE k.kind = 'sale' AND k.gross < 0 AND k.paid_date IS NULL AND k.manual_status IS NULL
+    )
+    UPDATE ksef_invoices x SET paid_date = c.issue_date, paid_via = 'korekta'
+    FROM cand c WHERE (x.id = c.inv_id OR x.id = c.kor_id) AND c.inv_open AND c.n_inv = 1 AND c.n_kor = 1`);
+  // коректа продажу на 0 zł (правка реквізитів без зміни сум) — платити нічого
+  await run(sql`
+    UPDATE ksef_invoices SET paid_date = issue_date, paid_via = 'korekta'
+    WHERE kind = 'sale' AND paid_date IS NULL AND manual_status IS NULL
+      AND abs(gross) < 0.005 AND invoice_type ILIKE 'kor%'`);
   // purchases: OUR outgoing transfer from the same firm carrying the invoice
   // number, exact gross — anything else stays manual (no amount-only heuristics)
   await run(sql`
@@ -384,7 +424,7 @@ export async function matchKsefPayments(): Promise<number> {
     FROM bank_transactions t
     WHERE i.kind = 'purchase' AND i.paid_date IS NULL AND t.direction = 'out' AND t.value_date >= i.issue_date
       AND t.company_id = i.company_id
-      AND position(upper(i.invoice_number) IN upper(coalesce(t.title, ''))) > 0
+      AND ${TITLE_HAS_INVOICE}
       AND abs(t.amount - i.gross) <= 0.02`);
   // purchases: transfer to a KNOWN supplier IBAN from the counterparty dictionary
   // + exact gross. Identity comes from the IBAN (not the amount alone — the owner's
