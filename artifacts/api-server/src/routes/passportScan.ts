@@ -33,6 +33,7 @@ import { nextWorkerCode } from "../lib/workerCode";
 import { findLikelyDuplicate } from "../bot/workerMatch";
 import { bot } from "../bot/instance";
 import { logger } from "../lib/logger";
+import { journalQuestionnaire } from "../services/questionnaireJournal";
 import { ensureDocumentType, applyWorkerDocumentUpload } from "../services/workerDocuments";
 import { requestRehire } from "../bot/handlers/rehire";
 import { validatePassport, validateQuestionnaire, passportIssuedError, trimStr, CONSENTS_VERSION } from "../lib/questionnaireRules";
@@ -311,9 +312,11 @@ router.post("/passport-scan/:token/confirm", async (req, res) => {
     // Upsert — для isExistingWorker анкета могла вже частково існувати
     // (напр. дозаповнена раніше через бот без скану паспорта).
     const qPatch = { ocrRaw: { ...draftJson, enteredManually }, ocrDocId: doc!.id, passportNumber, passportCountry, passportIssuedAt, passportExpiresAt, citizenship, sex };
-    const [existingQ] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, worker.id));
+    const [existingQ] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, worker.id));
     if (existingQ) await db.update(workerQuestionnairesTable).set(qPatch).where(eq(workerQuestionnairesTable.workerId, worker.id));
     else await db.insert(workerQuestionnairesTable).values({ workerId: worker.id, ...qPatch });
+    // історія анкети: лише заміна вже вписаних значень (adminId NULL = сам працівник)
+    await journalQuestionnaire(worker.id, existingQ, qPatch, null, { onlyOverwrites: true });
 
     // expiresAt продовжуємо на ANKETA_TOKEN_TTL_MS — токен далі живе для кроку анкети
     // (questionnaire нижче), яку працівник може дозаповнити пізніше за тим самим лінком з бота.
@@ -403,7 +406,7 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   if (new Date(row.expiresAt).getTime() < Date.now()) return fail(res, 404, "Термін дії лінку вичерпано.");
 
   const b = req.body ?? {};
-  const [workerRow] = await db.select({ birthDate: workersTable.birthDate, gender: workersTable.gender, firstName: workersTable.firstName, lastName: workersTable.lastName })
+  const [workerRow] = await db.select({ birthDate: workersTable.birthDate, gender: workersTable.gender, firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName })
     .from(workersTable).where(eq(workersTable.id, row.workerId));
 
   // Ім'я/по-батькові/прізвище (лише коли кроку паспорта не було — needsPassportScan=false):
@@ -469,9 +472,12 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   // Upsert — з purpose=anketa (дозаповнення пізніше) рядка анкети може ще
   // не існувати взагалі (confirm(), що завжди його створює, для anketa-токена
   // не викликався — нема кроку сканування паспорта).
-  const [existing] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, row.workerId));
+  const [existing] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, row.workerId));
   if (existing) await db.update(workerQuestionnairesTable).set(patch).where(eq(workerQuestionnairesTable.workerId, row.workerId));
   else await db.insert(workerQuestionnairesTable).values({ workerId: row.workerId, ...patch });
+  // історія анкети: перша подача — не «зміна», журналимо лише заміну вписаного (adminId NULL = працівник)
+  await journalQuestionnaire(row.workerId, { ...existing, firstName: workerRow?.firstName, middleName: workerRow?.middleName, lastName: workerRow?.lastName },
+    { ...patch, ...workerPatch }, null, { onlyOverwrites: true });
 
   // PESEL — канонічне поле на workersTable (не дублюємо в анкеті). fullName НЕ
   // чіпаємо — канонічне джерело для сортування/матчингу/бота лишається як є.

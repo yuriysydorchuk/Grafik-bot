@@ -22,6 +22,7 @@ import { releaseSourcesForRows, remarkSources, findSourceConflicts, releasedCoun
 import { loadRateRules } from "../services/rateRules";
 import { loadNotifyHours, resolveNotifyHours, setFactoryNotifyHours } from "../services/notifyHours";
 import { nameCaps } from "../services/drive";
+import { isQuestionnaireField } from "../services/questionnaireJournal";
 import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
 import { listaRecords, listaXlsxBuffer } from "../services/gratyfikantExport";
@@ -311,7 +312,8 @@ async function pendingJournalForScope(month: string, lock: LockRow, workerIds: n
     .innerJoin(workersTable, eq(workerChangesTable.workerId, workersTable.id))
     .where(and(
       inArray(workerChangesTable.workerId, workerIds),
-      sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`))
+      sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`,
+      sql`${workerChangesTable.field} NOT LIKE 'q.%'`)) // історія анкети (services/questionnaireJournal.ts) — поза сводною
     .orderBy(asc(workerChangesTable.createdAt));
   return raw.filter(({ c }) => c.createdAt > lock.lockedAt
     || (c.reviewDismissedAt == null && !appliedCoversScope(c, month, lock)));
@@ -990,7 +992,8 @@ router.get("/svodni", requireCap("svodni"), async (req: AuthedRequest, res) => {
       const nextMonthStart = sm === 12 ? `${sy! + 1}-01-01` : `${sy}-${String(sm! + 1).padStart(2, "0")}-01`;
       const changes = await db.select().from(workerChangesTable).where(and(
         inArray(workerChangesTable.workerId, workerIds),
-        sql`${workerChangesTable.effectiveDate} < ${nextMonthStart}`));
+        sql`${workerChangesTable.effectiveDate} < ${nextMonthStart}`,
+        sql`${workerChangesTable.field} NOT LIKE 'q.%'`)); // правка анкети сводну не застарює
       for (const l of lockRows) {
         const stale = raw.some(({ r }) => r.workerId != null
           && isLocked([l], r.city, r.factoryLabel)
@@ -2293,6 +2296,7 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
   if (["fired", "restored"].includes(entry.field))
     return fail(res, 400, "звільнення/поновлення скасовуються кнопками профілю");
   if (entry.field === "selfTransport") return fail(res, 400, "«доїжджає сам» правиться періодами у профілі (Транспорт)");
+  if (isQuestionnaireField(entry.field)) return fail(res, 400, "Зміни анкети — історія; значення правиться в анкеті");
   // гейти — ті самі, що в застосуванні змін
   if (FINANCE_TRACKED.has(entry.field) && !hasCap(req.admin!.role, req.admin!.caps, "viewFinance")) return fail(res, 403, "forbidden");
   if (SENSITIVE_TRACKED.has(entry.field) && !canSensitive(req)) return fail(res, 403, "forbidden");

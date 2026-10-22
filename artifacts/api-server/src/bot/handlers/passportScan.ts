@@ -114,7 +114,7 @@ export function registerPassportScan(bot: Telegraf<any>) {
       const buf = Buffer.from(await (await fetch(link.href)).arrayBuffer());
       if (buf.length > 15 * 1024 * 1024) return ctx.reply(tb(al, "Файл завеликий (до 15 МБ)."));
 
-      const { draft, mrz } = await applyPassportScan(workerId, buf, fileName);
+      const { draft, mrz } = await applyPassportScan(workerId, buf, fileName, admin.id);
       const mrzNote = mrz
         ? (mrz.documentNumberValid && mrz.compositeValid ? tb(al, "\n✅ MRZ-зона валідна (чек-суми збігаються).") : tb(al, "\n⚠️ MRZ-зона знайдена, але чек-суми не збігаються — перевір скан."))
         : "";

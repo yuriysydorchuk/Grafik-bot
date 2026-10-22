@@ -207,6 +207,13 @@ export default function WorkerDetail() {
   // viewWorkers-only (напр. бухгалтерія): бачить картку, інлайн-поля — нередаговані
   const canEdit = can(me, "editData");
   const canLifecycle = canEdit || can(me, "workerLifecycle"); // звільнити / виповідзення / відновити (офіс-менеджер)
+  // телефон живе лише в анкеті → правка тим самим PUT, що й модалка анкети (cap workerDocs)
+  const canEditPhone = can(me, "workerDocs");
+  const phoneSave = useMutation({
+    mutationFn: (phone: string) => put(`/workers/${id}/questionnaire`, { phone }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-questionnaire", Number(id)] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Збережено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const [pendingChange, setPendingChange] = useState<{ changes: Record<string, unknown>; title: string; from?: string } | null>(null);
   const requestChange = canSvodni ? (changes: Record<string, unknown>, title: string, from?: string) => setPendingChange({ changes, title, from }) : undefined;
 
@@ -402,11 +409,16 @@ export default function WorkerDetail() {
                 )}
               </span>
             </InfoRow>
-            {/* Телефон (20.09.2026): читається з анкети працівника (у workers колонки немає), у профілі
-                не редагується — анкета «яка є, така є» (рішення власника); фолбек — картка кандидата */}
+            {/* Телефон (20.09.2026): читається з анкети працівника (у workers колонки немає); фолбек —
+                картка кандидата. З 20.10.2026 редагується й тут — пишеться в анкету (одне джерело) */}
             <InfoRow icon={Phone} label={t("Телефон")}>
               <span className="flex flex-wrap items-center gap-2">
-                {w.phone ? (
+                {canEditPhone ? (
+                  <>
+                    <InlineText value={w.phone ?? ""} placeholder={t("немає в анкеті")} width="w-36" onSave={v => phoneSave.mutate(v.trim())} />
+                    {w.phone && <span className="text-xs text-slate-400">{w.phoneSource === "candidate" ? t("з картки кандидата") : t("з анкети")}</span>}
+                  </>
+                ) : w.phone ? (
                   <>
                     <a href={`tel:${w.phone.replace(/[^\d+]/g, "")}`} className="font-medium text-slate-700 hover:text-red-600">{w.phone}</a>
                     <span className="text-xs text-slate-400">{w.phoneSource === "candidate" ? t("з картки кандидата") : t("з анкети")}</span>
@@ -870,14 +882,17 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   useEffect(() => { setForm(q ?? {}); }, [q]);
   useEffect(() => { if (worker) setName({ firstName: worker.firstName ?? "", middleName: worker.middleName ?? "", lastName: worker.lastName ?? "" }); }, [worker]);
   const inv = () => qc.invalidateQueries({ queryKey: ["worker-questionnaire", workerId] });
+  // status не шлемо: форма — це весь рядок з GET, а сервер приймає лише draft|submitted
+  // (verified — через /verify) → перевірену анкету не можна було зберегти (400), а
+  // «submitted» щоразу переписував submittedAt (20.10.2026)
   const save = useMutation({
-    mutationFn: () => put(`/workers/${workerId}/questionnaire`, { ...form, ...name }),
-    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); toast.success(t("Анкету збережено")); },
+    mutationFn: () => { const { status: _status, ...fields } = form; return put(`/workers/${workerId}/questionnaire`, { ...fields, ...name }); },
+    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker", String(workerId)] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Анкету збережено")); },
     onError: (e: any) => toast.error(e.message),
   });
   const verify = useMutation({
     mutationFn: () => post(`/workers/${workerId}/questionnaire/verify`),
-    onSuccess: () => { inv(); toast.success(t("Анкету підтверджено")); },
+    onSuccess: () => { inv(); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Анкету підтверджено")); },
     onError: (e: any) => toast.error(e.message),
   });
   // OCR паспорта (Document AI): фото/скан → чернетка полів анкети. Не чіпає
@@ -886,7 +901,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   const scan = useMutation({
     mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload<{ nameDraft?: { firstName: string | null; middleName: string | null; lastName: string | null } }>(`/workers/${workerId}/passport-scan`, fd); },
     onSuccess: (r) => {
-      inv();
+      inv(); qc.invalidateQueries({ queryKey: ["worker-changes"] });
       // Не перезаписуємо те, що вже вписано в цій сесії — лише добираємо порожнє.
       if (r.nameDraft) setName(n => ({
         firstName: n.firstName || r.nameDraft!.firstName || "",
@@ -1919,7 +1934,11 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   const toggleFactory = toggleIn(setCheckedFactory, factoryCandidates);
   const toggleStandard = toggleIn(setCheckedStandard, standardCandidates);
 
-  const setPayoutMethod = useMutation({ mutationFn: (method: "konto" | "reka") => put(`/workers/${workerId}/questionnaire`, { payoutMethod: method }) });
+  const qc = useQueryClient();
+  const setPayoutMethod = useMutation({
+    mutationFn: (method: "konto" | "reka") => put(`/workers/${workerId}/questionnaire`, { payoutMethod: method }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["worker-changes"] }),
+  });
   const onTogglePayout = (cash: boolean) => {
     setPayoutCash(cash);
     setPayoutMethod.mutate(cash ? "reka" : "konto");
@@ -4171,6 +4190,33 @@ export function IssueClothingModal({ workerId, onClose, onSaved }: { workerId?: 
 }
 
 // Історія змін профілю: журнал worker_changes (хто/що/коли, з якої дати діє)
+// Історія анкети — записи worker_changes `q.<поле>` (services/questionnaireJournal.ts, 20.10.2026):
+// підписи — ті самі, що в модалці анкети; гранульні адреси — «Адреса …: Województwo» тощо
+const Q_FIELD_LABEL: Record<string, string> = {
+  status: "Статус анкети", payoutMethod: "Спосіб виплати",
+  firstName: "Ім'я", middleName: "Друге ім'я", lastName: "Прізвище",
+  passportNumber: "Номер паспорта", passportCountry: "Країна паспорта", passportIssuedAt: "Паспорт видано", passportExpiresAt: "Паспорт дійсний до",
+  birthPlace: "Місце народження", sex: "Стать (документ)", citizenship: "Громадянство",
+  addressPl: "Адреса в Польщі", postalCode: "Поштовий індекс", city: "Місто/gmina", addressRegistered: "Адреса замельдування",
+  motherName: "Імʼя мами", fatherName: "Імʼя тата", bankName: "Банк", bankIban: "IBAN", phone: "Телефон", email: "Email",
+  taxOffice: "Urząd skarbowy", nfzBranch: "NFZ", emergencyContact: "Контакт для екстрених випадків",
+  isStudent: "Студент", schoolName: "Навчальний заклад", hasOtherEmployment: "Є інша робота", otherEmploymentNote: "Деталі іншої зайнятості",
+  isRegisteredUnemployed: "Зареєстрований(а) як безробітний(а) в PL", nip: "NIP", taxOfficeAddress: "Адреса Urzędu Skarbowego",
+  pit0: "Ulga dla młodych — 0% PIT (до 26 років)", seriaINumerDowodu: "Seria i numer dowodu", waivesTaxAdvance: "Відмова від авансу податку",
+  ankietaInnyPracodawca: "Інший роботодавець (ZUS)", ankietaEmeryt: "Емерит", ankietaRencista: "Рецист (інвалідність — пенсія)",
+  ankietaNiepelnosprawnosc: "Інвалідність", ankietaSkladkaChorobowa: "Хоче хворобову складку (добровільно)",
+};
+const Q_ADDR_PART: Record<string, string> = {
+  Wojewodztwo: "Województwo", Powiat: "Powiat", Gmina: "Gmina", Miejscowosc: "Miejscowość", Ulica: "Ulica", NumerDomu: "Numer domu", KodPocztowy: "Kod pocztowy",
+};
+const isQField = (field: string) => field.startsWith("q.");
+function qFieldLabel(field: string, t: (s: string) => string): string {
+  const key = field.slice(2);
+  const m = key.match(/^(reg|zam)([A-Z]\w*)$/);
+  const label = m ? `${t(m[1] === "reg" ? "Адреса замельдування" : "Адреса проживання")}: ${Q_ADDR_PART[m[2]!] ?? m[2]}` : t(Q_FIELD_LABEL[key] ?? key);
+  return `${t("Анкета")} · ${label}`;
+}
+
 function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
@@ -4200,6 +4246,13 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
   const { data: positions = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ["positions"], queryFn: () => get("/positions") });
   const showVal = (field: string, v: string | null, withDates = false): string => {
     if (v == null || v === "") return "—";
+    if (isQField(field)) {
+      const k = field.slice(2);
+      if (k === "status") return t(QUESTIONNAIRE_STATUS[v]?.label ?? v);
+      if (k === "sex") return v === "M" ? t("Чоловіча") : v === "F" ? t("Жіноча") : v;
+      if (k === "payoutMethod") return v === "reka" ? t("Готівка") : v;
+      return fmtVal(v, t);
+    }
     if (field === "factoryId" || field === "factoryEnded" || field === "factoryAdded") return factories.find(f => String(f.id) === v)?.name ?? v;
     if (field === "terminationDate") return v.replace(/ @(\d+)$/, (_m, id) => ` · ${factories.find(f => String(f.id) === id)?.name ?? `#${id}`}`);
     if (field === "positionId") return positions.find(p => String(p.id) === v)?.name ?? v;
@@ -4221,16 +4274,16 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
       <div className="max-h-80 divide-y divide-slate-100 overflow-auto">
         {changes.map(c => (
           <div key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-5 py-2 text-sm">
-            <span className="font-medium text-slate-700">{t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}{c.factoryName ? ` · ${c.factoryName}` : ""}:</span>
+            <span className="font-medium text-slate-700">{isQField(c.field) ? qFieldLabel(c.field, t) : t(CHANGE_FIELD_LABEL[c.field] ?? c.field)}{c.factoryName ? ` · ${c.factoryName}` : ""}:</span>
             {(() => { const wd = c.field === "selfTransport" && !!c.oldValue?.startsWith("self") && !!c.newValue?.startsWith("self"); return (
               <span className="text-slate-500">{showVal(c.field, c.oldValue, wd)} → <span className="font-medium text-slate-700">{showVal(c.field, c.newValue, wd)}</span></span>
             ); })()}
-            <span className="rounded bg-sky-50 px-1.5 text-xs font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>
+            {!isQField(c.field) && <span className="rounded bg-sky-50 px-1.5 text-xs font-medium text-sky-700">{t("діє з")} {c.effectiveDate}</span>}
             {!!c.appliedRows?.length && <span className="rounded bg-emerald-50 px-1.5 text-xs text-emerald-700">{t("сводні: {n}", { n: c.appliedRows.length })}</span>}
             {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
-              {c.adminName ?? "—"} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
-              {canUndo && !["fired", "restored", "selfTransport"].includes(c.field) && (
+              {c.adminName ?? (isQField(c.field) ? t("працівник") : "—")} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
+              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport"].includes(c.field) && (
                 <button type="button"
                   title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
                   onClick={async () => {

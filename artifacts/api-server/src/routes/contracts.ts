@@ -30,6 +30,7 @@ import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUp
 import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature, EVENT_KINDS } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
+import { journalQuestionnaire } from "../services/questionnaireJournal";
 import { randomInviteCode } from "../lib/invite";
 import { sendSignLink } from "../bot/notify";
 import { logger } from "../lib/logger";
@@ -118,6 +119,8 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   const [q] = existing
     ? await db.update(workerQuestionnairesTable).set(patch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...patch }).returning();
+  const adminId = (req as AuthedRequest).admin?.adminId ?? null;
+  await journalQuestionnaire(workerId, existing, patch, adminId); // історія: хто / з чого на що
   // анкета → профіль: рахунок з анкети стає рахунком профілю (services/questionnaireSync.ts)
   if (patch.bankIban !== undefined) await (await import("../services/questionnaireSync")).syncQuestionnaireToProfile(workerId);
   // поля, які людина реально змінила цим збереженням — їх значення виграє над профілем
@@ -132,7 +135,12 @@ router.put("/workers/:id/questionnaire", WD, async (req, res) => {
   if (body.firstName !== undefined && String(body.firstName).trim()) namePatch.firstName = String(body.firstName).trim();
   if (body.middleName !== undefined) namePatch.middleName = String(body.middleName).trim() || null;
   if (body.lastName !== undefined && String(body.lastName).trim()) namePatch.lastName = String(body.lastName).trim();
-  if (Object.keys(namePatch).length) await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
+  if (Object.keys(namePatch).length) {
+    const [nameBefore] = await db.select({ firstName: workersTable.firstName, middleName: workersTable.middleName, lastName: workersTable.lastName })
+      .from(workersTable).where(eq(workersTable.id, workerId));
+    await db.update(workersTable).set(namePatch).where(eq(workersTable.id, workerId));
+    await journalQuestionnaire(workerId, nameBefore, namePatch, adminId);
+  }
   // анкета → профіль (громадянство/стать) + перерахунок світлофорів легальності
   await syncProfileFromQuestionnaire(workerId, {
     citizenship: q?.citizenship ?? null, sex: q?.sex ?? null,
@@ -183,11 +191,12 @@ async function syncProfileFromQuestionnaire(
 
 router.post("/workers/:id/questionnaire/verify", WD, async (req: AuthedRequest, res) => {
   const workerId = Number(req.params.id);
-  const [existing] = await db.select({ id: workerQuestionnairesTable.id }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
+  const [existing] = await db.select({ id: workerQuestionnairesTable.id, status: workerQuestionnairesTable.status }).from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   if (!existing) return fail(res, 404, "Анкета ще не заповнена");
   const [q] = await db.update(workerQuestionnairesTable).set({
     status: "verified", verifiedBy: req.admin?.adminId ?? null, verifiedAt: new Date(), updatedAt: new Date(),
   }).where(eq(workerQuestionnairesTable.workerId, workerId)).returning();
+  await journalQuestionnaire(workerId, existing, { status: "verified" }, req.admin?.adminId ?? null);
   await syncProfileFromQuestionnaire(workerId, {
     citizenship: q?.citizenship ?? null, sex: q?.sex ?? null,
     passportNumber: q?.passportNumber ?? null, passportExpiresAt: q?.passportExpiresAt ?? null,
@@ -204,7 +213,7 @@ const uploadScan = multer({ storage: multer.memoryStorage(), limits: { fileSize:
 
 const PASSPORT_DRAFT_FIELDS = ["passportNumber", "passportCountry", "passportIssuedAt", "passportExpiresAt", "citizenship", "sex"] as const;
 
-export async function applyPassportScan(workerId: number, rawBuffer: Buffer, rawName: string): Promise<{
+export async function applyPassportScan(workerId: number, rawBuffer: Buffer, rawName: string, adminId: number | null = null): Promise<{
   documentId: number; questionnaire: typeof workerQuestionnairesTable.$inferSelect; draft: PassportDraft; mrz: MrzResult | null;
   nameDraft: { firstName: string | null; middleName: string | null; lastName: string | null };
 }> {
@@ -236,6 +245,8 @@ export async function applyPassportScan(workerId: number, rawBuffer: Buffer, raw
   const [questionnaire] = existing
     ? await db.update(workerQuestionnairesTable).set(ocrPatch).where(eq(workerQuestionnairesTable.workerId, workerId)).returning()
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...ocrPatch }).returning();
+  // історія: лише заміна вже вписаних значень (перша OCR-чернетка — не «зміна»)
+  await journalQuestionnaire(workerId, existing, ocrPatch, adminId, { onlyOverwrites: true });
 
   // номер і строк паспорта з MRZ → на документ (список документів і движок легальності читають number/expires_at)
   const docPatch: Record<string, unknown> = {};
@@ -262,7 +273,7 @@ router.post("/workers/:id/passport-scan", WD, uploadScan.single("file"), async (
   if (!realMime || !SCAN_MIME_WHITELIST.has(realMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
   if (!passportOcrConfigured()) return fail(res, 501, "OCR паспорта не налаштований на цьому сервері (GOOGLE_DOCAI_KEY_FILE)");
   try {
-    const result = await applyPassportScan(workerId, req.file.buffer, Buffer.from(req.file.originalname, "latin1").toString("utf8"));
+    const result = await applyPassportScan(workerId, req.file.buffer, Buffer.from(req.file.originalname, "latin1").toString("utf8"), (req as AuthedRequest).admin?.adminId ?? null);
     ok(res, result);
   } catch (e: any) {
     fail(res, 400, e?.message ?? "Не вдалося розпізнати паспорт");

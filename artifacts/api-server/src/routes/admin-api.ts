@@ -1009,8 +1009,11 @@ router.get("/workers/:id/changes", WORKERS_RO, async (req, res) => {
   // закритий шар (svodniSensitive), як і в GET /workers/:id
   const fin = canFinance(req);
   const sens = hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "svodniSensitive");
+  // історія анкети (q.*: паспорт, IBAN, адреси) — лише тим, хто бачить саму анкету
+  const docs = hasCap((req as AuthedRequest).admin!.role, (req as AuthedRequest).admin!.caps, "workerDocs");
   ok(res, rows
-    .filter(({ c }) => (fin || !["hourlyRate", "hourlyRateNetto"].includes(c.field))
+    .filter(({ c }) => (docs || !c.field.startsWith("q."))
+      && (fin || !["hourlyRate", "hourlyRateNetto"].includes(c.field))
       // дзеркало SENSITIVE_TRACKED (svodni.ts): бонусні галочки і дата працевлаштування — теж закритий шар
       && (sens || !["payoutPrefKind", "payoutPrefValue", "agramStazBonus", "agramCashBonus", "employmentStartDate"].includes(c.field)))
     .map(({ c, adminName, factoryName }) => ({
