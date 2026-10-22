@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { useRoute } from "wouter";
 import { Card, Button, Spinner } from "../components/ui";
+import { shrinkImageFile } from "../lib/shrinkFile";
 
 type Lang = "uk" | "en" | "es" | "ru" | "pl";
 const STR: Record<string, Record<Lang, string>> = {
@@ -16,11 +17,12 @@ const STR: Record<string, Record<Lang, string>> = {
   pending: { uk: "✅ Отримано — офіс перевіряє", en: "✅ Received — the office is checking", es: "✅ Recibido — la oficina lo revisa", ru: "✅ Получено — офис проверяет", pl: "✅ Odebrano — biuro sprawdza" },
   rejected: { uk: "❌ Попередній файл відхилено: {note}. Надішліть, будь ласка, ще раз.", en: "❌ The previous file was rejected: {note}. Please send it again.", es: "❌ El archivo anterior fue rechazado: {note}. Envíalo de nuevo, por favor.", ru: "❌ Предыдущий файл отклонён: {note}. Пожалуйста, отправьте ещё раз.", pl: "❌ Poprzedni plik został odrzucony: {note}. Prześlij go ponownie." },
   takePhoto: { uk: "📷 Зробити фото", en: "📷 Take a photo", es: "📷 Hacer una foto", ru: "📷 Сделать фото", pl: "📷 Zrób zdjęcie" },
-  chooseFile: { uk: "📎 Вибрати файл / PDF", en: "📎 Choose a file / PDF", es: "📎 Elegir archivo / PDF", ru: "📎 Выбрать файл / PDF", pl: "📎 Wybierz plik / PDF" },
+  chooseFile: { uk: "📎 Вибрати з галереї / PDF (можна кілька)", en: "📎 Choose from gallery / PDF (several allowed)", es: "📎 Elegir de la galería / PDF (se pueden varios)", ru: "📎 Выбрать из галереи / PDF (можно несколько)", pl: "📎 Wybierz z galerii / PDF (można kilka)" },
   uploading: { uk: "Надсилаю…", en: "Uploading…", es: "Subiendo…", ru: "Отправляю…", pl: "Wysyłanie…" },
   done: { uk: "Дякуємо! Файл отримано — офіс перевірить його і за потреби напише вам у бот.", en: "Thank you! The file has been received — the office will check it and message you in the bot if needed.", es: "¡Gracias! Hemos recibido el archivo — la oficina lo revisará y te escribirá en el bot si hace falta.", ru: "Спасибо! Файл получен — офис проверит его и при необходимости напишет вам в бот.", pl: "Dziękujemy! Plik został odebrany — biuro go sprawdzi i w razie potrzeby napisze w bocie." },
-  more: { uk: "Ще один файл цього ж документа", en: "One more file for the same document", es: "Otro archivo del mismo documento", ru: "Ещё один файл этого же документа", pl: "Jeszcze jeden plik tego dokumentu" },
-  hint: { uk: "Чітке фото при доброму освітленні, весь документ у кадрі. Дві сторони — двома фото.", en: "A clear photo in good light with the whole document in the frame. Two sides — two photos.", es: "Foto nítida con buena luz y todo el documento en el encuadre. Dos caras — dos fotos.", ru: "Чёткое фото при хорошем освещении, весь документ в кадре. Две стороны — два фото.", pl: "Wyraźne zdjęcie w dobrym świetle, cały dokument w kadrze. Dwie strony — dwa zdjęcia." },
+  more: { uk: "📷 Додати ще фото до цього документа", en: "📷 Add another photo to this document", es: "📷 Añadir otra foto a este documento", ru: "📷 Добавить ещё фото к этому документу", pl: "📷 Dodaj kolejne zdjęcie do tego dokumentu" },
+  hint: { uk: "Чітке фото при доброму освітленні, весь документ у кадрі. Кілька сторінок (дві сторони, штампи, кілька довідок) — фотографуйте по черзі або виберіть кілька фото з галереї: усе збережеться в один документ.", en: "A clear photo in good light with the whole document in the frame. Several pages (two sides, stamps, several certificates) — take them one by one or pick several photos from the gallery: everything is saved as one document.", es: "Foto nítida con buena luz y todo el documento en el encuadre. Varias páginas (dos caras, sellos, varios certificados): hazlas una a una o elige varias fotos de la galería; todo se guarda como un solo documento.", ru: "Чёткое фото при хорошем освещении, весь документ в кадре. Несколько страниц (две стороны, штампы, несколько справок) — фотографируйте по очереди или выберите несколько фото из галереи: всё сохранится в один документ.", pl: "Wyraźne zdjęcie w dobrym świetle, cały dokument w kadrze. Kilka stron (dwie strony, pieczątki, kilka zaświadczeń) — rób zdjęcia po kolei albo wybierz kilka z galerii: wszystko zapisze się jako jeden dokument." },
+  sentN: { uk: "Надіслано файлів: {n} — усі в цьому документі", en: "Files sent: {n} — all in this document", es: "Archivos enviados: {n} — todos en este documento", ru: "Отправлено файлов: {n} — все в этом документе", pl: "Wysłano plików: {n} — wszystkie w tym dokumencie" },
   failed: { uk: "Не вдалося надіслати. Спробуйте інший файл або пізніше.", en: "Upload failed. Try another file or later.", es: "No se pudo enviar. Prueba con otro archivo o más tarde.", ru: "Не удалось отправить. Попробуйте другой файл или позже.", pl: "Nie udało się wysłać. Spróbuj inny plik lub później." },
   // дані документа, які вписує сам працівник (document_types.worker_fields) — усі обовʼязкові
   fieldsTitle: { uk: "Впишіть дані з документа:", en: "Enter the details from the document:", es: "Introduce los datos del documento:", ru: "Впишите данные из документа:", pl: "Wpisz dane z dokumentu:" },
@@ -63,6 +65,7 @@ export default function DocUpload() {
   const [state, setState] = useState<"loading" | "ok" | "invalid">("loading");
   const [busy, setBusy] = useState<number | null>(null);
   const [doneFor, setDoneFor] = useState<Set<number>>(new Set());
+  const [sentCount, setSentCount] = useState<Record<number, number>>({}); // скільки файлів надіслано в цій сесії
   const [error, setError] = useState<string | null>(null);
   // введені дані по типу документа; серверні помилки по полю (коди → локалізовані рядки)
   const [vals, setVals] = useState<Record<number, Record<string, string>>>({});
@@ -81,13 +84,17 @@ export default function DocUpload() {
     } catch { setState("invalid"); }
   };
   useEffect(() => { void load(); }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
-  const send = async (it: Item, file: File) => {
+  // files — одне фото з камери або кілька з галереї; після першого завантаження (pending) — дозапис
+  // сторінок у той самий документ (append), а не заміна файлу
+  const send = async (it: Item, files: File[], append: boolean) => {
     const docTypeId = it.docTypeId;
     setTouched(p => ({ ...p, [docTypeId]: true }));
     if (Object.keys(checkFields(it.fields, vals[docTypeId] ?? {}, today)).length) return; // підсвітка полів, файл не шлемо
     setBusy(docTypeId); setError(null); setSrvErrs(p => ({ ...p, [docTypeId]: {} }));
     try {
-      const fd = new FormData(); fd.append("docTypeId", String(docTypeId)); fd.append("file", file);
+      const fd = new FormData(); fd.append("docTypeId", String(docTypeId));
+      for (const f of files) fd.append("files", f.type.startsWith("image/") ? await shrinkImageFile(f) : f);
+      if (append) fd.append("append", "1");
       const picked: Record<string, string> = {}; for (const k of it.fields) picked[k] = (vals[docTypeId]?.[k] ?? "").trim();
       if (it.fields.length) fd.append("fields", JSON.stringify(picked));
       // прямий fetch (не upload()): 400 з {fields:{ключ:код}} треба показати по полях, а обгортка лишає лише текст
@@ -98,6 +105,7 @@ export default function DocUpload() {
         throw new Error(data?.error ?? String(r.status));
       }
       setDoneFor(prev => new Set(prev).add(docTypeId));
+      setSentCount(p => ({ ...p, [docTypeId]: (p[docTypeId] ?? 0) + files.length }));
       await load();
     } catch { setError(s("failed")); }
     finally { setBusy(null); }
@@ -123,7 +131,10 @@ export default function DocUpload() {
             {it.expiresAt && <div className={`text-xs ${expired ? "text-rose-600" : "text-slate-500"}`}>{expired ? s("expired") : s("validUntil")} {fmt(it.expiresAt)}</div>}
             {it.reviewNote && !uploaded && <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{s("rejected", { note: it.reviewNote })}</div>}
             {uploaded ? (
-              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{doneFor.has(it.docTypeId) ? s("done") : s("pending")}</div>
+              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                {doneFor.has(it.docTypeId) ? s("done") : s("pending")}
+                {(sentCount[it.docTypeId] ?? 0) > 0 && <div className="mt-1 text-xs">{s("sentN", { n: String(sentCount[it.docTypeId]) })}</div>}
+              </div>
             ) : <p className="text-xs text-slate-500">{s("hint")}</p>}
             {it.fields.length > 0 && (
               <div className="space-y-1.5 rounded-lg bg-slate-50 p-3">
@@ -141,11 +152,11 @@ export default function DocUpload() {
             )}
             <div className="flex flex-wrap gap-2">
               <label className="flex-1" title={incomplete ? s("fillFirst") : undefined}>
-                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it, f); e.target.value = ""; }} />
+                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it, [f], uploaded); e.target.value = ""; }} />
                 <span className={`block w-full cursor-pointer rounded-lg bg-red-600 px-3 py-2.5 text-center text-sm font-semibold text-white ${busy != null || incomplete ? "opacity-60" : "hover:bg-red-700"}`}>{busy === it.docTypeId ? s("uploading") : uploaded ? s("more") : s("takePhoto")}</span>
               </label>
               <label title={incomplete ? s("fillFirst") : undefined}>
-                <input type="file" accept="image/*,application/pdf" className="hidden" disabled={busy != null} onChange={e => { const f = e.target.files?.[0]; if (f) void send(it, f); e.target.value = ""; }} />
+                <input type="file" accept="image/*,application/pdf" multiple className="hidden" disabled={busy != null} onChange={e => { const fs = Array.from(e.target.files ?? []); if (fs.length) void send(it, fs, uploaded); e.target.value = ""; }} />
                 <span className={`block cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-center text-sm text-slate-700 ${incomplete ? "opacity-60" : "hover:bg-slate-50"}`}>{s("chooseFile")}</span>
               </label>
             </div>

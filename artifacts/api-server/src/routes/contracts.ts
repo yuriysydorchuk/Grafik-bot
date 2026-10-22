@@ -27,7 +27,7 @@ import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
 import { factoryInScope } from "../lib/scope";
 import { KSIEG_STD_BRUTTO } from "../services/svodni";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
-import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, type PassportDraft, type MrzResult } from "../services/docai";
+import { processPassport, passportOcrConfigured, mrzNationalityToCatalog, trustedPassportDraft, type PassportDraft, type MrzResult } from "../services/docai";
 import { generateContract, updateContractDates, finalizeContractSignature, resolveDocumentSet, resolveContractDuties, sendContractForSignature, EVENT_KINDS } from "../services/contracts";
 import { ensureDocumentType } from "../services/workerDocuments";
 import { journalQuestionnaire } from "../services/questionnaireJournal";
@@ -216,6 +216,8 @@ const PASSPORT_DRAFT_FIELDS = ["passportNumber", "passportCountry", "passportIss
 export async function applyPassportScan(workerId: number, rawBuffer: Buffer, rawName: string, adminId: number | null = null): Promise<{
   documentId: number; questionnaire: typeof workerQuestionnairesTable.$inferSelect; draft: PassportDraft; mrz: MrzResult | null;
   nameDraft: { firstName: string | null; middleName: string | null; lastName: string | null };
+  // номер у скані (валідна чек-сума MRZ) ≠ номер у ПІДТВЕРДЖЕНІЙ анкеті — анкету не чіпаємо, офіс вирішує
+  passportConflict: { questionnaire: string; scan: string } | null;
 }> {
   const rawMime = sniffDocMime(rawBuffer);
   if (!rawMime || !SCAN_MIME_WHITELIST.has(rawMime)) throw new Error("Тип файлу не підтверджено вмістом");
@@ -232,13 +234,17 @@ export async function applyPassportScan(workerId: number, rawBuffer: Buffer, raw
     filePath: path.join("worker-documents", storedName), fileName: originalName, fileMime: realMime,
   }).returning();
 
-  const { draft, mrz } = await processPassport(buffer, rawMime);
+  const { draft: rawDraft, mrz } = await processPassport(buffer, rawMime);
+  // пишемо лише поля з валідною чек-сумою MRZ (як скан працівника, routes/passportScan.ts):
+  // сирий OCR дав «2050-71-42» у строк → UPDATE документа падав і номер не зберігався
+  // (Koshmak Kira, 21.10.2026); сирий результат — у ocrRaw для довідки
+  const draft = trustedPassportDraft(rawDraft, mrz);
   logger.info({ workerId, documentId: doc!.id, mrzValid: mrz?.documentNumberValid ?? null }, "passport scan applied");
 
   // OCR ніколи не перезаписує вже ПІДТВЕРДЖЕНУ анкету — лише прикладає сирий
   // результат для довідки; людина сама вирішує, чи оновлювати підтверджені поля.
   const [existing] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
-  const ocrPatch: Record<string, unknown> = { ocrRaw: { draft, mrz }, ocrDocId: doc!.id, updatedAt: new Date() };
+  const ocrPatch: Record<string, unknown> = { ocrRaw: { draft: rawDraft, mrz }, ocrDocId: doc!.id, updatedAt: new Date() };
   if (!existing || existing.status !== "verified") {
     for (const k of PASSPORT_DRAFT_FIELDS) if (draft[k]) ocrPatch[k] = draft[k];
   }
@@ -247,6 +253,10 @@ export async function applyPassportScan(workerId: number, rawBuffer: Buffer, raw
     : await db.insert(workerQuestionnairesTable).values({ workerId, ...ocrPatch }).returning();
   // історія: лише заміна вже вписаних значень (перша OCR-чернетка — не «зміна»)
   await journalQuestionnaire(workerId, existing, ocrPatch, adminId, { onlyOverwrites: true });
+  const normNo = (v: string | null | undefined) => String(v ?? "").replace(/[\s-]/g, "").toUpperCase();
+  const passportConflict = existing?.status === "verified" && draft.passportNumber && existing.passportNumber
+    && normNo(draft.passportNumber) !== normNo(existing.passportNumber)
+    ? { questionnaire: existing.passportNumber, scan: draft.passportNumber } : null;
 
   // номер і строк паспорта з MRZ → на документ (список документів і движок легальності читають number/expires_at)
   const docPatch: Record<string, unknown> = {};
@@ -263,7 +273,7 @@ export async function applyPassportScan(workerId: number, rawBuffer: Buffer, raw
   // сюди лише пропонуємо чернетку, нічого не пишемо в workersTable сам.
   const nameDraft = { firstName: draft.firstName, middleName: draft.middleName, lastName: draft.lastName };
 
-  return { documentId: doc!.id, questionnaire: questionnaire!, draft, mrz, nameDraft };
+  return { documentId: doc!.id, questionnaire: questionnaire!, draft, mrz, nameDraft, passportConflict };
 }
 
 router.post("/workers/:id/passport-scan", WD, uploadScan.single("file"), async (req, res) => {

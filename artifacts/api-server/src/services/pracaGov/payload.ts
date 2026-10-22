@@ -32,7 +32,12 @@ export interface UaFormPayload {
   podpis: { funkcja: string; pelnomocnik: boolean; poaAbsPath?: string | null };
   // залучники (не редагуються): oświadczenia «88Z» фірми (pz_company_attachments) + скан паспорта з профілю — як у ручних подачах Влади
   zalaczniki: { label: string; fileName: string; absPath: string; url?: string; mime?: string | null; kind?: "passport" | "company" }[]; // url/mime — для перегляду в анкеті перед запуском
+  // номер паспорта зі скану, що йде вкладенням (номер документа або MRZ з валідною чек-сумою OCR цього ж
+  // файлу); ≠ seriaNr → подача блокується (Koshmak Kira 21.10.2026: у формі номер з анкети, у вкладенні — інший паспорт)
+  passportScanNo?: string | null;
 }
+
+const normPassNo = (v: string | null | undefined) => String(v ?? "").replace(/[\s-]/g, "").toUpperCase();
 
 export const RODZAJ_UMOWY_ZLECENIE = "Umowa zlecenie / Umowa o świadczenie usług";
 // Опції «Tytuł pobytu» в контексті організації (зняті з порталу 16.10.2026, подача #2)
@@ -78,6 +83,8 @@ export function missingOf(payload: UaFormPayload): string[] {
   need(p.praca.miejsce.wojewodztwo, "адреса фабрики: województwo"); need(p.praca.miejsce.powiat, "адреса фабрики: powiat"); need(p.praca.miejsce.gmina, "адреса фабрики: gmina");
   need(p.praca.godzinMiesiac, "години в повідомленні (Налаштування → praca.gov.pl → фабрика)"); need(p.praca.stawkaGodz, "ставка brutto"); need(p.praca.stawkaMies, "місячна сума за ставкою");
   need(p.liczby.umowaOPrace, "чисельність фірми: umowa o pracę"); need(p.liczby.cywilne, "чисельність фірми: umowy cywilnoprawne");
+  if (p.passportScanNo && p.cudzoziemiec.seriaNr && normPassNo(p.passportScanNo) !== normPassNo(p.cudzoziemiec.seriaNr))
+    missing.push(`номер паспорта ${p.cudzoziemiec.seriaNr} ≠ вкладений скан паспорта (${p.passportScanNo}) — виправте анкету або номер у формі`);
   return missing;
 }
 
@@ -139,6 +146,7 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
   if (startFakt && startFakt < windowStart) { start = windowStart; warnings.push(`Прострочено: фактичний перший робочий день ${startFakt}, портал приймає лише дати з ${windowStart} по ${today} — у форму підставлено ${windowStart}.`); }
   else if (startFakt && startFakt > today) warnings.push(`Дата початку ${startFakt} у майбутньому — portal такого не приймає; виправте дату в анкеті (підміна на «сьогодні» була б неправдивими відомостями).`);
 
+  let passportScanNo: string | null = null;
   // залучники: oświadczenia фірми (88Z) + скан паспорта (present, з файлом PDF/JPG/PNG); файл без диску — пропускаємо
   const zalaczniki: UaFormPayload["zalaczniki"] = [];
   const existsAbs = (rel: string) => { const abs = path.resolve(UPLOADS_ROOT, rel); return abs.startsWith(UPLOADS_ROOT + path.sep) && fs.existsSync(abs) ? abs : null; };
@@ -146,13 +154,17 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
     const abs = existsAbs(a.filePath); if (abs) zalaczniki.push({ label: a.label, fileName: a.fileName, absPath: abs, url: `/api/praca-gov/reference/company/${cid}/attachments/${a.id}/file`, mime: /\.pdf$/i.test(a.fileName) ? "application/pdf" : "image/jpeg", kind: "company" });
   }
   {
-    const [pass] = await db.select({ id: workerDocumentsTable.id, filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, mime: workerDocumentsTable.fileMime }).from(workerDocumentsTable)
+    const [pass] = await db.select({ id: workerDocumentsTable.id, filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, mime: workerDocumentsTable.fileMime, number: workerDocumentsTable.number }).from(workerDocumentsTable)
       .innerJoin(documentTypesTable, eq(documentTypesTable.id, workerDocumentsTable.docTypeId))
       .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.status, "present"), eq(documentTypesTable.code, "passport"),
         sql`${workerDocumentsTable.filePath} is not null`, sql`(${workerDocumentsTable.fileMime} is null or ${workerDocumentsTable.fileMime} in ('application/pdf','image/jpeg','image/png'))`))
       .orderBy(desc(workerDocumentsTable.id)).limit(1); // найновіший паспорт, у якого Є придатний скан
     const abs = pass?.filePath ? existsAbs(pass.filePath) : null;
     // назва файлу на порталі = імʼя людини, а не «Unknown.jpg» з Telegram (жива подача #5, 19.10.2026)
+    if (abs) {
+      const ocr = q?.ocrDocId === pass!.id ? (q?.ocrRaw as { draft?: { passportNumber?: string | null }; mrz?: { documentNumberValid?: boolean } } | null) : null;
+      passportScanNo = pass!.number || (ocr?.mrz?.documentNumberValid ? ocr.draft?.passportNumber ?? null : null);
+    }
     if (abs) zalaczniki.unshift({ label: "Paszport", fileName: `Paszport ${w.fullName.replace(/[\/\\:*?"<>|]/g, " ").trim()}${path.extname(pass!.fileName ?? abs).toLowerCase() || ".pdf"}`, absPath: abs, url: `/api/worker-documents/${pass!.id}/file`, mime: pass!.mime ?? (/\.pdf$/i.test(abs) ? "application/pdf" : "image/jpeg"), kind: "passport" });
   }
 
@@ -187,7 +199,7 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
     liczby: { umowaOPrace: String(c?.headcountEmployment ?? 0), cywilne: c?.headcountCivil != null ? String(c.headcountCivil) : "" },
     warnings,
     podpis: { funkcja: "", pelnomocnik: true },
-    zalaczniki,
+    zalaczniki, passportScanNo,
   };
 
   const missing = missingOf(payload);

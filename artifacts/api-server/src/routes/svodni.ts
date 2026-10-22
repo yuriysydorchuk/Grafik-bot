@@ -2295,6 +2295,7 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
   if (!entry) return fail(res, 404, "запис не знайдено");
   if (["fired", "restored"].includes(entry.field))
     return fail(res, 400, "звільнення/поновлення скасовуються кнопками профілю");
+  if (entry.field === "merged") return fail(res, 400, "обʼєднання профілів не відкочується");
   if (entry.field === "selfTransport") return fail(res, 400, "«доїжджає сам» правиться періодами у профілі (Транспорт)");
   if (isQuestionnaireField(entry.field)) return fail(res, 400, "Зміни анкети — історія; значення правиться в анкеті");
   // гейти — ті самі, що в застосуванні змін

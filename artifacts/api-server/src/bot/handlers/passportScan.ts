@@ -114,10 +114,10 @@ export function registerPassportScan(bot: Telegraf<any>) {
       const buf = Buffer.from(await (await fetch(link.href)).arrayBuffer());
       if (buf.length > 15 * 1024 * 1024) return ctx.reply(tb(al, "Файл завеликий (до 15 МБ)."));
 
-      const { draft, mrz } = await applyPassportScan(workerId, buf, fileName, admin.id);
-      const mrzNote = mrz
+      const { draft, mrz, passportConflict } = await applyPassportScan(workerId, buf, fileName, admin.id);
+      const mrzNote = (mrz
         ? (mrz.documentNumberValid && mrz.compositeValid ? tb(al, "\n✅ MRZ-зона валідна (чек-суми збігаються).") : tb(al, "\n⚠️ MRZ-зона знайдена, але чек-суми не збігаються — перевір скан."))
-        : "";
+        : "") + (passportConflict ? tb(al, "\n⚠️ Номер у скані ({scan}) не збігається з підтвердженою анкетою ({q}) — анкету не змінено, виправ її в панелі.", { scan: passportConflict.scan, q: passportConflict.questionnaire }) : "");
       return ctx.reply(tb(al,
         "📄 Розпізнано паспорт:\n\n• Номер: {num}\n• Громадянство: {citz}\n• Дійсний до: {exp}\n\nДані внесено в анкету — перевір і підтверди на сторінці працівника в панелі.{mrz}",
         { num: draft.passportNumber ?? "—", citz: draft.citizenship ?? "—", exp: draft.passportExpiresAt ?? "—", mrz: mrzNote }));

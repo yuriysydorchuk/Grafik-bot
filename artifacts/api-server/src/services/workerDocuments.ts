@@ -5,9 +5,9 @@
 // окремим — той редагує вже створений рядок, цей створює/оновлює по docTypeId.
 import fs from "node:fs";
 import path from "node:path";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, desc } from "drizzle-orm";
 import { db, documentTypesTable, workerDocumentsTable } from "@workspace/db";
-import { WORKER_DOCS_DIR, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
+import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage, deleteStoredFile } from "../lib/uploads";
 import { logger } from "../lib/logger";
 import { DOCUMENT_TYPE_SEED } from "./legalizationCatalog";
 
@@ -78,13 +78,53 @@ export function validateWorkerFields(fields: WorkerFieldKey[], input: unknown, t
 // «офіційними» автоматично). source='worker_bot' — для аудиту/движка легальності.
 // fields — уже провалідовані дані працівника (validateWorkerFields): пишуться в колонки
 // рядка разом із файлом; офіс бачить їх у модалці документа й може виправити до підтвердження.
-export async function applyWorkerDocumentUpload(workerId: number, docTypeId: number, rawBuffer: Buffer, rawName: string, fields: WorkerFieldValues = {}): Promise<{ documentId: number; title: string }> {
-  const rawMime = sniffDocMime(rawBuffer);
-  if (!rawMime || !DOC_MIME_WHITELIST.has(rawMime)) throw new Error("Тип файлу не підтверджено вмістом");
-  const { buffer, mime: realMime, fileName: originalName } = await compressUploadImage(rawBuffer, rawMime, rawName);
+export type DocPart = { buffer: Buffer; name: string };
 
+// Файл документа з кількох частин (22.10.2026, власник: «не обмежувати кількість фото» — паспорт
+// зі штампами в'їзду/подання на карту, 3+ медичні довідки): одна частина без дозапису — як була
+// (стиснене фото / PDF); інакше все склеюється в ОДИН PDF — решта системи (перегляд, задачі,
+// вкладення паспорта в praca.gov) і далі читає один file_path. appendTo — наявний файл документа,
+// до якого дописуються сторінки.
+export async function buildDocFile(parts: DocPart[], appendTo: { buffer: Buffer; mime: string } | null, baseName: string, whitelist: Set<string> = DOC_MIME_WHITELIST): Promise<{ buffer: Buffer; mime: string; fileName: string }> {
+  if (!parts.length) throw new Error("Файл не отримано");
+  const prepared: { buffer: Buffer; mime: string; fileName: string }[] = [];
+  for (const p of parts) {
+    const rawMime = sniffDocMime(p.buffer);
+    if (!rawMime || !whitelist.has(rawMime)) throw new Error("Тип файлу не підтверджено вмістом");
+    prepared.push(await compressUploadImage(p.buffer, rawMime, p.name));
+  }
+  if (!appendTo && prepared.length === 1) return prepared[0]!;
+  const all = [...(appendTo ? [appendTo] : []), ...prepared];
+  if (all.some(x => !PDF_PARTS.has(x.mime))) throw new Error("Склеїти в один документ можна лише фото (JPG/PNG) і PDF");
+  const { combineToPdf } = await import("./imagePdf");
+  const safe = baseName.replace(/[\/\\:*?"<>|]/g, " ").trim() || "document";
+  return { buffer: await combineToPdf(all), mime: "application/pdf", fileName: `${safe}.pdf` };
+}
+const PDF_PARTS = new Set(["application/pdf", "image/jpeg", "image/png"]);
+
+// Поточний файл документа з диска (для дозапису сторінок); null — нема/не склеюється
+export async function readDocFile(filePath: string | null, mime: string | null): Promise<{ buffer: Buffer; mime: string } | null> {
+  if (!filePath || !mime || !PDF_PARTS.has(mime)) return null;
+  const abs = path.resolve(UPLOADS_ROOT, filePath);
+  if (!abs.startsWith(UPLOADS_ROOT + path.sep)) return null;
+  try { return { buffer: await fs.promises.readFile(abs), mime }; } catch { return null; }
+}
+
+// append — «ще одне фото цього ж документа» з /docs/:token: дописуємо сторінки лише до ще не
+// перевіреного файлу самого працівника (pending + worker_bot), інакше завантаження замінює файл
+export async function applyWorkerDocumentUpload(workerId: number, docTypeId: number, rawBuffer: Buffer | DocPart[], rawName: string, fields: WorkerFieldValues = {}, opts: { append?: boolean } = {}): Promise<{ documentId: number; title: string }> {
   const [docType] = await db.select().from(documentTypesTable).where(eq(documentTypesTable.id, docTypeId));
   if (!docType) throw new Error("Тип документа не знайдено");
+  // кілька рядків одного типу можливі (по фірмах, після злиття профілів): дописуємо саме у файл
+  // працівника на перевірці, інакше — найновіший рядок типу
+  const sameType = await db.select().from(workerDocumentsTable)
+    .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, docTypeId)))
+    .orderBy(desc(workerDocumentsTable.id));
+  const existing = (opts.append ? sameType.find(r => r.status === "pending" && r.source === "worker_bot") : undefined) ?? sameType[0];
+  const parts = Array.isArray(rawBuffer) ? rawBuffer : [{ buffer: rawBuffer, name: rawName }];
+  const appendTo = opts.append && existing?.status === "pending" && existing.source === "worker_bot"
+    ? await readDocFile(existing.filePath, existing.fileMime) : null;
+  const { buffer, mime: realMime, fileName: originalName } = await buildDocFile(parts, appendTo, docType.name);
 
   const storedName = makeStoredName(originalName);
   await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), buffer);
@@ -97,13 +137,12 @@ export async function applyWorkerDocumentUpload(workerId: number, docTypeId: num
     ...fieldPatch,
   };
 
-  const [existing] = await db.select().from(workerDocumentsTable)
-    .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, docTypeId)));
   const [doc] = existing
     ? await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, existing.id)).returning()
     : await db.insert(workerDocumentsTable).values({ workerId, docTypeId, ...patch }).returning();
 
-  logger.info({ workerId, docTypeId, documentId: doc!.id, fields: Object.keys(fieldPatch) }, "worker self-uploaded document");
+  if (appendTo) deleteStoredFile(existing!.filePath); // старі сторінки вже всередині нового PDF
+  logger.info({ workerId, docTypeId, documentId: doc!.id, parts: parts.length, appended: !!appendTo, fields: Object.keys(fieldPatch) }, "worker self-uploaded document");
   // журнал + перерахунок світлофорів (best-effort; lazy import — не тягнути движок у бот-код при старті)
   const { documentChanged } = await import("./documentEvents");
   // вписані працівником дані — у журнал змін документа (diff лише по них; файл/статус пише сама подія)

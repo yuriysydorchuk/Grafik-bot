@@ -481,7 +481,17 @@ router.post("/worker-documents/:id/verify", LG, async (req, res) => {
   const patch = { verifiedAt: new Date(), verifiedBy: admin.adminId, reviewNote: null, status: before.status === "pending" ? "present" : before.status, updatedAt: new Date() };
   const [d] = await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, id)).returning();
   await documentChanged({ id, workerId: before.workerId }, "verified", admin, documentAuditDiff(before, patch));
-  ok(res, d);
+  // паспорт: розбіжності з анкетою → веб питає «оновити анкету?» (services/passportSync.ts)
+  const { passportQuestionnaireDiff } = await import("../services/passportSync");
+  ok(res, { ...d, questionnaireDiff: await passportQuestionnaireDiff(id) });
+});
+
+// «Оновити анкету з паспорта» — після підтвердження нового паспорта, рішення офісу в модалці;
+// у історію анкети (q.*) від імені адміна
+router.post("/worker-documents/:id/apply-to-questionnaire", LG, async (req, res) => {
+  const { applyPassportToQuestionnaire } = await import("../services/passportSync");
+  try { ok(res, await applyPassportToQuestionnaire(Number(req.params.id), adminOf(req).adminId)); }
+  catch (e: any) { fail(res, 400, e?.message ?? "Не вдалося оновити анкету"); }
 });
 
 // Відхилення аплоуду: рядок лишається (історія + повторний аплоуд з бота оновить його),

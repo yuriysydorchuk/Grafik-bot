@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2,
+  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge,
 } from "lucide-react";
 import { fmtIban } from "../lib/iban";
 import { SendFileModal, printFile } from "../components/SendFileModal";
@@ -37,6 +37,8 @@ import { Button, Card, Spinner, Badge, Empty, Modal, Input, Select, Label, Searc
 import { AbsenceFiles } from "../components/AbsenceFiles";
 import { WorkerTasksBlock, WorkerUpcomingEvents } from "../components/TasksWidgets";
 import { WorkerModal } from "../components/WorkerModal";
+import { MergeWorkerModal } from "../components/MergeWorkerModal";
+import { PassportAnketaSyncModal, type PassportDiff } from "../components/PassportAnketaSyncModal";
 import { FireModal } from "./Workers";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -180,6 +182,7 @@ export default function WorkerDetail() {
   const canDeleteWorkers = can(me, "deleteWorkers");
   const canBlacklist = canDeleteWorkers || can(me, "blacklist"); // внести і зняти (cap blacklist або deleteWorkers)
   const [blacklisting, setBlacklisting] = useState(false);
+  const [merging, setMerging] = useState(false); // «Обʼєднати з дублем»
   const [blReason, setBlReason] = useState("");
   const blacklistOn = useMutation({
     mutationFn: () => post(`/workers/${id}/do-not-hire`, { reason: blReason.trim() || null }),
@@ -319,6 +322,11 @@ export default function WorkerDetail() {
               {canBlacklist && (w.doNotHire
                 ? <button type="button" onClick={() => blacklistOff.mutate()} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" disabled={blacklistOff.isPending}>{t("Прибрати з чорного списку")}</button>
                 : <button type="button" onClick={() => setBlacklisting(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"><Ban className="h-3.5 w-3.5" /> {t("У чорний список")}</button>)}
+              {canEdit && (
+                <button type="button" onClick={() => setMerging(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" title={t("Обʼєднати з дублем")}>
+                  <GitMerge className="h-3.5 w-3.5" /> {t("Дубль?")}
+                </button>
+              )}
             </h1>
             {/* Фірма/фабрика/посада — редаговані прямо тут (badge-select), щоб
                 не дублювати те саме ще й рядками в групі «Робота» нижче. */}
@@ -582,6 +590,7 @@ export default function WorkerDetail() {
         </Modal>
       )}
       {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
+      {merging && <MergeWorkerModal worker={{ id: w.id, fullName: w.fullName }} onClose={() => setMerging(false)} />}
       {blacklisting && (
         <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
           <div className="space-y-3">
@@ -899,7 +908,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   // вже підтверджені (verified) дані — сервер лише додає ocrRaw для довідки.
   const scanInputRef = useRef<HTMLInputElement>(null);
   const scan = useMutation({
-    mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload<{ nameDraft?: { firstName: string | null; middleName: string | null; lastName: string | null } }>(`/workers/${workerId}/passport-scan`, fd); },
+    mutationFn: (file: File) => { const fd = new FormData(); fd.append("file", file); return upload<{ nameDraft?: { firstName: string | null; middleName: string | null; lastName: string | null }; passportConflict?: { questionnaire: string; scan: string } | null }>(`/workers/${workerId}/passport-scan`, fd); },
     onSuccess: (r) => {
       inv(); qc.invalidateQueries({ queryKey: ["worker-changes"] });
       // Не перезаписуємо те, що вже вписано в цій сесії — лише добираємо порожнє.
@@ -909,6 +918,8 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
         lastName: n.lastName || r.nameDraft!.lastName || "",
       }));
       toast.success(t("Паспорт розпізнано — перевір поля анкети"));
+      // перевірену анкету OCR не перезаписує — розбіжність номера показуємо явно (Koshmak Kira, 21.10.2026)
+      if (r.passportConflict) toast.warning(t("Номер у скані ({scan}) не збігається з підтвердженою анкетою ({q}) — анкету не змінено, виправте вручну", { scan: r.passportConflict.scan, q: r.passportConflict.questionnaire }), { duration: 15000 });
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -2778,6 +2789,66 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
 
 // «Попросити інший документ»: вибір типу з каталогу (активні, без слотів і без уже наявних рядків) →
 // той самий запит у бот, що й у слотах (POST /workers/:id/documents/request → /docs/:token).
+// «Запросити кілька документів» (22.10.2026): чекбокси по активних типах каталогу → по запиту на
+// кожен тип ТИМ САМИМ ендпойнтом, що й один (послідовно, щоб повідомлення в бот ішли по черзі):
+// працівник отримує окреме повідомлення на кожен документ (services/docRequests.ts).
+function RequestDocsModal({ workerId, types, docs, onClose }: { workerId: number; types: DocumentType[]; docs: WorkerDocument[]; onClose: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const docByType = new Map<number, WorkerDocument>();
+  for (const d of docs) if (d.docTypeId != null) docByType.set(d.docTypeId, d);
+  const list = types.filter(ty => ty.isActive !== false).sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+  const toggle = (id: number) => setPicked(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const send = useMutation({
+    mutationFn: async () => {
+      let sent = 0, notSent = 0;
+      for (const ty of list) {
+        if (!picked.has(ty.id)) continue;
+        const r = await post<{ sent?: boolean }>(`/workers/${workerId}/documents/request`, { docTypeId: ty.id });
+        if (r?.sent) sent++; else notSent++;
+      }
+      return { sent, notSent };
+    },
+    onSuccess: ({ sent, notSent }) => {
+      qc.invalidateQueries({ queryKey: ["worker-docs", workerId] });
+      if (notSent && !sent) toast.warning(t("Запити позначено, але в бот не надіслано — працівник не привʼязаний до Telegram"));
+      else toast.success(t("Надіслано запитів у бот: {n}", { n: sent }) + (notSent ? ` · ${t("не надіслано: {n}", { n: notSent })}` : ""));
+      onClose();
+    },
+    onError: (e: any) => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); toast.error(e.message); },
+  });
+  const stateOf = (d: WorkerDocument | undefined): string | null =>
+    !d ? null
+    : d.status === "pending" ? t("на перевірці")
+    : d.status === "present" ? t("є в профілі")
+    : d.requestedAt ? `${t("запитано")} ${new Date(d.requestedAt).toLocaleDateString("uk-UA")}`
+    : null;
+  return (
+    <Modal open onClose={onClose} title={t("Запросити кілька документів")}>
+      <p className="mb-3 text-sm text-slate-500">{t("Працівник отримає в бот окреме повідомлення на кожен обраний документ.")}</p>
+      <div className="max-h-[55vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+        {list.map(ty => {
+          const st = stateOf(docByType.get(ty.id));
+          return (
+            <label key={ty.id} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-slate-50">
+              <input type="checkbox" checked={picked.has(ty.id)} onChange={() => toggle(ty.id)} />
+              <span className="flex-1 text-slate-700">{ty.name}</span>
+              {st && <span className="text-xs text-slate-400">{st}</span>}
+            </label>
+          );
+        })}
+      </div>
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+        <Button disabled={!picked.size} loading={send.isPending} onClick={() => send.mutate()}>
+          <Send className="h-3.5 w-3.5" /> {t("Запросити ({n})", { n: picked.size })}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 function RequestAnyDocButton({ types, onPick }: { types: DocumentType[]; onPick: (docTypeId: number) => void }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -2840,6 +2911,7 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
   const [preview, setPreview] = useState<WorkerDocument | null>(null);
   const [auditFor, setAuditFor] = useState<WorkerDocument | null>(null);
   const [rejecting, setRejecting] = useState<WorkerDocument | null>(null);
+  const [requestMany, setRequestMany] = useState(false);
   const [sendFor, setSendFor] = useState<WorkerDocument | null>(null);
   const [scanCard, setScanCard] = useState(false);
   const passportInputRef = useRef<HTMLInputElement>(null);
@@ -2865,7 +2937,21 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
   // будь-яка зміна документів оновлює і шапку профілю (національність/дата нар./статус), не лише список
   const inv = () => { qc.invalidateQueries({ queryKey: ["worker-docs", workerId] }); qc.invalidateQueries({ queryKey: ["worker-legality", workerId] }); qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); };
   const remove = useMutation({ mutationFn: (id: number) => del(`/worker-documents/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
-  const verify = useMutation({ mutationFn: (id: number) => post(`/worker-documents/${id}/verify`), onSuccess: () => { inv(); toast.success(t("Підтверджено")); }, onError: (e: any) => toast.error(e.message) });
+  // підтверджено паспорт, що розходиться з анкетою → модалка «оновити анкету?» (services/passportSync.ts)
+  const [passportDiff, setPassportDiff] = useState<PassportDiff | null>(null);
+  const verify = useMutation({
+    mutationFn: (id: number) => post<{ questionnaireDiff?: PassportDiff | null }>(`/worker-documents/${id}/verify`),
+    onSuccess: (d) => { inv(); toast.success(t("Підтверджено")); if (d?.questionnaireDiff) setPassportDiff(d.questionnaireDiff); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const applyPassport = useMutation({
+    mutationFn: (docId: number) => post(`/worker-documents/${docId}/apply-to-questionnaire`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["worker-questionnaire", workerId] }); qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      toast.success(t("Анкету оновлено даними нового паспорта")); setPassportDiff(null);
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   const reject = useMutation({
     mutationFn: (v: { id: number; note: string }) => post(`/worker-documents/${v.id}/reject`, { note: v.note }),
     onSuccess: () => { inv(); setRejecting(null); toast.success(t("Відхилено")); },
@@ -2909,6 +2995,11 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
                 <RefreshCw className="h-3.5 w-3.5" /> {t("Перерахувати")}
               </Button>
             )}
+            {canLegal && (
+              <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setRequestMany(true)}>
+                <Send className="h-3.5 w-3.5" /> {t("Запросити кілька документів")}
+              </Button>
+            )}
             <Button variant="secondary" className="px-2 py-1 text-xs" loading={docsInvite.isPending} onClick={() => docsInvite.mutate()}>{t("Запросити на скан+анкету")}</Button>
             <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setDocModal({ mode: "add", type: null })}><Plus className="h-3.5 w-3.5" /> {t("Документ")}</Button>
           </div>
@@ -2949,6 +3040,8 @@ function WorkerDocuments({ workerId, workerName, companies, nationality, factory
       {/* «Автоматична подача» з плюсика Powiadomienie — робот praca.gov.pl без задачі ступеня 2 (14.10.2026) */}
       {uaQueue && <UaSubmitFlow taskId={null} queue={uaQueue} onClose={() => setUaQueue(null)} onDone={() => { inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />}
       {preview && <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />}
+      {requestMany && <RequestDocsModal workerId={workerId} types={types} docs={docs} onClose={() => setRequestMany(false)} />}
+      {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={applyPassport.isPending} onApply={() => applyPassport.mutate(passportDiff.documentId)} onClose={() => setPassportDiff(null)} />}
       {rejecting && (
         <RejectDocModal doc={rejecting} loading={reject.isPending} onClose={() => setRejecting(null)}
           onReject={note => reject.mutate({ id: rejecting.id, note })} />
@@ -3110,7 +3203,8 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const [expiresAt, setExpiresAt] = useState(zwuaDoc ? "" : doc?.expiresAt ?? "");
   const [fileUrl, setFileUrl] = useState(doc?.fileUrl ?? "");
   const [note, setNote] = useState(doc?.note ?? "");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]); // кілька фото/PDF → один PDF на сервері (22.10.2026)
+  const [appendPages, setAppendPages] = useState(false); // дописати сторінки до наявного файлу замість заміни
   // Легалізація: строки/справа/роботодавець — окремий PATCH .../legal (cap legalization).
   const [validFrom, setValidFrom] = useState(doc?.validFrom ?? "");
   const [issuedAt, setIssuedAt] = useState(doc?.issuedAt ?? (zwuaDoc ? doc?.expiresAt ?? "" : ""));
@@ -3319,9 +3413,10 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
         .map(f => t(f.label));
       if (missing.length) throw new Error(t("Заповніть обов'язкові поля: {list}", { list: missing.join(", ") }));
       const saved: WorkerDocument = isEdit ? await patch(`/worker-documents/${doc!.id}`, body()) : await post(`/workers/${workerId}/documents`, body());
-      if (file) {
+      if (files.length) {
         const fd = new FormData();
-        fd.append("file", file);
+        for (const f of files) fd.append("files", f);
+        if (appendPages && doc?.fileName) fd.append("append", "1");
         await upload(`/worker-documents/${saved.id}/file`, fd);
       }
       if (canLegal) await patch(`/worker-documents/${saved.id}/legal`, legalBody());
@@ -3383,9 +3478,16 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
           <Label>{t("Файл")}</Label>
           <label className="flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50">
             <Upload className="h-4 w-4 shrink-0" />
-            <span className="truncate">{file ? file.name : (doc?.fileName ? t("Замінити: {name}", { name: doc.fileName }) : t("Обрати файл (PDF, фото, docx)"))}</span>
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx" className="hidden" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+            <span className="truncate">{files.length > 1 ? t("Обрано файлів: {n} — склеяться в один PDF", { n: files.length }) : files[0] ? files[0].name
+              : (doc?.fileName ? (appendPages ? t("Обрати сторінки для дописування") : t("Замінити: {name}", { name: doc.fileName })) : t("Обрати файл (PDF, фото, docx) — можна кілька"))}</span>
+            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx" className="hidden" onChange={e => setFiles(Array.from(e.target.files ?? []))} />
           </label>
+          {doc?.fileName && (
+            <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+              <input type="checkbox" checked={appendPages} onChange={e => setAppendPages(e.target.checked)} />
+              {t("Додати сторінки до наявного файлу (не замінювати)")}
+            </label>
+          )}
         </div>
         <div><Label>{t("Посилання на файл")}</Label><Input value={fileUrl} onChange={e => setFileUrl(e.target.value)} placeholder="https://drive…" /></div>
         <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} /></div>
@@ -4283,7 +4385,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
             {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
               {c.adminName ?? (isQField(c.field) ? t("працівник") : "—")} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
-              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport"].includes(c.field) && (
+              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport", "merged"].includes(c.field) && (
                 <button type="button"
                   title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
                   onClick={async () => {

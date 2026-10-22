@@ -1125,7 +1125,7 @@ bot.action(/^wmerge_(\d+)_(\d+)$/, async (ctx) => {
   const keepId = Number((ctx as any).match[1]);
   const dropId = Number((ctx as any).match[2]);
   const { mergeWorkers } = await import("../services/workerMerge");
-  const r = await mergeWorkers(keepId, dropId);
+  const r = await mergeWorkers(keepId, dropId, { adminId: (await getAdmin(tid))?.id ?? null });
   await ctx.answerCbQuery(r.ok ? "Обʼєднано" : r.error);
   if (r.ok) {
     await ctx.editMessageReplyMarkup(undefined).catch(() => {});

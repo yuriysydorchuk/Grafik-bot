@@ -16,7 +16,7 @@ import {
   type TaskKind, type TaskPriority, type TaskStatus, type Recurrence, setWatchers, remindGroup } from "../services/tasks";
 import { runAutoTasks, ensureAutoRules, AUTO_RULE_DEFS, officeAdmins } from "../services/taskAutoRules";
 import { recomputeAllActiveLegality } from "../services/legalityRecompute";
-import { buildTaskResolution, runTaskAction } from "../services/taskResolve";
+import { buildTaskResolution, runTaskAction, parseActionCode } from "../services/taskResolve";
 import { addDaysStr } from "../lib/dates";
 import { icalUrl } from "./taskIcal";
 import multer from "multer";
@@ -236,7 +236,14 @@ router.post("/tasks/:id/action/:code", TP, async (req: AuthedRequest, res) => {
   if (!canManage(req) && !(await isParticipant(t, me(req))) && t.creatorAdminId !== me(req)) return fail(res, 403, "Не ваша задача");
   try {
     const message = await runTaskAction(t, String(req.params.code), { adminId: me(req), name: req.admin!.name }, { note: req.body?.note });
-    ok(res, { ok: true, message });
+    // підтверджено паспорт → розбіжності з анкетою для модалки «оновити анкету?» (дія passport_to_anketa)
+    let questionnaireDiff = null;
+    const { code, param } = parseActionCode(String(req.params.code));
+    if (code === "verify_doc") {
+      const docId = param ?? (await buildTaskResolution(t)).context.document?.id ?? null;
+      if (docId) questionnaireDiff = await (await import("../services/passportSync")).passportQuestionnaireDiff(docId);
+    }
+    ok(res, { ok: true, message, questionnaireDiff });
   } catch (e: any) { fail(res, 400, e?.message ?? "Помилка"); }
 });
 

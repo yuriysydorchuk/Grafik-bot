@@ -438,6 +438,18 @@ export async function runTaskAction(task: Task, rawCode: string, actor: { adminI
       message = sent ? "Лінк на скан+анкету надіслано в бот" : `Працівник без Telegram — лінк: ${link}`;
       break;
     }
+    // «Оновити анкету з паспорта» після verify_doc (модалка розбіжностей у задачі, services/passportSync.ts)
+    case "passport_to_anketa": {
+      const docId = param ?? context.document?.id ?? null;
+      if (!docId) throw new Error("Документ не знайдено");
+      // після verify_doc документ уже не pending → його нема в context.uploads; достатньо, що він цієї людини
+      const [own] = await db.select({ workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, docId));
+      if (!own || !w || own.workerId !== w.id) throw new Error("Документ не належить цій задачі");
+      const { applyPassportToQuestionnaire } = await import("./passportSync");
+      const r = await applyPassportToQuestionnaire(docId, actor.adminId);
+      message = r.changed.length ? "Анкету оновлено даними нового паспорта" : "Анкета вже збігається з паспортом";
+      break;
+    }
     case "verify_doc": case "reject_doc": {
       const docId = param ?? context.document?.id ?? null;
       if (!docId) throw new Error("Документ не знайдено");

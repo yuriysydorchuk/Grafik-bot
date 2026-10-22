@@ -83,3 +83,16 @@ export async function appendImageToPdf(existingPdf: Buffer, imageBuffer: Buffer,
   await addImagePage(pdfDoc, imageBuffer, mimeType);
   return Buffer.from(await pdfDoc.save());
 }
+
+// Кілька фото/PDF одного документа → один PDF (22.10.2026: паспорт зі штампами в'їзду,
+// 3+ медичні довідки): фото — сторінкою кожне, сторінки PDF копіюються як є, порядок — як прийшли.
+export async function combineToPdf(parts: { buffer: Buffer; mime: string }[]): Promise<Buffer> {
+  const out = await PDFDocument.create();
+  for (const p of parts) {
+    if (p.mime === "application/pdf") {
+      const src = await PDFDocument.load(new Uint8Array(p.buffer), { ignoreEncryption: true });
+      for (const page of await out.copyPages(src, src.getPageIndices())) out.addPage(page);
+    } else await addImagePage(out, p.buffer, p.mime);
+  }
+  return Buffer.from(await out.save());
+}

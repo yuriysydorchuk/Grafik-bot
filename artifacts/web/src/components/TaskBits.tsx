@@ -12,6 +12,7 @@ import {
   STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, PRIORITY_BORDER, SOURCE_LABEL, KIND_LABEL, RULE_LABEL, fmtD, fmtDShort, todayStr, addDays,
 } from "../lib/tasksApi";
 import { ProfileChangeModal } from "./ProfileChangeModal";
+import { PassportAnketaSyncModal, type PassportDiff } from "./PassportAnketaSyncModal";
 import { LEGAL_LABEL, type LegalStatus } from "../lib/legalStatus";
 import { reasonText } from "../lib/legality";
 import { Button, Badge, Modal, Input, Select, Label, Textarea, Spinner, cn } from "./ui";
@@ -501,9 +502,15 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
   const [noteFor, setNoteFor] = useState<TaskAction | null>(null);
   const [note, setNote] = useState("");
   const [applyChange, setApplyChange] = useState(false);
+  // підтверджено паспорт, що розходиться з анкетою → «оновити анкету?» (дія passport_to_anketa.<docId>)
+  const [passportDiff, setPassportDiff] = useState<PassportDiff | null>(null);
   const run = useMutation({
-    mutationFn: (v: { code: string; note?: string }) => post<{ message: string }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note }),
-    onSuccess: (d) => { toast.success(d.message); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setNoteFor(null); setNote(""); },
+    mutationFn: (v: { code: string; note?: string }) => post<{ message: string; questionnaireDiff?: PassportDiff | null }>(`/tasks/${task.id}/action/${v.code}`, { note: v.note }),
+    onSuccess: (d) => {
+      toast.success(d.message); inv(); qc.invalidateQueries({ queryKey: ["worker-docs"] }); qc.invalidateQueries({ queryKey: ["worker-legality"] }); setNoteFor(null); setNote("");
+      qc.invalidateQueries({ queryKey: ["worker-questionnaire"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] });
+      setPassportDiff(d.questionnaireDiff ?? null);
+    },
     onError: (e: any) => toast.error(e.message),
   });
   const fire = (a: TaskAction) => {
@@ -577,6 +584,8 @@ function ResolveBlock({ task, inv }: { task: TaskDetail; inv: () => void }) {
         <ProfileChangeModal workerId={c.worker.id} changes={{ effectiveLegalStatus: c.change.newValue }} title={tr("статус для виплат (за документами)")} initialFrom={c.change.effectiveDate ?? undefined}
           onClose={() => { setApplyChange(false); inv(); qc.invalidateQueries({ queryKey: ["worker-legality"] }); }} />
       )}
+      {passportDiff && <PassportAnketaSyncModal diff={passportDiff} applying={run.isPending}
+        onApply={() => run.mutate({ code: `passport_to_anketa.${passportDiff.documentId}` })} onClose={() => setPassportDiff(null)} />}
     </div>
   );
 }

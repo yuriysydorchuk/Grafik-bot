@@ -480,6 +480,8 @@ const BOT_EN: Record<string, string> = {
   "Не знайшов такого працівника. Спробуй ще раз, або «✖️ Скасувати».": "Couldn't find that worker. Try again, or press “✖️ Cancel”.",
   "📄 Розпізнано паспорт:\n\n• Номер: {num}\n• Громадянство: {citz}\n• Дійсний до: {exp}\n\nДані внесено в анкету — перевір і підтверди на сторінці працівника в панелі.{mrz}":
     "📄 Passport recognized:\n\n• Number: {num}\n• Citizenship: {citz}\n• Valid until: {exp}\n\nData was added to the questionnaire — review and confirm it on the worker's page in the panel.{mrz}",
+  "\n⚠️ Номер у скані ({scan}) не збігається з підтвердженою анкетою ({q}) — анкету не змінено, виправ її в панелі.":
+    "\n⚠️ The number on the scan ({scan}) differs from the confirmed questionnaire ({q}) — the questionnaire was not changed, fix it in the panel.",
   "\n✅ MRZ-зона валідна (чек-суми збігаються).": "\n✅ MRZ zone is valid (checksums match).",
   "\n⚠️ MRZ-зона знайдена, але чек-суми не збігаються — перевір скан.": "\n⚠️ MRZ zone found, but checksums don't match — check the scan.",
   "Не вдалося розпізнати ({err}). Спробуй ще раз: «🪪 Паспорт».": "Recognition failed ({err}). Try again: “🪪 Passport”.",

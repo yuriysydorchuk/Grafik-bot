@@ -54,12 +54,16 @@ router.get("/docs/:token", async (req, res) => {
   return res.json({ workerName: w.fullName, language: asLang(row.language ?? w.language), focusTypeId, items });
 });
 
-router.post("/docs/:token/upload", upload.single("file"), async (req, res) => {
+// file — одне фото/PDF (як раніше); files — кілька одразу (вибір із галереї, 22.10.2026) → один PDF;
+// append=1 — «ще одне фото цього ж документа»: дописати сторінки до щойно завантаженого файлу
+router.post("/docs/:token/upload", upload.fields([{ name: "file", maxCount: 1 }, { name: "files", maxCount: 30 }]), async (req, res) => {
   const row = await loadToken(String(req.params.token));
   if (!row) return fail(res, 404, "Лінк недійсний або прострочений");
   const docTypeId = Number(req.body?.docTypeId);
   if (!docTypeId) return fail(res, 400, "Вкажіть тип документа");
-  if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
+  const got = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const files = [...(got?.file ?? []), ...(got?.files ?? [])];
+  if (!files.length) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
   // дозволено лише те, що просили (requested_at) або тип із лінка
   const focusTypeId = Number((row.draftJson as any)?.docTypeId) || null;
   const [requested] = await db.select({ id: workerDocumentsTable.id }).from(workerDocumentsTable).where(and(eq(workerDocumentsTable.workerId, row.workerId!), eq(workerDocumentsTable.docTypeId, docTypeId), isNotNull(workerDocumentsTable.requestedAt)));
@@ -73,8 +77,8 @@ router.post("/docs/:token/upload", upload.single("file"), async (req, res) => {
   const { values, errors } = validateWorkerFields(workerFieldsOf(ty), rawFields, warsawToday());
   if (Object.keys(errors).length) return res.status(400).json({ error: "Заповніть дані документа", fields: errors });
   try {
-    const originalName = Buffer.from(req.file.originalname ?? "document.jpg", "latin1").toString("utf8");
-    const { documentId, title } = await applyWorkerDocumentUpload(row.workerId!, docTypeId, req.file.buffer, originalName, values);
+    const parts = files.map(f => ({ buffer: f.buffer, name: Buffer.from(f.originalname ?? "document.jpg", "latin1").toString("utf8") }));
+    const { documentId, title } = await applyWorkerDocumentUpload(row.workerId!, docTypeId, parts, parts[0]!.name, values, { append: req.body?.append === "1" });
     // підтвердження в бот (best-effort)
     const [w] = await db.select({ telegramId: workersTable.telegramId, language: workersTable.language }).from(workersTable).where(eq(workersTable.id, row.workerId!));
     if (w?.telegramId) bot.telegram.sendMessage(w.telegramId, tw(asLang(w.language), "docs.uploaded", { doc: title })).catch(() => {});

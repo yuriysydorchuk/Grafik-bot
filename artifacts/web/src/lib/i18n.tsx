@@ -3865,7 +3865,33 @@ const EN: Record<string, string> = {
   "усіх": "all",
   "Заповніть обов'язкові поля: {list}": "Fill in the required fields: {list}",
   "Номер паспорта": "Passport number",
+  // ── новий паспорт → оновити анкету (22.10.2026) ──
+  "Оновити анкету з нового паспорта?": "Update the questionnaire from the new passport?",
+  "Дані підтвердженого паспорта відрізняються від анкети. Зміна запишеться в «Історію змін» профілю.": "The confirmed passport differs from the questionnaire. The change will be recorded in the profile's “Change history”.",
+  "В анкеті": "In questionnaire", "У паспорті": "In passport", "Лишити анкету як є": "Keep questionnaire as is", "Оновити анкету": "Update questionnaire",
+  "Анкету оновлено даними нового паспорта": "Questionnaire updated from the new passport",
+  // ── кілька фото в документі → один PDF (22.10.2026) ──
+  "Обрано файлів: {n} — склеяться в один PDF": "Files selected: {n} — will be merged into one PDF",
+  "Обрати сторінки для дописування": "Choose pages to append", "Обрати файл (PDF, фото, docx) — можна кілька": "Choose file (PDF, photo, docx) — several allowed",
+  "Додати сторінки до наявного файлу (не замінювати)": "Append pages to the existing file (don't replace)",
+  // ── обʼєднання дублів профілів (22.10.2026) ──
+  "Обʼєднати з дублем": "Merge with duplicate", "Дубль?": "Duplicate?", "Обʼєднано з дублем": "Merged with duplicate",
+  "Профілі обʼєднано": "Profiles merged", "Знайдіть другий профіль цієї ж людини (імʼя, код, PESEL).": "Find the other profile of the same person (name, code, PESEL).",
+  "Пошук працівника…": "Search worker…", "Введіть щонайменше 2 символи": "Type at least 2 characters",
+  "Який профіль лишається?": "Which profile stays?", "обрати інший профіль": "pick another profile",
+  "Лишається": "Stays", "Буде видалено (дубль)": "Will be deleted (duplicate)", "З дубля переїде": "Moves from the duplicate", "записів немає": "no records",
+  "Порожні поля профілю, що лишається, доповняться з дубля; подія буде в «Історії змін».": "Empty fields of the remaining profile are filled from the duplicate; the event goes to “Change history”.",
+  "Обʼєднати — дубль буде видалено": "Merge — the duplicate will be deleted",
+  "Записи графіку": "Schedule entries", "Рядки сводної": "Svodni rows", "Години фабрик": "Factory hours",
+  "Пропуски/відпрошування": "Absences/leave requests", "додано": "added",
+  // ── запит кількох документів у профілі (22.10.2026) ──
+  "Запросити кілька документів": "Request several documents",
+  "Працівник отримає в бот окреме повідомлення на кожен обраний документ.": "The worker will get a separate bot message for each selected document.",
+  "Запросити ({n})": "Request ({n})", "Надіслано запитів у бот: {n}": "Requests sent to the bot: {n}", "не надіслано: {n}": "not sent: {n}",
+  "Запити позначено, але в бот не надіслано — працівник не привʼязаний до Telegram": "Requests marked, but nothing was sent — the worker is not linked to Telegram",
+  "є в профілі": "in the profile",
   // ── анкета: модалка + історія змін анкети в профілі (20.10.2026) ──
+  "Номер у скані ({scan}) не збігається з підтвердженою анкетою ({q}) — анкету не змінено, виправте вручну": "The number on the scan ({scan}) differs from the confirmed questionnaire ({q}) — the questionnaire was not changed, fix it manually",
   "Статус анкети": "Questionnaire status", "Спосіб виплати": "Payout method",
   "Країна паспорта": "Passport country", "Паспорт видано": "Passport issued", "Паспорт дійсний до": "Passport valid until",
   "Місце народження": "Place of birth", "Стать (документ)": "Sex (document)", "Чоловіча": "Male", "Жіноча": "Female",

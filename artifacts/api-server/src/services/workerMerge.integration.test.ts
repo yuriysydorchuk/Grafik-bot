@@ -66,3 +66,50 @@ test("mergeWorkers: keep ЗВІЛЬНЕНИЙ + drop активний з інш�
   assert.equal(merged!.firedAt, null);
   assert.equal((await db.select().from(workersTable)).length, 1);
 });
+
+test("mergeWorkers manual (з профілю): два активні з різними Telegram — зливається, лишається tg keep; журнал merged", opts, async () => {
+  const [a] = await db.insert(workersTable).values({ fullName: "A B", workerCode: "00001", telegramId: "1" }).returning();
+  const [b] = await db.insert(workersTable).values({ fullName: "A B", workerCode: "00002", telegramId: "2" }).returning();
+  const r = await mergeWorkers(a!.id, b!.id, { manual: true });
+  assert.deepEqual(r, { ok: true });
+  const [merged] = await db.select().from(workersTable).where(eq(workersTable.id, a!.id));
+  assert.equal(merged!.telegramId, "1");
+  const { workerChangesTable } = await import("../test/harness.ts");
+  const [ch] = await db.select().from(workerChangesTable).where(eq(workerChangesTable.workerId, a!.id));
+  assert.equal(ch!.field, "merged");
+  assert.match(ch!.oldValue ?? "", /00002/);
+});
+
+test("mergeWorkers: рапорт БЕЗ фабрики за той самий місяць в обох — не падає (unique nofactory), лишається keep", opts, async () => {
+  const [keep] = await db.insert(workersTable).values({ fullName: "C D", workerCode: "00001" }).returning();
+  const [drop] = await db.insert(workersTable).values({ fullName: "C D", workerCode: "00002" }).returning();
+  await db.insert(monthlyReportsTable).values([
+    { workerId: keep!.id, month: "2026-07", factoryId: null, hoursReported: 100 },
+    { workerId: drop!.id, month: "2026-07", factoryId: null, hoursReported: 60 },
+  ]);
+  assert.deepEqual(await mergeWorkers(keep!.id, drop!.id), { ok: true });
+  const reports = await db.select().from(monthlyReportsTable).where(eq(monthlyReportsTable.workerId, keep!.id));
+  assert.deepEqual(reports.map(r => r.hoursReported), [100]);
+});
+
+test("POST /workers/:id/merge + merge-preview: превʼю попереджає про сводну/Telegram, злиття з профілю працює", opts, async () => {
+  const { app, seedAdmin } = await import("../test/harness.ts");
+  const request = (await import("supertest")).default;
+  const H = { "X-Requested-With": "grafik" };
+  const owner = await seedAdmin({ role: "owner" });
+  const [keep] = await db.insert(workersTable).values({ fullName: "E F", workerCode: "00001", telegramId: "11" }).returning();
+  const [drop] = await db.insert(workersTable).values({ fullName: "E F", workerCode: "00002", telegramId: "22" }).returning();
+  for (const wid of [keep!.id, drop!.id]) await db.insert(svodniRowsTable).values({
+    periodMonth: "2026-08", city: "Люблін", factoryLabel: "TEST", rawName: "E F", workerId: wid, linkStatus: "auto", extras: {}, hr: {}, sheetValues: {},
+  } as any);
+  const pv = await request(app).get(`/api/workers/${keep!.id}/merge-preview?dropId=${drop!.id}`).set("Cookie", owner.cookie);
+  assert.equal(pv.status, 200, JSON.stringify(pv.body));
+  assert.equal(pv.body.drop.workerCode, "00002");
+  assert.ok(pv.body.moves.some((m: any) => m.label === "Рядки сводної" && m.count === 1));
+  assert.ok(pv.body.warnings.some((w: string) => w.startsWith("Різні Telegram")));
+  assert.ok(pv.body.warnings.some((w: string) => w.startsWith("Сводна")));
+  const m = await request(app).post(`/api/workers/${keep!.id}/merge`).set("Cookie", owner.cookie).set(H).send({ dropId: drop!.id });
+  assert.equal(m.status, 200, JSON.stringify(m.body));
+  assert.equal((await db.select().from(workersTable)).length, 1);
+  assert.equal((await db.select().from(svodniRowsTable).where(eq(svodniRowsTable.workerId, keep!.id))).length, 2, "рядки сводної перенесено як є");
+});

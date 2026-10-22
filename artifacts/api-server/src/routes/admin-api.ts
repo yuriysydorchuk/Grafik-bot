@@ -840,6 +840,36 @@ router.post("/workers/:id/termination-email", LIFECYCLE, async (req, res) => {
   ok(res, { sent: true, to: toList.join(", ") });
 });
 
+// «Обʼєднати з дублем» у профілі (22.10.2026, рішення власника: усі з editData): :id — профіль,
+// що лишається, dropId — дубль (видаляється, усе переїжджає в :id; services/workerMerge.ts).
+// Скоуп-адмін — лише коли обидва профілі в його скоупі (:id звіряє scopeGate).
+const mergeDropId = async (req: any, res: any): Promise<number | null> => {
+  const dropId = Number(req.query.dropId ?? req.body?.dropId);
+  if (!Number.isInteger(dropId) || dropId <= 0) { fail(res, 400, "dropId обовʼязковий"); return null; }
+  const { workerInScope } = await import("../lib/scope");
+  if (!(await workerInScope(scopeOf(req), dropId))) { fail(res, 403, "Дубль поза вашим скоупом"); return null; }
+  return dropId;
+};
+router.get("/workers/:id/merge-preview", RW, async (req, res) => {
+  const dropId = await mergeDropId(req, res); if (dropId == null) return;
+  const { mergePreview } = await import("../services/workerMerge");
+  const r = await mergePreview(Number(req.params.id), dropId);
+  if ("error" in r) return fail(res, 400, r.error);
+  ok(res, r);
+});
+router.post("/workers/:id/merge", RW, async (req, res) => {
+  const dropId = await mergeDropId(req, res); if (dropId == null) return;
+  const { mergeWorkers } = await import("../services/workerMerge");
+  try {
+    const r = await mergeWorkers(Number(req.params.id), dropId, { adminId: (req as AuthedRequest).admin?.adminId ?? null, manual: true });
+    if (!r.ok) return fail(res, 400, r.error);
+    ok(res, { ok: true, keepId: Number(req.params.id) });
+  } catch (e: any) {
+    logger.error({ err: e?.message, keepId: req.params.id, dropId }, "manual worker merge failed");
+    fail(res, 500, `Не вдалося обʼєднати: ${e?.message ?? e}`);
+  }
+});
+
 // Відновлення звільненого — services/workerRehire.ts (спільно з «✅ Відновити»
 // офіса в боті). Опційні factoryId/positionId — «Відновити його» з модалки дубля
 // одразу ставить нову фабрику/посаду; кожна зміна — у журнал worker_changes.
@@ -1665,17 +1695,25 @@ router.delete("/worker-bank-accounts/:id", RW, async (req, res) => {
 });
 
 // Upload (or replace) the file attached to an existing document.
-router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.single("file"), async (req, res) => {
+// file — один файл (як раніше), files — кілька фото/PDF → один PDF; append=1 — дописати сторінки
+// до наявного файлу документа (22.10.2026: паспорт зі штампами, кілька медичних довідок)
+router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.fields([{ name: "file", maxCount: 1 }, { name: "files", maxCount: 30 }]), async (req, res) => {
   const id = Number(req.params.id);
-  if (!req.file) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
-  const rawMime = sniffDocMime(req.file.buffer);
-  if (!rawMime || !DOC_MIME_WHITELIST.has(rawMime)) return fail(res, 400, "Тип файлу не підтверджено вмістом");
-  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, workerId: workerDocumentsTable.workerId }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const got = req.files as Record<string, Express.Multer.File[]> | undefined;
+  const files = [...(got?.file ?? []), ...(got?.files ?? [])];
+  if (!files.length) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
+  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, fileMime: workerDocumentsTable.fileMime, workerId: workerDocumentsTable.workerId, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc) return fail(res, 404, "Документ не знайдено");
 
-  // Original filename arrives latin1-encoded from multipart — decode to UTF-8.
-  const rawName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
-  const { buffer, mime: realMime, fileName: originalName } = await compressUploadImage(req.file.buffer, rawMime, rawName);
+  const { buildDocFile, readDocFile } = await import("../services/workerDocuments");
+  const appendTo = req.body?.append === "1" ? await readDocFile(doc.filePath, doc.fileMime) : null;
+  if (req.body?.append === "1" && doc.filePath && !appendTo) return fail(res, 400, "До цього файлу не можна дописати сторінки (лише PDF/JPG/PNG) — завантажте документ заново");
+  let built;
+  try {
+    // Original filename arrives latin1-encoded from multipart — decode to UTF-8.
+    built = await buildDocFile(files.map(f => ({ buffer: f.buffer, name: Buffer.from(f.originalname, "latin1").toString("utf8") })), appendTo, doc.title, DOC_MIME_WHITELIST);
+  } catch (e: any) { return fail(res, 400, e?.message ?? "Не вдалося обробити файл"); }
+  const { buffer, mime: realMime, fileName: originalName } = built;
   const storedName = makeStoredName(originalName);
   const relPath = path.join("worker-documents", storedName);
   await fs.promises.writeFile(path.join(WORKER_DOCS_DIR, storedName), buffer);
