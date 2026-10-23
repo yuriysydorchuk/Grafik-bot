@@ -278,11 +278,12 @@ export function computeLegality(input: LegalityInput): LegalityResult {
   else if (input.facts?.passportNationality && input.facts.passportNationality !== worker.nationality) {
     flag({ code: "nationality_conflict", axis: "overall", severity: "warn", params: { profile: worker.nationality, passport: input.facts.passportNationality } }, true);
   }
-  // ефективна дата закінчення документа (status_ukr → глобальна дата)
+  // ефективна дата закінчення документа. status_ukr — ЛИШЕ глобальна дата правила:
+  // збережену expires_at ігноруємо (у панелі її не видно й не змінити; імпорт HRappka
+  // 21.09.2026 приніс старий кінець спецустави 04.03.2026 → статус «прострочено», кейс Hnatiuk 23.10.2026)
   const effExpiry = (d: LegalityDocument): string | null => {
-    if (d.expiresAt) return d.expiresAt;
     if (d.typeCode === "status_ukr") return g.ukrStatusEnd;
-    return null;
+    return d.expiresAt ?? null;
   };
   const isValidAt = (d: LegalityDocument, at: string): boolean => {
     if (d.status !== "present") return false;
@@ -672,7 +673,7 @@ export function deriveLegacy(
   const current = normalizeLegacyStatus(worker.legalStatus);
   const currentClass = payrollClassOf(worker.legalStatus);
   const valid = (d: LegalityDocument) => d.status === "present" && (!d.validFrom || d.validFrom <= today)
-    && (() => { const e = d.expiresAt ?? (d.typeCode === "status_ukr" ? g.ukrStatusEnd : null); return !e || e >= today; })();
+    && (() => { const e = d.typeCode === "status_ukr" ? g.ukrStatusEnd : d.expiresAt; return !e || e >= today; })();
   // документ на будь-якого з наших роботодавців працівника — підстава для статусу
   const empOk = (d: LegalityDocument) => !d.requiresEmployerMatch || (d.employerCompanyId != null && employerCompanies.includes(d.employerCompanyId));
 

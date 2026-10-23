@@ -2443,8 +2443,8 @@ type DocRowState =
 
 // Найкращий документ слоту серед кодів: чинний (найпізніший строк) > прострочений
 // (найпізніший) > на перевірці > запрошений (status=missing з POST .../request,
-// лишає requestedAt) > немає. status_ukr рахує ефективний строк з
-// globals.ukrStatusEnd, якщо в самого документа дата не проставлена.
+// лишає requestedAt) > немає. status_ukr рахує ефективний строк лише з
+// globals.ukrStatusEnd (збережена дата документа ігнорується, див. docExpiry).
 function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], codes: string[], globals?: LegalizationGlobals | null): DocRowState {
   const cands = items.filter(it => it.type.code && codes.includes(it.type.code));
   const real = cands.filter(it => it.doc.status !== "missing");
@@ -2479,13 +2479,16 @@ function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], co
   return { kind: "empty", requestedDoc: requested[0]?.doc ?? null };
 }
 
-// Ефективний строк дії: status_ukr — з globals.ukrStatusEnd; ZWUA строку не має (дата в
+// Ефективний строк дії: status_ukr — ЛИШЕ з globals.ukrStatusEnd: у модалці ця дата
+// заблокована й показує правило, тож збережена expires_at (імпорт HRappka приніс старий
+// кінець спецустави 04.03.2026 → хибне «прострочено», кейс 23.10.2026) не враховується;
+// дзеркало — effExpiry у services/legality.ts. ZWUA строку не має (дата в
 // ранніх записах стояла в expiresAt як «дата виреєстрування» — не рахуємо її простроченням).
 // Zaświadczenie o złożeniu wniosku (справа) строку теж не має: перебування законне до рішення, а
 // дата в записі лишається від попереднього типу (karta pobytu → справа, кейс 02.10.2026).
 // Дзеркало — NO_EXPIRY_DOC_CODES у services/taskAutoRules.ts.
 function docExpiry(code: string | null | undefined, doc: WorkerDocument, globals?: LegalizationGlobals | null): string | null {
-  if (code === "status_ukr") return doc.expiresAt ?? globals?.ukrStatusEnd ?? null;
+  if (code === "status_ukr") return globals?.ukrStatusEnd ?? null;
   if (code === "zus_zwua" || code === "stay_case_certificate") return null;
   return doc.expiresAt;
 }
@@ -3228,7 +3231,10 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const [number, setNumber] = useState(doc?.number ?? "");
   // ZWUA: дата виреєстрування живе в issuedAt; ранні записи мали її в expiresAt — переносимо при редагуванні
   const zwuaDoc = !!doc && types.find(ty => ty.id === doc.docTypeId)?.code === "zus_zwua";
-  const [expiresAt, setExpiresAt] = useState(zwuaDoc ? "" : doc?.expiresAt ?? "");
+  // status_ukr: строк — лише з правила (поле заблоковане), стару імпортну дату в стейт не беремо,
+  // щоб збереження її не повертало в базу
+  const ukrDoc = !!doc && types.find(ty => ty.id === doc.docTypeId)?.code === "status_ukr";
+  const [expiresAt, setExpiresAt] = useState(zwuaDoc || ukrDoc ? "" : doc?.expiresAt ?? "");
   const [fileUrl, setFileUrl] = useState(doc?.fileUrl ?? "");
   const [note, setNote] = useState(doc?.note ?? "");
   const [files, setFiles] = useState<File[]>([]); // кілька фото/PDF → один PDF на сервері (22.10.2026)
@@ -3409,15 +3415,18 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   // Статус для каталожних типів не редагується вручну (поле сховане) — але
   // «запрошений» рядок (status=missing з /request), заповнений і збережений
   // тут, автоматично стає present; pending/expired/present лишаються як є.
+  // status_ukr (поле строку auto ukrEnd): дату в базі очищаємо, а імпортний «expired»
+  // (HRappka ставив його за старим кінцем спецустави) збереження повертає в present
+  const ukrEndType = fields.some(f => f.key === "expiresAt" && f.auto === "ukrEnd");
   const body = () => ({
     docTypeId: docTypeId ? Number(docTypeId) : null, title: effectiveTitle.trim(),
-    status: !isCustomType && status === "missing" ? "present" : status,
+    status: !isCustomType && status === "missing" ? "present" : ukrEndType && status === "expired" ? "present" : status,
     ...(hasNumberField ? { number } : {}),
-    expiresAt: expiresAt || null, fileUrl, note,
+    expiresAt: ukrEndType ? null : expiresAt || null, fileUrl, note,
     ...(fields.some(f => f.key === "issuedAt" && f.open) ? { issuedAt: issuedAt || null } : {}),
   });
   const legalBody = () => ({
-    validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: expiresAt || null,
+    validFrom: validFrom || null, issuedAt: issuedAt || null, submittedAt: submittedAt || null, decisionAt: decisionAt || null, expiresAt: ukrEndType ? null : expiresAt || null,
     issuer: issuer.trim() || null, caseNumber: caseNumber.trim() || null,
     employerCompanyId: employerCompanyId ? Number(employerCompanyId) : null,
     caseStatus: caseStatus || null,

@@ -88,6 +88,16 @@ test("L3 africa без документів → unknown/unknown, requiredMissing
 });
 
 // ── L4–L7: UA, роботодавець ──
+// Імпорт HRappka (21.09.2026) приніс status_ukr зі старим кінцем спецустави в expires_at — у панелі
+// ця дата не видима й не редагується, тож строк завжди з правила (кейс Hnatiuk 23.10.2026)
+test("status_ukr зі збереженою старою expires_at → строк лише з правила global.ukr_status_end", () => {
+  const r = run({ employmentStartDate: "2026-08-01" }, [
+    doc("status_ukr", { expiresAt: "2026-03-04" }), doc("powiadomienie_ua", { employerCompanyId: 1, submittedAt: "2026-08-03" }),
+  ]);
+  assert.equal(r.stay.status, "legal"); assert.equal(r.stay.expiresAt, "2027-03-04");
+  assert.equal(r.nextExpiry?.date, "2027-03-04");
+});
+
 test("L4 UA + status_ukr + powiadomienie на нашу фірму → legal/legal, nextExpiry = глобальна дата UKR", () => {
   const r = run({ employmentStartDate: "2026-08-01" }, [
     doc("status_ukr"), doc("powiadomienie_ua", { employerCompanyId: 1, submittedAt: "2026-08-03" }),
