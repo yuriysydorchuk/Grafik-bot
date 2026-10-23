@@ -359,19 +359,26 @@ export function effectiveDay(due: string | null, planned: string | null, today: 
 }
 
 // Лічильники для віджетів (мої: прострочено / сьогодні / тиждень / зустрічі).
-export async function myCounters(adminId: number, today = warsawToday()) {
+// seenAt (23.10.2026, бейдж у меню): ISO-момент, коли адмін останній раз відкривав /tasks
+// (admins.web_prefs.tasksSeenAt) — total = усі мої відкриті, fresh = створені після нього
+// (null = сторінку ще не відкривали → нові лише за останню добу, а не весь беклог; undefined = не рахувати, fresh=0)
+export async function myCounters(adminId: number, today = warsawToday(), opts: { seenAt?: string | null } = {}) {
   const weekEnd = addDaysStr(today, 6);
+  const seenMs = opts.seenAt === undefined ? undefined : (opts.seenAt ? new Date(opts.seenAt).getTime() : Date.now() - 86_400_000);
   const rows = await db.execute(sql`
-    select t.due_at, t.planned_for, t.kind from tasks t
+    select t.due_at, t.planned_for, t.kind, t.created_at from tasks t
     left join task_assignees a on a.task_id = t.id and a.admin_id = ${adminId}
     where t.status in ('open','in_progress','review')
       and (t.assignee_admin_id = ${adminId} or a.id is not null)
       and (t.snoozed_until is null or t.snoozed_until <= ${today})`);
-  let overdue = 0, todayN = 0, week = 0, meetingsToday = 0;
-  for (const r of rows.rows as { due_at: string | null; planned_for: string | null; kind: string }[]) {
+  let overdue = 0, todayN = 0, week = 0, meetingsToday = 0, total = 0, fresh = 0;
+  for (const r of rows.rows as { due_at: string | null; planned_for: string | null; kind: string; created_at: string | Date }[]) {
+    total++;
+    // created_at — настінний Warsaw, процес теж у Warsaw → new Date(рядок) дає правильний момент
+    if (seenMs !== undefined && new Date(r.created_at).getTime() > seenMs) fresh++;
     const d = r.kind === "meeting" ? dateStr(r.due_at) : effectiveDay(dateStr(r.due_at), dateStr(r.planned_for), today);
     if (!d) continue;
     if (d < today) overdue++; else if (d === today) { todayN++; if (r.kind === "meeting") meetingsToday++; } else if (d <= weekEnd) week++;
   }
-  return { overdue, today: todayN, week, meetingsToday };
+  return { overdue, today: todayN, week, meetingsToday, total, fresh };
 }

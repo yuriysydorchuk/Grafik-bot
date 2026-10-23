@@ -193,6 +193,8 @@ export interface Worker {
   companyId?: number | null; companyName?: string | null;
   positionId?: number | null; positionName?: string | null; positionColor?: string | null;
   gender?: Gender | null; fixedShift?: string | null; selfTransport?: boolean;
+  // чергування закріпленої зміни тиждень через тиждень (23.10.2026): друга зміна, понеділок-якір (тиждень fixedShift), зміна цього тижня (лише з профілю)
+  fixedShiftAlt?: string | null; fixedShiftAnchor?: string | null; fixedShiftThisWeek?: string | null;
   selfTransportSince?: string | null; // «діє з»: дата чинності поточного значення selfTransport
   nationality?: string | null; // ukraine|belarus|africa|latin_america|central_asia|south_asia (lib/nationality.tsx)
   legalStatus?: string | null; // форма легалізації (lib/legalStatus.ts); null = без форми — РУЧНЕ поле

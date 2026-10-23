@@ -38,6 +38,7 @@ import { hashPassword } from "../lib/auth";
 import { scopeGate, workerInScopeSql, factoryInScope, factoryInScopeSql, factoriesOutsideScope, type AdminScope } from "../lib/scope";
 import { calcPayroll, round2, DEFAULT_RATES, type FinanceRates } from "../lib/payroll";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, deleteStoredFile, sniffDocMime, compressUploadImage } from "../lib/uploads";
+import { fixedShiftForWeek, mondayOf } from "../lib/fixedShift";
 import { DAYS, entryDateStr, weekFromForMonth, addDaysStr } from "../lib/dates";
 import { terminatedOn } from "../lib/termination";
 import { workerQuestionnairesTable } from "@workspace/db";
@@ -398,6 +399,7 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
       id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, referralCode: workersTable.referralCode,
       telegramId: workersTable.telegramId, factoryId: workersTable.factoryId, companyId: workersTable.companyId,
       positionId: workersTable.positionId, gender: workersTable.gender, fixedShift: workersTable.fixedShift,
+      fixedShiftAlt: workersTable.fixedShiftAlt, fixedShiftAnchor: workersTable.fixedShiftAnchor,
       nationality: workersTable.nationality, language: workersTable.language,
       gratyfikantName: workersTable.gratyfikantName, pesel: workersTable.pesel,
       factoryName: factoriesTable.name, status: workersTable.status, isActive: workersTable.isActive,
@@ -451,6 +453,22 @@ router.get("/workers", WORKERS_RO, async (req, res) => {
 
 const normGender = (g: any): string | null => (g === "male" || g === "female") ? g : null;
 const normFixedShift = (s: any): string | null => (s != null && /^[1-6]$/.test(String(s))) ? String(s) : null;
+// Чергування закріпленої зміни (23.10.2026): alt лише разом із закріпленою і не та сама; якір —
+// понеділок (нормалізуємо); alt щойно ввімкнули без якоря → якір = поточний тиждень (цього тижня —
+// закріплена, наступного — alt). Поля, яких у body нема, беруться з поточного рядка (PATCH).
+const isCalendarDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+const fixedShiftFields = (body: any, before?: { fixedShift: string | null; fixedShiftAlt: string | null; fixedShiftAnchor: string | null }) => {
+  const has = (k: string) => body?.[k] !== undefined;
+  if (!has("fixedShift") && !has("fixedShiftAlt") && !has("fixedShiftAnchor")) return {};
+  const fs = has("fixedShift") ? normFixedShift(body.fixedShift) : before?.fixedShift ?? null;
+  let alt = has("fixedShiftAlt") ? normFixedShift(body.fixedShiftAlt) : before?.fixedShiftAlt ?? null;
+  let anchor = has("fixedShiftAnchor")
+    ? (isCalendarDate(body.fixedShiftAnchor) ? mondayOf(body.fixedShiftAnchor) : null) // «2026-02-30» не приймаємо (JS тихо зсунув би)
+    : before?.fixedShiftAnchor ?? null;
+  if (!fs || alt === fs) alt = null;
+  if (!alt) anchor = null; else if (!anchor) anchor = mondayOf(warsawToday());
+  return { fixedShift: fs, fixedShiftAlt: alt, fixedShiftAnchor: anchor };
+};
 // національність — прапорець біля імені (профіль, довози, сводна); дзеркало веб-каталогу lib/nationality.ts
 const NATIONALITIES = ["ukraine", "belarus", "poland", "moldova", "romania", "georgia", "azerbaijan", "turkey", "eu_other", "africa", "latin_america", "central_asia", "south_asia", "other"];
 
@@ -480,7 +498,7 @@ router.post("/workers", RW, async (req, res) => {
   }
   const values: any = {
     fullName: fullName.trim(), factoryId: factoryId ?? null, companyId: companyId ?? null,
-    positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift),
+    positionId: positionId ?? null, gender: normGender(gender), fixedShift: normFixedShift(fixedShift), ...fixedShiftFields(req.body),
     telegramId: tgId, workerCode: code,
     nationality: NATIONALITIES.includes(String(req.body?.nationality)) ? String(req.body.nationality) : null,
     gratyfikantName: strOrNull(req.body?.gratyfikantName),
@@ -556,6 +574,7 @@ router.patch("/workers/:id", RW, async (req, res) => {
   if (positionId !== undefined) patch.positionId = positionId ?? null;
   if (gender !== undefined) patch.gender = normGender(gender);
   if (fixedShift !== undefined) patch.fixedShift = normFixedShift(fixedShift);
+  Object.assign(patch, fixedShiftFields(req.body, before)); // + чергування (alt/якір), узгоджене з закріпленою
   if (telegramId !== undefined) {
     // telegram_id unique: чужа привʼязка → людське 400 замість 500 з БД
     const tgId = strOrNull(telegramId);
@@ -1317,6 +1336,8 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
     // «доїжджає сам» — по фабриці й поденно; selfTransport/Since — зріз по основній
     // фабриці на сьогодні (сумісність модалки), повний список — selfTransportRows
     gender: w.gender, fixedShift: w.fixedShift, selfTransport: !!selfToday,
+    // чергування змін: друга зміна, якір і яка зміна діє цього тижня (lib/fixedShift.ts)
+    fixedShiftAlt: w.fixedShiftAlt, fixedShiftAnchor: w.fixedShiftAnchor, fixedShiftThisWeek: fixedShiftForWeek(w, mondayOf(warsawToday())),
     selfTransportSince: selfToday?.since ?? null,
     selfTransportRows: selfRows,
     // без цих полів модалки профілю (редагування, анкета) відкривались би з порожніми

@@ -9,7 +9,8 @@ import {
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { useNavTracking } from "../lib/nav";
-import { post, type Me } from "../lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { get, post, type Me } from "../lib/api";
 import { canAccessPage, isReadOnly } from "../lib/roles";
 import { NotificationBell } from "./NotificationBell";
 import { GlobalSearch } from "./GlobalSearch";
@@ -170,6 +171,11 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
   const groups = NAV
     .map(g => ({ ...g, items: g.items.filter(i => canAccessPage(me, i.href)) }))
     .filter(g => g.items.length > 0);
+  // Бейдж біля «Задачі» (23.10.2026): усього моїх відкритих + червоним нові з останнього відкриття
+  // сторінки (той самий ключ кешу, що й на /tasks — відкриття сторінки обнуляє «нові»)
+  const { data: taskCounters } = useQuery<{ total: number; fresh: number }>({
+    queryKey: ["task-counters"], queryFn: () => get("/tasks/counters"), enabled: canAccessPage(me, "/tasks"), refetchInterval: 60000,
+  });
 
   // `rail` = collapsed icon-only mode (labels appear on hover via the group/nav peer)
   const renderSidebar = (rail: boolean) => (
@@ -195,6 +201,16 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
                     {active && <span className="absolute left-0 h-5 w-1 rounded-r-full bg-red-600" />}
                     <Icon className={cn("h-[18px] w-[18px] shrink-0 transition", active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600")} />
                     <span className={cn("truncate", rail && "hidden group-hover/nav:inline")}>{t(label)}</span>
+                    {href === "/tasks" && taskCounters && taskCounters.total > 0 && (
+                      <>
+                        <span className={cn("ml-auto flex shrink-0 items-center gap-1", rail && "hidden group-hover/nav:flex")}>
+                          {taskCounters.fresh > 0 && <span className="rounded-full bg-red-600 px-1.5 text-[10px] font-semibold leading-4 text-white" title={t("нових")}>{taskCounters.fresh}</span>}
+                          <span className="rounded-full bg-slate-200 px-1.5 text-[10px] font-semibold leading-4 text-slate-600" title={t("усього відкритих")}>{taskCounters.total}</span>
+                        </span>
+                        {/* згорнуте меню — лише червона крапка на іконці, коли є нові */}
+                        {rail && taskCounters.fresh > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-600 group-hover/nav:hidden" />}
+                      </>
+                    )}
                   </Link>
                 );
               })}

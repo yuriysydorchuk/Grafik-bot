@@ -60,6 +60,7 @@ interface WorkerProfile {
   factoryId: number | null; factoryName: string | null; companyId: number | null; companyName: string | null;
   positionId: number | null; positionName: string | null; positionColor: string | null;
   gender: string | null; fixedShift: string | null; selfTransport: boolean;
+  fixedShiftAlt?: string | null; fixedShiftAnchor?: string | null; fixedShiftThisWeek?: string | null; // чергування змін
   selfTransportSince?: string | null;
   // «доїжджає сам» — по фабриці й поденно: інтервали [since, until) пари
   selfTransportRows?: { id: number; factoryId: number; factoryName: string | null; since: string; until: string | null }[];
@@ -228,7 +229,7 @@ export default function WorkerDetail() {
     id: w.id, fullName: w.fullName, workerCode: w.workerCode, telegramId: w.telegramId,
     factoryId: w.factoryId, factoryName: w.factoryName, companyId: w.companyId, companyName: w.companyName,
     positionId: w.positionId, positionName: w.positionName, positionColor: w.positionColor,
-    gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, selfTransport: w.selfTransport,
+    gender: (w.gender as Gender | null) ?? null, fixedShift: w.fixedShift, fixedShiftAlt: w.fixedShiftAlt ?? null, fixedShiftAnchor: w.fixedShiftAnchor ?? null, selfTransport: w.selfTransport,
     selfTransportSince: w.selfTransportSince ?? null, nationality: w.nationality ?? null,
     gratyfikantName: w.gratyfikantName ?? null, pesel: w.pesel ?? null, middleName: w.middleName ?? null,
     status: w.status, isActive: w.isActive, language: w.language,
@@ -367,8 +368,26 @@ export default function WorkerDetail() {
                 options={posOptions} disabled={!canEdit} />
             </InfoRow>
             <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
-              <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
-                options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} disabled={!canEdit} />
+              {/* чергування тиждень через тиждень (23.10.2026): друга зміна + «цього тижня — N»; якір ставить сервер
+                  (увімкнули → цього тижня закріплена, наступного друга); ⇄ міняє їх місцями, не чіпаючи якір */}
+              <span className="flex flex-wrap items-center gap-1">
+                <InlineSelect value={w.fixedShift ?? ""} none={t("— немає —")} onChange={v => wpatch.mutate({ fixedShift: v || null })}
+                  options={["1", "2", "3"].map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} disabled={!canEdit} />
+                {w.fixedShift && (canEdit || w.fixedShiftAlt) && (
+                  <>
+                    <span className="text-xs text-slate-400">{t("через тиждень —")}</span>
+                    <InlineSelect value={w.fixedShiftAlt ?? ""} none={t("— ні —")} onChange={v => wpatch.mutate({ fixedShiftAlt: v || null })}
+                      options={["1", "2", "3"].filter(s => s !== w.fixedShift).map(s => ({ value: s, label: t("{n} зміна", { n: s }) }))} disabled={!canEdit} />
+                  </>
+                )}
+                {w.fixedShift && w.fixedShiftAlt && w.fixedShiftThisWeek && (
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
+                    {t("цього тижня — {n}, наступного — {m}", { n: w.fixedShiftThisWeek, m: w.fixedShiftThisWeek === w.fixedShift ? w.fixedShiftAlt : w.fixedShift })}
+                    {canEdit && <button type="button" className="rounded px-0.5 hover:bg-emerald-100" title={t("Поміняти: цього тижня — {n}", { n: w.fixedShiftThisWeek === w.fixedShift ? w.fixedShiftAlt : w.fixedShift })}
+                      onClick={() => wpatch.mutate({ fixedShift: w.fixedShiftAlt, fixedShiftAlt: w.fixedShift })}>⇄</button>}
+                  </span>
+                )}
+              </span>
             </InfoRow>
             <InfoRow icon={Car} label={t("Транспорт")} title={t("Режим «доїжджає сам» — окремо на кожну фабрику; зміна фабрики його не переносить")}>
               <SelfTransportRows workerId={w.id} mainFactoryId={w.factoryId} rows={w.selfTransportRows ?? []}
@@ -2510,7 +2529,7 @@ const DOC_TONE_CLS = { ok: "text-green-600", soon: "text-yellow-600", urgent: "t
 function docTone(s: Extract<DocRowState, { kind: "doc" }>): keyof typeof DOC_TONE_CLS {
   if (s.pending) return "pending";
   if (s.expired) return "expired";
-  if (s.indefinite) return "muted";
+  if (s.indefinite) return "ok"; // безстроковий і підтверджений — зелений, як чинний паспорт (23.10.2026)
   if (!s.expiresAt) return "warn";
   const tone = expiryTone(daysUntil(s.expiresAt), leadDaysCache); // жовта/червона зона з правила легальності
   return tone === "rose" ? "urgent" : tone === "amber" ? "soon" : "ok";
@@ -2658,8 +2677,8 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   );
 }
 
-// Секція «Документи»: фіксовані слоти (у порядку) + окремо решта
-// документів людини, що в слоти не потрапили. Один макет рядка на все.
+// Секція «Документи»: фіксовані слоти + решта документів людини, що в слоти не потрапили;
+// один макет рядка на все. Порядок — паспорт, потім за станом (підтверджені вгорі), див. rank().
 function DocSlotList({ types, docs, companies, employers, nationality, requiresSanepid, globals, canLegal, onOpenDoc, onOpenEmpty, onAutoSubmit, onRequest, onHistory, onDelete, onVerify, onReject, onPreview, onSend, onScanCard, onScanPassport }: {
   types: DocumentType[]; docs: WorkerDocument[]; companies: Company[]; employers: DocEmployer[]; nationality: string | null; requiresSanepid: boolean;
   globals: LegalizationGlobals | undefined; canLegal: boolean;
@@ -2693,12 +2712,12 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     const uaCompany = code === "powiadomienie_ua" ? employers[0]?.companyId ?? null : undefined;
     const onAdd = () => (state.kind === "empty" && state.requestedDoc && !scanOnly) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type, undefined, uaCompany);
     const onAuto = code === "powiadomienie_ua" && onAutoSubmit ? () => onAutoSubmit(uaCompany ?? null) : undefined;
-    return (
+    return { state, node: (
       <DocRow key={code} icon={docTypeIcon(type.icon)} label={label} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
         onAdd={scanOnly ? undefined : onAdd} onAuto={onAuto} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={onScan} scanTitle={scanTitle} />
-    );
+    ) };
   };
 
   // Слот ПО ФІРМІ (powiadomienie, рішення 20.09.2026): людина на двох фірмах має два документи —
@@ -2710,12 +2729,12 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
     const own = items.filter(it => it.doc.employerCompanyId === e.companyId || (e.primary && it.doc.employerCompanyId == null));
     const state = resolveDocSlot(own, [code], globals);
     const onAdd = () => (state.kind === "empty" && state.requestedDoc) ? onOpenDoc(state.requestedDoc) : onOpenEmpty(type, undefined, e.companyId);
-    return (
+    return { state, node: (
       <DocRow key={`${code}-${e.companyId}`} icon={docTypeIcon(type.icon)} label={label} subLabel={e.companyName} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={[type]} requestTitle={requestTitle}
         onAdd={onAdd} onAuto={onAutoSubmit ? () => onAutoSubmit(e.companyId) : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} />
-    );
+    ) };
   };
 
   // Слот з кількома можливими типами (Karta pobytu/Zezwolenie): тип не
@@ -2738,12 +2757,12 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
       const matching = slotTypes.filter(ty => typeMatchesNationality(ty, nationality));
       candidates = matching.length ? matching : slotTypes;
     }
-    return (
+    return { state, node: (
       <DocRow key={key} icon={icon} label={label} subLabel={subLabel} state={state} canLegal={canLegal} companies={companies}
         requestCandidates={candidates} requestTitle={requestTitle}
         onAdd={state.kind !== "notneeded" ? onAdd : undefined} onEdit={onOpenDoc} onRequest={onRequest} onHistory={onHistory} onDelete={onDelete}
         onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onScan={state.kind !== "notneeded" ? onScan : undefined} />
-    );
+    ) };
   };
 
   const otherDocs = [...docs]
@@ -2754,31 +2773,44 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
       return sa - sb || a.id - b.id;
     });
 
+  // Порядок рядків (23.10.2026, прохання власника): Paszport завжди перший, далі — завантажені й
+  // підтверджені документи (чинні), потім на перевірці, прострочені, порожні слоти, «не потрібно».
+  // Усередині групи — сталий порядок слотів (sort стабільний).
+  type SlotRow = { state: DocRowState; node: React.ReactNode };
+  const rank = (st: DocRowState) => st.kind === "doc" ? (st.pending ? 1 : st.expired ? 2 : 0) : st.kind === "empty" ? 3 : 4;
+  const passport = fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"));
+  const rows: SlotRow[] = [];
+  const add = (r: SlotRow | null | false) => { if (r) rows.push(r); };
+  // PESEL файлом — іноземцям (у поляків він у dowodzie); показуємо й тоді, коли документ уже є
+  add((nationality !== "poland" || hasCode("pesel")) && fixedSlot("pesel", t("PESEL")));
+  add(multiSlot("wiza", t("Wiza"), WIZA_CODES, WIZA_SHORT, docTypeIcon("residence_card")));
+  add(multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard));
+  add(multiSlot("decyzja", t("Decyzja (pobyt)"), DECYZJA_CODES, {}, docTypeIcon("decision")));
+  add((nationality === "ukraine" || hasCode("status_ukr")) && fixedSlot("status_ukr", t("Status UKR")));
+  add(fixedSlot("student_cert", t("Student")));
+  if (nationality === "ukraine") {
+    if (employers.length > 1) employers.forEach(e => add(employerSlot("powiadomienie_ua", t("Powiadomienie"), e)));
+    else add(fixedSlot("powiadomienie_ua", t("Powiadomienie")));
+  }
+  add(multiSlot("zezwolenie", t("Zezwolenie / Oświadczenie"), ZEZWOLENIE_CODES, ZEZWOLENIE_SHORT, FileSignature));
+  add(fixedSlot("medical_exam", t("Badania")));
+  add(requiresSanepid && fixedSlot("sanepid", t("Sanepid")));
+  for (const doc of otherDocs) {
+    const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
+    const state = otherDocState(doc, type, globals);
+    rows.push({ state, node: (
+      <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={state}
+        canLegal={canLegal} companies={companies}
+        requestCandidates={type && type.isActive !== false ? [type] : undefined} requestTitle={requestTitle}
+        onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onRequest={type ? onRequest : undefined} />
+    ) });
+  }
+  rows.sort((a, b) => rank(a.state) - rank(b.state));
+
   return (
     <div>
-      {fixedSlot("passport", t("Paszport"), onScanPassport, t("Сканувати паспорт"))}
-      {/* PESEL файлом — іноземцям (у поляків він у dowodzie); показуємо й тоді, коли документ уже є */}
-      {(nationality !== "poland" || hasCode("pesel")) && fixedSlot("pesel", t("PESEL"))}
-      {multiSlot("wiza", t("Wiza"), WIZA_CODES, WIZA_SHORT, docTypeIcon("residence_card"))}
-      {multiSlot("karta", t("Karta pobytu"), KARTA_POBYTU_CODES, KARTA_POBYTU_SHORT, IdCard, onScanCard)}
-      {multiSlot("decyzja", t("Decyzja (pobyt)"), DECYZJA_CODES, {}, docTypeIcon("decision"))}
-      {(nationality === "ukraine" || hasCode("status_ukr")) && fixedSlot("status_ukr", t("Status UKR"))}
-      {fixedSlot("student_cert", t("Student"))}
-      {nationality === "ukraine" && (employers.length > 1
-        ? employers.map(e => employerSlot("powiadomienie_ua", t("Powiadomienie"), e))
-        : fixedSlot("powiadomienie_ua", t("Powiadomienie")))}
-      {multiSlot("zezwolenie", t("Zezwolenie / Oświadczenie"), ZEZWOLENIE_CODES, ZEZWOLENIE_SHORT, FileSignature)}
-      {fixedSlot("medical_exam", t("Badania"))}
-      {requiresSanepid && fixedSlot("sanepid", t("Sanepid"))}
-      {otherDocs.map(doc => {
-        const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
-        return (
-          <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={otherDocState(doc, type, globals)}
-            canLegal={canLegal} companies={companies}
-            requestCandidates={type && type.isActive !== false ? [type] : undefined} requestTitle={requestTitle}
-            onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onRequest={type ? onRequest : undefined} />
-        );
-      })}
+      {passport?.node}
+      {rows.map(r => r.node)}
       <div className="flex items-center">
         <button type="button" onClick={() => onOpenEmpty(null)} className="flex-1 px-4 py-1.5 text-left text-xs text-slate-400 hover:text-slate-600">
           {t("+ інший документ")}

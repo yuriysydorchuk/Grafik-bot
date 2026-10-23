@@ -29,6 +29,13 @@ export default function Tasks() {
   const { setOpenId, drawer } = useOpenTask();
   // deep-link з бота: /tasks?task=<id> відкриває шухляду
   useEffect(() => { const id = Number(new URLSearchParams(window.location.search).get("task")); if (id) setOpenId(id); }, []);
+  // відкрили сторінку — задачі «побачені»: бейдж «нових» у меню обнуляється (web_prefs.tasksSeenAt → GET /tasks/counters)
+  const qcSeen = useQueryClient();
+  useEffect(() => {
+    post("/auth/web-prefs", { key: "tasksSeenAt", value: new Date().toISOString() })
+      .then(() => qcSeen.invalidateQueries({ queryKey: ["task-counters"] }))
+      .catch(() => { /* бейдж не критичний */ });
+  }, [qcSeen]);
   const { data: counters } = useQuery<{ overdue: number; today: number; week: number; meetingsToday: number }>({ queryKey: ["task-counters"], queryFn: () => get("/tasks/counters"), refetchInterval: 60000 });
   // клавіші: N нова, T сьогодні (перемикає на Мій день)
   useEffect(() => {

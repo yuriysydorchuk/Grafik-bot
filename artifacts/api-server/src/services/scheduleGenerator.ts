@@ -11,6 +11,7 @@ import { factoryShifts, nowWarsaw } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, shiftDurationHours } from "./shiftOverrides";
 import { entryDateStr } from "../lib/dates";
 import { terminatedOn } from "../lib/termination";
+import { fixedShiftForWeek } from "../lib/fixedShift";
 
 export interface ShortageInfo {
   factoryName: string;
@@ -191,13 +192,15 @@ export async function generateSchedule(
       // manual factory → all active workers of this factory. A worker with a `fixedShift`
       // is only offered to that shift (handles "give everyone, split across shifts"); a
       // flexible worker (no fixedShift) is offered to every active shift.
+      // Зміна тижня — через fixedShiftForWeek (чергування тиждень через тиждень, 23.10.2026).
       const count = settings.shiftCount ?? 3;
       const active = allWorkers.filter(w => w.factoryId === fId);
       for (const day of DAYS) {
         for (let s = 1; s <= count; s++) {
           const set = poolFor(fId, `${day}-${s}`);
           for (const w of active) {
-            if (w.fixedShift && Number(w.fixedShift) !== s) continue;
+            const fs = fixedShiftForWeek(w, weekStart);
+            if (fs && Number(fs) !== s) continue;
             set.add(w.id);
           }
         }
@@ -300,6 +303,8 @@ export async function generateSchedule(
   for (const fac of allModeFactories) {
     const count = Math.min(6, Math.max(1, fac.shiftCount ?? 3));
     const active = allWorkers.filter(w => w.factoryId === fac.id);
+    // закріплена зміна ЦЬОГО тижня (0 = гнучкий); чергування — lib/fixedShift.ts
+    const boundShift = (w: typeof active[number]) => { const s = fixedShiftForWeek(w, weekStart); return s ? Number(s) : 0; };
     for (const day of ALL_DAYS) {
       // current load per shift (1-based), seeded from already-locked/worked entries
       const load = Array.from({ length: count }, () => 0);
@@ -311,7 +316,7 @@ export async function generateSchedule(
       for (const w of active) {
         if (workerDayShifts.has(`${w.id}-${day}`)) continue;       // already placed today
         if ((workerDaysAssigned.get(w.id)?.size ?? 0) >= 6) continue;
-        const fs = w.fixedShift ? Number(w.fixedShift) : 0;
+        const fs = boundShift(w);
         if (!fs || fs < 1 || fs > count) continue;                 // unbound — handled below
         const shift = String(fs) as Shift;
         if (slotLocked(day, shift)) continue;
@@ -326,7 +331,7 @@ export async function generateSchedule(
       }
       // 2) unbound workers → the least-loaded shift they're not absent for (prefer continuity)
       const unbound = active.filter(w =>
-        !(w.fixedShift && Number(w.fixedShift) >= 1 && Number(w.fixedShift) <= count) &&
+        !(boundShift(w) >= 1 && boundShift(w) <= count) &&
         !workerDayShifts.has(`${w.id}-${day}`) &&
         (workerDaysAssigned.get(w.id)?.size ?? 0) < 6);
       for (const w of unbound) {

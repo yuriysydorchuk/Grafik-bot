@@ -114,6 +114,21 @@ test("'all' mode releases everyone Mon–Sat with fixed-shift workers pinned to 
   assert.ok(rows.some(r => r.workerId === flex), "flexible worker must be scheduled too");
 });
 
+test("'all' mode: alternating fixed shift flips week by week from the anchor", opts, async () => {
+  const f = await mkFactory({ genMode: "all", usesAvailability: false, shiftCount: 2 });
+  // цього тижня (якір) — 1-ша, наступного — 2-га, потім знов 1-ша
+  const w = await mkWorker(f, { fixedShift: "1", fixedShiftAlt: "2", fixedShiftAnchor: WEEK });
+  const shiftsOn = async (weekStart: string) => {
+    const res = await generateSchedule(weekStart);
+    const rows = (await entriesFor(res.weekId)).filter(r => r.workerId === w);
+    assert.equal(rows.length, 6);
+    return new Set(rows.map(r => r.shift));
+  };
+  assert.deepEqual([...await shiftsOn(WEEK)], ["1"]);
+  assert.deepEqual([...await shiftsOn("2099-01-12")], ["2"]);
+  assert.deepEqual([...await shiftsOn("2099-01-19")], ["1"]);
+});
+
 test("full regeneration reuses the draft week row — driver assignments made ahead survive", opts, async () => {
   const f = await mkFactory({ usesAvailability: true });
   const w = await mkWorker(f);

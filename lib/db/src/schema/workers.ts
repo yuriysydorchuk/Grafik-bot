@@ -127,6 +127,10 @@ export const workersTable = pgTable("workers", {
   positionId: integer("position_id").references(() => positionsTable.id), // work role (nullable = generic production)
   gender: text("gender"), // male | female | null (needed where factory orders split by gender)
   fixedShift: text("fixed_shift"), // "1".."6" — worker bound to this shift (for manual "give everyone" factories); null = flexible
+  // Чергування тиждень через тиждень (23.10.2026): fixed_shift_alt — друга зміна, fixed_shift_anchor —
+  // понеділок тижня, у який діє fixed_shift (наступний — alt, далі по черзі; lib/fixedShift.ts). NULL = без чергування.
+  fixedShiftAlt: text("fixed_shift_alt"),
+  fixedShiftAnchor: date("fixed_shift_anchor"),
   status: text("status").notNull().default("active"), // active | fired
   isActive: boolean("is_active").notNull().default(true),
   selfTransport: boolean("self_transport").notNull().default(false), // gets to work on their own → hidden from drivers, presence marked manually by the scheduler

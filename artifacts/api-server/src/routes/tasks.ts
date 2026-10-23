@@ -192,7 +192,12 @@ router.get("/tasks/my-day", TP, async (req: AuthedRequest, res) => {
   ok(res, { date, overdue, today: todayTasks, meetings, planned, newOvernight: fresh, doneToday, stats: { done: doneToday.length, total: doneToday.length + todayTasks.length, plannedMin }, counters: await myCounters(adminId, date) });
 });
 
-router.get("/tasks/counters", TP, async (req: AuthedRequest, res) => ok(res, await myCounters(me(req))));
+// + total/fresh для бейджа в меню: «нові» — створені після останнього відкриття /tasks (web_prefs.tasksSeenAt, пише веб)
+router.get("/tasks/counters", TP, async (req: AuthedRequest, res) => {
+  const [a] = await db.select({ prefs: adminsTable.webPrefs }).from(adminsTable).where(eq(adminsTable.id, me(req)));
+  const seenAt = a?.prefs?.tasksSeenAt;
+  ok(res, await myCounters(me(req), warsawToday(), { seenAt: typeof seenAt === "string" ? seenAt : null }));
+});
 
 // Календар: задачі й зустрічі в діапазоні (мої або команда)
 router.get("/tasks/calendar", TP, async (req: AuthedRequest, res) => {

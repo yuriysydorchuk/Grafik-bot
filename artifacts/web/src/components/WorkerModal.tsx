@@ -34,6 +34,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const [positionId, setPositionId] = useState(worker?.positionId ? String(worker.positionId) : "");
   const [gender, setGender] = useState(worker?.gender ?? "");
   const [fixedShift, setFixedShift] = useState(worker?.fixedShift ?? "");
+  const [fixedShiftAlt, setFixedShiftAlt] = useState(worker?.fixedShiftAlt ?? ""); // чергування тиждень через тиждень; якір ставить сервер
   const [telegramId, setTelegramId] = useState(worker?.telegramId ?? "");
   const [workerCode, setWorkerCode] = useState(worker?.workerCode ?? "");
   const [language, setLanguage] = useState(worker?.language ?? "");
@@ -60,7 +61,7 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
   const showGender = !!selFactory?.usesGender;
   const base = {
     fullName, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
-    positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null,
+    positionId: positionId ? Number(positionId) : null, gender: gender || null, fixedShift: fixedShift || null, fixedShiftAlt: fixedShift && fixedShiftAlt !== fixedShift ? fixedShiftAlt || null : null,
     telegramId, workerCode: workerCode.trim() || null, language: language || null, selfTransport,
     selfTransportSince: selfSince || null, nationality: nationality || null,
     gratyfikantName: gratyfikantName.trim() || null, pesel: pesel.trim() || null,
@@ -182,6 +183,18 @@ export function WorkerModal({ worker, factories, companies, isOwner, onClose, on
           </Select>
           <p className="mt-1 text-xs text-slate-400">{t("Для фабрик «всіх у зміни» — закріплює працівника за конкретною зміною на весь тиждень.")}</p>
         </div>
+        {fixedShift && (
+          <div><Label>{t("Чергувати зі зміною")}</Label>
+            <Select value={fixedShiftAlt} onChange={e => setFixedShiftAlt(e.target.value)}>
+              <option value="">{t("— без чергування —")}</option>
+              {Array.from({ length: shiftCount }, (_, i) => String(i + 1)).filter(s => s !== fixedShift).map(s => <option key={s} value={s}>{t("{n} зміна", { n: s })}</option>)}
+            </Select>
+            {/* чергування вже йде — якір не зсувається: показуємо фактичний порядок, а не «цього тижня — закріплена» */}
+            <p className="mt-1 text-xs text-slate-400">{worker?.fixedShiftAlt && worker.fixedShiftThisWeek && fixedShift === worker.fixedShift
+              ? t("Чергування триває: цього тижня — {n} зміна, далі по черзі.", { n: worker.fixedShiftThisWeek })
+              : t("Тиждень через тиждень: цього тижня — закріплена, наступного — ця, далі по черзі.")}</p>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div><Label>{t("Код (лише цифри)")}</Label><Input value={workerCode} onChange={e => setWorkerCode(e.target.value)} placeholder={worker ? "" : t("авто-генерація")} inputMode="numeric" /></div>
           <div><Label>{t("Мова бота")}</Label>

@@ -3876,6 +3876,11 @@ const EN: Record<string, string> = {
   "Заповніть обов'язкові поля: {list}": "Fill in the required fields: {list}",
   "Номер паспорта": "Passport number",
   // ── поворот/скачування фото (22.10.2026) ──
+  "нових": "new", "усього відкритих": "open in total",
+  "через тиждень —": "every other week —", "— ні —": "— no —", "цього тижня — {n}, наступного — {m}": "this week — {n}, next — {m}",
+  "Чергування триває: цього тижня — {n} зміна, далі по черзі.": "Alternation in progress: this week — shift {n}, then alternating.",
+  "Поміняти: цього тижня — {n}": "Swap: this week — {n}", "Чергувати зі зміною": "Alternate with shift", "— без чергування —": "— no alternation —",
+  "Тиждень через тиждень: цього тижня — закріплена, наступного — ця, далі по черзі.": "Every other week: this week — the fixed shift, next week — this one, then alternating.",
   "Повернути вліво": "Rotate left", "Повернути вправо": "Rotate right", "Зберегти поворот": "Save rotation", "Зберегти файл повернутим": "Save the file rotated", "Поворот збережено": "Rotation saved", "Повернути сторінку №": "Rotate page no.",
   // ── новий паспорт → оновити анкету (22.10.2026) ──
   "Оновити анкету з нового паспорта?": "Update the questionnaire from the new passport?",
