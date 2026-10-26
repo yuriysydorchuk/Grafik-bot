@@ -32,10 +32,10 @@ const adminOf = (req: any) => ({ adminId: (req as AuthedRequest).admin?.adminId 
 const isDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const CASE_STATUSES = new Set(["to_submit", "submitted", "in_progress", "decision_positive", "decision_negative", "withdrawn"]);
 
-// Польські назви громадянства для експорту (каталог — web/src/lib/nationality.tsx)
+// Громадянство для експорту у формі ZUS (каталог — web/src/lib/nationality.tsx; прикметники — lib/countries.ts CITIZENSHIP_ZUS)
 const NAT_PL: Record<string, string> = {
-  ukraine: "Ukraina", belarus: "Białoruś", poland: "Polska", moldova: "Mołdawia", romania: "Rumunia", georgia: "Gruzja",
-  azerbaijan: "Azerbejdżan", turkey: "Turcja", eu_other: "UE/EOG", africa: "Afryka", latin_america: "Ameryka Łacińska",
+  ukraine: "ukraińskie", belarus: "białoruskie", poland: "polskie", moldova: "mołdawskie", romania: "rumuńskie", georgia: "gruzińskie",
+  azerbaijan: "azerbejdżańskie", turkey: "tureckie", eu_other: "UE/EOG", africa: "Afryka", latin_america: "Ameryka Łacińska",
   central_asia: "Azja Środkowa", south_asia: "Azja Południowa", other: "Inne",
 };
 const STATUS_PL: Record<string, string> = { legal: "OK", pending: "W toku", expiring: "Wygasa", illegal: "BRAK PODSTAWY", unknown: "Brak danych" };
@@ -399,7 +399,8 @@ router.patch("/worker-documents/:id/legal", LG, async (req, res) => {
   }
   // типоспецифічні атрибути — білий список ключів (web/src/lib/documentFields.ts)
   if (b.attrs !== undefined) {
-    if (b.attrs === null) patch.attrs = null;
+    // attrs: null = скинути легалізаційні атрибути; службова історія файлів (previousFiles, 26.10.2026) лишається
+    if (b.attrs === null) patch.attrs = sql`case when ${workerDocumentsTable.attrs} ? 'previousFiles' then jsonb_build_object('previousFiles', ${workerDocumentsTable.attrs}->'previousFiles') else null end`;
     else if (typeof b.attrs !== "object" || Array.isArray(b.attrs)) return fail(res, 400, "attrs: обʼєкт");
     else {
       // laborMarketAccess — TRC z dostępem do rynku pracy; studyMode — тип навчання (stationary дає працю; part_time/school — лише ставка студента)

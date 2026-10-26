@@ -92,3 +92,46 @@ const KNOWN = new Map(COUNTRY_NAMES.map(n => [n.toLowerCase(), n]));
 export const isKnownCountry = (name: string): boolean => KNOWN.has(name.trim().toLowerCase());
 /** Код MRZ або назва в будь-якому регістрі → точна назва зі списку (для select-а); невідоме → "" */
 export const canonicalCountry = (raw: string | null | undefined): string => KNOWN.get(countryNamePl(raw).toLowerCase()) ?? "";
+
+// Громадянство у формі ZUS (прикметник: «ukraińskie», не «Ukraina») — довідник
+// Obywatelstwa_ZUS.csv (26.10.2026, 152 позиції), ключ — польська назва країни
+// з COUNTRIES. Країни поза довідником ZUS (Bhutan, Tajwan, Hongkong…) — назва як є.
+export const CITIZENSHIP_ZUS: Record<string, string> = {
+  "Afganistan": "afgańskie", "Albania": "albańskie", "Algieria": "algierskie", "Andora": "andorskie", "Angola": "angolskie",
+  "Antigua i Barbuda": "antiguaskie i barbudzkie", "Arabia Saudyjska": "saudyjskie", "Argentyna": "argentyńskie", "Armenia": "armeńskie",
+  "Australia": "australijskie", "Austria": "austriackie", "Azerbejdżan": "azerbejdżańskie", "Bahamy": "bahamskie", "Bahrajn": "bahrajskie",
+  "Bangladesz": "banglijskie", "Barbados": "barbadoskie", "Belgia": "belgijskie", "Belize": "belizeskie", "Benin": "benińskie",
+  "Białoruś": "białoruskie", "Boliwia": "boliwijskie", "Bośnia i Hercegowina": "bośniackie", "Botswana": "botswańskie", "Brazylia": "brazylijskie",
+  "Brunei": "brunejskie", "Bułgaria": "bułgarskie", "Burkina Faso": "burkińskie", "Burundi": "burundyjskie", "Chile": "chilijskie",
+  "Chiny": "chińskie", "Chorwacja": "chorwackie", "Cypr": "cypryjskie", "Czad": "czadyjskie", "Czarnogóra": "czarnogórskie", "Czechy": "czeskie",
+  "Dania": "duńskie", "Egipt": "egipskie", "Ekwador": "ekwadorskie", "Erytrea": "erytrejskie", "Estonia": "estońskie", "Etiopia": "etiopskie",
+  "Fidżi": "fidżyjskie", "Filipiny": "filipińskie", "Finlandia": "fińskie", "Francja": "francuskie", "Gambia": "gambijskie", "Ghana": "ghańskie",
+  "Grecja": "greckie", "Gruzja": "gruzińskie", "Gwatemala": "gwatemalskie", "Gwinea": "gwinejskie", "Haiti": "haitańskie", "Hiszpania": "hiszpańskie",
+  "Holandia": "holenderskie", "Honduras": "honduraskie", "Indie": "indyjskie", "Indonezja": "indonezyjskie", "Irak": "irackie", "Iran": "irańskie",
+  "Irlandia": "irlandzkie", "Islandia": "islandzkie", "Izrael": "izraelskie", "Jamajka": "jamajskie", "Japonia": "japońskie", "Jemen": "jemeńskie",
+  "Jordania": "jordańskie", "Kambodża": "kambodżańskie", "Kamerun": "kameruńskie", "Kanada": "kanadyjskie", "Katar": "katarskie",
+  "Kazachstan": "kazachskie", "Kenia": "kenijskie", "Kirgistan": "kirgiskie", "Kolumbia": "kolumbijskie", "Kongo": "kongijskie",
+  "Korea Południowa": "południowokoreańskie", "Kosowo": "kosowskie", "Kostaryka": "kostarykańskie", "Kuba": "kubańskie", "Kuwejt": "kuwejckie",
+  "Laos": "laotańskie", "Liban": "libańskie", "Libia": "libijskie", "Litwa": "litewskie", "Luksemburg": "luksemburskie", "Łotwa": "łotewskie",
+  "Macedonia": "macedońskie", "Madagaskar": "madagaskarskie", "Malezja": "malezyjskie", "Malta": "maltańskie", "Maroko": "marokańskie",
+  "Mauretania": "mauretańskie", "Meksyk": "meksykańskie", "Mołdawia": "mołdawskie", "Monako": "monakijskie", "Mongolia": "mongolskie",
+  "Mozambik": "mozambickie", "Nepal": "nepalskie", "Niemcy": "niemieckie", "Niger": "nigerskie", "Nigeria": "nigeryjskie",
+  "Nikaragua": "nikaraguańskie", "Norwegia": "norweskie", "Nowa Zelandia": "nowozelandzkie", "Oman": "omańskie", "Pakistan": "pakistańskie",
+  "Panama": "panamskie", "Papua-Nowa Gwinea": "papuaskie", "Paragwaj": "paragwajskie", "Peru": "peruwiańskie", "Polska": "polskie",
+  "Portugalia": "portugalskie", "Republika Środkowoafrykańska": "środkowoafrykańskie", "Rosja": "rosyjskie", "Rumunia": "rumuńskie",
+  "Rwanda": "rwandyjskie", "Salwador": "salwadorskie", "San Marino": "sanmaryńskie", "Senegal": "senegalskie", "Serbia": "serbskie",
+  "Seszele": "seszelskie", "Słowacja": "słowackie", "Słowenia": "słoweńskie", "Somalia": "somalijskie", "Sri Lanka": "lankijskie",
+  "Stany Zjednoczone": "amerykańskie", "Sudan": "sudańskie", "Syria": "syryjskie", "Szwajcaria": "szwajcarskie", "Szwecja": "szwedzkie",
+  "Tadżykistan": "tadżyckie", "Tajlandia": "tajlandzkie", "Tanzania": "tanzańskie", "Togo": "togijskie", "Tunezja": "tunezyjskie",
+  "Turcja": "tureckie", "Turkmenistan": "turkmeńskie", "Uganda": "ugandyjskie", "Ukraina": "ukraińskie", "Urugwaj": "urugwajskie",
+  "Uzbekistan": "uzbeckie", "Watykan": "watykańskie", "Wenezuela": "wenezuelskie", "Węgry": "węgierskie", "Wielka Brytania": "brytyjskie",
+  "Wietnam": "wietnamskie", "Włochy": "włoskie", "Wybrzeże Kości Słoniowej": "iworyjskie", "Zambia": "zambijskie", "Zimbabwe": "zimbabwe",
+  "Zjednoczone Emiraty Arabskie": "emirackie", "Macedonia Północna": "macedońskie",
+  "Bezpaństwowiec": "bezpaństwowiec",
+};
+
+/** Код MRZ або назва країни → громадянство у формі ZUS («UKR»/«Ukraina» → «ukraińskie»); невідоме — назва країни */
+export function citizenshipZus(raw: string | null | undefined): string {
+  const name = countryNamePl(raw);
+  return CITIZENSHIP_ZUS[name] ?? CITIZENSHIP_ZUS[canonicalCountry(name)] ?? name;
+}

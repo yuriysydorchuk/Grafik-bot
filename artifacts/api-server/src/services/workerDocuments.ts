@@ -5,9 +5,9 @@
 // окремим — той редагує вже створений рядок, цей створює/оновлює по docTypeId.
 import fs from "node:fs";
 import path from "node:path";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, sql, type SQL } from "drizzle-orm";
 import { db, documentTypesTable, workerDocumentsTable } from "@workspace/db";
-import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage, deleteStoredFile } from "../lib/uploads";
+import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
 import { logger } from "../lib/logger";
 import { DOCUMENT_TYPE_SEED } from "./legalizationCatalog";
 
@@ -85,6 +85,21 @@ export type DocPart = { buffer: Buffer; name: string };
 // (стиснене фото / PDF); інакше все склеюється в ОДИН PDF — решта системи (перегляд, задачі,
 // вкладення паспорта в praca.gov) і далі читає один file_path. appendTo — наявний файл документа,
 // до якого дописуються сторінки.
+// Попередні версії файлу документа (рішення власника 26.10.2026: жоден документ не перезаписується
+// й не зникає — старий файл лишається на диску і в `attrs.previousFiles`, GET /worker-documents/:id/file/prev/:i).
+// Вираз для SET attrs = … в тому ж UPDATE, що міняє file_path: бере ПОТОЧНІ file_* рядка і дописує до
+// наявного attrs атомарно (ревʼю codex 26.10.2026: read-modify-write у JS губив версію при двох
+// паралельних завантаженнях і затирав паралельно змінені легалізаційні attrs).
+export type PreviousFile = { filePath: string; fileName: string | null; fileMime: string | null; replacedAt: string; replacedBy: number | null };
+export function archivePreviousFile(adminId: number | null): SQL {
+  const t = workerDocumentsTable;
+  return sql`case when ${t.filePath} is null then ${t.attrs}
+    else coalesce(${t.attrs}, '{}'::jsonb) || jsonb_build_object('previousFiles',
+      coalesce(${t.attrs}->'previousFiles', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+        'filePath', ${t.filePath}, 'fileName', ${t.fileName}, 'fileMime', ${t.fileMime},
+        'replacedAt', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS'), 'replacedBy', ${adminId}::int))) end`;
+}
+
 export async function buildDocFile(parts: DocPart[], appendTo: { buffer: Buffer; mime: string } | null, baseName: string, whitelist: Set<string> = DOC_MIME_WHITELIST): Promise<{ buffer: Buffer; mime: string; fileName: string }> {
   if (!parts.length) throw new Error("Файл не отримано");
   const prepared: { buffer: Buffer; mime: string; fileName: string }[] = [];
@@ -137,11 +152,12 @@ export async function applyWorkerDocumentUpload(workerId: number, docTypeId: num
     ...fieldPatch,
   };
 
+  // попередній файл (вкл. дописаний — старі сторінки вже всередині нового PDF) лишається попередньою
+  // версією документа, не видаляється (рішення власника 26.10.2026)
   const [doc] = existing
-    ? await db.update(workerDocumentsTable).set(patch).where(eq(workerDocumentsTable.id, existing.id)).returning()
+    ? await db.update(workerDocumentsTable).set({ ...patch, attrs: archivePreviousFile(null) }).where(eq(workerDocumentsTable.id, existing.id)).returning()
     : await db.insert(workerDocumentsTable).values({ workerId, docTypeId, ...patch }).returning();
 
-  if (appendTo) deleteStoredFile(existing!.filePath); // старі сторінки вже всередині нового PDF
   logger.info({ workerId, docTypeId, documentId: doc!.id, parts: parts.length, appended: !!appendTo, fields: Object.keys(fieldPatch) }, "worker self-uploaded document");
   // журнал + перерахунок світлофорів (best-effort; lazy import — не тягнути движок у бот-код при старті)
   const { documentChanged } = await import("./documentEvents");

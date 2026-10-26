@@ -7,7 +7,7 @@ import request from "supertest";
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { app, hasTestDb, resetDb, closeDb, seedAdmin, db, workersTable, documentTemplatesTable, contractsTable, contractFilesTable } from "../test/harness.ts";
+import { app, hasTestDb, resetDb, closeDb, seedAdmin, db, workersTable, companiesTable, documentTemplatesTable, contractsTable, contractFilesTable } from "../test/harness.ts";
 import { ensureUploadDirs, UPLOADS_ROOT } from "../lib/uploads.ts";
 import { loadWorkerContracts } from "../services/legalityRecompute.ts";
 
@@ -45,7 +45,8 @@ test("сталий пакет подокументно: signed без фабри
   const dl = await request(app).get(`/api/contracts/${c!.id}/files/${files[0]!.id}`).set("Cookie", owner);
   assert.equal(dl.status, 200); assert.equal(dl.headers["content-type"], "application/pdf");
 
-  // повторний скан ZUS → замінює файл (той самий рядок, інший sha), старий файл з диска прибрано
+  // повторний скан ZUS → на його місці новий файл, старий рядок переїжджає в архівний рядок пакета
+  // (status superseded, data.archiveOf) і лишається на диску (рішення власника 26.10.2026)
   const oldPath = files[0]!.signedPath!;
   const r2 = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
     .field("items", JSON.stringify([{ templateId: zus!.id }])).attach("files", PDF2, "zus-v2.pdf");
@@ -54,13 +55,24 @@ test("сталий пакет подокументно: signed без фабри
   const files2 = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, c!.id)).orderBy(contractFilesTable.sortOrder);
   assert.equal(files2.length, 2);
   assert.notEqual(files2[0]!.signedSha256, files[0]!.signedSha256);
-  assert.equal(fs.existsSync(path.join(UPLOADS_ROOT, oldPath)), false, "старий скан прибрано");
+  assert.equal(fs.existsSync(path.join(UPLOADS_ROOT, oldPath)), true, "старий скан лишився на диску");
+  const [arch] = await db.select().from(contractsTable).where(eq(contractsTable.status, "superseded"));
+  assert.ok(arch, "архівний рядок пакета створено"); assert.equal((arch!.data as any).archiveOf, c!.id); assert.equal(arch!.factoryId, null);
+  const archFiles = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, arch!.id));
+  assert.equal(archFiles.length, 1); assert.equal(archFiles[0]!.id, files[0]!.id); assert.equal(archFiles[0]!.signedPath, oldPath);
+  assert.match(archFiles[0]!.title, /zastąpiony/);
+  // ще одна заміна — у той самий архівний рядок
+  const r2b = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
+    .field("items", JSON.stringify([{ templateId: zus!.id }])).attach("files", PDF, "zus-v3.pdf");
+  assert.equal(r2b.status, 200); assert.equal(r2b.body.replaced, 1);
+  assert.equal((await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, arch!.id))).length, 2);
+  assert.equal((await db.select().from(contractsTable).where(eq(contractsTable.status, "superseded"))).length, 1, "один архівний рядок на пакет");
 
   // шаблон виду umowa — не частина пакета
   const bad = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
     .field("items", JSON.stringify([{ templateId: umowa!.id }])).attach("files", PDF, "u.pdf");
   assert.equal(bad.status, 400);
-  assert.equal((await db.select().from(contractsTable)).length, 1, "нового рядка не зʼявилось");
+  assert.equal((await db.select().from(contractsTable)).length, 2, "нового рядка не зʼявилось (пакет + його архів)");
 });
 
 test("весь пакет одним файлом без типу; без файлів і не-PDF — 400", opts, async () => {
@@ -92,4 +104,36 @@ test("весь пакет одним файлом без типу; без фай
     .field("items", JSON.stringify([{ templateId: null, title: "Załącznik" }])).field("dateTo", "2027-06-30").attach("files", PDF2, "z.pdf");
   assert.equal(more.status, 200, JSON.stringify(more.body));
   assert.equal(more.body.id, r.body.id); assert.equal(more.body.dateTo, "2027-06-30"); assert.equal(more.body.files.length, 2);
+});
+
+// Пакет — по фірмі-роботодавцю (26.10.2026): комплект другої фірми з тими самими шаблонами — окремий рядок,
+// файли першої не чіпаються (інцидент: комплект Klinex затер комплект Grupa і прибрав файли з диска).
+test("сталий пакет по фірмі: друга фірма — новий рядок без заміни; та сама фірма — заміна; невідома фірма — 404", opts, async () => {
+  const [w] = await db.insert(workersTable).values({ fullName: "Erik B", isActive: true }).returning();
+  const [grupa] = await db.insert(companiesTable).values({ name: "Grupa" } as any).returning();
+  const [klinex] = await db.insert(companiesTable).values({ name: "Klinex" } as any).returning();
+  const [zus] = await db.insert(documentTemplatesTable).values({ kind: "zus", title: "Oświadczenie ZUS", body: { pl: "<p>x</p>" } }).returning();
+
+  const r1 = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
+    .field("companyId", String(grupa!.id)).field("items", JSON.stringify([{ templateId: zus!.id }])).attach("files", PDF, "zus-grupa.pdf");
+  assert.equal(r1.status, 200, JSON.stringify(r1.body)); assert.equal(r1.body.created, true); assert.equal(r1.body.companyId, grupa!.id);
+  const [f1] = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, r1.body.id));
+
+  const r2 = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
+    .field("companyId", String(klinex!.id)).field("items", JSON.stringify([{ templateId: zus!.id }])).attach("files", PDF2, "zus-klinex.pdf");
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  assert.equal(r2.body.created, true, "інша фірма — окремий пакет"); assert.notEqual(r2.body.id, r1.body.id); assert.equal(r2.body.replaced, 0);
+  const [f1again] = await db.select().from(contractFilesTable).where(eq(contractFilesTable.id, f1!.id));
+  assert.equal(f1again!.signedSha256, f1!.signedSha256, "файл першої фірми не замінено");
+  assert.ok(fs.existsSync(path.join(UPLOADS_ROOT, f1!.signedPath!)), "файл першої фірми лишився на диску");
+  assert.equal((await db.select().from(contractsTable).where(eq(contractsTable.workerId, w!.id))).length, 2);
+
+  // та сама фірма, той самий шаблон — заміна в її пакеті
+  const r3 = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
+    .field("companyId", String(grupa!.id)).field("items", JSON.stringify([{ templateId: zus!.id }])).attach("files", PDF2, "zus-grupa-v2.pdf");
+  assert.equal(r3.status, 200, JSON.stringify(r3.body)); assert.equal(r3.body.id, r1.body.id); assert.equal(r3.body.replaced, 1);
+
+  const bad = await request(app).post(`/api/workers/${w!.id}/standard-package/import`).set("Cookie", owner).set(H)
+    .field("companyId", "999999").attach("files", PDF, "x.pdf");
+  assert.equal(bad.status, 404);
 });

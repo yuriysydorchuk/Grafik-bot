@@ -299,6 +299,7 @@ router.post("/workers/:id/passport-scan", WD, uploadScan.single("file"), async (
 router.post("/workers/:id/contracts", WD, async (req, res) => {
   const workerId = Number(req.params.id);
   const { factoryId, templateIds, dateFrom, dateTo, supersedesId, contractRateBrutto, companyId } = req.body ?? {};
+  if (dateFrom && dateTo && String(dateTo) < String(dateFrom)) return fail(res, 400, "Дата кінця раніше за дату початку");
   try {
     const contract = await generateContract({
       workerId, factoryId: factoryId ? Number(factoryId) : null, companyId: companyId ? Number(companyId) : null,
@@ -416,6 +417,11 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
   if (signedAtIn === false || dateTo === false) return fail(res, 400, "Дата: очікується YYYY-MM-DD");
   const signedOn = signedAtIn ?? new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
   if (dateTo && dateTo < signedOn) return fail(res, 400, "Дата кінця раніше за дату підпису");
+  // фірма-роботодавець пакета (26.10.2026): oświadczenia ZUS/PIT — по płatniku, тож пакет однієї фірми
+  // і пакет іншої — два різні рядки. Без фірми другий комплект лягав у перший і «замінював» файли
+  // тих самих шаблонів (інцидент: комплект Klinex затер комплект Grupa, старі файли з диска прибрано).
+  const companyId = b.companyId != null && b.companyId !== "" ? Number(b.companyId) : null;
+  if (companyId != null && !Number.isInteger(companyId)) return fail(res, 400, "companyId має бути числом");
   // items — JSON-масив паралельно файлам: { templateId?: number|null, title?: string }
   if (b.items !== undefined && typeof b.items !== "string") return fail(res, 400, "items: очікується один JSON-рядок");
   let items: { templateId: number | null; title: string }[] = [];
@@ -432,6 +438,7 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
 
   const [worker] = await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.id, workerId));
   if (!worker) return fail(res, 404, "Працівника не знайдено");
+  if (companyId != null && !(await db.select({ id: companiesTable.id }).from(companiesTable).where(eq(companiesTable.id, companyId))).length) return fail(res, 404, "Фірму не знайдено");
   const templateIds = [...new Set(items.map(i => i.templateId).filter((x): x is number => x != null))];
   const templates = templateIds.length
     ? await db.select({ id: documentTemplatesTable.id, kind: documentTemplatesTable.kind, title: documentTemplatesTable.title }).from(documentTemplatesTable).where(inArray(documentTemplatesTable.id, templateIds))
@@ -459,7 +466,6 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
   });
 
   const written: string[] = [];
-  const oldPaths: string[] = [];
   const replaced: string[] = [];
   let created = false;
   let addedCount = 0;
@@ -469,11 +475,12 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
       // імпорти однієї людини — послідовно (ревʼю codex/agy 02.10.2026): без локу два паралельні
       // запити не бачили пакета один одного й створювали два, а заміна скану губила файл
       await tx.execute(sql`select pg_advisory_xact_lock(${PACKAGE_LOCK_NS}, ${workerId})`);
-      // чинний підписаний сталий пакет (без фабрики) — файли додаються в нього
+      // чинний підписаний сталий пакет (без фабрики) ТІЄЇ Ж фірми — файли додаються в нього;
+      // пакет без фірми (старі імпорти) збігається лише з запитом без фірми
       const existingRows = await tx.select().from(contractsTable)
         .where(and(eq(contractsTable.workerId, workerId), isNull(contractsTable.factoryId), eq(contractsTable.status, "signed")))
         .orderBy(desc(contractsTable.id));
-      const target = existingRows.find(c => !c.dateTo || String(c.dateTo) >= today) ?? null;
+      const target = existingRows.find(c => (!c.dateTo || String(c.dateTo) >= today) && (c.companyId ?? null) === companyId) ?? null;
       const targetImported = !!target && (target.data as Record<string, unknown> | null)?.importedPackage === true;
       // дублі одного шаблону в одному запиті — лишаємо останній ЛИШЕ там, де діє заміна (імпортований
       // пакет): інакше заміна «сама себе» дала б два файли; у підписаний у системі пакет додаються всі
@@ -485,7 +492,7 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
       let cid = target?.id ?? null;
       if (cid == null) {
         const [c] = await tx.insert(contractsTable).values({
-          workerId, factoryId: null, companyId: null, status: "signed", dateFrom: signedOn, dateTo,
+          workerId, factoryId: null, companyId, status: "signed", dateFrom: signedOn, dateTo,
           signedAt, companySignedAt: signedAt, companySignedBy: adminId, generatedAt: null,
           data: { importedPackage: true, importedBy: adminId, importedAt: now, ...(note ? { note } : {}) },
         }).returning();
@@ -500,12 +507,36 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
       }
       const existingFiles = await tx.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, cid)).orderBy(contractFilesTable.sortOrder);
       let sortOrder = existingFiles.reduce((m, f) => Math.max(m, f.sortOrder), -1) + 1;
+      // Замінений скан НЕ видаляється (рішення власника 26.10.2026 після втрати комплекту Grupa): старий рядок
+      // файлу переїжджає в архівний рядок пакета (status superseded, data.archiveOf = id пакета) — видно в
+      // профілі в «Архіві» зі скачуванням; на місце старого стає новий файл.
+      let archiveId: number | null = null;
+      let archiveSort = 0;
+      const archiveRowId = async (): Promise<number> => {
+        if (archiveId != null) return archiveId;
+        const [arch] = await tx.select({ id: contractsTable.id }).from(contractsTable)
+          .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "superseded"), sql`${contractsTable.data}->>'archiveOf' = ${String(cid)}`)).limit(1);
+        if (arch) {
+          archiveId = arch.id;
+          const [mx] = await tx.select({ m: sql<number>`coalesce(max(${contractFilesTable.sortOrder}), -1)` }).from(contractFilesTable).where(eq(contractFilesTable.contractId, arch.id));
+          archiveSort = Number(mx?.m ?? -1) + 1;
+          return arch.id;
+        }
+        const [c] = await tx.insert(contractsTable).values({
+          workerId, factoryId: null, companyId: target?.companyId ?? companyId, status: "superseded",
+          dateFrom: target?.dateFrom ?? signedOn, dateTo: target?.dateTo ?? null, signedAt: target?.signedAt ?? signedAt,
+          companySignedAt: target?.companySignedAt ?? signedAt, companySignedBy: target?.companySignedBy ?? adminId, generatedAt: null,
+          data: { importedPackage: true, archiveOf: cid, archivedBy: adminId, archivedAt: now, note: "Zastąpione skany pakietu standardowego" },
+        }).returning();
+        archiveId = c!.id;
+        return c!.id;
+      };
       for (const p of toWrite) {
         const same = targetImported && p.templateId != null ? existingFiles.find(f => f.templateId === p.templateId) : undefined;
         if (same) {
-          if (same.signedPath) oldPaths.push(same.signedPath);
-          if (same.unsignedPath) oldPaths.push(same.unsignedPath);
-          await tx.update(contractFilesTable).set({ title: p.title, signedPath: p.relPath, signedSha256: p.sha256, unsignedPath: null, unsignedSha256: null, pageCount: null }).where(eq(contractFilesTable.id, same.id));
+          const aid = await archiveRowId();
+          await tx.update(contractFilesTable).set({ contractId: aid, sortOrder: archiveSort++, title: `${same.title} — zastąpiony ${today}` }).where(eq(contractFilesTable.id, same.id));
+          await tx.insert(contractFilesTable).values({ contractId: cid, templateId: p.templateId, sortOrder: same.sortOrder, title: p.title, signedPath: p.relPath, signedSha256: p.sha256 });
           replaced.push(p.title);
         } else {
           await tx.insert(contractFilesTable).values({ contractId: cid, templateId: p.templateId, sortOrder: sortOrder++, title: p.title, signedPath: p.relPath, signedSha256: p.sha256 });
@@ -514,7 +545,6 @@ router.post("/workers/:id/standard-package/import", WD, uploadPackage.array("fil
       addedCount = toWrite.length - replaced.length;
       return cid;
     });
-    for (const op of oldPaths) await fs.promises.unlink(path.join(UPLOADS_ROOT, op)).catch(() => {});
   } catch (e) {
     for (const rp of written) await fs.promises.unlink(path.join(UPLOADS_ROOT, rp)).catch(() => {});
     throw e;

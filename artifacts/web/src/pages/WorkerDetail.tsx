@@ -1186,7 +1186,8 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
   const current = contracts.filter(c => isCurrentContract(c, today));
   const archive = contracts.filter(c => !isCurrentContract(c, today));
   const standard = current.filter(c => c.factoryId == null);
-  const validStandard = standard.find(c => c.status === "worker_signed" || c.status === "signed");
+  // підписані сталі пакети з фірмою — модалка генерації звіряє з фірмою обраної умови (26.10.2026)
+  const standardSigned = standard.filter(c => c.status === "worker_signed" || c.status === "signed").map(c => ({ companyId: c.companyId, dateTo: c.dateTo }));
   const byFactory = new Map<number, ContractSummary[]>();
   for (const c of current) if (c.factoryId != null) { const arr = byFactory.get(c.factoryId) ?? []; arr.push(c); byFactory.set(c.factoryId, arr); }
 
@@ -1258,7 +1259,8 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
       </Section>
       {annexFor != null && <AnnexModal contractId={annexFor} current={contracts.find(c => c.id === annexFor) ?? null} onClose={() => setAnnexFor(null)} onSaved={() => { inv(); setAnnexFor(null); }} />}
       {importStdOpen && (
-        <ImportStandardPackageModal workerId={workerId} onClose={() => setImportStdOpen(false)} onSaved={() => { inv(); setImportStdOpen(false); }} />
+        <ImportStandardPackageModal workerId={workerId} companies={companies.filter(c => c.employsWorkers !== false)} defaultCompanyId={employers[0]?.companyId ?? profile?.companyId ?? null}
+          onClose={() => setImportStdOpen(false)} onSaved={() => { inv(); setImportStdOpen(false); }} />
       )}
       {importOpen && (
         <ImportSignedContractModal workerId={workerId} factories={factories} companies={companies} employers={employers}
@@ -1267,7 +1269,7 @@ function WorkerContracts({ workerId, factoryId, factories }: { workerId: number;
       {newFor && (
         <GenerateDocumentsModal workerId={workerId} defaultFactoryId={newFor.factoryId} defaultCompanyId={newFor.companyId}
           factories={factories} employers={employers}
-          standardValid={!!validStandard} standardValidUntil={validStandard?.dateTo ?? null}
+          standardSigned={standardSigned}
           onClose={() => setNewFor(null)} onSaved={() => { inv(); setNewFor(null); }} />
       )}
     </>
@@ -1282,7 +1284,12 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate, onImport }: {
   const [open, setOpen] = useState(false);
   const main = list.find(c => c.status === "signed") ?? list.find(c => c.status === "worker_signed") ?? [...list].sort((a, b) => b.id - a.id)[0] ?? null;
   const st = main ? (CONTRACT_STATUS[main.status] ?? CONTRACT_STATUS.draft!) : null;
-  const summary = main ? [
+  // пакети кількох фірм-роботодавців (26.10.2026) — згорнуто по рядку на фірму, а не лише «головний»
+  const signedList = list.filter(c => c.status === "signed" || c.status === "worker_signed");
+  const multiCompany = new Set(list.map(c => c.companyId)).size > 1;
+  const summary = multiCompany && signedList.length > 1 ? signedList.map(c =>
+    `${c.companyName ?? "—"}: ${c.signedAt ? `${t("підписано")} ${fmtDocDate(c.signedAt.slice(0, 10))}` : t((CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!).label)}, ${c.dateTo ? `${t("дійсний до")} ${fmtDocDate(c.dateTo)}` : t("безстроково")}, ${c.files.length} ${t("док.")}`,
+  ).join(" · ") : main ? [
     main.signedAt ? `${t("підписано")} ${fmtDocDate(main.signedAt.slice(0, 10))}` : main.sentAt ? `${t("надіслано")} ${fmtDocDate(main.sentAt.slice(0, 10))}` : main.generatedAt ? `${t("згенеровано")} ${fmtDocDate(main.generatedAt.slice(0, 10))}` : null,
     main.status === "signed" || main.status === "worker_signed" ? (main.dateTo ? `${t("дійсний до")} ${fmtDocDate(main.dateTo)}` : t("безстроково")) : null,
     `${main.files.length} ${t("док.")}`,
@@ -1312,7 +1319,7 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate, onImport }: {
       </div>
       {open && main && (
         <div className="mt-2 space-y-2">
-          {[...list].sort((a, b) => (a.status === "signed" ? -1 : b.status === "signed" ? 1 : b.id - a.id)).map(c => <ContractRow key={c.id} c={c} workerId={workerId} onSaved={onSaved} />)}
+          {[...list].sort((a, b) => (a.status === "signed" ? -1 : b.status === "signed" ? 1 : b.id - a.id)).map(c => <ContractRow key={c.id} c={c} workerId={workerId} onSaved={onSaved} showTarget={multiCompany} />)}
         </div>
       )}
     </div>
@@ -1396,9 +1403,11 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
 // типів) чи окремі документи — кожен файл тегається шаблоном з бібліотеки (ZUS, PIT,
 // PPK, BHP, wniosek…), щоб у рядку пакета було видно, що саме є. Файли лягають у
 // чинний підписаний сталий пакет; нема — створюється новий одразу signed.
-function ImportStandardPackageModal({ workerId, onClose, onSaved }: { workerId: number; onClose: () => void; onSaved: () => void }) {
+function ImportStandardPackageModal({ workerId, companies, defaultCompanyId, onClose, onSaved }: { workerId: number; companies: Company[]; defaultCompanyId: number | null; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const [mode, setMode] = useState<"whole" | "separate">("whole");
+  // пакет — по фірмі-роботодавцю (26.10.2026): комплект іншої фірми — окремий рядок, не заміна
+  const [companyId, setCompanyId] = useState<string>(defaultCompanyId != null ? String(defaultCompanyId) : "");
   const [signedAt, setSignedAt] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [note, setNote] = useState("");
@@ -1425,7 +1434,9 @@ function ImportStandardPackageModal({ workerId, onClose, onSaved }: { workerId: 
     mutationFn: async () => {
       if (!rows.length) throw new Error(t("Оберіть PDF-файли"));
       if (mode === "separate" && rows.some(r => !r.templateId)) throw new Error(t("Вкажіть тип для кожного документа"));
+      if (!companyId) throw new Error(t("Вкажіть фірму пакета"));
       const fd = new FormData();
+      fd.append("companyId", companyId);
       for (const r of rows) fd.append("files", r.file);
       const items = rows.map(r => mode === "separate"
         ? (r.templateId === "other" ? { templateId: null, title: r.file.name.replace(/\.pdf$/i, "") } : { templateId: Number(r.templateId) })
@@ -1448,8 +1459,15 @@ function ImportStandardPackageModal({ workerId, onClose, onSaved }: { workerId: 
   return (
     <Modal open onClose={onClose} title={t("Підписаний сталий пакет (скан)")}>
       <div className="space-y-3">
-        <p className="text-xs text-slate-500">{t("Для пакетів, підписаних поза системою. Файли одразу стають частиною чинного сталого пакета; якщо його ще нема — створюється підписаний.")}</p>
+        <p className="text-xs text-slate-500">{t("Для пакетів, підписаних поза системою. Файли одразу стають частиною чинного сталого пакета цієї фірми; якщо його ще нема — створюється підписаний.")}</p>
         <div className="inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5">{modeBtn("whole", t("Весь пакет одним файлом"))}{modeBtn("separate", t("Окремі документи"))}</div>
+        <div>
+          <Label>{t("Фірма пакета")} <span className="font-normal text-slate-400">({t("oświadczenia ZUS/PIT — по фірмі-роботодавцю")})</span></Label>
+          <Select value={companyId} onChange={e => setCompanyId(e.target.value)}>
+            <option value="">— {t("Фірма")} —</option>
+            {companies.map(c => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+          </Select>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div><Label>{t("Дата підпису")} <span className="font-normal text-slate-400">({t("порожньо = сьогодні")})</span></Label><Input type="date" value={signedAt} onChange={e => setSignedAt(e.target.value)} /></div>
           <div><Label>{t("Дійсний до")} <span className="font-normal text-slate-400">({t("порожньо = безстроково")})</span></Label><Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} /></div>
@@ -1776,7 +1794,11 @@ function EditContractDates({ contractId, initialFrom, initialTo, onSaved, onCanc
       <Input type="date" autoFocus value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-7 w-32 text-xs" />
       <span className="text-slate-400">→</span>
       <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-7 w-32 text-xs" />
-      <button onClick={() => { if (!dateFrom && !dateTo) { toast.error(t("Вкажіть хоча б одну дату")); return; } save.mutate(); }} disabled={save.isPending}
+      <button onClick={() => {
+        if (!dateFrom && !dateTo) { toast.error(t("Вкажіть хоча б одну дату")); return; }
+        if (dateFrom && dateTo && dateTo < dateFrom) { toast.error(t("Дата кінця раніше за дату початку")); return; }
+        save.mutate();
+      }} disabled={save.isPending}
         className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50">
         {t("Зберегти дати")}
       </button>
@@ -1840,9 +1862,9 @@ function ContractPdfPreview({ url }: { url: string }) {
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const yearAheadIso = () => { const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
 
-function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, factories, employers, standardValid, standardValidUntil, onClose, onSaved }: {
+function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, factories, employers, standardSigned, onClose, onSaved }: {
   workerId: number; defaultFactoryId: number | null; defaultCompanyId?: number | null; factories: Factory[]; employers: EmployerRef[];
-  standardValid: boolean; standardValidUntil: string | null;
+  standardSigned: { companyId: number | null; dateTo: string | null }[];
   onClose: () => void; onSaved: () => void;
 }) {
   const t = useT();
@@ -1889,9 +1911,14 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   const [checkedFactory, setCheckedFactory] = useState<Set<number>>(new Set());
   const [checkedStandard, setCheckedStandard] = useState<Set<number>>(new Set());
   const isStandard = factoryId === "";
-  // Сталий пакет (ZUS/tax/PPK/BHP/wniosek) — спільний для ВСІХ фабрик; має
-  // з'являтись у комплекті кожного разу, коли його ще нема чинного підписаного
-  // варіанту, а не лише коли адмін явно обрав "— Стандартний пакет —".
+  // Сталий пакет (ZUS/tax/PPK/BHP/wniosek) — спільний для всіх фабрик ОДНІЄЇ фірми-роботодавця
+  // (26.10.2026: oświadczenia — по płatniku); має зʼявлятись у комплекті кожного разу, коли для
+  // фірми обраної умови ще нема чинного підписаного пакета, а не лише коли адмін явно обрав
+  // "— Стандартний пакет —". Пакет без фірми (старі імпорти) фірму НЕ покриває (ревʼю codex 26.10.2026) —
+  // такий рядок привʼязується до фірми вручну, інакше пакет запропонується ще раз (офіс може зняти галочки).
+  const selCid = companyId ? Number(companyId) : null;
+  const validStd = standardSigned.find(s => s.companyId === selCid) ?? null;
+  const standardValid = !!validStd, standardValidUntil = validStd?.dateTo ?? null;
   const needsStandardToo = !isStandard && !standardValid;
   const showStandardSection = isStandard || needsStandardToo;
 
@@ -2097,7 +2124,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
         {showStandardSection && (
           <div>
             <Label>
-              {t("Стандартний пакет")} <span className="font-normal text-slate-400">({t("спільний для всіх фабрик")})</span>
+              {t("Стандартний пакет")} <span className="font-normal text-slate-400">({t("по фірмі-роботодавцю, спільний для її фабрик")})</span>
               {needsStandardToo && <span className="ml-1 font-normal text-amber-600">— {t("ще не підписаний, додається разом")}</span>}
               {" "}{autoStandardLoading && <Spinner />}
             </Label>
@@ -3121,6 +3148,7 @@ function DocPreviewModal({ doc, onClose, canRotate }: { doc: WorkerDocument; onC
   const url = ver ? `${base}?v=${ver}` : base;
   const isImage = !!doc.fileMime?.startsWith("image/");
   const isPdf = doc.fileMime === "application/pdf";
+  const prevFiles = (Array.isArray(doc.attrs?.previousFiles) ? doc.attrs!.previousFiles : []) as { fileName: string | null; replacedAt: string }[];
   const rotate = async (degrees: 90 | 180 | 270, pg?: number) => {
     try {
       await post(`/worker-documents/${doc.id}/rotate`, { degrees, page: pg ?? null });
@@ -3144,6 +3172,17 @@ function DocPreviewModal({ doc, onClose, canRotate }: { doc: WorkerDocument; onC
           <Download className="h-3.5 w-3.5" /> {t("Скачати")}
         </a>
       </div>
+      {/* попередні версії файлу (attrs.previousFiles) — замінений файл не зникає (26.10.2026) */}
+      {prevFiles.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+          <span>{t("Попередні версії файлу")}:</span>
+          {prevFiles.map((p, i) => (
+            <a key={i} href={`${base}/prev/${i}?download=1`} className="inline-flex items-center gap-1 text-slate-600 hover:text-red-600 hover:underline" title={p.fileName ?? ""}>
+              <Download className="h-3 w-3" /> {fmtDocDate(p.replacedAt.slice(0, 10))}{p.fileName ? ` · ${p.fileName}` : ""}
+            </a>
+          ))}
+        </div>
+      )}
       {isImage ? (
         <ZoomImage src={url} alt={doc.title} className="h-[78vh]" downloadUrl={`${base}?download=1`} onSaveRotation={canRotate ? (d) => rotate(d) : undefined} />
       ) : isPdf ? (

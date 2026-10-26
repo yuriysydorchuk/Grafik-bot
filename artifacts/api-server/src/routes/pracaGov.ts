@@ -146,7 +146,8 @@ router.post("/praca-gov/workers/:id/passport-file", passUpload.single("file"), a
   let docId: number;
   if (existing) {
     // офіс вантажить скан сам = перевірено: missing/pending стають present (інакше залучник не потрапить у подачу — payload бере лише present)
-    await db.update(workerDocumentsTable).set({ filePath: relPath, fileName, fileMime: mime, status: existing.status === "missing" || existing.status === "pending" ? "present" : existing.status, updatedAt: new Date() }).where(eq(workerDocumentsTable.id, existing.id));
+    const { archivePreviousFile } = await import("../services/workerDocuments");
+    await db.update(workerDocumentsTable).set({ filePath: relPath, fileName, fileMime: mime, attrs: archivePreviousFile(req.admin!.adminId), status: existing.status === "missing" || existing.status === "pending" ? "present" : existing.status, updatedAt: new Date() }).where(eq(workerDocumentsTable.id, existing.id));
     docId = existing.id;
     await documentChanged({ id: docId, workerId: wid }, "file", { adminId: req.admin!.adminId }, [{ field: "fileName", to: fileName }]);
   } else {

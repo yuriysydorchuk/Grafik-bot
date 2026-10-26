@@ -1723,10 +1723,10 @@ router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.fields([{ name: "fi
   const got = req.files as Record<string, Express.Multer.File[]> | undefined;
   const files = [...(got?.file ?? []), ...(got?.files ?? [])];
   if (!files.length) return fail(res, 400, "Файл не отримано (недопустимий тип або завеликий)");
-  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, fileMime: workerDocumentsTable.fileMime, workerId: workerDocumentsTable.workerId, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, fileName: workerDocumentsTable.fileName, fileMime: workerDocumentsTable.fileMime, attrs: workerDocumentsTable.attrs, workerId: workerDocumentsTable.workerId, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   if (!doc) return fail(res, 404, "Документ не знайдено");
 
-  const { buildDocFile, readDocFile } = await import("../services/workerDocuments");
+  const { buildDocFile, readDocFile, archivePreviousFile } = await import("../services/workerDocuments");
   const appendTo = req.body?.append === "1" ? await readDocFile(doc.filePath, doc.fileMime) : null;
   if (req.body?.append === "1" && doc.filePath && !appendTo) return fail(res, 400, "До цього файлу не можна дописати сторінки (лише PDF/JPG/PNG) — завантажте документ заново");
   let built;
@@ -1743,11 +1743,28 @@ router.post("/worker-documents/:id/file", DOCS_RW, uploadDoc.fields([{ name: "fi
     filePath: relPath,
     fileName: originalName,
     fileMime: realMime,
+    // попередній файл НЕ видаляється — лишається попередньою версією документа (рішення власника 26.10.2026)
+    attrs: archivePreviousFile(actingAdminId(req)),
     updatedAt: new Date(),
   }).where(eq(workerDocumentsTable.id, id)).returning();
-  deleteStoredFile(doc.filePath); // remove the previous file, if any
   await documentChanged({ id, workerId: doc.workerId }, "file", { adminId: actingAdminId(req) }, [{ field: "fileName", to: originalName }]);
   ok(res, d);
+});
+
+// Попередня версія файлу документа (attrs.previousFiles[i]) — ті самі права, що й на чинний файл
+router.get("/worker-documents/:id/file/prev/:idx", requireAnyCap("editData", "viewWorkers", "workerDocs", "legalization"), async (req, res) => {
+  const id = Number(req.params.id), idx = Number(req.params.idx);
+  const [doc] = await db.select({ attrs: workerDocumentsTable.attrs }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
+  const list = Array.isArray(doc?.attrs?.previousFiles) ? (doc!.attrs!.previousFiles as { filePath: string; fileName: string | null; fileMime: string | null }[]) : [];
+  const prev = Number.isInteger(idx) ? list[idx] : undefined;
+  if (!prev?.filePath) return fail(res, 404, "Попередньої версії не знайдено");
+  const abs = path.resolve(UPLOADS_ROOT, prev.filePath);
+  if (!abs.startsWith(UPLOADS_ROOT) || !fs.existsSync(abs)) return fail(res, 404, "Файл не знайдено");
+  if (prev.fileMime) res.type(prev.fileMime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  const downloadName = encodeURIComponent(prev.fileName || `document-${id}-v${idx + 1}`);
+  res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${downloadName}`);
+  fs.createReadStream(abs).pipe(res);
 });
 
 // Поворот завантаженого файлу (22.10.2026: фото боком/догори дриґом): фото — цілком (спершу

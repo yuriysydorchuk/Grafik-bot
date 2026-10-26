@@ -21,7 +21,7 @@ import { logger } from "../lib/logger";
 import { warsawDateStr } from "../bot/time";
 import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
 import { fmtIban } from "../lib/iban";
-import { countryNamePl } from "../lib/countries";
+import { countryNamePl, citizenshipZus } from "../lib/countries";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
 const LANGS: Lang[] = ["pl", "en", "es", "ru", "uk"];
@@ -255,8 +255,11 @@ export async function buildContractData(
     "Paszport data ważności": questionnaire?.passportExpiresAt ?? "",
     "Seria i numer dowodu": questionnaire?.seriaINumerDowodu ?? "",
     "Miejsce urodzenia": questionnaire?.birthPlace ?? "",
-    // сирий MRZ-код зі старих сканів («UKR») → «Ukraina»; назва лишається як є
-    "Obywatelstwo": countryNamePl(questionnaire?.citizenship),
+    // форма ZUS («ukraińskie», довідник CITIZENSHIP_ZUS; сирий MRZ-код «UKR» теж
+    // розшифровується) — так вимагають Oświadczenie ZUS/podatkowe; назва країни —
+    // окремим плейсхолдером
+    "Obywatelstwo": citizenshipZus(questionnaire?.citizenship),
+    "Kraj obywatelstwa": countryNamePl(questionnaire?.citizenship),
     "Narodowość": worker.nationality ?? "",
     "Imię ojca": questionnaire?.fatherName ?? "",
     "Imię matki": questionnaire?.motherName ?? "",
@@ -567,6 +570,8 @@ export async function updateContractDates(contractId: number, dateFrom: string |
   if (DEAD.has(contract.status)) throw new Error(`Пакет у термінальному статусі (${contract.status}) — дату вже не дописати`);
   const from = dateFrom ?? (contract.dateFrom ? String(contract.dateFrom) : null);
   const to = dateTo ?? (contract.dateTo ? String(contract.dateTo) : null); // PATCH лише з «від» не стирає «до»
+  // одрук у даті (інцидент 26.10.2026: умова «закінчилась» раніше, ніж почалась) — не пропускати
+  if (from && to && to < from) throw new Error(`Дата кінця (${to}) раніше за дату початку (${from})`);
 
   if (contract.status === "signed") {
     const [updated] = await db.update(contractsTable).set({
