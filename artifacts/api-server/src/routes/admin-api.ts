@@ -2555,6 +2555,7 @@ router.post("/factories", RW, async (req, res) => {
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
+  if (req.body?.weeklyHours !== undefined) values.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   if (req.body?.transportFeeMonthCap !== undefined) values.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
   if (req.body?.contractDuties !== undefined) values.contractDuties = String(req.body.contractDuties ?? "").trim() || null;
   if (canFinance(req)) {
@@ -2635,6 +2636,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (req.body?.minDaysPerWeek !== undefined) {
     const n = Number(req.body.minDaysPerWeek);
     patch.minDaysPerWeek = Number.isInteger(n) && n >= 1 ? Math.min(7, n) : null;
+  if (req.body?.weeklyHours !== undefined) patch.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   }
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
@@ -4110,6 +4112,8 @@ router.get("/hours", RW, async (req, res) => {
     totalFactoryHours: round2(workers.reduce((s, w) => s + (w.factoryHours ?? 0), 0)),
     ...(isOwner ? {
       totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)),
+    // фабрики з тижневим обліком (26.10.2026) — вкладка має підвкладки тижнів (GET /hours/weeks)
+    weeklyFactoryIds: [...facById.values()].filter(f => f.weeklyHours).map(f => f.id),
       totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)),
       totalReportNet: round2(workers.reduce((s, w) => s + (w.reportNet ?? 0), 0)),
     } : {}),
@@ -4427,7 +4431,8 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   // multipart — гейт тіла фабрику не бачив: для скоуп-адміна вона обовʼязкова і зі скоупу
   const fpScope = scopeOf(req);
   if (fpScope && (parseFactoryId == null || !factoryInScope(fpScope, parseFactoryId))) return res.status(403).json({ error: "Немає доступу до даних цього міста/фабрики", code: "scope" });
-  const { parseFactoryHoursWorkbook, parseFactoryHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
+  const { parseFactoryHoursWorkbook, parseFactoryHoursText, parseWeekHoursText, monthFromPolishFilename } = await import("../services/factoryHours");
+  const weekStart = typeof req.body?.weekStart === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.weekStart) ? String(req.body.weekStart) : null;
   let parsed: import("../services/factoryHours").ParsedHoursRow[] = [];
   let monthDetected: string | null = null;
   let format: string = "text";
@@ -4438,7 +4443,8 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
       // евіденція дати в аркуші не має — місяць добираємо з імені файла
       monthDetected = f.monthDetected ?? monthFromPolishFilename(req.file.originalname ?? "");
     } else if (typeof req.body?.text === "string" && req.body.text.trim()) {
-      parsed = parseFactoryHoursText(req.body.text);
+      // тижневий режим: «імʼя; пн; вт; …; нд» (7 чисел → дати тижня) або «імʼя; години»
+      parsed = weekStart ? parseWeekHoursText(req.body.text, weekStart) : parseFactoryHoursText(req.body.text);
     } else return fail(res, 400, "Потрібен файл або текст");
   } catch (e: any) { return fail(res, 400, e?.message ?? "Не вдалося розібрати файл"); }
   if (!parsed.length) return fail(res, 400, "У файлі/тексті не знайдено жодного рядка з годинами");
@@ -4449,6 +4455,26 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
   // Профілі-дублі (однакове ім'я двічі в базі): перевага тому, хто ВЖЕ в
   // обліку годин цього місяця на цій фабриці (явки/рапорт/години фабрики) —
   // саме його рядок звіряється з файлом.
+  // тижневий режим (26.10.2026): дні місяця з Excel → дати; беремо лише дати цього тижня
+  // (день ≥ дня понеділка — місяць понеділка, менший — наступний місяць: тиждень на межі)
+  if (weekStart) {
+    const { weekDates: wd, round2: r2 } = await import("../lib/weekMath");
+    const dates = wd(weekStart);
+    const monDay = Number(weekStart.slice(8, 10));
+    const nextMonth = dates[6]!.slice(0, 7);
+    parsed = parsed.filter(p => {
+      if (!p.days) return true;
+      const out: Record<string, number | Record<string, number>> = {};
+      for (const [k, v] of Object.entries(p.days)) {
+        const d = /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : `${Number(k) >= monDay ? weekStart.slice(0, 7) : nextMonth}-${String(Number(k)).padStart(2, "0")}`;
+        if (dates.includes(d)) out[d] = v;
+      }
+      if (!Object.keys(out).length) return false; // файл з днями, але жодного дня цього тижня — місячний тотал у тиждень не пишемо
+      (p as any).days = out;
+      p.hours = r2(Object.values(out).reduce<number>((s, v) => s + (typeof v === "number" ? v : Object.values(v).reduce((a, b) => a + b, 0)), 0)); // тотал тижня = лише його дні
+      return true;
+    });
+  }
   const inHours = new Set<number>();
   if (parseFactoryId) {
     const [y, m] = month.split("-").map(Number);

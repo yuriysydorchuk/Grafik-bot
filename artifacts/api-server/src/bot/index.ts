@@ -109,6 +109,7 @@ installChatTracking();
 import { registerInvoiceScan } from "./handlers/invoiceScan";
 import { registerPassportScan } from "./handlers/passportScan";
 import { registerWorkerAbsences } from "./handlers/absences";
+import { registerWeeklyHours } from "./handlers/weeklyHours";
 import { registerTaskActions } from "./handlers/tasks";
 import { registerPracaGov } from "./handlers/pracaGov";
 import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
@@ -138,6 +139,7 @@ registerInvoiceScan(bot as any);
 registerPassportScan(bot as any);
 // «🚫 Мої пропуски» + пояснення пропуску з довідками — теж до загальних хендлерів
 registerWorkerAbsences(bot as any, workerMenuFor);
+registerWeeklyHours(bot as any, workerMenuFor); // тижневий облік: відмітки зміни + рапорт за тиждень (до загальних hears/on)
 registerRehire(bot as any, workerMenuFor);
 registerSignupLinks(bot as any);
 registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кнопки sms:*

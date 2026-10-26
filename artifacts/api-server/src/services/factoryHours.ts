@@ -470,3 +470,33 @@ export function parseFactoryCodesText(text: string): { code: string; name: strin
   }
   return out;
 }
+
+// Тижневий облік (26.10.2026): вставлений список за тиждень — «імʼя; пн; вт; ср; чт; пт; сб; нд»
+// (7 чисел → розбивка по датах тижня, тотал = сума) або звичайний «імʼя; години» (лише тотал).
+// Ключ фабрики на початку рядка — як у parseFactoryHoursText.
+export function parseWeekHoursText(text: string, weekStart: string): ParsedHoursRow[] {
+  const dates: string[] = [];
+  { const d = new Date(weekStart + "T00:00:00"); for (let i = 0; i < 7; i++) { dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`); d.setDate(d.getDate() + 1); } }
+  const out: ParsedHoursRow[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const keyM = /^\s*(\d{1,10})\s*[;,\t]\s*(\S.*)$/.exec(rawLine);
+    const key = keyM?.[1];
+    // десяткова кома між цифрами («8,5») → крапка, інакше split по «,» розірве число
+    const line = collapse((keyM?.[2] ?? rawLine).replace(/\t/g, " ")).replace(/(\d),(\d)/g, "$1.$2");
+    if (!line) continue;
+    const m7 = /^(?:\d{1,3}[.)]\s*)?(.+?)[\s;,]+((?:-|\d{1,2}(?:[.,]\d{1,2})?)(?:[\s;,]+(?:-|\d{1,2}(?:[.,]\d{1,2})?)){6})$/.exec(line);
+    if (m7) {
+      const name = dedupeDoubledName(m7[1]!.replace(/[;,–—-]+$/, ""));
+      const nums = m7[2]!.split(/[\s;,]+/).map(v => v === "-" ? 0 : parseHoursValue(v) ?? 0);
+      if (name && nums.length === 7) {
+        const days: Record<number, number> = {};
+        nums.forEach((h, i) => { if (h > 0) (days as any)[dates[i]!] = h; });
+        out.push({ name, hours: Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100, days, ...(key ? { key } : {}) });
+        continue;
+      }
+    }
+    const rows = parseFactoryHoursText(rawLine);
+    if (rows[0]) out.push(rows[0]);
+  }
+  return out;
+}

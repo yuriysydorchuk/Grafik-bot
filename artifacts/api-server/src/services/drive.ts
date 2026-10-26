@@ -531,6 +531,8 @@ export async function uploadReportPhoto(
   // повторні рапорти не губились — раніше кожна здача створювала новий файл,
   // а рядок рапорту тримав лише останній лінк.
   existingLink?: string | null,
+  // Підпис файла замість назви місяця (тижневий рапорт: «tydzień 20.10–26.10»); папка — місяця
+  fileLabel?: string | null,
 ): Promise<string | null> {
   if (existingLink) {
     try {
@@ -561,7 +563,7 @@ export async function uploadReportPhoto(
     const monthFolderId = await getOrCreateFolder(monthName, factoryFolderId);
 
     const pdfBuffer = await imageToPdf(photoBuffer, mimeType);
-    const fileName = `${workerName} — ${monthName}.pdf`;
+    const fileName = `${workerName} — ${fileLabel ?? monthName}.pdf`;
 
     const created = await drive.files.create({
       requestBody: { name: fileName, parents: [monthFolderId], mimeType: "application/pdf" },

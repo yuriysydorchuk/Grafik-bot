@@ -76,6 +76,7 @@ async function truncateAll(): Promise<void> {
     "factories, positions, factory_orders, availability, absence_requests, " +
     "schedule_weeks, schedule_entries, schedule_approvals, notifications, factory_shift_overrides, bank_transactions, pnl_entries, " +
     "svodni_rows, svodni_clears, svodni_tab_checks, svodni_tab_meta, svodni_locks, factory_payout_rules, monthly_reports, factory_hours, hours_notes, worker_changes, " +
+    "worker_shift_logs, weekly_reports, factory_week_hours, " +
     "transport_deductions, clothing_items, clothing_stock, clothing_types, " +
     "agreement_conditions, agreement_charges, agreement_audit, " +
     "companies, document_types, vehicles, advance_requests, worker_questionnaires, " +

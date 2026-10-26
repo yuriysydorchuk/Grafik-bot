@@ -237,6 +237,7 @@ export interface Factory {
   genMode: GenMode; usesPositions: boolean; usesGender: boolean;
   usesTransport: boolean; usesScheduling: boolean; showWorkerHours: boolean; showCode: boolean;
   requiresSanepid?: boolean; // фабрика вимагає książeczkę sanepidowską → плитка Sanepid у документах працівника
+  weeklyHours?: boolean;      // тижневий облік годин: відмітки зміни + рапорт щотижня + години фабрики по тижнях (26.10.2026)
   positions: FactoryPositionConf[];
   shifts: { start: string; end: string }[];
   stops?: { name: string; time: string }[];

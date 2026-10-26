@@ -73,6 +73,7 @@ let smsStatusTask: ScheduledTask | null = null;
 let smsReportTask: ScheduledTask | null = null;
 let smsRemindTask: ScheduledTask | null = null;
 let preShiftTask: ScheduledTask | null = null;
+let weeklyHoursRequestTask: ScheduledTask | null = null;
 let midnightResetTask: ScheduledTask | null = null;
 let prunePruneTask: ScheduledTask | null = null;
 let pickupGapTask: ScheduledTask | null = null;
@@ -180,9 +181,26 @@ export function startScheduler() {
   // Pre-shift check every 15 minutes (+ forgotten-arrival reminders for drivers)
   preShiftTask = cron.schedule(
     "*/15 * * * *",
-    async () => { await checkPreShiftNotifications(); await checkForgottenArrivals(); },
+    async () => {
+      await checkPreShiftNotifications(); await checkForgottenArrivals();
+      // тижневий облік: пуш «приступив?» на старті зміни + протухання кнопок / авто-закриття (services/shiftLogs.ts)
+      try { const m = await import("./shiftLogs"); await m.promptShiftStarts(); await m.expireStaleLogs(); }
+      catch (e: any) { logger.error({ err: e }, "shift logs tick failed"); void sendAlert({ service: "cron", kind: e?.name, source: "shiftLogsTick", message: e?.message ?? String(e) }); }
+    },
     { timezone: TZ },
   );
+
+  // Тижневий облік годин: понеділок 09:00 — запит годин за минулий тиждень (Пн–Нд) працівникам
+  // тижневих фабрик; вівторок 09:00 — нагадування тим, хто не подав (рішення власника 26.10.2026:
+  // у вівторок години вже закриваються). services/weeklyHours.ts
+  weeklyHoursRequestTask = cron.schedule("0 9 * * 1,2", async () => {
+    try {
+      const { sendWeeklyRequests } = await import("./weeklyHours");
+      const { addDaysStr } = await import("../lib/dates");
+      const remind = nowWarsaw().getDay() === 2;
+      await sendWeeklyRequests({ weekStart: addDaysStr(getCurrentMonday(), -7), remind });
+    } catch (e: any) { logger.error({ err: e }, "weekly hours request failed"); void sendAlert({ service: "cron", kind: e?.name, source: "weeklyHoursRequest", message: e?.message ?? String(e) }); }
+  }, { timezone: TZ });
 
   // Reset dedup tracker at midnight Warsaw time
   midnightResetTask = cron.schedule(
@@ -442,6 +460,7 @@ export function stopScheduler() {
   smsRemindTask?.stop();      smsRemindTask = null;
   weeklyReminderTask?.stop(); weeklyReminderTask = null;
   preShiftTask?.stop();       preShiftTask = null;
+  weeklyHoursRequestTask?.stop(); weeklyHoursRequestTask = null;
   midnightResetTask?.stop();  midnightResetTask = null;
   prunePruneTask?.stop();     prunePruneTask = null;
   pickupGapTask?.stop();      pickupGapTask = null;

@@ -1,12 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound, FileSpreadsheet } from "lucide-react";
+import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound, FileSpreadsheet, EyeOff, CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, upload, type EmailRecipient } from "../lib/api";
 import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge, Button, Input, Modal, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { WorkerDaysModal } from "../components/DetailModals";
+import { HoursWeekView, weeksOfMonth, weeksKey } from "../components/HoursWeekView";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
@@ -122,7 +123,7 @@ export default function Hours() {
   const [leftoverKey, setLeftoverKey] = useState<string | null>(null); // «залишки» після імпорту годин
   const { data: allFactories = [] } = useQuery<{ id: number; name: string; city?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
   const monthLabel = months.find(m => m.value === month)?.label ?? month;
-  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; svodniDone?: number[]; totalHours: number; totalShifts: number; totalWeekendShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
+  const { data, isFetching } = useQuery<{ month: string; workers: HourRow[]; excluded?: ExcludedInfo[]; svodniDone?: number[]; weeklyFactoryIds?: number[]; totalHours: number; totalShifts: number; totalWeekendShifts: number; totalReportHours: number; totalFactoryHours?: number; totalNet?: number; totalReportNet?: number }>({
     queryKey: ["hours", month], queryFn: () => get(`/hours?month=${month}`),
   });
   const { data: disputes = [] } = useQuery<Dispute[]>({ queryKey: ["hours-reports"], queryFn: () => get("/hours-reports") });
@@ -244,6 +245,16 @@ export default function Hours() {
   // Персональний порядок вкладок (drag-and-drop, живе в admins.web_prefs)
   const [cityOrder, saveCityOrder] = useOrderPref("order.hours.cities");
   const [facOrder, saveFacOrder] = useOrderPref("order.hours.factories");
+  // Приховані фабрики Обліку годин (не сезон / нема людей) — персонально, як колонки
+  // (26.10.2026, рішення власника); чип «Приховані» над вкладками повертає
+  const [hiddenFacArr, saveHiddenFac] = useOrderPref("hidden.hours.factories");
+  const hiddenFac = useMemo(() => new Set(hiddenFacArr), [hiddenFacArr]);
+  const [showHiddenFac, setShowHiddenFac] = useState(false);
+  const hiddenGroups = useMemo(() => groups.filter(g => hiddenFac.has(g.key)), [groups, hiddenFac]);
+  // Тижневий облік (factories.weekly_hours): підвкладка тижня по фабриці ("" = місяць) + імпорт тижня
+  const weeklyIds = useMemo(() => new Set(data?.weeklyFactoryIds ?? []), [data]);
+  const [weekTab, setWeekTab] = useState<Record<string, string>>({});
+  const [importWeek, setImportWeek] = useState<{ key: string; weekStart: string } | null>(null);
   // Персональний порядок і видимість колонок таблиці (той самий механізм, що
   // для вкладок — живе в admins.web_prefs, їде за користувачем між пристроями)
   const [colOrder, saveColOrder] = useOrderPref("order.hours.cols");
@@ -258,12 +269,12 @@ export default function Hours() {
   // місто → його фабрики (для заголовків і кнопки «місто → до сводної»)
   const cityGroups = useMemo(() => {
     const map = new Map<string, Group[]>();
-    for (const g of orderBy(groups, x => x.key, facOrder)) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
+    for (const g of orderBy(groups.filter(x => !hiddenFac.has(x.key)), x => x.key, facOrder)) (map.get(g.city) ?? map.set(g.city, []).get(g.city)!).push(g);
     // «Без міста» — завжди в кінці, решта міст за алфавітом; далі — порядок користувача
     const last = (c: string) => c === "Без міста" ? 1 : 0;
     const sorted = [...map.entries()].sort((a, b) => last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]));
     return orderBy(sorted, ([c]) => c, cityOrder);
-  }, [groups, cityOrder, facOrder]);
+  }, [groups, cityOrder, facOrder, hiddenFac]);
   // Вкладки: місто → фабрики в ньому; невалідний вибір (інший місяць) тихо падає на «всі»
   const cities = cityGroups.map(([c]) => c);
   const effCity = cities.includes(cityTab) ? cityTab : "";
@@ -366,6 +377,31 @@ export default function Hours() {
                 </button>
               );
             })}
+            {hiddenGroups.length > 0 && (
+              <div className="relative shrink-0">
+                <button onClick={() => setShowHiddenFac(v => !v)}
+                  className="flex items-center gap-1.5 rounded-xl border border-dashed border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-500 hover:border-slate-400"
+                  title={t("Фабрики, приховані з Обліку годин (не сезон) — клікни, щоб повернути")}>
+                  <EyeOff className="h-3.5 w-3.5" /> {t("Приховані")} ({hiddenGroups.length})
+                </button>
+                {showHiddenFac && (
+                  <div className="absolute left-0 top-full z-30 mt-1 min-w-[18rem] rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                    {hiddenGroups.map(g => (
+                      <div key={g.key} className="flex items-center gap-2 px-2 py-1 text-sm">
+                        <span className="flex-1 text-slate-700">
+                          {g.name}
+                          {(g.hours > 0 || g.rows.some(w => w.reportHours != null || w.factoryHours != null)) && (
+                            <span className="ml-1.5 text-xs text-amber-600" title={t("У прихованої фабрики цього місяця є явки/рапорти/години — не загуби")}>• {t("є дані")}</span>
+                          )}
+                        </span>
+                        <button onClick={() => { saveHiddenFac(hiddenFacArr.filter(k => k !== g.key)); if (hiddenGroups.length === 1) setShowHiddenFac(false); }}
+                          className="text-xs text-red-600 hover:underline">{t("показати")}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           {/* видимість колонок таблиць — персональна, як і порядок (× на заголовку теж ховає) */}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -540,6 +576,13 @@ export default function Hours() {
                       <KeyRound className="h-3.5 w-3.5" /> {t("Ключі")}
                     </button>
                   )}
+                  {g.factoryId != null && (
+                    <button onClick={() => { saveHiddenFac([...hiddenFacArr, g.key]); if (effFac === g.key) setFacTab(""); }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
+                      title={t("Сховати фабрику з Обліку годин (не сезон, нема людей). Повернути — чип «Приховані» над вкладками")}>
+                      <EyeOff className="h-3.5 w-3.5" /> {t("Сховати")}
+                    </button>
+                  )}
                   {(() => {
                     const hid = (data?.excluded ?? []).filter(e => e.factoryId === g.factoryId);
                     return hid.length > 0 ? (
@@ -592,6 +635,26 @@ export default function Hours() {
                   )}
                   </span>
                 </div>
+                {/* тижневий облік: підвкладки «Місяць | тижні» (тиждень завжди цілий Пн–Нд, місяць — лише свої дні) */}
+                {g.factoryId != null && weeklyIds.has(g.factoryId) && (
+                  <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-white px-4 py-2">
+                    <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
+                    {[{ weekStart: "", label: t("Місяць") }, ...weeksOfMonth(month).map((w, i) => ({ weekStart: w.weekStart, label: `${t("Тиж")} ${i + 1} · ${w.label}` }))].map(w => {
+                      const active = (weekTab[g.key] ?? "") === w.weekStart;
+                      return (
+                        <button key={w.weekStart || "m"} onClick={() => setWeekTab(s => ({ ...s, [g.key]: w.weekStart }))}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${active ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                          {w.label}
+                        </button>
+                      );
+                    })}
+                    <span className="ml-auto text-[11px] text-slate-400">{t("рапорт щотижня · відмітки старт/кінець зміни в боті")}</span>
+                  </div>
+                )}
+                {g.factoryId != null && weeklyIds.has(g.factoryId) && weekTab[g.key] ? (
+                  <HoursWeekView factoryId={g.factoryId} month={month} weekStart={weekTab[g.key]!} canEdit={canEdit}
+                    onImport={ws => setImportWeek({ key: g.key, weekStart: ws })} />
+                ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[15px]">
                     <thead className="border-b-2 border-slate-200 bg-slate-100/80 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -646,6 +709,7 @@ export default function Hours() {
                     </tfoot>
                   </table>
                 </div>
+                )}
               </Card>
             );
           })}
@@ -781,6 +845,10 @@ export default function Hours() {
             {eg?.factoryId != null && <DiscrepancyEmailModal group={eg} month={month} onClose={() => setEmailKey(null)} />}
           </>
         );
+      })()}
+      {importWeek && (() => {
+        const g = groups.find(x => x.key === importWeek.key);
+        return g?.factoryId != null ? <ImportHoursModal group={g} month={month} weekStart={importWeek.weekStart} onClose={() => setImportWeek(null)} /> : null;
       })()}
       {importFacId != null && (() => {
         // імпорт з тулбара: реальна група місяця, якщо вкладка вже є, інакше
@@ -1186,7 +1254,7 @@ interface ParsedRow { name: string; hours: number; days: Record<number, FacDayVa
 
 // Імпорт годин фабрики: Excel-файл (3 формати) або вставлений список → превʼю
 // з матчингом імен (bot/workerMatch) → масове збереження.
-function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; month: string; onClose: () => void; onApplied?: (format: string | null) => void }) {
+function ImportHoursModal({ group, month, weekStart, onClose, onApplied }: { group: Group; month: string; weekStart?: string; onClose: () => void; onApplied?: (format: string | null) => void }) {
   const t = useT();
   const qc = useQueryClient();
   const [text, setText] = useState("");
@@ -1223,15 +1291,24 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
         form.append("file", file);
         form.append("month", month);
         if (group.factoryId != null) form.append("factoryId", String(group.factoryId)); // дубль-профілі: перевага тим, хто вже в обліку годин фабрики
+        if (weekStart) form.append("weekStart", weekStart); // тижневий режим: дні → дати тижня, тотал = лише його дні
         return upload<{ rows: ParsedRow[]; monthDetected: string | null; format: string }>("/hours/factory-parse", form);
       }
-      return post<{ rows: ParsedRow[]; monthDetected: string | null; format: string }>("/hours/factory-parse", { month, text, factoryId: group.factoryId });
+      return post<{ rows: ParsedRow[]; monthDetected: string | null; format: string }>("/hours/factory-parse", { month, text, factoryId: group.factoryId, ...(weekStart ? { weekStart } : {}) });
     },
     onSuccess: (r) => { setFormat(r.format ?? null); initPreview(r.rows, r.monthDetected); },
     onError: (e: any) => toast.error(e.message),
   });
   const apply = useMutation({
     mutationFn: () => {
+      if (weekStart) {
+        // тижневий облік: лише наявні профілі (без «створити»), рядки → factory_week_hours; місяць перераховується сам
+        const wk = (rows ?? []).map((r, i) => ({ r, i })).filter(({ i }) => checked[i] && picked[i] != null)
+          .map(({ r, i }) => ({ workerId: picked[i]!, name: r.name, hours: r.hours, days: r.days }));
+        return post<{ saved: number; skipped: number; skippedRows: { name: string; hours: number | null }[]; created: number; merged: { workerId: number; rows: number; hours: number; names: string[] }[] }>("/hours/weeks/factory-apply", {
+          weekStart, factoryId: group.factoryId, source: srcKind, rows: wk,
+        }).then(r => ({ ...r, created: 0 }));
+      }
       const out = (rows ?? [])
         .map((r, i) => ({ r, i }))
         .filter(({ i }) => checked[i] && (picked[i] != null || createSel[i]))
@@ -1262,6 +1339,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
       });
       qc.invalidateQueries({ queryKey: ["hours", month] });
       qc.invalidateQueries({ queryKey: ["hours-day-compare"] });
+      if (weekStart && group.factoryId != null) qc.invalidateQueries({ queryKey: weeksKey(group.factoryId, month) });
       if (r.created) qc.invalidateQueries({ queryKey: ["workers"] });
       onApplied?.(format);
       onClose();
@@ -1299,7 +1377,7 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
     return m;
   }, [dupGroups]);
   return (
-    <Modal open onClose={onClose} title={`${t("Імпорт годин фабрики")} — ${group.name} · ${month}`} size="xl">
+    <Modal open onClose={onClose} title={`${t("Імпорт годин фабрики")} — ${group.name} · ${weekStart ? `${t("тиждень від")} ${weekStart}` : month}`} size="xl">
       {!rows ? (
         <div className="space-y-4">
           <div>
@@ -1311,9 +1389,9 @@ function ImportHoursModal({ group, month, onClose, onApplied }: { group: Group; 
             <div className="h-px flex-1 bg-slate-200" />{t("або")}<div className="h-px flex-1 bg-slate-200" />
           </div>
           <div>
-            <Label>{t("Вставити список «ім'я — години» або «ключ; ім'я; години» (по рядку на людину)")}</Label>
+            <Label>{weekStart ? t("Вставити список «ім'я; пн; вт; ср; чт; пт; сб; нд» (7 чисел, 0 або - = вихідний) або «ім'я; години за тиждень»") : t("Вставити список «ім'я — години» або «ключ; ім'я; години» (по рядку на людину)")}</Label>
             <textarea value={text} onChange={e => setText(e.target.value)} rows={8}
-              placeholder={"Kowalski Jan 168\nNowak Anna — 152,5\n1234; Wiśniewski Piotr; 140:30"}
+              placeholder={weekStart ? "Kowalski Jan; 8; 8; 8; 0; 8; 10; 0\nNowak Anna; 42,5" : "Kowalski Jan 168\nNowak Anna — 152,5\n1234; Wiśniewski Piotr; 140:30"}
               className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:border-red-300" />
             <div className="mt-2 flex justify-end">
               <Button onClick={() => parse.mutate(null)} loading={parse.isPending} disabled={!text.trim()}>{t("Розібрати")}</Button>

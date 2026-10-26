@@ -487,6 +487,12 @@ export const factoriesTable = pgTable("factories", {
   responsibleAdminId: integer("responsible_admin_id").references(() => adminsTable.id, { onDelete: "set null" }),
   schedulerAdminId: integer("scheduler_admin_id").references(() => adminsTable.id, { onDelete: "set null" }),
   requiresSanepid: boolean("requires_sanepid").notNull().default(false), // фабрика вимагає książeczkę sanepidowską → плитка «Sanepid» у документах працівника (легалізація, 03.09.2026)
+  // Тижневий облік годин (26.10.2026, рішення власника): фабрика без довозу — працівник відмічає
+  // старт/кінець кожної зміни кнопками в боті (worker_shift_logs), у понеділок подає години за
+  // минулий тиждень Пн–Нд зі змінами по днях і фото рапорту (weekly_reports), фабрика шле години
+  // по тижнях (factory_week_hours). Місячні monthly_reports/factory_hours для таких фабрик
+  // виводяться з тижнів по датах (services/weeklyHours.ts) — тиждень цілий, місяць цілий.
+  weeklyHours: boolean("weekly_hours").notNull().default(false),
   rateBrutto: real("rate_brutto"),  // базова ставка брутто PLN/год (для фабрик без посад)
   rateNetto: real("rate_netto"),    // базова ставка нетто PLN/год
   nightAddon: real("night_addon"),  // доплата за нічну годину, нетто PLN (null = нічних нема)
@@ -1002,6 +1008,75 @@ export const hoursNotesTable = pgTable("hours_notes", {
 }, (t) => [
   uniqueIndex("hours_notes_worker_month_factory_uniq").on(t.workerId, t.month, t.factoryId),
   uniqueIndex("hours_notes_worker_month_nofactory_uniq").on(t.workerId, t.month).where(sql`${t.factoryId} IS NULL`),
+]);
+
+// ── Тижневий облік годин (26.10.2026, factories.weekly_hours) ──────────────────
+// Відмітка зміни працівником: пуш на старті зміни з кнопками «Приступив»/«Відсутній»,
+// після старту — «Закінчив». Рядок = один запис графіку (entry). Дата зміни = дата
+// запису графіку, тож нічна зміна, закрита після опівночі, лягає на свій день.
+// status: pending (пуш надіслано, не клікнуто) | open (приступив) | closed | absent |
+// expired (24 год без кліку / прийшла наступна зміна) | auto (не закрив за 24 год → 1 год).
+export const workerShiftLogsTable = pgTable("worker_shift_logs", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  entryId: integer("entry_id").references(() => scheduleEntriesTable.id, { onDelete: "set null" }),
+  workDate: date("work_date").notNull(),             // дата зміни за графіком
+  shift: text("shift").notNull(),                     // "1".."6"
+  status: text("status").notNull().default("pending"),
+  promptSentAt: timestamp("prompt_sent_at"),          // пуш «приступив?» (кнопки діють 24 год)
+  promptChatId: text("prompt_chat_id"),
+  promptMessageId: integer("prompt_message_id"),      // щоб зняти кнопки, коли пуш застарів
+  endChatId: text("end_chat_id"),
+  endMessageId: integer("end_message_id"),            // повідомлення з кнопкою «Закінчив»
+  startedAt: timestamp("started_at"),
+  startSource: text("start_source"),                  // now | manual | office
+  endedAt: timestamp("ended_at"),
+  endSource: text("end_source"),                      // now | manual | auto | office
+  hours: real("hours"),                               // (ended − started), округлення 0.25; auto = 1
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("worker_shift_logs_entry_uniq").on(t.entryId),
+  index("worker_shift_logs_worker_date_idx").on(t.workerId, t.workDate),
+]);
+
+// Тижневий рапорт працівника (бот, понеділок за минулий тиждень Пн–Нд): зміна по
+// кожному дню (№ зміни фабрики або 0 = не працював) з годинами зміни, тотал, який
+// людина вписала сама, і фото рапорту. Місячний monthly_reports виводиться по датах.
+export const weeklyReportsTable = pgTable("weekly_reports", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  weekStart: date("week_start").notNull(),            // понеділок
+  days: jsonb("days").$type<Record<string, { shift: string | null; hours: number }>>(), // "YYYY-MM-DD" → зміна+год
+  hoursReported: real("hours_reported"),              // тотал за тиждень, вписаний працівником
+  photoLink: text("photo_link"),
+  requestSentAt: timestamp("request_sent_at"),        // понеділковий запит
+  remindSentAt: timestamp("remind_sent_at"),          // вівторкове нагадування
+  submittedAt: timestamp("submitted_at"),             // NULL = ще не подав
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("weekly_reports_worker_factory_week_uniq").on(t.workerId, t.factoryId, t.weekStart),
+]);
+
+// Години з фабрики за тиждень (імпорт/ручна клітинка на вкладці тижня). days — по датах
+// тижня; без днів тотал іде в місяць четверга тижня (ISO). Місячний factory_hours
+// для тижневої фабрики перераховується з цих рядків.
+export const factoryWeekHoursTable = pgTable("factory_week_hours", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id),
+  weekStart: date("week_start").notNull(),
+  hours: real("hours").notNull(),
+  days: jsonb("days").$type<Record<string, number | Record<string, number>>>(),
+  source: text("source").notNull().default("manual"), // excel | paste | manual
+  confirmed: boolean("confirmed").notNull().default(false), // «все ок» по тижню; скидається при зміні годин
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("factory_week_hours_worker_factory_week_uniq").on(t.workerId, t.factoryId, t.weekStart),
 ]);
 
 // Tracks messages the bot exchanges in private chats so it can bulk-delete recent

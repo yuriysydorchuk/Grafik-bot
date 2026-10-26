@@ -161,6 +161,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     transportFeeMonthCap: factory?.transportFeeMonthCap != null ? String(factory.transportFeeMonthCap) : "",
     usesScheduling: factory?.usesScheduling ?? true,
     showWorkerHours: factory?.showWorkerHours ?? true,
+    weeklyHours: factory?.weeklyHours ?? false,
     showCode: factory?.showCode ?? true,
     requiresSanepid: factory?.requiresSanepid ?? false,
     isOffice: factory?.isOffice ?? false,
@@ -207,7 +208,7 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
     minDaysPerWeek: v.minDaysPerWeek.trim() ? Number(v.minDaysPerWeek) : null,
     companyId: v.companyId ? Number(v.companyId) : null,
     genMode: v.genMode, usesPositions: v.usesPositions, usesGender: v.usesGender,
-    usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, showCode: v.showCode,
+    usesTransport: v.usesTransport, fuelCommute: v.fuelCommute, usesScheduling: v.usesScheduling, showWorkerHours: v.showWorkerHours, weeklyHours: v.weeklyHours, showCode: v.showCode,
     requiresSanepid: v.requiresSanepid,
     isOffice: v.isOffice,
     responsibleAdminId: v.responsibleAdminId ? Number(v.responsibleAdminId) : null,
@@ -418,6 +419,11 @@ function FactoryModal({ factory, canRates, canInvoice, canPayoutView, canPayoutE
             <input type="checkbox" checked={v.showWorkerHours} onChange={e => setV({ ...v, showWorkerHours: e.target.checked })} />
             {t("Показувати кнопку «Мої години та зміни»")}
           </label>
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input type="checkbox" checked={v.weeklyHours} onChange={e => setV({ ...v, weeklyHours: e.target.checked })} />
+            {t("Тижневий облік годин")}
+          </label>
+          <p className="pl-6 text-xs text-slate-400">{t("Фабрика без довозу: на старті зміни працівник відмічає в боті «приступив» / «закінчив» (24 год на кнопку; не закрив — 1 год), у понеділок подає години за минулий тиждень Пн–Нд зі змінами по днях і фото рапорту (нагадування у вівторок), фабрика шле години по тижнях. В Обліку годин у вкладки фабрики зʼявляються підвкладки тижнів; місяць рахується зі своїх днів.")}</p>
           <p className="pl-6 text-xs text-slate-400">{t("Кнопка «Заповнити доступність» зʼявляється лише в режимі «Працівники заповнюють доступність».")}</p>
         </div>
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700">

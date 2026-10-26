@@ -14,7 +14,7 @@ import type { Response, NextFunction } from "express";
 import { db, factoriesTable, workersTable, workerFactoriesTable, svodniRowsTable,
   workerDocumentsTable, workerBadaniaTable, workerBankAccountsTable, contractsTable,
   advanceRequestsTable, tasksTable, taskAssigneesTable, clothingItemsTable,
-  scheduleEntriesTable, unplannedWorkersTable, workerFactoryCodesTable, hoursDisputesTable, absenceRequestsTable,
+  scheduleEntriesTable, unplannedWorkersTable, workerFactoryCodesTable, hoursDisputesTable, absenceRequestsTable, workerShiftLogsTable,
   svodniClearsTable, workerChangesTable, factoryPayoutRulesTable } from "@workspace/db";
 import { and, eq, isNull, or, sql, type SQL, type AnyColumn } from "drizzle-orm";
 import type { AuthedRequest } from "./auth";
@@ -179,7 +179,7 @@ type Check =
   | { kind: "svodniRowIds" }                          // body.rowIds — кожен рядок у скоупі
   | { kind: "requireIds"; field: string };            // body[field] — непорожній масив (вибіркова дія; людей звіряє хендлер)
 
-type LookupTable = "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" | "entry" | "unplanned" | "factoryCode" | "dispute" | "absenceReq" | "change" | "payoutRule";
+type LookupTable = "doc" | "badania" | "bank" | "wf" | "contract" | "advance" | "clothing" | "entry" | "unplanned" | "factoryCode" | "shiftLog" | "dispute" | "absenceReq" | "change" | "payoutRule";
 type Rule = { methods: string[]; re: RegExp; check: Check };
 const R = (methods: string, re: RegExp, check: Check): Rule => ({ methods: methods.split(","), re, check });
 const ANY = "GET,POST,PUT,PATCH,DELETE";
@@ -235,7 +235,10 @@ const SCOPE_RULES: Rule[] = [
   // Списки без фабрики — фільтрує хендлер; довідники тижнів/шаблонів листів — лише читання
   R("GET", /^\/(?:dashboard|attention|weeks|email-templates|reliability|absences|absence-requests|hours|hours-reports|availability|availability\/missing)$/, { kind: "free" }),
   // Без factoryId ці дії йдуть по ВСІХ фабриках — для скоуп-адміна фабрика обовʼязкова
-  R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel)$/, { kind: "queryFactory" }),
+  R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel|hours\/weeks)$/, { kind: "queryFactory" }),
+  // тижневий облік (26.10.2026, routes/hoursWeekly.ts): фабрика у тілі; відмітка — по фабриці рядка
+  R("POST", /^\/hours\/weeks\/(?:remind|factory|confirm|factory-apply)$/, { kind: "bodyFactory" }),
+  R("PATCH", /^\/hours\/shift-logs\/(\d+)$/, { kind: "lookup", table: "shiftLog" }),
   R("DELETE", /^\/schedule\/shift-override$/, { kind: "queryFactory" }),
   R("POST", /^\/schedule\/(?:generate|approve|entry|shift-cancel|shift-restore|copy-day|clear|shift-override|email|notify)$/, { kind: "bodyFactory" }),
   R("PUT", /^\/orders$/, { kind: "bodyFactory" }),
@@ -294,9 +297,9 @@ export function scopeTaskSql(scope: AdminScope, adminId: number): SQL {
 // Рядок → його працівник; для привʼязки до фабрики й умови — ще й фабрика рядка: працівник
 // може бути у двох містах, а рядок чужої фабрики правити/читати не можна.
 async function lookupAllowed(scope: AdminScope, table: LookupTable, id: number): Promise<boolean> {
-  if (table === "entry" || table === "unplanned" || table === "factoryCode") {
+  if (table === "entry" || table === "unplanned" || table === "factoryCode" || table === "shiftLog") {
     // рядок, привʼязаний до фабрики — лише фабрика рядка
-    const t = { entry: scheduleEntriesTable, unplanned: unplannedWorkersTable, factoryCode: workerFactoryCodesTable }[table];
+    const t = { entry: scheduleEntriesTable, unplanned: unplannedWorkersTable, factoryCode: workerFactoryCodesTable, shiftLog: workerShiftLogsTable }[table];
     const [r] = await db.select({ factoryId: t.factoryId }).from(t).where(eq(t.id, id));
     return !!r && factoryInScope(scope, r.factoryId);
   }
