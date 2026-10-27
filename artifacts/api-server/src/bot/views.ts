@@ -23,6 +23,16 @@ export async function getMenuDriverFactory(factoryId: number) {
 
 // ─── Availability keyboard ────────────────────────────────────────────────────
 
+// Підпис періоду доступності: повний тиждень — як formatWeekStart, частковий — від першого дозволеного дня.
+export function availRangeLabel(weekStart: string, days: DayOfWeek[] = DAYS): string {
+  if (days.length === DAYS.length) return formatWeekStart(weekStart);
+  const d = new Date(weekStart + "T00:00:00");
+  const from = new Date(d); from.setDate(d.getDate() + DAYS.indexOf(days[0]!));
+  const to = new Date(d); to.setDate(d.getDate() + DAYS.indexOf(days[days.length - 1]!));
+  const fmt = (x: Date) => x.toLocaleDateString("uk-UA", { day: "numeric", month: "numeric" });
+  return `${fmt(from)} – ${fmt(to)}`;
+}
+
 export async function sendAvailabilityKeyboard(
   ctx: Context,
   weekStart: string,
@@ -30,10 +40,11 @@ export async function sendAvailabilityKeyboard(
   editMessageId?: number,
   shiftCount = 3,
   lang: Lang = "uk",
+  days: DayOfWeek[] = DAYS, // підмножина днів (новий працівник заповнює поточний тиждень від завтра)
 ) {
   const weekDate = new Date(weekStart + "T00:00:00");
   const shifts = (["1", "2", "3", "4", "5", "6"] as Shift[]).slice(0, Math.min(6, Math.max(1, shiftCount)));
-  const rows = DAYS.map((day) => {
+  const rows = days.map((day) => {
     const sel = responses[day];
     const has = (s: Shift) => Array.isArray(sel) && sel.includes(s);
     const shiftBtns = shifts.map(s => ({ text: (has(s) ? "✅ " : "") + t(lang, "av.shift", { n: s }), callback_data: `avail_${day}_${s}` }));
@@ -42,9 +53,9 @@ export async function sendAvailabilityKeyboard(
   });
   const fmtSel = (sel: Shift[] | null | undefined) =>
     !Array.isArray(sel) ? "—" : sel.length === 0 ? t(lang, "sched.dayOff") : sel.map(s => SHIFT_SHORT[s]).join(", ");
-  const dayLabels = DAYS.map((day, i) => {
+  const dayLabels = days.map((day) => {
     const date = new Date(weekDate);
-    date.setDate(weekDate.getDate() + i);
+    date.setDate(weekDate.getDate() + DAYS.indexOf(day));
     const dateStr = date.toLocaleDateString("uk-UA", { day: "numeric", month: "numeric" });
     return `${dayShort(lang, day)} ${dateStr}: ${fmtSel(responses[day])}`;
   });
@@ -56,7 +67,7 @@ export async function sendAvailabilityKeyboard(
     [{ text: t(lang, "menu.back"), callback_data: "avail_cancel" }],
   ];
 
-  const text = `${t(lang, "av.kbTitle", { week: formatWeekStart(weekStart) })}\n\n${dayLabels.join("\n")}\n\n${t(lang, "av.kbHint")}`;
+  const text = `${t(lang, "av.kbTitle", { week: availRangeLabel(weekStart, days) })}\n\n${dayLabels.join("\n")}\n\n${t(lang, "av.kbHint")}`;
 
   if (editMessageId) {
     try {

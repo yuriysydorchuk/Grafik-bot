@@ -44,6 +44,7 @@ import {
   loadOrderMap, saveOrderDay, renderOrderBoard, renderAttendanceMenu, showWorkerSchedule,
   showHdSlots, showFullWeekSchedule, showFactoryWeekSchedule, showDriverShift, showDriverWeek,
   type OrderMap,
+  availRangeLabel,
 } from "./views";
 import { adminMenu, workerMenu, workerMenuFor, cancelKb, leaverMenu, headDriverMenu, driverMenu, managementMenu } from "./menus";
 import { t, trAll, tb, bhears, LANGS, LANG_LABEL, OFFICE_LANGS, asLang, oLang, dayShort, stageLabel, DATE_LOCALE, type Lang } from "./i18n";
@@ -1779,25 +1780,87 @@ bot.hears(trAll("menu.availability"), async (ctx) => {
     if (f && f.usesAvailability === false) return ctx.reply(t(lang, "av.manual"));
     if (f) { shiftCount = f.shiftCount; minDays = f.minDaysPerWeek; factoryName = f.name; }
   }
-  const weekStart = getNextMonday();
+  const nextMon = getNextMonday();
+  const opts: AvailOpts = { shiftCount, minDays, factoryName, lang };
+  // Новий працівник (прохання графікового 27.10.2026): якщо на ПОТОЧНОМУ тижні людина ще не має
+  // ні доступності, ні записів графіку, а до неділі лишаються дні — пропонуємо заповнити цей
+  // тиждень від завтра, не чекаючи наступного понеділка. Решті — як раніше, наступний тиждень.
+  const curMon = getCurrentMonday();
+  const fromIdx = DAYS.indexOf(warsawDayName()) + 1;
+  if (fromIdx < DAYS.length) {
+    const [hasAv] = await db.select({ id: availabilityTable.id }).from(availabilityTable)
+      .where(and(eq(availabilityTable.weekStart, curMon), eq(availabilityTable.workerId, worker.id))).limit(1);
+    if (!hasAv) {
+      const weeks = await db.select({ id: scheduleWeeksTable.id }).from(scheduleWeeksTable).where(eq(scheduleWeeksTable.weekStart, curMon));
+      const [hasEntry] = weeks.length === 0 ? [] : await db.select({ id: scheduleEntriesTable.id }).from(scheduleEntriesTable)
+        .where(and(eq(scheduleEntriesTable.workerId, worker.id), inArray(scheduleEntriesTable.weekId, weeks.map(w => w.id)))).limit(1);
+      if (!hasEntry) {
+        setState(String(ctx.from.id), "avail:period", { ...opts, curMon, nextMon, fromIdx });
+        return ctx.reply(t(lang, "av.periodQ"), {
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: [
+            [{ text: t(lang, "av.periodCur", { range: availRangeLabel(curMon, DAYS.slice(fromIdx)) }), callback_data: "avail_period_cur" }],
+            [{ text: t(lang, "av.periodNext", { week: formatWeekStart(nextMon) }), callback_data: "avail_period_next" }],
+            [{ text: t(lang, "menu.back"), callback_data: "avail_cancel" }],
+          ] },
+        });
+      }
+    }
+  }
+  return beginAvailability(ctx, worker.id, nextMon, opts);
+});
+
+type AvailOpts = { shiftCount: number; minDays: number | null; factoryName: string; lang: Lang };
+
+// Старт заповнення: клавіатура на `days` (повний тиждень або поточний від завтра).
+// Уже подані зміни тижня — залочені (можна лише додати). `editMessageId` — коли стартуємо
+// з інлайн-вибору періоду: питання перетворюється на вступ, клавіатура йде новим повідомленням.
+async function beginAvailability(ctx: Context, workerId: number, weekStart: string, opts: AvailOpts, days: DayOfWeek[] = DAYS, editMessageId?: number) {
+  const { shiftCount, minDays, factoryName, lang } = opts;
+  const partial = days.length < DAYS.length;
   const responses: Record<string, Shift[] | null> = {};
-  DAYS.forEach(d => { responses[d] = null; });
+  days.forEach(d => { responses[d] = null; });
   const existing = await db.select({ day: availabilityTable.dayOfWeek, shift: availabilityTable.shift })
     .from(availabilityTable)
-    .where(and(eq(availabilityTable.weekStart, weekStart), eq(availabilityTable.workerId, worker.id)));
+    .where(and(eq(availabilityTable.weekStart, weekStart), eq(availabilityTable.workerId, workerId)));
   for (const a of existing) {
+    if (!days.includes(a.day as DayOfWeek)) continue;
     const arr = (responses[a.day] ??= []) as Shift[];
     if (!arr.includes(a.shift as Shift)) arr.push(a.shift as Shift);
   }
   const alreadyFilled = existing.length > 0;
   // Already-submitted shifts are locked: the worker may ADD more, but can't remove/change these.
   const locked = existing.map(a => `${a.day}-${a.shift}`);
-  setState(String(ctx.from.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked, minDays, factoryName });
-  await ctx.reply(
-    alreadyFilled ? t(lang, "av.already", { week: formatWeekStart(weekStart) }) : t(lang, "av.intro", { week: formatWeekStart(weekStart) }),
-    { parse_mode: "Markdown" },
-  );
-  return sendAvailabilityKeyboard(ctx, weekStart, responses, undefined, shiftCount, lang);
+  setState(String(ctx.from!.id), "avail:filling", { weekStart, responses, shiftCount, lang, locked, minDays, factoryName, days });
+  const intro = alreadyFilled ? t(lang, "av.already", { week: formatWeekStart(weekStart) })
+    : partial ? t(lang, "av.introPartial", { range: availRangeLabel(weekStart, days), week: formatWeekStart(weekStart) })
+    : t(lang, "av.intro", { week: formatWeekStart(weekStart) });
+  if (editMessageId) {
+    try { await ctx.telegram.editMessageText(ctx.chat!.id, editMessageId, undefined, intro, { parse_mode: "Markdown" }); }
+    catch { await ctx.reply(intro, { parse_mode: "Markdown" }); }
+  } else {
+    await ctx.reply(intro, { parse_mode: "Markdown" });
+  }
+  return sendAvailabilityKeyboard(ctx, weekStart, responses, undefined, shiftCount, lang, days);
+}
+
+// Вибір періоду для нового працівника: цей тиждень від завтра або наступний повністю
+bot.action(/^avail_period_(cur|next)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const state = getState(tid);
+  if (state?.action !== "avail:period") { await ctx.answerCbQuery(); return; }
+  await ctx.answerCbQuery();
+  const { shiftCount, minDays, factoryName } = state.data;
+  const opts: AvailOpts = { shiftCount, minDays, factoryName, lang: asLang(state.data.lang) };
+  const worker = await getWorker(tid);
+  if (!worker) { clearState(tid); return; }
+  // Період рахуємо на момент кліку, не зі стану: питання могло провисіти кілька днів —
+  // «цей тиждень» тоді починається з сьогоднішнього завтра, а якщо тиждень уже минув
+  // (або це неділя) — тихо переходимо на наступний.
+  const curMon = getCurrentMonday(), nextMon = getNextMonday();
+  const fromIdx = DAYS.indexOf(warsawDayName()) + 1;
+  const cur = ctx.match[1] === "cur" && state.data.curMon === curMon && fromIdx < DAYS.length;
+  return beginAvailability(ctx, worker.id, cur ? curMon : nextMon, opts, cur ? DAYS.slice(fromIdx) : DAYS, ctx.callbackQuery.message?.message_id);
 });
 
 
@@ -1811,6 +1874,8 @@ bot.action(/^avail_([a-z]+)_(1|2|3|4|5|6|off)$/, async (ctx) => {
   const { responses, weekStart, shiftCount } = state.data;
   const locked: string[] = state.data.locked ?? [];
   const lang = asLang(state.data.lang);
+  const days: DayOfWeek[] = state.data.days ?? DAYS;
+  if (!days.includes(day as DayOfWeek)) { await ctx.answerCbQuery(); return; } // стара клавіатура з днем поза дозволеними
   if (shiftRaw === "off") {
     // Can't take a whole day off if any shift that day was already confirmed.
     if (locked.some(k => k.startsWith(`${day}-`))) { await ctx.answerCbQuery(t(lang, "av.locked")); return; }
@@ -1823,7 +1888,7 @@ bot.action(/^avail_([a-z]+)_(1|2|3|4|5|6|off)$/, async (ctx) => {
   }
   await ctx.answerCbQuery();
   setState(tid, "avail:filling", { ...state.data, responses });
-  await sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery.message?.message_id, shiftCount ?? 3, lang);
+  await sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery.message?.message_id, shiftCount ?? 3, lang, state.data.days ?? DAYS);
 });
 
 // Availability confirm callback. Days without a single picked shift are saved as
@@ -1835,11 +1900,13 @@ bot.action(/^avail_confirm_(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   if (state?.action !== "avail:filling") { await ctx.answerCbQuery(); return; }
   const lang = asLang(state.data.lang);
   const responses = state.data.responses as Record<string, Shift[] | null>;
-  const offDays = DAYS.filter(d => { const s = responses[d]; return !Array.isArray(s) || s.length === 0; });
+  const days: DayOfWeek[] = state.data.days ?? DAYS;
+  const offDays = days.filter(d => { const s = responses[d]; return !Array.isArray(s) || s.length === 0; });
   // Правило фабрики «мінімум N днів на тиждень»: рахуємо дні з хоча б однією зміною
   // (погоджений вихідний не зараховується). Менше — не приймаємо, повертаємо до вибору.
-  const minDays: number | null = state.data.minDays ?? null;
-  const picked = DAYS.length - offDays.length;
+  // Частковий тиждень (новий працівник від завтра) правилом не обмежуємо — днів може бракувати фізично.
+  const minDays: number | null = days.length === DAYS.length ? state.data.minDays ?? null : null;
+  const picked = days.length - offDays.length;
   if (minDays && picked < minDays) {
     await ctx.answerCbQuery();
     const word = (n: number) => t(lang, n === 1 ? "av.days1" : n >= 2 && n <= 4 ? "av.days2" : "av.days5");
@@ -1883,7 +1950,7 @@ bot.action("avail_edit", async (ctx) => {
   if (state?.action !== "avail:filling") return;
   const { weekStart, responses, shiftCount } = state.data;
   const lang = asLang(state.data.lang);
-  return sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery?.message?.message_id, shiftCount ?? 3, lang);
+  return sendAvailabilityKeyboard(ctx as any, weekStart, responses, ctx.callbackQuery?.message?.message_id, shiftCount ?? 3, lang, state.data.days ?? DAYS);
 });
 
 async function saveAvailability(ctx: Context, tid: string) {
@@ -1893,6 +1960,7 @@ async function saveAvailability(ctx: Context, tid: string) {
   if (!worker) return;
   const { weekStart, responses } = state.data;
   const locked: string[] = state.data.locked ?? [];
+  const days: DayOfWeek[] = state.data.days ?? DAYS;
   const lang = asLang(state.data.lang);
   clearState(tid);
 
@@ -1935,21 +2003,21 @@ async function saveAvailability(ctx: Context, tid: string) {
         await notifyRoles("scheduler", {
           type: "availability_change",
           title: `📝 Диспозиційність: ${worker.fullName}`,
-          body: `${locked.length > 0 ? "Додано зміни" : "Заповнено вперше"} на тиждень ${formatWeekStart(weekStart)}: ${pairsTxt}`
+          body: `${locked.length > 0 ? "Додано зміни" : "Заповнено вперше"} на тиждень ${formatWeekStart(weekStart)}${days.length < DAYS.length ? ` (новий, від ${availRangeLabel(weekStart, days).split(" – ")[0]})` : ""}: ${pairsTxt}`
             + (releaseAt ? "\n⚠️ Графік уже затверджений/розісланий — перевірте призначення." : ""),
         });
       }
     } catch (e) { logger.error({ err: e }, "availability change notify failed"); }
   }
 
-  const summary = DAYS.map(d => {
+  const summary = days.map(d => {
     const s = responses[d] as Shift[] | null;
     const txt = !Array.isArray(s) || s.length === 0 ? t(lang, "sched.dayOff") : s.map(x => SHIFT_SHORT[x]).join(", ");
     return `${dayShort(lang, d)}: ${txt}`;
   }).join("\n");
   try {
     await ctx.editMessageText(
-      t(lang, "av.saved", { week: formatWeekStart(weekStart), summary }),
+      t(lang, "av.saved", { week: availRangeLabel(weekStart, days), summary }),
       { parse_mode: "Markdown" },
     );
   } catch { /* ignore */ }

@@ -1668,7 +1668,7 @@ router.patch("/worker-documents/:id", DOCS_RW, async (req, res) => {
   if (d) await documentChanged({ id, workerId: before.workerId }, "updated", { adminId: actingAdminId(req) }, documentAuditDiff(before, patch));
   ok(res, d);
 });
-router.delete("/worker-documents/:id", RW, async (req, res) => {
+router.delete("/worker-documents/:id", DOCS_RW, async (req, res) => {
   const id = Number(req.params.id);
   const [doc] = await db.select({ filePath: workerDocumentsTable.filePath, workerId: workerDocumentsTable.workerId, title: workerDocumentsTable.title }).from(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));
   await db.delete(workerDocumentsTable).where(eq(workerDocumentsTable.id, id));

@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Factory as FactoryIcon, Send } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, type AvailRow, DAYS, DAY_UK } from "../lib/api";
-import { upcomingWeeks } from "../lib/dates";
+import { upcomingWeeks, weekLabel } from "../lib/dates";
 import { WeekSelect } from "../components/WeekSelect";
 import { Card, Spinner, Empty, Badge, Button, Modal } from "../components/ui";
 import { PageHeader } from "../components/Layout";
@@ -14,7 +15,7 @@ import { useT } from "../lib/i18n";
 import { SearchBox, matchesQuery } from "../components/SearchBox";
 import { useSessionState } from "../lib/nav";
 
-interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryName: string | null }
+interface MissingWorker { id: number; fullName: string; telegramId: string | null; factoryId: number | null; factoryName: string | null }
 
 const shiftColor = (s?: string) => s === "1" ? "blue" : s === "2" ? "amber" : s === "3" ? "red" : "slate";
 const fmtAt = (iso: string) => new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -61,6 +62,7 @@ export default function Availability() {
   const [weekStart, setWeekStart] = useState(upcomingWeeks()[0]!.value);
   const [sq, setSq] = useSessionState("availability.q", ""); // пошук по працівнику
   const [hist, setHist] = useState<AvailRow | null>(null); // модалка історії заповнення
+  const [showMissing, setShowMissing] = useSessionState("availability.missing", false); // режим «хто не заповнив»
   const me = useMe();
   const canRemind = can(me, "editData");
   const confirm = useConfirm();
@@ -68,11 +70,24 @@ export default function Availability() {
     queryKey: ["availability", weekStart],
     queryFn: () => get(`/availability?weekStart=${weekStart}`),
   });
-  // Workers who still haven't filled availability for the selected week (for the reminder button)
+  // Workers who still haven't filled availability for the selected week: лічильник у барі,
+  // список «хто саме» за кліком по ньому (прохання графікового 27.10.2026) і кнопка нагадування.
   const { data: missing = [] } = useQuery<MissingWorker[]>({
-    queryKey: ["avail-missing", weekStart], enabled: !!weekStart && canRemind,
+    queryKey: ["avail-missing", weekStart], enabled: !!weekStart,
     queryFn: () => get(`/availability/missing?weekStart=${weekStart}`),
   });
+  // «Не заповнили» по фабриках — той самий порядок, що й основний список (фабрики за абеткою, «Без фабрики» останні)
+  const missingGroups = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; rows: MissingWorker[] }>();
+    for (const w of missing) {
+      if (!matchesQuery(sq, w.fullName, w.factoryName)) continue;
+      const key = w.factoryId != null ? `f${w.factoryId}` : "none";
+      const name = w.factoryName ?? t("Без фабрики");
+      if (!map.has(key)) map.set(key, { key, name, rows: [] });
+      map.get(key)!.rows.push(w);
+    }
+    return [...map.values()].sort((a, b) => a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
+  }, [missing, sq]);
   const remind = useMutation({
     mutationFn: () => post("/availability/remind", { weekStart }),
     onSuccess: (r: any) => toast.success(t("Нагадування надіслано"), { description: `✅ ${r.notified}${r.skipped ? ` · ⚠️ ${t("без Telegram")}: ${r.skipped}` : ""}` }),
@@ -104,9 +119,13 @@ export default function Availability() {
       <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-40 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
         <WeekSelect value={weekStart} onChange={setWeekStart} />
         <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник")} />
-        {canRemind && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setShowMissing(!showMissing)}
+            title={showMissing ? t("Назад до списку доступності") : t("Показати, хто не заповнив")}
+            className={`rounded-full ring-offset-1 transition ${showMissing ? "ring-2 ring-amber-400" : "hover:ring-2 hover:ring-slate-300"}`}>
             <Badge color={missing.length ? "amber" : "green"}>{t("Не заповнили:")} {missing.length}</Badge>
+          </button>
+          {canRemind && (
             <Button variant="secondary" loading={remind.isPending} disabled={missing.length === 0}
               onClick={async () => {
                 const n = missing.filter(w => w.telegramId).length;
@@ -117,10 +136,33 @@ export default function Availability() {
               }}>
               <Send className="h-3.5 w-3.5" /> {t("Нагадати всім")}
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-      {isFetching && !data ? <Spinner /> : !data?.length ? <Empty>{t("Ніхто ще не заповнив доступність на цей тиждень")}</Empty> : (
+      {showMissing ? (
+        <div className="space-y-6">
+          <p className="text-sm text-slate-500">{t("Активні працівники фабрик з доступністю, які не заповнили її на тиждень {week}.", { week: weekLabel(weekStart) })} <button type="button" onClick={() => setShowMissing(false)} className="text-red-700 underline-offset-2 hover:underline">{t("Назад до списку доступності")}</button></p>
+          {missingGroups.length === 0 ? <Empty>{missing.length === 0 ? t("Усі заповнили доступність на цей тиждень") : t("Нікого не знайдено")}</Empty> : missingGroups.map(g => (
+            <div key={g.key}>
+              <div className="mb-2 flex items-center gap-2">
+                <FactoryIcon className="h-4 w-4 text-slate-400" />
+                <h2 className="text-sm font-semibold text-slate-700">{g.name}</h2>
+                <Badge color="amber">{g.rows.length} {t("осіб")}</Badge>
+              </div>
+              <Card className="overflow-hidden">
+                <ul className="divide-y divide-slate-100 text-sm">
+                  {g.rows.map(w => (
+                    <li key={w.id} className="flex items-center gap-2 px-4 py-2">
+                      <Link href={`/workers/${w.id}`} className="font-medium text-slate-700 hover:text-red-600 hover:underline">{w.fullName}</Link>
+                      {!w.telegramId && <Badge color="slate">{t("без Telegram")}</Badge>}
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            </div>
+          ))}
+        </div>
+      ) : isFetching && !data ? <Spinner /> : !data?.length ? <Empty>{t("Ніхто ще не заповнив доступність на цей тиждень")}</Empty> : (
         <div className="space-y-6">
           {groups.map(g => (
             <div key={g.key}>
