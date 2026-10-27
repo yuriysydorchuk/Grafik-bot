@@ -2825,8 +2825,11 @@ function DocSlotList({ types, docs, companies, employers, nationality, requiresS
   for (const doc of otherDocs) {
     const type = doc.docTypeId != null ? types.find(ty => ty.id === doc.docTypeId) ?? null : null;
     const state = otherDocState(doc, type, globals);
+    // Тип «Inny» / без типу: назва документа — та, що вписав офіс (а не «Inny» на кожному рядку);
+    // назва типу — дрібним підписом (прохання власника 27.10.2026)
+    const custom = (!type || type.code === "other") && doc.title.trim() && doc.title.trim() !== type?.name;
     rows.push({ state, node: (
-      <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={type?.name ?? doc.title} state={state}
+      <DocRow key={doc.id} icon={docTypeIcon(type?.icon)} label={custom ? doc.title : (type?.name ?? doc.title)} subLabel={custom ? type?.name : undefined} state={state}
         canLegal={canLegal} companies={companies}
         requestCandidates={type && type.isActive !== false ? [type] : undefined} requestTitle={requestTitle}
         onEdit={onOpenDoc} onHistory={onHistory} onDelete={onDelete} onVerify={onVerify} onReject={onReject} onPreview={onPreview} onSend={onSend} onRequest={type ? onRequest : undefined} />
