@@ -403,7 +403,7 @@ function AccessFields({ role, roles, scope, onScope, inviteRoles, onInviteRoles 
 
 // ─── Делегат: мої запрошення ──────────────────────────────────────────────────
 interface InviteRow { id: number; name: string; role: string; pending: boolean; hasWebLogin: boolean; hasTelegram: boolean; inviteLink: string | null; scopeCities: string[]; scopeFactoryIds: number[] }
-interface InvitesResp { roles: { key: string; label: string }[]; myScope: ScopeValue | null; invites: InviteRow[] }
+interface InvitesResp { roles: { key: string; label: string }[]; roleLabels?: Record<string, string>; myScope: ScopeValue | null; invites: InviteRow[] }
 
 function MyInvites({ me }: { me: Me }) {
   const t = useT();
@@ -413,7 +413,7 @@ function MyInvites({ me }: { me: Me }) {
   const [adding, setAdding] = useState(false);
   const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ["admin-invites"] });
-  const roleLabel = (k: string) => data?.roles.find(r => r.key === k)?.label ?? k;
+  const roleLabel = (k: string) => data?.roleLabels?.[k] ?? data?.roles.find(r => r.key === k)?.label ?? k;
   const regen = useMutation({
     mutationFn: (a: InviteRow) => post<{ inviteLink: string }>(`/admin-invites/${a.id}/invite`).then(r => ({ r, a })),
     onSuccess: ({ r, a }) => { navigator.clipboard?.writeText(r.inviteLink); setInvite({ name: a.name, link: r.inviteLink }); },

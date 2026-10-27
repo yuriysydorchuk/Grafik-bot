@@ -6272,8 +6272,14 @@ router.get("/admin-invites", requireInviter, async (req, res) => {
   const mine = await db.select({ id: adminsTable.id, name: adminsTable.name, role: adminsTable.role, telegramId: adminsTable.telegramId, inviteCode: adminsTable.inviteCode,
       username: adminsTable.username, scopeCities: adminsTable.scopeCities, scopeFactoryIds: adminsTable.scopeFactoryIds, createdAt: adminsTable.createdAt })
     .from(adminsTable).where(and(eq(adminsTable.invitedBy, me.adminId), isNull(adminsTable.deactivatedAt))).orderBy(desc(adminsTable.id));
+  // Назви для ВСІХ ролей у списку: головний міг потім перевести запрошеного на роль, якої запрошувач
+  // видавати не може (OnTon → Ivan Misiura на «Рекрутер», 27.10.2026) — інакше в таблиці сирий ключ
+  const extraKeys = [...new Set(mine.map(a => a.role))].filter(k => !roles.some(r => r.key === k));
+  const roleLabels: Record<string, string> = Object.fromEntries(roles.map(r => [r.key, r.label]));
+  if (extraKeys.length) for (const r of await db.select({ key: rolesTable.key, label: rolesTable.label }).from(rolesTable).where(inArray(rolesTable.key, extraKeys))) roleLabels[r.key] = r.label;
   ok(res, {
     roles,
+    roleLabels,
     // власний скоуп — для пікера (null = без обмежень)
     myScope: me.scope ? { cities: me.scope.cities, factoryIds: me.scope.factoryIds } : null,
     invites: mine.map(a => ({
