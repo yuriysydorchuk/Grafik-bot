@@ -83,7 +83,7 @@ export interface ExportRow {
   telegram: boolean; status: "active" | "fired" | "blacklist"; firedAt: string | null; firstWorkDate: string | null; employmentStartDate: string | null; createdAt: string | null;
   doNotHireReason: string | null; terminationDate: string | null;
   companyId: number | null; companyName: string | null; factoryId: number | null; factoryName: string | null; city: string | null; factoryCompanyName: string | null;
-  extraFactories: string[]; positionName: string | null; kzisCode: string | null;
+  extraFactories: string[]; extraFactoryIds: number[]; positionName: string | null; kzisCode: string | null;
   legalStatus: string | null; effectiveLegalStatus: string | null; legalSource: string; student: boolean; stud26: boolean;
   legality: { overall: string; stay: string | null; work: string | null; nextExpiryAt: string | null } | null;
   umowa: { status: string; dateFrom: string | null; dateTo: string | null; signedAt: string | null; factoryName: string | null; expired: boolean } | null;
@@ -197,7 +197,7 @@ export async function loadExportRows(f: ExportFilters, scope: AdminScope | null 
       doNotHireReason: w.doNotHireReason, terminationDate: dstr(w.terminationDate),
       companyId: coId, companyName: coId != null ? coById.get(coId)?.name ?? null : null,
       factoryId: w.factoryId, factoryName: fac?.name ?? null, city: fac?.city ?? null, factoryCompanyName: fac?.companyId != null ? coById.get(fac.companyId)?.name ?? null : null,
-      extraFactories: extras.map(e => facById.get(e.factoryId)?.name ?? `#${e.factoryId}`),
+      extraFactories: extras.map(e => facById.get(e.factoryId)?.name ?? `#${e.factoryId}`), extraFactoryIds: extras.map(e => e.factoryId),
       positionName: w.positionId != null ? posById.get(w.positionId)?.name ?? null : null,
       kzisCode: (w.factoryId != null && w.positionId != null ? facPosKzis.get(`${w.factoryId}-${w.positionId}`) : null) || fac?.uaKzisCode || (w.positionId != null ? posById.get(w.positionId)?.kzisCode : null) || null,
       legalStatus: normalizeProfileLegal(w.legalStatus) ?? w.legalStatus, effectiveLegalStatus: eff.legalStatus, legalSource: eff.legalSource,
@@ -595,7 +595,7 @@ const extOf = (fileName: string | null, mime: string | null, fallback: string) =
   return fallback;
 };
 
-export interface DocsZipOptions { docTypeIds: number[]; includeContracts: boolean; scope?: AdminScope | null }
+export interface DocsZipOptions { docTypeIds: number[]; includeContracts: boolean; scope?: AdminScope | null; factoryIds?: number[] }
 
 /** Скільки файлів поїде (превʼю в модалці). */
 export async function countDocsForZip(rows: ExportRow[], opts: DocsZipOptions): Promise<{ docs: number; contracts: number; workersWithFiles: number }> {
@@ -615,9 +615,14 @@ export async function countDocsForZip(rows: ExportRow[], opts: DocsZipOptions): 
 const ROOT_ABS = path.resolve(UPLOADS_ROOT);
 const safeAbs = (rel: string): string | null => { const abs = path.resolve(UPLOADS_ROOT, rel); return abs.startsWith(ROOT_ABS + path.sep) ? abs : null; };
 
-/** Стрім ZIP у відповідь: Firma/Fabryka/Nazwisko Imię (kod)/… */
+/**
+ * Стрім ZIP у відповідь: Firma/Fabryka/Nazwisko Imię (kod)/… Людина на кількох фабриках (основна +
+ * чинні додаткові) кладеться під КОЖНУ з них (рішення власника 28.10.2026); якщо фільтр по фабриках
+ * заданий — лише під вибрані, де вона є. Файли в кожній папці ті самі.
+ */
 export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res: Response, filename: string): Promise<void> {
   const ids = rows.map(r => r.id);
+  const facNames = new Map((await db.select({ id: factoriesTable.id, name: factoriesTable.name }).from(factoriesTable)).map(f => [f.id, f.name]));
   const docs = ids.length ? await db.select().from(workerDocumentsTable)
     .where(and(inArray(workerDocumentsTable.workerId, ids), ...(opts.docTypeIds.length ? [inArray(workerDocumentsTable.docTypeId, opts.docTypeIds)] : [])))
     .orderBy(workerDocumentsTable.id) : [];
@@ -639,7 +644,11 @@ export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res
   let added = 0;
   for (const r of rows) {
     const person = safeName(nameCaps(r.fullName));
-    const folder = `${safeName(r.companyName ?? "Bez firmy")}/${safeName(r.factoryName ?? "Bez fabryki")}/${safeName(`${nameCaps(r.fullName)}${r.code ? ` (${r.code})` : ""}`)}`;
+    let facIds = [...new Set([...(r.factoryId != null ? [r.factoryId] : []), ...r.extraFactoryIds])];
+    if (opts.factoryIds?.length) facIds = facIds.filter(id => opts.factoryIds!.includes(id));
+    const facFolders = facIds.length ? facIds.map(id => safeName(facNames.get(id) ?? `#${id}`)) : ["Bez fabryki"];
+    for (const facFolder of facFolders) {
+    const folder = `${safeName(r.companyName ?? "Bez firmy")}/${facFolder}/${safeName(`${nameCaps(r.fullName)}${r.code ? ` (${r.code})` : ""}`)}`;
     const used = new Set<string>();
     const uniq = (name: string) => { let n = name, i = 2; while (used.has(n.toLowerCase())) { const e = path.extname(name); n = `${name.slice(0, name.length - e.length)} (${i++})${e}`; } used.add(n.toLowerCase()); return n; };
     for (const d of docs.filter(x => x.workerId === r.id)) {
@@ -661,6 +670,7 @@ export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res
       const base = `${person} - ${safeName(`${f.title}${f.dateFrom ? ` ${dstr(f.dateFrom)}` : ""}${f.factoryName ? ` ${f.factoryName}` : ""}`)}`;
       zip.file(abs, { name: `${folder}/Umowy/${uniq(base + ".pdf")}` });
       added++;
+    }
     }
   }
   if (!added) zip.append("Brak plików dla wybranych filtrów.\r\n", { name: "README.txt" });

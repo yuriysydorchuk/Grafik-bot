@@ -75,7 +75,8 @@ router.get("/workers/export/csv", requireCap("workerDocs"), async (req, res) => 
 
 router.get("/workers/export/docs.zip", FILES, async (req, res) => {
   const rows = await loadFiltered(req as any);
-  await streamDocsZip(rows, zipOpts(req.query as Record<string, unknown>, (req as AuthedRequest).admin?.scope), res, `Dokumenty pracownikow ${stamp()}.zip`);
+  const zo = { ...zipOpts(req.query as Record<string, unknown>, (req as AuthedRequest).admin?.scope), factoryIds: parseExportFilters(req.query as Record<string, unknown>).factoryIds };
+  await streamDocsZip(rows, zo, res, `Dokumenty pracownikow ${stamp()}.zip`);
 });
 
 export default router;
