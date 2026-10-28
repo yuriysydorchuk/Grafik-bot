@@ -638,6 +638,7 @@ export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res
   zip.pipe(res);
   let added = 0;
   for (const r of rows) {
+    const person = safeName(nameCaps(r.fullName));
     const folder = `${safeName(r.companyName ?? "Bez firmy")}/${safeName(r.factoryName ?? "Bez fabryki")}/${safeName(`${nameCaps(r.fullName)}${r.code ? ` (${r.code})` : ""}`)}`;
     const used = new Set<string>();
     const uniq = (name: string) => { let n = name, i = 2; while (used.has(n.toLowerCase())) { const e = path.extname(name); n = `${name.slice(0, name.length - e.length)} (${i++})${e}`; } used.add(n.toLowerCase()); return n; };
@@ -647,7 +648,8 @@ export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res
       if (!abs) { logger.warn({ docId: d.id, filePath: d.filePath }, "docs zip: path outside uploads root blocked"); continue; }
       if (!fs.existsSync(abs)) { logger.warn({ docId: d.id, filePath: d.filePath }, "docs zip: file missing on disk"); continue; }
       const ty = d.docTypeId != null ? typeById.get(d.docTypeId) : undefined;
-      const base = safeName(ty?.name && ty.code !== "other" ? ty.name : d.title) + (d.number ? ` ${safeName(d.number)}` : "");
+      // імʼя файла = ПРІЗВИЩЕ ІМʼЯ - тип документа [номер] (прохання власника 28.10.2026)
+      const base = `${person} - ${safeName(ty?.name && ty.code !== "other" ? ty.name : d.title)}${d.number ? ` ${safeName(d.number)}` : ""}`;
       zip.file(abs, { name: `${folder}/${uniq(base + extOf(d.fileName, d.fileMime, ".bin"))}` });
       added++;
     }
@@ -656,7 +658,7 @@ export async function streamDocsZip(rows: ExportRow[], opts: DocsZipOptions, res
       const abs = safeAbs(f.signedPath);
       if (!abs) { logger.warn({ contractId: f.contractId, signedPath: f.signedPath }, "docs zip: path outside uploads root blocked"); continue; }
       if (!fs.existsSync(abs)) { logger.warn({ contractId: f.contractId, signedPath: f.signedPath }, "docs zip: contract file missing on disk"); continue; }
-      const base = safeName(`${f.title}${f.dateFrom ? ` ${dstr(f.dateFrom)}` : ""}${f.factoryName ? ` ${f.factoryName}` : ""}`);
+      const base = `${person} - ${safeName(`${f.title}${f.dateFrom ? ` ${dstr(f.dateFrom)}` : ""}${f.factoryName ? ` ${f.factoryName}` : ""}`)}`;
       zip.file(abs, { name: `${folder}/Umowy/${uniq(base + ".pdf")}` });
       added++;
     }
