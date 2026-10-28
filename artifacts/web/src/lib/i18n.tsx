@@ -4272,6 +4272,8 @@ const EN: Record<string, string> = {
   "Людей: {n}": "People: {n}",
   "Файлів: {n} · з умовами: {c} · людей з файлами: {w}": "Files: {n} · contracts: {c} · people with files: {w}",
   "рахую…": "counting…",
+  "Зі сторінки «Працівники»": "From the “Workers” page",
+  "скинути": "reset",
   // конструктор умов / колонки експорту (28.10.2026)
   "38 колонок 1:1 як у вивантаженні «Eksport - Umowy». Імʼя — «Nazwisko Imię» (поле «Імʼя в Gratyfikancie», якщо заповнене); умова — чинна umowa на фірму працівника; PESEL, адреса, рахунок, NFZ, US — з анкети.": "38 columns 1:1 as in the “Eksport - Umowy” dump. Name — “Nazwisko Imię” (the “Name in Gratyfikant” field when filled); contract — the current umowa with the worker's company; PESEL, address, bank account, NFZ, tax office — from the questionnaire.",
   "Швидкі фільтри": "Quick filters", "Збережені набори": "Saved sets", "— вибрати —": "— select —", "ще немає": "none yet", "назва набору": "set name",

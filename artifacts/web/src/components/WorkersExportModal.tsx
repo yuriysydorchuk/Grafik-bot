@@ -77,6 +77,24 @@ export function WorkersExportModal({ onClose, initial }: {
     return [...g.entries()].sort((a, b) => a[0].localeCompare(b[0], "pl"));
   }, [facVisible, t]);
   const toggle = <T,>(set: Set<T>, v: T, setter: (s: Set<T>) => void) => { const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); setter(n); };
+  // що прийшло з фільтрів сторінки і досі активне
+  const inherited = useMemo(() => {
+    const out: string[] = [];
+    const fid = initial?.factoryId ? Number(initial.factoryId) : null;
+    if (fid && factoryIds.has(fid)) out.push(`${t("Фабрика")}: ${factories.find(f => f.id === fid)?.name ?? fid}`);
+    const cid = initial?.companyId ? Number(initial.companyId) : null;
+    if (cid && companyIds.has(cid)) out.push(`${t("Фірма")}: ${companies.find(c => c.id === cid)?.name ?? cid}`);
+    const pid = initial?.positionId ? Number(initial.positionId) : null;
+    if (pid && positionIds.has(pid)) out.push(`${t("Посада")}: ${positions.find(p => p.id === pid)?.name ?? pid}`);
+    if (initial?.q && q === initial.q) out.push(`${t("Пошук")}: ${q}`);
+    return out;
+  }, [initial, factoryIds, companyIds, positionIds, q, factories, companies, positions, t]);
+  const resetInherited = () => {
+    const fid = initial?.factoryId ? Number(initial.factoryId) : null; if (fid) setFactoryIds(s => { const n = new Set(s); n.delete(fid); return n; });
+    const cid = initial?.companyId ? Number(initial.companyId) : null; if (cid) setCompanyIds(s => { const n = new Set(s); n.delete(cid); return n; });
+    const pid = initial?.positionId ? Number(initial.positionId) : null; if (pid) setPositionIds(s => { const n = new Set(s); n.delete(pid); return n; });
+    if (initial?.q && q === initial.q) setQ("");
+  };
 
   const condSpec = useMemo(() => {
     const or = groups.map(g => ({ and: g.and.filter(c => c.k && c.op && (!needsValue(c.op) || (Array.isArray(c.v) ? c.v.some(Boolean) : c.v != null && String(c.v) !== ""))) })).filter(g => g.and.length);
@@ -156,6 +174,14 @@ export function WorkersExportModal({ onClose, initial }: {
           {/* ліва колонка: швидкі фільтри + конструктор умов */}
           <div className="space-y-3 lg:col-span-7">
             <Card title={t("Швидкі фільтри")}>
+              {/* успадковані з фільтрів сторінки /workers — показуємо явно, бо непомічений чип фабрики давав «не тих людей» (28.10.2026) */}
+              {inherited.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+                  <span className="font-medium">{t("Зі сторінки «Працівники»")}:</span>
+                  {inherited.map(x => <span key={x} className="rounded-md bg-white px-1.5 py-0.5">{x}</span>)}
+                  <button type="button" onClick={resetInherited} className="ml-auto underline-offset-2 hover:underline">{t("скинути")}</button>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 {([["active", t("Активні")], ["fired", t("Звільнені")], ["blacklist", t("Чорний список")], ["all", t("Усі")]] as const).map(([k, l]) => (
                   <button key={k} type="button" className={chip(mode === k)} onClick={() => setMode(k)}>{l}</button>
