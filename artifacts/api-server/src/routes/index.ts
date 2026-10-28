@@ -39,6 +39,7 @@ import smsPublicRouter from "./smsPublic";
 import smsCampaignsRouter from "./smsCampaigns";
 import tasksRouter from "./tasks";
 import hoursWeeklyRouter from "./hoursWeekly";
+import workersExportRouter from "./workersExport";
 import workersCalendarRouter from "./workersCalendar";
 import searchRouter from "./search";
 import workerPayRouter from "./workerPay";
@@ -100,6 +101,7 @@ router.use(contractsRouter);
 router.use(documentTemplatesRouter);
 router.use(tasksRouter);
 router.use(hoursWeeklyRouter); // /hours/weeks, /hours/shift-logs — тижневий облік годин (editData)
+router.use(workersExportRouter); // /workers/export/* — Excel-список, CSV Gratyfikant, ZIP документів (28.10.2026)
 router.use(workersCalendarRouter);
 router.use(legalizationRouter);
 router.use(documentDeliveryRouter);

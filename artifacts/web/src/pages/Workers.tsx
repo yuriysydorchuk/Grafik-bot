@@ -3,11 +3,12 @@ import { Link } from "wouter";
 import { useSessionState } from "../lib/nav";
 import { matchesQuery } from "../components/SearchBox";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText } from "lucide-react";
+import { Plus, Search, Pencil, UserX, UserCheck, Link2, Trash2, FileText, Download } from "lucide-react";
 import { toast } from "sonner";
 import { get, post, del, type Worker, type Factory, type Company, type Position, type WorkerContractsBrief } from "../lib/api";
 import { Button, Input, Select, Card, Spinner, Badge, Empty, Modal } from "../components/ui";
 import { WorkerModal } from "../components/WorkerModal";
+import { WorkersExportModal } from "../components/WorkersExportModal";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -55,6 +56,7 @@ export default function Workers() {
   const [adding, setAdding] = useState(false);
   const [firing, setFiring] = useState<Worker | null>(null);
   const [scanInviteLink, setScanInviteLink] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false); // експорт Excel / CSV Gratyfikant / ZIP документів (28.10.2026)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
   const fire = useMutation({
@@ -190,6 +192,11 @@ export default function Workers() {
           <option value="none">{t("без umowy")}</option>
           <option value="expired">{t("прострочена")}</option>
         </Select>
+        <button type="button" onClick={() => setExporting(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          title={t("Експорт: Excel-список, CSV для Gratyfikant, ZIP документів — з фільтрами по фірмах/фабриках/статусах")}>
+          <Download className="h-3.5 w-3.5" /> {t("Експорт")}
+        </button>
         <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 text-xs font-medium">
           {([["active", t("Активні")], ["fired", t("Звільнені")], ["blacklist", t("Чорний список")]] as const).map(([k, label]) => (
             <button key={k} type="button" onClick={() => setMode(k)}
@@ -250,6 +257,8 @@ export default function Workers() {
       {(adding || edit) && <WorkerModal worker={edit} factories={factories} companies={companies} isOwner={isOwner} onClose={() => { setAdding(false); setEdit(null); }} onSaved={() => { invalidate(); setAdding(false); setEdit(null); }} />}
 
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport, date) => fire.mutate({ id: firing.id, offerReport, date })} />}
+
+      {exporting && <WorkersExportModal onClose={() => setExporting(false)} initial={{ mode, factoryId: facFilter, companyId: coFilter, positionId: posFilter, q }} />}
 
       {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}
       {addingLinks && <NewWorkerLinksModal onClose={() => setAddingLinks(false)} />}
