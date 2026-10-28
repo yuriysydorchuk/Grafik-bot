@@ -8,7 +8,7 @@ import { db, factoriesTable, factoryWeekHoursTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { authRequired, requireCap } from "../lib/auth";
 import {
-  buildWeekRows, sendWeeklyRequests, upsertFactoryWeekHours, deleteFactoryWeekHours, syncWeek,
+  buildWeekRows, sendWeeklyRequests, upsertFactoryWeekHours, deleteFactoryWeekHours, syncWeek, clearFactoryWeekHours, sendWeekAckRequests,
 } from "../services/weeklyHours";
 import { officeSetLog, getLog } from "../services/shiftLogs";
 import { weeksOverlappingMonth, weekLabel, weekDates, round2, dayValueTotal } from "../lib/weekMath";
@@ -95,6 +95,30 @@ router.post("/hours/weeks/confirm", async (req, res) => {
   if (!r) return fail(res, 404, "Годин фабрики за цей тиждень нема");
   await syncWeek(workerId, factoryId, weekStart);
   res.json({ ok: true });
+});
+
+// Очистити години фабрики за тиждень (усіх або вибраних) — щоб завантажити новий файл;
+// похідні місячні рядки перераховуються. Рапорти працівників не чіпаються.
+router.post("/hours/weeks/clear", async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const weekStart = req.body?.weekStart;
+  if (!factoryId || !isWeek(weekStart)) return fail(res, 400, "factoryId та weekStart (понеділок) обовʼязкові");
+  const workerIds = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter((n: number) => n > 0) : undefined;
+  if (workerIds && !workerIds.length) return fail(res, 400, "Порожній список працівників"); // [] ≠ «усі»
+  const cleared = await clearFactoryWeekHours(factoryId, weekStart, workerIds);
+  res.json({ cleared });
+});
+
+// Розсилка «підтверди свої години фабрики за тиждень» у бот (кнопки ✅/❌, дзеркало
+// місячного /hours/factory-notify); відповідь — колонка «Підтв. працівника» вкладки тижня.
+router.post("/hours/weeks/notify", async (req, res) => {
+  const factoryId = Number(req.body?.factoryId);
+  const weekStart = req.body?.weekStart;
+  const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter((n: number) => n > 0) : [];
+  if (!factoryId || !isWeek(weekStart)) return fail(res, 400, "factoryId та weekStart (понеділок) обовʼязкові");
+  if (!workerIds.length) return fail(res, 400, "Порожній список працівників");
+  try { res.json(await sendWeekAckRequests(factoryId, weekStart, workerIds)); }
+  catch (e: any) { fail(res, 404, e?.message ?? "Помилка"); }
 });
 
 // Імпорт тижня (після превʼю /hours/factory-parse з weekStart): рядки {workerId, hours, days?} —

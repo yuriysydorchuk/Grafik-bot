@@ -1073,6 +1073,12 @@ export const factoryWeekHoursTable = pgTable("factory_week_hours", {
   days: jsonb("days").$type<Record<string, number | Record<string, number>>>(),
   source: text("source").notNull().default("manual"), // excel | paste | manual
   confirmed: boolean("confirmed").notNull().default(false), // «все ок» по тижню; скидається при зміні годин
+  // запит підтвердження годин тижня працівнику в бот і його відповідь (28.10.2026, дзеркало factory_hours)
+  askSentAt: timestamp("ask_sent_at"),
+  askHours: real("ask_hours"),
+  workerResponse: text("worker_response"),    // confirmed | dispute | null
+  workerResponseAt: timestamp("worker_response_at"),
+  workerNote: text("worker_note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [

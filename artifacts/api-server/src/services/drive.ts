@@ -617,22 +617,53 @@ export async function buildReportHoursExcel(
   month: string, factoryId?: number,
   // statement — «Zestawienie godzin» для клієнта: заголовок/аркуш без слова «raport»,
   // без підсвітки розбіжностей; рядки без значення у вибраному джерелі пропускаються.
-  opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean; statement?: HoursStatementSource } = {},
+  // weekStart — тиждень тижневої фабрики (28.10.2026): рядки з вкладки тижня (їх відмітки /
+  // рапорт за тиждень / години фабрики за тиждень), період у заголовку — «tydzień dd.mm–dd.mm».
+  opts: { cols?: HoursXlsxColKey[]; errorsOnly?: boolean; statement?: HoursStatementSource; weekStart?: string } = {},
 ): Promise<{ buffer: Buffer; facName: string | null; rowCount: number; total: number }> {
   const colKeys = (opts.cols?.length ? opts.cols : DEFAULT_HOURS_COLS).filter(k => HOURS_XLSX_COLS.some(c => c.key === k));
   const cols = HOURS_XLSX_COLS.filter(c => colKeys.includes(c.key));
   const errorsOnly = !!opts.errorsOnly;
   const statement = opts.statement;
 
-  const { buildHoursMergedRows } = await import("./hoursRows");
-  const { rows: merged, facById } = await buildHoursMergedRows(month);
-  const selectedFac = factoryId != null ? (facById.get(factoryId)?.name ?? null) : null;
-
   type Row = {
     facId: number | null; code: string; name: string; factory: string;
     shifts: number; weekendShifts: number; hours: number; report: number | null; factoryHours: number | null;
     confirmed: boolean; workerResponse: string | null; asked: boolean; note: string | null;
   };
+  let selectedFac: string | null = null;
+  let baseRows: Row[];
+  if (opts.weekStart && factoryId != null) {
+    const { buildWeekRows } = await import("./weeklyHours");
+    const { weekDates } = await import("../lib/weekMath");
+    const { fac, rows: wrows } = await buildWeekRows(factoryId, opts.weekStart);
+    selectedFac = fac?.name ?? null;
+    const weekend = new Set(weekDates(opts.weekStart).slice(5));
+    baseRows = wrows.map(r => {
+      const present = Object.values(r.days).filter(c => c.entry?.status === "present");
+      return {
+        facId: factoryId, code: r.code ?? "", name: r.name, factory: fac?.name ?? "Bez fabryki",
+        shifts: present.length, weekendShifts: present.filter(c => weekend.has(c.date)).length,
+        hours: r.hours, // лише затверджений тиждень (облікова вибірка — approved-only; draft-тиждень = 0 → у zestawienie не потрапляє)
+        report: r.report?.submittedAt ? r.report.hoursReported : null, factoryHours: r.factory?.hours ?? null,
+        confirmed: r.factory?.confirmed ?? false, workerResponse: r.factory?.workerResponse ?? null, asked: !!r.factory?.askSentAt, note: null,
+      };
+    });
+  } else {
+    const { buildHoursMergedRows } = await import("./hoursRows");
+    const { rows: merged, facById } = await buildHoursMergedRows(month);
+    selectedFac = factoryId != null ? (facById.get(factoryId)?.name ?? null) : null;
+    baseRows = merged
+      .filter(x => factoryId == null || x.factoryId === factoryId)
+      .map(x => ({
+        facId: x.factoryId, code: x.code ?? "", name: x.name,
+        factory: x.factory ?? "Bez fabryki",
+        shifts: x.shifts, weekendShifts: x.weekendShifts, hours: Math.round(x.hours * 100) / 100,
+        report: x.reportHours, factoryHours: x.factoryHours,
+        confirmed: x.factoryConfirmed, workerResponse: x.workerResponse, asked: x.askSentAt != null,
+        note: x.note,
+      }));
+  }
   // Для графіку 0 год = людина не працювала → у zestawienie не потрапляє
   // (рапорт/фабрика: явний 0 — теж значення, лишається).
   const sourceValue = (r: Row, src: HoursStatementSource): number | null =>
@@ -644,16 +675,7 @@ export async function buildReportHoursExcel(
     return Math.abs(r.report - r.factoryHours) <= 0.01 ? "match" : "mismatch";
   };
 
-  const rows: Row[] = merged
-    .filter(x => factoryId == null || x.factoryId === factoryId)
-    .map(x => ({
-      facId: x.factoryId, code: x.code ?? "", name: x.name,
-      factory: x.factory ?? "Bez fabryki",
-      shifts: x.shifts, weekendShifts: x.weekendShifts, hours: Math.round(x.hours * 100) / 100,
-      report: x.reportHours, factoryHours: x.factoryHours,
-      confirmed: x.factoryConfirmed, workerResponse: x.workerResponse, asked: x.askSentAt != null,
-      note: x.note,
-    }))
+  const rows: Row[] = baseRows
     // підтверджене вручну («все ок» на /hours) — не помилка: і розбіжність,
     // і години фабрики без рапорту працівника
     .filter(x => {
@@ -666,7 +688,9 @@ export async function buildReportHoursExcel(
     })
     .sort((a, b) => a.factory.localeCompare(b.factory, "pl") || a.name.localeCompare(b.name, "pl"));
 
-  const monthLabel = new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
+  const monthLabel = opts.weekStart
+    ? `tydzień ${opts.weekStart.slice(8, 10)}.${opts.weekStart.slice(5, 7)}–${(await import("../lib/weekMath")).weekEnd(opts.weekStart).split("-").reverse().join(".")}`
+    : new Date(`${month}-01`).toLocaleDateString("pl-PL", { month: "long", year: "numeric" });
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(statement ? "Zestawienie" : "Raport-godziny", { views: [{ showGridLines: false }] });
   ws.columns = cols.map(c => ({ width: c.width }));

@@ -2,12 +2,13 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Factory as FactoryIcon, AlertTriangle, BellRing, CheckCircle2, Clock, Columns3, Download, Check, Send, X, XCircle, Pencil, Plus, Trash2, Upload as UploadIcon, Mail, RotateCcw, KeyRound, FileSpreadsheet, EyeOff, CalendarDays } from "lucide-react";
 import { toast } from "sonner";
-import { get, post, del, upload, type EmailRecipient } from "../lib/api";
+import { get, post, del, upload } from "../lib/api";
 import { monthOptions } from "../lib/dates";
 import { Card, Spinner, Select, Empty, Badge, Button, Input, Modal, Label } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { WorkerDaysModal } from "../components/DetailModals";
 import { HoursWeekView, weeksOfMonth, weeksKey } from "../components/HoursWeekView";
+import { RecipientsPicker } from "../components/RecipientsPicker";
 import { useMe } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useT, useLang } from "../lib/i18n";
@@ -42,6 +43,7 @@ interface ExcludedInfo { workerId: number; name: string; factoryId: number | nul
 const EXCL_REASON_LABEL: Record<string, string> = { manual: "прибрано", vacation: "відпустка", not_started: "ще не приступив" };
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const ddmm = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+const weekLabelOf = (ws: string) => { const e = new Date(ws + "T00:00:00"); e.setDate(e.getDate() + 6); return `${ddmm(ws)}–${String(e.getDate()).padStart(2, "0")}.${String(e.getMonth() + 1).padStart(2, "0")}`; };
 
 // Звірка «рапорт працівника vs години фабрики» для підсвітки рядка:
 // match — обидва є і збігаються (±0.01), mismatch — розходяться, partial — є лише одне.
@@ -110,7 +112,7 @@ export default function Hours() {
   const [statementKey, setStatementKey] = useState<string | null>(null); // лист «zestawienie godzin» клієнту
   const [notifyKey, setNotifyKey] = useState<string | null>(null); // розсилка «підтверди свої години» у бот
   // Excel-експорт: модалка вибору стовпчиків (+ фільтр «лише помилки»); factoryId=null → всі фабрики
-  const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string } | null>(null);
+  const [exportTo, setExportTo] = useState<{ factoryId: number | null; name: string; weekStart?: string } | null>(null);
   // Імпорт файла фабрики, якої ще НЕМАЄ у вкладках місяця (перший імпорт:
   // жодних явок/рапортів — вкладка зʼявиться після збереження годин).
   // Типовий кейс — Eurocash: графік не ведеться в системі, всі дані з файлу.
@@ -545,6 +547,9 @@ export default function Hours() {
                 foot: () => <td key="reportNet" className="px-4 py-2.5 text-right text-blue-700">{round(g.rows.reduce((s, w) => s + (w.reportNet ?? 0), 0))} zł</td>,
               },
             };
+            // тижнева фабрика на вкладці тижня: місячні дії (імпорт/підтвердження/очищення/листи)
+            // ховаються — їхні тижневі версії живуть у хедері вкладки тижня (HoursWeekView)
+            const wk = g.factoryId != null && weeklyIds.has(g.factoryId) ? (weekTab[g.key] ?? "") : "";
             return (
               <Card key={g.key} className="overflow-hidden">
                 {/* хедер фабрики — всередині картки, щоб таблиці сусідніх фабрик не зливались */}
@@ -562,7 +567,7 @@ export default function Hours() {
                       <Check className="h-3.5 w-3.5" /> {t("До сводної")}
                     </button>
                   )}
-                  {canEdit && g.factoryId != null && (
+                  {canEdit && g.factoryId != null && !wk && (
                     <button onClick={() => setImportKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
                       title={t("Імпорт годин з файла фабрики або вставленого списку")}>
@@ -593,14 +598,14 @@ export default function Hours() {
                       </button>
                     ) : null;
                   })()}
-                  {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
+                  {canEdit && g.factoryId != null && !wk && g.rows.some(w => w.factoryHours != null) && (
                     <button onClick={() => setNotifyKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
                       title={t("Розіслати людям їх години фабрики на підтвердження в бот")}>
                       <Send className="h-3.5 w-3.5" /> {t("На підтвердження людям")}
                     </button>
                   )}
-                  {canEdit && g.factoryId != null && g.rows.some(w => w.factoryHours != null) && (
+                  {canEdit && g.factoryId != null && !wk && g.rows.some(w => w.factoryHours != null) && (
                     <button onClick={() => {
                         const n = g.rows.filter(w => w.factoryHours != null).length;
                         if (window.confirm(t("Очистити години фабрики для «{name}»? Приберуться значення {n} людей разом з розбивками й підтвердженнями. Рапорти працівників не чіпаються.", { name: g.name, n }))) clearFactoryHours.mutate(g);
@@ -612,7 +617,7 @@ export default function Hours() {
                   )}
                   {/* кнопка видима завжди (раніше ховалась без розбіжностей — «пропала»);
                       без пар «рапорт ≠ фабрика» — неактивна з підказкою */}
-                  {canEdit && g.factoryId != null && (() => {
+                  {canEdit && g.factoryId != null && !wk && (() => {
                     const nMis = g.rows.filter(w => diffState(w) === "mismatch").length;
                     return (
                       <button onClick={() => setEmailKey(g.key)} disabled={nMis === 0}
@@ -623,7 +628,7 @@ export default function Hours() {
                       </button>
                     );
                   })()}
-                  {canEdit && g.factoryId != null && (
+                  {canEdit && g.factoryId != null && !wk && (
                     <button onClick={() => setStatementKey(g.key)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
                       title={t("Зеставєння годин клієнту: Excel з однією обраною колонкою годин на email фабрики")}>
@@ -631,7 +636,7 @@ export default function Hours() {
                     </button>
                   )}
                   {canEdit && g.factoryId != null && (
-                    <button onClick={() => setExportTo({ factoryId: g.factoryId!, name: g.name })} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {t("Excel рапорту")}</button>
+                    <button onClick={() => setExportTo({ factoryId: g.factoryId!, name: g.name, weekStart: wk || undefined })} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50" title={wk ? t("Excel обліку годин за цей тиждень") : t("Excel рапорту по фабриці")}><Download className="h-3.5 w-3.5" /> {wk ? t("Excel тижня") : t("Excel рапорту")}</button>
                   )}
                   </span>
                 </div>
@@ -866,7 +871,7 @@ export default function Hours() {
 // Excel-експорт обліку годин: вибір стовпчиків + перемикач «лише рядки з помилками»
 // (розбіжність рапорт ↔ фабрика, як підсвітка в таблиці). Формує URL /hours/report-excel.
 function ExportExcelModal({ month, monthLabel, target, onClose }: {
-  month: string; monthLabel: string; target: { factoryId: number | null; name: string }; onClose: () => void;
+  month: string; monthLabel: string; target: { factoryId: number | null; name: string; weekStart?: string }; onClose: () => void;
 }) {
   const t = useT();
   const COLS: { key: string; label: string }[] = [
@@ -889,12 +894,13 @@ function ExportExcelModal({ month, monthLabel, target, onClose }: {
   const download = () => {
     const p = new URLSearchParams({ month, cols: COLS.map(c => c.key).filter(k => checked.has(k)).join(",") });
     if (target.factoryId != null) p.set("factoryId", String(target.factoryId));
+    if (target.weekStart) p.set("weekStart", target.weekStart); // тиждень тижневої фабрики
     if (errorsOnly) p.set("errorsOnly", "1");
     window.location.href = `/api/hours/report-excel?${p.toString()}`;
     onClose();
   };
   return (
-    <Modal open onClose={onClose} title={`${t("Excel обліку годин")} — ${target.name} · ${monthLabel}`}>
+    <Modal open onClose={onClose} title={`${t("Excel обліку годин")} — ${target.name} · ${target.weekStart ? `${t("Тиждень")} ${weekLabelOf(target.weekStart)}` : monthLabel}`}>
       <div className="space-y-4">
         <div>
           <Label>{t("Стовпчики")}</Label>
@@ -1946,51 +1952,6 @@ function DiscrepancyEmailModal({ group, month, onClose }: { group: Group; month:
         </div>
       </div>
     </Modal>
-  );
-}
-
-// Отримувачі листа: база email-ів фабрики (налаштування фабрики → «Отримувачі
-// графіку») чекбоксами — типово всі відмічені — плюс поле «інші адреси» через кому.
-// Значення = плоский список адрес, що піде в `to`.
-function RecipientsPicker({ factoryId, value, onChange }: { factoryId: number; value: string[]; onChange: (v: string[]) => void }) {
-  const t = useT();
-  const { data: factories = [] } = useQuery<{ id: number; emailRecipients?: EmailRecipient[]; clientEmail?: string | null }[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
-  const base = useMemo(() => {
-    const f = factories.find(x => x.id === factoryId);
-    // legacy-фабрика (без рядків у factory_email_recipients) приходить одним
-    // записом «a@b.pl, c@d.pl» — ріжемо кожен запис по роздільниках
-    const src = f?.emailRecipients?.length ? f.emailRecipients : [{ email: f?.clientEmail ?? "", name: null as string | null }];
-    const seen = new Set<string>();
-    return src.flatMap(r => r.email.split(/[,;]/).map(s => s.trim()).filter(Boolean).map(email => ({ email, name: r.name })))
-      .filter(r => !seen.has(r.email) && seen.add(r.email));
-  }, [factories, factoryId]);
-  const [extra, setExtra] = useState("");
-  const [checked, setChecked] = useState<Set<string> | null>(null); // null = ще не ініціалізовано з бази
-  const sel = checked ?? new Set(base.map(r => r.email));
-  const extraList = useMemo(() => extra.split(/[,;]/).map(s => s.trim()).filter(Boolean), [extra]);
-  const combined = useMemo(() => [...new Set([...base.filter(r => sel.has(r.email)).map(r => r.email), ...extraList])], [base, sel, extraList]);
-  const combinedKey = combined.join("|");
-  const valueKey = value.join("|");
-  useEffect(() => { if (combinedKey !== valueKey) onChange(combined); }, [combinedKey, valueKey, combined, onChange]);
-  const toggle = (email: string) => setChecked(() => { const n = new Set(sel); n.has(email) ? n.delete(email) : n.add(email); return n; });
-  return (
-    <div>
-      <Label>{t("Кому (адреси фабрики)")}</Label>
-      {base.length ? (
-        <div className="mt-1 grid gap-1 sm:grid-cols-2">
-          {base.map(r => (
-            <label key={r.email} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm">
-              <input type="checkbox" checked={sel.has(r.email)} onChange={() => toggle(r.email)} className="accent-red-600" />
-              <span className="min-w-0 truncate text-slate-700" title={r.email}>{r.name ? <><span className="font-medium">{r.name}</span> · </> : null}{r.email}</span>
-            </label>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-1 text-xs text-amber-700">{t("У налаштуваннях фабрики немає email-адрес — впишіть адресу нижче.")}</div>
-      )}
-      <Input value={extra} onChange={e => setExtra(e.target.value)} placeholder={t("інші адреси через кому")} className="mt-1.5" />
-      {combined.length > 0 && <div className="mt-1 text-xs text-slate-400">{t("Піде на {n} адрес(и): {list}", { n: combined.length, list: combined.join(", ") })}</div>}
-    </div>
   );
 }
 

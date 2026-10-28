@@ -9,7 +9,7 @@ import {
   availabilityTable, scheduleWeeksTable, scheduleEntriesTable,
   driverShiftAssignmentsTable, driverTripsTable, driverWorkdaysTable, adminsTable, settingsTable,
   scheduleApprovalsTable, notificationsTable, unplannedWorkersTable, candidatesTable,
-  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
+  hoursDisputesTable, absenceRequestsTable, advanceRequestsTable, monthlyReportsTable, weeklyReportsTable, factoryHoursTable, hoursNotesTable, funnelsTable, candidateActivityTable, companiesTable,
   documentTypesTable, workerDocumentsTable, workerBankAccountsTable, positionsTable, factoryPositionsTable, rolesTable, absenceAttachmentsTable,
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, workerFactoriesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
@@ -4366,6 +4366,13 @@ router.post("/hours/factory-clear", RW, async (req, res) => {
   const workerIds: number[] = Array.isArray(req.body?.workerIds) ? req.body.workerIds.map(Number).filter(Number.isInteger) : [];
   if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
   if (!workerIds.length) return fail(res, 400, "Порожній список працівників");
+  // тижнева фабрика: місячні рядки — похідні від тижнів (переписались би наступним синком),
+  // тож чистимо самі тижні місяця — services/weeklyHours.ts (дні сусіднього місяця лишаються)
+  const [facW] = await db.select({ weeklyHours: factoriesTable.weeklyHours }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (facW?.weeklyHours) {
+    const { clearFactoryWeekHoursForMonth } = await import("../services/weeklyHours");
+    return ok(res, { cleared: await clearFactoryWeekHoursForMonth(factoryId, month, workerIds) });
+  }
   const gone = await db.delete(factoryHoursTable).where(and(
     eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId),
     inArray(factoryHoursTable.workerId, workerIds),
@@ -4885,13 +4892,15 @@ function parseEmailList(raw: unknown): string[] | null {
   return list;
 }
 
+// weekStart (28.10.2026, тижнева фабрика): лист за тиждень — вкладення з weekly_reports (фото рапорту тижня).
 router.post("/hours/discrepancy-email", RW, async (req, res) => {
   const month = String(req.body?.month || "");
   const factoryId = Number(req.body?.factoryId);
   const subject = String(req.body?.subject || "").trim();
   const body = String(req.body?.body || "").trim();
   const attachWorkerIds: number[] = Array.isArray(req.body?.attachWorkerIds) ? req.body.attachWorkerIds.map(Number).filter(Boolean) : [];
-  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  const weekStart = typeof req.body?.weekStart === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.weekStart) ? String(req.body.weekStart) : null;
+  if (!factoryId || (!weekStart && !/^\d{4}-\d{2}$/.test(month))) return fail(res, 400, "factoryId та month (або weekStart) обовʼязкові");
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
   const toList = parseEmailList(req.body?.to);
   if (!toList) return fail(res, 400, "Некоректний email отримувача");
@@ -4900,9 +4909,12 @@ router.post("/hours/discrepancy-email", RW, async (req, res) => {
   const attachments: { filename: string; content: Buffer }[] = [];
   const missing: string[] = [];
   if (attachWorkerIds.length) {
-    const reps = await db.select({ workerId: monthlyReportsTable.workerId, link: monthlyReportsTable.photoLink })
-      .from(monthlyReportsTable)
-      .where(and(eq(monthlyReportsTable.month, month), eq(monthlyReportsTable.factoryId, factoryId), inArray(monthlyReportsTable.workerId, attachWorkerIds)));
+    const reps = weekStart
+      ? await db.select({ workerId: weeklyReportsTable.workerId, link: weeklyReportsTable.photoLink }).from(weeklyReportsTable)
+          .where(and(eq(weeklyReportsTable.weekStart, weekStart), eq(weeklyReportsTable.factoryId, factoryId), inArray(weeklyReportsTable.workerId, attachWorkerIds)))
+      : await db.select({ workerId: monthlyReportsTable.workerId, link: monthlyReportsTable.photoLink })
+          .from(monthlyReportsTable)
+          .where(and(eq(monthlyReportsTable.month, month), eq(monthlyReportsTable.factoryId, factoryId), inArray(monthlyReportsTable.workerId, attachWorkerIds)));
     const linkByWorker = new Map(reps.map(r => [r.workerId, r.link]));
     const names = await db.select({ id: workersTable.id, fullName: workersTable.fullName })
       .from(workersTable).where(inArray(workersTable.id, attachWorkerIds));
@@ -4934,8 +4946,9 @@ router.post("/hours/statement-email", RW, async (req, res) => {
   const subject = String(req.body?.subject || "").trim();
   const body = String(req.body?.body || "").trim();
   const source = req.body?.source;
+  const weekStart = typeof req.body?.weekStart === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.body.weekStart) ? String(req.body.weekStart) : undefined;
   const { buildReportHoursExcel, isStatementSource } = await import("../services/drive");
-  if (!factoryId || !/^\d{4}-\d{2}$/.test(month)) return fail(res, 400, "factoryId та month обовʼязкові");
+  if (!factoryId || (!weekStart && !/^\d{4}-\d{2}$/.test(month))) return fail(res, 400, "factoryId та month (або weekStart) обовʼязкові");
   if (!isStatementSource(source)) return fail(res, 400, "source: hours | report | factoryHours");
   if (!subject || !body) return fail(res, 400, "Тема і текст листа обовʼязкові");
   const toList = parseEmailList(req.body?.to);
@@ -4943,9 +4956,9 @@ router.post("/hours/statement-email", RW, async (req, res) => {
   const withCode = req.body?.withCode !== false;
   const attachExcel = req.body?.attachExcel !== false;
   const cols: import("../services/drive").HoursXlsxColKey[] = withCode ? ["code", "name", source] : ["name", source];
-  const { buffer, facName, rowCount, total } = await buildReportHoursExcel(month, factoryId, { cols, statement: source });
-  if (!rowCount) return fail(res, 400, "У вибраній колонці немає годин за цей місяць");
-  const filename = `Zestawienie godzin ${facName ? `${facName} ` : ""}${month}.xlsx`;
+  const { buffer, facName, rowCount, total } = await buildReportHoursExcel(month, factoryId, { cols, statement: source, weekStart });
+  if (!rowCount) return fail(res, 400, weekStart ? "У вибраній колонці немає годин за цей тиждень" : "У вибраній колонці немає годин за цей місяць");
+  const filename = `Zestawienie godzin ${facName ? `${facName} ` : ""}${weekStart ? `tydzien ${weekStart}` : month}.xlsx`;
   try {
     const { sendEmailWithAttachments } = await import("../services/email");
     await sendEmailWithAttachments(toList.join(", "), subject, body, attachExcel ? [{ filename, content: buffer }] : []);
@@ -4969,12 +4982,14 @@ router.get("/hours/report-excel", RW, async (req, res) => {
   const errorsOnly = req.query.errorsOnly === "1" || req.query.errorsOnly === "true";
   // statement=hours|report|factoryHours — «Zestawienie godzin» з однією колонкою годин
   const statement = isStatementSource(req.query.statement) ? req.query.statement : undefined;
-  const { buffer, facName } = await buildReportHoursExcel(month, factoryId, { cols, errorsOnly, statement });
+  // weekStart=YYYY-MM-DD (понеділок) — тиждень тижневої фабрики (потрібен factoryId)
+  const weekStart = typeof req.query.weekStart === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.weekStart) && factoryId ? req.query.weekStart : undefined;
+  const { buffer, facName } = await buildReportHoursExcel(month, factoryId, { cols, errorsOnly, statement, weekStart });
   const namePart = facName ? `${facName} ` : "";
   const suffix = errorsOnly ? " rozbieżności" : "";
   const base = statement ? "Zestawienie godzin" : `Godziny${suffix}`;
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`${base} ${namePart}${month}.xlsx`)}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(`${base} ${namePart}${weekStart ? `tydzien ${weekStart}` : month}.xlsx`)}"`);
   res.send(buffer);
 });
 

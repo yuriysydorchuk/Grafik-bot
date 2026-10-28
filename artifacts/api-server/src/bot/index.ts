@@ -1114,6 +1114,37 @@ bot.action(/^fh:(ok|no):(\d+)$/, async (ctx) => {
   return ctx.reply(t(lang, "fh.askNote"), cancelKb(lang));
 });
 
+// Те саме для ТИЖНЯ тижневої фабрики (factory_week_hours, 28.10.2026): fhw:ok|no:<id>
+bot.action(/^fhw:(ok|no):(\d+)$/, async (ctx) => {
+  const tid = String(ctx.from.id);
+  const kind = (ctx as any).match[1] as "ok" | "no";
+  const id = Number((ctx as any).match[2]);
+  const worker = await getWorker(tid);
+  const lang = wlang(worker);
+  const { factoryWeekHoursTable } = await import("@workspace/db");
+  const { setWeekAckResponse } = await import("../services/weeklyHours");
+  const { ddmm, weekEnd } = await import("../lib/weekMath");
+  const [row] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, id));
+  if (!row || !worker || row.workerId !== worker.id) {
+    await ctx.answerCbQuery(t(lang, "fh.gone"));
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    return;
+  }
+  const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];
+  const ws = String(row.weekStart);
+  if (kind === "ok") {
+    await setWeekAckResponse(id, "confirmed");
+    await ctx.answerCbQuery("✅");
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    return ctx.reply(t(lang, "fh.confirmedWeek", { hours: row.hours, factory: mdSafe(fac?.name ?? "—"), from: ddmm(ws), to: ddmm(weekEnd(ws)) }), { parse_mode: "Markdown" });
+  }
+  await setWeekAckResponse(id, "dispute");
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  setState(tid, "fh:dispute_note", { fhId: id, lang, week: true });
+  return ctx.reply(t(lang, "fh.askNote"), cancelKb(lang));
+});
+
 // Обʼєднання дубліката профілю — лише після ручного затвердження адміном
 // (кнопка під сповіщенням про самореєстрацію). keep = профіль офіса, drop = новий.
 bot.action("wmerge_skip", async (ctx) => {
@@ -4669,8 +4700,26 @@ bot.on("text", async (ctx) => {
     const lang = asLang(state.data.lang);
     clearState(tid);
     const note = text.trim().slice(0, 500);
-    const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, Number(state.data.fhId)));
     const worker = await getWorker(tid);
+    // тижнева фабрика: рядок factory_week_hours (пояснення → офісу тим самим сповіщенням, з тижнем замість місяця)
+    if (state.data.week) {
+      const { factoryWeekHoursTable } = await import("@workspace/db");
+      const { setWeekAckResponse } = await import("../services/weeklyHours");
+      const { weekLabel } = await import("../lib/weekMath");
+      const [wrow] = await db.select().from(factoryWeekHoursTable).where(eq(factoryWeekHoursTable.id, Number(state.data.fhId)));
+      if (wrow && worker && wrow.workerId === worker.id) {
+        await setWeekAckResponse(wrow.id, "dispute", note);
+        const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, wrow.factoryId)))[0];
+        const period = `тиждень ${weekLabel(String(wrow.weekStart))}`;
+        await notifyAdmins("hours_correction",
+          `⚠️ *Помилка в годинах фабрики*\n\n👷 *${mdSafe(worker.fullName)}*\n🏭 ${mdSafe(fac?.name ?? "—")} · ${period}\n🕒 Наші години: *${wrow.hours}*\n📝 ${mdSafe(note)}`,
+          { parse_mode: "Markdown" },
+        );
+        await notifyRoles("scheduler", { type: "hours_correction", adminsNotified: true, title: `⚠️ Помилка в годинах фабрики: ${worker.fullName}`, body: `${fac?.name ?? "—"} · ${period} · наші ${wrow.hours} год · ${note}` });
+      }
+      return ctx.reply(t(lang, "fh.noteSaved"), await workerMenuFor(worker, lang));
+    }
+    const [row] = await db.select().from(factoryHoursTable).where(eq(factoryHoursTable.id, Number(state.data.fhId)));
     if (row && worker && row.workerId === worker.id) {
       await db.update(factoryHoursTable).set({ workerNote: note }).where(eq(factoryHoursTable.id, row.id));
       const fac = (await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, row.factoryId)))[0];

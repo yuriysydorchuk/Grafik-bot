@@ -23,7 +23,7 @@ import { notifyAdminById } from "../bot/notify";
 import { logger } from "../lib/logger";
 
 // типи, чия дата в expires_at — не строк дії (див. фільтр doc_expiring/doc_expired)
-const NO_EXPIRY_DOC_CODES = new Set(["stay_case_certificate", "zus_zwua"]);
+const NO_EXPIRY_DOC_CODES = new Set(["stay_case_certificate", "zus_zwua", "zus_zua", "zus_zza"]); // ZUA/ZZA — дата зголошення, чинне до ZWUA (28.10.2026)
 
 export interface AutoRuleDef { code: string; label: string; description: string; leadDays: number | null; enabledByDefault: boolean; scheduler?: boolean }
 export const AUTO_RULE_DEFS: AutoRuleDef[] = [
@@ -49,7 +49,7 @@ export const AUTO_RULE_DEFS: AutoRuleDef[] = [
   // документи звільнення (services/contractEndDocs.ts): zaświadczenie o zatrudnieniu (з печаткою) і wypowiedzenie від працівника — на підпис через лінк
   { code: "termination_doc", label: "Документ звільнення — надіслати на підпис", description: "Після звільнення: zaświadczenie o zatrudnieniu на кожну умову (печатка фірми вже стоїть) і wypowiedzenie від працівника, якщо звільнення раніше кінця умови → графікова надсилає лінк на підпис", leadDays: null, enabledByDefault: true, scheduler: true },
   // зголошення нового працівника (services/hireRegistration.ts): після підпису умови працівником
-  { code: "hire_zus", label: "Зголосити нового працівника (ZUS ZUA / Gratyfikant)", description: "Одразу після підпису умови працівником — виконавцю ZUS: перевірити умову й документи, зголосити до ZUS (ZUA) по фірмі умови й додати в Gratyfikant; студент до 26 — лише Gratyfikant, без ZUS. Закривається, коли ZUA внесено в профіль (студент — вручну)", leadDays: 7, enabledByDefault: true },
+  { code: "hire_zus", label: "Зголосити нового працівника (ZUS ZUA / Gratyfikant)", description: "Одразу після підпису умови ОБОМА сторонами (працівник + фірма) — виконавцю ZUS: перевірити умову й документи, зголосити до ZUS (ZUA) по фірмі умови й додати в Gratyfikant; студент до 26 — лише Gratyfikant, без ZUS. Закривається, коли ZUA внесено в профіль (студент — вручну)", leadDays: 7, enabledByDefault: true },
   { code: "termination_zus", label: "Виреєструвати з ZUS (ZWUA)", description: "Після звільнення — 7 днів на ZWUA; закривається, коли документ ZUS ZWUA внесено в профіль", leadDays: 7, enabledByDefault: true },
   // SMS-кампанії (services/sms/automation.ts): групова задача на кампанію — подзвонити тим, хто відкрив сторінку, але в бот не зайшов
   { code: "sms_no_bot", label: "SMS: відкрили сторінку, не зайшли в бот", description: "Отримувачі SMS-кампанії відкрили персональну сторінку N+ днів тому і не зайшли в бот — список на обдзвон рекрутеру кампанії (вікно 7 днів)", leadDays: 2, enabledByDefault: true },
@@ -108,7 +108,8 @@ export async function collectCandidates(today = warsawToday()): Promise<Candidat
       if (have.has(f.id)) continue;
       const fireDate = dateStr(f.firedAt)!;
       const due = addDaysStr(fireDate, lead);
-      out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
+      const { zwuaTaskDescription } = await import("./terminationFlow");
+      out.push({ sourceKey: `zwua:${f.id}`, rule: "termination_zus", title: `Виреєструвати з ZUS (ZWUA): ${f.fullName}`, description: await zwuaTaskDescription(f.id, fireDate, null), priority: diffDays(due, today) < 0 ? "urgent" : "high", dueAt: due,
         workerId: f.id, factoryId: f.factoryId, autoParams: { workerName: f.fullName, fireDate, docTypeCode: "zus_zwua" }, assign: { factoryId: null } });
     }
     // задачі по фірмі (zwua:<w>:<company>, виповідзення з однієї фабрики — людина лишається

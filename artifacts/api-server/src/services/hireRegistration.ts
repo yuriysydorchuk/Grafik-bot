@@ -1,6 +1,7 @@
-// Зголошення нового працівника (рішення власника 09.10.2026): одразу після того, як
-// ПРАЦІВНИК підписав умову (routes/sign.ts, bundle з файлом виду umowa) або офіс імпортував
-// скан уже підписаної умови (routes/contracts.ts import) — задача виконавцю ZUS
+// Зголошення нового працівника (рішення власника 09.10.2026; з 28.10.2026 — лише після підпису
+// ОБОМА сторонами): коли фірма підписала у відповідь (services/contracts.ts
+// finalizeContractSignature, статус signed) або офіс імпортував скан уже підписаної умови
+// (routes/contracts.ts import) — задача виконавцю ZUS
 // (правило hire_zus: фолбек правила → головний):
 //   • перевірити умову (фірма/фабрика/дати/ставка, підпис від компанії) і документи
 //     (паспорт, підстава перебування/праці, анкета);
@@ -69,7 +70,7 @@ async function liveUmowaContracts(workerId: number, companyId: number | null) {
 
 const docForCompany = (d: { companyId: number | null }, companyId: number | null) => d.companyId == null || companyId == null || d.companyId === companyId;
 
-/** Після підпису працівником (або імпорту підписаного скана): задача «зголосити» на кожну пару працівник×фірма. */
+/** Після підпису обома сторонами (або імпорту підписаного скана): задача «зголосити» на кожну пару працівник×фірма. */
 export async function startHireRegistrationFlow(contractIds: number[], actorAdminId: number | null): Promise<number> {
   const [rule] = await db.select({ enabled: taskAutoRulesTable.enabled, leadDays: taskAutoRulesTable.leadDays }).from(taskAutoRulesTable).where(eq(taskAutoRulesTable.code, "hire_zus"));
   if (rule && !rule.enabled) return 0; // правило вимкнене в Налаштуваннях задач (без рядка = enabledByDefault)
@@ -77,7 +78,7 @@ export async function startHireRegistrationFlow(contractIds: number[], actorAdmi
   const contracts = await umowaContracts(contractIds);
   let created = 0;
   for (const c of contracts) {
-    if (!["worker_signed", "signed"].includes(c.status)) continue;
+    if (c.status !== "signed") continue; // лише повністю підписана умова (працівник + фірма)
     const companyId = c.companyId ?? c.factoryCompanyId ?? null;
     const sourceKey = `hire:${c.workerId}:${companyId ?? 0}`;
     try {
@@ -104,8 +105,12 @@ export async function startHireRegistrationFlow(contractIds: number[], actorAdmi
 
       const period = dateFrom ? `${fmtDate(dateFrom)}${c.dateTo ? ` – ${fmtDate(dateStr(c.dateTo))}` : " – безстроково"}` : "дати не вказані";
       const srcLabel = w.legalSource === "documents" ? "за документами" : w.legalSource === "manual" ? "вручну" : "не визначено";
+      const [sig] = await db.select({ signedAt: contractsTable.signedAt, companySignedAt: contractsTable.companySignedAt }).from(contractsTable).where(eq(contractsTable.id, c.id));
+      const signedWhen = sig?.signedAt || sig?.companySignedAt
+        ? ` Підписано: працівник ${sig?.signedAt ? fmtDate(dateStr(sig.signedAt)) : "—"}, фірма ${sig?.companySignedAt ? fmtDate(dateStr(sig.companySignedAt)) : "—"}.`
+        : "";
       const description = [
-        `Працівник підписав умову${coLabel ? ` з ${coLabel}` : ""}${c.factoryName ? ` на ${c.factoryName}` : ""} (${period}).`,
+        `Умова${coLabel ? ` з ${coLabel}` : ""}${c.factoryName ? ` на ${c.factoryName}` : ""} (${period}) підписана обома сторонами.${signedWhen}`,
         `Статус для виплат: ${w.legalStatus ?? "—"} (${srcLabel}). Студент до 26: ${student26 ? "ТАК — до ZUS не зголошувати, лише Gratyfikant" : "ні"}.`,
         zuaAt ? `ZUS ZUA${coLabel ? ` (${coLabel})` : ""} уже є в профілі від ${fmtDate(zuaAt)} — повторно не подавати, лише перевірити.` : null,
       ].filter(Boolean).join("\n");

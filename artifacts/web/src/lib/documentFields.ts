@@ -177,10 +177,21 @@ export const DOC_FIELD_SPEC: Record<string, DocField[]> = {
   bhp: [
     F("issuedAt", "Дата шкільонного", "date", { required: true }),
   ],
-  // ZWUA — подія, не строк дії: дата, якою людину виреєстровано з ZUS (відгук 01.10.2026)
+  // ZWUA — подія, не строк дії: дата, якою людину виреєстровано з ZUS (відгук 01.10.2026);
+  // по фірмі-платнику (28.10.2026) — людина на двох фірмах має два документи
   zus_zwua: [
     F("issuedAt", "Дата виреєстрування з ZUS", "date", { required: true, open: true }),
-    F("employerCompanyId", "Роботодавець (фірма, з якої виреєстровано)", "company", { hint: "потрібно лише коли людина була на умовах у двох наших фірмах" }),
+    F("employerCompanyId", "Роботодавець (фірма, з якої виреєстровано)", "company", { required: true, open: true, hint: "ZWUA подає конкретна фірма-платник" }),
+  ],
+  // ZUA/ZZA — зголошення до ZUS: не «дійсний до», а дата зголошення; чинне, поки нема ZWUA
+  // (відгук 28.10.2026); по фірмі-платнику
+  zus_zua: [
+    F("issuedAt", "Дата зголошення до ZUS", "date", { required: true, open: true }),
+    F("employerCompanyId", "Роботодавець (фірма, що зголосила)", "company", { required: true, open: true, hint: "ZUA подає конкретна фірма-платник; чинне до ZWUA цієї фірми" }),
+  ],
+  zus_zza: [
+    F("issuedAt", "Дата зголошення до ZUS", "date", { required: true, open: true }),
+    F("employerCompanyId", "Роботодавець (фірма, що зголосила)", "company", { required: true, open: true, hint: "ZZA подає конкретна фірма-платник" }),
   ],
   other: [
     F("expiresAt", "Дійсний до", "date"),

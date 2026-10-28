@@ -2536,6 +2536,7 @@ function resolveDocSlot(items: { doc: WorkerDocument; type: DocumentType }[], co
 function docExpiry(code: string | null | undefined, doc: WorkerDocument, globals?: LegalizationGlobals | null): string | null {
   if (code === "status_ukr") return globals?.ukrStatusEnd ?? null;
   if (code === "zus_zwua" || code === "stay_case_certificate") return null;
+  if (code === "zus_zua" || code === "zus_zza") return null; // зголошення чинне до ZWUA (28.10.2026)
   return doc.expiresAt;
 }
 
@@ -2649,6 +2650,7 @@ function DocRow({ icon: Icon, label, subLabel, state, canLegal, companies, reque
   const stateText = state.pending ? t("⏳ на перевірці")
     : state.expired ? (state.expiresAt ? t("прострочено {date}", { date: fmtDocDate(state.expiresAt) }) : t("прострочено")) // статус expired без дати (справа/ZWUA) — без null.slice
     : state.indefinite && type?.code === "zus_zwua" ? ((doc.issuedAt ?? doc.expiresAt) ? t("виреєстровано {date}", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
+    : state.indefinite && (type?.code === "zus_zua" || type?.code === "zus_zza") ? ((doc.issuedAt ?? doc.expiresAt) ? t("зголошено {date} · чинне до ZWUA", { date: fmtDocDate((doc.issuedAt ?? doc.expiresAt)!) }) : t("дата не вказана"))
     : type?.code === "stay_case_certificate" ? (doc.caseStatus === "submitted" || doc.caseStatus === "in_progress" || !doc.caseStatus
         ? (doc.submittedAt ? t("подано {date}", { date: fmtDocDate(doc.submittedAt) }) : t("справа в toku"))
         : t(CASE_STATUS_LABEL[doc.caseStatus]))
@@ -3304,7 +3306,7 @@ function DocModal({ workerId, doc, type, restrictCodes, defaultEmployerCompanyId
   const [status, setStatus] = useState(doc?.status ?? "present");
   const [number, setNumber] = useState(doc?.number ?? "");
   // ZWUA: дата виреєстрування живе в issuedAt; ранні записи мали її в expiresAt — переносимо при редагуванні
-  const zwuaDoc = !!doc && types.find(ty => ty.id === doc.docTypeId)?.code === "zus_zwua";
+  const zwuaDoc = !!doc && ["zus_zwua", "zus_zua", "zus_zza"].includes(types.find(ty => ty.id === doc.docTypeId)?.code ?? ""); // ZUA/ZZA — та сама логіка (дата зголошення в issuedAt, 28.10.2026)
   // status_ukr: строк — лише з правила (поле заблоковане), стару імпортну дату в стейт не беремо,
   // щоб збереження її не повертало в базу
   const ukrDoc = !!doc && types.find(ty => ty.id === doc.docTypeId)?.code === "status_ukr";

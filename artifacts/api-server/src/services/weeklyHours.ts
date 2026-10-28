@@ -19,7 +19,7 @@ import { factoryShiftHours } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, shiftDurationHours } from "./shiftOverrides";
 import { DAYS, entryDateStr } from "../lib/dates";
 import {
-  weekDates, weekEnd, weeksOverlappingMonth, monthsOfWeek, splitWeekByMonth, flattenWeekDays, round2, weekLabel, ddmm,
+  weekDates, weekEnd, weeksOverlappingMonth, monthsOfWeek, isoMonthOfWeek, splitWeekByMonth, flattenWeekDays, dayValueTotal, round2, weekLabel, ddmm,
   type DayHours,
 } from "../lib/weekMath";
 import { logsForDates, shiftLabel, wallHHMM, type ShiftLog } from "./shiftLogs";
@@ -37,7 +37,11 @@ export type WeekRow = {
   hours: number;              // їх години: Σ present-записів тижня (затвердженого) — через відмітки
   hoursUnapproved: number;    // те саме, якщо тиждень ще не approved (довідково)
   report: { id: number; hoursReported: number | null; daysSum: number; photoLink: string | null; requestSentAt: string | null; remindSentAt: string | null; submittedAt: string | null } | null;
-  factory: { id: number; hours: number; daysSum: number; hasDays: boolean; source: string; confirmed: boolean } | null;
+  factory: {
+    id: number; hours: number; daysSum: number; hasDays: boolean; source: string; confirmed: boolean;
+    // підтвердження працівником у боті (запит «На підтвердження людям» по тижню)
+    askSentAt: string | null; askHours: number | null; workerResponse: string | null; workerResponseAt: string | null; workerNote: string | null;
+  } | null;
 };
 
 type FacRow = typeof factoriesTable.$inferSelect;
@@ -117,7 +121,10 @@ export async function buildWeekRows(factoryId: number, weekStart: string): Promi
     const r = ensure(fh.workerId);
     const flat = flattenWeekDays(weekStart, fh.days);
     for (const [d, h] of Object.entries(flat)) cell(r, d).factory = h;
-    r.factory = { id: fh.id, hours: fh.hours, daysSum: round2(Object.values(flat).reduce((s, h) => s + h, 0)), hasDays: Object.keys(flat).length > 0, source: fh.source, confirmed: fh.confirmed };
+    r.factory = {
+      id: fh.id, hours: fh.hours, daysSum: round2(Object.values(flat).reduce((s, h) => s + h, 0)), hasDays: Object.keys(flat).length > 0, source: fh.source, confirmed: fh.confirmed,
+      askSentAt: iso(fh.askSentAt), askHours: fh.askHours, workerResponse: fh.workerResponse, workerResponseAt: iso(fh.workerResponseAt), workerNote: fh.workerNote,
+    };
   }
   for (const id of await weekRecipients(factoryId, weekStart)) ensure(id);
 
@@ -175,13 +182,25 @@ export async function syncMonthsFromWeeks(workerId: number, factoryId: number, m
     ));
     if (fhs.length) {
       let total = 0; const days: Record<string, number | Record<string, number>> = {}; let allConfirmed = true;
+      // відповідь працівника на місяць — зведення по тижнях: усі підтверджені → confirmed,
+      // хоч один «є помилка» → dispute (нотатка першого), решта → запит без відповіді/без запиту
+      let asked: Date | null = null, anyDispute: typeof fhs[number] | null = null, allConfirmedByWorker = true, anyAsked = false;
+      let staleDelta = 0; // Σ (години зараз − години, які людина підтверджувала): ≠0 → місяць теж «застаріле підтвердження»
       for (const r of fhs) {
         const flat = flattenWeekDays(String(r.weekStart), r.days);
         const { byMonth } = splitWeekByMonth(String(r.weekStart), flat, r.hours);
         total += byMonth[month] ?? 0;
         for (const [d, v] of Object.entries(r.days ?? {})) if (d.slice(0, 7) === month && weekDates(String(r.weekStart)).includes(d)) days[d] = v;
         if (!r.confirmed) allConfirmed = false;
+        if (r.askSentAt) { anyAsked = true; if (!asked || r.askSentAt > asked) asked = r.askSentAt; }
+        if (r.workerResponse === "dispute" && !anyDispute) anyDispute = r;
+        if (r.askSentAt && r.workerResponse !== "confirmed") allConfirmedByWorker = false; // лише запитані тижні (ревʼю agy 28.10.2026)
+        if (r.workerResponse === "confirmed" && r.askHours != null) staleDelta += r.hours - r.askHours;
       }
+      const ack = anyDispute
+        ? { workerResponse: "dispute", workerResponseAt: anyDispute.workerResponseAt, workerNote: anyDispute.workerNote ? `${weekLabel(String(anyDispute.weekStart))}: ${anyDispute.workerNote}` : null }
+        : anyAsked && allConfirmedByWorker ? { workerResponse: "confirmed", workerResponseAt: fhs.map(r => r.workerResponseAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null, workerNote: null }
+        : { workerResponse: null, workerResponseAt: null, workerNote: null };
       total = round2(total);
       const [cur] = await db.select({ hours: factoryHoursTable.hours, confirmed: factoryHoursTable.confirmed, source: factoryHoursTable.source }).from(factoryHoursTable)
         .where(and(eq(factoryHoursTable.workerId, workerId), eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId)));
@@ -193,10 +212,12 @@ export async function syncMonthsFromWeeks(workerId: number, factoryId: number, m
       }
       const confirmed = allConfirmed; // «все ок» місяця тижневої фабрики = усі її тижні підтверджені
       void cur;
-      await db.insert(factoryHoursTable).values({ workerId, month, factoryId, hours: total, source: "weekly", days: Object.keys(days).length ? days : null, confirmed })
+      // askHours місяця = тотал мінус те, що змінили після підтвердження (ревʼю codex 28.10.2026): веб жовтить, коли ≠ hours
+      const ackSet = { askSentAt: asked, askHours: anyAsked ? round2(total - staleDelta) : null, ...ack };
+      await db.insert(factoryHoursTable).values({ workerId, month, factoryId, hours: total, source: "weekly", days: Object.keys(days).length ? days : null, confirmed, ...ackSet })
         .onConflictDoUpdate({
           target: [factoryHoursTable.workerId, factoryHoursTable.month, factoryHoursTable.factoryId],
-          set: { hours: total, source: "weekly", days: Object.keys(days).length ? days : null, confirmed, updatedAt: new Date() },
+          set: { hours: total, source: "weekly", days: Object.keys(days).length ? days : null, confirmed, ...ackSet, updatedAt: new Date() },
         });
     }
   }
@@ -216,6 +237,7 @@ export async function upsertFactoryWeekHours(
     .onConflictDoUpdate({
       target: [factoryWeekHoursTable.workerId, factoryWeekHoursTable.factoryId, factoryWeekHoursTable.weekStart],
       set: { hours, source, days, confirmed, updatedAt: new Date() },
+      // відповідь працівника лишається (askHours зберігає, що саме він підтверджував — веб жовтить, якщо число змінилось)
     });
   await syncWeek(workerId, factoryId, weekStart);
 }
@@ -234,6 +256,96 @@ export async function deleteFactoryWeekHours(workerId: number, factoryId: number
       eq(factoryHoursTable.workerId, workerId), eq(factoryHoursTable.month, month), eq(factoryHoursTable.factoryId, factoryId), eq(factoryHoursTable.source, "weekly"),
     ));
   }
+}
+
+/** Очистити години фабрики за тиждень (усіх або вибраних) — рапорти працівників не чіпаються. */
+export async function clearFactoryWeekHours(factoryId: number, weekStart: string, workerIds?: number[]): Promise<number> {
+  if (workerIds && !workerIds.length) return 0; // явний порожній вибір — нічого не чистимо (без параметра = весь тиждень)
+  const rows = await db.select({ workerId: factoryWeekHoursTable.workerId }).from(factoryWeekHoursTable)
+    .where(and(eq(factoryWeekHoursTable.factoryId, factoryId), eq(factoryWeekHoursTable.weekStart, weekStart),
+      ...(workerIds?.length ? [inArray(factoryWeekHoursTable.workerId, workerIds)] : [])));
+  for (const r of rows) await deleteFactoryWeekHours(r.workerId, factoryId, weekStart);
+  return rows.length;
+}
+
+/**
+ * Очистити години фабрики за МІСЯЦЬ тижневої фабрики (кнопка «Очистити години фабрики» на вкладці
+ * «Місяць»): тижні цілком у місяці — видаляються; тиждень на межі з розбивкою по днях — лишаються
+ * дні сусіднього місяця (тотал перераховується); тотал без днів — належить місяцю четверга (ISO).
+ */
+export async function clearFactoryWeekHoursForMonth(factoryId: number, month: string, workerIds: number[]): Promise<number> {
+  if (!workerIds.length) return 0;
+  const weeks = weeksOverlappingMonth(month);
+  const rows = await db.select().from(factoryWeekHoursTable).where(and(
+    eq(factoryWeekHoursTable.factoryId, factoryId), inArray(factoryWeekHoursTable.weekStart, weeks), inArray(factoryWeekHoursTable.workerId, workerIds),
+  ));
+  let cleared = 0;
+  for (const r of rows) {
+    const ws = String(r.weekStart);
+    const wholeInMonth = monthsOfWeek(ws).length === 1;
+    const flat = flattenWeekDays(ws, r.days);
+    if (wholeInMonth || (!Object.keys(flat).length && isoMonthOfWeek(ws) === month)) {
+      await deleteFactoryWeekHours(r.workerId, factoryId, ws); cleared++; continue;
+    }
+    if (!Object.keys(flat).length) continue; // тотал без днів, що належить сусідньому місяцю
+    const rest: Record<string, number | Record<string, number>> = {};
+    for (const [d, v] of Object.entries(r.days ?? {})) if (d.slice(0, 7) !== month && weekDates(ws).includes(d)) rest[d] = v;
+    if (!Object.keys(rest).length) { await deleteFactoryWeekHours(r.workerId, factoryId, ws); cleared++; continue; }
+    // тотал, що лишається, = частка сусіднього місяця за тим самим правилом, що й місячний рядок
+    // (тотал масштабує дні, якщо не збігається з їх сумою — ревʼю codex 28.10.2026), не сира сума днів
+    const { byMonth } = splitWeekByMonth(ws, flat, r.hours);
+    const total = round2(Object.entries(byMonth).filter(([m]) => m !== month).reduce((s, [, h]) => s + h, 0));
+    if (total <= 0) { await deleteFactoryWeekHours(r.workerId, factoryId, ws); cleared++; continue; }
+    await upsertFactoryWeekHours(r.workerId, factoryId, ws, total, r.source, rest);
+    cleared++;
+  }
+  // похідний місячний рядок міг лишитись (тижні сусіднього місяця перерахували його) — для цього місяця прибираємо явно
+  await db.delete(factoryHoursTable).where(and(
+    eq(factoryHoursTable.factoryId, factoryId), eq(factoryHoursTable.month, month), eq(factoryHoursTable.source, "weekly"), inArray(factoryHoursTable.workerId, workerIds),
+  ));
+  return cleared;
+}
+
+/** Розсилка «підтверди свої години фабрики за тиждень» у бот (кнопки fhw:ok|no:<id>); повторна скидає відповідь. */
+export async function sendWeekAckRequests(factoryId: number, weekStart: string, workerIds: number[]): Promise<{ sent: number; skipped: number }> {
+  const [fac] = await db.select({ name: factoriesTable.name }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!fac) throw new Error("Фабрику не знайдено");
+  const rows = await db.select().from(factoryWeekHoursTable).where(and(
+    eq(factoryWeekHoursTable.factoryId, factoryId), eq(factoryWeekHoursTable.weekStart, weekStart), inArray(factoryWeekHoursTable.workerId, workerIds),
+  ));
+  const people = rows.length ? await db.select({ id: workersTable.id, telegramId: workersTable.telegramId, language: workersTable.language })
+    .from(workersTable).where(inArray(workersTable.id, rows.map(r => r.workerId))) : [];
+  const byId = new Map(people.map(p => [p.id, p]));
+  let sent = 0, skipped = 0;
+  for (const row of rows) {
+    const w = byId.get(row.workerId);
+    if (!w?.telegramId) { skipped++; continue; }
+    const lang = asLang(w.language);
+    try {
+      await bot.telegram.sendMessage(w.telegramId, t(lang, "fh.askWeek", { factory: mdSafe(fac.name), from: ddmm(weekStart), to: ddmm(weekEnd(weekStart)), hours: row.hours }), {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[
+          { text: t(lang, "fh.btnOk"), callback_data: `fhw:ok:${row.id}` },
+          { text: t(lang, "fh.btnNo"), callback_data: `fhw:no:${row.id}` },
+        ]] },
+      });
+      await db.update(factoryWeekHoursTable)
+        .set({ askSentAt: new Date(), askHours: row.hours, workerResponse: null, workerResponseAt: null, workerNote: null, updatedAt: new Date() })
+        .where(eq(factoryWeekHoursTable.id, row.id));
+      sent++;
+    } catch (err) { logger.warn({ err, workerId: row.workerId }, "weekly ack request failed"); skipped++; }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  for (const r of rows) await syncWeek(r.workerId, factoryId, weekStart);
+  return { sent, skipped: skipped + (workerIds.length - rows.length) };
+}
+
+/** Відповідь працівника на запит тижня (бот): ✅ / ❌ (+ нотатка окремим повідомленням). */
+export async function setWeekAckResponse(id: number, response: "confirmed" | "dispute", note?: string | null): Promise<void> {
+  const [row] = await db.update(factoryWeekHoursTable)
+    .set(note !== undefined ? { workerResponse: response, workerNote: note, updatedAt: new Date() } : { workerResponse: response, workerResponseAt: new Date(), workerNote: null, updatedAt: new Date() })
+    .where(eq(factoryWeekHoursTable.id, id)).returning({ workerId: factoryWeekHoursTable.workerId, factoryId: factoryWeekHoursTable.factoryId, weekStart: factoryWeekHoursTable.weekStart });
+  if (row) await syncWeek(row.workerId, row.factoryId, String(row.weekStart));
 }
 
 // ── Запит рапорту тижня в бот (понеділок) / нагадування (вівторок) ───────────

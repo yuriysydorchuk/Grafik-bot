@@ -818,5 +818,9 @@ export async function finalizeContractSignature(contractId: number, adminId: num
     } else logger.warn({ annexId: contractId, contractId: extendsId, active: wk?.isActive, forward }, "signed annex NOT applied to contract (fired worker or earlier date)");
   }
   logger.info({ contractId, stamped: stamped > 0 }, "contract finalized — company countersigned");
+  // підписано обома сторонами → задача виконавцю ZUS «зголосити» (services/hireRegistration.ts,
+  // рішення власника 28.10.2026: не після підпису працівника, а коли умова повністю підписана); best-effort
+  import("./hireRegistration").then(m => m.startHireRegistrationFlow([contractId], adminId))
+    .catch(err => logger.warn({ err: String(err), contractId }, "hire registration flow failed"));
   return stampOk ? { stamped: stamped > 0 } : { stamped: false, reason: "Печатка фірми не знайдена (uploads/company/stamp-<companyId>.png або COMPANY_STAMP_PNG)" };
 }

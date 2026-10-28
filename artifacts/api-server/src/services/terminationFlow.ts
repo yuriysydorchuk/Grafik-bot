@@ -7,12 +7,37 @@
 //   2) задача «Виреєструвати з ZUS (ZWUA)» виконавцю правила termination_zus
 //      (фолбек правила → головний), строк 7 днів від дати звільнення; закривається сама,
 //      коли в профілі зʼявляється документ типу zus_zwua (нічний синк у taskAutoRules).
-import { db, tasksTable, documentTemplatesTable, contractsTable, factoriesTable, companiesTable, type Worker } from "@workspace/db";
+import { db, tasksTable, documentTemplatesTable, contractsTable, factoriesTable, companiesTable, workersTable, documentTypesTable, workerDocumentsTable, type Worker } from "@workspace/db";
 import { and, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { addDaysStr } from "../lib/dates";
 import { createTask, resolveAssignee, loadTaskSettings, OPEN_STATUSES } from "./tasks";
 import { normalizeChecklist, dateStr } from "./taskUtils";
 import { logger } from "../lib/logger";
+import { effectiveViewOf } from "./effectiveStatus";
+import { isUnder26 } from "./svodniSync";
+
+const fmtDate = (d: string) => d.split("-").reverse().join(".");
+
+/**
+ * Опис задачі ZWUA (прохання власника 28.10.2026): дата звільнення і дата виреєстрування з ZUS
+ * (= звільнення + 1 день) одразу в задачі, щоб не заходити в профіль. Студент до 26 без ZUA
+ * в профілі — до ZUS не зголошувався, виреєстрування не потрібне.
+ */
+export async function zwuaTaskDescription(workerId: number, fireDate: string, companyId: number | null): Promise<string> {
+  const [raw] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  const lines = [`Дата звільнення: ${fmtDate(fireDate)}`];
+  if (!raw) { lines.push(`Дата виреєстрування з ZUS (ZWUA): ${fmtDate(addDaysStr(fireDate, 1))}`); return lines.join("\n"); }
+  const w = await effectiveViewOf(raw);
+  const bd = dateStr(raw.birthDate);
+  const student26 = !!w.isStudent && (bd ? isUnder26(bd) : !!raw.under26);
+  const [zuaTy] = await db.select({ id: documentTypesTable.id }).from(documentTypesTable).where(eq(documentTypesTable.code, "zus_zua"));
+  const zua = zuaTy ? await db.select({ companyId: workerDocumentsTable.employerCompanyId }).from(workerDocumentsTable)
+    .where(and(eq(workerDocumentsTable.workerId, workerId), eq(workerDocumentsTable.docTypeId, zuaTy.id), ne(workerDocumentsTable.status, "missing"))) : [];
+  const hasZua = zua.some(d => d.companyId == null || companyId == null || d.companyId === companyId);
+  if (student26 && !hasZua) lines.push("Студент до 26 без ZUA в профілі — до ZUS не зголошувався, виреєстрування (ZWUA) не потрібне.");
+  else lines.push(`Дата виреєстрування з ZUS (ZWUA): ${fmtDate(addDaysStr(fireDate, 1))}${student26 ? " (студент до 26, але ZUA є в профілі)" : ""}`);
+  return lines.join("\n");
+}
 
 
 export async function startTerminationFlow(worker: Worker, fireDate: string, actorAdminId: number | null, earlyContractIds: number[] = []): Promise<void> {
@@ -46,7 +71,7 @@ export async function startTerminationFlow(worker: Worker, fireDate: string, act
       const coLabel = companyId != null ? (co?.name ?? `фірма #${companyId}`) : null;
       const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
       await createTask({
-        kind: "task", title: `Виреєструвати з ZUS (ZWUA${coLabel ? `, ${coLabel}` : ""}): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,
+        kind: "task", title: `Виреєструвати з ZUS (ZWUA${coLabel ? `, ${coLabel}` : ""}): ${worker.fullName}`, description: await zwuaTaskDescription(worker.id, fireDate, companyId), priority: "high", dueAt: addDaysStr(fireDate, 7), assigneeAdminId: assignee,
         workerId: worker.id, factoryId: worker.factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
         autoParams: { workerName: worker.fullName, fireDate, docTypeCode: "zus_zwua", ...(companyId != null ? { companyId } : {}) },
         checklist: normalizeChecklist([{ id: "", text: `Подати ZUS ZWUA (Płatnik / PUE ZUS)${coLabel ? ` — ${coLabel}` : ""}`, done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),
@@ -89,7 +114,7 @@ export async function startFactoryEndFlow(worker: Worker, factoryId: number, end
       const [co] = await db.select({ name: companiesTable.name }).from(companiesTable).where(eq(companiesTable.id, companyId));
       const assignee = await resolveAssignee({ factoryId: null, ruleCode: "termination_zus" });
       await createTask({
-        kind: "task", title: `Виреєструвати з ZUS (ZWUA, ${co?.name ?? `фірма #${companyId}`}): ${worker.fullName}`, priority: "high", dueAt: addDaysStr(endDate, 7), assigneeAdminId: assignee,
+        kind: "task", title: `Виреєструвати з ZUS (ZWUA, ${co?.name ?? `фірма #${companyId}`}): ${worker.fullName}`, description: await zwuaTaskDescription(worker.id, endDate, companyId), priority: "high", dueAt: addDaysStr(endDate, 7), assigneeAdminId: assignee,
         workerId: worker.id, factoryId, source: "auto:termination_zus", sourceKey: zwuaKey,
         autoParams: { workerName: worker.fullName, fireDate: endDate, docTypeCode: "zus_zwua", companyId, factoryEnd: true },
         checklist: normalizeChecklist([{ id: "", text: "Подати ZUS ZWUA (Płatnik / PUE ZUS)", done: false }, { id: "", text: "Внести підтвердження ZWUA в профіль", done: false, auto: "entered" }]),

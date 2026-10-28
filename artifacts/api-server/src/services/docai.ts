@@ -469,6 +469,28 @@ export async function normalizeForOcr(buffer: Buffer): Promise<Buffer> {
 export { normalizeMrzCountry } from "../lib/countries";
 export const mrzNationalityToCatalog = (code: string | null): string | null => countryToCatalog(code);
 
+// ── Діакритика імен з візуальної зони (28.10.2026) ────────────────────────────
+// MRZ кодує лише A–Z: іспанське Ñ іде як «N» або (ICAO 9303, п. 6) як «NXX», Á/É/Í/Ó/Ú/Ü —
+// голими голосними, польські Ł/Ś/Ż — L/S/Z. Через це в профілі зʼявлялись імена з «іксами»
+// (кейс 28.10.2026). Відновлюємо з тексту VIZ, який Vision читає з діакритикою: слово
+// сторінки, що після зняття діакритики збігається з токеном MRZ, — беремо його написання.
+// Без збігу — токен MRZ як є (лише NXX → Ñ).
+const stripDiacritics = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").replace(/Ł/g, "L").replace(/Ø/g, "O").replace(/Đ/g, "D").replace(/Æ/g, "AE").replace(/Œ/g, "OE");
+export function recoverNameDiacritics(name: string, fullText: string): string {
+  const viz = new Map<string, string>();
+  for (const raw of fullText.split(/[^\p{L}]+/u)) {
+    if (raw.length < 2) continue;
+    const up = raw.toLocaleUpperCase("pl-PL");
+    const key = stripDiacritics(up);
+    if (key === up || !/^[A-Z]+$/.test(key)) continue; // без діакритики (або не латиниця) — нема чого відновлювати
+    if (!viz.has(key)) viz.set(key, up);
+  }
+  return name.split(/\s+/).filter(Boolean).map(tok => {
+    const t = tok.replace(/NXX/g, "Ñ");
+    return viz.get(stripDiacritics(t)) ?? t;
+  }).join(" ");
+}
+
 // mimeType лишається в сигнатурі для узгодженості виклику з боту/роуту —
 // формат реально визначається з байтів (toVisionCompatible/sniffDocMime).
 export async function processPassport(buffer: Buffer, mimeType: string): Promise<{ draft: PassportDraft; mrz: MrzResult | null; fullText: string }> {
@@ -476,6 +498,7 @@ export async function processPassport(buffer: Buffer, mimeType: string): Promise
   if (mimeType !== "application/pdf") prepared = await normalizeForOcr(prepared);
   const fullText = await callVisionOcr(prepared);
   const mrz = parsePassportMrz(fullText);
+  if (mrz) { mrz.surname = recoverNameDiacritics(mrz.surname, fullText); mrz.givenNames = recoverNameDiacritics(mrz.givenNames, fullText); }
   const draft = mrzToPassportDraft(mrz);
   draft.passportIssuedAt = findPassportIssueDate(fullText, { birthDate: draft.birthDate, expiryDate: draft.passportExpiresAt });
   logger.info({ passportTail: draft.passportNumber ? String(draft.passportNumber).slice(-3) : null, mrzValid: mrz?.documentNumberValid ?? null }, "vision passport parsed");

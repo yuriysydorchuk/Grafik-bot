@@ -237,7 +237,7 @@ const SCOPE_RULES: Rule[] = [
   // Без factoryId ці дії йдуть по ВСІХ фабриках — для скоуп-адміна фабрика обовʼязкова
   R("GET", /^\/(?:schedule|schedule\/excel|orders|hours\/factory-codes|hours\/day-compare|hours\/report-excel|hours\/weeks)$/, { kind: "queryFactory" }),
   // тижневий облік (26.10.2026, routes/hoursWeekly.ts): фабрика у тілі; відмітка — по фабриці рядка
-  R("POST", /^\/hours\/weeks\/(?:remind|factory|confirm|factory-apply)$/, { kind: "bodyFactory" }),
+  R("POST", /^\/hours\/weeks\/(?:remind|factory|confirm|factory-apply|clear|notify)$/, { kind: "bodyFactory" }),
   R("PATCH", /^\/hours\/shift-logs\/(\d+)$/, { kind: "lookup", table: "shiftLog" }),
   R("DELETE", /^\/schedule\/shift-override$/, { kind: "queryFactory" }),
   R("POST", /^\/schedule\/(?:generate|approve|entry|shift-cancel|shift-restore|copy-day|clear|shift-override|email|notify)$/, { kind: "bodyFactory" }),
