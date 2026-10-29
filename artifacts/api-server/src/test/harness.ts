@@ -82,7 +82,7 @@ async function truncateAll(): Promise<void> {
     "companies, document_types, vehicles, advance_requests, worker_questionnaires, " +
     "document_templates, contracts, contract_files, signature_tokens, signature_events, " +
     "legal_rules, worker_legality, document_audit, " +
-    "tasks, task_assignees, task_comments, task_events, task_templates, task_auto_rules, " +
+    "tasks, task_assignees, task_comments, task_events, task_templates, task_auto_rules, feedback_reports, feedback_attachments, feedback_comments, feedback_votes, " +
     "funnels, candidates, candidate_activity, sms_campaigns, sms_recipients, sms_events, " +
     "expense_categories, counterparty_rules, " +
     "payroll_sources, payroll_factory_months RESTART IDENTITY CASCADE",

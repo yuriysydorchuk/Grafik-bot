@@ -6,6 +6,7 @@
 //   useSessionState(key, init) — фільтри списків, що переживають перехід і повернення.
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { record } from "./breadcrumbs";
 
 const STACK = "nav.stack";
 const SCROLL = "nav.scroll";
@@ -46,6 +47,7 @@ export function useNavTracking() {
       if (prevLoc != null && prevLoc !== loc) window.scrollTo(0, 0); // новий перехід — з верху сторінки
     }
     write(STACK, stack.slice(-50)); write(SCROLL, scroll);
+    if (prevLoc != null && prevLoc !== loc) record({ type: "nav", text: `${loc}${window.location.search}` }); // крихта для зголошень
     currentLoc = loc;
     liveScroll[loc] = window.scrollY;
   }, [loc]);

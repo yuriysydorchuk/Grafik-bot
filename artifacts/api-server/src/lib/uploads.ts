@@ -23,6 +23,7 @@ export const SIGNATURES_DIR = path.join(UPLOADS_ROOT, "signatures"); // PNG пі
 export const PASSPORT_SCAN_TMP_DIR = path.join(UPLOADS_ROOT, "passport-scan-tmp"); // /passport-scan/:token: між analyze() і confirm()
 export const AGREEMENTS_DIR = path.join(UPLOADS_ROOT, "agreements"); // скани умов (/cost-invoices)
 export const ABSENCE_DOCS_DIR = path.join(UPLOADS_ROOT, "absence-attachments"); // довідки до пропусків (бот працівника)
+export const FEEDBACK_DIR = path.join(UPLOADS_ROOT, "feedback"); // скріншоти/піни/файли зголошень з панелі (routes/feedback.ts)
 
 // Create the upload directories once at startup.
 export function ensureUploadDirs(): void {
@@ -34,6 +35,7 @@ export function ensureUploadDirs(): void {
   fs.mkdirSync(AGREEMENTS_DIR, { recursive: true });
   fs.mkdirSync(ABSENCE_DOCS_DIR, { recursive: true });
   fs.mkdirSync(TASK_ATTACH_DIR, { recursive: true });
+  fs.mkdirSync(FEEDBACK_DIR, { recursive: true });
 }
 
 // The multipart MIME is client-declared and NOT trustworthy. Sniff magic bytes so a

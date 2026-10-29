@@ -46,6 +46,7 @@ import workerPayRouter from "./workerPay";
 import signupLinksRouter from "./signupLinks";
 import pracaGovRouter from "./pracaGov";
 import pracaGovReferenceRouter from "./pracaGovReference";
+import feedbackRouter from "./feedback";
 
 const router: IRouter = Router();
 
@@ -97,6 +98,7 @@ router.use(ksefRouter);
 router.use(cleaningRouter);
 router.use(fuelRouter);
 router.use(securityRouter);
+router.use(feedbackRouter); // /feedback — зголошення проблем/побажань з панелі (усі ролі; /feedback/admin — головний)
 router.use(contractsRouter);
 router.use(documentTemplatesRouter);
 router.use(tasksRouter);

@@ -19,9 +19,10 @@ import Admins from "./Admins";
 import { LegalRulesSettings } from "./LegalRulesSettings";
 import { TasksSettings } from "./TasksSettings";
 import { PracaGovSettings } from "./PracaGovSettings";
+import { FeedbackSettings } from "./FeedbackSettings";
 import { canAccessPage } from "../lib/roles";
 
-type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "pracaGov" | "tasks" | "funnels" | "email" | "gratyfikant" | "users";
+type TabId = "general" | "companies" | "factories" | "positions" | "documents" | "legalRules" | "pracaGov" | "tasks" | "funnels" | "email" | "gratyfikant" | "feedback" | "users";
 const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "general", label: "Фінанси / ставки", show: m => can(m, "viewFinance") },
   { id: "companies", label: "Фірми", show: m => can(m, "editData") },
@@ -34,6 +35,7 @@ const TABS: { id: TabId; label: string; show: (me: Me) => boolean }[] = [
   { id: "funnels", label: "Воронки рекрутації", show: m => can(m, "editData") },
   { id: "email", label: "Email-шаблони", show: m => can(m, "editData") },
   { id: "gratyfikant", label: "Gratyfikant", show: m => can(m, "svodniSensitive") },
+  { id: "feedback", label: "Зголошення", show: m => m.isMain },
   { id: "users", label: "Користувачі та ролі", show: m => m.isMain },
 ];
 
@@ -73,6 +75,7 @@ export default function Settings() {
       {active === "email" && <><EmailTemplatesSettings /><TerminationEmailSettings /></>}
       {active === "gratyfikant" && <GratyfikantSettings />}
       {active === "tasks" && <TasksSettings />}
+      {active === "feedback" && <FeedbackSettings />}
       {active === "users" && me && <Admins me={me} />}
     </>
   );

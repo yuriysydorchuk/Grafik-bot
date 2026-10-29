@@ -4,6 +4,16 @@ import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
 import { rm } from "node:fs/promises";
+import { execSync } from "node:child_process";
+
+// Версія збірки (sha7 + дата) — віддається в /auth/me як buildVersion і лягає в кожне
+// зголошення з панелі, щоб у тріажі було видно, з якого коду проблема.
+function appVersion() {
+  try {
+    const sha = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    return `${sha} ${new Date().toISOString().slice(0, 10)}`;
+  } catch { return "dev"; }
+}
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -26,6 +36,7 @@ async function buildAll() {
     // без keepNames esbuild перейменовує клас поліфіла при колізії (AbortSignal2) —
     // полінг бота падає з "Expected signal to be an instanceof AbortSignal".
     keepNames: true,
+    define: { "process.env.APP_VERSION": JSON.stringify(appVersion()) },
     // Some packages may not be bundleable, so we externalize them, we can add more here as needed.
     // Some of the packages below may not be imported or installed, but we're adding them in case they are in the future.
     // Examples of unbundleable packages:

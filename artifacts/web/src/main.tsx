@@ -6,6 +6,9 @@ import { ConfirmProvider } from "./components/confirm";
 import { LangProvider } from "./lib/i18n";
 import { useTheme } from "./lib/theme";
 import "./index.css";
+import { installBreadcrumbs } from "./lib/breadcrumbs";
+
+installBreadcrumbs(); // «хлібні крихти» для зголошень — до першого рендеру
 
 // sonner needs the resolved theme explicitly — its "system" mode can't see our toggle.
 function ThemedToaster() {

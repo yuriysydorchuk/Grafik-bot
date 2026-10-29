@@ -57,6 +57,7 @@ export const SEARCH_CATALOG: CatalogEntry[] = [
   S("Фабрики", "/factories", "фабрики клієнти ставки email клієнта зміни"),
   { label: "Користувачі та ролі", href: "/admins", keywords: "користувачі ролі адміни доступи права", kind: "section", mainOnly: true },
   { label: "Безпека / Сесії", href: "/security", keywords: "безпека сесії входи логіни ip", kind: "section", mainOnly: true },
+  { label: "Зголошення", href: "/feedback", keywords: "зголошення проблеми побажання баги feedback помилки", kind: "section", mainOnly: true },
   // вкладки налаштувань
   A("Налаштування → Фінанси / ставки", "/settings?tab=general", "ставки дефолтна ставка фінанси налаштування", "viewFinance"),
   A("Налаштування → Фірми", "/settings?tab=companies", "фірми компанії реквізити nip", "editData"),

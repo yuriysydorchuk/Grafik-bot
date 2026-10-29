@@ -370,6 +370,9 @@ export function startScheduler() {
       catch (e: any) { logger.warn({ err: e?.message }, "contract termination cron failed"); }
       try { const { fireDueTerminations } = await import("./workerFire"); const n = await fireDueTerminations(); if (n) logger.info({ n }, "🔥 terminations applied"); }
       catch (e: any) { logger.warn({ err: e?.message }, "termination cron failed"); }
+      // зголошення: нагадати авторам підтвердити «виправлено» / автопідтвердити (services/feedback.ts)
+      try { const { feedbackDailyTick } = await import("./feedback"); const r = await feedbackDailyTick(); if (r.reminded || r.autoConfirmed) logger.info(r, "🐞 feedback daily tick"); }
+      catch (e: any) { logger.warn({ err: e?.message }, "feedback daily tick failed"); }
     },
     { timezone: TZ },
   );

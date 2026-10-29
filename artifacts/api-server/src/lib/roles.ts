@@ -48,6 +48,9 @@ export function isReadOnly(role: Role | null | undefined, caps: string[] | null 
 export const READ_ONLY_ALLOWED_PATHS = [
   "/auth/web-lang", "/auth/web-prefs", "/notifications/read", "/cost-invoices/new/ack", "/cfo/analyze",
 ] as const;
+// Префікси, дозволені read-only ролі цілком: зголошення проблем/побажань (routes/feedback.ts) —
+// створити/голосувати/коментувати може кожен залогінений; адмінські мутації там і так за requireMainAdmin.
+export const READ_ONLY_ALLOWED_PREFIXES = ["/feedback"] as const;
 
 // Nav/route paths a role can be granted access to (the "what can it see" catalogue).
 export const PAGE_KEYS = [
@@ -69,7 +72,7 @@ export function hasCap(role: Role | null | undefined, caps: string[] | null | un
 // everyone else (see plan "Гранулярний вибір типів сповіщень для кожної ролі").
 export const NOTIFY_KEYS = [
   "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
-  "absence_warning", "weekly_summary", "finance_alerts", "tasks", "sms",
+  "absence_warning", "weekly_summary", "finance_alerts", "tasks", "sms", "feedback",
 ] as const;
 export type NotifyType = (typeof NOTIFY_KEYS)[number];
 export const NOTIFY_LABEL: Record<NotifyType, string> = {
@@ -84,4 +87,5 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
   finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
   tasks: "📋 Задачі (призначено мені, нагадування, дайджест, зустрічі)",
   sms: "📨 SMS-кампанії (денний звіт хвилі, завершення кампанії)",
+  feedback: "🐞 Зголошення з панелі (нові проблеми/побажання, вечірній підсумок)",
 };

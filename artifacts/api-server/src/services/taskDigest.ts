@@ -170,6 +170,9 @@ export async function sendWeeklyControlReport(today = warsawToday()): Promise<bo
     lines.push(`${mdEsc(a.name)}: виконано ${a.done} · відкрито ${a.open} · прострочено ${a.overdue ? `*${a.overdue}*` : "0"}${a.avgDays != null ? ` · сер. ${a.avgDays} дн.` : ""}`);
   }
   lines.push(`Авто закрилось само: ${s.autoResolved} · створено нових: ${s.created}`);
+  // рядок модуля «Зголошення» (services/feedback.ts) — той самий звіт, без окремого крону
+  try { const { feedbackWeeklyLine } = await import("./feedback"); const fl = await feedbackWeeklyLine(s.from, s.to); if (fl) lines.push(fl); }
+  catch (e: any) { logger.warn({ err: e?.message }, "feedback weekly line failed"); }
   const kb = panelUrl() ? [[{ text: "🔗 Контроль задач", url: `${panelUrl()}/tasks` }]] : [];
   return notifyAdminById(main, "tasks", lines.join("\n"), { parse_mode: "Markdown", ...(kb.length ? { reply_markup: { inline_keyboard: kb } } : {}) });
 }
@@ -192,6 +195,11 @@ export async function runTaskDigestTick(now = new Date()): Promise<void> {
       await setSetting("tasks.evening.sent", today);
       const n = await sendEveningSummaries(today);
       logger.info({ n }, "🗂 task evening summaries");
+    }
+    // вечірній підсумок зголошень головному — той самий час, свій дедуп-ключ (feedback.evening.sent)
+    if (within(s.eveningTime)) {
+      try { const { sendFeedbackEveningSummary } = await import("./feedback"); if (await sendFeedbackEveningSummary(today)) logger.info("🐞 feedback evening summary sent"); }
+      catch (e: any) { logger.warn({ err: e?.message }, "feedback evening summary failed"); }
     }
   } catch (e: any) { logger.warn({ err: e?.message }, "task digest tick failed"); }
 }

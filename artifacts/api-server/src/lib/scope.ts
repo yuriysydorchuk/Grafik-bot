@@ -189,6 +189,8 @@ const SCOPE_RULES: Rule[] = [
   R("GET", /^\/(companies|positions|document-types|document-templates|clothing\/stock|clothing\/types)$/, { kind: "free" }),
   // дзвіночок: хендлер віддає скоуп-адміну порожній список
   R("GET", /^\/notifications$/, { kind: "free" }),
+  // Зголошення проблем/побажань (routes/feedback.ts) — не дані працівників; адмінські шляхи за requireMainAdmin
+  R(ANY, /^\/feedback(?:\/.*)?$/, { kind: "free" }),
   R("GET", /^\/legalization\/(globals|status-map)$/, { kind: "free" }),
   R("GET", /^\/(workers|legalization|factories)$/, { kind: "free" }),
   R("GET", /^\/workers\/export\/(?:preview|fields|xlsx|csv|docs\.zip)$/, { kind: "free" }), // експорт списку/CSV/ZIP — loadExportRows фільтрує по скоупу

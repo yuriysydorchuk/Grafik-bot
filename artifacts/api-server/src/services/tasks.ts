@@ -248,6 +248,11 @@ export async function setTaskStatus(task: Task, next: TaskStatus, actorAdminId: 
       await notifyAdminById(task.assigneeAdminId, "tasks", `↩️ *Повернуто з перевірки*: ${mdEsc(task.title)}${note ? `\n_${mdEsc(note)}_` : ""}`, { parse_mode: "Markdown" });
     }
   } catch (e: any) { logger.warn({ err: e?.message, taskId: task.id }, "task status notify failed"); }
+  // задача зі зголошення з панелі виконана → системний рядок у зголошенні + головному «відповісти автору?»
+  if (to === "done" && task.source === "feedback") {
+    try { const { onFeedbackTaskDone } = await import("./feedback"); await onFeedbackTaskDone(task, actorAdminId); }
+    catch (e: any) { logger.warn({ err: e?.message, taskId: task.id }, "feedback task-done hook failed"); }
+  }
   // повторювана: наступний екземпляр після виконання (не після скасування)
   if (to === "done" && task.status !== "done" && task.recurrence && task.source === "manual") { // повторний «done» не плодить наступний екземпляр
     const r = task.recurrence as Recurrence;

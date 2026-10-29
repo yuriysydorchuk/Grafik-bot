@@ -5,10 +5,11 @@ import {
   Users, Truck, LogOut, Menu, X,
   FolderOpen, Activity, Route, Clock, CalendarX, Wallet, Landmark, Vault, TrendingUp, FileText, PiggyBank, BarChart3, Banknote, HandCoins, UserPlus, Megaphone, Settings as SettingsIcon, Gauge,
   PanelLeftClose, PanelLeftOpen, ShieldCheck, Home, Gavel, Sun, Moon, Fuel, CarFront, Bus, Shirt, Fish, Citrus, Sparkles, FileStack, type LucideIcon,
-  MessageSquareText, Maximize2, Minimize2, QrCode,
+  MessageSquareText, Maximize2, Minimize2, QrCode, MessageSquareWarning,
 } from "lucide-react";
 import { cn, Logo } from "./ui";
 import { useNavTracking } from "../lib/nav";
+import { FeedbackWidget } from "./FeedbackWidget";
 import { useQuery } from "@tanstack/react-query";
 import { get, post, type Me } from "../lib/api";
 import { canAccessPage, isReadOnly } from "../lib/roles";
@@ -121,6 +122,7 @@ const NAV: NavGroup[] = [
       { href: "/settings", label: "Налаштування", icon: SettingsIcon },
       { href: "/admins", label: "Користувачі та запрошення", icon: UserPlus },
       { href: "/security", label: "Безпека / Сесії", icon: ShieldCheck },
+      { href: "/feedback", label: "Зголошення", icon: MessageSquareWarning },
     ],
   },
 ];
@@ -176,6 +178,10 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
   const { data: taskCounters } = useQuery<{ total: number; fresh: number }>({
     queryKey: ["task-counters"], queryFn: () => get("/tasks/counters"), enabled: canAccessPage(me, "/tasks"), refetchInterval: 60000,
   });
+  // бейдж «Зголошення» головному: нові (не переглянуті) зголошення з панелі
+  const { data: fbCounters } = useQuery<{ new: number; blocks: number }>({
+    queryKey: ["feedback-counters"], queryFn: () => get("/feedback/admin/counters"), enabled: !!me.isMain, refetchInterval: 120000,
+  });
 
   // `rail` = collapsed icon-only mode (labels appear on hover via the group/nav peer)
   const renderSidebar = (rail: boolean) => (
@@ -201,6 +207,9 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
                     {active && <span className="absolute left-0 h-5 w-1 rounded-r-full bg-red-600" />}
                     <Icon className={cn("h-[18px] w-[18px] shrink-0 transition", active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600")} />
                     <span className={cn("truncate", rail && "hidden group-hover/nav:inline")}>{t(label)}</span>
+                    {href === "/feedback" && fbCounters && fbCounters.new > 0 && (
+                      <span className={cn("ml-auto rounded-full px-1.5 text-[10px] font-semibold leading-4 text-white", fbCounters.blocks > 0 ? "bg-rose-600" : "bg-red-600", rail && "hidden group-hover/nav:inline")} title={t("нових зголошень")}>{fbCounters.new}</span>
+                    )}
                     {href === "/tasks" && taskCounters && taskCounters.total > 0 && (
                       <>
                         <span className={cn("ml-auto flex shrink-0 items-center gap-1", rail && "hidden group-hover/nav:flex")}>
@@ -285,6 +294,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
         )}
         <main className={cn("mx-auto w-full flex-1 p-4 md:p-8", wide ? "md:max-w-none" : "max-w-6xl")}>{children}</main>
       </div>
+      <FeedbackWidget me={me} />
     </div>
   );
 }

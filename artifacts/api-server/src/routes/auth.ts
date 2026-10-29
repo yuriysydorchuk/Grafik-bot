@@ -206,6 +206,9 @@ router.get("/auth/me", authRequired, async (req: AuthedRequest, res) => {
     // доступ по містах/фабриках (null = усе) і ролі для делегованих запрошень — lib/scope.ts
     scope: req.admin!.scope ? { cities: req.admin!.scope.cities, factoryIds: req.admin!.scope.factoryIds } : null,
     canInviteRoles: req.admin!.canInviteRoles,
+    buildVersion: process.env.APP_VERSION ?? "dev",
+    // початок поточної сесії — віджет зголошень пише «сесія N год» в автоконтекст
+    sessionSince: req.admin!.sessionId ? (await db.select({ c: adminSessionsTable.createdAt }).from(adminSessionsTable).where(eq(adminSessionsTable.id, req.admin!.sessionId)))[0]?.c ?? null : null,
   });
 });
 

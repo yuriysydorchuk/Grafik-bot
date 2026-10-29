@@ -2926,3 +2926,94 @@ export const uaSubmissionsTable = pgTable("ua_submissions", {
   finishedAt: timestamp("finished_at"),
 }, (t) => [index("ua_submissions_account_status_idx").on(t.accountId, t.status)]);
 export type UaSubmission = typeof uaSubmissionsTable.$inferSelect;
+
+// ── Зголошення проблем і побажань з веб-панелі (docs/tasks/2026-10-29-feedback-module.md) ──
+// Користувач панелі зголошує проблему/побажання віджетом; контекст (сторінка, фільтри,
+// «хлібні крихти» дій/запитів/помилок, версія збірки) збирається автоматично. Сесія
+// Claude (/feedback-triage) читає відкриті read-only й повертає статуси імпортом результату.
+export type FeedbackBreadcrumb = {
+  t: string;                 // ISO-час події (клієнт)
+  type: "click" | "nav" | "api" | "error" | "console" | "rec" | "input";
+  text: string;              // «button «Доповнити»», «/schedule?factoryId=3», «POST /schedule/generate»
+  status?: number;           // для api
+  ms?: number;               // для api
+  reqId?: string;            // X-Request-Id відповіді (для grep логів pino)
+};
+export type FeedbackContext = {
+  role?: string; roleLabel?: string; scope?: { cities: string[]; factoryIds: number[] } | null;
+  ua?: string; platform?: string; screen?: string; theme?: string; lang?: string;
+  pageTitle?: string;
+  failedRequests?: { method: string; path: string; status: number; reqId?: string; t: string }[];
+  consoleErrors?: { message: string; source?: string; t: string }[];
+};
+export const feedbackReportsTable = pgTable("feedback_reports", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),                       // bug | wish | question
+  severity: text("severity"),                         // bug: blocks | hinders | minor
+  status: text("status").notNull().default("new"),    // new | review | clarify | planned | in_progress | fixed | confirmed | rejected | duplicate | exists
+  title: text("title").notNull(),                     // авто з опису (≤120), головний може правити
+  description: text("description").notNull(),         // що сталось / побажання / питання
+  steps: text("steps"),                               // що робили (bug)
+  expected: text("expected"),                         // що очікували (bug)
+  aboutPage: boolean("about_page").notNull().default(true),
+  pagePath: text("page_path"),                        // «/schedule»; null = загальне
+  pageLabel: text("page_label"),                      // «Графіки»
+  pageUrl: text("page_url"),                          // повний URL з query
+  pageFilters: jsonb("page_filters").$type<Record<string, unknown>>(),
+  origin: text("origin").notNull().default("widget"), // widget | error | api5xx
+  clientError: jsonb("client_error").$type<{ message: string; stack?: string; source?: string }>(),
+  context: jsonb("context").$type<FeedbackContext>().notNull().default({}),
+  breadcrumbs: jsonb("breadcrumbs").$type<FeedbackBreadcrumb[]>().notNull().default([]),
+  recorded: boolean("recorded").notNull().default(false),
+  buildVersion: text("build_version"),
+  authorAdminId: integer("author_admin_id").notNull().references(() => adminsTable.id),
+  authorSeenAt: timestamp("author_seen_at"),          // непрочитане для автора = lastAdminActivityAt > coalesce(authorSeenAt, createdAt)
+  lastAdminActivityAt: timestamp("last_admin_activity_at"),
+  reply: text("reply"),                               // остання офіційна відповідь автору
+  duplicateOfId: integer("duplicate_of_id").references((): AnyPgColumn => feedbackReportsTable.id, { onDelete: "set null" }),
+  taskId: integer("task_id").references(() => tasksTable.id, { onDelete: "set null" }),
+  triage: jsonb("triage").$type<{ verdict?: string; effort?: string; risk?: string; note?: string; batch?: string }>(),
+  deployedCommit: text("deployed_commit"),
+  statusByAdminId: integer("status_by_admin_id"),
+  statusChangedAt: timestamp("status_changed_at"),
+  confirmRequestedAt: timestamp("confirm_requested_at"),
+  confirmRemindedAt: timestamp("confirm_reminded_at"),
+  confirmedAt: timestamp("confirmed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("feedback_reports_status_idx").on(t.status),
+  index("feedback_reports_author_idx").on(t.authorAdminId),
+  index("feedback_reports_page_idx").on(t.pagePath),
+]);
+export type FeedbackReport = typeof feedbackReportsTable.$inferSelect;
+
+export const feedbackAttachmentsTable = pgTable("feedback_attachments", {
+  id: serial("id").primaryKey(),
+  reportId: integer("report_id").notNull().references(() => feedbackReportsTable.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),                       // screenshot | pin | upload
+  path: text("path").notNull(),                       // ім'я файла в uploads/feedback/
+  name: text("name").notNull(),
+  mime: text("mime").notNull(),
+  size: integer("size").notNull(),
+  meta: jsonb("meta").$type<Record<string, unknown>>(), // pin: {selector, text, tag, rect}; screenshot: {annotations, blurred, viewport}
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type FeedbackAttachment = typeof feedbackAttachmentsTable.$inferSelect;
+
+export const feedbackCommentsTable = pgTable("feedback_comments", {
+  id: serial("id").primaryKey(),
+  reportId: integer("report_id").notNull().references(() => feedbackReportsTable.id, { onDelete: "cascade" }),
+  adminId: integer("admin_id").references(() => adminsTable.id),   // null = система/імпорт тріажу
+  kind: text("kind").notNull().default("comment"),    // comment | answer | question | system
+  body: text("body").notNull(),
+  via: text("via").notNull().default("web"),          // web | bot | triage
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export type FeedbackComment = typeof feedbackCommentsTable.$inferSelect;
+
+export const feedbackVotesTable = pgTable("feedback_votes", {
+  reportId: integer("report_id").notNull().references(() => feedbackReportsTable.id, { onDelete: "cascade" }),
+  adminId: integer("admin_id").notNull().references(() => adminsTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("feedback_votes_pk").on(t.reportId, t.adminId)]);

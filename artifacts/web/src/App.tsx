@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Route, Switch, Redirect } from "wouter";
+import { Route, Switch, Redirect, useLocation } from "wouter";
 import { get, type Me } from "./lib/api";
 import { isTelegramWebApp, telegramLogin } from "./lib/telegram";
 import { canAccessPage } from "./lib/roles";
@@ -63,6 +63,8 @@ import SmsCampaignCard from "./pages/SmsCampaignCard";
 import Settings from "./pages/Settings";
 import Admins from "./pages/Admins";
 import Security from "./pages/Security";
+import Feedback from "./pages/Feedback";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Compact УКР/EN/РУС switcher for the Telegram Mini App (the full Layout with its own
 // toggle is hidden there). Mirrors LangToggle in components/Layout.tsx.
@@ -81,6 +83,7 @@ function TgLangToggle() {
 }
 
 export default function App() {
+  const [loc] = useLocation();
   const t = useT();
   const { applyLang } = useLang();
   const onLogin = location.pathname.startsWith("/login");
@@ -145,6 +148,9 @@ export default function App() {
 
   return (
     <Layout me={me}>
+      {/* межа помилок рендеру: картка «Щось зламалось» + «Зголосити» (віджет з прикріпленою помилкою); key — скидання при зміні маршруту */}
+      <ErrorBoundary key={loc} labels={{ title: t("Щось зламалось на цій сторінці."), sub: t("Помилка й ваші останні дії вже зібрані."), report: t("Зголосити"), reload: t("Оновити сторінку") }}
+        onReport={e => window.dispatchEvent(new CustomEvent("grafik:feedback-open", { detail: { origin: "error", clientError: e } }))}>
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/tasks">{() => guard("/tasks", <Tasks />)}</Route>
@@ -199,8 +205,10 @@ export default function App() {
         <Route path="/settings">{() => guard("/settings", <Settings />)}</Route>
         <Route path="/admins">{() => guard("/admins", <Admins me={me} />)}</Route>
         <Route path="/security">{() => guard("/security", <Security />)}</Route>
+        <Route path="/feedback">{() => guard("/feedback", <Feedback />)}</Route>
         <Route><Redirect to="/" /></Route>
       </Switch>
+      </ErrorBoundary>
     </Layout>
   );
 }

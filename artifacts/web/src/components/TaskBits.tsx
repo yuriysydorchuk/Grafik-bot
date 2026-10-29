@@ -157,7 +157,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
           {t.status === "auto_resolved" && <div className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">✓ {tr("Вирішено автоматично")} · {t.resolutionNote}</div>}
 
           {/* кого стосується */}
-          {(t.worker || t.factoryName || t.autoParams) && (
+          {(t.worker || t.factoryName || t.autoParams || t.source === "feedback") && (
             <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tr("Кого стосується")}</div>
               <div className="flex flex-wrap items-center gap-2">
@@ -166,6 +166,7 @@ export function TaskDrawer({ id, onClose }: { id: number; onClose: () => void })
                 {t.documentTitle && <Badge color="amber">📄 {t.documentTitle}</Badge>}
                 {t.contractLabel && <Badge color="blue">✍️ {t.contractLabel}</Badge>}
                 {t.candidateName && <Link href="/recruitment" className="text-xs text-slate-600 hover:text-red-600">🧑‍💼 {t.candidateName}</Link>}
+                {t.source === "feedback" && typeof t.autoParams?.feedbackId === "number" && <Link href={`/feedback?id=${t.autoParams.feedbackId}`} className="text-xs font-medium text-slate-600 hover:text-red-600">🐞 {tr("Зголошення")} #{String(t.autoParams.feedbackId)}</Link>}
                 {typeof t.autoParams?.expiresAt === "string" && <span className="text-xs text-slate-500">{tr("строк")}: <b>{fmtD(String(t.autoParams.expiresAt))}</b></span>}
                 {Array.isArray(t.autoParams?.workerNames) && <span className="text-xs text-slate-500">{(t.autoParams.workerNames as string[]).slice(0, 8).join(", ")}{(t.autoParams.count as number) > 8 ? ` … (+${(t.autoParams.count as number) - 8})` : ""}</span>}
               </div>

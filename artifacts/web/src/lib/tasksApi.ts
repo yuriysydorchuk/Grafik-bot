@@ -66,7 +66,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "ручна", "auto:doc_expiring": "авто · документ", "auto:doc_expired": "авто · прострочений документ", "auto:contract": "авто · умова",
   "auto:obligation": "авто · обов'язок", "auto:required_missing": "авто · бракує підстави", "auto:pending_doc": "авто · перевірка файлу",
   "auto:payroll_change": "авто · виплати", "auto:review_required": "авто · перевірка", "auto:absence_unexplained": "авто · пропуск", "auto:candidate_stale": "авто · рекрутинг",
-  "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS ZWUA", "auto:hire_zus": "авто · ZUS ZUA (новий)", "auto:termination_doc": "авто · документ звільнення",
+  feedback: "зголошення", "auto:doc_no_response": "авто · не надіслав документ", "auto:ua_notification": "авто · powiadomienie", "auto:termination_zus": "авто · ZUS ZWUA", "auto:hire_zus": "авто · ZUS ZUA (новий)", "auto:termination_doc": "авто · документ звільнення",
 };
 export const KIND_LABEL: Record<TaskKind, string> = { task: "задача", group: "групова", meeting: "зустріч" };
 export const RULE_LABEL: Record<string, string> = {

@@ -61,7 +61,7 @@ export const PAGE_KEYS = Object.keys(PAGE_LABEL);
 // Owner is NOT auto-included here (unlike caps/pages) — plain per-role list.
 export const NOTIFY_KEYS = [
   "no_show", "cancellation", "hours_correction", "advance", "substitution", "availability_change",
-  "absence_warning", "weekly_summary", "finance_alerts", "tasks", "sms",
+  "absence_warning", "weekly_summary", "finance_alerts", "tasks", "sms", "feedback",
 ] as const;
 export type NotifyType = (typeof NOTIFY_KEYS)[number];
 export const NOTIFY_LABEL: Record<NotifyType, string> = {
@@ -76,6 +76,7 @@ export const NOTIFY_LABEL: Record<NotifyType, string> = {
   finance_alerts: "💳 Фінансові алерти (банк / KSeF / komornik)",
   tasks: "📋 Задачі (призначено мені, нагадування, дайджест, зустрічі)",
   sms: "📨 SMS-кампанії (денний звіт хвилі, завершення кампанії)",
+  feedback: "🐞 Зголошення з панелі (нові проблеми/побажання, вечірній підсумок)",
 };
 
 // The resolved access carried on the current user (from /auth/me).
@@ -95,6 +96,7 @@ export function canAccessPage(me: Access, path: string): boolean {
   // /admins — головний адмін (користувачі/ролі) або делегат запрошень (бачить лише свої запрошення)
   if (path === "/admins") return !!me.isMain || !!me.canInviteRoles?.length;
   if (path === "/security") return !!me.isMain; // sessions — head admin only
+  if (path === "/feedback") return !!me.isMain; // зголошення з панелі — лише головний (віджет є в усіх)
   if (me.role === OWNER) return true;
   return !!me.pages?.includes(path);
 }

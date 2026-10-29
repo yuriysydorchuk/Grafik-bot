@@ -113,6 +113,7 @@ import { registerWorkerAbsences } from "./handlers/absences";
 import { registerWeeklyHours } from "./handlers/weeklyHours";
 import { registerTaskActions } from "./handlers/tasks";
 import { registerPracaGov } from "./handlers/pracaGov";
+import { registerFeedback } from "./handlers/feedback";
 import { registerRehire, offerRehire, completeNameSignup, S_PENDING as REHIRE_PENDING } from "./handlers/rehire";
 import { registerSmsCampaign, handleSmsStart } from "./handlers/smsCampaign";
 import { loadSelfTransport, isSelfOn } from "../services/selfTransport";
@@ -147,6 +148,7 @@ registerSmsCampaign(bot); // SMS-кампанії: ?start=sms<токен> + кн
 // «📋 Задачі» офісу: інлайн-дії на сповіщеннях (готово / завтра / буду / прийняти…)
 registerTaskActions(bot as any);
 registerPracaGov(bot as any); // код SMS для робота praca.gov.pl (pz:code)
+registerFeedback(bot as any); // зголошення з панелі: кнопки головного (fb:accept/ask/reject) і автора (fb:ok/no/reply)
 
 // Time/view helpers live in ./time and ./views.
 

@@ -488,6 +488,9 @@ importers:
       lucide-react:
         specifier: 'catalog:'
         version: 0.545.0(react@19.1.0)
+      modern-screenshot:
+        specifier: ^4.7.0
+        version: 4.7.0
       pdfjs-dist:
         specifier: 5.4.624
         version: 5.4.624

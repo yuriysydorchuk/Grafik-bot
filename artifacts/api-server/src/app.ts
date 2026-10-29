@@ -4,6 +4,7 @@ import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import path from "node:path";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
@@ -22,6 +23,10 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(
   pinoHttp({
     logger,
+    // Короткий випадковий id замість лічильника процесу: не повторюється після рестарту,
+    // віддається клієнту в X-Request-Id — віджет зголошень кладе його в «хлібні крихти»,
+    // щоб рядок логу невдалого запиту знаходився grep-ом (docs/tasks/2026-10-29-feedback-module.md).
+    genReqId: () => randomBytes(4).toString("hex"),
     serializers: {
       req(req) {
         return {
@@ -38,13 +43,17 @@ app.use(
     },
   }),
 );
+app.use((req, res, next) => { res.setHeader("X-Request-Id", String((req as any).id ?? "")); next(); });
 // The panel is served same-origin by this server, so cross-origin requests are
 // blocked by default. Set CORS_ORIGINS (comma-separated) only if you need them.
 const corsOrigins = process.env.CORS_ORIGINS?.split(",").map(s => s.trim()).filter(Boolean);
 app.use(cors({ origin: corsOrigins?.length ? corsOrigins : false, credentials: true }));
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Ліміт тіла: дефолтні 100 КБ body-parser замалі для шаблонів документів
+// (5 мов HTML — regulamin ~200 КБ, Andros zakres obowiązków ~1 МБ) — PUT
+// /document-templates падав 413 → у загальний хендлер → «Internal server error».
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // CSRF defense-in-depth: state-changing requests must carry a custom header the
 // browser only lets same-origin JS set (a cross-site <form> POST cannot). SameSite=Lax
@@ -102,6 +111,26 @@ const errorHandler: express.ErrorRequestHandler = (err, req, res, _next) => {
     const msg = code === "LIMIT_FILE_SIZE" ? "Файл завеликий (макс 60 МБ)" : `Помилка завантаження: ${(err as any).message}`;
     logger.warn({ code, method: req.method, url: path }, "multer rejected upload");
     if (!res.headersSent) res.status(code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: msg });
+    return;
+  }
+  // Клієнт сам обірвав запит посеред завантаження (мобільний інтернет, закрив
+  // сторінку, перевибрав фото): multer — «Request aborted/closed», body-parser —
+  // type "request.aborted". Не інцидент сервера — лише warn у лог, без алерту.
+  const errMsg = (err as any)?.message;
+  if ((err as any)?.type === "request.aborted" || errMsg === "Request aborted" || errMsg === "Request closed") {
+    logger.warn({ method: req.method, url: path, reason: errMsg }, "client aborted request");
+    if (!res.headersSent) res.status(400).json({ error: "Завантаження перервано" });
+    return;
+  }
+  // body-parser (завелике/биті JSON-тіло, неправильна кодування): помилка
+  // клієнта з власним 4xx-статусом — віддаємо його, не 500 і не алерт.
+  const bpStatus = (err as any)?.status;
+  if (typeof (err as any)?.type === "string" && typeof bpStatus === "number" && bpStatus >= 400 && bpStatus < 500) {
+    const msg = (err as any).type === "entity.too.large"
+      ? "Запит завеликий (макс 10 МБ)"
+      : (err as any).type === "entity.parse.failed" ? "Некоректне тіло запиту (JSON)" : `Помилка запиту: ${errMsg}`;
+    logger.warn({ type: (err as any).type, status: bpStatus, method: req.method, url: path }, "body-parser rejected request");
+    if (!res.headersSent) res.status(bpStatus).json({ error: msg });
     return;
   }
   logger.error({ err, method: req.method, url: path }, "unhandled API error");

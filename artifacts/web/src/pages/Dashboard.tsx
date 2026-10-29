@@ -98,6 +98,7 @@ export default function Dashboard() {
       <PageHeader title={t("Огляд")} subtitle={t("Поточний тиждень {a} · наступний {b}", { a: data.currentWeek, b: data.nextWeek })} />
 
       <MyTasksTile />
+      {me?.isMain && <FeedbackTile />}
       {attn && <AttentionPanel a={attn} />}
 
       <LiveShifts />
@@ -274,6 +275,30 @@ export default function Dashboard() {
         )}
       </Card>
     </>
+  );
+}
+
+// Плитка «Зголошення» головному (docs/tasks/2026-10-29-feedback-module.md): нові / без відповіді / чекають підтвердження; ховається, коли все 0.
+function FeedbackTile() {
+  const t = useT();
+  const { data } = useQuery<{ new: number; stale: number; awaiting: number; open: number; blocks: number; closed30: number; avgDays: number | null }>({ queryKey: ["feedback-counters"], queryFn: () => get("/feedback/admin/counters"), refetchInterval: 60000 });
+  if (!data || (!data.new && !data.stale && !data.awaiting && !data.closed30)) return null;
+  const items = [
+    { n: data.new, label: t("нових зголошень"), sub: data.blocks ? t("{n} блокує роботу", { n: data.blocks }) : null, cls: "border-red-200 bg-red-50/50 hover:bg-red-50" },
+    { n: data.stale, label: t("без відповіді понад 7 дн"), sub: null, cls: "border-amber-200 bg-amber-50/50 hover:bg-amber-50" },
+    { n: data.awaiting, label: t("чекають підтвердження авторів"), sub: null, cls: "border-sky-200 bg-sky-50/50 hover:bg-sky-50" },
+    { n: data.closed30, label: t("закрито за 30 дн"), sub: data.avgDays != null ? t("середній час {n} дн", { n: data.avgDays }) : null, cls: "border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50" },
+  ].filter(i => i.n > 0);
+  return (
+    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {items.map(i => (
+        <Link key={i.label} href="/feedback"><div className={cn("flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition", i.cls)}>
+          <div className="text-xl font-bold text-slate-800">{i.n}</div>
+          <div className="min-w-0"><div className="text-xs text-slate-600">🐞 {i.label}</div>{i.sub && <div className="text-[11px] text-rose-600">{i.sub}</div>}</div>
+          <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-slate-300" />
+        </div></Link>
+      ))}
+    </div>
   );
 }
 

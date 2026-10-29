@@ -1,3 +1,4 @@
+import { record, prompt } from "./breadcrumbs";
 // Роль «лише перегляд» (сервер, authRequired → 403 code=readOnly) — повідомлення мовою панелі.
 function errorMessage(data: any, status: number): string {
   if (data?.code === "readOnly") {
@@ -8,13 +9,29 @@ function errorMessage(data: any, status: number): string {
   return data?.error || `Помилка ${status}`;
 }
 
+// «Хлібні крихти» для зголошень (lib/breadcrumbs.ts): кожен запит — метод, шлях (без /api),
+// статус, час і X-Request-Id відповіді; 5xx → підказка «Зголосити?». Запити поза api()/upload()
+// крихт не лишають — новий fetch до /api краще вести через ці обгортки.
+function crumb(method: string, path: string, res: Response | null, started: number) {
+  const status = res?.status ?? 0;
+  const reqId = res?.headers.get("X-Request-Id") ?? undefined;
+  record({ type: "api", text: `${method} ${path.split("?")[0]}`, status, ms: Date.now() - started, reqId });
+  if (status >= 500 && !/\/feedback(\/|$)/.test(path)) prompt({ origin: "api5xx", message: `${method} ${path.split("?")[0]} → ${status}${reqId ? ` (req ${reqId})` : ""}` });
+}
+
 // Thin fetch wrapper — same-origin, cookie session.
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "grafik", ...(opts.headers || {}) },
-    ...opts,
-  });
+  const started = Date.now();
+  const method = (opts.method ?? "GET").toUpperCase();
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "grafik", ...(opts.headers || {}) },
+      ...opts,
+    });
+  } catch (e) { crumb(method, path, null, started); throw e; }
+  crumb(method, path, res, started);
   if (res.status === 401) {
     // session expired — bounce to login
     if (!location.pathname.startsWith("/login")) location.href = "/login";
@@ -43,7 +60,11 @@ export const del = <T = any>(p: string) => api<T>(p, { method: "DELETE" });
 // Multipart upload — let the browser set the multipart boundary itself, so we
 // must omit the JSON Content-Type that `api()` sends by default.
 export async function upload<T = any>(p: string, form: FormData): Promise<T> {
-  const res = await fetch(`/api${p}`, { method: "POST", credentials: "include", headers: { "X-Requested-With": "grafik" }, body: form });
+  const started = Date.now();
+  let res: Response;
+  try { res = await fetch(`/api${p}`, { method: "POST", credentials: "include", headers: { "X-Requested-With": "grafik" }, body: form }); }
+  catch (e) { crumb("POST", p, null, started); throw e; }
+  crumb("POST", p, res, started);
   if (res.status === 401) {
     if (!location.pathname.startsWith("/login")) location.href = "/login";
     throw new Error("unauthorized");
@@ -51,7 +72,7 @@ export async function upload<T = any>(p: string, form: FormData): Promise<T> {
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-  if (!res.ok) throw new Error(errorMessage(data, res.status));
+  if (!res.ok) { const err: any = new Error(errorMessage(data, res.status)); err.status = res.status; err.data = data; throw err; }
   return data as T;
 }
 
@@ -61,7 +82,8 @@ export type ShiftCode = "1" | "2" | "3" | "4" | "5" | "6";
 
 export interface Me { id: number; name: string; username: string; isMain: boolean; role: import("./roles").Role; roleLabel: string; caps: string[]; pages: string[]; lang?: "uk" | "en" | "ru" | null; prefs?: Record<string, unknown>;
   // доступ по містах/фабриках (null = усе) і ролі, на які можна запрошувати (01.10.2026)
-  scope?: { cities: string[]; factoryIds: number[] } | null; canInviteRoles?: string[] }
+  scope?: { cities: string[]; factoryIds: number[] } | null; canInviteRoles?: string[];
+  buildVersion?: string; sessionSince?: string | null } // «sha7 дата» збірки бекенду й початок сесії — лягають у зголошення з панелі
 export interface RoleDef { id: number; key: string; label: string; isSystem: boolean; pages: string[]; caps: string[]; notify: string[]; inUse: number }
 export interface AdvanceRequest {
   id: number; workerId: number; name: string | null; code: string | null; factory: string | null;

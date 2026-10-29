@@ -39,7 +39,7 @@ const SECRET = process.env.SESSION_SECRET || "dev-insecure-secret-change-me";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "grafik_session";
 
-import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, isReadOnly, READ_ONLY_ALLOWED_PATHS, type Role, type Capability } from "./roles";
+import { OWNER, hasCap, PAGE_KEYS, CAP_KEYS, isReadOnly, READ_ONLY_ALLOWED_PATHS, READ_ONLY_ALLOWED_PREFIXES, type Role, type Capability } from "./roles";
 import { resolveScope, type AdminScope } from "./scope";
 
 type SessionPayload = { adminId: number; name: string; role: Role; exp: number; tv?: number; sid?: string };
@@ -132,7 +132,7 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
     // авторизований запит, тож жоден новий ендпойнт не обійде заборону мутацій.
     if (!admin.isMain && isReadOnly(role, access.caps) && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
       const path = req.originalUrl.split("?")[0]!.replace(/^\/api(?=\/)/, "");
-      if (!(READ_ONLY_ALLOWED_PATHS as readonly string[]).includes(path)) {
+      if (!(READ_ONLY_ALLOWED_PATHS as readonly string[]).includes(path) && !READ_ONLY_ALLOWED_PREFIXES.some(p => path === p || path.startsWith(p + "/"))) {
         return res.status(403).json({ error: "Режим перегляду: ця роль не може вносити змін", code: "readOnly" });
       }
     }
