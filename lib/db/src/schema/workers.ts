@@ -2450,6 +2450,16 @@ export const contractsTable = pgTable("contracts", {
   workerSignaturePath: text("worker_signature_path"), // PNG підпису (доказова база) — потрібен повторно при companySign-рендері
   companySignedBy: integer("company_signed_by").references(() => adminsTable.id),
   companySignedAt: timestamp("company_signed_at"), // коли компанія завершила підпис (фінальний signed)
+  // Виповідзення НА УМОВІ (29.10.2026, рішення власника): останній робочий день за цією умовою,
+  // ініціатор (worker | company — типово працівник), згенерований пакет wypowiedzenia.
+  // У дату: умова закривається (date_to), і якщо на фабриці не лишилось інших живих умов —
+  // endWorkerAtFactory/fireWorker (services/contractTermination.ts). Профільне workers.termination_*
+  // виставляється звідси ж, коли умова остання на фабриці.
+  terminationDate: date("termination_date"),
+  terminationBy: text("termination_by"),               // worker | company
+  terminationDocId: integer("termination_doc_id"),     // contracts.id пакета wypowiedzenia (без FK — self-reference)
+  terminationSetAt: timestamp("termination_set_at"),
+  terminationSetBy: integer("termination_set_by").references(() => adminsTable.id),
   supersededAt: timestamp("superseded_at"),
   declineReason: text("decline_reason"),
   expiryWarnedAt: timestamp("expiry_warned_at"),

@@ -23,7 +23,7 @@ import {
   workersTable, factoriesTable, companiesTable, documentTemplatesTable,
 } from "@workspace/db";
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import { authRequired, requireCap, type AuthedRequest } from "../lib/auth";
+import { authRequired, requireCap, requireAnyCap, type AuthedRequest } from "../lib/auth";
 import { factoryInScope } from "../lib/scope";
 import { KSIEG_STD_BRUTTO } from "../services/svodni";
 import { WORKER_DOCS_DIR, UPLOADS_ROOT, makeStoredName, sniffDocMime, compressUploadImage } from "../lib/uploads";
@@ -569,6 +569,25 @@ router.post("/contracts/:id/annex", WD, async (req: AuthedRequest, res) => {
   } catch (e: any) {
     fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося створити аннекс");
   }
+});
+
+// ── Виповідзення на умові (29.10.2026): останній робочий день + ініціатор → wypowiedzenie цієї умови на
+// підпис одразу; остання жива умова на фабриці → профільне виповідзення по фабриці (services/contractTermination.ts)
+const LIFECYCLE = requireAnyCap("editData", "workerLifecycle");
+router.post("/contracts/:id/termination", LIFECYCLE, async (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  const date = typeof req.body?.date === "string" ? req.body.date : "";
+  const by = req.body?.by === "company" ? "company" : "worker";
+  try {
+    const { setContractTermination } = await import("../services/contractTermination");
+    ok(res, await setContractTermination(id, { date, by }, req.admin?.adminId ?? null));
+  } catch (e: any) { fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося поставити виповідзення"); }
+});
+router.delete("/contracts/:id/termination", LIFECYCLE, async (req: AuthedRequest, res) => {
+  try {
+    const { clearContractTermination } = await import("../services/contractTermination");
+    ok(res, await clearContractTermination(Number(req.params.id), req.admin?.adminId ?? null));
+  } catch (e: any) { fail(res, /не знайдено/i.test(e?.message ?? "") ? 404 : 400, e?.message ?? "Не вдалося скасувати виповідзення"); }
 });
 
 // Дата може з'явитись у БУДЬ-якому нетермінальному статусі, навіть після

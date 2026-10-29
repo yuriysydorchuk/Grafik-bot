@@ -8,7 +8,7 @@ import { useBack } from "../lib/nav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift,
+  ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift, X,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
   Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge, RotateCcw, RotateCw,
 } from "lucide-react";
@@ -1076,12 +1076,15 @@ type ContractSummary = {
   companySignedAt: string | null; supersedesId: number | null;
   companyId: number | null; factoryName: string | null; companyName: string | null;
   files: { id: number; title: string; signed: boolean }[];
+  data?: Record<string, string> | null; // _forContractId / _extendsContractId — подієвий документ, не умова
+  // виповідзення на умові (29.10.2026): останній робочий день, ініціатор, пакет wypowiedzenia
+  terminationDate?: string | null; terminationBy?: "worker" | "company" | null; terminationDocId?: number | null;
 };
 type ContractFileRow = { id: number; title: string; sortOrder: number; unsignedSha256: string | null; signedSha256: string | null };
 type DocSetItem = { id: number; kind: string; title: string };
 const KIND_LABEL: Record<string, string> = {
   umowa: "Umowa", regulamin: "Regulamin", zus: "ZUS", tax: "Podatkowe", ppk: "PPK", bhp: "BHP",
-  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", aneks: "Aneks — przedłużenie", zcna: "ZUS ZCNA (rodzina)",
+  wniosek_konto: "Wniosek — konto", wniosek_reka: "Wniosek — do rąk", wniosek_zaliczki: "Wniosek — zaliczki", wniosek_chorobowe: "Wniosek — chorobowe", zaswiadczenie: "Zaświadczenie o zatrudnieniu", wypowiedzenie: "Wypowiedzenie umowy", wypowiedzenie_firma: "Wypowiedzenie umowy (od firmy)", aneks: "Aneks — przedłużenie", zcna: "ZUS ZCNA (rodzina)",
   andros_extra: "Andros — додатковий", sprzatanie_umowa: "Sprzątanie", custom: "Інше",
 };
 
@@ -1564,6 +1567,9 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   const canEditDates = !archived && !["cancelled", "superseded", "expired", "declined"].includes(c.status);
   const cancelMut = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/cancel`), onSuccess: () => { onSaved(); toast.success(t("Скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const [annexOpen, setAnnexOpen] = useState(false);
+  const [termOpen, setTermOpen] = useState(false); // виповідзення на умові
+  const isEventDoc = !!(c.data?._forContractId || c.data?._extendsContractId);
+  const clearTerm = useMutation({ mutationFn: () => del(`/contracts/${c.id}/termination`), onSuccess: () => { onSaved(); toast.success(t("Виповідзення скасовано")); }, onError: (e: any) => toast.error(e.message) });
   const finalize = useMutation({ mutationFn: (id: number) => post(`/contracts/${id}/finalize`), onSuccess: () => { onSaved(); toast.success(t("Підписано від компанії — пакет завершено")); }, onError: (e: any) => toast.error(e.message) });
   const send = useMutation({
     mutationFn: (id: number) => post<{ notified: boolean; link: string | null; bundledCount: number }>(`/contracts/${id}/send`),
@@ -1589,6 +1595,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
   return (
     <div className={cls}>
       {annexOpen && <AnnexModal contractId={c.id} current={c} onClose={() => setAnnexOpen(false)} onSaved={() => { setAnnexOpen(false); onSaved(); }} />}
+      {termOpen && <ContractTerminationModal contract={c} workerId={workerId} onClose={() => setTermOpen(false)} onSaved={() => { setTermOpen(false); onSaved(); }} />}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <Badge color={st.color}>{t(st.label)}</Badge>
         {newVersion && <span className="text-xs text-slate-500">{t("нова версія")}</span>}
@@ -1606,9 +1613,19 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
           </span>
         )}
         {c.supersedesId && <span className="text-xs text-slate-400" title={t("Замінює попередній пакет")}>↺ #{c.supersedesId}</span>}
+        {c.terminationDate && (
+          <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs text-amber-800" title={t("Виповідзення на цій умові: у цю дату умова закриється; якщо це остання умова на фабриці — робота на фабриці закінчиться")}>
+            <UserX className="h-3 w-3" /> {t("виповідзення")} {new Date(c.terminationDate + "T00:00:00").toLocaleDateString("uk-UA")} · {c.terminationBy === "company" ? t("від фірми") : t("від працівника")}
+            {c.terminationDocId && <span className="text-amber-600">· wypowiedzenie #{c.terminationDocId}</span>}
+            {!archived && <button type="button" onClick={async () => { if (await confirm({ title: t("Скасувати виповідзення?"), message: t("Дата зніметься з умови (і з профілю, якщо походила звідси); непідписане wypowiedzenie скасується."), danger: true, confirmText: t("Скасувати виповідзення") })) clearTerm.mutate(); }} className="ml-1 text-amber-700 hover:text-rose-600" title={t("Скасувати виповідзення")}><X className="h-3 w-3" /></button>}
+          </span>
+        )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {!archived && c.status === "signed" && c.factoryId != null && (
             <button type="button" onClick={() => setAnnexOpen(true)} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200" title={t("Аннекс на продовження умови — документ одразу на підпис працівнику")}>{t("Аннекс")}</button>
+          )}
+          {!archived && ["signed", "worker_signed"].includes(c.status) && c.factoryId != null && !isEventDoc && !c.terminationDate && (
+            <button type="button" onClick={() => setTermOpen(true)} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100" title={t("Виповідзення цієї умови: дата останнього дня + ініціатор → wypowiedzenie одразу на підпис; у дату умова закриється")}>{t("Виповідзення")}</button>
           )}
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
             <button onClick={() => { if (!c.dateFrom && !window.confirm(t("Дата початку умови не вказана — надіслати на підпис без дати? Дописати її можна буде пізніше."))) return; send.mutate(c.id); }} disabled={send.isPending} className="rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">{t("Надіслати на підпис")}</button>
@@ -1753,6 +1770,51 @@ function WorkerFamily({ workerId }: { workerId: number }) {
     </>
   );
 }
+// Виповідзення на умові (29.10.2026, рішення власника): останній робочий день + ініціатор (типово працівник,
+// за потреби фірма) → POST /contracts/:id/termination → wypowiedzenie цієї умови одразу на підпис; остання жива
+// умова на фабриці → профільне виповідзення по фабриці (крон / негайно, якщо дата настала). Після збереження —
+// пропозиція листа роботодавцю (як у профільному рядку).
+function ContractTerminationModal({ contract, workerId, onClose, onSaved }: { contract: ContractSummary; workerId: number; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const [date, setDate] = useState("");
+  const [by, setBy] = useState<"worker" | "company">("worker");
+  const [mail, setMail] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: () => post<{ docId: number | null; factoryLevel: boolean; firedNow: boolean; othersOnFactory: number }>(`/contracts/${contract.id}/termination`, { date, by }),
+    onSuccess: r => {
+      qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-contracts", workerId] }); qc.invalidateQueries({ queryKey: ["tasks"] });
+      toast.success(r.firedNow ? t("Дата вже настала — умову закрито, роботу на фабриці закінчено") : r.factoryLevel ? t("Виповідзення поставлено: умова й робота на фабриці закінчаться {date}", { date }) : t("Виповідзення поставлено лише на цю умову (на фабриці є інша жива умова)"), {
+        description: r.docId ? t("Wypowiedzenie згенеровано — задача «надіслати на підпис» у виконавця") : t("Wypowiedzenie не згенеровано (нема шаблону або вже є)"),
+      });
+      setMail(date);
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  if (mail) return <TerminationEmailModal workerId={workerId} date={mail} factoryId={contract.factoryId} onClose={() => { setMail(null); onSaved(); }} />;
+  return (
+    <Modal open onClose={onClose} title={`${t("Виповідзення умови")} — ${contract.factoryName ?? ""}${contract.companyName ? ` · ${contract.companyName}` : ""}`}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">{t("Умова")}: {fmtPeriod(contract) || t("без дат")}. {t("У вказану дату умова закриється; wypowiedzenie цієї умови піде на підпис одразу. Якщо це остання чинна умова людини на фабриці, у цю ж дату закінчиться робота на фабриці (остання фабрика — звільнення з ZWUA).")}</p>
+        <div><Label>{t("Останній робочий день")}</Label><Input type="date" value={date} min={contract.dateFrom ?? undefined} max={contract.dateTo ?? undefined} onChange={e => setDate(e.target.value)} autoFocus /></div>
+        <div>
+          <Label>{t("Ініціатор")}</Label>
+          <Select value={by} onChange={e => setBy(e.target.value as "worker" | "company")}>
+            <option value="worker">{t("працівник (wypowiedzenie od zleceniobiorcy — підписує працівник)")}</option>
+            <option value="company">{t("фірма (wypowiedzenie od zleceniodawcy — печатка фірми, працівник підписує отримання)")}</option>
+          </Select>
+        </div>
+        {date && date <= today && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{t("Дата вже настала — усе застосується одразу.")}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!date}><UserX className="h-4 w-4" /> {t("Поставити виповідзення")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // Аннекс на продовження умови (рішення власника 10.09.2026): нова дата → POST /contracts/:id/annex →
 // документ kind=aneks одразу на підпис працівнику; після підпису date_to умови подовжується.
 function AnnexModal({ contractId, current, onClose, onSaved }: { contractId: number; current: ContractSummary | null; onClose: () => void; onSaved: () => void }) {
@@ -1860,7 +1922,8 @@ function ContractPdfPreview({ url }: { url: string }) {
 // сталий пакет (factoryId=null): ZUS/tax/PPK/BHP/wniosek. Чекліст авторезолвиться
 // (factory > company > all), кожен пункт можна вручну зняти/додати перед генерацією.
 const todayIso = () => new Date().toISOString().slice(0, 10);
-const yearAheadIso = () => { const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d.toISOString().slice(0, 10); };
+// кінець умови/комплекту типово = кінець поточного року (рішення власника 29.10.2026; іншу дату правлять руками)
+const endOfYearIso = (from?: string) => `${(from && /^\d{4}/.test(from) ? from.slice(0, 4) : String(new Date().getFullYear()))}-12-31`;
 
 function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, factories, employers, standardSigned, onClose, onSaved }: {
   workerId: number; defaultFactoryId: number | null; defaultCompanyId?: number | null; factories: Factory[]; employers: EmployerRef[];
@@ -1895,7 +1958,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
   // wniosek): факторі-пакет (Umowa, іноді разом з Regulamin) цілком легально
   // йде БЕЗ дат (дата роботи невідома заздалегідь) — не форсувати тут дефолт.
   const [dateFrom, setDateFrom] = useState(defaultFactoryId ? "" : todayIso());
-  const [dateTo, setDateTo] = useState(defaultFactoryId ? "" : yearAheadIso());
+  const [dateTo, setDateTo] = useState(endOfYearIso());
   // факторі-пакет: «Діє від» підставляється з першого робочого дня / дати працевлаштування (рішення 08.09.2026) — порожнє лишається дозволеним
   const [dateTouched, setDateTouched] = useState(false);
   useEffect(() => {
@@ -2078,7 +2141,7 @@ function GenerateDocumentsModal({ workerId, defaultFactoryId, defaultCompanyId, 
         </div>
         <div className="text-xs text-slate-400">
           {isStandard
-            ? t("За замовчуванням — рік від сьогодні, можна відредагувати вручну.")
+            ? t("За замовчуванням — кінець поточного року (31.12), іншу дату правте вручну.")
             : t("Для умови дати можна лишити порожніми й дописати пізніше, коли вони стануть відомі.")}
         </div>
 

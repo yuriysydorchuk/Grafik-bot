@@ -37,7 +37,7 @@ const MODIFIER_RE = /^(data:|format:|język:)/;
 const COMPANY_SIG_RE = /podpis.*pracodawc|piecz[eę]ć/i;
 // Подієві документи: генеруються ланцюжками (звільнення — świadectwo/wypowiedzenie, кінець
 // умови — zaświadczenie), НЕ входять в автонабір «Згенерувати документи».
-export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie", "aneks", "zcna"]);
+export const EVENT_KINDS = new Set(["swiadectwo", "zaswiadczenie", "wypowiedzenie", "wypowiedzenie_firma", "aneks", "zcna"]);
 // Маркери в contracts.data (снапшот плейсхолдерів): підкреслення = службові, не для шаблонів.
 export const DATA_AUTO_FINALIZE = "_autoFinalize"; // "1" → після підпису працівника компанія підписує автоматично
 export const DATA_SOURCE_CONTRACT = "_forContractId"; // id умови, до якої згенеровано подієвий документ

@@ -86,7 +86,7 @@ export interface ExportRow {
   extraFactories: string[]; extraFactoryIds: number[]; positionName: string | null; kzisCode: string | null;
   legalStatus: string | null; effectiveLegalStatus: string | null; legalSource: string; student: boolean; stud26: boolean;
   legality: { overall: string; stay: string | null; work: string | null; nextExpiryAt: string | null } | null;
-  umowa: { status: string; dateFrom: string | null; dateTo: string | null; signedAt: string | null; companySignedAt: string | null; sentAt: string | null; factoryName: string | null; companyName: string | null; payoutMethod: string | null; expired: boolean } | null;
+  umowa: { status: string; dateFrom: string | null; dateTo: string | null; signedAt: string | null; companySignedAt: string | null; sentAt: string | null; factoryName: string | null; companyName: string | null; payoutMethod: string | null; expired: boolean; terminationDate: string | null; terminationBy: string | null } | null;
   contracts: { status: string; dateFrom: string | null; dateTo: string | null; factoryName: string | null; companyName: string | null; concludedAt: string | null }[]; // усі живі umowy людини
   q: typeof workerQuestionnairesTable.$inferSelect | null;
   passport: { number: string | null; issuedAt: string | null; expiresAt: string | null } | null;
@@ -155,7 +155,7 @@ export async function loadExportRows(f: ExportFilters, scope: AdminScope | null 
   const contracts = await db.select({
     id: contractsTable.id, workerId: contractsTable.workerId, factoryId: contractsTable.factoryId, status: contractsTable.status,
     dateFrom: contractsTable.dateFrom, dateTo: contractsTable.dateTo, signedAt: contractsTable.signedAt, companySignedAt: contractsTable.companySignedAt, sentAt: contractsTable.sentAt,
-    payoutMethod: contractsTable.payoutMethod, companyId: contractsTable.companyId,
+    payoutMethod: contractsTable.payoutMethod, companyId: contractsTable.companyId, terminationDate: contractsTable.terminationDate, terminationBy: contractsTable.terminationBy,
     factoryCompanyId: factoriesTable.companyId, factoryName: factoriesTable.name,
   }).from(contractsTable).leftJoin(factoriesTable, eq(contractsTable.factoryId, factoriesTable.id))
     .where(and(inArray(contractsTable.workerId, ids), inArray(contractsTable.status, LIVE))).orderBy(desc(contractsTable.id));
@@ -208,7 +208,7 @@ export async function loadExportRows(f: ExportFilters, scope: AdminScope | null 
       umowa: um ? {
         status: um.status, dateFrom: dstr(um.dateFrom), dateTo: dstr(um.dateTo), signedAt: dstr(um.signedAt), companySignedAt: dstr(um.companySignedAt), sentAt: dstr(um.sentAt),
         factoryName: um.factoryName, companyName: (um.companyId ?? um.factoryCompanyId) != null ? coById.get((um.companyId ?? um.factoryCompanyId)!)?.name ?? null : null,
-        payoutMethod: um.payoutMethod, expired: !!um.dateTo && dstr(um.dateTo)! < today,
+        payoutMethod: um.payoutMethod, expired: !!um.dateTo && dstr(um.dateTo)! < today, terminationDate: dstr(um.terminationDate), terminationBy: um.terminationBy,
       } : null,
       contracts: contracts.filter(c => c.workerId === w.id && c.factoryId != null && isUmowa(c.id)).map(c => ({
         status: c.status, dateFrom: dstr(c.dateFrom), dateTo: dstr(c.dateTo), factoryName: c.factoryName,
@@ -398,6 +398,8 @@ export const WORKER_FIELDS: ExportField[] = [
   F("umowaCompany", "Umowa — firma", "Умова — фірма", "umowa", "text", 18, r => r.umowa?.companyName ?? null),
   F("umowaPayout", "Umowa — sposób wypłaty", "Умова — спосіб виплати", "umowa", "enum", 12, r => r.umowa?.payoutMethod ?? null, [["konto", "na konto"], ["reka", "do rąk"]]),
   F("umowaDaysLeft", "Umowa — dni do końca", "Умова — днів до кінця", "umowa", "number", 10, r => r.umowa?.dateTo ? Math.round((Date.parse(r.umowa.dateTo) - Date.parse(warsawDateStr())) / 86400000) : null),
+  F("umowaTermination", "Umowa — wypowiedzenie (data)", "Умова — виповідзення (дата)", "umowa", "date", 13, r => r.umowa?.terminationDate ?? null),
+  F("umowaTerminationBy", "Umowa — wypowiedzenie (strona)", "Умова — виповідзення (ініціатор)", "umowa", "enum", 12, r => r.umowa?.terminationBy ?? null, [["worker", "pracownik"], ["company", "firma"]]),
   F("contractsCount", "Umowy — ilość", "Умов усього (живих)", "umowa", "number", 8, r => r.contracts.length),
   F("contractsList", "Umowy — lista", "Умови — перелік", "umowa", "list", 50, r => r.contracts.map(c => `${c.factoryName ?? "?"}${c.companyName ? ` (${c.companyName})` : ""} ${c.dateFrom ?? "?"}–${c.dateTo ?? "∞"} [${c.status}]${c.concludedAt ? ` zawarta ${c.concludedAt}` : ""}`)),
   F("docsList", "Dokumenty (lista)", "Документи (перелік)", "docs", "list", 40, r => r.docs.filter(d => d.status !== "missing").map(d => `${d.typeName}${d.number ? ` ${d.number}` : ""}${d.expiresAt ? ` do ${d.expiresAt}` : ""}`)),

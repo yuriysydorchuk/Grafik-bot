@@ -366,6 +366,8 @@ export function startScheduler() {
         if ((await loadTaskSettings()).rollover) { const n = await rolloverPlanned(); if (n) logger.info({ n }, "🗂 tasks rolled over"); }
       } catch (e: any) { logger.warn({ err: e?.message }, "tasks rollover failed"); }
       // виповідзення: запланована дата звільнення настала → звільнити (services/workerFire.ts)
+      try { const { applyDueContractTerminations } = await import("./contractTermination"); const n = await applyDueContractTerminations(); if (n) logger.info({ n }, "📄 contract terminations applied"); }
+      catch (e: any) { logger.warn({ err: e?.message }, "contract termination cron failed"); }
       try { const { fireDueTerminations } = await import("./workerFire"); const n = await fireDueTerminations(); if (n) logger.info({ n }, "🔥 terminations applied"); }
       catch (e: any) { logger.warn({ err: e?.message }, "termination cron failed"); }
     },

@@ -20,6 +20,7 @@ import { logger } from "../lib/logger";
 
 export const ZASW_KIND = "zaswiadczenie";
 export const WYPOW_KIND = "wypowiedzenie";
+export const WYPOW_FIRMA_KIND = "wypowiedzenie_firma"; // від фірми (виповідзення на умові з ініціатором company, 29.10.2026)
 export const ANEKS_KIND = "aneks";
 export const DATA_ENDED_AT_FACTORY = "_endedAtFactory"; // умову закрито виповідзенням по фабриці (workerFire.endWorkerAtFactory) — кінець вирішено
 const LOOKBACK_DAYS = 30; // умови, що закінчились давніше, не бекфілимо (модуль запустився 08.09.2026)
@@ -90,17 +91,22 @@ async function workplacePhrase(workerId: number, companyId: number | null, from:
 }
 
 // ── Документ звільнення для ОДНІЄЇ умови: zaświadczenie (з печаткою) або wypowiedzenie ──────
-async function issueEventDoc(opts: {
+export async function issueEventDoc(opts: {
   kind: string; contract: typeof contractsTable.$inferSelect; worker: { id: number; fullName: string }; dateTo: string;
   title: string; checklistFirst: string; stamp: boolean; actorAdminId: number | null;
-}): Promise<boolean> {
+}): Promise<boolean> { return (await issueEventDocId(opts)) != null; }
+/** Те саме, але повертає id створеного пакета (null — уже був / нема шаблону / збій). */
+export async function issueEventDocId(opts: {
+  kind: string; contract: typeof contractsTable.$inferSelect; worker: { id: number; fullName: string }; dateTo: string;
+  title: string; checklistFirst: string; stamp: boolean; actorAdminId: number | null;
+}): Promise<number | null> {
   const { contract: c, worker } = opts;
   const key = `${opts.kind}:${c.id}`;
   const legacyKey = opts.kind === ZASW_KIND ? `zasw:${c.id}` : null; // ключ першої версії крону (10.09)
   const [exists] = await db.select({ id: tasksTable.id }).from(tasksTable).where(legacyKey ? inArray(tasksTable.sourceKey, [key, legacyKey]) : eq(tasksTable.sourceKey, key));
-  if (exists) return false;
+  if (exists) return null;
   const tpl = await pickEventTemplate(opts.kind, c.factoryId, c.companyId ?? null);
-  if (!tpl) return false;
+  if (!tpl) return null;
   const assignee = await resolveAssignee({ factoryId: c.factoryId, ruleCode: "termination_doc", useScheduler: true });
   // СПЕРШУ задача (unique source_key = замок), потім документ; збій генерації → задачу прибираємо
   let task: { id: number };
@@ -112,7 +118,7 @@ async function issueEventDoc(opts: {
       checklist: normalizeChecklist([{ id: "", text: opts.checklistFirst, done: false }, { id: "", text: "Надіслати працівнику на підпис", done: false, auto: "sent" }]),
       notify: false,
     }, opts.actorAdminId);
-  } catch { return false; }
+  } catch { return null; }
   try {
     const doc = await generateContract({
       workerId: worker.id, factoryId: c.factoryId, companyId: c.companyId ?? null, templateIds: [tpl.id],
@@ -130,11 +136,11 @@ async function issueEventDoc(opts: {
     else await db.update(contractsTable).set({ status: "approved", updatedAt: new Date() }).where(eq(contractsTable.id, doc.id));
     await db.update(tasksTable).set({ contractId: doc.id, autoParams: sql`${tasksTable.autoParams} || ${JSON.stringify({ contractId: doc.id, stamped })}::jsonb`, updatedAt: new Date() }).where(eq(tasksTable.id, task.id));
     if (assignee) await notifyAdminById(assignee, "tasks", `📄 *${mdEsc(tpl.title)}* — ${mdEsc(worker.fullName)}: документ готовий, надішли на підпис (задача)`, { parse_mode: "Markdown" }).catch(() => {});
-    return true;
+    return doc.id;
   } catch (e: any) {
     await db.delete(tasksTable).where(eq(tasksTable.id, task.id)).catch(() => {});
     logger.warn({ err: e?.message, kind: opts.kind, contractId: c.id, workerId: worker.id }, "event document generation failed");
-    return false;
+    return null;
   }
 }
 
@@ -153,7 +159,7 @@ export async function issueTerminationDocs(worker: { id: number; fullName: strin
     if (events.has(c.id)) continue;
     if (await issueEventDoc({ kind: ZASW_KIND, contract: c, worker, dateTo: dateStr(c.dateTo)!, stamp: true, actorAdminId,
       title: `Zaświadczenie o zatrudnieniu — надіслати на підпис: ${worker.fullName}`, checklistFirst: "Переглянути zaświadczenie (PDF у задачі, печатка фірми вже стоїть)" })) stats.zaswiadczenie++;
-    if (earlyContractIds.includes(c.id) && await issueEventDoc({ kind: WYPOW_KIND, contract: c, worker, dateTo: fireDate, stamp: false, actorAdminId,
+    if (earlyContractIds.includes(c.id) && c.terminationDocId == null && await issueEventDoc({ kind: WYPOW_KIND, contract: c, worker, dateTo: fireDate, stamp: false, actorAdminId,
       title: `Wypowiedzenie umowy zlecenia (від працівника) — надіслати на підпис: ${worker.fullName}`, checklistFirst: "Переглянути wypowiedzenie (PDF у задачі; підписує працівник)" })) stats.wypowiedzenie++;
   }
   return stats;
