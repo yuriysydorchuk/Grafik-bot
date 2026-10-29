@@ -204,9 +204,12 @@ export function HoursWeekView({ factoryId, month, weekStart, canEdit, onImport }
                     <FactoryWeekCell factoryId={factoryId} weekStart={weekStart} row={r} canEdit={canEdit} onSaved={invalidate} />
                   </td>
                   <td className={`px-2 py-1.5 text-center ${DIFF_CELL[ds]}`}><WeekAckCell f={r.factory} /></td>
-                  <td className={`px-2 py-1.5 text-center text-xs ${ds === "mismatch" ? "font-semibold text-red-600" : "text-slate-400"}`}>
-                    {rep != null && fac != null ? round(rep - fac) || "0" : ""}
-                  </td>
+                  {/* різниця = фабрика − працівник: у фабрики більше → «+» зелено, у працівника більше → «−» червоно */}
+                  {(() => {
+                    const diff = rep != null && fac != null ? round(fac - rep) : null;
+                    const tone = ds !== "mismatch" || diff == null || Math.abs(diff) <= 0.01 ? "text-slate-400" : diff > 0 ? "font-semibold text-emerald-600" : "font-semibold text-red-600";
+                    return <td className={`px-2 py-1.5 text-center text-xs ${tone}`}>{diff != null ? `${diff > 0 ? "+" : ""}${diff}` : ""}</td>;
+                  })()}
                   <td className="px-2 py-1.5 text-center text-xs">
                     {r.report?.submittedAt ? <span className="text-emerald-600" title={new Date(r.report.submittedAt).toLocaleString("uk-UA")}>✅ {t("подав")}</span>
                       : r.report?.remindSentAt ? <span className="text-amber-600">{t("нагадано")}</span>

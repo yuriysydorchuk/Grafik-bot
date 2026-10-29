@@ -21,9 +21,13 @@ after(async () => { if (hasTestDb) await closeDb(); });
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 const hireTasks = (workerId: number) => db.select().from(tasksTable).where(and(eq(tasksTable.source, HIRE_SOURCE), eq(tasksTable.workerId, workerId)));
 
-async function importContract(workerId: number, factoryId: number, companyId: number) {
-  const r = await request(app).post(`/api/workers/${workerId}/contracts/import`).set("Cookie", owner).set(H)
-    .field("factoryId", String(factoryId)).field("companyId", String(companyId)).field("dateFrom", "2026-10-05").attach("file", PDF, "umowa.pdf");
+// force=1 — друга умова тієї ж фірми/фабрики/періоду поруч із підписаною з файлом (з 29.10.2026 імпорт
+// без force прикріплює скан до наявної й не створює дубля, routes/contracts.ts)
+async function importContract(workerId: number, factoryId: number, companyId: number, force = false) {
+  let q = request(app).post(`/api/workers/${workerId}/contracts/import`).set("Cookie", owner).set(H)
+    .field("factoryId", String(factoryId)).field("companyId", String(companyId)).field("dateFrom", "2026-10-05");
+  if (force) q = q.field("force", "1");
+  const r = await q.attach("file", PDF, "umowa.pdf");
   assert.equal(r.status, 200, JSON.stringify(r.body));
   await wait(300); // хук best-effort, після відповіді
   return r.body.id as number;
@@ -110,7 +114,7 @@ test("ревʼю codex: missing-рядок ZUA, заповнений після 
   const [miss] = await db.insert(workerDocumentsTable).values({ workerId: w!.id, docTypeId: zua!.id, title: "ZUS ZUA", status: "missing" }).returning();
   await wait(50);
   const a = await importContract(w!.id, fa!.id, co!.id);
-  const b = await importContract(w!.id, fa!.id, co!.id);
+  const b = await importContract(w!.id, fa!.id, co!.id, true);
   let tasks = await hireTasks(w!.id);
   assert.equal(tasks.length, 1, "дві умови однієї фірми — одна задача"); assert.equal(tasks[0]!.contractId, a);
   // умову A скасовано → задача перепривʼязується до чинної B, не закривається
@@ -122,7 +126,7 @@ test("ревʼю codex: missing-рядок ZUA, заповнений після 
   assert.equal(await resolveHireTasksNow(w!.id), 1);
   assert.equal((await hireTasks(w!.id))[0]!.status, "auto_resolved");
   // закрита задача звільняє ключ: нова умова → нова задача з тим самим ключем
-  const c = await importContract(w!.id, fa!.id, co!.id);
+  const c = await importContract(w!.id, fa!.id, co!.id, true);
   tasks = await hireTasks(w!.id);
   assert.equal(tasks.length, 2); assert.equal(tasks.find(t => t.status === "open")?.contractId, c);
   assert.equal(tasks.find(t => t.status === "open")?.sourceKey, `hire:${w!.id}:${co!.id}`);

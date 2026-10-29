@@ -56,3 +56,38 @@ test("імпорт: невалідна дата → 400, а не тиха без
   assert.equal(r.status, 400);
   assert.equal((await db.select().from(contractsTable)).length, 0);
 });
+
+test("імпорт: та сама умова вже є без файлу (HRappka) → скан прикріплюється, дубль не створюється; з файлом → 409, force=1 → окрема", opts, async () => {
+  const [co] = await db.insert(companiesTable).values({ name: "ESO" }).returning();
+  const [fa] = await db.insert(factoriesTable).values({ name: "DAWTONA", companyId: co!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Nina H", factoryId: fa!.id, companyId: co!.id, isActive: true }).returning();
+  const [hr] = await db.insert(contractsTable).values({ workerId: w!.id, factoryId: fa!.id, companyId: co!.id, status: "signed", dateFrom: "2026-09-16", dateTo: "2026-12-31", data: { imported: true, source: "hrappka" } }).returning();
+  const send = (extra: Record<string, string> = {}) => {
+    let q = request(app).post(`/api/workers/${w!.id}/contracts/import`).set("Cookie", owner).set(H)
+      .field("factoryId", String(fa!.id)).field("companyId", String(co!.id)).field("dateFrom", "2026-09-16").field("dateTo", "2026-12-31");
+    for (const [k, v] of Object.entries(extra)) q = q.field(k, v);
+    return q.attach("file", PDF, "signed_Umowa 10 9 2026.pdf");
+  };
+  const r1 = await send();
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  assert.equal(r1.body.attachedTo, hr!.id);
+  assert.equal((await db.select().from(contractsTable).where(eq(contractsTable.workerId, w!.id))).length, 1, "другої умови нема");
+  const files = await db.select().from(contractFilesTable).where(eq(contractFilesTable.contractId, hr!.id));
+  assert.equal(files.length, 1); assert.ok(files[0]!.signedPath);
+  const [c] = await db.select().from(contractsTable).where(eq(contractsTable.id, hr!.id));
+  assert.equal((c!.data as any).scanAttached, true); assert.ok(c!.signedAt);
+
+  const r2 = await send();
+  assert.equal(r2.status, 409); assert.equal(r2.body.code, "duplicate"); assert.equal(r2.body.contractId, hr!.id);
+  assert.equal((await db.select().from(contractsTable).where(eq(contractsTable.workerId, w!.id))).length, 1);
+
+  const r3 = await send({ force: "1" });
+  assert.equal(r3.status, 200, JSON.stringify(r3.body));
+  assert.equal(r3.body.attachedTo, undefined);
+  assert.equal((await db.select().from(contractsTable).where(eq(contractsTable.workerId, w!.id))).length, 2);
+
+  // інша фабрика / період без перетину — звичайний імпорт
+  const r4 = await request(app).post(`/api/workers/${w!.id}/contracts/import`).set("Cookie", owner).set(H)
+    .field("factoryId", String(fa!.id)).field("companyId", String(co!.id)).field("dateFrom", "2027-01-01").attach("file", PDF, "u.pdf");
+  assert.equal(r4.status, 200); assert.equal(r4.body.attachedTo, undefined);
+});

@@ -726,6 +726,14 @@ router.patch("/workers/:id", RW, async (req, res) => {
   ok(res, { ...stripWorkerEcho(w, req), supersedeContractId });
 });
 
+// Дата звільнення вже звільненого — services/workerFire.ts changeFireDate (22.10.2026)
+router.put("/workers/:id/fire-date", LIFECYCLE, async (req, res) => {
+  const { changeFireDate } = await import("../services/workerFire");
+  const r = await changeFireDate(Number(req.params.id), String(req.body?.date ?? ""), (req as AuthedRequest).admin?.adminId ?? null);
+  if (!r.ok) return fail(res, 400, r.error);
+  ok(res, r);
+});
+
 router.post("/workers/:id/fire", LIFECYCLE, async (req, res) => {
   const id = Number(req.params.id);
   const offerReport = !!(req.body ?? {}).offerReport;
@@ -2564,6 +2572,7 @@ router.post("/factories", RW, async (req, res) => {
   if (showWorkerHours !== undefined) values.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) values.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) values.requiresSanepid = !!req.body.requiresSanepid;
+  if (req.body?.weeklyHours !== undefined) values.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   if (req.body?.responsibleAdminId !== undefined) values.responsibleAdminId = req.body.responsibleAdminId ? Number(req.body.responsibleAdminId) : null; // задачі (D7)
   if (req.body?.schedulerAdminId !== undefined) values.schedulerAdminId = req.body.schedulerAdminId ? Number(req.body.schedulerAdminId) : null;
   if (req.body?.isOffice !== undefined) values.isOffice = !!req.body.isOffice;
@@ -2572,7 +2581,6 @@ router.post("/factories", RW, async (req, res) => {
   if (req.body?.fuelCommute !== undefined) values.fuelCommute = !!req.body.fuelCommute;
   if (req.body?.paidTransport !== undefined) values.paidTransport = !!req.body.paidTransport;
   if (req.body?.transportFeePerShift !== undefined) values.transportFeePerShift = parseRate(req.body.transportFeePerShift);
-  if (req.body?.weeklyHours !== undefined) values.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   if (req.body?.transportFeeMonthCap !== undefined) values.transportFeeMonthCap = parseRate(req.body.transportFeeMonthCap);
   if (req.body?.contractDuties !== undefined) values.contractDuties = String(req.body.contractDuties ?? "").trim() || null;
   if (canFinance(req)) {
@@ -2645,6 +2653,7 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (showWorkerHours !== undefined) patch.showWorkerHours = !!showWorkerHours;
   if (showCode !== undefined) patch.showCode = !!showCode;
   if (req.body?.requiresSanepid !== undefined) patch.requiresSanepid = !!req.body.requiresSanepid;
+  if (req.body?.weeklyHours !== undefined) patch.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   if (req.body?.isOffice !== undefined) patch.isOffice = !!req.body.isOffice; // «Biuro» — офісні працівники
   // модуль «Задачі» (D7): відповідальний за фабрику / графікова фабрики — admins.id
   if (req.body?.responsibleAdminId !== undefined) patch.responsibleAdminId = req.body.responsibleAdminId ? Number(req.body.responsibleAdminId) : null;
@@ -2653,7 +2662,6 @@ router.patch("/factories/:id", RW, async (req, res) => {
   if (req.body?.minDaysPerWeek !== undefined) {
     const n = Number(req.body.minDaysPerWeek);
     patch.minDaysPerWeek = Number.isInteger(n) && n >= 1 ? Math.min(7, n) : null;
-  if (req.body?.weeklyHours !== undefined) patch.weeklyHours = !!req.body.weeklyHours; // тижневий облік годин (26.10.2026)
   }
   const st = cleanStops(req.body?.stops);
   if (st) patch.stops = st;
@@ -4121,6 +4129,8 @@ router.get("/hours", RW, async (req, res) => {
     .sort((a, b) => (a.factory ?? "").localeCompare(b.factory ?? "", "uk") || a.name.localeCompare(b.name, "uk"));
   ok(res, {
     month, workers, excluded,
+    // фабрики з тижневим обліком (26.10.2026) — вкладка має підвкладки тижнів (GET /hours/weeks)
+    weeklyFactoryIds: [...facById.values()].filter(f => f.weeklyHours).map(f => f.id),
     ...(canSvodni ? { svodniDone } : {}),
     totalHours: Math.round(workers.reduce((s, w) => s + w.hours, 0) * 100) / 100,
     totalShifts: workers.reduce((s, w) => s + w.shifts, 0),
@@ -4129,8 +4139,6 @@ router.get("/hours", RW, async (req, res) => {
     totalFactoryHours: round2(workers.reduce((s, w) => s + (w.factoryHours ?? 0), 0)),
     ...(isOwner ? {
       totalNet: round2(workers.reduce((s, w) => s + (w.net ?? 0), 0)),
-    // фабрики з тижневим обліком (26.10.2026) — вкладка має підвкладки тижнів (GET /hours/weeks)
-    weeklyFactoryIds: [...facById.values()].filter(f => f.weeklyHours).map(f => f.id),
       totalGross: round2(workers.reduce((s, w) => s + (w.gross ?? 0), 0)),
       totalReportNet: round2(workers.reduce((s, w) => s + (w.reportNet ?? 0), 0)),
     } : {}),
@@ -4471,14 +4479,6 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
       parsed = weekStart ? parseWeekHoursText(req.body.text, weekStart) : parseFactoryHoursText(req.body.text);
     } else return fail(res, 400, "Потрібен файл або текст");
   } catch (e: any) { return fail(res, 400, e?.message ?? "Не вдалося розібрати файл"); }
-  if (!parsed.length) return fail(res, 400, "У файлі/тексті не знайдено жодного рядка з годинами");
-  // Матчинг по всій базі (звільнений теж міг відпрацювати місяць); активні
-  // виграють при рівних кандидатах — matchWorker сам ранжує за схожістю.
-  const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
-    .from(workersTable).where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!) : undefined); // скоуп: матчити лише своїх
-  // Профілі-дублі (однакове ім'я двічі в базі): перевага тому, хто ВЖЕ в
-  // обліку годин цього місяця на цій фабриці (явки/рапорт/години фабрики) —
-  // саме його рядок звіряється з файлом.
   // тижневий режим (26.10.2026): дні місяця з Excel → дати; беремо лише дати цього тижня
   // (день ≥ дня понеділка — місяць понеділка, менший — наступний місяць: тиждень на межі)
   if (weekStart) {
@@ -4499,6 +4499,14 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
       return true;
     });
   }
+  if (!parsed.length) return fail(res, 400, "У файлі/тексті не знайдено жодного рядка з годинами");
+  // Матчинг по всій базі (звільнений теж міг відпрацювати місяць); активні
+  // виграють при рівних кандидатах — matchWorker сам ранжує за схожістю.
+  const all = await db.select({ id: workersTable.id, fullName: workersTable.fullName, workerCode: workersTable.workerCode, isActive: workersTable.isActive })
+    .from(workersTable).where(scopeOf(req) ? workerInScopeSql(scopeOf(req)!) : undefined); // скоуп: матчити лише своїх
+  // Профілі-дублі (однакове ім'я двічі в базі): перевага тому, хто ВЖЕ в
+  // обліку годин цього місяця на цій фабриці (явки/рапорт/години фабрики) —
+  // саме його рядок звіряється з файлом.
   const inHours = new Set<number>();
   if (parseFactoryId) {
     const [y, m] = month.split("-").map(Number);

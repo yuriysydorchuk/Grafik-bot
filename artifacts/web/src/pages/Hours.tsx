@@ -960,7 +960,8 @@ function FactoryHoursCell({ w, month, canEdit }: { w: HourRow; month: string; ca
   const inner = (
     <>
       {w.factoryHours} {t("год")}
-      {st === "mismatch" && diff != null && <span className="ml-1 text-xs font-medium text-red-500">({diff > 0 ? "+" : ""}{diff})</span>}
+      {/* різниця = фабрика − працівник: «+» (у фабрики більше) зелено, «−» (у працівника більше) червоно */}
+      {st === "mismatch" && diff != null && <span className={`ml-1 text-xs font-medium ${diff > 0 ? "text-emerald-600" : "text-red-500"}`}>({diff > 0 ? "+" : ""}{diff})</span>}
       {rawMismatch && w.factoryConfirmed && <span className="ml-1 text-xs font-medium text-emerald-600">({diff! > 0 ? "+" : ""}{diff})</span>}
       {st === "match" && <Check className="ml-1 inline h-3.5 w-3.5 text-emerald-500" />}
     </>

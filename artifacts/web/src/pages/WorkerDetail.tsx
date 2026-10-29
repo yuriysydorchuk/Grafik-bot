@@ -200,9 +200,10 @@ export default function WorkerDetail() {
     onSuccess: (d) => { navigator.clipboard?.writeText(d.link).catch(() => {}); setBotInviteLink(d.link); },
     onError: (e: any) => toast.error(e.message),
   });
+  const [restoring, setRestoring] = useState(false);
   const restore = useMutation({
-    mutationFn: (force?: boolean) => post(`/workers/${id}/restore`, force ? { force: true } : {}),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Відновлено")); },
+    mutationFn: (p: { factoryId: number | null; force: boolean }) => post(`/workers/${id}/restore`, p),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-factories", id] }); setRestoring(false); toast.success(t("Відновлено")); },
     onError: (e: any) => toast.error(e.message),
   });
   // зміна з датою набуття: свод-релевантні поля відкривають модалку «від коли +
@@ -312,11 +313,7 @@ export default function WorkerDetail() {
                 </button>
               )}
               {!w.isActive && canLifecycle && (!w.doNotHire || canDeleteWorkers) && (
-                <button type="button" onClick={async () => {
-                  if (w.doNotHire) {
-                    if (await confirmDlg({ title: t("Людина в чорному списку. Повернути?"), message: `${w.doNotHireReason ?? t("без причини")}. ${t("Прапорець буде знято, профіль знову стане активним.")}`, danger: true, confirmText: t("Повернути") })) restore.mutate(true);
-                  } else if (await confirmDlg({ title: t("Відновити працівника?"), message: t("Профіль знову стане активним, історія і документи збережуться."), confirmText: t("Відновити") })) restore.mutate(false);
-                }} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100" disabled={restore.isPending}>
+                <button type="button" onClick={() => setRestoring(true)} className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100" disabled={restore.isPending}>
                   <UserCheck className="h-3.5 w-3.5" /> {t("Відновити")}
                 </button>
               )}
@@ -403,6 +400,7 @@ export default function WorkerDetail() {
             <EmploymentDateRow workerId={w.id} date={w.employmentStartDate ?? null} readOnly={w.payoutPrefKind === undefined} onRequest={requestChange} />
             <FirstWorkDateRow workerId={w.id} date={w.firstWorkDate ?? null} byFactory={w.firstWorkDates ?? []} readOnly={!canEdit} />
             {w.isActive && <TerminationRow workerId={w.id} date={w.terminationDate ?? null} factoryId={w.terminationFactoryId ?? null} primaryFactoryId={w.factoryId} factories={factories} readOnly={!canLifecycle} />}
+            {!w.isActive && w.status === "fired" && <FireDateRow workerId={w.id} firedAt={w.firedAt} readOnly={!canLifecycle} />}
             <NotifyHoursRows workerId={w.id} rows={w.notifyHoursByFactory ?? []} shared={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
@@ -609,6 +607,7 @@ export default function WorkerDetail() {
         </Modal>
       )}
       {firing && <FireModal worker={{ fullName: w.fullName, telegramId: w.telegramId }} loading={fire.isPending} onClose={() => setFiring(false)} onFire={(offerReport, date) => fire.mutate({ offerReport, date })} />}
+      {restoring && <RestoreWorkerModal worker={w} factories={factories} loading={restore.isPending} onClose={() => setRestoring(false)} onRestore={(factoryId, force) => restore.mutate({ factoryId, force })} />}
       {merging && <MergeWorkerModal worker={{ id: w.id, fullName: w.fullName }} onClose={() => setMerging(false)} />}
       {blacklisting && (
         <Modal open onClose={() => setBlacklisting(false)} title={t("У чорний список")}>
@@ -1332,6 +1331,50 @@ function StandardPackageRow({ workerId, list, onSaved, onGenerate, onImport }: {
 // Картка одного роботодавця: шапка «фабрика · фірма» +
 // рядки чинних умов. Підписана чинна + нова версія в роботі — обидві в тій самій
 // картці (нова позначена «нова версія»).
+// Повернення звільненого з профілю. Фабрика обирається явно: якщо людину звільнили з основної,
+// а нову вже додали як «додаткову» (worker_factories), саме вона пропонується типово — інакше
+// стара фабрика мовчки лишалась основною (Nina Hryhorian 29.10.2026). Сервер прибирає обраний
+// рядок додаткової, щоб основна й додаткова не збігались.
+function RestoreWorkerModal({ worker, factories, loading, onClose, onRestore }: {
+  worker: { id: number; fullName: string; factoryId: number | null; doNotHire?: boolean; doNotHireReason?: string | null };
+  factories: Factory[]; loading: boolean; onClose: () => void; onRestore: (factoryId: number | null, force: boolean) => void;
+}) {
+  const t = useT();
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const { data: extra = [], isLoading } = useQuery<WorkerFactory[]>({ queryKey: ["worker-factories", worker.id], queryFn: () => get(`/workers/${worker.id}/factories`) });
+  const live = extra.filter(r => !r.validTo || r.validTo >= today);
+  const suggested = live.find(r => (!r.validFrom || r.validFrom <= today) && !r.validTo) ?? live[0] ?? null;
+  const [factoryId, setFactoryId] = useState<string>("");
+  useEffect(() => { if (!isLoading) setFactoryId(String(suggested?.factoryId ?? worker.factoryId ?? "")); }, [isLoading, suggested?.factoryId, worker.factoryId]);
+  const oldName = factories.find(f => f.id === worker.factoryId)?.name ?? null;
+  const sorted = [...factories].sort((a, b) => a.name.localeCompare(b.name, "pl"));
+  return (
+    <Modal open onClose={onClose} title={worker.doNotHire ? t("Людина в чорному списку. Повернути?") : t("Відновити працівника?")}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">
+          {worker.doNotHire ? `${worker.doNotHireReason ?? t("без причини")}. ${t("Прапорець буде знято, профіль знову стане активним.")}` : t("Профіль знову стане активним, історія і документи збережуться.")}
+        </p>
+        <div>
+          <Label>{t("Основна фабрика після повернення")}</Label>
+          <Select value={factoryId} onChange={e => setFactoryId(e.target.value)} disabled={isLoading}>
+            <option value="">—</option>
+            {sorted.map(f => <option key={f.id} value={f.id}>{f.name}{f.id === worker.factoryId ? ` · ${t("була основною")}` : live.some(r => r.factoryId === f.id) ? ` · ${t("додаткова")}` : ""}</option>)}
+          </Select>
+          {suggested && suggested.factoryId !== worker.factoryId && (
+            <p className="mt-1 text-xs text-slate-500">{t("Звільнено з {old}; у профілі вже є додаткова фабрика — пропонуємо її основною.", { old: oldName ?? "—" })}</p>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
+          <Button variant={worker.doNotHire ? "danger" : "primary"} loading={loading} disabled={isLoading} onClick={() => onRestore(factoryId ? Number(factoryId) : null, !!worker.doNotHire)}>
+            <UserCheck className="h-4 w-4" /> {worker.doNotHire ? t("Повернути") : t("Відновити")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // Скан уже підписаної умови → POST /workers/:id/contracts/import (одразу signed, чинна для
 // осі «умова»). Для старих умов, підписаних до запуску модуля; нові — через генерацію.
 function ImportSignedContractModal({ workerId, factories, companies, employers, defaultFactoryId, onClose, onSaved }: {
@@ -1346,6 +1389,7 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
   const [signedAt, setSignedAt] = useState("");
   const [note, setNote] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [duplicate, setDuplicate] = useState<string | null>(null); // 409: така умова вже є з файлом — створити окрему лише свідомо
   // фабрика змінилась → підставити її фірму (мультифірмова — лишити вибір людині)
   const pickFactory = (v: string) => {
     setFactoryId(v);
@@ -1355,7 +1399,7 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
     setCompanyId(cid != null ? String(cid) : ""); // невідома фірма → очистити, не успадковувати від попередньої фабрики
   };
   const save = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (force: boolean) => {
       if (!file) throw new Error(t("Оберіть PDF-файл підписаної умови"));
       if (!factoryId) throw new Error(t("Вкажіть фабрику умови"));
       if (!companyId) throw new Error(t("Вкажіть нашу фірму в умові"));
@@ -1363,10 +1407,11 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
       const fd = new FormData();
       fd.append("file", file); fd.append("factoryId", factoryId); fd.append("companyId", companyId);
       fd.append("dateFrom", dateFrom); if (dateTo) fd.append("dateTo", dateTo); if (signedAt) fd.append("signedAt", signedAt); if (note.trim()) fd.append("note", note.trim());
-      return upload(`/workers/${workerId}/contracts/import`, fd);
+      if (force) fd.append("force", "1");
+      return upload<{ attachedTo?: number }>(`/workers/${workerId}/contracts/import`, fd);
     },
-    onSuccess: () => { toast.success(t("Умову додано як підписану")); onSaved(); },
-    onError: (e: any) => toast.error(e.message),
+    onSuccess: (r) => { toast.success(r?.attachedTo ? t("Скан прикріплено до наявної умови №{id}", { id: r.attachedTo }) : t("Умову додано як підписану")); onSaved(); },
+    onError: (e: any) => { if (e?.status === 409 && e?.data?.code === "duplicate") setDuplicate(e.message); else toast.error(e.message); },
   });
   const sortedFactories = [...factories].sort((a, b) => (employers.some(e => e.factoryId === b.id) ? 1 : 0) - (employers.some(e => e.factoryId === a.id) ? 1 : 0) || a.name.localeCompare(b.name, "pl"));
   return (
@@ -1392,9 +1437,15 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
           <div><Label>{t("Файл PDF")}</Label><input type="file" accept="application/pdf,.pdf" onChange={e => setFile(e.target.files?.[0] ?? null)} className="block w-full text-xs text-slate-600" /></div>
         </div>
         <div><Label>{t("Нотатка")}</Label><Input value={note} onChange={e => setNote(e.target.value)} placeholder={t("напр. звідки скан")} /></div>
+        {duplicate && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <div>{duplicate}</div>
+            <button type="button" className="mt-1 font-medium underline" onClick={() => save.mutate(true)} disabled={save.isPending}>{t("Усе одно створити окрему умову")}</button>
+          </div>
+        )}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
+          <Button onClick={() => { setDuplicate(null); save.mutate(false); }} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
         </div>
       </div>
     </Modal>
@@ -4027,6 +4078,50 @@ function FirstWorkDateRow({ workerId, date, byFactory, readOnly }: { workerId: n
 }
 
 // Виповідзення: запланована дата звільнення — крон звільняє в цю дату (дата ≤ сьогодні — одразу).
+// Дата звільнення вже звільненого (22.10.2026): «останній робочий день — це і є день звільнення»
+// (власник). Раніше її задавали лише в «Звільнити»; тепер правиться тут — журнал (було → стало),
+// календар і кінець умов, закритих звільненням (PUT /workers/:id/fire-date, services/workerFire.ts).
+function FireDateRow({ workerId, firedAt, readOnly }: { workerId: number; firedAt: string | null; readOnly?: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const confirmDlg = useConfirm();
+  const current = firedAt ? new Date(firedAt).toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : "";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(current);
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" });
+  const save = useMutation({
+    mutationFn: (date: string) => put<{ contracts: number }>(`/workers/${workerId}/fire-date`, { date }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); qc.invalidateQueries({ queryKey: ["worker-contracts"] });
+      setEditing(false);
+      toast.success(r.contracts ? t("Дату звільнення змінено; умов з новою датою закінчення: {n}", { n: r.contracts }) : t("Дату звільнення змінено"));
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const submit = async () => {
+    if (!draft || draft === current) { setEditing(false); return; }
+    if (await confirmDlg({
+      title: t("Змінити дату звільнення?"),
+      message: t("{from} → {to}. Умови, закриті звільненням, отримають нову дату закінчення; зміна буде в «Історії змін».", { from: current ? new Date(current + "T00:00:00").toLocaleDateString("uk-UA") : "—", to: new Date(draft + "T00:00:00").toLocaleDateString("uk-UA") }),
+      confirmText: t("Змінити"),
+    })) save.mutate(draft);
+  };
+  const shown = current ? new Date(current + "T00:00:00").toLocaleDateString("uk-UA") : t("не вказано");
+  return (
+    <InfoRow icon={UserX} label={t("Дата звільнення")}>
+      {editing ? (
+        <span className="flex flex-wrap items-center justify-end gap-1">
+          <input type="date" value={draft} max={today} autoFocus onChange={e => setDraft(e.target.value)} className="rounded border border-slate-300 px-1 py-0.5 text-xs" />
+          <button className="text-xs font-medium text-red-600" disabled={!draft || save.isPending} onClick={() => void submit()}>{t("Зберегти")}</button>
+          <button className="text-xs text-slate-400" onClick={() => { setEditing(false); setDraft(current); }}>{t("Скасувати")}</button>
+        </span>
+      ) : readOnly ? <span className="font-medium text-slate-700">{shown}</span> : (
+        <button className="font-medium text-slate-700 hover:text-red-600" title={t("Останній робочий день — змінити дату звільнення")} onClick={() => { setDraft(current); setEditing(true); }}>{shown}</button>
+      )}
+    </InfoRow>
+  );
+}
+
 function TerminationRow({ workerId, date, factoryId, primaryFactoryId, factories, readOnly }: { workerId: number; date: string | null; factoryId: number | null; primaryFactoryId: number | null; factories: Factory[]; readOnly?: boolean }) {
   const t = useT();
   const qc = useQueryClient();
@@ -4561,7 +4656,7 @@ function ChangesTimeline({ workerId, canUndo }: { workerId: number; canUndo?: bo
             {!!c.skippedLocked?.length && <span className="rounded bg-amber-50 px-1.5 text-xs text-amber-700">🔒 {c.skippedLocked.map(s => s.month).join(", ")}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-slate-400">
               {c.adminName ?? (isQField(c.field) ? t("працівник") : "—")} · {new Date(c.createdAt).toLocaleDateString("uk-UA")}
-              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport", "merged"].includes(c.field) && (
+              {canUndo && !isQField(c.field) && !["fired", "restored", "selfTransport", "merged", "fireDate"].includes(c.field) && (
                 <button type="button"
                   title={t("Видалити зміну: значення повернеться до попереднього, сводні перерахуються, запис зникне з історії")}
                   onClick={async () => {

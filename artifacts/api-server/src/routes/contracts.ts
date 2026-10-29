@@ -353,12 +353,53 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   const rawName = Buffer.from(req.file.originalname ?? "umowa.pdf", "latin1").toString("utf8");
   const storedName = makeStoredName(rawName.toLowerCase().endsWith(".pdf") ? rawName : `${rawName}.pdf`);
   const relPath = path.join("contracts", storedName);
-  await fs.promises.mkdir(path.join(UPLOADS_ROOT, "contracts"), { recursive: true });
-  await fs.promises.writeFile(path.join(UPLOADS_ROOT, relPath), req.file.buffer);
   const sha256 = crypto.createHash("sha256").update(req.file.buffer).digest("hex");
   const signedAt = new Date(`${signedOn}T12:00:00Z`);
   const adminId = req.admin?.adminId ?? null;
   const note = typeof b.note === "string" ? b.note.trim().slice(0, 500) : "";
+
+  // Та сама умова вже є (підписана, ця фабрика й фірма, період перетинається) — типово імпорт
+  // HRappka без PDF. Скан ПРИКРІПЛЮЄМО до неї, другого рядка умови не створюємо: дубль умови
+  // при звільненні дає подвійні zaświadczenie/wypowiedzenie і ZWUA (інцидент Nina Hryhorian
+  // 29.10.2026). Якщо в наявної файл уже є — 409; окрему умову поруч можна створити лише force=1.
+  const force = b.force === "1" || b.force === "true";
+  const { loadWorkerContracts } = await import("../services/legalityRecompute");
+  const same = (await loadWorkerContracts(workerId)).filter(c =>
+    c.hasUmowa && c.status === "signed" && c.factoryId === factoryId && (c.companyId == null || c.companyId === companyId)
+    && (!c.dateTo || c.dateTo >= dateFrom) && (!dateTo || !c.dateFrom || c.dateFrom <= dateTo),
+  ).sort((a, b2) => (a.dateFrom ?? "").localeCompare(b2.dateFrom ?? "") || a.id - b2.id);
+  if (same.length && !force) {
+    const target = same[0]!;
+    const [withFile] = await db.select({ id: contractFilesTable.id }).from(contractFilesTable)
+      .where(and(eq(contractFilesTable.contractId, target.id), sql`${contractFilesTable.signedPath} is not null`)).limit(1);
+    if (withFile) {
+      return res.status(409).json({ error: `Підписана умова на цю фабрику за цей період уже є (#${target.id}, ${target.dateFrom ?? "…"} – ${target.dateTo ?? "безстрокова"}) і файл у неї є. Перевірте дати або створіть окрему умову свідомо.`, code: "duplicate", contractId: target.id });
+    }
+    await fs.promises.mkdir(path.join(UPLOADS_ROOT, "contracts"), { recursive: true });
+    await fs.promises.writeFile(path.join(UPLOADS_ROOT, relPath), req.file.buffer);
+    let attached: typeof contractsTable.$inferSelect;
+    try {
+      attached = await db.transaction(async tx => {
+        await tx.insert(contractFilesTable).values({ contractId: target.id, sortOrder: 0, title: "Umowa (skan podpisany)", signedPath: relPath, signedSha256: sha256 });
+        const [c] = await tx.update(contractsTable).set({
+          signedAt: sql`coalesce(${contractsTable.signedAt}, ${signedAt})`, companySignedAt: sql`coalesce(${contractsTable.companySignedAt}, ${signedAt})`,
+          data: sql`${contractsTable.data} || ${JSON.stringify({ scanAttached: true, scanAttachedBy: adminId, scanAttachedAt: new Date().toISOString(), originalName: rawName, ...(note ? { scanNote: note } : {}) })}::jsonb`,
+          updatedAt: new Date(),
+        }).where(eq(contractsTable.id, target.id)).returning();
+        return c!;
+      });
+    } catch (e) {
+      await fs.promises.unlink(path.join(UPLOADS_ROOT, relPath)).catch(() => {});
+      throw e;
+    }
+    const { workerLegalityChanged } = await import("../services/documentEvents");
+    await workerLegalityChanged(workerId);
+    logger.info({ contractId: target.id, workerId, factoryId, companyId, dateFrom, dateTo, adminId }, "signed contract scan attached to existing contract");
+    return ok(res, { ...attached, factoryName: factory.name, companyName: company.name, attachedTo: target.id });
+  }
+
+  await fs.promises.mkdir(path.join(UPLOADS_ROOT, "contracts"), { recursive: true });
+  await fs.promises.writeFile(path.join(UPLOADS_ROOT, relPath), req.file.buffer);
   // умова + файл — однією транзакцією; впало → файл з диска прибираємо (не лишати
   // signed-умову без PDF або PDF-сироту)
   let contract: typeof contractsTable.$inferSelect;

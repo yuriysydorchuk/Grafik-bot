@@ -20,6 +20,9 @@ const KINDS = [
   "umowa", "regulamin", "zus", "tax", "ppk", "bhp",
   "wniosek_konto", "wniosek_reka", "wniosek_zaliczki", "andros_extra", "sprzatanie_umowa",
   "swiadectwo", // документ при звільненні (świadectwo pracy / zaświadczenie) — ланцюжок звільнення, без підпису працівника
+  // подієві документи (EVENT_KINDS у services/contracts.ts) і wniosek chorobowe —
+  // без них PUT існуючого шаблону цих типів падав 400 «kind має бути одним з…»
+  "wniosek_chorobowe", "zaswiadczenie", "wypowiedzenie", "wypowiedzenie_firma", "aneks", "zcna",
   "custom",
 ] as const;
 const SCOPES = ["all", "company", "factory"] as const;

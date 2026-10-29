@@ -46,3 +46,26 @@ test("restoreWorker: уже активний — відмова; Telegram акт
   const [me] = await db.select().from(workersTable).where(eq(workersTable.id, fired!.id));
   assert.equal(me!.telegramId, "5");
 });
+
+test("restoreWorker: без фабрики, але є чинна додаткова → вона стає основною, рядок worker_factories зникає", opts, async () => {
+  const { workerFactoriesTable } = await import("@workspace/db");
+  const [f1] = await db.insert(factoriesTable).values({ name: "Dawtona" } as any).returning();
+  const [f2] = await db.insert(factoriesTable).values({ name: "Agro" } as any).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "N H", workerCode: "00003", factoryId: f1!.id, isActive: false, status: "fired", firedAt: new Date() }).returning();
+  await db.insert(workerFactoriesTable).values({ workerId: w!.id, factoryId: f2!.id });
+  const r = await restoreWorker({ workerId: w!.id, adminId: null });
+  assert.equal(r.ok, true);
+  const [row] = await db.select().from(workersTable).where(eq(workersTable.id, w!.id));
+  assert.equal(row!.factoryId, f2!.id, "додаткова стала основною");
+  assert.equal((await db.select().from(workerFactoriesTable).where(eq(workerFactoriesTable.workerId, w!.id))).length, 0, "основна й додаткова не збігаються");
+  const fj = (await db.select().from(workerChangesTable).where(eq(workerChangesTable.field, "factoryId")))[0]!;
+  assert.equal(fj.oldValue, String(f1!.id)); assert.equal(fj.newValue, String(f2!.id));
+
+  // явна фабрика, що збігається з додатковою — теж прибирає рядок; явна стара — додаткову не чіпає
+  const [w2] = await db.insert(workersTable).values({ fullName: "P Q", workerCode: "00004", factoryId: f1!.id, isActive: false, status: "fired" }).returning();
+  await db.insert(workerFactoriesTable).values({ workerId: w2!.id, factoryId: f2!.id });
+  assert.equal((await restoreWorker({ workerId: w2!.id, factoryId: f1!.id, adminId: null })).ok, true);
+  const [row2] = await db.select().from(workersTable).where(eq(workersTable.id, w2!.id));
+  assert.equal(row2!.factoryId, f1!.id);
+  assert.equal((await db.select().from(workerFactoriesTable).where(eq(workerFactoriesTable.workerId, w2!.id))).length, 1);
+});

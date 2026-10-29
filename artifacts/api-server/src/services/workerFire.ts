@@ -11,7 +11,7 @@
 // решті лишається активною — endWorkerAtFactory() нижче (умови/графік/документи лише цієї фабрики).
 import { db, workersTable, workerChangesTable, contractsTable, scheduleEntriesTable, scheduleWeeksTable, workerFactoriesTable, factoriesTable } from "@workspace/db";
 import type { Worker } from "@workspace/db";
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { entryDateStr } from "../lib/dates";
 import { logger } from "../lib/logger";
 
@@ -25,6 +25,42 @@ export type FireOpts = {
   source: "web" | "bot" | "cron" | "hours";
 };
 export type FireResult = { ok: true; worker: Worker; removedEntries: number; closedContracts: number } | { ok: false; error: string };
+
+// Дата звільнення ВЖЕ звільненого (22.10.2026, власник: «останній робочий день — це і є день
+// звільнення»; раніше дату можна було задати лише в момент звільнення — Okafor звільнили
+// «сьогодні» 21.08, а реально останній день 13.08). Правиться запис журналу `fired` (його
+// effective_date читає календар), fired_at і умови, закриті ЦИМ звільненням (date_to = стара дата).
+// Подія — рядок журналу `fireDate` (було → стало) в «Історії змін».
+export async function changeFireDate(workerId: number, date: string, adminId: number | null): Promise<{ ok: true; from: string | null; to: string; contracts: number } | { ok: false; error: string }> {
+  if (!isDate(date)) return { ok: false, error: "Невірна дата" };
+  if (date > warsawToday()) return { ok: false, error: "Дата звільнення не може бути в майбутньому" };
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w) return { ok: false, error: "Працівника не знайдено" };
+  if (w.isActive || w.status !== "fired") return { ok: false, error: "Працівник не звільнений — дату ставить «Звільнити» або «Виповідзення»" };
+  const [fj] = await db.select().from(workerChangesTable)
+    .where(and(eq(workerChangesTable.workerId, workerId), eq(workerChangesTable.field, "fired"))).orderBy(desc(workerChangesTable.id)).limit(1);
+  const from = fj?.effectiveDate ? String(fj.effectiveDate) : (w.firedAt ? w.firedAt.toLocaleDateString("sv-SE", { timeZone: "Europe/Warsaw" }) : null);
+  if (from === date) return { ok: true, from, to: date, contracts: 0 };
+  if (fj) await db.update(workerChangesTable).set({ effectiveDate: date }).where(eq(workerChangesTable.id, fj.id));
+  else await db.insert(workerChangesTable).values({ workerId, field: "fired", oldValue: "active", newValue: "fired", effectiveDate: date, adminId });
+  await db.update(workersTable).set({ firedAt: new Date(`${date}T12:00:00`) }).where(eq(workersTable.id, workerId));
+  // умови, які закрило саме звільнення (date_to = стара дата), — на нову дату
+  const moved = from ? await db.update(contractsTable).set({ dateTo: date, updatedAt: new Date() })
+    .where(and(eq(contractsTable.workerId, workerId), eq(contractsTable.status, "signed"), eq(contractsTable.dateTo, from)))
+    .returning({ id: contractsTable.id }) : [];
+  // той самий інваріант, що й у fireWorker: нерозіслані записи графіку після (нової) дати — геть (ревʼю codex 29.10.2026)
+  const future = await db.select({ id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
+    .from(scheduleEntriesTable).innerJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
+    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.status, "scheduled"), isNull(scheduleEntriesTable.sentAt), sql`${scheduleWeeksTable.weekStart} >= ${date}::date - interval '6 days'`));
+  const toRemove = future.filter(e => entryDateStr(String(e.weekStart), e.day) > date).map(e => e.id);
+  if (toRemove.length) await db.delete(scheduleEntriesTable).where(inArray(scheduleEntriesTable.id, toRemove));
+  await db.insert(workerChangesTable).values({ workerId, field: "fireDate", oldValue: from, newValue: date, effectiveDate: date, adminId })
+    .catch(err => logger.error({ err }, "worker change journal failed"));
+  try { const { workerLegalityChanged } = await import("./documentEvents"); await workerLegalityChanged(workerId); }
+  catch (e) { logger.warn({ err: String(e), workerId }, "fire date: legality recompute failed"); }
+  logger.info({ workerId, from, to: date, contracts: moved.length, adminId }, "fire date changed");
+  return { ok: true, from, to: date, contracts: moved.length };
+}
 
 export async function fireWorker(opts: FireOpts): Promise<FireResult> {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, opts.workerId));

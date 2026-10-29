@@ -4,9 +4,9 @@
 // рапорти) — новий НЕ створюється; фабрика/посада/Telegram оновлюються за
 // потреби, кожна зміна йде в журнал worker_changes (старий Telegram — «архів»
 // саме там, окремої колонки немає).
-import { db, workersTable, workerChangesTable, workerQuestionnairesTable, candidatesTable, factoriesTable } from "@workspace/db";
+import { db, workersTable, workerChangesTable, workerQuestionnairesTable, candidatesTable, factoriesTable, workerFactoriesTable } from "@workspace/db";
 import type { Worker } from "@workspace/db";
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { findLikelyDuplicate } from "../bot/workerMatch";
 
@@ -39,9 +39,23 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
     [tgOwner] = await db.select().from(workersTable).where(and(eq(workersTable.telegramId, tg!), ne(workersTable.id, w.id)));
     if (tgOwner?.isActive) return { ok: false, error: `Цей Telegram уже привʼязаний до активного працівника ${tgOwner.fullName}` };
   }
-  const factoryChanged = opts.factoryId !== undefined && (opts.factoryId ?? null) !== (w.factoryId ?? null);
-  const positionChanged = opts.positionId !== undefined && (opts.positionId ?? null) !== (w.positionId ?? null);
   const today = warsawToday();
+  // Куди повертаємо. Явна фабрика (бот, веб-модалка) має пріоритет; якщо її не передали, а в профілю
+  // є чинна додаткова фабрика — людину звільнили з основної, нову вже додали рядком worker_factories
+  // (Nina Hryhorian 29.10.2026: Dawtona лишилась основною, Agro Trade — «додатковою») — основною стає
+  // вона. Обрана додаткова прибирається з worker_factories: основна й додаткова не можуть збігатись.
+  const extras = await db.select({ id: workerFactoriesTable.id, factoryId: workerFactoriesTable.factoryId, companyId: workerFactoriesTable.companyId, validFrom: workerFactoriesTable.validFrom, validTo: workerFactoriesTable.validTo })
+    .from(workerFactoriesTable)
+    .where(and(eq(workerFactoriesTable.workerId, w.id), or(isNull(workerFactoriesTable.validTo), gte(workerFactoriesTable.validTo, today))))
+    .orderBy(asc(workerFactoriesTable.validFrom), asc(workerFactoriesTable.id));
+  let targetFactoryId = opts.factoryId;
+  if (targetFactoryId === undefined && extras.length) {
+    const started = extras.filter(e => !e.validFrom || String(e.validFrom) <= today);
+    targetFactoryId = (started.find(e => !e.validTo) ?? started[0] ?? extras.find(e => !e.validTo) ?? extras[0])!.factoryId;
+  }
+  const factoryChanged = targetFactoryId !== undefined && (targetFactoryId ?? null) !== (w.factoryId ?? null);
+  const extraRow = targetFactoryId != null ? extras.find(e => e.factoryId === targetFactoryId) : undefined;
+  const positionChanged = opts.positionId !== undefined && (opts.positionId ?? null) !== (w.positionId ?? null);
 
   const restored = await db.transaction(async tx => {
     if (tgOwner) {
@@ -51,7 +65,11 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
     // перший робочий день — від нового найму: обнуляємо, бекфіл/явка поставлять дату після повернення
     // (services/firstWorkDate.ts рахує лише дати після журналу `restored`)
     const patch: Partial<typeof workersTable.$inferInsert> = { isActive: true, status: "active", firedAt: null, firstWorkDate: null };
-    if (factoryChanged) patch.factoryId = opts.factoryId ?? null;
+    if (factoryChanged) patch.factoryId = targetFactoryId ?? null;
+    // фірма додаткової фабрики (worker_factories.company_id) їде в профіль разом із фабрикою — інакше
+    // після видалення рядка роботодавцем лишалась би стара фірма профілю (ревʼю codex 29.10.2026)
+    if (extraRow?.companyId != null && extraRow.companyId !== w.companyId) patch.companyId = extraRow.companyId;
+    if (extraRow) await tx.delete(workerFactoriesTable).where(eq(workerFactoriesTable.id, extraRow.id));
     if (positionChanged) patch.positionId = opts.positionId ?? null;
     if (tgChanged) patch.telegramId = tg;
     if (w.doNotHire && opts.force) { patch.doNotHire = false; patch.doNotHireReason = null; patch.doNotHireAt = null; patch.doNotHireBy = null; }
@@ -60,7 +78,8 @@ export async function restoreWorker(opts: RestoreOpts): Promise<RestoreResult> {
       { workerId: w.id, field: "restored", oldValue: "fired", newValue: "active", effectiveDate: today, adminId: opts.adminId },
     ];
     if (w.doNotHire && opts.force) journal.push({ workerId: w.id, field: "doNotHire", oldValue: "1", newValue: "0", effectiveDate: today, adminId: opts.adminId });
-    if (factoryChanged) journal.push({ workerId: w.id, field: "factoryId", oldValue: w.factoryId != null ? String(w.factoryId) : null, newValue: opts.factoryId != null ? String(opts.factoryId) : null, effectiveDate: today, adminId: opts.adminId });
+    if (factoryChanged) journal.push({ workerId: w.id, field: "factoryId", oldValue: w.factoryId != null ? String(w.factoryId) : null, newValue: targetFactoryId != null ? String(targetFactoryId) : null, effectiveDate: today, adminId: opts.adminId });
+    if (patch.companyId !== undefined) journal.push({ workerId: w.id, field: "companyId", oldValue: w.companyId != null ? String(w.companyId) : null, newValue: String(patch.companyId), effectiveDate: today, adminId: opts.adminId });
     if (positionChanged) journal.push({ workerId: w.id, field: "positionId", oldValue: w.positionId != null ? String(w.positionId) : null, newValue: opts.positionId != null ? String(opts.positionId) : null, effectiveDate: today, adminId: opts.adminId });
     if (tgChanged) journal.push({ workerId: w.id, field: "telegramId", oldValue: w.telegramId, newValue: tg, effectiveDate: today, adminId: opts.adminId });
     await tx.insert(workerChangesTable).values(journal);
