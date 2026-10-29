@@ -171,6 +171,8 @@ export async function setTerminationDate(workerId: number, date: string | null, 
   if (prev === next) return { ok: true, worker: w, firedNow: false };
   const [row] = await db.update(workersTable).set({ terminationDate: date, terminationFactoryId: factoryId }).where(eq(workersTable.id, workerId)).returning();
   await db.insert(workerChangesTable).values({ workerId, field: "terminationDate", oldValue: prev, newValue: next, effectiveDate: warsawToday(), adminId }).catch(() => {});
+  // виповідзення на умовах (contractTermination.ts), що несли попередню профільну дату, — слідом (зняти разом з документом / перенести дату)
+  await import("./contractTermination").then(m => m.syncContractTerminationsFromProfile(workerId, { date: w.terminationDate ? String(w.terminationDate) : null, factoryId: w.terminationFactoryId ?? null }, { date, factoryId }, adminId)).catch(err => logger.warn({ err: String(err), workerId }, "contract terminations sync failed"));
   if (date && date <= warsawToday()) {
     const r = factoryId != null
       ? await endWorkerAtFactory({ workerId, factoryId, date, adminId, source: "web" })

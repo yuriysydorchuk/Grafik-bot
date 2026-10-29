@@ -1624,7 +1624,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
           {!archived && c.status === "signed" && c.factoryId != null && (
             <button type="button" onClick={() => setAnnexOpen(true)} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200" title={t("Аннекс на продовження умови — документ одразу на підпис працівнику")}>{t("Аннекс")}</button>
           )}
-          {!archived && ["signed", "worker_signed"].includes(c.status) && c.factoryId != null && !isEventDoc && !c.terminationDate && (
+          {!archived && c.status === "signed" && c.factoryId != null && !isEventDoc && !c.terminationDate && (
             <button type="button" onClick={() => setTermOpen(true)} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100" title={t("Виповідзення цієї умови: дата останнього дня + ініціатор → wypowiedzenie одразу на підпис; у дату умова закриється")}>{t("Виповідзення")}</button>
           )}
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (

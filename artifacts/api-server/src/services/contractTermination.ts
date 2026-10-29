@@ -14,7 +14,7 @@ import { setTerminationDate, endWorkerAtFactory } from "./workerFire";
 import { logger } from "../lib/logger";
 
 export type TerminationBy = "worker" | "company";
-const LIVE = ["signed", "worker_signed"];
+const LIVE = ["signed"]; // лише повністю підписана: fireWorker/endWorkerAtFactory закривають датою тільки signed (ревʼю codex)
 const isDate = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 export const DATA_TERMINATED_BY_CONTRACT = "_terminatedByContract"; // маркер на умові, закритій виповідзенням на умові
 
@@ -34,8 +34,9 @@ export async function setContractTermination(contractId: number, input: { date: 
   const [c] = await db.select().from(contractsTable).where(eq(contractsTable.id, contractId));
   if (!c) throw new Error("Умову не знайдено");
   if (c.factoryId == null) throw new Error("Виповідзення — лише для умови на фабрику (не сталий пакет)");
-  if (!LIVE.includes(c.status)) throw new Error(`Виповідзення можна поставити лише на підписану умову (поточний статус: ${c.status})`);
+  if (!LIVE.includes(c.status)) throw new Error(`Виповідзення можна поставити лише на підписану обома умову (поточний статус: ${c.status})`);
   if ((await eventContractIds([c.id])).has(c.id)) throw new Error("Це подієвий документ, а не умова");
+  if (c.terminationDate) throw new Error(`На умові вже є виповідзення ${dateStr(c.terminationDate)} — спершу скасуйте його`); // інакше документ лишився б зі старою датою/стороною
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, c.workerId));
   if (!w?.isActive) throw new Error("Працівник уже звільнений");
   const from = dateStr(c.dateFrom), to = dateStr(c.dateTo);
@@ -68,6 +69,7 @@ export async function setContractTermination(contractId: number, input: { date: 
     else { factoryLevel = true; firedNow = r.firedNow; }
   } else if (input.date <= warsawToday()) {
     await closeContractByTermination(c.id, input.date);
+    await afterContractOnlyClose(c.workerId, c.factoryId, input.date, adminId, c.id);
   }
   return { ok: true as const, docId, factoryLevel, firedNow, othersOnFactory: others.length };
 }
@@ -79,12 +81,13 @@ export async function clearContractTermination(contractId: number, adminId: numb
   const date = dateStr(c.terminationDate)!;
   await db.update(contractsTable).set({ terminationDate: null, terminationBy: null, terminationDocId: null, terminationSetAt: null, terminationSetBy: null, updatedAt: new Date() }).where(eq(contractsTable.id, c.id));
   await db.insert(workerChangesTable).values({ workerId: c.workerId, field: "contractTermination", oldValue: `${date} (${c.terminationBy ?? "worker"}) #${c.id}`, newValue: null, effectiveDate: warsawToday(), adminId }).catch(() => {});
-  // непідписаний пакет wypowiedzenia — скасувати разом із задачею
+  // непідписаний пакет wypowiedzenia — скасувати разом із задачею; ключ задачі звільнити суфіксом,
+  // інакше повторне виповідзення того самого виду не згенерує документ (дедуп по source_key; ревʼю codex)
   if (c.terminationDocId != null) {
     const [d] = await db.select({ status: contractsTable.status }).from(contractsTable).where(eq(contractsTable.id, c.terminationDocId));
     if (d && !["signed", "cancelled", "superseded", "declined", "expired"].includes(d.status)) {
       await db.update(contractsTable).set({ status: "cancelled", updatedAt: new Date() }).where(eq(contractsTable.id, c.terminationDocId));
-      await db.update(tasksTable).set({ status: "cancelled", completedAt: new Date(), resolutionNote: "виповідзення скасовано", updatedAt: new Date() })
+      await db.update(tasksTable).set({ status: "cancelled", completedAt: new Date(), resolutionNote: "виповідзення скасовано", sourceKey: sql`${tasksTable.sourceKey} || ':' || ${tasksTable.id}::text`, updatedAt: new Date() })
         .where(and(eq(tasksTable.contractId, c.terminationDocId), inArray(tasksTable.status, OPEN_STATUSES)));
     }
   }
@@ -119,16 +122,46 @@ export async function applyDueContractTerminations(today = warsawToday()): Promi
   for (const c of due) {
     const date = dateStr(c.terminationDate)!;
     const [w] = await db.select({ isActive: workersTable.isActive, td: workersTable.terminationDate, tf: workersTable.terminationFactoryId }).from(workersTable).where(eq(workersTable.id, c.workerId));
-    if (!w?.isActive) continue;
-    // профільне виповідзення по цій фабриці на цю дату — його виконає fireDueTerminations (закриє умови сам)
-    if (w.td && dateStr(w.td)! <= today && (w.tf == null || w.tf === c.factoryId)) continue;
+    if (!w?.isActive || c.factoryId == null) continue;
+    const others = await otherLiveOnFactory(c, date);
+    const profileSame = !!w.td && dateStr(w.td) === date && (w.tf == null || w.tf === c.factoryId);
+    if (profileSame && !others.length) continue; // профільне виповідзення на ту саму дату — fireDueTerminations закриє умови й фабрику сам
+    if (profileSame && others.length && w.tf === c.factoryId) {
+      // після планування на фабриці зʼявилась інша жива умова — фабрику не закриваємо, лише цю умову (ревʼю codex)
+      const r = await setTerminationDate(c.workerId, null, null, null);
+      if (!r.ok) logger.warn({ contractId: c.id, error: r.error }, "contract termination cron: profile termination not cleared");
+    }
     await closeContractByTermination(c.id, date);
     n++;
-    const others = c.factoryId != null ? await otherLiveOnFactory(c, date) : [1];
-    if (!others.length && c.factoryId != null) {
+    if (!others.length) {
       const r = await endWorkerAtFactory({ workerId: c.workerId, factoryId: c.factoryId, date, adminId: null, source: "cron" });
       if (!r.ok) logger.warn({ contractId: c.id, error: r.error }, "contract termination cron: factory end failed");
-    }
+    } else await afterContractOnlyClose(c.workerId, c.factoryId, date, null, c.id);
   }
   return n;
+}
+
+/** Умову закрито без виходу з фабрики (інша жива умова лишилась): ZWUA по фірмі цієї умови, якщо з нею
+ *  більше не працює, + zaświadczenie — той самий ланцюжок, що по фабриці (маркер _endedAtFactory уже стоїть). */
+async function afterContractOnlyClose(workerId: number, factoryId: number, date: string, adminId: number | null, contractId: number): Promise<void> {
+  const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!w) return;
+  const { startFactoryEndFlow } = await import("./terminationFlow");
+  await startFactoryEndFlow(w, factoryId, date, adminId, [contractId]).catch(err => logger.warn({ err: String(err), contractId }, "contract-only close: end flow failed"));
+}
+
+/**
+ * Профільне виповідзення змінили/зняли вручну (workerFire.setTerminationDate): синхронізувати умови, що
+ * несли ту саму дату (бекфіл або поставлені звідси) — нова дата або зняття разом із документом (ревʼю codex).
+ */
+export async function syncContractTerminationsFromProfile(workerId: number, prev: { date: string | null; factoryId: number | null }, next: { date: string | null; factoryId: number | null }, adminId: number | null): Promise<void> {
+  if (!prev.date) return;
+  const rows = await db.select({ id: contractsTable.id }).from(contractsTable).where(and(
+    eq(contractsTable.workerId, workerId), eq(contractsTable.terminationDate, prev.date),
+    prev.factoryId != null ? eq(contractsTable.factoryId, prev.factoryId) : sql`true`,
+  ));
+  for (const r of rows) {
+    if (!next.date) await clearContractTermination(r.id, adminId).catch(err => logger.warn({ err: String(err), contractId: r.id }, "profile termination clear: contract not cleared"));
+    else if (next.date !== prev.date && (next.factoryId == null || next.factoryId === prev.factoryId)) await db.update(contractsTable).set({ terminationDate: next.date, updatedAt: new Date() }).where(eq(contractsTable.id, r.id));
+  }
 }

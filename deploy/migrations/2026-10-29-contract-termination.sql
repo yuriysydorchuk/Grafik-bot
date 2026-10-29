@@ -11,7 +11,7 @@ ALTER TABLE contracts ADD COLUMN IF NOT EXISTS termination_set_by integer REFERE
 UPDATE contracts c SET termination_date = w.termination_date, termination_by = 'worker', termination_set_at = now()
 FROM workers w
 WHERE c.worker_id = w.id AND w.is_active AND w.termination_date IS NOT NULL AND c.termination_date IS NULL
-  AND c.status IN ('signed', 'worker_signed') AND c.factory_id IS NOT NULL
+  AND c.status = 'signed' AND c.factory_id IS NOT NULL
   AND (w.termination_factory_id IS NULL OR c.factory_id = w.termination_factory_id)
   AND (c.date_to IS NULL OR c.date_to >= w.termination_date)
   AND (c.data->>'_endedAtFactory') IS NULL
