@@ -4272,6 +4272,7 @@ const EN: Record<string, string> = {
   "Людей: {n}": "People: {n}",
   "Файлів: {n} · з умовами: {c} · людей з файлами: {w}": "Files: {n} · contracts: {c} · people with files: {w}",
   "рахую…": "counting…",
+  "Людину вже звільнено, але powiadomienie за початок праці все одно треба подати": "The person is already dismissed, but the powiadomienie for the start of work still has to be filed",
   "Зі сторінки «Працівники»": "From the “Workers” page",
   "скинути": "reset",
   // конструктор умов / колонки експорту (28.10.2026)

@@ -21,7 +21,7 @@ import {
   positionsTable, workerQuestionnairesTable, contractsTable, taskAutoRulesTable,
   type Task,
 } from "@workspace/db";
-import { and, desc, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { createTask, logTaskEvent, resolveAssignee, priorityForDays, warsawToday, diffDays, dateStr, fmtDate, mdEsc, mainAdminId, adminName, taskPanelUrl, loadTaskSettings, OPEN_STATUSES, type TaskPriority } from "./tasks";
 import { loadLegacyWorkerIds } from "./taskLegacy";
 import { normalizeChecklist } from "./taskUtils";
@@ -49,6 +49,7 @@ export interface UaWorker {
   sentAt?: string | null;      // ступінь 1 → 2 (ISO)
   sentBy?: number | null;
   submittedAt?: string | null; // «подано» відмічено руками (ISO) — до появи документа
+  fired?: boolean;             // звільнений, але обовʼязок повідомити лишається (29.10.2026)
 }
 export interface UaParams { grouped: true; stage: 1 | 2; workers: UaWorker[]; count: number; workerNames: string[] }
 
@@ -70,10 +71,16 @@ const distinctWorkers = (ws: UaWorker[]) => new Set(ws.map(w => w.id)).size;
 export const uaKey = (w: { id: number; companyId?: number | null }) => `${w.id}:${w.companyId ?? 0}`;
 const withCo = (w: UaWorker) => `${mdEsc(w.name)}${w.companyName ? ` (${mdEsc(w.companyName)})` : ""}`;
 
-interface PendingObl { workerId: number; companyId: number | null; companyName: string | null; dueAt: string; start: string | null }
+interface PendingObl { workerId: number; companyId: number | null; companyName: string | null; dueAt: string; start: string | null; fired: boolean }
+// Звільнення обовʼязок НЕ знімає: powiadomienie подається за фактом початку праці, навіть якщо людина
+// вже пішла (Влада не бачила звільнених у списку — 29.10.2026). Беремо звільнених за останні
+// FIRED_WINDOW_DAYS днів; давніші — історія, не ретроактивно.
+const FIRED_WINDOW_DAYS = 60;
 async function pendingObligations(today: string): Promise<Map<string, PendingObl>> {
+  const firedFrom = new Date(`${addDays(today, -FIRED_WINDOW_DAYS)}T00:00:00`);
   const rows = await db.select({ workerId: workerLegalityTable.workerId, obligations: workerLegalityTable.obligations, isActive: workersTable.isActive })
-    .from(workerLegalityTable).innerJoin(workersTable, eq(workerLegalityTable.workerId, workersTable.id)).where(eq(workersTable.isActive, true));
+    .from(workerLegalityTable).innerJoin(workersTable, eq(workerLegalityTable.workerId, workersTable.id))
+    .where(or(eq(workersTable.isActive, true), and(eq(workersTable.isActive, false), eq(workersTable.doNotHire, false), gte(workersTable.firedAt, firedFrom))));
   const out = new Map<string, PendingObl>();
   // «старі» без документів/умов (додані до запуску модуля) — не ретроактивно (taskLegacy.ts)
   const legacy = await loadLegacyWorkerIds(rows.map(r => r.workerId), (await loadTaskSettings()).legacyBefore);
@@ -85,7 +92,7 @@ async function pendingObligations(today: string): Promise<Map<string, PendingObl
       const days = typeof o.params?.days === "number" ? (o.params.days as number) : 7;
       const companyId = o.params?.companyId != null ? Number(o.params.companyId) : null;
       const companyName = typeof o.params?.company === "string" ? (o.params.company as string) : null;
-      const p: PendingObl = { workerId: r.workerId, companyId, companyName, dueAt, start: dueAt ? addDays(dueAt, -days) : null };
+      const p: PendingObl = { workerId: r.workerId, companyId, companyName, dueAt, start: dueAt ? addDays(dueAt, -days) : null, fired: !r.isActive };
       out.set(uaKey({ id: r.workerId, companyId }), p);
     }
   }
@@ -176,10 +183,10 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
     for (const w of cur) {
       const p = findPending(w);
       if (!p) continue;
-      const row: UaWorker = { ...w, companyId: p.companyId, companyName: p.companyName ?? w.companyName ?? null, dueAt: p.dueAt, start: p.start ?? w.start };
+      const row: UaWorker = { ...w, companyId: p.companyId, companyName: p.companyName ?? w.companyName ?? null, dueAt: p.dueAt, start: p.start ?? w.start, fired: p.fired };
       keep.push(row); listed.add(uaKey(row));
     }
-    const changed = keep.length !== cur.length || keep.some((w, i) => w.dueAt !== cur[i]?.dueAt || (w.companyId ?? null) !== (cur[i]?.companyId ?? null));
+    const changed = keep.length !== cur.length || keep.some((w, i) => w.dueAt !== cur[i]?.dueAt || (w.companyId ?? null) !== (cur[i]?.companyId ?? null) || !!w.fired !== !!cur[i]?.fired);
     if (changed) { await writeTask(t, keep, today, ld); keep.length ? stats.updated++ : stats.resolved++; }
   }
   // 2) нові: stage1Days-й день роботи настав → у ступінь 1 виконавцю фабрики (рядок = людина×фірма).
@@ -201,7 +208,7 @@ export async function syncUaNotificationTasks(today = warsawToday()): Promise<{ 
     if (start && addDays(start, rule.params.stage1Days - 1) > today) continue; // ще рано
     const assignee = await resolveAssignee({ factoryId: w.factoryId, ruleCode: UA_RULE, useScheduler: true });
     const l = byAssignee.get(assignee) ?? [];
-    l.push({ id: w.id, name: w.fullName, factoryId: w.factoryId, factoryName: w.facName ?? null, companyId: o.companyId, companyName: o.companyName, start, dueAt: o.dueAt });
+    l.push({ id: w.id, name: w.fullName, factoryId: w.factoryId, factoryName: w.facName ?? null, companyId: o.companyId, companyName: o.companyName, start, dueAt: o.dueAt, ...(o.fired ? { fired: true } : {}) });
     byAssignee.set(assignee, l);
   }
   for (const [assignee, list] of byAssignee) {

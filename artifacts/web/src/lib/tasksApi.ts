@@ -41,7 +41,7 @@ export interface TaskContext {
   ua?: { stage: 1 | 2; rows: UaRow[] }; // ланцюжок powiadomienie UA (групова задача)
 }
 // рядок людини в груповій задачі powiadomienie
-export interface UaRow { id: number; name: string; factoryId: number | null; factoryName: string | null; companyId?: number | null; companyName?: string | null; start: string | null; dueAt: string; daysLeft: number; sentAt?: string | null; submittedAt?: string | null; missing: string[]; docId: number | null; docFileUrl: string | null; nationality: string | null; steps: { data: boolean; submitted: boolean; entered: boolean } }
+export interface UaRow { id: number; name: string; factoryId: number | null; factoryName: string | null; companyId?: number | null; companyName?: string | null; start: string | null; dueAt: string; daysLeft: number; sentAt?: string | null; submittedAt?: string | null; fired?: boolean; missing: string[]; docId: number | null; docFileUrl: string | null; nationality: string | null; steps: { data: boolean; submitted: boolean; entered: boolean } }
 export interface UaCardField { key: string; label: string; value: string; required?: boolean; source?: string }
 export interface UaCard { workerId: number; name: string; groups: { title: string; fields: UaCardField[] }[]; missing: string[] }
 export interface TaskResolution { context: TaskContext; actions: TaskAction[] }

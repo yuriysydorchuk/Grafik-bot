@@ -644,6 +644,7 @@ function UaBlock({ taskId, ua, run, busy, inv }: { taskId: number; ua: { stage: 
             {canRobot && !r.steps.entered && <input type="checkbox" checked={picked.has(rowKey(r))} onChange={() => togglePick(r)} title={tr("до групової подачі")} />}
             <Link href={`/workers/${r.id}`} className="font-medium text-slate-800 hover:text-red-600">{r.name}</Link>
             {r.companyName && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700" title={tr("Фірма-роботодавець, на яку подається powiadomienie")}>{r.companyName}</span>}
+            {r.fired && <span className="rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700" title={tr("Людину вже звільнено, але powiadomienie за початок праці все одно треба подати")}>{tr("звільнений")}</span>}
             {r.factoryName && <span className="text-slate-400">{r.factoryName}</span>}
             <span className="text-slate-500">{tr("з")} {r.start ? fmtD(r.start) : "—"}</span>
             <span className={tone(r.daysLeft)}>{tr("до")} {fmtD(r.dueAt)}{r.daysLeft < 0 ? ` · −${-r.daysLeft} ${tr("дн.")}` : r.daysLeft === 0 ? ` · ${tr("сьогодні")}` : ` · ${r.daysLeft} ${tr("дн.")}`}</span>
