@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, FileSpreadsheet, FolderArchive, Table2, Plus, X, GripVertical, Search, Save, Trash2, BookmarkCheck } from "lucide-react";
+import { Download, FileSpreadsheet, FolderArchive, Table2, Plus, X, GripVertical, Search, Save, Trash2, BookmarkCheck, Check } from "lucide-react";
 import { get, type Factory, type Company, type Position, type DocumentType } from "../lib/api";
 import { Button, Input, Select, Modal, Label, Badge, Spinner } from "./ui";
 import { useT } from "../lib/i18n";
@@ -367,12 +367,15 @@ function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field
   const [drag, setDrag] = useState<number | null>(null);
   const byKey = useMemo(() => new Map(fields.map(f => [f.key, f])), [fields]);
   const sel = selected.filter(k => byKey.has(k));
+  // показуємо ВСІ поля (вибрані — з галочкою), не ховаємо вибрані: інакше розділ з типовими колонками
+  // виглядав порожнім («в умові лише два параметри», 29.10.2026)
   const available = useMemo(() => {
     const s = search.trim().toLowerCase();
     const g = new Map<Group, Field[]>();
-    for (const f of fields) if (!sel.includes(f.key) && (!s || t(f.label).toLowerCase().includes(s) || f.header.toLowerCase().includes(s))) g.set(f.group, [...(g.get(f.group) ?? []), f]);
+    for (const f of fields) if (!s || t(f.label).toLowerCase().includes(s) || f.header.toLowerCase().includes(s)) g.set(f.group, [...(g.get(f.group) ?? []), f]);
     return [...g.entries()];
-  }, [fields, sel, search, t]);
+  }, [fields, search, t]);
+  const selSet = new Set(sel);
   const move = (from: number, to: number) => { if (from === to) return; const n = [...sel]; const [x] = n.splice(from, 1); n.splice(to, 0, x!); onChange(n); };
   return (
     <div className="rounded-xl border border-slate-200 p-3">
@@ -403,17 +406,25 @@ function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field
           </ul>
         </div>
         <div>
-          <div className="mb-1 text-xs font-medium text-slate-500">{t("Доступні")}</div>
+          <div className="mb-1 text-xs font-medium text-slate-500">{t("Усі поля")} <span className="font-normal text-slate-400">({t("клік — додати / зняти")})</span></div>
           <div className="relative mb-1"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-slate-400" /><Input value={search} onChange={e => setSearch(e.target.value)} placeholder={t("пошук колонки")} className="pl-7 text-xs" /></div>
           <div className="max-h-[19.5rem] space-y-1.5 overflow-auto rounded-lg border border-slate-100 p-1">
             {available.map(([g, list]) => (
               <div key={g}>
-                <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{t(GROUP_LABEL[g])}</div>
-                {list.map(f => (
-                  <button key={f.key} type="button" onClick={() => onChange([...sel, f.key])} className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-slate-700 hover:bg-red-50 hover:text-red-700">
-                    <Plus className="h-3 w-3 text-slate-300" /><span className="truncate">{t(f.label)}</span><span className="ml-auto truncate text-[10px] text-slate-400">{f.header}</span>
-                  </button>
-                ))}
+                <div className="flex items-center gap-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                  {t(GROUP_LABEL[g])}
+                  <button type="button" className="font-normal normal-case text-slate-400 underline-offset-2 hover:underline" onClick={() => { const all = list.every(f => selSet.has(f.key)); onChange(all ? sel.filter(k => !list.some(f => f.key === k)) : [...sel, ...list.filter(f => !selSet.has(f.key)).map(f => f.key)]); }}>{list.every(f => selSet.has(f.key)) ? t("зняти всі") : t("вибрати всі")}</button>
+                </div>
+                {list.map(f => {
+                  const on = selSet.has(f.key);
+                  return (
+                    <button key={f.key} type="button" onClick={() => onChange(on ? sel.filter(k => k !== f.key) : [...sel, f.key])}
+                      className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${on ? "bg-red-50/60 text-red-700" : "text-slate-700 hover:bg-slate-50"}`}>
+                      <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${on ? "border-red-400 bg-red-500 text-white" : "border-slate-300"}`}>{on && <Check className="h-2.5 w-2.5" />}</span>
+                      <span className="truncate">{t(f.label)}</span><span className="ml-auto truncate text-[10px] text-slate-400">{f.header}</span>
+                    </button>
+                  );
+                })}
               </div>
             ))}
             {!available.length && <div className="px-2 py-3 text-xs text-slate-400">{t("Нічого не знайдено")}</div>}
