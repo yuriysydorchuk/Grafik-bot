@@ -2,7 +2,7 @@
 
 > Контекст проєкту: [`HANDOFF.md`](../../HANDOFF.md) · [`CLAUDE.md`](../../CLAUDE.md) · [`PROJECT_MAP.md`](../../PROJECT_MAP.md) · пропозиція-макет: https://claude.ai/artifact/Twy4G9zYQkWcVpWJQWaxkY
 
-- **Статус:** ✅ зроблено локально 29.10.2026 (чекає тесту Yuriy і пушу/деплою)
+- **Статус:** ✅ ЗАДЕПЛОЄНО 29.10.2026 (70ad883; міграція накачена; healthz ok)
 - **Дата:** 2026-10-29
 - **Автор/сесія:** Claude Fable 5.1, сесія з Yuriy
 

@@ -252,7 +252,18 @@ export default function Hours() {
   const [hiddenFacArr, saveHiddenFac] = useOrderPref("hidden.hours.factories");
   const hiddenFac = useMemo(() => new Set(hiddenFacArr), [hiddenFacArr]);
   const [showHiddenFac, setShowHiddenFac] = useState(false);
-  const hiddenGroups = useMemo(() => groups.filter(g => hiddenFac.has(g.key)), [groups, hiddenFac]);
+  // список прихованих: групи цього місяця + приховані ключі без даних цього місяця (назва з довідника),
+  // інакше фабрику, приховану в сезон, у порожній місяць не повернути (зголошення #1, 29.10.2026)
+  const hiddenGroups = useMemo(() => {
+    const withData = groups.filter(g => hiddenFac.has(g.key));
+    const known = new Set(withData.map(g => g.key));
+    const rest = hiddenFacArr.filter(k => !known.has(k)).map(k => {
+      const id = /^f(\d+)$/.test(k) ? Number(k.slice(1)) : null;
+      const f = id != null ? allFactories.find(x => x.id === id) : undefined;
+      return { key: k, name: f?.name ?? (k === "none" ? "Без фабрики" : k), hours: 0, rows: [] as Group["rows"] };
+    });
+    return [...withData, ...rest];
+  }, [groups, hiddenFac, hiddenFacArr, allFactories]);
   // Тижневий облік (factories.weekly_hours): підвкладка тижня по фабриці ("" = місяць) + імпорт тижня
   const weeklyIds = useMemo(() => new Set(data?.weeklyFactoryIds ?? []), [data]);
   const [weekTab, setWeekTab] = useState<Record<string, string>>({});
@@ -380,31 +391,31 @@ export default function Hours() {
               );
             })}
             {hiddenGroups.length > 0 && (
-              <div className="relative shrink-0">
-                <button onClick={() => setShowHiddenFac(v => !v)}
-                  className="flex items-center gap-1.5 rounded-xl border border-dashed border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-500 hover:border-slate-400"
-                  title={t("Фабрики, приховані з Обліку годин (не сезон) — клікни, щоб повернути")}>
-                  <EyeOff className="h-3.5 w-3.5" /> {t("Приховані")} ({hiddenGroups.length})
-                </button>
-                {showHiddenFac && (
-                  <div className="absolute left-0 top-full z-30 mt-1 min-w-[18rem] rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
-                    {hiddenGroups.map(g => (
-                      <div key={g.key} className="flex items-center gap-2 px-2 py-1 text-sm">
-                        <span className="flex-1 text-slate-700">
-                          {g.name}
-                          {(g.hours > 0 || g.rows.some(w => w.reportHours != null || w.factoryHours != null)) && (
-                            <span className="ml-1.5 text-xs text-amber-600" title={t("У прихованої фабрики цього місяця є явки/рапорти/години — не загуби")}>• {t("є дані")}</span>
-                          )}
-                        </span>
-                        <button onClick={() => { saveHiddenFac(hiddenFacArr.filter(k => k !== g.key)); if (hiddenGroups.length === 1) setShowHiddenFac(false); }}
-                          className="text-xs text-red-600 hover:underline">{t("показати")}</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <button onClick={() => setShowHiddenFac(v => !v)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-xl border border-dashed px-3 py-2 text-xs font-medium ${showHiddenFac ? "border-slate-500 bg-slate-100 text-slate-700" : "border-slate-300 bg-white text-slate-500 hover:border-slate-400"}`}
+                title={t("Фабрики, приховані з Обліку годин (не сезон) — клікни, щоб повернути")}>
+                <EyeOff className="h-3.5 w-3.5" /> {t("Приховані")} ({hiddenGroups.length})
+              </button>
             )}
           </div>
+          {/* список прихованих — окремим блоком ПІД рядом вкладок: absolute-попап усередині
+              overflow-x-ряду обрізався і виїжджав за правий край (зголошення #1, 29.10.2026) */}
+          {showHiddenFac && hiddenGroups.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white px-3 py-2">
+              <span className="text-xs text-slate-400">{t("Приховані з Обліку годин")}:</span>
+              {hiddenGroups.map(g => (
+                <span key={g.key} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-sm text-slate-700">
+                  {g.name}
+                  {(g.hours > 0 || g.rows.some(w => w.reportHours != null || w.factoryHours != null)) && (
+                    <span className="text-xs text-amber-600" title={t("У прихованої фабрики цього місяця є явки/рапорти/години — не загуби")}>• {t("є дані")}</span>
+                  )}
+                  <button onClick={() => { saveHiddenFac(hiddenFacArr.filter(k => k !== g.key)); if (hiddenGroups.length === 1) setShowHiddenFac(false); }}
+                    className="ml-1 rounded-md bg-white px-1.5 py-0.5 text-xs font-medium text-red-600 ring-1 ring-red-200 hover:bg-red-50">{t("повернути")}</button>
+                </span>
+              ))}
+              {hiddenGroups.length > 1 && <button onClick={() => { saveHiddenFac([]); setShowHiddenFac(false); }} className="text-xs text-red-600 hover:underline">{t("повернути всі")}</button>}
+            </div>
+          )}
           {/* видимість колонок таблиць — персональна, як і порядок (× на заголовку теж ховає) */}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <button onClick={() => setShowCols(v => !v)}

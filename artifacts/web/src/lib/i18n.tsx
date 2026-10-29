@@ -4427,6 +4427,9 @@ const EN: Record<string, string> = {
   "Кінець (Warsaw)": "End (Warsaw)",
   "Години (порожнє = з часу)": "Hours (empty = from the times)",
   "Години пишуться у запис графіку (явка + години) — їх побачать місяць і сводна.": "Hours are written to the schedule entry (present + hours) — the month and the payroll sheet will see them.",  // ── Зголошення з панелі (components/FeedbackWidget.tsx, pages/Feedback.tsx, FeedbackSettings) ──
+  "Приховані з Обліку годин": "Hidden from Hours",
+  "повернути": "restore",
+  "повернути всі": "restore all",
   "зголошення вже створене, повторіть надсилання вкладень": "the report is already created, retry sending the attachments",
   "Обрізати": "Crop",
   "Незамазані скріншоти з фінансових сторінок": "Unblurred screenshots from finance pages",
