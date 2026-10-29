@@ -50,7 +50,7 @@ export default function Workers() {
   const [umowaFilter, setUmowaFilter] = useSessionState("workers.umowa", "");
   const [expiringOnly, setExpiringOnly] = useSessionState("workers.expiring", false);
   // режим списку: активні | звільнені | чорний список (людина з прапорцем do_not_hire — лише у своїй вкладці)
-  const [mode, setMode] = useSessionState<"active" | "fired" | "blacklist">("workers.mode", "active");
+  const [mode, setMode] = useSessionState<"active" | "fired" | "blacklist" | "all">("workers.mode", "active"); // all — активні й звільнені разом (легалізація/бухгалтерія: powiadomienie подається і звільненим, 29.10.2026)
   const showInactive = mode !== "active";
   const [edit, setEdit] = useState<Worker | null>(null);
   const [adding, setAdding] = useState(false);
@@ -105,7 +105,7 @@ export default function Workers() {
   });
 
   const filtered = useMemo(() => (workers ?? []).filter(w =>
-    (mode === "blacklist" ? !!w.doNotHire : mode === "fired" ? (!w.isActive && !w.doNotHire) : w.isActive) &&
+    (mode === "blacklist" ? !!w.doNotHire : mode === "fired" ? (!w.isActive && !w.doNotHire) : mode === "all" ? !w.doNotHire : w.isActive) &&
     (!facFilter || String(w.factoryId) === facFilter) &&
     (!coFilter || String(w.companyId) === coFilter) &&
     (!posFilter || String(w.positionId) === posFilter) &&
@@ -133,7 +133,7 @@ export default function Workers() {
 
   return (
     <>
-      <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${mode === "blacklist" ? t("у чорному списку") : mode === "fired" ? t("звільнених") : t("активних")}`}
+      <PageHeader title={t("Працівники")} subtitle={`${filtered.length} ${mode === "blacklist" ? t("у чорному списку") : mode === "fired" ? t("звільнених") : mode === "all" ? t("активних і звільнених") : t("активних")}`}
         action={addViaFactory ? (
           <Button onClick={() => setAddingLinks(true)}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
         ) : canEdit ? (
@@ -198,7 +198,7 @@ export default function Workers() {
           <Download className="h-3.5 w-3.5" /> {t("Експорт")}
         </button>
         <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 text-xs font-medium">
-          {([["active", t("Активні")], ["fired", t("Звільнені")], ["blacklist", t("Чорний список")]] as const).map(([k, label]) => (
+          {([["active", t("Активні")], ["fired", t("Звільнені")], ["all", t("Усі")], ["blacklist", t("Чорний список")]] as const).map(([k, label]) => (
             <button key={k} type="button" onClick={() => setMode(k)}
               className={`px-3 py-1.5 ${mode === k ? (k === "blacklist" ? "bg-slate-800 text-white" : "bg-red-600 text-white") : "bg-white text-slate-600 hover:bg-slate-50"}`}>{label}</button>
           ))}
@@ -228,6 +228,7 @@ export default function Workers() {
                     <Link href={`/workers/${w.id}`} className="text-red-700 underline-offset-2 hover:underline">{w.fullName}</Link>
                     {w.gender && <span className={`ml-1.5 font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
                     <NatFlag value={w.nationality} className="ml-1.5 cursor-default" />
+                    {mode === "all" && !w.isActive && <span className="ml-1.5 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">{t("звільнений")}</span>}
                   </td>
                   <td className="px-4 py-2.5 font-mono text-slate-500">{w.workerCode ?? "—"}</td>
                   <td className="px-4 py-2.5">{w.positionName ? <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(w.positionColor ?? "slate")}`}><span className={`h-1.5 w-1.5 rounded-full ${dotClass(w.positionColor ?? "slate")}`} />{w.positionName}</span> : <span className="text-slate-300">—</span>}</td>
