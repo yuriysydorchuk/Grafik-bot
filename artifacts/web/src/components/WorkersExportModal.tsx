@@ -39,7 +39,7 @@ const needsValue = (op: string) => !["empty", "not_empty", "true", "false"].incl
 
 export function WorkersExportModal({ onClose, initial }: {
   onClose: () => void;
-  initial?: { mode?: Mode; factoryId?: string; companyId?: string; positionId?: string; q?: string };
+  initial?: { mode?: Mode; factoryId?: string; companyId?: string; positionId?: string; q?: string; picked?: { id: number; name: string }[] };
 }) {
   const t = useT();
   const me = useMe();
@@ -100,8 +100,19 @@ export function WorkersExportModal({ onClose, initial }: {
     const or = groups.map(g => ({ and: g.and.filter(c => c.k && c.op && (!needsValue(c.op) || (Array.isArray(c.v) ? c.v.some(Boolean) : c.v != null && String(c.v) !== ""))) })).filter(g => g.and.length);
     return or.length ? JSON.stringify({ or }) : "";
   }, [groups]);
+  // конкретні працівники (зголошення #2, 30.10.2026): галочки зі списку /workers + пошук тут; з ними
+  // режим active/fired не звіряється, решта фільтрів (фірми, умови) — звужує пачку
+  const [picked, setPicked] = useState<Map<number, string>>(() => new Map((initial?.picked ?? []).map(p => [p.id, p.name])));
+  const [pickQ, setPickQ] = useState("");
+  const [pickQd, setPickQd] = useState("");
+  useEffect(() => { const h = setTimeout(() => setPickQd(pickQ.trim()), 300); return () => clearTimeout(h); }, [pickQ]);
+  const { data: pickRes } = useQuery<Preview>({
+    queryKey: ["workers-export-pick", pickQd], enabled: pickQd.length >= 2,
+    queryFn: () => get(`/workers/export/preview?mode=all&cols=fullName,code&q=${encodeURIComponent(pickQd)}`),
+  });
   const params = useMemo(() => {
     const p = new URLSearchParams({ mode });
+    if (picked.size) p.set("ids", [...picked.keys()].join(","));
     const setList = (k: string, s: Set<string | number>) => { if (s.size) p.set(k, [...s].join(",")); };
     setList("companyIds", companyIds); setList("cities", cities); setList("factoryIds", factoryIds); setList("positionIds", positionIds);
     if (q.trim()) p.set("q", q.trim());
@@ -110,7 +121,7 @@ export function WorkersExportModal({ onClose, initial }: {
     if (withContracts) p.set("contracts", "1");
     if (cols) p.set("cols", cols.join(","));
     return p;
-  }, [mode, companyIds, cities, factoryIds, positionIds, q, condSpec, docTypeIds, withContracts, cols]);
+  }, [mode, companyIds, cities, factoryIds, positionIds, q, condSpec, docTypeIds, withContracts, cols, picked]);
   const [debounced, setDebounced] = useState(params.toString());
   useEffect(() => { const h = setTimeout(() => setDebounced(params.toString()), 350); return () => clearTimeout(h); }, [params]);
   const { data: preview, isFetching } = useQuery<Preview>({
@@ -187,6 +198,31 @@ export function WorkersExportModal({ onClose, initial }: {
                   <button key={k} type="button" className={chip(mode === k)} onClick={() => setMode(k)}>{l}</button>
                 ))}
                 <div className="relative ml-auto"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" /><Input placeholder={t("Пошук за іменем або кодом")} value={q} onChange={e => setQ(e.target.value)} className="w-56 pl-8" /></div>
+              </div>
+              {/* конкретні працівники — пачка на експорт */}
+              <div className="mt-3 rounded-lg border border-slate-200 p-2.5">
+                <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-semibold text-slate-700">{t("Конкретні працівники")}</span>
+                  {picked.size > 0 ? <Badge color="red">{picked.size}</Badge> : <span className="text-slate-400">{t("порожньо = усі за фільтрами; з галочками на сторінці «Працівники» потрапляють сюди")}</span>}
+                  {picked.size > 0 && <button type="button" onClick={() => setPicked(new Map())} className="ml-auto text-red-600 underline-offset-2 hover:underline">{t("очистити пачку")}</button>}
+                </div>
+                {picked.size > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {[...picked].map(([id, name]) => (
+                      <span key={id} className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-0.5 text-xs text-red-800 ring-1 ring-red-200">{name}
+                        <button type="button" onClick={() => setPicked(m => { const n = new Map(m); n.delete(id); return n; })} className="rounded p-0.5 hover:bg-red-100"><X className="h-3 w-3" /></button></span>
+                    ))}
+                  </div>
+                )}
+                <div className="relative"><Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" /><Input placeholder={t("Додати людину: імʼя або код…")} value={pickQ} onChange={e => setPickQ(e.target.value)} className="pl-8 text-xs" /></div>
+                {pickQd.length >= 2 && (
+                  <div className="mt-1.5 max-h-40 overflow-y-auto rounded-md border border-slate-100 text-xs">
+                    {(pickRes?.rows ?? []).slice(0, 30).map((r, i) => { const id = pickRes!.ids[i]!; const name = String(r[0] ?? ""); const code = String(r[1] ?? ""); const on = picked.has(id); return (
+                      <button key={id} type="button" disabled={on} onClick={() => { setPicked(m => new Map(m).set(id, name)); setPickQ(""); }}
+                        className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-slate-50 disabled:opacity-50"><Plus className="h-3 w-3 text-red-600" />{name}<span className="font-mono text-slate-400">{code}</span>{on && <span className="ml-auto text-slate-400">{t("вже в пачці")}</span>}</button>); })}
+                    {pickRes && !pickRes.rows.length && <div className="px-2 py-1 text-slate-400">{t("Нікого не знайдено")}</div>}
+                  </div>
+                )}
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <ChipRow label={t("Фірми")}>{companies.map(c => <button key={c.id} type="button" className={chip(companyIds.has(c.id))} onClick={() => toggle(companyIds, c.id, setCompanyIds)}>{c.name}</button>)}</ChipRow>

@@ -38,6 +38,7 @@ type YesNo = "" | "yes" | "no";
 export interface ExportFilters {
   mode: ExportMode;
   factoryIds: number[]; companyIds: number[]; positionIds: number[]; cities: string[];
+  ids: number[]; // конкретні працівники («пачка» з галочок списку / пошуку в модалці) — тоді режим active/fired не звіряється (зголошення #2, 30.10.2026)
   legal: string; nationality: string; stud26: boolean; docLeg: string; umowa: string; q: string;
   gender: "" | "male" | "female"; telegram: YesNo;
   // дати (YYYY-MM-DD, включно; порожньо = без межі)
@@ -60,7 +61,7 @@ const str = (v: unknown) => String(v ?? "").trim();
 export function parseExportFilters(q: Record<string, unknown>): ExportFilters {
   const mode = ["active", "fired", "blacklist", "all"].includes(String(q.mode)) ? String(q.mode) as ExportMode : "active";
   return {
-    mode, factoryIds: nums(q.factoryIds), companyIds: nums(q.companyIds), positionIds: nums(q.positionIds), cities: strs(q.cities),
+    mode, ids: nums(q.ids), factoryIds: nums(q.factoryIds), companyIds: nums(q.companyIds), positionIds: nums(q.positionIds), cities: strs(q.cities),
     legal: str(q.legal), nationality: str(q.nationality), stud26: q.stud26 === "1" || q.stud26 === "true",
     docLeg: str(q.docLeg), umowa: str(q.umowa), q: str(q.q),
     gender: q.gender === "male" || q.gender === "female" ? q.gender : "", telegram: yn(q.telegram),
@@ -219,7 +220,8 @@ export async function loadExportRows(f: ExportFilters, scope: AdminScope | null 
       docs, note: w.note,
     };
     // ── фільтри ──
-    if (f.mode !== "all" && status !== f.mode) continue;
+    if (f.ids.length) { if (!f.ids.includes(w.id)) continue; } // вибрані явно — незалежно від режиму
+    else if (f.mode !== "all" && status !== f.mode) continue;
     if (f.factoryIds.length && !(w.factoryId != null && f.factoryIds.includes(w.factoryId)) && !extras.some(e => f.factoryIds.includes(e.factoryId))) continue;
     if (f.companyIds.length && !(coId != null && f.companyIds.includes(coId))) continue;
     if (f.positionIds.length && !(w.positionId != null && f.positionIds.includes(w.positionId))) continue;

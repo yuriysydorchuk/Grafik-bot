@@ -56,7 +56,10 @@ export default function Workers() {
   const [adding, setAdding] = useState(false);
   const [firing, setFiring] = useState<Worker | null>(null);
   const [scanInviteLink, setScanInviteLink] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false); // експорт Excel / CSV Gratyfikant / ZIP документів (28.10.2026)
+  const [exporting, setExporting] = useState(false);
+  // галочки на рядках → «Експорт вибраних» (пачка в модалці експорту; зголошення #2, 30.10.2026)
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const toggleSel = (id: number) => setSelected(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; }); // експорт Excel / CSV Gratyfikant / ZIP документів (28.10.2026)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["workers"] });
   const fire = useMutation({
@@ -193,10 +196,11 @@ export default function Workers() {
           <option value="expired">{t("прострочена")}</option>
         </Select>
         <button type="button" onClick={() => setExporting(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-          title={t("Експорт: Excel-список, CSV для Gratyfikant, ZIP документів — з фільтрами по фірмах/фабриках/статусах")}>
-          <Download className="h-3.5 w-3.5" /> {t("Експорт")}
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${selected.size ? "border-red-600 bg-red-600 text-white hover:bg-red-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+          title={selected.size ? t("Експорт лише позначених галочками людей") : t("Експорт: Excel-список, CSV для Gratyfikant, ZIP документів — з фільтрами по фірмах/фабриках/статусах; позначте галочки, щоб експортувати лише вибраних")}>
+          <Download className="h-3.5 w-3.5" /> {selected.size ? t("Експорт вибраних ({n})", { n: selected.size }) : t("Експорт")}
         </button>
+        {selected.size > 0 && <button type="button" onClick={() => setSelected(new Set())} className="text-xs text-slate-500 underline-offset-2 hover:underline">{t("зняти вибір")}</button>}
         <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 text-xs font-medium">
           {([["active", t("Активні")], ["fired", t("Звільнені")], ["all", t("Усі")], ["blacklist", t("Чорний список")]] as const).map(([k, label]) => (
             <button key={k} type="button" onClick={() => setMode(k)}
@@ -219,11 +223,12 @@ export default function Workers() {
         {filtered.length === 0 ? <Empty>{t("Нікого не знайдено")}</Empty> : (
           <table className="w-full min-w-150 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-400">
-              <tr><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
+              <tr><th className="w-8 px-2 py-2.5"><input type="checkbox" title={t("Позначити всіх у списку")} checked={filtered.length > 0 && filtered.every(w => selected.has(w.id))} onChange={e => setSelected(e.target.checked ? new Set(filtered.map(w => w.id)) : new Set())} /></th><th className="px-4 py-2.5">{t("Ім'я")}</th><th className="px-4 py-2.5">{t("Код")}</th><th className="px-4 py-2.5">{t("Посада")}</th><th className="px-4 py-2.5">{t("Легалізація")}</th><th className="px-4 py-2.5">{t("Фірма")}</th><th className="px-4 py-2.5">{t("Фабрика")}</th><th className="px-4 py-2.5">Telegram</th><th className="px-4 py-2.5"></th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filtered.map(w => (
                 <tr key={w.id} className={rowTint(w)}>
+                  <td className="px-2 py-2.5"><input type="checkbox" checked={selected.has(w.id)} onChange={() => toggleSel(w.id)} /></td>
                   <td className="px-4 py-2.5 font-medium">
                     <Link href={`/workers/${w.id}`} className="text-red-700 underline-offset-2 hover:underline">{w.fullName}</Link>
                     {w.gender && <span className={`ml-1.5 font-semibold ${genderClass(w.gender)}`} title={w.gender === "male" ? t("Чоловік") : t("Жінка")}>{genderIcon(w.gender)}</span>}
@@ -259,7 +264,7 @@ export default function Workers() {
 
       {firing && <FireModal worker={firing} loading={fire.isPending} onClose={() => setFiring(null)} onFire={(offerReport, date) => fire.mutate({ id: firing.id, offerReport, date })} />}
 
-      {exporting && <WorkersExportModal onClose={() => setExporting(false)} initial={{ mode, factoryId: facFilter, companyId: coFilter, positionId: posFilter, q }} />}
+      {exporting && <WorkersExportModal onClose={() => setExporting(false)} initial={{ mode, factoryId: facFilter, companyId: coFilter, positionId: posFilter, q, picked: (workers ?? []).filter(w => selected.has(w.id)).map(w => ({ id: w.id, name: w.fullName })) }} />}
 
       {scanInviteLink && <ScanInviteModal link={scanInviteLink} onClose={() => setScanInviteLink(null)} />}
       {addingLinks && <NewWorkerLinksModal onClose={() => setAddingLinks(false)} />}
