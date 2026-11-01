@@ -4427,6 +4427,9 @@ const EN: Record<string, string> = {
   "Кінець (Warsaw)": "End (Warsaw)",
   "Години (порожнє = з часу)": "Hours (empty = from the times)",
   "Години пишуться у запис графіку (явка + години) — їх побачать місяць і сводна.": "Hours are written to the schedule entry (present + hours) — the month and the payroll sheet will see them.",  // ── Зголошення з панелі (components/FeedbackWidget.tsx, pages/Feedback.tsx, FeedbackSettings) ──
+  "Фабрика: список, «Не заповнили» і нагадування — лише по ній": "Factory: the list, “Not filled” and the reminder apply only to it",
+  "Нагадати: {f}": "Remind: {f}",
+  "Усім працівникам із змінами цього тижня (ще не розісланими) прийде графік.": "Every worker with (not yet sent) shifts this week will receive the schedule.",
   "Конкретні працівники": "Specific workers",
   "порожньо = усі за фільтрами; з галочками на сторінці «Працівники» потрапляють сюди": "empty = everyone matching the filters; checked rows on the Workers page land here",
   "очистити пачку": "clear the batch",

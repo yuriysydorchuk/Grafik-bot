@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { get, post, type AvailRow, DAYS, DAY_UK } from "../lib/api";
 import { upcomingWeeks, weekLabel } from "../lib/dates";
 import { WeekSelect } from "../components/WeekSelect";
-import { Card, Spinner, Empty, Badge, Button, Modal } from "../components/ui";
+import { Card, Spinner, Empty, Badge, Button, Modal, Select } from "../components/ui";
 import { PageHeader } from "../components/Layout";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
@@ -63,6 +63,8 @@ export default function Availability() {
   const [sq, setSq] = useSessionState("availability.q", ""); // пошук по працівнику
   const [hist, setHist] = useState<AvailRow | null>(null); // модалка історії заповнення
   const [showMissing, setShowMissing] = useSessionState("availability.missing", false); // режим «хто не заповнив»
+  // фільтр фабрики: таблиця, «Не заповнили» і нагадування — лише по ній (зголошення #4, 01.11.2026)
+  const [facKey, setFacKey] = useSessionState("availability.factory", "");
   const me = useMe();
   const canRemind = can(me, "editData");
   const confirm = useConfirm();
@@ -76,10 +78,20 @@ export default function Availability() {
     queryKey: ["avail-missing", weekStart], enabled: !!weekStart,
     queryFn: () => get(`/availability/missing?weekStart=${weekStart}`),
   });
+  // фабрики для фільтра — з доступності й зі списку «не заповнили» тижня
+  const facOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of data ?? []) m.set(r.factoryId != null ? `f${r.factoryId}` : "none", r.factoryName ?? t("Без фабрики"));
+    for (const w of missing) m.set(w.factoryId != null ? `f${w.factoryId}` : "none", w.factoryName ?? t("Без фабрики"));
+    return [...m].map(([key, name]) => ({ key, name })).sort((a, b) => a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
+  }, [data, missing]); // eslint-disable-line react-hooks/exhaustive-deps
+  const facId = /^f\d+$/.test(facKey) ? Number(facKey.slice(1)) : null;
+  const facName = facKey ? facOptions.find(f => f.key === facKey)?.name ?? null : null;
+  const missingF = useMemo(() => (facKey ? missing.filter(w => (w.factoryId != null ? `f${w.factoryId}` : "none") === facKey) : missing), [missing, facKey]);
   // «Не заповнили» по фабриках — той самий порядок, що й основний список (фабрики за абеткою, «Без фабрики» останні)
   const missingGroups = useMemo(() => {
     const map = new Map<string, { key: string; name: string; rows: MissingWorker[] }>();
-    for (const w of missing) {
+    for (const w of missingF) {
       if (!matchesQuery(sq, w.fullName, w.factoryName)) continue;
       const key = w.factoryId != null ? `f${w.factoryId}` : "none";
       const name = w.factoryName ?? t("Без фабрики");
@@ -87,9 +99,9 @@ export default function Availability() {
       map.get(key)!.rows.push(w);
     }
     return [...map.values()].sort((a, b) => a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
-  }, [missing, sq]);
+  }, [missingF, sq]);
   const remind = useMutation({
-    mutationFn: () => post("/availability/remind", { weekStart }),
+    mutationFn: () => post("/availability/remind", { weekStart, ...(facId != null ? { factoryId: facId } : {}) }),
     onSuccess: (r: any) => toast.success(t("Нагадування надіслано"), { description: `✅ ${r.notified}${r.skipped ? ` · ⚠️ ${t("без Telegram")}: ${r.skipped}` : ""}` }),
     onError: (e: any) => toast.error(e.message),
   });
@@ -98,6 +110,7 @@ export default function Availability() {
     if (!data) return [];
     const map = new Map<string, Omit<Group, "summary">>();
     for (const r of data) {
+      if (facKey && (r.factoryId != null ? `f${r.factoryId}` : "none") !== facKey) continue;
       const key = r.factoryId != null ? `f${r.factoryId}` : "none";
       const name = r.factoryName ?? t("Без фабрики");
       if (!map.has(key)) map.set(key, { key, name, rows: [] });
@@ -107,7 +120,7 @@ export default function Availability() {
     return [...map.values()]
       .map(g => ({ ...g, summary: buildSummary(g.rows) }))
       .sort((a, b) => a.key === "none" ? 1 : b.key === "none" ? -1 : a.name.localeCompare(b.name, "uk"));
-  }, [data]);
+  }, [data, facKey]);
 
   return (
     <>
@@ -118,23 +131,28 @@ export default function Availability() {
           нижче, щоб вони ховалися під бар, а не просвічували. */}
       <div className="mb-4 flex flex-wrap items-center gap-3 md:sticky md:top-[52px] md:z-40 md:-mx-8 md:bg-page md:px-8 md:pb-3 md:pt-2 md:shadow-[0_6px_10px_-8px_rgb(15_23_42/0.12)]">
         <WeekSelect value={weekStart} onChange={setWeekStart} />
+        <Select value={facKey} onChange={e => setFacKey(e.target.value)} className="w-56" title={t("Фабрика: список, «Не заповнили» і нагадування — лише по ній")}>
+          <option value="">{t("Усі фабрики")}</option>
+          {facOptions.map(f => <option key={f.key} value={f.key}>{f.name}</option>)}
+        </Select>
         <SearchBox value={sq} onChange={setSq} placeholder={t("Пошук: працівник")} />
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setShowMissing(!showMissing)}
             title={showMissing ? t("Назад до списку доступності") : t("Показати, хто не заповнив")}
             className={`rounded-full ring-offset-1 transition ${showMissing ? "ring-2 ring-amber-400" : "hover:ring-2 hover:ring-slate-300"}`}>
-            <Badge color={missing.length ? "amber" : "green"}>{t("Не заповнили:")} {missing.length}</Badge>
+            <Badge color={missingF.length ? "amber" : "green"}>{t("Не заповнили:")} {missingF.length}</Badge>
           </button>
           {canRemind && (
-            <Button variant="secondary" loading={remind.isPending} disabled={missing.length === 0}
+            <Button variant="secondary" loading={remind.isPending} disabled={missingF.length === 0}
               onClick={async () => {
-                const n = missing.filter(w => w.telegramId).length;
-                const msg = n > 0
-                  ? t("{n} із {total} прац. мають Telegram і отримають нагадування заповнити доступність на наступний тиждень.", { n, total: missing.length })
-                  : t("Жоден із {total} прац. не приєднаний до Telegram — нагадування нікому не надійде.", { total: missing.length });
+                const n = missingF.filter(w => w.telegramId).length;
+                const who = facName ? `${facName}: ` : `${t("Усі фабрики")}: `;
+                const msg = who + (n > 0
+                  ? t("{n} із {total} прац. мають Telegram і отримають нагадування заповнити доступність на наступний тиждень.", { n, total: missingF.length })
+                  : t("Жоден із {total} прац. не приєднаний до Telegram — нагадування нікому не надійде.", { total: missingF.length }));
                 if (await confirm({ title: t("Надіслати нагадування?"), message: msg, confirmText: t("Надіслати") })) remind.mutate();
               }}>
-              <Send className="h-3.5 w-3.5" /> {t("Нагадати всім")}
+              <Send className="h-3.5 w-3.5" /> {facName ? t("Нагадати: {f}", { f: facName }) : t("Нагадати всім")}
             </Button>
           )}
         </div>

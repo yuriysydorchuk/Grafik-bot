@@ -237,8 +237,16 @@ export default function Schedule() {
     onSuccess: () => { reload(); setExtraTo(null); toast.success(t("Разову зміну прибрано")); },
     onError: (e: any) => toast.error(e.message),
   });
-  const approve = useMutation({ mutationFn: (sendEmail: boolean) => post("/schedule/approve", { weekStart, factoryId: Number(factoryId), sendEmail }),
-    onSuccess: (r: any) => { reload(); setApproveOpen(false); toast.success(t("Затверджено"), { description: (r.messages ?? []).join(" · ") }); }, onError: (e: any) => toast.error(e.message) });
+  // затвердження тижня: Drive + за вибором email фабриці і/або розсилка працівникам у Telegram
+  // (вибір «кого інформувати», як у «Затвердити день»; зголошення #3, 01.11.2026)
+  const approve = useMutation({
+    mutationFn: async (p: { sendEmail: boolean; tg: boolean }) => {
+      const r: any = await post("/schedule/approve", { weekStart, factoryId: Number(factoryId), sendEmail: p.sendEmail });
+      const messages: string[] = [...(r.messages ?? [])];
+      if (p.tg) { const n: any = await post("/schedule/notify", { weekStart, factoryId: Number(factoryId) }); messages.push(`Telegram: ${n.workersNotified ?? 0}${n.workersSkipped ? ` · ${t("без TG:")} ${n.workersSkipped}` : ""}`); }
+      return messages;
+    },
+    onSuccess: (msgs) => { reload(); setApproveOpen(false); toast.success(t("Затверджено"), { description: msgs.join(" · ") }); }, onError: (e: any) => toast.error(e.message) });
   const emailSend = useMutation({ mutationFn: (day: DayCode | null) => post("/schedule/email", { weekStart, factoryId: Number(factoryId), day }),
     onSuccess: (r: any) => { setEmailOpen(false); toast.success("Email", { description: r.message }); }, onError: (e: any) => toast.error(e.message) });
   const notify = useMutation({ mutationFn: () => post("/schedule/notify", { weekStart, factoryId: Number(factoryId) }),
@@ -728,7 +736,7 @@ export default function Schedule() {
         />
       )}
 
-      {approveOpen && <ApproveModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} loading={approve.isPending} onClose={() => setApproveOpen(false)} onApprove={(sendEmail) => approve.mutate(sendEmail)} />}
+      {approveOpen && <ApproveModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} loading={approve.isPending} onClose={() => setApproveOpen(false)} onApprove={(sendEmail, tg) => approve.mutate({ sendEmail, tg })} />}
 
       {emailOpen && <EmailModal factoryName={facName} clientEmail={factory?.clientEmail ?? null} weekStart={weekStart} loading={emailSend.isPending} onClose={() => setEmailOpen(false)} onSend={(day) => emailSend.mutate(day)} />}
 
@@ -1135,14 +1143,22 @@ function CancelShiftModal({ label, people, driverNames, loading, onClose, onCanc
 }
 
 function ApproveModal({ factoryName, clientEmail, loading, onClose, onApprove }: {
-  factoryName: string; clientEmail: string | null; loading: boolean; onClose: () => void; onApprove: (sendEmail: boolean) => void;
+  factoryName: string; clientEmail: string | null; loading: boolean; onClose: () => void; onApprove: (sendEmail: boolean, tg: boolean) => void;
 }) {
   const t = useT();
   const [sendEmail, setSendEmail] = useState(false);
+  const [tg, setTg] = useState(false);
   return (
     <Modal open onClose={onClose} title={t("Затвердити графік — {name}", { name: factoryName })}>
       <div className="space-y-4">
         <p className="text-sm text-slate-600">{t("Графік цієї фабрики буде")} <b>{t("збережено на Google Drive")}</b> (Excel). {t("Інші фабрики не зачіпаються.")}</p>
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={tg} onChange={e => setTg(e.target.checked)} />
+          <span>
+            <span className="font-medium text-slate-700">{t("Розіслати працівникам у Telegram")}</span>
+            <span className="block text-xs text-slate-500">{t("Усім працівникам із змінами цього тижня (ще не розісланими) прийде графік.")}</span>
+          </span>
+        </label>
         <label className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${clientEmail ? "border-slate-200" : "border-slate-100 bg-slate-50 opacity-60"}`}>
           <input type="checkbox" className="mt-0.5" disabled={!clientEmail} checked={sendEmail} onChange={e => setSendEmail(e.target.checked)} />
           <span>
@@ -1152,7 +1168,7 @@ function ApproveModal({ factoryName, clientEmail, loading, onClose, onApprove }:
         </label>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button variant="success" loading={loading} onClick={() => onApprove(sendEmail)}>{t("Затвердити")}</Button>
+          <Button variant="success" loading={loading} onClick={() => onApprove(sendEmail, tg)}>{t("Затвердити")}</Button>
         </div>
       </div>
     </Modal>

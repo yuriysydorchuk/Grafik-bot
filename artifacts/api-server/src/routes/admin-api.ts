@@ -6054,7 +6054,11 @@ router.get("/availability/missing", async (req, res) => {
 router.post("/availability/remind", RW, async (req, res) => {
   const weekStart = String((req.body ?? {}).weekStart || "");
   if (!weekStart) return fail(res, 400, "weekStart обовʼязковий");
-  const missing = await missingAvailabilityWorkers(weekStart, scopeOf(req)); // скоуп — нагадати лише своїм
+  // factoryId — нагадати лише одній фабриці (фільтр сторінки «Доступність»; зголошення #4, 01.11.2026:
+  // «Нагадати всім» без фабрики розсилало всім 256, хоча графікова хотіла лише свою)
+  const fid = Number((req.body ?? {}).factoryId) || null;
+  const missing = (await missingAvailabilityWorkers(weekStart, scopeOf(req))) // скоуп — нагадати лише своїм
+    .filter(w => fid == null || w.factoryId === fid);
   const withTg = missing.filter(w => w.telegramId);
   if (withTg.length === 0) return ok(res, { notified: 0, skipped: missing.length, total: missing.length });
   try {

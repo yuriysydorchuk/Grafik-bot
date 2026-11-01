@@ -249,7 +249,7 @@ export function Layout({ me, children }: { me: Me; children: ReactNode }) {
       {/* desktop sidebar: when collapsed it's a slim rail that floats open (w-64) on hover */}
       <div className={cn("relative hidden shrink-0 md:block", collapsed ? "w-16" : "w-64")}>
         <aside className={cn(
-          "group/nav fixed inset-y-0 left-0 z-40 flex flex-col border-r border-slate-200 bg-white transition-[width] duration-200",
+          "group/nav fixed inset-y-0 left-0 z-[41] flex flex-col border-r border-slate-200 bg-white transition-[width] duration-200", // z-[41]: розкрите при наведенні меню — над закріпленими смугами сторінок (z-40, «Доступність»; зголошення #5, 01.11.2026)
           collapsed ? "w-16 hover:w-64 hover:shadow-xl" : "w-64",
         )}>
           {renderSidebar(collapsed)}
