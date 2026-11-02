@@ -91,3 +91,37 @@ test("імпорт: та сама умова вже є без файлу (HRappk
     .field("factoryId", String(fa!.id)).field("companyId", String(co!.id)).field("dateFrom", "2027-01-01").attach("file", PDF, "u.pdf");
   assert.equal(r4.status, 200); assert.equal(r4.body.attachedTo, undefined);
 });
+
+test("імпорт: PDF з білими сторінками (без тексту й зображень) → 409 blankPages; allowBlank=1 — завантажується; PDF з текстом — одразу", opts, async () => {
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const [co] = await db.insert(companiesTable).values({ name: "ES" }).returning();
+  const [fa] = await db.insert(factoriesTable).values({ name: "LST", companyId: co!.id }).returning();
+  const [w] = await db.insert(workersTable).values({ fullName: "Erik A", factoryId: fa!.id, isActive: true }).returning();
+  // як «signed_Umowa…» з HRappka: сторінки умови порожні, остання — «Karta podpisów» з текстом
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  doc.addPage(); doc.addPage();
+  doc.addPage().drawText("Karta podpisow / Signature Card", { x: 50, y: 700, size: 12, font });
+  const blankPdf = Buffer.from(await doc.save());
+  const send = (file: Buffer, extra: Record<string, string> = {}) => {
+    let rq = request(app).post(`/api/workers/${w!.id}/contracts/import`).set("Cookie", owner).set(H)
+      .field("factoryId", String(fa!.id)).field("companyId", String(co!.id)).field("dateFrom", "2026-06-01");
+    for (const [k, v] of Object.entries(extra)) rq = rq.field(k, v);
+    return rq.attach("file", file, "signed_Umowa.pdf");
+  };
+  const r1 = await send(blankPdf);
+  assert.equal(r1.status, 409, JSON.stringify(r1.body));
+  assert.equal(r1.body.code, "blankPages"); assert.deepEqual(r1.body.blank, [1, 2]); assert.equal(r1.body.pages, 3);
+  assert.equal((await db.select().from(contractsTable)).length, 0, "нічого не створено");
+  const r2 = await send(blankPdf, { allowBlank: "1" });
+  assert.equal(r2.status, 200, JSON.stringify(r2.body));
+  // повноцінний PDF (текст на кожній сторінці) — без попередження
+  const ok = await PDFDocument.create();
+  const f2 = await ok.embedFont(StandardFonts.Helvetica);
+  ok.addPage().drawText("UMOWA ZLECENIA", { x: 50, y: 700, size: 12, font: f2 });
+  const [w2] = await db.insert(workersTable).values({ fullName: "Ola B", factoryId: fa!.id, isActive: true }).returning();
+  const r3 = await request(app).post(`/api/workers/${w2!.id}/contracts/import`).set("Cookie", owner).set(H)
+    .field("factoryId", String(fa!.id)).field("companyId", String(co!.id)).field("dateFrom", "2026-06-01")
+    .attach("file", Buffer.from(await ok.save()), "umowa.pdf");
+  assert.equal(r3.status, 200, JSON.stringify(r3.body));
+});

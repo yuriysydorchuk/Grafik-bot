@@ -1398,8 +1398,9 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
     const cid = emp?.companyId ?? (f && !f.multiFirm ? f.companyId ?? null : null);
     setCompanyId(cid != null ? String(cid) : ""); // невідома фірма → очистити, не успадковувати від попередньої фабрики
   };
+  const [blank, setBlank] = useState<string | null>(null); // 409: у PDF білі сторінки — завантажити лише свідомо
   const save = useMutation({
-    mutationFn: async (force: boolean) => {
+    mutationFn: async ({ force, allowBlank }: { force?: boolean; allowBlank?: boolean }) => {
       if (!file) throw new Error(t("Оберіть PDF-файл підписаної умови"));
       if (!factoryId) throw new Error(t("Вкажіть фабрику умови"));
       if (!companyId) throw new Error(t("Вкажіть нашу фірму в умові"));
@@ -1408,10 +1409,15 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
       fd.append("file", file); fd.append("factoryId", factoryId); fd.append("companyId", companyId);
       fd.append("dateFrom", dateFrom); if (dateTo) fd.append("dateTo", dateTo); if (signedAt) fd.append("signedAt", signedAt); if (note.trim()) fd.append("note", note.trim());
       if (force) fd.append("force", "1");
+      if (allowBlank) fd.append("allowBlank", "1");
       return upload<{ attachedTo?: number }>(`/workers/${workerId}/contracts/import`, fd);
     },
     onSuccess: (r) => { toast.success(r?.attachedTo ? t("Скан прикріплено до наявної умови №{id}", { id: r.attachedTo }) : t("Умову додано як підписану")); onSaved(); },
-    onError: (e: any) => { if (e?.status === 409 && e?.data?.code === "duplicate") setDuplicate(e.message); else toast.error(e.message); },
+    onError: (e: any) => {
+      if (e?.status === 409 && e?.data?.code === "duplicate") setDuplicate(e.message);
+      else if (e?.status === 409 && e?.data?.code === "blankPages") setBlank(e.message);
+      else toast.error(e.message);
+    },
   });
   const sortedFactories = [...factories].sort((a, b) => (employers.some(e => e.factoryId === b.id) ? 1 : 0) - (employers.some(e => e.factoryId === a.id) ? 1 : 0) || a.name.localeCompare(b.name, "pl"));
   return (
@@ -1440,12 +1446,18 @@ function ImportSignedContractModal({ workerId, factories, companies, employers, 
         {duplicate && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
             <div>{duplicate}</div>
-            <button type="button" className="mt-1 font-medium underline" onClick={() => save.mutate(true)} disabled={save.isPending}>{t("Усе одно створити окрему умову")}</button>
+            <button type="button" className="mt-1 font-medium underline" onClick={() => save.mutate({ force: true, allowBlank: !!blank })} disabled={save.isPending}>{t("Усе одно створити окрему умову")}</button>
+          </div>
+        )}
+        {blank && (
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
+            <div>{blank}</div>
+            <button type="button" className="mt-1 font-medium underline" onClick={() => { setDuplicate(null); save.mutate({ allowBlank: true }); }} disabled={save.isPending}>{t("Усе одно завантажити цей файл")}</button>
           </div>
         )}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="secondary" onClick={onClose}>{t("Скасувати")}</Button>
-          <Button onClick={() => { setDuplicate(null); save.mutate(false); }} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
+          <Button onClick={() => { setDuplicate(null); setBlank(null); save.mutate({}); }} disabled={save.isPending}>{save.isPending ? <Spinner /> : t("Завантажити")}</Button>
         </div>
       </div>
     </Modal>
@@ -1610,6 +1622,8 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
 }) {
   const t = useT();
   const confirm = useConfirm();
+  // звільненому «Виповідзення» вже не поставити (сервер: 400 «Працівник уже звільнений», зголошення #10) — кнопку ховаємо
+  const workerFired = useQueryClient().getQueryData<{ isActive?: boolean }>(["worker", String(workerId)])?.isActive === false; // ключ профілю — рядковий params.id
   const [expanded, setExpanded] = useState(false);
   const [editDates, setEditDates] = useState(false);
   const st = CONTRACT_STATUS[c.status] ?? CONTRACT_STATUS.draft!;
@@ -1675,7 +1689,7 @@ function ContractRow({ c, workerId, onSaved, newVersion, archived, showTarget }:
           {!archived && c.status === "signed" && c.factoryId != null && (
             <button type="button" onClick={() => setAnnexOpen(true)} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200" title={t("Аннекс на продовження умови — документ одразу на підпис працівнику")}>{t("Аннекс")}</button>
           )}
-          {!archived && c.status === "signed" && c.factoryId != null && !isEventDoc && !c.terminationDate && (
+          {!archived && !workerFired && c.status === "signed" && c.factoryId != null && !isEventDoc && !c.terminationDate && (
             <button type="button" onClick={() => setTermOpen(true)} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100" title={t("Виповідзення цієї умови: дата останнього дня + ініціатор → wypowiedzenie одразу на підпис; у дату умова закриється")}>{t("Виповідзення")}</button>
           )}
           {!archived && ["draft", "pending_approval", "approved"].includes(c.status) && (
@@ -1847,7 +1861,7 @@ function ContractTerminationModal({ contract, workerId, onClose, onSaved }: { co
   return (
     <Modal open onClose={onClose} title={`${t("Виповідзення умови")} — ${contract.factoryName ?? ""}${contract.companyName ? ` · ${contract.companyName}` : ""}`}>
       <div className="space-y-3">
-        <p className="text-xs text-slate-500">{t("Умова")}: {fmtPeriod(contract) || t("без дат")}. {t("У вказану дату умова закриється; wypowiedzenie цієї умови піде на підпис одразу. Якщо це остання чинна умова людини на фабриці, у цю ж дату закінчиться робота на фабриці (остання фабрика — звільнення з ZWUA).")}</p>
+        <p className="text-xs text-slate-500">{t("Умова")}: {fmtPeriod(contract) || t("без дат")}. {t("У вказану дату умова закриється; wypowiedzenie цієї умови згенерується одразу, а на підпис піде після перевірки — задачею виконавцю. Якщо це остання чинна умова людини на фабриці, у цю ж дату закінчиться робота на фабриці (остання фабрика — звільнення з ZWUA).")}</p>
         <div><Label>{t("Останній робочий день")}</Label><Input type="date" value={date} min={contract.dateFrom ?? undefined} max={contract.dateTo ?? undefined} onChange={e => setDate(e.target.value)} autoFocus /></div>
         <div>
           <Label>{t("Ініціатор")}</Label>

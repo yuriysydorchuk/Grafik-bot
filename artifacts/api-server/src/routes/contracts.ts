@@ -337,6 +337,13 @@ router.post("/workers/:id/contracts/import", WD, uploadContract.single("file"), 
   const signedOn = signedAtIn ?? dateFrom;
   if (!req.file) return fail(res, 400, "Файл не отримано (лише PDF до 15 МБ)");
   if (sniffDocMime(req.file.buffer) !== "application/pdf") return fail(res, 400, "Очікується PDF (тип файлу перевіряється за вмістом)");
+  // білі сторінки (без тексту й зображень) — типово «вивантажений» PDF без змісту умови: з HRappka приходила
+  // лише «Karta podpisów» після 3 порожніх сторінок (зголошення #10, 02.11.2026). Завантажити все одно — allowBlank=1.
+  if (!(b.allowBlank === "1" || b.allowBlank === "true")) {
+    const { blankPdfPages } = await import("../services/pdfBlank");
+    const bp = await blankPdfPages(req.file.buffer);
+    if (bp.blank.length) return res.status(409).json({ error: `Сторінки ${bp.blank.join(", ")} з ${bp.pages} порожні — без тексту й зображень. Схоже, вивантажився файл без змісту умови (напр. з HRappka лише «Karta podpisów»). Завантажте повний PDF.`, code: "blankPages", blank: bp.blank, pages: bp.pages });
+  }
   if (!factoryId || !Number.isInteger(factoryId)) return fail(res, 400, "Вкажіть фабрику умови");
   // multipart: scopeGate тіла ще не бачив — фабрика умови мусить бути в скоупі адміна
   if (!factoryInScope(req.admin?.scope, factoryId)) return fail(res, 403, "Немає доступу до даних цього міста/фабрики");
