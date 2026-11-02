@@ -4368,6 +4368,7 @@ const EN: Record<string, string> = {
   "Номер документа містить…": "Document number contains…",
   "Стан застосовується до вибраних типів «є»; без вибраних типів — до будь-якого документа людини.": "The state applies to the selected “has” types; with no types selected — to any document of the person.",
   "Колонки Excel": "Excel columns", "типові": "default", "усі без документів": "all except documents", "лише імʼя": "name only", "вибрати всі": "select all", "зняти всі": "clear all",
+  "ширше": "wider", "вужче": "narrower", "Розгорнути на всю ширину вікна": "Expand to the full window width", "Повернути колонки праворуч від фільтрів": "Put columns back to the right of the filters", "стан": "status", "виданий": "issued", "файл є": "has file",
   "Основне": "Basics", 
   "Типи документів в архів": "Document types for the archive", "показано перших {n}": "showing first {n}",
   // ZUA/ZZA/ZWUA по фірмі, дата зголошення (28.10.2026)

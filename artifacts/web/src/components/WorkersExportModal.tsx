@@ -8,11 +8,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, FileSpreadsheet, FolderArchive, Table2, Plus, X, GripVertical, Search, Save, Trash2, BookmarkCheck, Check } from "lucide-react";
+import { Download, FileSpreadsheet, FolderArchive, Table2, Plus, X, GripVertical, Search, Save, Trash2, BookmarkCheck, Check, Maximize2, Minimize2 } from "lucide-react";
 import { get, type Factory, type Company, type Position, type DocumentType } from "../lib/api";
 import { Button, Input, Select, Modal, Label, Badge, Spinner } from "./ui";
 import { useT } from "../lib/i18n";
-import { useMe } from "../lib/hooks";
+import { useMe, usePersisted } from "../lib/hooks";
 import { can } from "../lib/roles";
 import { useJsonPref } from "../lib/prefs";
 
@@ -152,6 +152,8 @@ export function WorkersExportModal({ onClose, initial }: {
   ];
   const chip = (on: boolean) => `cursor-pointer rounded-lg border px-2.5 py-1 text-xs transition ${on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`;
   const nConds = groups.reduce((s, g) => s + g.and.length, 0);
+  // «Колонки й порядок» на всю ширину під фільтрами — довгі назви колонок документів не влазили у вузьку праву колонку (02.11.2026)
+  const [colsWide, setColsWide] = usePersisted<"0" | "1">("workers.export.colsWide", "0");
 
   return (
     <Modal open onClose={onClose} title={t("Експорт даних працівників")} size="2xl">
@@ -183,7 +185,7 @@ export function WorkersExportModal({ onClose, initial }: {
 
         <div className="grid gap-4 lg:grid-cols-12">
           {/* ліва колонка: швидкі фільтри + конструктор умов */}
-          <div className="space-y-3 lg:col-span-7">
+          <div className={colsWide === "1" ? "space-y-3 lg:col-span-12" : "space-y-3 lg:col-span-7"}>
             <Card title={t("Швидкі фільтри")}>
               {/* успадковані з фільтрів сторінки /workers — показуємо явно, бо непомічений чип фабрики давав «не тих людей» (28.10.2026) */}
               {inherited.length > 0 && (
@@ -287,8 +289,8 @@ export function WorkersExportModal({ onClose, initial }: {
           </div>
 
           {/* права колонка: колонки й порядок */}
-          <div className="lg:col-span-5">
-            <ColumnsPicker fields={fields} selected={effCols} defaults={catalog?.defaults ?? []} onChange={setCols} />
+          <div className={colsWide === "1" ? "lg:col-span-12" : "lg:col-span-5"}>
+            <ColumnsPicker fields={fields} selected={effCols} defaults={catalog?.defaults ?? []} onChange={setCols} wide={colsWide === "1"} onToggleWide={() => setColsWide(colsWide === "1" ? "0" : "1")} />
           </div>
         </div>
 
@@ -396,8 +398,16 @@ function CondRow({ cond, fields, fieldByKey, ops, docTypes, onChange, onRemove }
   );
 }
 
+// Поле документа «<тип> — <частина>» (doc:<id>:status|number|…): у списку «Усі поля» групуємо по типу,
+// бо однаковий довгий префікс («Dowód osobisty (PL) — …») обрізав саме розрізнювальну частину
+function docPart(f: Field): { type: string; part: string } | null {
+  if (!/^doc:\d+:/.test(f.key)) return null;
+  const i = f.label.lastIndexOf(" — ");
+  return i > 0 ? { type: f.label.slice(0, i), part: f.label.slice(i + 3) } : null;
+}
+
 // Колонки: «Вибрані» (порядок drag&drop, ✕) і «Доступні» (пошук, групи, клік — додати)
-function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field[]; selected: string[]; defaults: string[]; onChange: (next: string[] | null) => void }) {
+function ColumnsPicker({ fields, selected, defaults, onChange, wide, onToggleWide }: { fields: Field[]; selected: string[]; defaults: string[]; onChange: (next: string[] | null) => void; wide: boolean; onToggleWide: () => void }) {
   const t = useT();
   const [search, setSearch] = useState("");
   const [drag, setDrag] = useState<number | null>(null);
@@ -412,6 +422,18 @@ function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field
     return [...g.entries()];
   }, [fields, search, t]);
   const selSet = new Set(sel);
+  const toggleKey = (k: string) => onChange(selSet.has(k) ? sel.filter(x => x !== k) : [...sel, k]);
+  // поспіль іде звичайне поле (type=null) або пачка полів одного типу документа
+  const segments = (list: Field[]) => {
+    const out: ({ type: null; items: Field[] } | { type: string; items: { f: Field; part: string }[] })[] = [];
+    for (const f of list) {
+      const d = docPart(f), last = out[out.length - 1];
+      if (!d) { if (last && last.type == null) last.items.push(f); else out.push({ type: null, items: [f] }); }
+      else if (last && last.type === d.type) last.items.push({ f, part: d.part });
+      else out.push({ type: d.type, items: [{ f, part: d.part }] });
+    }
+    return out;
+  };
   const move = (from: number, to: number) => { if (from === to) return; const n = [...sel]; const [x] = n.splice(from, 1); n.splice(to, 0, x!); onChange(n); };
   return (
     <div className="rounded-xl border border-slate-200 p-3">
@@ -421,19 +443,22 @@ function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field
           <button type="button" className="text-slate-500 underline-offset-2 hover:underline" onClick={() => onChange(null)}>{t("типові")}</button>
           <button type="button" className="text-slate-500 underline-offset-2 hover:underline" onClick={() => onChange(fields.filter(f => f.group !== "docs").map(f => f.key))}>{t("усі без документів")}</button>
           <button type="button" className="text-slate-500 underline-offset-2 hover:underline" onClick={() => onChange(["code", "fullName"])}>{t("лише імʼя")}</button>
+          <button type="button" className="hidden items-center gap-1 rounded-md border border-slate-200 px-1.5 text-slate-600 hover:bg-slate-50 lg:inline-flex" onClick={onToggleWide} title={wide ? t("Повернути колонки праворуч від фільтрів") : t("Розгорнути на всю ширину вікна")}>
+            {wide ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}{wide ? t("вужче") : t("ширше")}
+          </button>
         </span>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <div>
           <div className="mb-1 text-xs font-medium text-slate-500">{t("Вибрані")} <span className="font-normal text-slate-400">({t("перетягніть, щоб змінити порядок")})</span></div>
-          <ul className="max-h-[22rem] space-y-0.5 overflow-auto rounded-lg border border-slate-100 bg-slate-50/50 p-1">
+          <ul className="h-[22rem] min-h-[8rem] resize-y space-y-0.5 overflow-auto rounded-lg border border-slate-100 bg-slate-50/50 p-1">
             {sel.map((k, i) => {
               const f = byKey.get(k)!;
               return (
                 <li key={k} draggable onDragStart={() => setDrag(i)} onDragOver={e => e.preventDefault()} onDrop={() => { if (drag != null) move(drag, i); setDrag(null); }} onDragEnd={() => setDrag(null)}
                   className={`flex items-center gap-1.5 rounded-md border bg-white px-1.5 py-1 text-xs ${drag === i ? "border-red-300 opacity-60" : "border-slate-200"}`}>
                   <GripVertical className="h-3.5 w-3.5 cursor-grab text-slate-300" />
-                  <span className="min-w-0 flex-1 truncate text-slate-700" title={f.header}>{t(f.label)} <span className="text-slate-400">· {f.header}</span></span>
+                  <span className="min-w-0 flex-1 break-words text-slate-700" title={f.header}>{t(f.label)} <span className="block text-[10px] leading-tight text-slate-400">{f.header}</span></span>
                   <button type="button" onClick={() => onChange(sel.filter(x => x !== k))} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><X className="h-3.5 w-3.5" /></button>
                 </li>
               );
@@ -444,23 +469,38 @@ function ColumnsPicker({ fields, selected, defaults, onChange }: { fields: Field
         <div>
           <div className="mb-1 text-xs font-medium text-slate-500">{t("Усі поля")} <span className="font-normal text-slate-400">({t("клік — додати / зняти")})</span></div>
           <div className="relative mb-1"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-slate-400" /><Input value={search} onChange={e => setSearch(e.target.value)} placeholder={t("пошук колонки")} className="pl-7 text-xs" /></div>
-          <div className="max-h-[19.5rem] space-y-1.5 overflow-auto rounded-lg border border-slate-100 p-1">
+          <div className="h-[19.5rem] min-h-[6rem] resize-y space-y-1.5 overflow-auto rounded-lg border border-slate-100 p-1">
             {available.map(([g, list]) => (
               <div key={g}>
                 <div className="flex items-center gap-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                   {t(GROUP_LABEL[g])}
                   <button type="button" className="font-normal normal-case text-slate-400 underline-offset-2 hover:underline" onClick={() => { const all = list.every(f => selSet.has(f.key)); onChange(all ? sel.filter(k => !list.some(f => f.key === k)) : [...sel, ...list.filter(f => !selSet.has(f.key)).map(f => f.key)]); }}>{list.every(f => selSet.has(f.key)) ? t("зняти всі") : t("вибрати всі")}</button>
                 </div>
-                {list.map(f => {
+                {segments(list).map((seg, si) => seg.type == null ? seg.items.map(f => {
                   const on = selSet.has(f.key);
                   return (
-                    <button key={f.key} type="button" onClick={() => onChange(on ? sel.filter(k => k !== f.key) : [...sel, f.key])}
-                      className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${on ? "bg-red-50/60 text-red-700" : "text-slate-700 hover:bg-slate-50"}`}>
-                      <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${on ? "border-red-400 bg-red-500 text-white" : "border-slate-300"}`}>{on && <Check className="h-2.5 w-2.5" />}</span>
-                      <span className="truncate">{t(f.label)}</span><span className="ml-auto truncate text-[10px] text-slate-400">{f.header}</span>
+                    <button key={f.key} type="button" onClick={() => toggleKey(f.key)} title={f.header}
+                      className={`flex w-full items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${on ? "bg-red-50/60 text-red-700" : "text-slate-700 hover:bg-slate-50"}`}>
+                      <span className={`mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${on ? "border-red-400 bg-red-500 text-white" : "border-slate-300"}`}>{on && <Check className="h-2.5 w-2.5" />}</span>
+                      <span className="min-w-0 flex-1 break-words">{t(f.label)}<span className="block text-[10px] leading-tight text-slate-400">{f.header}</span></span>
                     </button>
                   );
-                })}
+                }) : (
+                  <div key={`doctype:${si}:${seg.type}`} className="rounded-md px-1.5 py-1 hover:bg-slate-50/70">
+                    <div className="break-words text-xs font-medium text-slate-700">{seg.type}</div>
+                    <div className="mt-0.5 flex flex-wrap gap-1">
+                      {seg.items.map(({ f, part }) => {
+                        const on = selSet.has(f.key);
+                        return (
+                          <button key={f.key} type="button" onClick={() => toggleKey(f.key)} title={f.header}
+                            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] ${on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
+                            {on && <Check className="h-2.5 w-2.5" />}{t(part)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
             {!available.length && <div className="px-2 py-3 text-xs text-slate-400">{t("Нічого не знайдено")}</div>}
