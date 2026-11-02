@@ -91,7 +91,7 @@ export function FeedbackWidget({ me }: { me: Me }) {
       });
     };
     const onOpen = (e: Event) => { const d = (e as CustomEvent<Prefill | undefined>).detail; openWith(d ?? undefined); };
-    const onKey = (e: KeyboardEvent) => { if (e.altKey && (e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А")) { e.preventDefault(); setOpen(o => !o); } if (e.key === "Escape" && pinMode) setPinMode(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.altKey && (e.code === "KeyF" || e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А")) { e.preventDefault(); setOpen(o => !o); } if (e.key === "Escape" && pinMode) setPinMode(false); };
     window.addEventListener("grafik:feedback-prompt", onPrompt); window.addEventListener("grafik:feedback-open", onOpen); window.addEventListener("keydown", onKey);
     const off = onRecordingChange(setRecording);
     return () => { window.removeEventListener("grafik:feedback-prompt", onPrompt); window.removeEventListener("grafik:feedback-open", onOpen); window.removeEventListener("keydown", onKey); off(); };
@@ -107,23 +107,59 @@ export function FeedbackWidget({ me }: { me: Me }) {
 
   // ── вкладення ──
   const screenshot = async () => {
-    setCapturing(true);
+    setCapturing(true); toast.dismiss("fb-rec"); // підказка запису — не в знімок (чужі тости, напр. помилка, лишаються)
     await new Promise(r => setTimeout(r, 80));
     const started = Date.now();
     try {
       // лише видима область (а не вся довжелезна сторінка): клон зсувається на scroll,
       // полотно обмежене вікном — інакше на списку з сотнями рядків знімок триває десятки секунд
       const scale = Math.min(1, 1600 / Math.max(1, window.innerWidth));
+      const vh = window.innerHeight, sy = window.scrollY, sx = window.scrollX;
+      // таблиці, що тягнуться нижче екрана, втратять рядки (фільтр нижче) — їх висоту в клоні
+      // відпускаємо, інакше скопійована повна висота розтягує видимі рядки
+      for (const el of document.querySelectorAll("table, thead, tbody, tfoot")) if (el.getBoundingClientRect().bottom > vh + 40) el.setAttribute("data-fb-trim", "");
       const capture = domToBlob(document.documentElement, {
         type: "image/png", scale, width: window.innerWidth, height: window.innerHeight,
-        style: { transform: `translate(${-window.scrollX}px, ${-window.scrollY}px)`, transformOrigin: "top left" },
-        filter: (n: Node) => !(n instanceof Element && n.hasAttribute("data-feedback-widget")),
+        // скрол відтворюємо відʼємним відступом <body> (у onCloneEachNode), а не transform кореня: transform
+        // робить корінь блоком-контейнером для fixed (бічне меню/шапка їхали зі скролом і зникали), sticky не
+        // «прилипали». Фон body (висота 100%) у знімку не розливається на все полотно — даємо його кореню.
+        style: { backgroundColor: getComputedStyle(document.body).backgroundColor },
+        filter: (n: Node) => {
+          if (!(n instanceof Element)) return true;
+          if (n.hasAttribute("data-feedback-widget")) return false;
+          // нижче видимої області — не клонуємо: копіювання стилів сотень рядків таблиць (/hours, /workers)
+          // тягнуло знімок за 25 с і обривало його таймаутом (зголошення #7, 02.11.2026). Вище не чіпаємо —
+          // від них залежить зсув видимого; праворуч теж (ширина таблиці копіюється, і без невидимих колонок
+          // видимі розтягувались би — широкий календар працівників)
+          return !(n.getBoundingClientRect().top > vh + 40);
+        },
+        // клони живуть в іншому документі — instanceof не годиться, лише tagName
+        onCloneEachNode: (c: Node) => {
+          if (c.nodeType !== 1) return;
+          const el = c as HTMLElement;
+          if (el.tagName === "BODY") { el.style.marginTop = `${-sy}px`; el.style.marginLeft = `${-sx}px`; }
+          if (el.hasAttribute("data-fb-trim")) { el.removeAttribute("data-fb-trim"); el.style.height = "auto"; el.style.minHeight = "0"; }
+          // бібліотека пише лише value=… на <select>, а показується перший/дефолтний <option>
+          // (на знімку «листопад» при вибраному «жовтень»)
+          if (el.tagName === "SELECT") {
+            const v = el.getAttribute("value");
+            for (const o of Array.from(el.querySelectorAll("option"))) { if ((o.getAttribute("value") ?? o.textContent) === v) o.setAttribute("selected", ""); else o.removeAttribute("selected"); }
+          }
+        },
       });
       const blob = await Promise.race([capture, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 25_000))]);
       record({ type: "rec", text: `📸 скріншот ${Math.round((Date.now() - started) / 100) / 10}s` });
       setAnnot(URL.createObjectURL(blob));
-    } catch (e: any) { toast.error(t("Не вдалося зробити скріншот") + (e?.message ? `: ${e.message}` : "")); }
-    finally { setCapturing(false); }
+    } catch (e: any) {
+      record({ type: "rec", text: `📸 скріншот не вдався: ${e?.message ?? e} (${Math.round((Date.now() - started) / 1000)}s)` });
+      toast.error(t("Не вдалося зробити скріншот") + (e?.message ? `: ${e.message}` : ""), { description: t("Зробіть знімок системою (⌘⇧4 на Mac, Win+Shift+S на Windows) і вставте його в опис через Ctrl/⌘+V"), duration: 12000 });
+    }
+    finally { setCapturing(false); for (const el of document.querySelectorAll("[data-fb-trim]")) el.removeAttribute("data-fb-trim"); }
+  };
+  // запис дій: панель ховаємо (пілюля запису стоїть на її місці і була під нею — «запис не працює», #7)
+  const startRec = () => {
+    startRecording(); setOpen(false);
+    toast(t("Запис дій іде"), { id: "fb-rec", description: t("Повторіть на сторінці те, що призвело до проблеми — записуються кліки, переходи й запити (без відео). Потім «Готово» на червоній плашці внизу."), duration: 9000 });
   };
   const onAnnotated = (blob: Blob, meta: { annotations: number; blurred: boolean; width: number; height: number }) => {
     if (annot) URL.revokeObjectURL(annot);
@@ -201,10 +237,10 @@ export function FeedbackWidget({ me }: { me: Me }) {
       <FeedbackAnnotator src={annot} open={!!annot} onClose={() => { if (annot) URL.revokeObjectURL(annot); setAnnot(null); }} onDone={onAnnotated} />
 
       {/* запис дій — пілюля над кнопкою */}
-      {recording && (
+      {recording && !open && (
         <div className="fixed bottom-20 right-5 z-[45] flex items-center gap-2 rounded-full border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 shadow-lg">
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-600" /> {t("Запис дій")} {Math.floor(recSec / 60)}:{String(recSec % 60).padStart(2, "0")}
-          <button onClick={() => stopRecording("user")} className="ml-1 rounded-md bg-white px-1.5 py-0.5 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"><Square className="inline h-3 w-3" /> {t("Стоп")}</button>
+          <button onClick={() => { stopRecording("user"); setOpen(true); }} className="ml-1 rounded-md bg-white px-1.5 py-0.5 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"><Square className="inline h-3 w-3" /> {t("Готово")}</button>
         </div>
       )}
 
@@ -286,7 +322,7 @@ export function FeedbackWidget({ me }: { me: Me }) {
                     <div className="flex flex-wrap gap-1.5 pt-1">
                       <Tool onClick={screenshot} icon={<Camera className="h-3.5 w-3.5" />} label={t("Скріншот")} on={pending.some(p => p.kind === "screenshot")} />
                       <Tool onClick={() => setPinMode(true)} icon={<MousePointerClick className="h-3.5 w-3.5" />} label={t("Показати де")} on={pending.some(p => p.kind === "pin")} />
-                      <Tool onClick={() => (recording ? stopRecording("user") : startRecording())} icon={<CircleDot className={cn("h-3.5 w-3.5", recording && "text-rose-600")} />} label={recording ? t("Стоп запис") : t("Записати дії")} on={recording} />
+                      <Tool onClick={() => (recording ? stopRecording("user") : startRec())} icon={<CircleDot className={cn("h-3.5 w-3.5", recording && "text-rose-600")} />} label={recording ? t("Стоп запис") : t("Записати дії")} on={recording} title={t("Запамʼятовує ваші кліки, переходи й запити, поки ви повторюєте проблему (без відео)")} />
                       <Tool onClick={() => fileRef.current?.click()} icon={<Paperclip className="h-3.5 w-3.5" />} label={t("Файл")} />
                       <input ref={fileRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
                     </div>
@@ -339,8 +375,8 @@ function Field({ label, value, onChange, rows, t, onPaste, autoFocus }: { label:
     </div>
   );
 }
-function Tool({ onClick, icon, label, on }: { onClick: () => void; icon: React.ReactNode; label: string; on?: boolean }) {
-  return <button onClick={onClick} className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium", on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{icon}{label}</button>;
+function Tool({ onClick, icon, label, on, title }: { onClick: () => void; icon: React.ReactNode; label: string; on?: boolean; title?: string }) {
+  return <button onClick={onClick} title={title} className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium", on ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50")}>{icon}{label}</button>;
 }
 function ContextPreview({ me, t }: { me: Me; t: TFn }) {
   const snap = snapshot(); const { b, os } = ua();
