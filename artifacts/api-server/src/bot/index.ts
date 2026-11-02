@@ -22,7 +22,7 @@ import {
 } from "../services/drive";
 import { bot } from "./instance";
 import { ensureReferralFunnel } from "../services/funnels";
-import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, type WeekRow } from "../services/weeks";
+import { resolveWeekRow, ensureWeekRow, factoryWeekReleaseAt, accountingWeekSql, type WeekRow } from "../services/weeks";
 import { plannedTripCount } from "../services/driverWorkdays";
 import { sendAlert } from "../lib/alerts";
 import { setState, getState, clearState } from "./state";
@@ -1271,7 +1271,7 @@ async function loadWorkerMonthShifts(workerId: number) {
     .from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
-    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.status, "present"), eq(scheduleWeeksTable.status, "approved")));
+    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.status, "present"), accountingWeekSql)); // як «Облік годин» (#6)
   const now = nowWarsaw();
   return rows.map(r => {
     const idx = Math.max(0, DAYS.indexOf(r.day));

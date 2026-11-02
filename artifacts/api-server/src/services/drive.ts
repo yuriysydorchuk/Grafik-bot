@@ -40,6 +40,7 @@ const weekLabelPL = (weekStart: string) => {
 // @ts-ignore – xlsx types are CJS
 import XLSX from "xlsx";
 import ExcelJS from "exceljs";
+import { accountingWeekSql } from "./weeks";
 
 const SHIFT_FILL = ["FF2563EB", "FFEA580C", "FF7C3AED", "FF059669", "FFDB2777", "FF0891B2"];
 const shiftFillFor = (n: number) => SHIFT_FILL[n - 1] ?? "FF6B7280";
@@ -816,7 +817,7 @@ export async function updateHoursTracking(month: string): Promise<string | null>
       .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
       .where(
         and(
-          eq(scheduleWeeksTable.status, "approved"),
+          accountingWeekSql,
           gte(scheduleWeeksTable.weekStart, weekFrom),
           lt(scheduleWeeksTable.weekStart, monthEnd),
         ),

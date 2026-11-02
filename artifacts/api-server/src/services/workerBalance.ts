@@ -21,6 +21,7 @@ import { resolveBaseRates, factoryBonusPerHour, debtCarryFromRow, KSIEG_STD_NETT
 import { loadRateRules } from "./rateRules";
 import { PayoutRules } from "./factoryRules";
 import { isUnder26 } from "./svodniSync";
+import { accountingWeekSql } from "./weeks";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -80,7 +81,7 @@ export async function computeWorkerBalance(
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .where(and(
       eq(scheduleEntriesTable.workerId, workerId), eq(scheduleEntriesTable.status, "present"),
-      eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(`${monthsToShow[0]}-01`)),
+      accountingWeekSql, gte(scheduleWeeksTable.weekStart, weekFromForMonth(`${monthsToShow[0]}-01`)),
       ...(factoryId != null ? [eq(scheduleEntriesTable.factoryId, factoryId)] : []),
     ));
   const hoursBy = new Map<string, { hours: number; shifts: number }>(monthsToShow.map(m => [m, { hours: 0, shifts: 0 }]));

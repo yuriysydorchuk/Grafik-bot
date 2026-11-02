@@ -27,6 +27,7 @@ import { addDaysStr, entryDateStr, weekFromForMonth } from "../lib/dates";
 import { absencePenaltyOf } from "../lib/absences";
 import { listaRecords, listaXlsxBuffer } from "../services/gratyfikantExport";
 import { defaultPayDate, umowaStatusFor } from "../services/gratyfikantImport";
+import { accountingWeekSql } from "../services/weeks";
 
 // Скоуп міст/фабрик (13.10.2026, «Dyrektor» регіону): читання віддає лише рядки своїх міст, движок знять
 // не торкається рядків чужого міста (навіть як фолбек «основної фабрики»), джерела — лише люди зі скоупу.
@@ -1456,7 +1457,7 @@ function windowsBetween(month: string, boundaries: string[]): { from: string; to
   return froms.map((f, i) => ({ from: f, to: i < bs.length ? addDaysStr(froms[i + 1]!, -1) : end }));
 }
 
-// фактичні години явок (затверджені тижні, present) по вікнах місяця
+// фактичні години явок (тижні обліку — accountingWeekSql, present) по вікнах місяця
 async function attendanceByWindows(
   workerId: number | null, factoryId: number | null, month: string,
   windows: { from: string; to: string }[],
@@ -1478,7 +1479,7 @@ async function attendanceByWindows(
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
       eq(scheduleEntriesTable.workerId, workerId),
-      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      accountingWeekSql, eq(scheduleEntriesTable.status, "present"),
       sql`${scheduleWeeksTable.weekStart} >= ${weekFromForMonth(monthStart)}`, sql`${scheduleWeeksTable.weekStart} < ${monthEnd}`,
     ));
   for (const r of att) {
@@ -2602,7 +2603,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   }).from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
-      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      accountingWeekSql, eq(scheduleEntriesTable.status, "present"),
       sql`${scheduleWeeksTable.weekStart} >= ${weekFromForMonth(monthStart)}`, sql`${scheduleWeeksTable.weekStart} < ${monthEnd}`,
     ));
   const key2 = (w: number, f: number | null) => `${w}|${f ?? 0}`;

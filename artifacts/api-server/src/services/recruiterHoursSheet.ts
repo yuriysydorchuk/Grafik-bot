@@ -10,6 +10,7 @@ import { logger } from "../lib/logger";
 import { getDriveAuth } from "./drive";
 import { daysBetween } from "./svodni";
 import { warsawDateStr, factoryShiftHours } from "../bot/time";
+import { accountingWeekSql } from "./weeks";
 
 type FactoryRow = typeof factoriesTable.$inferSelect;
 
@@ -83,7 +84,7 @@ export async function syncRecruiterHoursSheet(): Promise<{ spreadsheetId: string
     .from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
-      eq(scheduleWeeksTable.status, "approved"),
+      accountingWeekSql,
       eq(scheduleEntriesTable.status, "present"),
       inArray(scheduleEntriesTable.workerId, freshIds),
     ));

@@ -1317,7 +1317,7 @@ const EN: Record<string, string> = {
   "Спізн. на фабрику": "Late to factory",
 
   // ── Hours ──
-  "Відпрацьовані зміни й фактичні години за місяць (із затвердженого графіку)": "Worked shifts and actual hours per month (from the approved schedule)",
+  "Відпрацьовані зміни й фактичні години за місяць (відмічені явки графіку)": "Worked shifts and actual hours per month (marked schedule attendance)",
   "Усього змін:": "Total shifts:",
   "Усього годин:": "Total hours:",
   "Години з рапорту": "Hours from report",

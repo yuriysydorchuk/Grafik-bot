@@ -16,6 +16,7 @@ import { weekFromForMonth, entryDateStr } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
 import { monthBoundsStr } from "../services/transportFees";
 import { loadSelfTransport, isSelfOn, hasSelfInRange } from "../services/selfTransport";
+import { accountingWeekSql } from "../services/weeks";
 
 const router: IRouter = Router();
 router.use(authRequired);
@@ -408,9 +409,9 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
   // 2) «доїжджає сам» — ПО ФАБРИЦІ й ПОДЕННО (services/selfTransport.ts).
   // Пара без self-днів у місяці — зміни з годин сводної (ceil(години/зміна)).
   // Пара, що має хоч один self-день у місяці, — години сводної НЕ тарифікуються,
-  // рахуємо по записах затверджених тижнів: self-день — лише зі посадкою водія
+  // рахуємо по записах тижнів обліку (accountingWeekSql): self-день — лише зі посадкою водія
   // (picked_up_by), день «возить фірма» — кожна не-absent явка. Скасовані
-  // клітинки і draft-тижні — ні. Перехід усередині місяця так ділиться поденно.
+  // клітинки і дубль-draft поруч із затвердженим — ні. Перехід усередині місяця так ділиться поденно.
   const selfMap = await loadSelfTransport();
   const pairMixed = (workerId: number, factoryId: number) => hasSelfInRange(selfMap, workerId, factoryId, monthStart, monthEnd);
   for (const [k, hours] of hoursByPair) {
@@ -421,11 +422,12 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
   }
   {
     const weeks = await db.select().from(scheduleWeeksTable).where(and(
-      eq(scheduleWeeksTable.status, "approved"),
+      accountingWeekSql,
       gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)),
       lte(scheduleWeeksTable.weekStart, monthEnd),
     ));
     const weekById = new Map(weeks.map(w => [w.id, w.weekStart]));
+    const approvedWeek = new Set(weeks.filter(w => w.status === "approved").map(w => w.id));
     const weekIds = weeks.map(w => w.id);
     const entries = weekIds.length
       ? await db.select().from(scheduleEntriesTable).where(and(
@@ -446,6 +448,8 @@ router.post("/transport/deductions/generate", RW, async (req, res) => {
       if (isSelfOn(selfMap, e.workerId, e.factoryId, date)) {
         if (e.pickedUpBy == null) continue; // сам доїхав — не платить
       } else if (e.status === "absent") continue;
+      // draft-тиждень (затверджений лише по днях) — лише відмічені явки, не заплановані/майбутні клітинки
+      else if (!approvedWeek.has(e.weekId) && e.status !== "present") continue;
       const k = `${e.workerId}|${e.factoryId}`;
       shiftsByPair.set(k, (shiftsByPair.get(k) ?? 0) + 1);
     }

@@ -27,7 +27,7 @@ import {
   generateSchedule, formatWeekStart, getNextMonday, getCurrentMonday,
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
-import { resolveWeekRow, ensureWeekRow } from "../services/weeks";
+import { resolveWeekRow, ensureWeekRow, accountingWeekSql } from "../services/weeks";
 import { WORKER_FIELD_KEYS } from "../services/workerDocuments";
 import { findWorkerByReferralCode } from "../lib/referral";
 import { parseInstallments, installmentRows, dueBy, isMonth as isYm } from "../lib/installments";
@@ -4165,7 +4165,7 @@ router.post("/hours/report-remind", RW, async (req, res) => {
   }).from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
-      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      accountingWeekSql, eq(scheduleEntriesTable.status, "present"),
       gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
     ));
   const pairs = new Map<number, Set<number>>(); // workerId → фабрики з явками місяця
@@ -4516,7 +4516,7 @@ router.post("/hours/factory-parse", RW, uploadHoursFile.single("file"), async (r
       .from(scheduleEntriesTable)
       .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
       .where(and(
-        eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+        accountingWeekSql, eq(scheduleEntriesTable.status, "present"),
         eq(scheduleEntriesTable.factoryId, parseFactoryId),
         gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
       ));
@@ -4814,7 +4814,7 @@ router.post("/hours/last-activity", RW, async (req, res) => {
   const ents = await db.select({ workerId: scheduleEntriesTable.workerId, day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart })
     .from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"), inArray(scheduleEntriesTable.workerId, workerIds)));
+    .where(and(accountingWeekSql, eq(scheduleEntriesTable.status, "present"), inArray(scheduleEntriesTable.workerId, workerIds)));
   for (const e of ents) if (e.workerId) bump(e.workerId, entryDateStr(String(e.weekStart), e.day), "явка");
   const fh = await db.select({ workerId: factoryHoursTable.workerId, month: factoryHoursTable.month, hours: factoryHoursTable.hours, days: factoryHoursTable.days })
     .from(factoryHoursTable).where(inArray(factoryHoursTable.workerId, workerIds));
@@ -4857,7 +4857,7 @@ router.get("/hours/day-compare", RW, async (req, res) => {
   }).from(scheduleEntriesTable)
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
-      eq(scheduleWeeksTable.status, "approved"), eq(scheduleEntriesTable.status, "present"),
+      accountingWeekSql, eq(scheduleEntriesTable.status, "present"),
       eq(scheduleEntriesTable.factoryId, factoryId), inArray(scheduleEntriesTable.workerId, workerIds),
       gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd),
     ));
@@ -5062,7 +5062,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(start)), lt(scheduleWeeksTable.weekStart, end), eq(scheduleEntriesTable.status, "present")));
+    .where(and(accountingWeekSql, gte(scheduleWeeksTable.weekStart, weekFromForMonth(start)), lt(scheduleWeeksTable.weekStart, end), eq(scheduleEntriesTable.status, "present")));
   // aggregate hours per (factory, worker, position, month) — payroll/invoice are linear so per-portion is exact.
   // position matters because both pay rate and client invoice rate can vary by position;
   // month matters because report overrides apply per month.
@@ -5850,7 +5850,7 @@ router.get("/worker-days/:id", RW, async (req, res) => {
     .from(scheduleEntriesTable)
     .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
-    .where(and(eq(scheduleEntriesTable.workerId, workerId), eq(scheduleWeeksTable.status, "approved"), gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd)));
+    .where(and(eq(scheduleEntriesTable.workerId, workerId), accountingWeekSql, gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)), lt(scheduleWeeksTable.weekStart, monthEnd)));
   const driverRows = await db.select({ id: driversTable.id, name: driversTable.name }).from(driversTable);
   const days = rows.map(r => {
     const fac = r.factoryId != null ? facById.get(r.factoryId) : undefined;
@@ -5876,15 +5876,12 @@ router.get("/worker-days/:id", RW, async (req, res) => {
   });
 });
 
-// Find the approved schedule week that contains a given date (YYYY-MM-DD).
+// Тиждень обліку, що містить дату (YYYY-MM-DD): затверджений рядок понеділка, а без нього —
+// найновіший draft (resolveWeekRow = accountingWeekSql) — інакше «додати зміну» з модалки годин
+// падало на тижнях, затверджених лише по днях (зголошення #6, 02.11.2026)
 async function weekForDate(date: string) {
-  const weeks = await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.status, "approved"));
-  const d = new Date(date + "T00:00:00").getTime();
-  return weeks.find(w => {
-    const start = new Date(String(w.weekStart) + "T00:00:00");
-    const end = new Date(start); end.setDate(start.getDate() + 7);
-    return d >= start.getTime() && d < end.getTime();
-  });
+  const dow = new Date(date + "T00:00:00").getDay(); // 0 = нд
+  return resolveWeekRow(addDaysStr(date, dow === 0 ? -6 : 1 - dow));
 }
 const DOW: DayOfWeek[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const dayOfDate = (date: string): DayOfWeek => DOW[new Date(date + "T00:00:00").getDay()]!;
@@ -5941,7 +5938,7 @@ router.post("/worker-days/:id/add-shift", RW, async (req, res) => {
   const { date, factoryId, shift } = req.body ?? {};
   if (!date || !factoryId || !shift) return fail(res, 400, "Вкажіть дату, фабрику і зміну");
   const week = await weekForDate(String(date));
-  if (!week) return fail(res, 400, "Немає затвердженого тижня для цієї дати");
+  if (!week) return fail(res, 400, "Немає тижня графіку для цієї дати");
   const day = dayOfDate(String(date));
   const existing = (await db.select().from(scheduleEntriesTable).where(and(
     eq(scheduleEntriesTable.weekId, week.id), eq(scheduleEntriesTable.workerId, workerId),
@@ -5984,7 +5981,7 @@ router.post("/hours-reports/:id/apply", RW, async (req, res) => {
       await db.update(scheduleEntriesTable).set({ status: "scheduled", pickedUpBy: null }).where(eq(scheduleEntriesTable.id, it.entryId));
     } else if (it.kind === "add" && it.date && it.shift) {
       const week = await weekForDate(String(it.date));
-      if (!week) return fail(res, 400, "Немає затвердженого тижня для дати додавання");
+      if (!week) return fail(res, 400, "Немає тижня графіку для дати додавання");
       const day = dayOfDate(String(it.date));
       const wRow = (await db.select({ factoryId: workersTable.factoryId }).from(workersTable).where(eq(workersTable.id, d.workerId)))[0];
       const facId = it.factoryId ?? wRow?.factoryId;

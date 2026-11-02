@@ -14,6 +14,17 @@ export async function resolveWeekRow(weekStart: string): Promise<WeekRow | undef
   return candidates.find(w => w.status === "approved") ?? candidates[0];
 }
 
+// Тижні, явки яких ідуть в облік відпрацьованого (облік годин, «→ до сводної», зняття за довіз,
+// P&L, баланс, Drive-облік): затверджений рядок понеділка, а коли затвердженого нема — найновіший
+// (draft), як resolveWeekRow. Статус approved не означає «відпрацьовано»: «Затвердити день» у
+// графіку лише розсилає, статусу тижня не міняє, і явки таких тижнів мовчки випадали з обліку
+// (зголошення #6, 02.11.2026: у жовтні три draft-тижні, ~950 явок). Явка present — факт (посадка
+// водія / відмітка графікової), на майбутні дати її не буває. Дубль-draft поруч із затвердженим не
+// рахується. Вимагає scheduleWeeksTable у FROM/JOIN запиту; запис без тижня (порожній LEFT JOIN) — ні.
+export const accountingWeekSql = sql`(${scheduleWeeksTable.id} IS NOT NULL AND (${scheduleWeeksTable.status} = 'approved' OR NOT EXISTS (
+  SELECT 1 FROM schedule_weeks aw WHERE aw.week_start = ${scheduleWeeksTable.weekStart} AND aw.id <> ${scheduleWeeksTable.id}
+    AND (aw.status = 'approved' OR aw.id > ${scheduleWeeksTable.id}))))`;
+
 // When did this factory's schedule for the week go "into work" — the earliest of
 // its approval (schedule_approvals row) and the first Telegram send to workers
 // (min sent_at of the factory's entries). null = nothing approved/sent yet.

@@ -308,7 +308,7 @@ export default function Hours() {
 
   return (
     <>
-      <PageHeader title={t("Облік годин")} subtitle={t("Відпрацьовані зміни й фактичні години за місяць (із затвердженого графіку)")} />
+      <PageHeader title={t("Облік годин")} subtitle={t("Відпрацьовані зміни й фактичні години за місяць (відмічені явки графіку)")} />
       {/* Controls + city/factory tabs pinned under the top bar while tables scroll
           (md+ only) — same pattern as Schedule: top-[52px] = desktop top-bar height − 1px,
           -mx-8/px-8 undo the main padding so the opaque strip spans full width. */}

@@ -1,4 +1,4 @@
-// Спільний збирач рядків «Обліку годин» місяця: явки затверджених тижнів +
+// Спільний збирач рядків «Обліку годин» місяця: явки тижнів обліку (accountingWeekSql) +
 // рапорти працівників + години фабрики, злиті по парі (працівник, фабрика).
 // ЄДИНЕ джерело правди для сторінки GET /hours і Excel-експорту
 // buildReportHoursExcel: розсинхрон двох окремих збирачів уже давав інцидент
@@ -15,6 +15,7 @@ import {
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { entryDateStr, weekFromForMonth } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
+import { accountingWeekSql } from "./weeks";
 
 export type FactoryRow = typeof factoriesTable.$inferSelect;
 
@@ -101,7 +102,8 @@ export async function buildHoursMergedRows(month: string): Promise<{
     };
   };
 
-  // Явки затверджених тижнів; кожна зміна зараховується за фактичною датою
+  // Явки тижнів обліку (затверджений або, без нього, найновіший draft — accountingWeekSql);
+  // кожна зміна зараховується за фактичною датою
   // (тиждень легально перетинає межу місяця).
   const entries = await db
     .select({
@@ -117,7 +119,7 @@ export async function buildHoursMergedRows(month: string): Promise<{
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
     .leftJoin(scheduleWeeksTable, eq(scheduleEntriesTable.weekId, scheduleWeeksTable.id))
     .where(and(
-      eq(scheduleWeeksTable.status, "approved"),
+      accountingWeekSql,
       gte(scheduleWeeksTable.weekStart, weekFromForMonth(monthStart)),
       lt(scheduleWeeksTable.weekStart, monthEnd),
       eq(scheduleEntriesTable.status, "present"),

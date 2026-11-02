@@ -140,7 +140,7 @@ test("генерація: неціле ділення — округлення �
   assert.equal(byWorker.get(w5.id)?.amount, 80);
 });
 
-test("генерація: self_transport — не з годин, а лише зміни з посадкою; скасована клітинка і draft-тиждень — ні", opts, async () => {
+test("генерація: self_transport — не з годин, а лише зміни з посадкою; скасована клітинка і дубль-draft поруч із затвердженим — ні, draft без затвердженого — так", opts, async () => {
   const fab = await seedPaidFactory();
   const [drv] = await db.insert(driversTable).values({ name: "KIEROWCA TEST" } as any).returning();
   const wSelf = await seedWorker("SAM DOJEZDZA");
@@ -158,10 +158,17 @@ test("генерація: self_transport — не з годин, а лише з�
   await db.insert(shiftCancellationsTable).values({
     weekId: wk1!.id, factoryId: fab.id, dayOfWeek: "wed", shift: "1",
   } as any);
-  // посадка у draft-тижні — не рахується (фінансові вибірки approved-only)
+  // посадка у draft-тижні без затвердженого рядка — рахується (тиждень затверджували лише по днях;
+  // accountingWeekSql, зголошення #6 02.11.2026)
   const [draft] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-08", status: "draft" } as any).returning();
   await db.insert(scheduleEntriesTable).values({
     weekId: draft!.id, workerId: wSelf.id, factoryId: fab.id, dayOfWeek: "mon", shift: "1",
+    status: "present", pickedUpBy: drv!.id,
+  } as any);
+  // посадка в дубль-draft поруч із затвердженим 01.06 — ні
+  const [dup] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-01", status: "draft" } as any).returning();
+  await db.insert(scheduleEntriesTable).values({
+    weekId: dup!.id, workerId: wSelf.id, factoryId: fab.id, dayOfWeek: "thu", shift: "1",
     status: "present", pickedUpBy: drv!.id,
   } as any);
 
@@ -170,8 +177,8 @@ test("генерація: self_transport — не з годин, а лише з�
   assert.equal(res.status, 200);
   const rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.workerId, wSelf.id));
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]?.tripsCount, 1); // лише вт з посадкою
-  assert.equal(rows[0]?.amount, 20);
+  assert.equal(rows[0]?.tripsCount, 2); // вт з посадкою + пн draft-тижня без затвердженого
+  assert.equal(rows[0]?.amount, 40);
 });
 
 test("генерація: перехід на self усередині місяця — до дати за явками, з дати лише посадки; інша фабрика — з годин", opts, async () => {
@@ -195,14 +202,19 @@ test("генерація: перехід на self усередині місяц
   await entry(wk1!.id, "wed", { status: "absent" });   // не був — ні
   await entry(wk3!.id, "mon", { pickedUpBy: drv!.id }); // self-день з посадкою — рахується
   await entry(wk3!.id, "tue");                         // self-день без посадки — ні
+  // draft-тиждень 08.06 (затверджували лише по днях), дні «возить фірма»: відмічена явка — так,
+  // запланована/невідмічена клітинка — ні (у затвердженому тижні не-absent рахувались би обидві)
+  const [wk2] = await db.insert(scheduleWeeksTable).values({ weekStart: "2026-06-08", status: "draft" } as any).returning();
+  await entry(wk2!.id, "mon");
+  await entry(wk2!.id, "tue", { status: "scheduled" });
 
   const cookie = await opsCookie();
   const res = await request(app).post("/api/transport/deductions/generate").set("Cookie", cookie).set(H).send({ month: MONTH });
   assert.equal(res.status, 200);
   const rows = await db.select().from(transportDeductionsTable).where(eq(transportDeductionsTable.workerId, w.id));
   const byFab = new Map(rows.map(r => [r.factoryId, r]));
-  assert.equal(byFab.get(fab.id)?.tripsCount, 3, "2 дні «возить фірма» + 1 посадка");
-  assert.equal(byFab.get(fab.id)?.amount, 60);
+  assert.equal(byFab.get(fab.id)?.tripsCount, 4, "2 дні «возить фірма» + 1 явка draft-тижня + 1 посадка");
+  assert.equal(byFab.get(fab.id)?.amount, 80);
   assert.equal(byFab.get(fab2!.id)?.tripsCount, 2, "інша фабрика без self-запису — з годин");
   assert.equal(byFab.get(fab2!.id)?.amount, 20);
 });
