@@ -359,6 +359,20 @@ export const workerNotifyHoursTable = pgTable("worker_notify_hours", {
 }, (t) => [uniqueIndex("worker_notify_hours_worker_factory_uniq").on(t.workerId, t.factoryId)]);
 export type WorkerNotifyHours = typeof workerNotifyHoursTable.$inferSelect;
 
+// Посада людини ПО ФАБРИЦІ (зголошення #12, 03.11.2026): Wózkowy на одній фабриці, Pracownik на іншій.
+// Немає рядка пари → workers.position_id (профільна посада, як раніше). Резолвер — services/workerPositions.ts;
+// історія змін — worker_changes (field positionId + factory_id), як години повідомлення.
+export const workerFactoryPositionsTable = pgTable("worker_factory_positions", {
+  id: serial("id").primaryKey(),
+  workerId: integer("worker_id").notNull().references(() => workersTable.id, { onDelete: "cascade" }),
+  factoryId: integer("factory_id").notNull().references(() => factoriesTable.id, { onDelete: "cascade" }),
+  positionId: integer("position_id").notNull().references(() => positionsTable.id),
+  updatedBy: integer("updated_by").references(() => adminsTable.id),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("worker_factory_positions_worker_factory_uniq").on(t.workerId, t.factoryId)]);
+export type WorkerFactoryPosition = typeof workerFactoryPositionsTable.$inferSelect;
+
 // Fleet vehicles (managed by the head driver in the bot). Drivers pick one when
 // starting a workday; the plate shows up in the mileage report.
 export const vehiclesTable = pgTable("vehicles", {

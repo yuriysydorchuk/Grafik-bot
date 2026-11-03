@@ -660,7 +660,8 @@ router.get("/workers/:id/contract-duties", WD, async (req, res) => {
   const [worker] = await db.select({ positionId: workersTable.positionId }).from(workersTable).where(eq(workersTable.id, Number(req.params.id)));
   if (!worker) return fail(res, 404, "Працівника не знайдено");
   const factoryId = req.query.factoryId ? Number(req.query.factoryId) : null;
-  ok(res, await resolveContractDuties(worker.positionId, factoryId));
+  const { positionForFactory } = await import("../services/workerPositions");
+  ok(res, await resolveContractDuties(await positionForFactory(Number(req.params.id), worker.positionId, factoryId), factoryId)); // посада на фабриці (#12)
 });
 
 // Превʼю ставки {%Wynagrodzenie%} для модалки генерації (15.10.2026): та сама черга, що й у

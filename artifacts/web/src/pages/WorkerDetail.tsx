@@ -73,6 +73,7 @@ interface WorkerProfile {
   hourlyRate?: number; hourlyRateNetto?: number | null; positionRate?: number | null; effectiveRate?: number; isStudent?: boolean; under26?: boolean;
   birthDate?: string | null; legalStatus?: string | null; notifyHours?: number | null;
   notifyHoursByFactory?: NotifyFactoryRow[]; // години в повідомленні по фабриці (15.10.2026)
+  positionsByFactory?: FactoryPositionRow[]; // посада по фабриці (#12, 03.11.2026)
   doNotHire?: boolean; doNotHireReason?: string | null; doNotHireAt?: string | null; // чорний список
   employmentStartDate?: string | null;
   firstWorkDate?: string | null;   // перший робочий день (авто з першої явки / графікова)
@@ -366,11 +367,13 @@ export default function WorkerDetail() {
         <div className="grid grid-cols-1 divide-y divide-slate-100 border-t border-slate-100 md:grid-cols-3 md:divide-x md:divide-y-0">
           <InfoGroup title={t("Робота")}>
             {/* Фірма/фабрика/стать — у шапці профілю (badge-select), не дублюємо рядками (редизайн 09.2026) */}
-            <InfoRow icon={Briefcase} label={t("Посада")}>
+            <InfoRow icon={Briefcase} label={(w.positionsByFactory?.length ?? 0) > 1 ? t("Посада (основна)") : t("Посада")}>
               <InlineSelect value={w.positionId != null ? String(w.positionId) : ""}
                 onChange={v => { const p = v ? Number(v) : null; if (p != null && !Number.isFinite(p)) return; if (requestChange) requestChange({ positionId: p }, t("Посада")); else wpatch.mutate({ positionId: p }); }}
                 options={posOptions} disabled={!canEdit} />
             </InfoRow>
+            <FactoryPositionRows workerId={w.id} mainFactoryId={w.factoryId ?? null} profilePositionId={w.positionId ?? null} rows={w.positionsByFactory ?? []}
+              factories={factories} positions={positions} canEdit={canEdit} onRequest={requestChange} />
             <InfoRow icon={CalendarCheck} label={t("Закріплена зміна")}>
               {/* чергування тиждень через тиждень (23.10.2026): друга зміна + «цього тижня — N»; якір ставить сервер
                   (увімкнули → цього тижня закріплена, наступного друга); ⇄ міняє їх місцями, не чіпаючи якір */}
@@ -3899,6 +3902,49 @@ function LegalStatusRow({ workerId, legalStatus, onRequest }: { workerId: number
       {badge && <span className={`rounded px-1 text-[10px] font-medium ${badge.cls}`}>{badge.short}</span>}
       {byDocs && <span className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" title={t("виплати за документами")}>{t("док.")}</span>}
     </InfoRow>
+  );
+}
+
+// Посада ПО ФАБРИЦІ (#12, 03.11.2026): людина може бути Wózkowy на одній фабриці і Pracownik на іншій.
+// «Посада (основна)» вище діє на всіх фабриках без власного значення; тут — інші фабрики людини (і основна,
+// якщо для неї задано окремо). Від посади фабрики — секція/ставка сводної, Stanowisko в умові, powiadomienie.
+type FactoryPositionRow = { factoryId: number; factoryName: string | null; positionId: number | null; own: boolean };
+function FactoryPositionRows({ workerId, mainFactoryId, profilePositionId, rows, factories, positions, canEdit, onRequest }: {
+  workerId: number; mainFactoryId: number | null; profilePositionId: number | null; rows: FactoryPositionRow[];
+  factories: Factory[]; positions: { id: number; name: string }[]; canEdit: boolean; onRequest?: RequestChange;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (v: { factoryId: number; positionId: number | null }) => put(`/workers/${workerId}/factory-position`, v),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const shown = rows.filter(r => r.factoryId !== mainFactoryId || r.own);
+  if (rows.length < 2 && !shown.length) return null;
+  const profileName = positions.find(p => p.id === profilePositionId)?.name ?? t("без посади");
+  return (
+    <>
+      {shown.map(r => {
+        const fac = factories.find(f => f.id === r.factoryId);
+        const opts = fac?.usesPositions && (fac.positions?.length ?? 0) > 0
+          ? fac.positions!.map(p => ({ value: String(p.positionId), label: p.name ?? String(p.positionId) }))
+          : positions.map(p => ({ value: String(p.id), label: p.name }));
+        const name = r.factoryName ?? `#${r.factoryId}`;
+        return (
+          <InfoRow key={r.factoryId} icon={Briefcase} label={`${t("Посада")} · ${name}`}>
+            <InlineSelect value={r.own && r.positionId != null ? String(r.positionId) : ""}
+              onChange={v => {
+                const p = v ? Number(v) : null;
+                if (p != null && !Number.isFinite(p)) return;
+                if (onRequest) onRequest({ positionByFactory: { [r.factoryId]: p } }, `${t("Посада")} — ${name}`);
+                else save.mutate({ factoryId: r.factoryId, positionId: p });
+              }}
+              options={opts} none={`${t("як основна")} (${profileName})`} disabled={!canEdit} />
+          </InfoRow>
+        );
+      })}
+    </>
   );
 }
 

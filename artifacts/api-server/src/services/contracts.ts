@@ -22,6 +22,7 @@ import { warsawDateStr } from "../bot/time";
 import { taxOfficeAddressOf } from "../lib/taxOfficeAddresses";
 import { fmtIban } from "../lib/iban";
 import { countryNamePl, citizenshipZus } from "../lib/countries";
+import { positionForFactory } from "./workerPositions";
 
 export type Lang = "pl" | "en" | "es" | "ru" | "uk";
 const LANGS: Lang[] = ["pl", "en", "es", "ru", "uk"];
@@ -214,8 +215,10 @@ export async function buildContractData(
   rateOverride?: number | null,
   companyIdOverride?: number | null,
 ): Promise<Record<string, string>> {
-  const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
-  if (!worker) throw new Error("Працівника не знайдено");
+  const [workerRow] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
+  if (!workerRow) throw new Error("Працівника не знайдено");
+  // посада на ФАБРИЦІ умови (#12 03.11.2026): {%Stanowisko%}, {%Czynności%} — з неї, не з основної фабрики
+  const worker = { ...workerRow, positionId: await positionForFactory(workerId, workerRow.positionId, factoryId) };
   const [factory] = factoryId ? await db.select().from(factoriesTable).where(eq(factoriesTable.id, factoryId)) : [undefined];
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const [position] = worker.positionId ? await db.select().from(positionsTable).where(eq(positionsTable.id, worker.positionId)) : [undefined];
@@ -335,6 +338,7 @@ export function missingFields(data: Record<string, string>, keys: string[]): str
 export async function resolveDocumentSet(workerId: number, factoryId: number | null, companyIdOverride?: number | null): Promise<DocumentTemplate[]> {
   const [worker] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!worker) throw new Error("Працівника не знайдено");
+  const workerPos = await positionForFactory(workerId, worker.positionId, factoryId);
   const [questionnaire] = await db.select().from(workerQuestionnairesTable).where(eq(workerQuestionnairesTable.workerId, workerId));
   const companyId = await resolveContractCompanyId(workerId, factoryId, companyIdOverride); // company-scope шаблони — за фірмою умови
 
@@ -362,7 +366,7 @@ export async function resolveDocumentSet(workerId: number, factoryId: number | n
   for (const t of all) {
     const isFactoryLevel = factoryKinds.has(t.kind);
     if (isFactoryLevel !== (factoryId != null)) continue; // факторі-типи лише для факторі-пакету, і навпаки
-    if (t.kind === "andros_extra" && t.positionId != null && t.positionId !== worker.positionId) continue;
+    if (t.kind === "andros_extra" && t.positionId != null && t.positionId !== workerPos) continue; // посада на фабриці (#12)
     if (EVENT_KINDS.has(t.kind)) continue; // подієві документи (звільнення / кінець умови) — лише явним templateIds
     if (t.kind === "wniosek_konto" && payoutKind !== "wniosek_konto") continue;
     if (t.kind === "wniosek_reka" && payoutKind !== "wniosek_reka") continue;

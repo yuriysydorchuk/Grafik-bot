@@ -22,6 +22,7 @@ import { loadRateRules } from "./rateRules";
 import { PayoutRules } from "./factoryRules";
 import { isUnder26 } from "./svodniSync";
 import { accountingWeekSql } from "./weeks";
+import { positionForFactory } from "./workerPositions";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -99,7 +100,7 @@ export async function computeWorkerBalance(
   const under26 = w.birthDate ? isUnder26(String(w.birthDate)) : !!w.under26;
   const stud26 = (!!w.isStudent || w.legalStatus === "student") && under26;
   const ruleOf = await loadRateRules();
-  const base = resolveBaseRates(w, ruleOf(factoryId, w.positionId), stud26);
+  const base = resolveBaseRates(w, ruleOf(factoryId, await positionForFactory(w.id, w.positionId, factoryId)), stud26); // посада на фабриці (#12)
   const payoutRules = await PayoutRules.load(factoryId != null ? [factoryId] : []);
   const months: BalanceMonth[] = monthsToShow.map(month => {
     const { hours: h, shifts } = hoursBy.get(month)!;

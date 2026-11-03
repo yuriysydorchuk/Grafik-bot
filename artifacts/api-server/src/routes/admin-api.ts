@@ -14,7 +14,7 @@ import {
   vehiclesTable, shiftCancellationsTable, adminSessionsTable, loginEventsTable, svodniRowsTable,
   workerChangesTable, hostelDeductionsTable, penaltiesTable, factoryShiftOverridesTable, workerFactoryCodesTable, workerFactoriesTable, hoursMonthExclusionsTable, workerBadaniaTable, gratyfikantUmowyTable,
   contractsTable, contractFilesTable, documentTemplatesTable, passportScanTokensTable, workerLegalityTable,
-  emailTemplatesTable,
+  emailTemplatesTable, workerFactoryPositionsTable,
   type DayOfWeek, type Shift, type FunnelStage, type OrderRequirement,
 } from "@workspace/db";
 import { eq, and, or, asc, desc, gte, lt, lte, inArray, isNull, isNotNull, ne, sql } from "drizzle-orm";
@@ -28,6 +28,7 @@ import {
 } from "../services/scheduleGenerator";
 import { exportScheduleToDrive, getDriveFolderLink } from "../services/drive";
 import { resolveWeekRow, ensureWeekRow, accountingWeekSql } from "../services/weeks";
+import { effectivePositionSql, loadFactoryPositions, resolvePositionId } from "../services/workerPositions";
 import { WORKER_FIELD_KEYS } from "../services/workerDocuments";
 import { findWorkerByReferralCode } from "../lib/referral";
 import { parseInstallments, installmentRows, dueBy, isMonth as isYm } from "../lib/installments";
@@ -1235,6 +1236,31 @@ router.put("/workers/:id/notify-hours", RW, async (req, res) => {
   ok(res, { ok: true });
 });
 
+// Посада людини на фабриці (#12 03.11.2026) без пропагації в сводну (для тих, хто без cap svodni; з нею веб
+// іде через /svodni/profile-apply {positionByFactory}). positionId null = як у профілі (рядок пари геть).
+router.put("/workers/:id/factory-position", RW, async (req, res) => {
+  const workerId = Number(req.params.id);
+  const factoryId = Number(req.body?.factoryId);
+  const raw = req.body?.positionId;
+  const positionId = raw == null || raw === "" ? null : Number(raw);
+  if (!Number.isInteger(factoryId) || factoryId <= 0) return fail(res, 400, "factoryId обовʼязковий");
+  if (positionId != null && (!Number.isInteger(positionId) || positionId <= 0)) return fail(res, 400, "Невідома посада");
+  if (positionId != null && !(await db.select({ id: positionsTable.id }).from(positionsTable).where(eq(positionsTable.id, positionId))).length) return fail(res, 404, "Посаду не знайдено");
+  const adminId = (req as AuthedRequest).admin?.adminId ?? null;
+  const before = (await loadFactoryPositions([workerId])).get(workerId)?.get(factoryId) ?? null;
+  const { setFactoryPosition } = await import("../services/workerPositions");
+  await setFactoryPosition(workerId, factoryId, positionId, adminId);
+  if (String(before ?? "") !== String(positionId ?? "")) {
+    await db.insert(workerChangesTable).values({
+      workerId, field: "positionId", factoryId,
+      oldValue: before == null ? null : String(before), newValue: positionId == null ? null : String(positionId),
+      effectiveDate: warsawToday(), adminId,
+    });
+    void import("../services/documentEvents").then(m => m.workerLegalityChanged(workerId)).catch(() => {}); // KZiS/Stanowisko powiadomienia
+  }
+  ok(res, { ok: true });
+});
+
 router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
@@ -1246,9 +1272,10 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
   const coName = w.companyId ? (companies.find(c => c.id === w.companyId)?.name ?? null) : null;
   const pos = w.positionId ? (await db.select().from(positionsTable).where(eq(positionsTable.id, w.positionId)))[0] : null;
   // effective gross rate = per-(factory,position) override if set, else worker's own rate
-  const fpRate = (w.factoryId != null && w.positionId != null)
+  const mainPos = await (await import("../services/workerPositions")).positionForFactory(w.id, w.positionId, w.factoryId); // посада на основній фабриці (#12)
+  const fpRate = (w.factoryId != null && mainPos != null)
     ? (await db.select({ rate: factoryPositionsTable.rate }).from(factoryPositionsTable)
-        .where(and(eq(factoryPositionsTable.factoryId, w.factoryId), eq(factoryPositionsTable.positionId, w.positionId))))[0]?.rate ?? null
+        .where(and(eq(factoryPositionsTable.factoryId, w.factoryId), eq(factoryPositionsTable.positionId, mainPos))))[0]?.rate ?? null
     : null;
 
   const rows = await db
@@ -1381,6 +1408,14 @@ router.get("/workers/:id", WORKERS_RO, async (req, res) => {
           documentId: e?.documentId ?? null, updatedAt: e?.updatedAt ?? null,
         };
       });
+    })(),
+    // посада ПО ФАБРИЦІ (#12 03.11.2026): основна + чинні додаткові + ті, де вже задано; own=false — як у профілі
+    positionsByFactory: await (async () => {
+      const own = (await loadFactoryPositions([w.id])).get(w.id) ?? new Map<number, number>();
+      const extra = await db.select({ factoryId: workerFactoriesTable.factoryId }).from(workerFactoriesTable)
+        .where(and(eq(workerFactoriesTable.workerId, w.id), sql`(${workerFactoriesTable.validTo} is null or ${workerFactoriesTable.validTo} >= current_date)`));
+      const ids = [...new Set([w.factoryId, ...extra.map(e => e.factoryId), ...own.keys()].filter((x): x is number => x != null))];
+      return ids.map(fid => ({ factoryId: fid, factoryName: facMap.get(fid)?.name ?? null, positionId: own.get(fid) ?? w.positionId ?? null, own: own.has(fid) }));
     })(),
     employmentStartDate: w.employmentStartDate,
     firstWorkDate: w.firstWorkDate, firstWorkDates, terminationDate: w.terminationDate, terminationFactoryId: w.terminationFactoryId,
@@ -1542,7 +1577,8 @@ router.patch("/positions/:id", RW, async (req, res) => {
 });
 router.delete("/positions/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
-  const used = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.positionId, id))).length;
+  const used = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.positionId, id))).length
+    + (await db.select({ id: workerFactoryPositionsTable.id }).from(workerFactoryPositionsTable).where(eq(workerFactoryPositionsTable.positionId, id))).length; // і посади по фабриках (#12)
   if (used > 0) return fail(res, 400, `Посада використовується у ${used} працівників — спочатку приберіть`);
   // посада на фабриці (ставки/обовʼязки) чи в шаблоні документа — FK без каскаду, delete падав 500 (зголошення #12, 03.11.2026)
   const onFactories = await db.select({ name: factoriesTable.name }).from(factoryPositionsTable)
@@ -2621,9 +2657,13 @@ router.get("/factories/:id/positions", RW, async (req, res) => {
     catalogKzis: positionsTable.kzisCode,
   }).from(factoryPositionsTable).leftJoin(positionsTable, eq(factoryPositionsTable.positionId, positionsTable.id))
     .where(eq(factoryPositionsTable.factoryId, fid)).orderBy(factoryPositionsTable.sortOrder, factoryPositionsTable.id);
-  const counts = await db.select({ positionId: workersTable.positionId, n: sql<number>`count(*)::int` }).from(workersTable)
-    .where(and(eq(workersTable.factoryId, fid), eq(workersTable.isActive, true))).groupBy(workersTable.positionId);
-  const byPos = new Map(counts.map(c => [c.positionId, c.n]));
+  // люди фабрики (основна або чинна додаткова) за ЕФЕКТИВНОЮ посадою на ній (#12: посада по фабриці)
+  // (групування — у JS: параметр фабрики в select і group by — різні $n, Postgres їх не зіставляє)
+  const people = await db.select({ positionId: effectivePositionSql(workersTable.id, sql`${fid}`, workersTable.positionId) }).from(workersTable)
+    .where(and(eq(workersTable.isActive, true), or(eq(workersTable.factoryId, fid),
+      sql`exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${fid} and (wf.valid_to is null or wf.valid_to >= current_date))`)));
+  const byPos = new Map<number | null, number>();
+  for (const p of people) byPos.set(p.positionId, (byPos.get(p.positionId) ?? 0) + 1);
   ok(res, rows.map(({ rate, rateNetto, invoiceRate, ...r }) => ({ ...r, workers: byPos.get(r.positionId) ?? 0, ...(rates ? { rate, rateNetto, invoiceRate } : {}) })));
 });
 // Додати посаду на фабрику / оновити поля одного рядка (без перезапису всіх посад фабрики, як PATCH /factories/:id)
@@ -2662,7 +2702,7 @@ router.delete("/factories/:id/positions/:positionId", RW, async (req, res) => {
   const fid = Number(req.params.id), pid = Number(req.params.positionId);
   // основна фабрика АБО чинна додаткова (worker_factories) — посада людини діє і там
   const busy = (await db.select({ id: workersTable.id }).from(workersTable)
-    .where(and(eq(workersTable.positionId, pid), eq(workersTable.isActive, true), or(eq(workersTable.factoryId, fid),
+    .where(and(sql`${effectivePositionSql(workersTable.id, sql`${fid}`, workersTable.positionId)} = ${pid}`, eq(workersTable.isActive, true), or(eq(workersTable.factoryId, fid),
       sql`exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${fid} and (wf.valid_to is null or wf.valid_to >= current_date))`)))).length;
   if (busy) return fail(res, 400, `На цій посаді на фабриці ${busy} активних працівників — спершу змініть їм посаду`);
   await db.delete(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid)));
@@ -2940,7 +2980,7 @@ router.get("/schedule", async (req, res) => {
       id: scheduleEntriesTable.id, day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift,
       status: scheduleEntriesTable.status, workerId: scheduleEntriesTable.workerId,
       workerName: workersTable.fullName, workerCode: workersTable.workerCode,
-      positionId: workersTable.positionId, gender: workersTable.gender,
+      positionId: effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId), gender: workersTable.gender, // посада на фабриці запису (#12)
       factoryId: scheduleEntriesTable.factoryId, factoryName: factoriesTable.name,
       pickedUpByName: driversTable.name,
     })
@@ -2969,7 +3009,7 @@ router.get("/schedule", async (req, res) => {
     }
 
     const av = await db
-      .select({ workerId: availabilityTable.workerId, day: availabilityTable.dayOfWeek, shift: availabilityTable.shift, name: workersTable.fullName, code: workersTable.workerCode, wFactory: workersTable.factoryId, positionId: workersTable.positionId, gender: workersTable.gender })
+      .select({ workerId: availabilityTable.workerId, day: availabilityTable.dayOfWeek, shift: availabilityTable.shift, name: workersTable.fullName, code: workersTable.workerCode, wFactory: workersTable.factoryId, positionId: effectivePositionSql(workersTable.id, sql`${factoryId}`, workersTable.positionId), gender: workersTable.gender })
       .from(availabilityTable)
       .innerJoin(workersTable, eq(availabilityTable.workerId, workersTable.id))
       .where(and(eq(availabilityTable.weekStart, weekStart), eq(workersTable.isActive, true))); // звільнений у запас не потрапляє
@@ -2996,7 +3036,7 @@ router.get("/schedule", async (req, res) => {
 
     // "available" pool: active workers of this factory who are NOT assigned and NOT in reserve that day
     const activeWorkers = await db
-      .select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, positionId: workersTable.positionId, gender: workersTable.gender })
+      .select({ id: workersTable.id, name: workersTable.fullName, code: workersTable.workerCode, positionId: effectivePositionSql(workersTable.id, sql`${factoryId}`, workersTable.positionId), gender: workersTable.gender })
       .from(workersTable)
       .where(and(eq(workersTable.factoryId, factoryId), eq(workersTable.isActive, true)));
     for (const day of DAYS) {
@@ -5122,7 +5162,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
       workerId: scheduleEntriesTable.workerId, factoryId: scheduleEntriesTable.factoryId, shift: scheduleEntriesTable.shift,
       hoursOverride: scheduleEntriesTable.hoursOverride,
       day: scheduleEntriesTable.dayOfWeek, weekStart: scheduleWeeksTable.weekStart,
-      positionId: workersTable.positionId,
+      positionId: effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId), // посада на фабриці (#12) — ставка посади фабрики
       rate: workersTable.hourlyRate, isStudent: workersTable.isStudent, under26: workersTable.under26,
       legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
     })
@@ -5170,6 +5210,7 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
         legalStatus: workersTable.legalStatus, birthDate: workersTable.birthDate,
       }).from(workersTable).where(inArray(workersTable.id, [...new Set(reports.map(r => r.workerId))]));
       const wById = new Map(repWorkers.map(w => [w.id, w]));
+      const repPos = await loadFactoryPositions(repWorkers.map(w => w.id)); // посада на фабриці рапорту (#12)
       for (const rep of reports) {
         const w = wById.get(rep.workerId);
         // legacy reports without a factory → the factory where the worker has hours that month, preferring the current one
@@ -5188,10 +5229,11 @@ async function computeFinanceRange(start: string, end: string, rates: FinanceRat
         } else if (w) {
           // report without any marked shifts — count it at the worker's current position/rate
           const fac = facById.get(facId);
-          wf.set(`${facId}:${rep.workerId}:${w.positionId ?? 0}:${rep.month}`, {
-            factoryId: facId, workerId: rep.workerId, positionId: w.positionId ?? null, month: rep.month,
-            rate: effRate(posRates, facId, w.positionId, w.rate ?? rates.defaultRate),
-            invoiceRate: effRate(posInvoice, facId, w.positionId, fac?.invoiceRate ?? 0),
+          const wPos = resolvePositionId(w.positionId, repPos.get(w.id), facId);
+          wf.set(`${facId}:${rep.workerId}:${wPos ?? 0}:${rep.month}`, {
+            factoryId: facId, workerId: rep.workerId, positionId: wPos ?? null, month: rep.month,
+            rate: effRate(posRates, facId, wPos, w.rate ?? rates.defaultRate),
+            invoiceRate: effRate(posInvoice, facId, wPos, fac?.invoiceRate ?? 0),
             ...stud26Of(w), hours: rep.hours,
           });
         }

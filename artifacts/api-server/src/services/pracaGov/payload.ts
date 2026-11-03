@@ -9,6 +9,7 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { countryNamePl } from "../../lib/countries";
 import { dateStr } from "../taskUtils";
 import { contractCompanyOf } from "../legalityRecompute";
+import { positionForFactory } from "../workerPositions";
 
 export interface UaFormPayload {
   workerId: number; workerName: string; companyId: number | null; companyName: string;
@@ -115,8 +116,10 @@ export async function buildUaFormPayload(workerId: number, companyId: number | n
     if (hit) f = hit.fac;
   }
   const [c] = cid ? await db.select().from(companiesTable).where(eq(companiesTable.id, cid)) : [undefined];
-  const [pos] = w.positionId ? await db.select().from(positionsTable).where(eq(positionsTable.id, w.positionId)) : [undefined];
-  const [fp] = w.positionId && f ? await db.select().from(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, f.id), eq(factoryPositionsTable.positionId, w.positionId))) : [undefined];
+  // посада на ФАБРИЦІ подачі (#12 03.11.2026) — Stanowisko/KZiS з неї, не з основної фабрики
+  const posId = await positionForFactory(workerId, w.positionId, f?.id ?? null);
+  const [pos] = posId ? await db.select().from(positionsTable).where(eq(positionsTable.id, posId)) : [undefined];
+  const [fp] = posId && f ? await db.select().from(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, f.id), eq(factoryPositionsTable.positionId, posId))) : [undefined];
   const [contract] = await db.select().from(contractsTable).where(and(eq(contractsTable.workerId, workerId), f ? eq(contractsTable.factoryId, f.id) : isNull(contractsTable.factoryId), sql`${contractsTable.status} in ('signed','sent','viewed','worker_signed')`)).orderBy(desc(contractsTable.id)).limit(1);
   const { KSIEG_STD_BRUTTO } = await import("../svodni");
   const rate = f?.contractRateBrutto ?? KSIEG_STD_BRUTTO();

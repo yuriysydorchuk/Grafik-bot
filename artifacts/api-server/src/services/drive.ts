@@ -41,6 +41,7 @@ const weekLabelPL = (weekStart: string) => {
 import XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { accountingWeekSql } from "./weeks";
+import { effectivePositionSql } from "./workerPositions";
 
 const SHIFT_FILL = ["FF2563EB", "FFEA580C", "FF7C3AED", "FF059669", "FFDB2777", "FF0891B2"];
 const shiftFillFor = (n: number) => SHIFT_FILL[n - 1] ?? "FF6B7280";
@@ -437,10 +438,10 @@ export async function buildScheduleExcelBuffer(weekId: number, factoryId: number
   const week = (await db.select().from(scheduleWeeksTable).where(eq(scheduleWeeksTable.id, weekId)))[0];
   const weekStart = week?.weekStart ?? "";
   const entries = await db
-    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, workerId: scheduleEntriesTable.workerId, workerName: workersTable.fullName, workerCode: workersTable.workerCode, positionId: workersTable.positionId, positionName: positionsTable.name, gender: workersTable.gender })
+    .select({ day: scheduleEntriesTable.dayOfWeek, shift: scheduleEntriesTable.shift, workerId: scheduleEntriesTable.workerId, workerName: workersTable.fullName, workerCode: workersTable.workerCode, positionId: effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId), positionName: positionsTable.name, gender: workersTable.gender })
     .from(scheduleEntriesTable)
     .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-    .leftJoin(positionsTable, eq(workersTable.positionId, positionsTable.id))
+    .leftJoin(positionsTable, sql`${positionsTable.id} = ${effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId)}`) // посада на фабриці запису (#12)
     .where(and(
       eq(scheduleEntriesTable.weekId, weekId), eq(scheduleEntriesTable.factoryId, factoryId), ne(scheduleEntriesTable.status, "absent"),
       ...(day ? [eq(scheduleEntriesTable.dayOfWeek, day as any)] : []),
@@ -469,7 +470,7 @@ export async function exportScheduleToDrive(weekId: number, weekStart: string, o
         workerId: scheduleEntriesTable.workerId,
         workerName: workersTable.fullName,
         workerCode: workersTable.workerCode,
-        positionId: workersTable.positionId,
+        positionId: effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId),
         positionName: positionsTable.name,
         gender: workersTable.gender,
         factoryId: scheduleEntriesTable.factoryId,
@@ -478,7 +479,7 @@ export async function exportScheduleToDrive(weekId: number, weekStart: string, o
       })
       .from(scheduleEntriesTable)
       .leftJoin(workersTable, eq(scheduleEntriesTable.workerId, workersTable.id))
-      .leftJoin(positionsTable, eq(workersTable.positionId, positionsTable.id))
+      .leftJoin(positionsTable, sql`${positionsTable.id} = ${effectivePositionSql(workersTable.id, scheduleEntriesTable.factoryId, workersTable.positionId)}`)
       .leftJoin(factoriesTable, eq(scheduleEntriesTable.factoryId, factoriesTable.id))
       .where(and(eq(scheduleEntriesTable.weekId, weekId), ne(scheduleEntriesTable.status, "absent")));
 

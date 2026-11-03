@@ -16,6 +16,7 @@ import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import { entryDateStr, weekFromForMonth } from "../lib/dates";
 import { factoryShiftHours } from "../bot/time";
 import { accountingWeekSql } from "./weeks";
+import { loadFactoryPositions, resolvePositionId } from "./workerPositions";
 
 export type FactoryRow = typeof factoriesTable.$inferSelect;
 
@@ -85,11 +86,13 @@ export async function buildHoursMergedRows(month: string): Promise<{
     employmentStartDate: workersTable.employmentStartDate, createdAt: workersTable.createdAt,
   };
 
+  // посада ПО ФАБРИЦІ рядка (рядок пари → профільна; #12 03.11.2026) — від неї ставка в /hours і сводній
+  const posByWorker = await loadFactoryPositions();
   const blankRow = (w: WorkerMeta, factoryId: number | null): HoursMergedRow => {
     const fac = factoryId != null ? facById.get(factoryId) : undefined;
     return {
       workerId: w.id, name: w.fullName, code: w.code, isActive: w.isActive,
-      positionId: w.positionId, profileRate: w.rate,
+      positionId: resolvePositionId(w.positionId, posByWorker.get(w.id), factoryId), profileRate: w.rate,
       isStudent: w.isStudent, under26: w.under26, legalStatus: w.legalStatus, birthDate: w.birthDate,
       factoryId, factory: fac?.name ?? null, firm: firmOf(fac),
       factoryShiftCount: Math.min(6, Math.max(1, fac?.shiftCount ?? 3)),

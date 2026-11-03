@@ -28,6 +28,9 @@ import { absencePenaltyOf } from "../lib/absences";
 import { listaRecords, listaXlsxBuffer } from "../services/gratyfikantExport";
 import { defaultPayDate, umowaStatusFor } from "../services/gratyfikantImport";
 import { accountingWeekSql } from "../services/weeks";
+import { loadFactoryPositions, resolvePositionId, setFactoryPosition, positionForFactory as positionForFactoryAdd } from "../services/workerPositions";
+// посада впливає на KZiS/Stanowisko powiadomienia → перерахунок легальності (best-effort, як PATCH профілю)
+const workerLegalityChangedSafe = (workerId: number) => { void import("../services/documentEvents").then(m => m.workerLegalityChanged(workerId)).catch(() => {}); };
 
 // Скоуп міст/фабрик (13.10.2026, «Dyrektor» регіону): читання віддає лише рядки своїх міст, движок знять
 // не торкається рядків чужого міста (навіть як фолбек «основної фабрики»), джерела — лише люди зі скоупу.
@@ -189,6 +192,7 @@ async function freezeUnder26AtLock(month: string, lock: Pick<LockRow, "city" | "
   if (!ids.length) return;
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, ids));
   const wById = new Map(ws.map(w => [w.id, w]));
+  const posByWorker = await loadFactoryPositions(ids); // посада на фабриці рядка (#12)
   const segParents = new Set(rows.filter(r => r.segmentOf != null).map(r => r.segmentOf!));
   const ruleOf = await loadRateRules();
   const payoutRules = await PayoutRules.load();
@@ -210,7 +214,7 @@ async function freezeUnder26AtLock(month: string, lock: Pick<LockRow, "city" | "
       const stud26was = row.isStudent === true && row.under26 === true;
       const stud26now = row.isStudent === true && u;
       if (stud26was !== stud26now) {
-        const resolved = resolveBaseRates(w, ruleOf(row.factoryId, w.positionId), stud26now);
+        const resolved = resolveBaseRates(w, ruleOf(row.factoryId, resolvePositionId(w.positionId, posByWorker.get(w.id), row.factoryId)), stud26now);
         // 160-годинний гейт стажу — від МІСЯЧНИХ годин (батьківський рядок), не сегмента
         const parentHours = rows.find(p => p.id === row.segmentOf)?.hours ?? row.hours;
         const bonus = stud26now ? 0 : factoryBonusPerHour(w, payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth), row.periodMonth, parentHours);
@@ -228,7 +232,7 @@ async function freezeUnder26AtLock(month: string, lock: Pick<LockRow, "city" | "
       // звичайний рядок: та сама машинерія, що й зміна дати народження у профілі
       // (extras лишаємо в set — там живе вшитий бонус facBonus, який міняється
       // разом зі студентством; hr рядок цей шлях не чіпає)
-      const { set } = rowSetFromProfile(row, w, new Set(["birthDate"]), undefined, ruleOf(row.factoryId, w.positionId), payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth));
+      const { set } = rowSetFromProfile(row, w, new Set(["birthDate"]), undefined, ruleOf(row.factoryId, resolvePositionId(w.positionId, posByWorker.get(w.id), row.factoryId)), payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth));
       if (Object.keys(set).length) {
         await db.update(svodniRowsTable).set({ ...set, manual: true }).where(eq(svodniRowsTable.id, row.id));
       }
@@ -257,11 +261,12 @@ router.post("/svodni/lock", requireCap("svodni"), async (req: AuthedRequest, res
     // перелочування). Гейтнуті капами поля адмін не бачив — не чіпаємо.
     const fin = hasCap(req.admin!.role, req.admin!.caps, "viewFinance");
     const sens = canSensitive(req);
-    const scopeRows = await db.select({ workerId: svodniRowsTable.workerId, city: svodniRowsTable.city, factoryLabel: svodniRowsTable.factoryLabel })
+    const scopeRows = await db.select({ workerId: svodniRowsTable.workerId, factoryId: svodniRowsTable.factoryId, city: svodniRowsTable.city, factoryLabel: svodniRowsTable.factoryLabel })
       .from(svodniRowsTable).where(and(
         eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf), isNotNull(svodniRowsTable.workerId)));
-    const scopeWorkerIds = [...new Set(scopeRows.filter(r => isLocked([existing], r.city, r.factoryLabel)).map(r => r.workerId!))];
-    const shown = await pendingJournalForScope(month, existing, scopeWorkerIds);
+    const inScope = scopeRows.filter(r => isLocked([existing], r.city, r.factoryLabel));
+    const scopeWorkerIds = [...new Set(inScope.map(r => r.workerId!))];
+    const shown = await pendingJournalForScope(month, existing, scopeWorkerIds, new Set(inScope.map(r => `${r.workerId}|${r.factoryId}`)));
     const dismissIds = shown
       .filter(({ c }) => !applyIds.includes(c.id)
         && !(FINANCE_TRACKED.has(c.field) && !fin) && !(SENSITIVE_TRACKED.has(c.field) && !sens))
@@ -309,7 +314,10 @@ function appliedCoversScope(c: typeof workerChangesTable.$inferSelect, month: st
 // Друга гілка закриває дірку перелочування: зміна під старішим (заміненим)
 // локом випадала з вікна «createdAt > lockedAt» назавжди (кейс бекфілу
 // легалізацій 21.08 — Sadovyi лишився без студентської ставки).
-async function pendingJournalForScope(month: string, lock: LockRow, workerIds: number[]) {
+// scopePairs — пари «людина|фабрика» рядків області: зміна ПО ФАБРИЦІ (посада, години повідомлення) іншої
+// фабрики людини в ревʼю цієї області не показується (інакше розлок чужої вкладки її «відхиляв»; #12 03.11.2026)
+const BY_FACTORY_FIELDS = new Set(["positionId", "notifyHours"]);
+async function pendingJournalForScope(month: string, lock: LockRow, workerIds: number[], scopePairs?: Set<string>) {
   if (!workerIds.length) return [];
   const raw = await db.select({ c: workerChangesTable, adminName: adminsTable.name, workerName: workersTable.fullName })
     .from(workerChangesTable)
@@ -320,8 +328,9 @@ async function pendingJournalForScope(month: string, lock: LockRow, workerIds: n
       sql`${workerChangesTable.effectiveDate} < ${nextMonthStart(month)}`,
       sql`${workerChangesTable.field} NOT LIKE 'q.%'`)) // історія анкети (services/questionnaireJournal.ts) — поза сводною
     .orderBy(asc(workerChangesTable.createdAt));
-  return raw.filter(({ c }) => c.createdAt > lock.lockedAt
-    || (c.reviewDismissedAt == null && !appliedCoversScope(c, month, lock)));
+  return raw.filter(({ c }) => (c.createdAt > lock.lockedAt
+    || (c.reviewDismissedAt == null && !appliedCoversScope(c, month, lock)))
+    && !(scopePairs && c.factoryId != null && BY_FACTORY_FIELDS.has(c.field) && !scopePairs.has(`${c.workerId}|${c.factoryId}`)));
 }
 
 // ── Kara до зняття по області, що розблоковується ────────────────────────────
@@ -436,10 +445,11 @@ router.post("/svodni/lock-pending", requireCap("svodni"), async (req: AuthedRequ
   const monthRows = await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.periodMonth, month), isNull(svodniRowsTable.segmentOf),
     isNotNull(svodniRowsTable.workerId)));
-  const workerIds = [...new Set(monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel)).map(r => r.workerId!))];
+  const lockedRows = monthRows.filter(r => isLocked([lock], r.city, r.factoryLabel));
+  const workerIds = [...new Set(lockedRows.map(r => r.workerId!))];
   const pendingKara = await pendingKaraForScope(month, lock, monthRows);
   if (!workerIds.length) return ok(res, { lockedAt: lock.lockedAt, changes: [], hidden: 0, pendingKara });
-  const pending = await pendingJournalForScope(month, lock, workerIds);
+  const pending = await pendingJournalForScope(month, lock, workerIds, new Set(lockedRows.map(r => `${r.workerId}|${r.factoryId}`)));
   const ws = await db.select().from(workersTable).where(inArray(workersTable.id, [...new Set(pending.map(x => x.c.workerId))]));
   const wById = new Map(ws.map(w => [w.id, w]));
   // зміни по фабриці (години в повідомленні) — назва фабрики для ревʼю
@@ -498,6 +508,11 @@ async function journalChangesFor(w: typeof workersTable.$inferSelect, c: typeof 
     const cur = (await loadNotifyHours([w.id])).get(w.id)?.get(c.factoryId)?.hours ?? null;
     return { notifyHoursByFactory: { [c.factoryId]: cur } };
   }
+  // посада по фабриці (#12): поточна посада ЦІЄЇ фабрики (немає рядка = null → профільна)
+  if (c.field === "positionId" && c.factoryId != null) {
+    const cur = (await loadFactoryPositions([w.id])).get(w.id)?.get(c.factoryId) ?? null;
+    return { positionByFactory: { [c.factoryId]: cur } };
+  }
   return { [c.field]: await journalFieldValue(w, c) };
 }
 
@@ -533,6 +548,7 @@ async function applyReviewedChanges(month: string, scope: Pick<LockRow, "city" |
       // години по фабриці — кілька фабрик однієї людини зливаються в одну мапу
       const ch = await journalChangesFor(w, c);
       if (ch.notifyHoursByFactory) changes.notifyHoursByFactory = { ...((changes.notifyHoursByFactory as Record<string, unknown>) ?? {}), ...(ch.notifyHoursByFactory as Record<string, unknown>) };
+      else if (ch.positionByFactory) changes.positionByFactory = { ...((changes.positionByFactory as Record<string, unknown>) ?? {}), ...(ch.positionByFactory as Record<string, unknown>) };
       else Object.assign(changes, ch);
     }
     if (!Object.keys(changes).length) continue;
@@ -1187,7 +1203,9 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
   const addRule = factory != null ? await payoutRuleForRow({ factoryId: factory.id, factoryLabel, periodMonth }) : null;
   const isBonusAdd = factory != null && hasCashBonus(addRule);
   const isEurocashAdd = factory != null && EUROCASH_FACTORY_IDS.has(factory.id);
-  const baseAdd = resolveBaseRates(effW, ruleOfAdd(factory?.id ?? null, worker!.positionId), stud26Add);
+  // посада на ФАБРИЦІ рядка (#12 03.11.2026): ставка й секція — з неї, не з основної фабрики
+  const posAdd = await positionForFactoryAdd(worker!.id, worker!.positionId, factory?.id ?? null);
+  const baseAdd = resolveBaseRates(effW, ruleOfAdd(factory?.id ?? null, posAdd), stud26Add);
   const facBonus = !stud26Add && isBonusAdd ? factoryBonusPerHour(worker!, addRule, periodMonth, null) : 0;
   const rateBrutto = isEurocashAdd ? null
     : baseAdd.brutto ?? (effW.legalStatus == null || (isBonusAdd && !stud26Add) ? KSIEG_STD_BRUTTO() : null);
@@ -1196,8 +1214,8 @@ router.post("/svodni/rows", requireCap("svodni"), async (req: AuthedRequest, res
     : isBonusAdd ? (bonusBaseAdd != null ? Math.round((bonusBaseAdd + facBonus) * 100) / 100 : null)
     : baseAdd.netto ?? (effW.legalStatus == null ? KSIEG_STD_NETTO() : null);
   // секція — посада з профілю, без неї найдешевша посада фабрики (як у from-hours)
-  const addRules = ruleOfAdd(factory?.id ?? null, worker!.positionId);
-  const sectionPosIdAdd = worker!.positionId ?? addRules.cheapestPositionId ?? null;
+  const addRules = ruleOfAdd(factory?.id ?? null, posAdd);
+  const sectionPosIdAdd = posAdd ?? addRules.cheapestPositionId ?? null;
   const sectionAdd = factory?.usesPositions && sectionPosIdAdd != null
     ? (await db.select({ name: positionsTable.name }).from(positionsTable).where(eq(positionsTable.id, sectionPosIdAdd)))[0]?.name ?? null
     : null;
@@ -1692,7 +1710,7 @@ const FINANCE_TRACKED = new Set(["hourlyRate", "hourlyRateNetto"]);
 // або { notifyHoursByFactory: { [factoryId]: години|null } } з журналу/ревʼю — у workers не пишуться
 // (virtual), рядки сводної беруть години своєї фабрики (services/notifyHours.ts); null = прибрати
 // значення фабрики (назад до спільного). notifyHours без фабрики — старе спільне поле workers.notify_hours.
-type TrackedNorm = { patch: Partial<typeof workersTable.$inferInsert>; virtual: Set<string>; notifyByFactory?: Map<number, number | null>; err?: string };
+type TrackedNorm = { patch: Partial<typeof workersTable.$inferInsert>; virtual: Set<string>; notifyByFactory?: Map<number, number | null>; positionByFactory?: Map<number, number | null>; err?: string };
 function normTrackedChanges(body: Record<string, unknown>): TrackedNorm {
   const patch: any = {};
   const virtual = new Set<string>();
@@ -1755,6 +1773,23 @@ function normTrackedChanges(body: Record<string, unknown>): TrackedNorm {
     if (v != null && !Number.isFinite(v)) return { patch, virtual, err: "Невідома посада" };
     patch.positionId = v;
   }
+  // посада ПО ФАБРИЦІ (#12 03.11.2026): { [factoryId]: positionId | null } — null = як у профілі (рядок пари геть)
+  let positionByFactory: Map<number, number | null> | undefined;
+  if (has("positionByFactory")) {
+    const src = body.positionByFactory;
+    if (!src || typeof src !== "object" || Array.isArray(src)) return { patch, virtual, err: "Посада — по фабриках" };
+    positionByFactory = new Map();
+    for (const [k, raw] of Object.entries(src as Record<string, unknown>)) {
+      const fid = Number(k);
+      if (!Number.isInteger(fid) || fid <= 0) return { patch, virtual, err: "Невідома фабрика" };
+      const v = raw == null || raw === "" ? null : Number(raw);
+      if (v != null && (!Number.isInteger(v) || v <= 0)) return { patch, virtual, err: "Невідома посада" };
+      positionByFactory.set(fid, v);
+    }
+    if (!positionByFactory.size) return { patch, virtual, err: "нема змін" };
+    // лише по фабриці — ключ сигналить двигуну рядків, у профіль не пишеться (як notifyHours)
+    if (!has("positionId")) { patch.positionId = undefined; virtual.add("positionId"); }
+  }
   if (has("payoutPrefKind")) {
     const k = s(body.payoutPrefKind);
     if (k && !["all_konto", "hours", "amount"].includes(k)) return { patch, virtual, err: "Невідомий тип побажання" };
@@ -1762,7 +1797,7 @@ function normTrackedChanges(body: Record<string, unknown>): TrackedNorm {
     if (!k) patch.payoutPrefValue = null;
   }
   if (has("payoutPrefValue")) { const v = n(body.payoutPrefValue); if (v === undefined || (v != null && v < 0)) return { patch, virtual, err: "Значення побажання — число" }; patch.payoutPrefValue = v; }
-  return { patch, virtual, notifyByFactory };
+  return { patch, virtual, notifyByFactory, positionByFactory };
 }
 
 // Приведення рядка сводної до профілю w з урахуванням того, ЩО саме змінилось
@@ -1869,7 +1904,7 @@ function rowSetFromProfile(
 export async function profileChangeContext(workerId: number, body: Record<string, unknown>, from: string, sensitive: boolean) {
   const [w] = await db.select().from(workersTable).where(eq(workersTable.id, workerId));
   if (!w) return { err: "працівника не знайдено" } as const;
-  const { patch, virtual, notifyByFactory, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
+  const { patch, virtual, notifyByFactory, positionByFactory, err } = normTrackedChanges((body.changes ?? {}) as Record<string, unknown>);
   if (err) return { err } as const;
   if (!Object.keys(patch).length) return { err: "нема змін" } as const;
   const changed = new Set(Object.keys(patch));
@@ -1898,6 +1933,16 @@ export async function profileChangeContext(workerId: number, body: Record<string
   const notifyTouches = (row: typeof svodniRowsTable.$inferSelect) =>
     (row.factoryId != null && !!notifyByFactory?.has(row.factoryId))
     || (legacyChanged && !(row.factoryId != null && notifyAfter.has(row.factoryId))); // спільне не перекриває свій рядок фабрики
+  // посада по фабриці (#12): рядок бере посаду СВОЄЇ фабрики (свій рядок → профільна); зміна однієї фабрики
+  // чіпає лише її рядки, зміна профільної — лише фабрики без власного значення
+  const posBefore = (await loadFactoryPositions([workerId])).get(workerId) ?? new Map<number, number>();
+  const posAfter = new Map(posBefore);
+  if (positionByFactory) for (const [fid, v] of positionByFactory) { if (v == null) posAfter.delete(fid); else posAfter.set(fid, v); }
+  const profilePosChanged = changed.has("positionId") && !virtual.has("positionId");
+  const profilePosAfter = profilePosChanged ? (nextW.positionId ?? null) : w.positionId;
+  const positionTouches = (row: typeof svodniRowsTable.$inferSelect) =>
+    (row.factoryId != null && !!positionByFactory?.has(row.factoryId))
+    || (profilePosChanged && !(row.factoryId != null && posAfter.has(row.factoryId)));
   const fromMonth = from.slice(0, 7);
   const rows = (await db.select().from(svodniRowsTable).where(and(
     eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf),
@@ -1924,7 +1969,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
     const posById = new Map(positions.map(p => [p.id, p.name]));
     sectionOf = (row) => {
       if (row.factoryId == null || !facById.get(row.factoryId)?.usesPositions) return undefined;
-      const pid = nextW.positionId ?? ruleOf(row.factoryId, null).cheapestPositionId ?? null;
+      const pid = resolvePositionId(profilePosAfter, posAfter, row.factoryId) ?? ruleOf(row.factoryId, null).cheapestPositionId ?? null;
       return pid != null ? posById.get(pid) ?? null : null;
     };
   }
@@ -1942,7 +1987,9 @@ export async function profileChangeContext(workerId: number, body: Record<string
   }[] = [];
   for (const row of rows) {
     // зміна лише годин повідомлення іншої фабрики — рядок не чіпаємо взагалі
-    const rowChanged = changed.has("notifyHours") && !notifyTouches(row) ? new Set([...changed].filter(k => k !== "notifyHours")) : changed;
+    let rowChanged = changed.has("notifyHours") && !notifyTouches(row) ? new Set([...changed].filter(k => k !== "notifyHours")) : changed;
+    // посада іншої фабрики (або профільна, перекрита власною посадою фабрики рядка) — рядок не чіпає
+    if (rowChanged.has("positionId") && !positionTouches(row)) rowChanged = new Set([...rowChanged].filter(k => k !== "positionId"));
     if (!rowChanged.size) continue;
     // ефективний статус (virtual) — ПО ФАБРИЦІ рядка й за його місяць (01.10.2026): розрахунок по фабриці
     // рядка дає «за документами» (умова на цю фабрику, обовʼязки її фірми) — беремо його; умови на цю
@@ -1955,10 +2002,14 @@ export async function profileChangeContext(workerId: number, body: Record<string
       if (eff.legalSource === "documents" || lg?.contract === "illegal") return { ...nextW, legalStatus: eff.legalStatus, isStudent: eff.isStudent, legalSource: eff.legalSource } as typeof nextW;
       return nextW;
     })() : nextW;
-    const rowW = rowChanged.has("notifyHours") ? { ...rowWBase, notifyHours: resolveNotifyHours(legacyAfter, notifyAfter, row.factoryId) } : rowWBase;
+    const rowW0 = rowChanged.has("notifyHours") ? { ...rowWBase, notifyHours: resolveNotifyHours(legacyAfter, notifyAfter, row.factoryId) } : rowWBase;
+    const rowW = { ...rowW0, positionId: resolvePositionId(profilePosAfter, posAfter, row.factoryId) } as typeof rowW0; // ставка/секція — посада фабрики рядка
     const locked = isLocked(locksByMonth.get(row.periodMonth) ?? [], row.city, row.factoryLabel);
     const rowPayoutRule = payoutRules.for(row.factoryId, row.factoryLabel, row.periodMonth);
-    const { set, diffs, merged } = rowSetFromProfile(row, rowW, rowChanged, sectionOf(row), ruleOf(row.factoryId, rowW.positionId), rowPayoutRule);
+    // секцію чіпаємо лише там, де посада ЦІЄЇ фабрики справді змінилась (інакше пакет «посада A + години B»
+    // переписав би ручну/історичну секцію рядка B — ревʼю codex 03.11.2026)
+    const rowSection = rowChanged.has("positionId") ? sectionOf(row) : undefined;
+    const { set, diffs, merged } = rowSetFromProfile(row, rowW, rowChanged, rowSection, ruleOf(row.factoryId, rowW.positionId), rowPayoutRule);
     // сегментний шлях: (а) зміна з середини першого місяця → порізка;
     // (б) рядок УЖЕ порізаний → нові умови застосовуються до сегментів
     // від дати (батько ніколи не пишеться повз сегменти)
@@ -1982,7 +2033,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
           st.isStudent = rowW.legalStatus != null ? studentForStatus(rowW.legalStatus, !!rowW.isStudent) : !!rowW.isStudent;
         }
         if (changed.has("birthDate")) st.under26 = rowW.birthDate ? isUnder26(rowW.birthDate) : rowW.under26;
-        if (changed.has("positionId")) { st.section = sectionOf(row) ?? null; st.label = sectionOf(row) ?? null; }
+        if (rowChanged.has("positionId")) { st.section = rowSection ?? null; st.label = rowSection ?? null; }
         const stud26w = st.isStudent === true && st.under26 === true;
         const resolved = resolveBaseRates(rowW, rowRules, stud26w);
         if (changed.has("hourlyRate") && (rowW.hourlyRate ?? resolved.brutto) != null) st.rateBrutto = rowW.hourlyRate ?? resolved.brutto;
@@ -2090,7 +2141,7 @@ export async function profileChangeContext(workerId: number, body: Record<string
   // сводних людина взагалі має (щоб підказати «обери ранішу дату»)
   const allMonths = await db.selectDistinct({ m: svodniRowsTable.periodMonth })
     .from(svodniRowsTable).where(and(eq(svodniRowsTable.workerId, workerId), isNull(svodniRowsTable.segmentOf)));
-  return { w, patch, persistPatch, virtual, changed, notifyByFactory, notifyBefore, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
+  return { w, patch, persistPatch, virtual, changed, notifyByFactory, notifyBefore, positionByFactory, posBefore, items: nonEmpty, checkedRows: rows.length, workerMonths: allMonths.map(x => x.m).sort() } as const;
 }
 
 const SENSITIVE_DIFF_KEYS = new Set(["hoursDeclared", "ksiegBrutto", "ksiegNetto", "konto", "gotowka", "zusStatus"]);
@@ -2144,6 +2195,7 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
   const skippedLocked = ctx.items.filter(it => it.locked).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
   if (Object.keys(ctx.persistPatch).length) await db.update(workersTable).set(ctx.persistPatch).where(eq(workersTable.id, workerId));
   if (ctx.notifyByFactory) for (const [fid, v] of ctx.notifyByFactory) await setFactoryNotifyHours(workerId, fid, v, { source: "manual", adminId: req.admin!.adminId });
+  if (ctx.positionByFactory) for (const [fid, v] of ctx.positionByFactory) await setFactoryPosition(workerId, fid, v, req.admin!.adminId);
   for (const it of toApply) {
     if (it.plan) {
       // зміна з середини місяця → рядок ріжеться на сегменти
@@ -2159,6 +2211,7 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
   for (const field of Object.keys(changesBody)) {
     if (!(field in ctx.patch)) continue;
     if (field === "notifyHours" && ctx.virtual.has("notifyHours")) continue; // лише по фабриці — окремими записами нижче
+    if (field === "positionByFactory" || (field === "positionId" && ctx.virtual.has("positionId"))) continue; // посада по фабриці — нижче
     const oldV = (ctx.w as any)[field];
     const newV = (ctx.patch as any)[field];
     if (String(oldV ?? "") === String(newV ?? "")) continue; // фактичної зміни нема
@@ -2185,6 +2238,20 @@ router.post("/svodni/profile-apply", requireCap("svodni"), async (req: AuthedReq
       adminId: req.admin!.adminId,
     });
   }
+  // посада по фабриці: запис на кожну фабрику (field positionId + factory_id), рядки — лише цієї фабрики
+  if (ctx.positionByFactory) for (const [fid, v] of ctx.positionByFactory) {
+    const oldV = ctx.posBefore.get(fid) ?? null;
+    if (String(oldV ?? "") === String(v ?? "")) continue;
+    const appliedF = toApply.filter(it => it.row.factoryId === fid).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
+    const skippedF = ctx.items.filter(it => it.locked && it.row.factoryId === fid).map(it => ({ month: it.row.periodMonth, city: it.row.city, factoryLabel: it.row.factoryLabel }));
+    await db.insert(workerChangesTable).values({
+      workerId, field: "positionId", factoryId: fid,
+      oldValue: oldV == null ? null : String(oldV), newValue: v == null ? null : String(v),
+      effectiveDate: from, appliedRows: appliedF.length ? appliedF : null, skippedLocked: skippedF.length ? skippedF : null,
+      adminId: req.admin!.adminId,
+    });
+  }
+  if (ctx.positionByFactory?.size) workerLegalityChangedSafe(workerId);
   // ефективний статус за документами: запис у журнал уже створив движок при
   // перерахунку — відмічаємо його застосованим (без дубля), офіс = хто прийняв
   if (changesBody.effectiveLegalStatus !== undefined) {
@@ -2329,9 +2396,15 @@ router.delete("/svodni/profile-change/:id", requireCap("svodni"), async (req: Au
       sql`${workerChangesTable.id} < ${id}`)).orderBy(desc(workerChangesTable.id)).limit(1);
     if (prev && prev.adminId == null) restoreSource = "powiadomienie";
   }
-  const ctx = await profileChangeContext(entry.workerId, { changes: byFactory ? { notifyHoursByFactory: { [entry.factoryId!]: oldVal } } : { [entry.field]: oldVal } }, entry.effectiveDate, canSensitive(req));
+  // посада по фабриці (#12): повертається посада фабрики (null = прибрати рядок, назад до профільної)
+  const posByFactory = entry.field === "positionId" && entry.factoryId != null;
+  const changes = byFactory ? { notifyHoursByFactory: { [entry.factoryId!]: oldVal } }
+    : posByFactory ? { positionByFactory: { [entry.factoryId!]: oldVal } }
+    : { [entry.field]: oldVal };
+  const ctx = await profileChangeContext(entry.workerId, { changes }, entry.effectiveDate, canSensitive(req));
   if ("err" in ctx) return fail(res, 400, ctx.err!);
   if (byFactory) await setFactoryNotifyHours(entry.workerId, entry.factoryId!, oldVal as number | null, { source: restoreSource, adminId: req.admin!.adminId });
+  else if (posByFactory) { await setFactoryPosition(entry.workerId, entry.factoryId!, oldVal as number | null, req.admin!.adminId); workerLegalityChangedSafe(entry.workerId); }
   else await db.update(workersTable).set(ctx.patch).where(eq(workersTable.id, entry.workerId));
   const toApply = ctx.items.filter(it => !it.locked);
   for (const it of toApply) {
@@ -2711,6 +2784,7 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
   type WorkerEff = ReturnType<typeof effectiveView<typeof workersRaw[number]>>;
   const workers: WorkerEff[] = []; // типовий якір для хелперів нижче; реальні обʼєкти — у wById по парі
   const wById = new Map([...hoursByPair.values()].flatMap(p => { const raw = wRawById.get(p.workerId); return raw ? [[pairKey(p.workerId, p.factoryId), effectiveView(raw, lgByPair.get(pairKey(p.workerId, p.factoryId)))] as const] : []; }));
+  const fhPosByWorker = await loadFactoryPositions(workersRaw.map(w => w.id)); // посада по фабриці пари (#12)
   // дні з файлу фабрики (factory_hours.days) — теж точні дати активності
   {
     const { factoryHoursTable } = await import("@workspace/db");
@@ -2862,8 +2936,10 @@ router.post("/svodni/from-hours", requireCap("svodni"), async (req: AuthedReques
     // становіско (секція): позиція з профілю — для фабрик, що ведуть посади;
     // без посади в профілі — найдешевша посада фабрики (ставку вона й так задає),
     // інакше безсекційні рядки візуально «прилипали» до останньої секції вкладки
-    const rules = ruleOf(pair.factoryId, w.positionId);
-    const sectionPosId = w.positionId ?? rules.cheapestPositionId ?? null;
+    // посада на ФАБРИЦІ пари (#12 03.11.2026): рядок пари → профільна
+    const pairPos = resolvePositionId(w.positionId, fhPosByWorker.get(pair.workerId), pair.factoryId);
+    const rules = ruleOf(pair.factoryId, pairPos);
+    const sectionPosId = pairPos ?? rules.cheapestPositionId ?? null;
     const section = fac?.usesPositions && sectionPosId != null ? posById.get(sectionPosId) ?? null : null;
     // вік «до 26» — на момент розрахунку (наближення дати виплати, яка в M+1);
     // остаточно вік фіксується локом сводної (freezeUnder26AtLock)

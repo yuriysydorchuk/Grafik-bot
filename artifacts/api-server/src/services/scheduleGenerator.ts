@@ -9,6 +9,7 @@ import { DAYS } from "./sheets";
 import { matchWorker } from "../bot/workerMatch";
 import { factoryShifts, nowWarsaw } from "../bot/time";
 import { loadWeekShiftOverrides, overrideFor, shiftDurationHours } from "./shiftOverrides";
+import { loadFactoryPositions, resolvePositionId } from "./workerPositions";
 import { entryDateStr } from "../lib/dates";
 import { terminatedOn } from "../lib/termination";
 import { fixedShiftForWeek } from "../lib/fixedShift";
@@ -175,6 +176,7 @@ export async function generateSchedule(
   //    (prefer resolved workerId; fall back to name matching for legacy rows; deduped).
   //  • manual factory: ALL active workers of the factory, for every day and every active shift.
   const workerById = new Map(allWorkers.map(w => [w.id, w]));
+  const posByWorker = await loadFactoryPositions(allWorkers.map(w => w.id)); // посада на фабриці замовлення (#12)
   const availByFactory: Map<number, Map<string, Set<number>>> = new Map();
   const poolFor = (fId: number, key: string) => {
     let m = availByFactory.get(fId);
@@ -256,7 +258,7 @@ export async function generateSchedule(
               if (days.size >= 6) return false;            // max 6 days
               if (workerDayShifts.has(`${wid}-${day}`)) return false; // no 2 shifts same day
               const w = workerById.get(wid);
-              if (line.positionId != null && w?.positionId !== line.positionId) return false; // role must match
+              if (line.positionId != null && resolvePositionId(w?.positionId, posByWorker.get(wid), order.factoryId) !== line.positionId) return false; // role must match (посада на ЦІЙ фабриці)
               if (line.gender !== "any" && w?.gender !== line.gender) return false;            // gender split
               return true;
             })
