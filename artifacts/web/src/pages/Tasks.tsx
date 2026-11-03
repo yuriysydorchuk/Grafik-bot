@@ -7,7 +7,7 @@ import { Plus, ChevronLeft, ChevronRight, Sun, Columns3, List, CalendarDays, Gau
 import { get, post, patch, type Factory, type Company } from "../lib/api";
 import {
   type TaskRow, type MyDay, type TaskAdmin, type TaskControlRow, type TaskStatus,
-  STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, SOURCE_LABEL, fmtD, fmtDShort, todayStr, addDays, weekdayIdx, DAY_SHORT, MONTHS_NOM, MONTHS_GEN,
+  STATUS_LABEL, STATUS_BADGE, PRIORITY_LABEL, PRIORITY_CLS, SOURCE_LABEL, SOURCE_GROUPS, fmtD, fmtDShort, todayStr, addDays, weekdayIdx, DAY_SHORT, MONTHS_NOM, MONTHS_GEN,
 } from "../lib/tasksApi";
 import { TaskCard, NewTaskModal, useOpenTask, invalidateTasks, dueLabel, Initials } from "../components/TaskBits";
 import { Button, Badge, Card, Spinner, Input, Select, Modal, cn } from "../components/ui";
@@ -82,7 +82,7 @@ function useFilters() {
   const [factoryId, setFactoryId] = useState("");
   const [city, setCity] = usePersisted<string>("tasks.f.city", "");
   const [companyId, setCompanyId] = usePersisted<string>("tasks.f.company", "");
-  const [source, setSource] = useState("");
+  const [source, setSource] = usePersisted<string>("tasks.f.source", "");
   const [priority, setPriority] = useState("");
   const [q, setQ] = useState("");
   const [hideDone, setHideDone] = useState(true);
@@ -115,7 +115,7 @@ function FilterBar({ f, withGroup = false }: { f: ReturnType<typeof useFilters>;
       <Select value={f.assignee} onChange={e => f.setAssignee(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Виконавець: усі")}</option>{admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</Select>
       <Select value={f.factoryId} onChange={e => f.setFactoryId(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Фабрика: усі")}</option>{factories.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>
       {companies.length > 0 && <Select value={f.companyId} onChange={e => f.setCompanyId(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Фірма: усі")} ({companyCounts.reduce((a, c) => a + c.n, 0)})</option>{employers.map(c => <option key={c.id} value={c.id}>{c.name} ({countOf(c.id)})</option>)}<option value="none">{t("Без фірми")} ({countOf(null)})</option></Select>}
-      <Select value={f.source} onChange={e => f.setSource(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Джерело: усі")}</option><option value="manual">{t("ручні")}</option><option value="auto">{t("автозадачі")}</option>{Object.entries(SOURCE_LABEL).filter(([k]) => k.startsWith("auto:")).map(([k, l]) => <option key={k} value={k.slice(5)}>{t(l)}</option>)}</Select>
+      <Select value={f.source} onChange={e => f.setSource(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Джерело: усі")}</option><option value="manual">{t("ручні")}</option><option value="auto">{t("автозадачі")}</option>{SOURCE_GROUPS.map(g => <optgroup key={g.label} label={t(g.label)}>{g.all && <option value={g.all.value}>{t(g.all.label)}</option>}{g.keys.filter(k => SOURCE_LABEL[`auto:${k}`]).map(k => <option key={k} value={k}>{t(SOURCE_LABEL[`auto:${k}`]!)}</option>)}</optgroup>)}<optgroup label={t("Інше")}>{Object.entries(SOURCE_LABEL).filter(([k]) => k.startsWith("auto:") && !SOURCE_GROUPS.some(g => g.keys.includes(k.slice(5)))).map(([k, l]) => <option key={k} value={k.slice(5)}>{t(l)}</option>)}</optgroup></Select>
       <Select value={f.priority} onChange={e => f.setPriority(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Пріоритет: усі")}</option>{(["urgent", "high", "normal", "low"] as const).map(p => <option key={p} value={p}>{t(PRIORITY_LABEL[p])}</option>)}</Select>
       {cities.length > 0 && <Select value={f.city} onChange={e => f.setCity(e.target.value)} className="h-8 w-auto py-1 text-xs"><option value="">{t("Місто: усі")}</option>{cities.map(c => <option key={c} value={c}>{c}</option>)}</Select>}
       <label className="flex items-center gap-1 text-slate-600"><input type="checkbox" checked={f.overdueOnly} onChange={e => f.setOverdueOnly(e.target.checked)} /> {t("лише прострочені")}</label>

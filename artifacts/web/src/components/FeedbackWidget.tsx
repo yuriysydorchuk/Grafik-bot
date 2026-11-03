@@ -110,6 +110,7 @@ export function FeedbackWidget({ me }: { me: Me }) {
     setCapturing(true); toast.dismiss("fb-rec"); // підказка запису — не в знімок (чужі тости, напр. помилка, лишаються)
     await new Promise(r => setTimeout(r, 80));
     const started = Date.now();
+    let restoreDecode: (() => void) | null = null;
     try {
       // лише видима область (а не вся довжелезна сторінка): клон зсувається на scroll,
       // полотно обмежене вікном — інакше на списку з сотнями рядків знімок триває десятки секунд
@@ -118,6 +119,17 @@ export function FeedbackWidget({ me }: { me: Me }) {
       // таблиці, що тягнуться нижче екрана, втратять рядки (фільтр нижче) — їх висоту в клоні
       // відпускаємо, інакше скопійована повна висота розтягує видимі рядки
       for (const el of document.querySelectorAll("table, thead, tbody, tfoot")) if (el.getBoundingClientRect().bottom > vh + 40) el.setAttribute("data-fb-trim", "");
+      // Safari: HTMLImageElement.decode() для SVG (а знімок modern-screenshot — SVG з foreignObject) не
+      // завершується, поки сторінка не перемалюється — знімок «висів» до перемикання вкладки (зголошення #7,
+      // 03.11.2026; WebKit bug 198527). На час знімка decode чекаємо ≤300 мс: картинка вже load-нута, а
+      // малювання в Safari бібліотека й так повторює кілька разів.
+      if (/AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent)) {
+        const origDecode = HTMLImageElement.prototype.decode;
+        HTMLImageElement.prototype.decode = function (this: HTMLImageElement) {
+          return Promise.race([origDecode.call(this), new Promise<void>(r => setTimeout(r, 300))]);
+        };
+        restoreDecode = () => { HTMLImageElement.prototype.decode = origDecode; };
+      }
       const capture = domToBlob(document.documentElement, {
         type: "image/png", scale, width: window.innerWidth, height: window.innerHeight,
         // скрол відтворюємо відʼємним відступом <body> (у onCloneEachNode), а не transform кореня: transform
@@ -154,7 +166,7 @@ export function FeedbackWidget({ me }: { me: Me }) {
       record({ type: "rec", text: `📸 скріншот не вдався: ${e?.message ?? e} (${Math.round((Date.now() - started) / 1000)}s)` });
       toast.error(t("Не вдалося зробити скріншот") + (e?.message ? `: ${e.message}` : ""), { description: t("Зробіть знімок системою (⌘⇧4 на Mac, Win+Shift+S на Windows) і вставте його в опис через Ctrl/⌘+V"), duration: 12000 });
     }
-    finally { setCapturing(false); for (const el of document.querySelectorAll("[data-fb-trim]")) el.removeAttribute("data-fb-trim"); }
+    finally { restoreDecode?.(); setCapturing(false); for (const el of document.querySelectorAll("[data-fb-trim]")) el.removeAttribute("data-fb-trim"); }
   };
   // запис дій: панель ховаємо (пілюля запису стоїть на її місці і була під нею — «запис не працює», #7)
   const startRec = () => {

@@ -1544,6 +1544,12 @@ router.delete("/positions/:id", RW, async (req, res) => {
   const id = Number(req.params.id);
   const used = (await db.select({ id: workersTable.id }).from(workersTable).where(eq(workersTable.positionId, id))).length;
   if (used > 0) return fail(res, 400, `Посада використовується у ${used} працівників — спочатку приберіть`);
+  // посада на фабриці (ставки/обовʼязки) чи в шаблоні документа — FK без каскаду, delete падав 500 (зголошення #12, 03.11.2026)
+  const onFactories = await db.select({ name: factoriesTable.name }).from(factoryPositionsTable)
+    .innerJoin(factoriesTable, eq(factoriesTable.id, factoryPositionsTable.factoryId)).where(eq(factoryPositionsTable.positionId, id));
+  if (onFactories.length) return fail(res, 400, `Посада налаштована на фабриках: ${[...new Set(onFactories.map(f => f.name))].join(", ")} — спершу приберіть її там (Фабрики → «Розрізняти посади») або вимкніть посаду`);
+  const inTemplates = (await db.select({ id: documentTemplatesTable.id }).from(documentTemplatesTable).where(eq(documentTemplatesTable.positionId, id))).length;
+  if (inTemplates) return fail(res, 400, `Посада привʼязана до ${inTemplates} шаблон(ів) документів — спершу змініть шаблони або вимкніть посаду`);
   await db.delete(positionsTable).where(eq(positionsTable.id, id));
   ok(res, { ok: true });
 });
@@ -2600,6 +2606,67 @@ router.post("/factories", RW, async (req, res) => {
   const [f] = await db.insert(factoriesTable).values(values).returning();
   if (positions !== undefined) await setFactoryPositions(f!.id, positions, canFactoryRates(req));
   ok(res, stripFactoryEcho(f, req));
+});
+
+// ── Посади ВСЕРЕДИНІ фабрики (Налаштування → Посади, зголошення #12, 03.11.2026): усе про посаду на фабриці
+// в одному місці — ставки (лише viewFinance|factoryRates), обовʼязки в умові, Stanowisko/KZiS для powiadomienia.
+// Рядок = factory_positions (той самий, що й модалка фабрики «Розрізняти посади» та praca.gov → Фабрики).
+router.get("/factories/:id/positions", RW, async (req, res) => {
+  const fid = Number(req.params.id);
+  const rates = canFactoryRates(req);
+  const rows = await db.select({
+    positionId: factoryPositionsTable.positionId, name: positionsTable.name, color: positionsTable.color, isActive: positionsTable.isActive,
+    rate: factoryPositionsTable.rate, rateNetto: factoryPositionsTable.rateNetto, invoiceRate: factoryPositionsTable.invoiceRate,
+    contractDuties: factoryPositionsTable.contractDuties, uaStanowisko: factoryPositionsTable.uaStanowisko, kzisCode: factoryPositionsTable.kzisCode,
+    catalogKzis: positionsTable.kzisCode,
+  }).from(factoryPositionsTable).leftJoin(positionsTable, eq(factoryPositionsTable.positionId, positionsTable.id))
+    .where(eq(factoryPositionsTable.factoryId, fid)).orderBy(factoryPositionsTable.sortOrder, factoryPositionsTable.id);
+  const counts = await db.select({ positionId: workersTable.positionId, n: sql<number>`count(*)::int` }).from(workersTable)
+    .where(and(eq(workersTable.factoryId, fid), eq(workersTable.isActive, true))).groupBy(workersTable.positionId);
+  const byPos = new Map(counts.map(c => [c.positionId, c.n]));
+  ok(res, rows.map(({ rate, rateNetto, invoiceRate, ...r }) => ({ ...r, workers: byPos.get(r.positionId) ?? 0, ...(rates ? { rate, rateNetto, invoiceRate } : {}) })));
+});
+// Додати посаду на фабрику / оновити поля одного рядка (без перезапису всіх посад фабрики, як PATCH /factories/:id)
+router.put("/factories/:id/positions/:positionId", RW, async (req, res) => {
+  const fid = Number(req.params.id), pid = Number(req.params.positionId);
+  if (!Number.isInteger(fid) || !Number.isInteger(pid)) return fail(res, 400, "Невірний id");
+  const [fac] = await db.select({ id: factoriesTable.id, usesPositions: factoriesTable.usesPositions }).from(factoriesTable).where(eq(factoriesTable.id, fid));
+  if (!fac) return fail(res, 404, "Фабрику не знайдено");
+  const [pos] = await db.select({ id: positionsTable.id }).from(positionsTable).where(eq(positionsTable.id, pid));
+  if (!pos) return fail(res, 404, "Посаду не знайдено");
+  const b = req.body ?? {};
+  const patch: Record<string, unknown> = {};
+  const txt = (v: unknown) => String(v ?? "").trim() || null;
+  if (b.contractDuties !== undefined) patch.contractDuties = txt(b.contractDuties);
+  if (b.uaStanowisko !== undefined) patch.uaStanowisko = txt(b.uaStanowisko);
+  if (b.kzisCode !== undefined) {
+    const k = String(b.kzisCode ?? "").replace(/\D/g, "");
+    if (k && k.length !== 6) return fail(res, 400, "Kod zawodu KZiS — 6 цифр");
+    patch.kzisCode = k || null;
+  }
+  // ставки — фінансові: без права мовчки ігноруються (як у setFactoryPositions)
+  if (canFactoryRates(req)) for (const k of ["rate", "rateNetto", "invoiceRate"] as const) if (b[k] !== undefined) patch[k] = parseRate(b[k]);
+  const [existing] = await db.select({ id: factoryPositionsTable.id }).from(factoryPositionsTable)
+    .where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid)));
+  if (existing) {
+    if (Object.keys(patch).length) await db.update(factoryPositionsTable).set(patch).where(eq(factoryPositionsTable.id, existing.id));
+  } else {
+    const [mx] = await db.select({ m: sql<number>`coalesce(max(${factoryPositionsTable.sortOrder}), -1)::int` }).from(factoryPositionsTable).where(eq(factoryPositionsTable.factoryId, fid));
+    await db.insert(factoryPositionsTable).values({ factoryId: fid, positionId: pid, sortOrder: (mx?.m ?? -1) + 1, ...patch } as any);
+    // перша посада на фабриці — вмикаємо «Розрізняти посади», інакше графік/замовлення її не побачать
+    if (!fac.usesPositions) await db.update(factoriesTable).set({ usesPositions: true }).where(eq(factoriesTable.id, fid));
+  }
+  ok(res, { ok: true });
+});
+router.delete("/factories/:id/positions/:positionId", RW, async (req, res) => {
+  const fid = Number(req.params.id), pid = Number(req.params.positionId);
+  // основна фабрика АБО чинна додаткова (worker_factories) — посада людини діє і там
+  const busy = (await db.select({ id: workersTable.id }).from(workersTable)
+    .where(and(eq(workersTable.positionId, pid), eq(workersTable.isActive, true), or(eq(workersTable.factoryId, fid),
+      sql`exists (select 1 from worker_factories wf where wf.worker_id = ${workersTable.id} and wf.factory_id = ${fid} and (wf.valid_to is null or wf.valid_to >= current_date))`)))).length;
+  if (busy) return fail(res, 400, `На цій посаді на фабриці ${busy} активних працівників — спершу змініть їм посаду`);
+  await db.delete(factoryPositionsTable).where(and(eq(factoryPositionsTable.factoryId, fid), eq(factoryPositionsTable.positionId, pid)));
+  ok(res, { ok: true });
 });
 
 router.patch("/factories/:id", RW, async (req, res) => {

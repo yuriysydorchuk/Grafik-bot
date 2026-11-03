@@ -8,7 +8,8 @@ import { Card, Spinner, Input, Label, Button, Select, Badge, Empty, Modal, Texta
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useT } from "../lib/i18n";
-import { STAGE_COLORS, dotClass, badgeClass } from "../lib/colors";
+import { dotClass, badgeClass } from "../lib/colors";
+import { StageColorPicker } from "../components/StageColorPicker";
 import { DOC_TYPE_ICONS, DOC_TYPE_ICON_KEYS, docTypeIcon } from "../lib/docTypeIcons";
 import { WORKER_FIELD_KEYS, WORKER_FIELD_LABEL } from "../lib/documentFields";
 import { DOC_CATEGORY_LABEL, NAT_GROUP_LABEL } from "../lib/legality";
@@ -257,9 +258,7 @@ function FunnelEditor({ funnel, onChanged, confirm }: { funnel: Funnel; onChange
           <div key={i} className="flex items-center gap-2">
             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${dotClass(s.color)}`} />
             <Input value={s.label} onChange={e => setStage(i, { label: e.target.value })} placeholder={t("Назва етапу")} className="flex-1" />
-            <Select value={s.color} onChange={e => setStage(i, { color: e.target.value })} className="w-28">
-              {STAGE_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
-            </Select>
+            <StageColorPicker value={s.color} onChange={c => setStage(i, { color: c })} />
             <div className="flex shrink-0">
               <button onClick={() => move(i, -1)} disabled={i === 0} className="rounded p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30"><ChevronUp className="h-4 w-4" /></button>
               <button onClick={() => move(i, 1)} disabled={i === stages.length - 1} className="rounded p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30"><ChevronDown className="h-4 w-4" /></button>
@@ -543,14 +542,14 @@ function PositionsSettings() {
   const remove = useMutation({ mutationFn: (id: number) => del(`/positions/${id}`), onSuccess: () => { inv(); toast.success(t("Видалено")); }, onError: (e: any) => toast.error(e.message) });
   if (isLoading) return <Spinner />;
   return (
+    <div className="space-y-4">
+    <FactoryPositionsCard positions={positions} />
     <Card className="p-5">
       <div className="mb-1 text-sm font-semibold text-slate-700">{t("Посади (становіска праці)")}</div>
       <p className="mb-4 text-xs text-slate-400">{t("Ролі, які можуть мати працівники (напр. Pracownik produkcji, Wózkowy, Brygadista). Вони відображаються у графіках і замовленнях. Нові ролі можна додавати будь-коли.")}</p>
       <div className="mb-4 flex flex-wrap gap-2">
         <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("Назва посади")} onKeyDown={e => { if (e.key === "Enter" && name.trim()) create.mutate(); }} className="max-w-xs" />
-        <Select value={color} onChange={e => setColor(e.target.value)} className="w-32">
-          {STAGE_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
-        </Select>
+        <StageColorPicker value={color} onChange={setColor} />
         <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name.trim()}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
       </div>
       {!positions.length ? <Empty>{t("Немає посад")}</Empty> : (
@@ -560,6 +559,96 @@ function PositionsSettings() {
         </div>
       )}
     </Card>
+    </div>
+  );
+}
+
+// Посади ВСЕРЕДИНІ фабрики (зголошення #12, 03.11.2026): обрав фабрику → її посади з усім, що посада на ній
+// визначає — ставки (лише viewFinance/factoryRates), обовʼязки в умові (Czynności), Stanowisko і KZiS для
+// powiadomienia. Той самий рядок factory_positions, що й «Розрізняти посади» у фабриці та praca.gov → Фабрики.
+type FacPosRow = { positionId: number; name: string | null; color: string | null; isActive: boolean | null; contractDuties: string | null; uaStanowisko: string | null; kzisCode: string | null; catalogKzis: string | null; workers: number; rate?: number | null; rateNetto?: number | null; invoiceRate?: number | null };
+function FactoryPositionsCard({ positions }: { positions: Position[] }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const me = useMe();
+  const canRates = can(me, "viewFinance") || can(me, "factoryRates");
+  const { data: factories = [] } = useQuery<Factory[]>({ queryKey: ["factories"], queryFn: () => get("/factories") });
+  const [factoryId, setFactoryId] = useState<string>(() => { try { return localStorage.getItem("settings.facpos.factory") ?? ""; } catch { return ""; } });
+  const pick = (v: string) => { setFactoryId(v); try { localStorage.setItem("settings.facpos.factory", v); } catch { /* ignore */ } };
+  const fid = Number(factoryId) || null;
+  const key = ["factory-positions", fid];
+  const { data: rows = [], isLoading } = useQuery<FacPosRow[]>({ queryKey: key, queryFn: () => get(`/factories/${fid}/positions`), enabled: !!fid });
+  const inv = () => { qc.invalidateQueries({ queryKey: key }); qc.invalidateQueries({ queryKey: ["factories"] }); };
+  const save = useMutation({ mutationFn: (v: { positionId: number; patch: Record<string, unknown> }) => put(`/factories/${fid}/positions/${v.positionId}`, v.patch), onSuccess: inv, onError: (e: any) => toast.error(e.message) });
+  const remove = useMutation({ mutationFn: (positionId: number) => del(`/factories/${fid}/positions/${positionId}`), onSuccess: () => { inv(); toast.success(t("Прибрано з фабрики")); }, onError: (e: any) => toast.error(e.message) });
+  const [addId, setAddId] = useState("");
+  const [newName, setNewName] = useState("");
+  const createAndAdd = useMutation({
+    mutationFn: async () => { const p = await post<Position>("/positions", { name: newName.trim(), color: "slate" }); await put(`/factories/${fid}/positions/${p.id}`, {}); },
+    onSuccess: () => { setNewName(""); inv(); qc.invalidateQueries({ queryKey: ["positions"] }); toast.success(t("Додано")); }, onError: (e: any) => toast.error(e.message),
+  });
+  const onFactory = new Set(rows.map(r => r.positionId));
+  const free = positions.filter(p => !onFactory.has(p.id) && p.isActive !== false);
+  const fac = factories.find(f => f.id === fid);
+  return (
+    <Card className="p-5">
+      <div className="mb-1 text-sm font-semibold text-slate-700">{t("Посади на фабриці")}</div>
+      <p className="mb-3 text-xs text-slate-400">{t("Які посади є на фабриці і що вони на ній означають: ставки, обовʼязки в умові, Stanowisko й kod KZiS для powiadomienia. Посада без фабрики не діє — тут вона «живе».")}</p>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Select value={factoryId} onChange={e => pick(e.target.value)} className="w-64">
+          <option value="">{t("Оберіть фабрику")}</option>
+          {[...factories].sort((a, b) => a.name.localeCompare(b.name, "pl")).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </Select>
+        {fac && !fac.usesPositions && rows.length === 0 && <span className="text-xs text-slate-400">{t("На фабриці посади не розрізняються — додайте першу, і це ввімкнеться")}</span>}
+      </div>
+      {fid && (isLoading ? <Spinner /> : (
+        <div className="space-y-2">
+          {!rows.length && <Empty>{t("На цій фабриці ще немає посад")}</Empty>}
+          {rows.map(r => <FactoryPositionRow key={`${fid}-${r.positionId}`} r={r} canRates={canRates}
+            onSave={patch => save.mutate({ positionId: r.positionId, patch })} onRemove={() => remove.mutate(r.positionId)} />)}
+          <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+            <Select value={addId} onChange={e => setAddId(e.target.value)} className="w-56">
+              <option value="">{t("Додати посаду з каталогу…")}</option>
+              {free.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </Select>
+            <Button variant="secondary" disabled={!addId || save.isPending} onClick={() => { save.mutate({ positionId: Number(addId), patch: {} }); setAddId(""); }}><Plus className="h-4 w-4" /> {t("Додати")}</Button>
+            <span className="text-xs text-slate-400">{t("або")}</span>
+            <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder={t("Нова посада (лише для цієї фабрики)")} className="w-56" onKeyDown={e => { if (e.key === "Enter" && newName.trim()) createAndAdd.mutate(); }} />
+            <Button variant="secondary" disabled={!newName.trim() || createAndAdd.isPending} onClick={() => createAndAdd.mutate()}><Plus className="h-4 w-4" /> {t("Створити")}</Button>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function FactoryPositionRow({ r, canRates, onSave, onRemove }: { r: FacPosRow; canRates: boolean; onSave: (patch: Record<string, unknown>) => void; onRemove: () => void }) {
+  const t = useT();
+  const confirm = useConfirm();
+  const num = (v: number | null | undefined) => (v == null ? "" : String(v));
+  const [f, setF] = useState({ rate: num(r.rate), rateNetto: num(r.rateNetto), invoiceRate: num(r.invoiceRate), contractDuties: r.contractDuties ?? "", uaStanowisko: r.uaStanowisko ?? "", kzisCode: r.kzisCode ?? "" });
+  const blur = (k: keyof typeof f, orig: string) => () => { if (f[k] !== orig) onSave({ [k]: f[k] }); };
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-200 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(r.color ?? "slate")}`}><span className={`h-2 w-2 rounded-full ${dotClass(r.color ?? "slate")}`} />{r.name}</span>
+        <span className="text-xs text-slate-400">{t("людей: {n}", { n: r.workers })}</span>
+        {canRates && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-500">
+            {t("Платимо")}<Input value={f.rate} onChange={e => setF({ ...f, rate: e.target.value })} onBlur={blur("rate", num(r.rate))} inputMode="decimal" placeholder={t("zł/год")} className="w-16 px-1 text-center" />
+            {t("Нетто")}<Input value={f.rateNetto} onChange={e => setF({ ...f, rateNetto: e.target.value })} onBlur={blur("rateNetto", num(r.rateNetto))} inputMode="decimal" placeholder={t("zł/год")} className="w-16 px-1 text-center" />
+            {t("Клієнт")}<Input value={f.invoiceRate} onChange={e => setF({ ...f, invoiceRate: e.target.value })} onBlur={blur("invoiceRate", num(r.invoiceRate))} inputMode="decimal" placeholder={t("zł/год")} className="w-16 px-1 text-center" />
+          </span>
+        )}
+        <button onClick={async () => { if (await confirm({ title: t("Прибрати посаду «{name}» з фабрики?", { name: r.name ?? "" }), danger: true, confirmText: t("Прибрати") })) onRemove(); }}
+          className={`${canRates ? "" : "ml-auto "}shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600`} title={t("Прибрати з фабрики")}><Trash2 className="h-4 w-4" /></button>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_8rem]">
+        <Input value={f.contractDuties} onChange={e => setF({ ...f, contractDuties: e.target.value })} onBlur={blur("contractDuties", r.contractDuties ?? "")} placeholder={t("Обов'язки в умові (Czynności) для цієї посади")} className="text-xs" />
+        <Input value={f.uaStanowisko} onChange={e => setF({ ...f, uaStanowisko: e.target.value })} onBlur={blur("uaStanowisko", r.uaStanowisko ?? "")} placeholder={t("Stanowisko для powiadomienia (порожньо — з обовʼязків/назви)")} className="text-xs" />
+        <Input value={f.kzisCode} onChange={e => setF({ ...f, kzisCode: e.target.value.replace(/\D/g, "").slice(0, 6) })} onBlur={blur("kzisCode", r.kzisCode ?? "")} placeholder={r.catalogKzis ? `KZiS ${r.catalogKzis}` : t("код KZiS")} className="text-xs" inputMode="numeric" />
+      </div>
+    </div>
   );
 }
 
@@ -572,9 +661,7 @@ function PositionRow({ p, onSave, onDelete }: { p: Position; onSave: (patch: any
       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass(p.color)}`}><span className={`h-2 w-2 rounded-full ${dotClass(p.color)}`} />{p.name}</span>
       <Input value={name} onChange={e => setName(e.target.value)} className="min-w-32 flex-1" />
       <Input value={kzis} onChange={e => setKzis(e.target.value.replace(/\D/g, "").slice(0, 6))} onBlur={() => { if (kzis !== (p.kzisCode ?? "")) onSave({ kzisCode: kzis }); }} placeholder={t("код KZiS")} title={t("Kod zawodu KZiS (6 цифр) — форма PSZ-PPWPU 3.3")} className="w-24" />
-      <Select value={p.color} onChange={e => onSave({ color: e.target.value })} className="w-28">
-        {STAGE_COLORS.map(c => <option key={c} value={c}>{c}</option>)}
-      </Select>
+      <StageColorPicker value={p.color} onChange={c => onSave({ color: c })} />
       {name.trim() && name !== p.name && <Button variant="secondary" onClick={() => onSave({ name: name.trim() })}>{t("Зберегти")}</Button>}
       <button onClick={onDelete} className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title={t("Видалити")}><Trash2 className="h-4 w-4" /></button>
     </div>

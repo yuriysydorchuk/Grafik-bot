@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Factory as FactoryIcon, Send, Clock, CalendarCheck, UserX, Activity, Gift, X,
   FileText, Plus, Pencil, Trash2, ExternalLink, AlertTriangle, Briefcase, Users, Upload, Car, Cake, IdCard, Wallet, BadgePlus, History, Home, KeyRound, Shirt, ShieldCheck, FileSignature, ChevronDown, ChevronUp, ChevronRight, Ban, Eye, Scale, RefreshCw, XCircle,
-  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge, RotateCcw, RotateCw,
+  Download, Printer, Mail, ScanLine, UserCheck, Phone, Link2, GitMerge, RotateCcw, RotateCw, Copy,
 } from "lucide-react";
 import { fmtIban } from "../lib/iban";
 import { SendFileModal, printFile } from "../components/SendFileModal";
@@ -40,6 +40,8 @@ import { WorkerModal } from "../components/WorkerModal";
 import { MergeWorkerModal } from "../components/MergeWorkerModal";
 import { PassportAnketaSyncModal, type PassportDiff } from "../components/PassportAnketaSyncModal";
 import { FireModal } from "./Workers";
+import { copyText, dateForCopy } from "../lib/clipboard";
+import { CopyBtn, CopyInput } from "../components/CopyField";
 import { useConfirm } from "../components/confirm";
 import { useMe } from "../lib/hooks";
 import { useLeadDays, expiryTone, expiryTextCls, leadDaysCache } from "../lib/leadDays";
@@ -288,11 +290,16 @@ export default function WorkerDetail() {
                   <button className="text-xs text-slate-400" onClick={() => setRenaming(false)}>{t("Скасувати")}</button>
                 </span>
               ) : (
-                <button className="group inline-flex items-center gap-1.5 text-left" title={t("Перейменувати")}
-                  onClick={() => { setNameDraft(w.fullName); setRenaming(true); }}>
-                  {w.fullName}
-                  <Pencil className="h-3.5 w-3.5 text-slate-300 opacity-0 transition group-hover:opacity-100" />
-                </button>
+                <span className="group inline-flex items-center gap-1.5">
+                  <button className="text-left hover:text-sky-700" title={t("Клік — копіювати")} onClick={e => { if (e.detail <= 1) void copyText(w.fullName, t); }}
+                    onDoubleClick={() => { if (canEdit) { setNameDraft(w.fullName); setRenaming(true); } }}>{w.fullName}</button>
+                  {canEdit && (
+                    <button onClick={() => { setNameDraft(w.fullName); setRenaming(true); }} title={t("Перейменувати")} aria-label={t("Перейменувати")}
+                      className="rounded p-0.5 text-slate-300 opacity-0 transition hover:text-red-600 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </span>
               )}
               <NatFlag value={w.nationality} className="cursor-default text-lg" />
               <span className={`text-lg font-semibold ${genderClass(w.gender)} ${peselCheck(w.pesel, null, w.gender).genderMismatch ? "rounded bg-red-100 ring-1 ring-red-400" : ""}`} title={t("Стать")}>
@@ -404,7 +411,7 @@ export default function WorkerDetail() {
             <NotifyHoursRows workerId={w.id} rows={w.notifyHoursByFactory ?? []} shared={w.notifyHours ?? null} onRequest={requestChange} />
           </InfoGroup>
           <InfoGroup title={t("Особисте")}>
-            <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} pesel={w.pesel ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} />
+            <BirthDateRow workerId={w.id} birthDate={w.birthDate ?? null} pesel={w.pesel ?? null} under26Fallback={w.under26 ?? null} onRequest={requestChange} canEdit={canEdit} />
             {/* Порожні PESEL/друге ім'я — не показуємо рядок (менше інфи в профілі);
                 заповнити все одно можна через «Редагувати» (WorkerModal). */}
             {w.pesel && (
@@ -667,17 +674,28 @@ function InlineText({ value, placeholder, width = "w-40", onSave, disabled }: { 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const commit = () => { onSave(draft); setEditing(false); };
-  if (disabled) return (
-    <span className="max-w-full truncate font-medium text-slate-700" title={value || undefined}>
-      {value || <span className="font-normal text-slate-400">{placeholder}</span>}
-    </span>
-  );
-  if (!editing) return (
-    <button className="max-w-full truncate font-medium text-slate-700 hover:text-red-600" title={value || undefined}
-      onClick={() => { setDraft(value); setEditing(true); }}>
-      {value || <span className="font-normal text-slate-400">{placeholder}</span>}
-    </button>
-  );
+  const startEdit = () => { setDraft(value); setEditing(true); };
+  // клік по значенню — копіює (раніше одразу відкривав редагування — дані стирали випадково, #14 03.11.2026);
+  // редагування — олівцем (на тач-екранах видно завжди) або подвійним кліком
+  if (!editing) {
+    if (!value) return disabled
+      ? <span className="font-normal text-slate-400">{placeholder}</span>
+      : <button className="font-normal text-slate-400 hover:text-red-600" onClick={startEdit}>{placeholder}</button>;
+    return (
+      <span className="group inline-flex max-w-full items-center gap-1">
+        <button className="max-w-full truncate font-medium text-slate-700 hover:text-sky-700" title={disabled ? t("Клік — копіювати") : t("Клік — копіювати, подвійний клік — редагувати")}
+          onClick={e => { if (e.detail <= 1) void copyText(value, t); }} onDoubleClick={() => { if (!disabled) startEdit(); }}>
+          {value}
+        </button>
+        {!disabled && (
+          <button onClick={startEdit} title={t("Редагувати")} aria-label={t("Редагувати")}
+            className="shrink-0 rounded p-0.5 text-slate-400 opacity-0 transition hover:text-red-600 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+      </span>
+    );
+  }
   return (
     <span className="flex items-center gap-1">
       <input autoFocus value={draft} onChange={e => setDraft(e.target.value)}
@@ -943,6 +961,20 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
   });
   const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
   const setNameField = (k: keyof typeof name) => (v: string) => setName(n => ({ ...n, [k]: v }));
+  // «Скопіювати все» (зголошення #14, 03.11.2026): основні дані одним блоком «поле: значення», дати — ДД.ММ.РРРР
+  const copyAll = () => {
+    const rows: [string, string | null | undefined][] = [
+      [t("Прізвище"), name.lastName], [t("Ім'я"), name.firstName], [t("Друге ім'я"), name.middleName], ["PESEL", worker?.pesel],
+      [t("Номер паспорта"), form.passportNumber], [t("Паспорт дійсний до"), form.passportExpiresAt ? dateForCopy(form.passportExpiresAt) : null],
+      [t("Громадянство"), form.citizenship], [t("Місце народження"), form.birthPlace],
+      [t("Адреса в Польщі"), [form.addressPl, [form.postalCode, form.city].filter(Boolean).join(" ")].filter(Boolean).join(", ")],
+      [t("Адреса замельдування"), form.addressRegistered], [t("Банк"), form.bankName], ["IBAN", form.bankIban],
+      [t("Телефон"), form.phone], ["Email", form.email], ["NIP", form.nip], ["Urząd skarbowy", form.taxOffice], ["NFZ", form.nfzBranch],
+    ];
+    const text = rows.filter(([, v]) => v && String(v).trim()).map(([k, v]) => `${k}: ${String(v).trim()}`).join("\n");
+    if (!text) { toast(t("Анкета порожня — нічого копіювати")); return; }
+    void copyText(text, t);
+  };
   const st = QUESTIONNAIRE_STATUS[q?.status ?? "draft"]!;
 
   return (
@@ -958,6 +990,9 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
         <input ref={scanInputRef} type="file" accept="image/*,application/pdf" capture="environment" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) scan.mutate(f); e.target.value = ""; }} />
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={copyAll} title={t("Основні дані анкети одним текстом: «поле: значення»")}>
+            <Copy className="h-3.5 w-3.5" /> {t("Скопіювати все")}
+          </Button>
           <Button variant="secondary" className="px-2 py-1 text-xs" disabled={scan.isPending} onClick={() => scanInputRef.current?.click()}>
             <Upload className="h-3.5 w-3.5" /> {t("Сканувати паспорт")}
           </Button>
@@ -969,54 +1004,54 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
       </div>
       {isLoading ? <Spinner /> : (
         <div className="grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto pb-1 sm:grid-cols-2">
-          <div><Label>{t("Ім'я")}</Label><Input value={name.firstName} onChange={e => setNameField("firstName")(e.target.value)} /></div>
-          <div><Label>{t("Прізвище")}</Label><Input value={name.lastName} onChange={e => setNameField("lastName")(e.target.value)} /></div>
-          <div><Label>{t("Друге ім'я")}</Label><Input value={name.middleName} onChange={e => setNameField("middleName")(e.target.value)} /></div>
-          <div><Label>{t("Номер паспорта")}</Label><Input value={form.passportNumber ?? ""} onChange={e => set("passportNumber", e.target.value)} /></div>
-          <div><Label>{t("Країна паспорта")}</Label><Input value={form.passportCountry ?? ""} onChange={e => set("passportCountry", e.target.value)} /></div>
-          <div><Label>{t("Паспорт видано")}</Label><Input type="date" value={form.passportIssuedAt ?? ""} onChange={e => set("passportIssuedAt", e.target.value)} /></div>
-          <div><Label>{t("Паспорт дійсний до")}</Label><Input type="date" value={form.passportExpiresAt ?? ""} onChange={e => set("passportExpiresAt", e.target.value)} /></div>
-          <div><Label>{t("Місце народження")}</Label><Input value={form.birthPlace ?? ""} onChange={e => set("birthPlace", e.target.value)} /></div>
+          <div><Label>{t("Ім'я")}</Label><CopyInput value={name.firstName} onChange={e => setNameField("firstName")(e.target.value)} /></div>
+          <div><Label>{t("Прізвище")}</Label><CopyInput value={name.lastName} onChange={e => setNameField("lastName")(e.target.value)} /></div>
+          <div><Label>{t("Друге ім'я")}</Label><CopyInput value={name.middleName} onChange={e => setNameField("middleName")(e.target.value)} /></div>
+          <div><Label>{t("Номер паспорта")}</Label><CopyInput value={form.passportNumber ?? ""} onChange={e => set("passportNumber", e.target.value)} /></div>
+          <div><Label>{t("Країна паспорта")}</Label><CopyInput value={form.passportCountry ?? ""} onChange={e => set("passportCountry", e.target.value)} /></div>
+          <div><Label>{t("Паспорт видано")}</Label><CopyInput type="date" value={form.passportIssuedAt ?? ""} onChange={e => set("passportIssuedAt", e.target.value)} /></div>
+          <div><Label>{t("Паспорт дійсний до")}</Label><CopyInput type="date" value={form.passportExpiresAt ?? ""} onChange={e => set("passportExpiresAt", e.target.value)} /></div>
+          <div><Label>{t("Місце народження")}</Label><CopyInput value={form.birthPlace ?? ""} onChange={e => set("birthPlace", e.target.value)} /></div>
           <div>
             <Label>{t("Стать (документ)")}{peselCheck(worker?.pesel, null, form.sex).genderMismatch && <PeselMismatch what={peselCheck(worker?.pesel, null, form.sex).sex === "M" ? t("Чоловіча") : t("Жіноча")} />}</Label>
             <Select value={form.sex ?? ""} onChange={e => set("sex", e.target.value)} className={peselCheck(worker?.pesel, null, form.sex).genderMismatch ? "border-red-400 bg-red-50" : undefined}>
               <option value="">—</option><option value="M">{t("Чоловіча")}</option><option value="F">{t("Жіноча")}</option>
             </Select>
           </div>
-          <div><Label>{t("Громадянство")}</Label><Input value={form.citizenship ?? ""} onChange={e => set("citizenship", e.target.value)} /></div>
-          <div><Label>{t("Адреса в Польщі")}</Label><Input value={form.addressPl ?? ""} onChange={e => set("addressPl", e.target.value)} /></div>
-          <div><Label>{t("Поштовий індекс")}</Label><Input value={form.postalCode ?? ""} onChange={e => set("postalCode", e.target.value)} placeholder="00-000" /></div>
-          <div><Label>{t("Місто/gmina")}</Label><Input value={form.city ?? ""} onChange={e => set("city", e.target.value)} /></div>
+          <div><Label>{t("Громадянство")}</Label><CopyInput value={form.citizenship ?? ""} onChange={e => set("citizenship", e.target.value)} /></div>
+          <div><Label>{t("Адреса в Польщі")}</Label><CopyInput value={form.addressPl ?? ""} onChange={e => set("addressPl", e.target.value)} /></div>
+          <div><Label>{t("Поштовий індекс")}</Label><CopyInput value={form.postalCode ?? ""} onChange={e => set("postalCode", e.target.value)} placeholder="00-000" /></div>
+          <div><Label>{t("Місто/gmina")}</Label><CopyInput value={form.city ?? ""} onChange={e => set("city", e.target.value)} /></div>
           <div>
             <Label>{t("Адреса замельдування")}</Label>
             <div className="flex gap-1.5">
-              <Input value={form.addressRegistered ?? ""} onChange={e => set("addressRegistered", e.target.value)} />
+              <CopyInput value={form.addressRegistered ?? ""} onChange={e => set("addressRegistered", e.target.value)} />
               <button type="button" title={t("= адреса в Польщі")} onClick={() => set("addressRegistered", form.addressPl ?? "")}
                 className="shrink-0 rounded-lg border border-slate-300 px-2 text-xs text-slate-500 hover:bg-slate-50">=PL</button>
             </div>
           </div>
-          <div><Label>{t("Імʼя мами")}</Label><Input value={form.motherName ?? ""} onChange={e => set("motherName", e.target.value)} /></div>
-          <div><Label>{t("Імʼя тата")}</Label><Input value={form.fatherName ?? ""} onChange={e => set("fatherName", e.target.value)} /></div>
-          <div><Label>{t("Банк")}</Label><Input value={form.bankName ?? ""} onChange={e => set("bankName", e.target.value)} /></div>
-          <div><Label>IBAN</Label><Input value={form.bankIban ?? ""} onChange={e => set("bankIban", e.target.value)} /></div>
-          <div><Label>{t("Телефон")}</Label><Input value={form.phone ?? ""} onChange={e => set("phone", e.target.value)} /></div>
-          <div><Label>Email</Label><Input value={form.email ?? ""} onChange={e => set("email", e.target.value)} /></div>
-          <div><Label>{t("Urząd skarbowy")}</Label><SearchableSelect value={form.taxOffice ?? ""} onChange={v => set("taxOffice", v)} options={TAX_OFFICES} /></div>
-          <div><Label>NFZ</Label><SearchableSelect value={form.nfzBranch ?? ""} onChange={v => set("nfzBranch", v)} options={NFZ_BRANCHES} /></div>
-          <div className="sm:col-span-2"><Label>{t("Контакт для екстрених випадків")}</Label><Input value={form.emergencyContact ?? ""} onChange={e => set("emergencyContact", e.target.value)} /></div>
+          <div><Label>{t("Імʼя мами")}</Label><CopyInput value={form.motherName ?? ""} onChange={e => set("motherName", e.target.value)} /></div>
+          <div><Label>{t("Імʼя тата")}</Label><CopyInput value={form.fatherName ?? ""} onChange={e => set("fatherName", e.target.value)} /></div>
+          <div><Label>{t("Банк")}</Label><CopyInput value={form.bankName ?? ""} onChange={e => set("bankName", e.target.value)} /></div>
+          <div><Label>IBAN</Label><CopyInput value={form.bankIban ?? ""} onChange={e => set("bankIban", e.target.value)} /></div>
+          <div><Label>{t("Телефон")}</Label><CopyInput value={form.phone ?? ""} onChange={e => set("phone", e.target.value)} /></div>
+          <div><Label>Email</Label><CopyInput value={form.email ?? ""} onChange={e => set("email", e.target.value)} /></div>
+          <div><Label><span className="flex items-center justify-between">{t("Urząd skarbowy")}<CopyBtn value={form.taxOffice} /></span></Label><SearchableSelect value={form.taxOffice ?? ""} onChange={v => set("taxOffice", v)} options={TAX_OFFICES} /></div>
+          <div><Label><span className="flex items-center justify-between">NFZ<CopyBtn value={form.nfzBranch} /></span></Label><SearchableSelect value={form.nfzBranch ?? ""} onChange={v => set("nfzBranch", v)} options={NFZ_BRANCHES} /></div>
+          <div className="sm:col-span-2"><Label>{t("Контакт для екстрених випадків")}</Label><CopyInput value={form.emergencyContact ?? ""} onChange={e => set("emergencyContact", e.target.value)} /></div>
           <div className="flex items-center gap-2">
             <input type="checkbox" checked={!!form.isStudent} onChange={e => set("isStudent", e.target.checked)} id={`q-student-${workerId}`} />
             <label htmlFor={`q-student-${workerId}`} className="text-sm text-slate-600">{t("Студент")}</label>
           </div>
           {form.isStudent && (
-            <div><Label>{t("Навчальний заклад")}</Label><Input value={form.schoolName ?? ""} onChange={e => set("schoolName", e.target.value)} /></div>
+            <div><Label>{t("Навчальний заклад")}</Label><CopyInput value={form.schoolName ?? ""} onChange={e => set("schoolName", e.target.value)} /></div>
           )}
           <div className="flex items-center gap-2">
             <input type="checkbox" checked={!!form.hasOtherEmployment} onChange={e => set("hasOtherEmployment", e.target.checked)} id={`q-otherjob-${workerId}`} />
             <label htmlFor={`q-otherjob-${workerId}`} className="text-sm text-slate-600">{t("Є інша робота")}</label>
           </div>
           {form.hasOtherEmployment && (
-            <div className="sm:col-span-2"><Label>{t("Деталі іншої зайнятості")}</Label><Input value={form.otherEmploymentNote ?? ""} onChange={e => set("otherEmploymentNote", e.target.value)} /></div>
+            <div className="sm:col-span-2"><Label>{t("Деталі іншої зайнятості")}</Label><CopyInput value={form.otherEmploymentNote ?? ""} onChange={e => set("otherEmploymentNote", e.target.value)} /></div>
           )}
           <div className="flex items-center gap-2">
             <input type="checkbox" checked={!!form.isRegisteredUnemployed} onChange={e => set("isRegisteredUnemployed", e.target.checked)} id={`q-unemployed-${workerId}`} />
@@ -1026,8 +1061,8 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
           <div className="sm:col-span-2 mt-2 border-t border-slate-100 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
             {t("Для ZUS / podatkowe")}
           </div>
-          <div><Label>{t("NIP (необов'язково)")}</Label><Input value={form.nip ?? ""} onChange={e => set("nip", e.target.value)} /></div>
-          <div><Label>{t("Адреса Urzędu Skarbowego")}</Label><Input value={form.taxOfficeAddress ?? ""} onChange={e => set("taxOfficeAddress", e.target.value)} /></div>
+          <div><Label>{t("NIP (необов'язково)")}</Label><CopyInput value={form.nip ?? ""} onChange={e => set("nip", e.target.value)} /></div>
+          <div><Label>{t("Адреса Urzędu Skarbowego")}</Label><CopyInput value={form.taxOfficeAddress ?? ""} onChange={e => set("taxOfficeAddress", e.target.value)} /></div>
           <div className="flex items-center gap-2">
             <input type="checkbox" checked={!!form.pit0} onChange={e => set("pit0", e.target.checked)} id={`q-pit0-${workerId}`} />
             <label htmlFor={`q-pit0-${workerId}`} className="text-sm text-slate-600">{t("Ulga dla młodych — 0% PIT (до 26 років)")}</label>
@@ -1052,7 +1087,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
             ["regWojewodztwo", "Województwo"], ["regPowiat", "Powiat"], ["regGmina", "Gmina"], ["regMiejscowosc", "Miejscowość"],
             ["regUlica", "Ulica"], ["regNumerDomu", "Numer domu"], ["regKodPocztowy", "Kod pocztowy"],
           ] as const).map(([k, label]) => (
-            <div key={k}><Label>{label}</Label><Input value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
+            <div key={k}><Label>{label}</Label><CopyInput value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
           ))}
 
           <div className="sm:col-span-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t("Адреса проживання (гранульно)")}</div>
@@ -1060,7 +1095,7 @@ function QuestionnaireModal({ workerId, onClose }: { workerId: number; onClose: 
             ["zamWojewodztwo", "Województwo"], ["zamPowiat", "Powiat"], ["zamGmina", "Gmina"], ["zamMiejscowosc", "Miejscowość"],
             ["zamUlica", "Ulica"], ["zamNumerDomu", "Numer domu"], ["zamKodPocztowy", "Kod pocztowy"],
           ] as const).map(([k, label]) => (
-            <div key={k}><Label>{label}</Label><Input value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
+            <div key={k}><Label>{label}</Label><CopyInput value={form[k] ?? ""} onChange={e => set(k, e.target.value)} /></div>
           ))}
         </div>
       )}
@@ -4013,7 +4048,7 @@ function BadaniaRow({ workerId, entries }: { workerId: number; entries: BadaniaE
   );
 }
 
-function BirthDateRow({ workerId, birthDate, pesel, under26Fallback, onRequest }: { workerId: number; birthDate: string | null; pesel?: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange }) {
+function BirthDateRow({ workerId, birthDate, pesel, under26Fallback, onRequest, canEdit = true }: { workerId: number; birthDate: string | null; pesel?: string | null; under26Fallback?: boolean | null; onRequest?: RequestChange; canEdit?: boolean }) {
   const t = useT();
   const pc = peselCheck(pesel, birthDate, null);
   const qc = useQueryClient();
@@ -4044,10 +4079,22 @@ function BirthDateRow({ workerId, birthDate, pesel, under26Fallback, onRequest }
           <button className="text-xs text-slate-400" onClick={() => setEditing(false)}>{t("Скасувати")}</button>
         </span>
       ) : (
-        <button className={`font-medium hover:text-red-600 ${pc.birthMismatch ? "rounded bg-red-100 px-1 text-red-700 ring-1 ring-red-400" : "text-slate-700"}`} onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }}>
+        // клік — копіює ДД.ММ.РРРР, олівець / подвійний клік — редагує (лише з editData; #14 03.11.2026)
+        <span className="group inline-flex items-center gap-1">
+        <button className={`font-medium hover:text-sky-700 ${pc.birthMismatch ? "rounded bg-red-100 px-1 text-red-700 ring-1 ring-red-400" : "text-slate-700"}`}
+          title={canEdit ? t("Клік — копіювати, подвійний клік — редагувати") : t("Клік — копіювати")}
+          onClick={e => { if (e.detail > 1) return; if (birthDate) void copyText(dateForCopy(birthDate), t); else if (canEdit) { setDraft(""); setEditing(true); } }}
+          onDoubleClick={() => { if (canEdit) { setDraft(birthDate ?? ""); setEditing(true); } }}>
           {birthDate ? new Date(birthDate + "T00:00:00").toLocaleDateString("uk-UA") : t("вказати")}
           {under26 != null && <span className={under26 ? "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700" : "ml-1 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500"}>{under26 ? "<26" : "26+"}</span>}
         </button>
+        {canEdit && birthDate && (
+          <button onClick={() => { setDraft(birthDate ?? ""); setEditing(true); }} title={t("Редагувати")} aria-label={t("Редагувати")}
+            className="shrink-0 rounded p-0.5 text-slate-400 opacity-0 transition hover:text-red-600 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+        </span>
       )}
       {!editing && pc.birthMismatch && <PeselMismatch what={fmtPeselDate(pc.birthDate)} />}
     </InfoRow>

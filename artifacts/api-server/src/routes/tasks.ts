@@ -153,7 +153,11 @@ function taskConds(req: AuthedRequest, withCompany = true) {
   if (q.priority && TASK_PRIORITIES.includes(q.priority as TaskPriority)) conds.push(eq(tasksTable.priority, q.priority));
   if (q.source === "auto") conds.push(sql`${tasksTable.source} like 'auto:%'`);
   else if (q.source === "manual") conds.push(eq(tasksTable.source, "manual"));
-  else if (q.source) conds.push(eq(tasksTable.source, `auto:${q.source}`));
+  else if (q.source) {
+    // кілька джерел через кому — груповий пункт фільтра («ZUS: зголошення + виреєстрування», #13 03.11.2026)
+    const keys = String(q.source).split(",").map(s => s.trim()).filter(s => /^[a-z_]+$/.test(s)).map(s => `auto:${s}`);
+    conds.push(keys.length ? inArray(tasksTable.source, keys) : sql`false`);
+  }
   if (q.from && DATE_RE.test(q.from)) conds.push(gte(tasksTable.dueAt, q.from));
   if (q.to && DATE_RE.test(q.to)) conds.push(lte(tasksTable.dueAt, q.to));
   if (q.overdue === "1") conds.push(and(sql`${tasksTable.dueAt} < ${warsawToday()}`, inArray(tasksTable.status, OPEN_STATUSES)));
