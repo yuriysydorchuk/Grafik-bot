@@ -301,10 +301,12 @@ test("календар працівників: лише люди свого мі
 
 test("запросити/звільнити: лінк і звільнення для своєї людини; людину з чинною фабрикою поза скоупом — лише по фабриці", opts, async () => {
   const { om, wPoz, wLodz, poz, lodz } = await world2();
-  const inv = await request(app).get(`/api/workers/${wPoz.id}/invite`).set("Cookie", om.cookie);
+  // з 05.11.2026 (зголошення #23) голий лінк у бот — лише editData; офіс-менеджер запрошує лінком «скан + анкета»
+  assert.equal((await request(app).get(`/api/workers/${wPoz.id}/invite`).set("Cookie", om.cookie)).status, 403);
+  const inv = await request(app).post(`/api/workers/${wPoz.id}/docs-invite`).set("Cookie", om.cookie).set(H).send({});
   assert.equal(inv.status, 200);
   assert.ok(inv.body.link);
-  assert.equal((await request(app).get(`/api/workers/${wLodz.id}/invite`).set("Cookie", om.cookie)).status, 403);
+  assert.equal((await request(app).post(`/api/workers/${wLodz.id}/docs-invite`).set("Cookie", om.cookie).set(H).send({})).status, 403);
   // людина у двох містах: основна POZ + додаткова LDZ (чинна) → «з усіх» заборонено, по фабриці POZ — можна
   const [wBoth] = await db.insert(workersTable).values({ fullName: "Both Cities", factoryId: poz.id }).returning();
   await db.insert(workerFactoriesTable).values({ workerId: wBoth!.id, factoryId: lodz.id });

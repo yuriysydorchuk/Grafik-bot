@@ -47,6 +47,15 @@ export function factoryInScope(scope: AdminScope | null | undefined, factoryId: 
 
 const idList = (ids: number[]) => sql.join(ids.map(i => sql`${i}`), sql`, `);
 
+// Активний профіль БЕЗ жодної фабрики (ні основної, ні worker_factories) — «нічий»: самореєстрація без
+// лінка фабрики, ручне додавання. Раніше таких не бачив жоден скоуп-адмін (зголошення #20: на проді
+// 22 активних), тож їх не могли ні оформити, ні злити з дублем. Тепер нічий у скоупі КОЖНОГО
+// скоуп-адміна, доки йому не призначать фабрику (POST /workers/:id/assign-factory — лише зі свого скоупу).
+export function orphanWorkerSql(workerIdCol: SQL | AnyColumn = workersTable.id): SQL {
+  return sql`EXISTS (SELECT 1 FROM ${workersTable} ow WHERE ow.id = ${workerIdCol} AND ow.is_active AND ow.factory_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM ${workerFactoriesTable} owf WHERE owf.worker_id = ow.id))`;
+}
+
 // Умова на workers.id: працівник належить дозволеним фабрикам — основна фабрика, будь-яка
 // привʼязка worker_factories (і минула — офіс відповідає на питання по старих виплатах)
 // або рядок сводної на цю фабрику. Порожній скоуп → false.
@@ -57,6 +66,7 @@ export function workerInScopeSql(scope: AdminScope, workerIdCol: SQL | AnyColumn
     EXISTS (SELECT 1 FROM ${workersTable} sw WHERE sw.id = ${workerIdCol} AND sw.factory_id IN (${ids}))
     OR EXISTS (SELECT 1 FROM ${workerFactoriesTable} swf WHERE swf.worker_id = ${workerIdCol} AND swf.factory_id IN (${ids}))
     OR EXISTS (SELECT 1 FROM ${svodniRowsTable} ssr WHERE ssr.worker_id = ${workerIdCol} AND ssr.factory_id IN (${ids}))
+    OR ${orphanWorkerSql(workerIdCol)}
   )`;
 }
 

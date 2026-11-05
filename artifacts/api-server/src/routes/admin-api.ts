@@ -743,6 +743,26 @@ router.patch("/workers/:id", RW, async (req, res) => {
   ok(res, { ...stripWorkerEcho(w, req), supersedeContractId, autoCompany });
 });
 
+// Профіль без фабрики («нічий» — lib/scope.ts orphanWorkerSql): призначити фабрику може й роль без
+// editData (workerLifecycle); скоуп-адмін — лише свою (гейт звіряє body.factoryId). Фірма — з фабрики,
+// якщо вона в неї одна. Зміна фабрики профілю, в якого вона вже є, — як і раніше лише PATCH (editData).
+router.post("/workers/:id/assign-factory", LIFECYCLE, async (req, res) => {
+  const id = Number(req.params.id), factoryId = Number(req.body?.factoryId);
+  if (!Number.isInteger(factoryId) || factoryId <= 0) return fail(res, 400, "Виберіть фабрику");
+  const [before] = await db.select().from(workersTable).where(eq(workersTable.id, id));
+  if (!before) return fail(res, 404, "Не знайдено");
+  if (!before.isActive) return fail(res, 400, "Профіль неактивний");
+  if (before.factoryId != null) return fail(res, 400, "У працівника вже є фабрика — змінити її можна в картці (право редагування)");
+  const [f] = await db.select({ id: factoriesTable.id, companyId: factoriesTable.companyId, multiFirm: factoriesTable.multiFirm }).from(factoriesTable).where(eq(factoriesTable.id, factoryId));
+  if (!f) return fail(res, 404, "Фабрику не знайдено");
+  const patch: Record<string, unknown> = { factoryId };
+  if (!f.multiFirm && f.companyId != null && f.companyId !== before.companyId) patch.companyId = f.companyId;
+  const [w] = await db.update(workersTable).set(patch).where(eq(workersTable.id, id)).returning();
+  await journalWorkerChanges(id, before as any, patch, (req as AuthedRequest).admin?.adminId ?? null);
+  void workerLegalityChanged(id);
+  ok(res, stripWorkerEcho(w!, req));
+});
+
 // Дата звільнення вже звільненого — services/workerFire.ts changeFireDate (22.10.2026)
 router.put("/workers/:id/fire-date", LIFECYCLE, async (req, res) => {
   const { changeFireDate } = await import("../services/workerFire");
@@ -894,14 +914,17 @@ const mergeDropId = async (req: any, res: any): Promise<number | null> => {
   if (!(await workerInScope(scopeOf(req), dropId))) { fail(res, 403, "Дубль поза вашим скоупом"); return null; }
   return dropId;
 };
-router.get("/workers/:id/merge-preview", RW, async (req, res) => {
+// Злиття дублів — editData або окреме право mergeWorkers (зголошення #23: офіс-менеджер бачить дубль,
+// а злити не може). Скоуп: і профіль, що лишається (шлях), і дубль (mergeDropId) мають бути в скоупі.
+const MERGE = requireAnyCap("editData", "mergeWorkers");
+router.get("/workers/:id/merge-preview", MERGE, async (req, res) => {
   const dropId = await mergeDropId(req, res); if (dropId == null) return;
   const { mergePreview } = await import("../services/workerMerge");
   const r = await mergePreview(Number(req.params.id), dropId);
   if ("error" in r) return fail(res, 400, r.error);
   ok(res, r);
 });
-router.post("/workers/:id/merge", RW, async (req, res) => {
+router.post("/workers/:id/merge", MERGE, async (req, res) => {
   const dropId = await mergeDropId(req, res); if (dropId == null) return;
   const { mergeWorkers } = await import("../services/workerMerge");
   try {
@@ -1921,7 +1944,10 @@ async function docNameParts(doc: { workerId: number; docTypeId: number | null; t
 // Personal invite link for a worker — they tap it and the bot links their Telegram.
 // Binds via an unguessable invite_code (?start=emp<code>), regenerated here if missing/burned;
 // worker_code stays a public display id only, never the binding secret.
-router.get("/workers/:id/invite", LIFECYCLE, async (req, res) => {
+// Голий лінк привʼязки — лише з правом редагування (зголошення #23, рішення власника 05.11.2026): ним
+// людина заходила в бот, а анкету ніхто не просив. Ролі без editData запрошують лінком «скан + анкета»
+// (POST /workers/:id/docs-invite) — сторінка анкети в кінці сама веде в бот на привʼязку.
+router.get("/workers/:id/invite", RW, async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");
@@ -1933,7 +1959,7 @@ router.get("/workers/:id/invite", LIFECYCLE, async (req, res) => {
 // заповнити анкету — anketa-токен (routes/passportScan.ts сам вирішує на
 // GET /passport-scan/:token, чи показувати крок сканування). Best-effort
 // push у Telegram, як /contracts/:id/send — офіс копіює лінк, якщо не вийшло.
-router.post("/workers/:id/docs-invite", WD, async (req, res) => {
+router.post("/workers/:id/docs-invite", requireAnyCap("workerDocs", "editData", "workerLifecycle"), async (req, res) => {
   const id = Number(req.params.id);
   const w = (await db.select().from(workersTable).where(eq(workersTable.id, id)))[0];
   if (!w) return fail(res, 404, "Не знайдено");

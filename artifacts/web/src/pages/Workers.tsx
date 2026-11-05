@@ -75,15 +75,17 @@ export default function Workers() {
   });
   const [restoreAsk, setRestoreAsk] = useState<{ worker: Worker; kind: RestoreKind | null } | null>(null); // новий найм / помилкове звільнення (#19)
   const remove = useMutation({ mutationFn: (id: number) => del(`/workers/${id}`), onSuccess: () => { invalidate(); toast.success(t("Працівника видалено")); }, onError: (e: any) => toast.error(e.message) });
+  const inviteLinkOf = (id: number) => canEdit ? get<{ link: string }>(`/workers/${id}/invite`) : post<{ link: string }>(`/workers/${id}/docs-invite`);
   const invite = useMutation({
-    mutationFn: (id: number) => get<{ link: string }>(`/workers/${id}/invite`),
+    // з правом редагування — голий лінк у бот; без нього — «скан + анкета», що в кінці веде в бот (#23)
+    mutationFn: (id: number) => inviteLinkOf(id),
     onSuccess: (d) => { navigator.clipboard?.writeText(d.link); toast.success(t("Посилання скопійовано"), { description: d.link }); },
     onError: (e: any) => toast.error(e.message),
   });
   const inviteAll = useMutation({
     mutationFn: async (targets: Worker[]) => {
       const lines = await Promise.all(targets.map(async w => {
-        const { link } = await get<{ link: string }>(`/workers/${w.id}/invite`);
+        const { link } = await inviteLinkOf(w.id);
         return `${w.fullName}: ${link}`;
       }));
       return lines.join("\n");

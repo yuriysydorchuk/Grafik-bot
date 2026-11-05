@@ -67,6 +67,8 @@ const STR: Record<string, Record<Lang, string>> = {
   rehireNotMe: { uk: "❌ Ні, це інша людина", en: "❌ No, that's someone else", es: "❌ No, es otra persona", ru: "❌ Нет, это другой человек", pl: "❌ Nie, to ktoś inny" },
   badName: { uk: "Ім'я та прізвище — лише латиницею (напр. Jan Kowalski)", en: "Name — Latin letters only (e.g. Jan Kowalski)", es: "Nombre — solo letras latinas (p. ej. Jan Kowalski)", ru: "Имя — только латиницей (напр. Jan Kowalski)", pl: "Imię — tylko alfabet łaciński (np. Jan Kowalski)" },
   successTitle: { uk: "✅ Готово!", en: "✅ Done!", es: "✅ ¡Listo!", ru: "✅ Готово!", pl: "✅ Gotowe!" },
+  successBotBody: { uk: "Дані передано в офіс. Останній крок — відкрий наш бот у Telegram і натисни Start: там будуть твій графік і години.", en: "Your details have been sent to the office. One last step — open our Telegram bot and press Start: your schedule and hours will be there.", es: "Tus datos se enviaron a la oficina. Último paso: abre nuestro bot de Telegram y pulsa Start: allí estarán tu horario y tus horas.", ru: "Данные переданы в офис. Последний шаг — открой наш бот в Telegram и нажми Start: там будут твой график и часы.", pl: "Dane przesłano do biura. Ostatni krok — otwórz naszego bota w Telegramie i naciśnij Start: tam będą Twój grafik i godziny." },
+  successBotBtn: { uk: "Відкрити бот у Telegram", en: "Open the bot in Telegram", es: "Abrir el bot en Telegram", ru: "Открыть бот в Telegram", pl: "Otwórz bota w Telegramie" },
   successBody: { uk: "Дані передано в офіс. Можеш закрити цю сторінку.", en: "Your details have been sent to the office. You can close this page now.", es: "Tus datos se enviaron a la oficina. Ya puedes cerrar esta página.", ru: "Данные переданы в офис. Можешь закрыть эту страницу.", pl: "Dane przesłano do biura. Możesz zamknąć tę stronę." },
   error: { uk: "Помилка", en: "Error", es: "Error", ru: "Ошибка", pl: "Błąd" },
   qTitle: { uk: "Ще трохи даних", en: "A few more details", es: "Unos datos más", ru: "Ещё немного данных", pl: "Jeszcze kilka danych" },
@@ -223,6 +225,7 @@ export default function PassportScan() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<"capture" | "analyzing" | "confirm" | "rehire" | "questionnaire" | "success">("capture");
+  const [botLink, setBotLink] = useState<string | null>(null); // після анкети — лінк привʼязки Telegram, якщо людина ще не в боті
   const [rehire, setRehire] = useState<{ candidate: { id: number; fullName: string; workerCode: string | null }; fields: Omit<Draft, "fullName"> } | null>(null);
   const [analyzeErr, setAnalyzeErr] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -293,7 +296,8 @@ export default function PassportScan() {
   async function submitQuestionnaire(fields: Record<string, unknown>, certFile: File | null) {
     setBusy(true); setServerErrors({}); setAnalyzeErr(null);
     try {
-      await apiPostJson(`/passport-scan/${token}/questionnaire`, fields);
+      const saved = await apiPostJson<{ botLink?: string | null }>(`/passport-scan/${token}/questionnaire`, fields);
+      setBotLink(saved?.botLink ?? null);
       if (certFile) {
         const form = new FormData();
         form.append("file", certFile, certFile.name);
@@ -320,7 +324,10 @@ export default function PassportScan() {
     );
   }
   if (step === "success") return (
-    <Centered><Card className="max-w-md p-6 text-center"><h1 className="mb-2 text-lg font-bold text-emerald-600">{s("successTitle")}</h1><p className="text-sm text-slate-500">{s("successBody")}</p></Card></Centered>
+    <Centered><Card className="max-w-md p-6 text-center"><h1 className="mb-2 text-lg font-bold text-emerald-600">{s("successTitle")}</h1><p className="text-sm text-slate-500">{s(botLink ? "successBotBody" : "successBody")}</p>
+      {/* людина ще не в боті — останній крок: відкрити бот і привʼязати Telegram (одноразовий лінк) */}
+      {botLink && <a href={botLink} className="mt-4 inline-flex items-center justify-center rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-700">{s("successBotBtn")}</a>}
+    </Card></Centered>
   );
   if (!meta) return <Centered><Spinner /></Centered>;
 

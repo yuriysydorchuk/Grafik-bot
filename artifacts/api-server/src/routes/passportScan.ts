@@ -486,7 +486,11 @@ router.post("/passport-scan/:token/questionnaire", async (req, res) => {
   // анкета → профіль: рахунок з анкети стає рахунком профілю (services/questionnaireSync.ts)
   await (await import("../services/questionnaireSync")).syncQuestionnaireToProfile(row.workerId);
 
-  ok(res, { ok: true });
+  // людина ще не в боті → сторінка після анкети веде її в бот на привʼязку (одноразовий emp-лінк):
+  // так лінк «скан + анкета» замінює голий лінк у бот — анкета заповнена ДО привʼязки (зголошення #23)
+  const [tg] = await db.select({ telegramId: workersTable.telegramId }).from(workersTable).where(eq(workersTable.id, row.workerId));
+  const botLink = tg && !tg.telegramId ? workerInviteLink(await ensureWorkerInviteCode(row.workerId)) : null;
+  ok(res, { ok: true, botLink });
 });
 
 // Довідка студента — окремим типом документа (icon="student"), одразу з

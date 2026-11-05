@@ -171,6 +171,11 @@ export default function WorkerDetail() {
     },
     onError: (e: any) => toast.error(e.message),
   });
+  const assignFactory = useMutation({
+    mutationFn: (factoryId: number) => post(`/workers/${id}/assign-factory`, { factoryId }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["workers"] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Фабрику призначено")); },
+    onError: (e: any) => toast.error(e.message),
+  });
   // повернення звільненого прямо з профілю (той самий POST, що й у списку)
   const confirmDlg = useConfirm();
   const [firing, setFiring] = useState(false);
@@ -204,8 +209,9 @@ export default function WorkerDetail() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["worker", id] }); qc.invalidateQueries({ queryKey: ["worker-changes"] }); toast.success(t("Прибрано з чорного списку")); },
     onError: (e: any) => toast.error(e.message),
   });
+  // з правом редагування — голий лінк привʼязки; без нього — лінк «скан + анкета», який у кінці сам веде в бот (#23)
   const botInvite = useMutation({
-    mutationFn: () => get<{ link: string }>(`/workers/${id}/invite`),
+    mutationFn: () => canEdit ? get<{ link: string }>(`/workers/${id}/invite`) : post<{ link: string }>(`/workers/${id}/docs-invite`),
     onSuccess: (d) => { navigator.clipboard?.writeText(d.link).catch(() => {}); setBotInviteLink(d.link); },
     onError: (e: any) => toast.error(e.message),
   });
@@ -335,7 +341,7 @@ export default function WorkerDetail() {
               {canBlacklist && (w.doNotHire
                 ? <button type="button" onClick={() => blacklistOff.mutate()} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" disabled={blacklistOff.isPending}>{t("Прибрати з чорного списку")}</button>
                 : <button type="button" onClick={() => setBlacklisting(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100"><Ban className="h-3.5 w-3.5" /> {t("У чорний список")}</button>)}
-              {canEdit && (
+              {(canEdit || can(me, "mergeWorkers")) && (
                 <button type="button" onClick={() => setMerging(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-100" title={t("Обʼєднати з дублем")}>
                   <GitMerge className="h-3.5 w-3.5" /> {t("Дубль?")}
                 </button>
@@ -352,6 +358,14 @@ export default function WorkerDetail() {
               <InlineBadgeSelect value={w.factoryId != null ? String(w.factoryId) : ""} color="red" none={t("— без фабрики —")}
                 onChange={v => wpatch.mutate({ factoryId: v ? Number(v) : null })}
                 options={factories.map(f => ({ value: String(f.id), label: f.name }))} />
+              {/* профіль без фабрики: призначити може й роль без права редагування (workerLifecycle), скоуп-адмін — зі своїх фабрик (#20) */}
+              {w.isActive && w.factoryId == null && canLifecycle && !canEdit && (
+                <select value="" onChange={e => { const v = Number(e.target.value); if (v) assignFactory.mutate(v); }} disabled={assignFactory.isPending}
+                  className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800" title={t("У профілю немає фабрики — призначте, щоб людину можна було оформити")}>
+                  <option value="">{t("Призначити фабрику…")}</option>
+                  {[...factories].sort((a, b) => a.name.localeCompare(b.name, "pl")).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              )}
               <WorkerFactoriesChips workerId={w.id} factories={factories} companies={companies} primaryFactoryId={w.factoryId} />
               {w.signupLink && <span className="text-xs text-slate-500" title={t("Зареєструвався за персональним лінком реєстрації")}>{t("Привів(ла)")}: <b>{w.signupLink.adminName}</b> · {w.signupLink.factoryName}</span>}
             </div>
@@ -614,7 +628,9 @@ export default function WorkerDetail() {
       {botInviteLink && (
         <Modal open onClose={() => setBotInviteLink(null)} title={t("Запросити в бот")}>
           <div className="space-y-3">
-            <p className="text-sm text-slate-600">{t("Надішліть цей лінк")} <b>{w.fullName}</b> {t("(SMS, WhatsApp). Відкривши його й натиснувши Start, людина привʼяже свій Telegram до цього профілю. Лінк одноразовий.")}</p>
+            <p className="text-sm text-slate-600">{t("Надішліть цей лінк")} <b>{w.fullName}</b> {canEdit
+              ? t("(SMS, WhatsApp). Відкривши його й натиснувши Start, людина привʼяже свій Telegram до цього профілю. Лінк одноразовий.")
+              : t("(SMS, WhatsApp). Людина зісканує паспорт і заповнить анкету, а в кінці сторінка сама відкриє бот і привʼяже її Telegram до цього профілю.")}</p>
             <div className="flex gap-2">
               <Input readOnly value={botInviteLink} onFocus={e => e.currentTarget.select()} className="flex-1 font-mono text-xs" />
               <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(botInviteLink).then(() => toast.success(t("Скопійовано"))).catch(() => {}); }}>{t("Копіювати")}</Button>
